@@ -27,7 +27,7 @@ Read the user's description of what they want to build. If the scope is unclear,
 
 ### 2. Research
 
-Before writing the spec, research what you need to know. Load relevant context library files:
+Before writing the spec, read `context/lib/context_style_guide.md` — all plan content and context file updates must follow this style. Then load other relevant context library files:
 
 !`ls context/lib/`
 

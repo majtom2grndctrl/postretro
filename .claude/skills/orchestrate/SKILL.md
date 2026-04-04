@@ -21,7 +21,12 @@ You are the orchestrator for a plan in `context/plans/ready/`. Your job is to co
 
 ### 1. Load the plan
 
-Read `context/plans/ready/$ARGUMENTS/plan.md`. If the plan doesn't exist, list available plans and ask the user which one to run.
+Read these context library files first:
+- `context/lib/index.md` — agent router, architectural principles
+- `context/lib/development_guide.md` — conventions, constraints, coding standards
+- `context/lib/testing_guide.md` — what to test, test patterns
+
+Then read `context/plans/ready/$ARGUMENTS/plan.md`. If the plan doesn't exist, list available plans and ask the user which one to run.
 
 Understand:
 - The shared context section (every agent needs this)

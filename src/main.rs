@@ -20,7 +20,7 @@ use winit::window::{CursorGrabMode, Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::render::Renderer;
-use crate::visibility::VisibleFaces;
+use crate::visibility::{VisibilityStats, VisibleFaces};
 
 /// CLI flag to force the line-list wireframe fallback path.
 const FORCE_LINE_LIST_FLAG: &str = "--force-line-list";
@@ -133,11 +133,7 @@ impl ApplicationHandler for App {
             }
         };
 
-        let renderer = match Renderer::new(
-            &window,
-            self.bsp_world.as_ref(),
-            self.force_line_list,
-        ) {
+        let renderer = match Renderer::new(&window, self.bsp_world.as_ref(), self.force_line_list) {
             Ok(r) => r,
             Err(err) => {
                 self.exit_result = Err(err);
@@ -277,12 +273,47 @@ impl ApplicationHandler for App {
 
                 // Determine visibility: PVS + frustum culling.
                 let view_proj = self.camera.view_projection();
-                let visible = match self.bsp_world.as_ref() {
+                let (visible, stats) = match self.bsp_world.as_ref() {
                     Some(world) => {
                         visibility::determine_visibility(self.camera.position, view_proj, world)
                     }
-                    None => VisibleFaces::DrawAll,
+                    None => (
+                        VisibleFaces::DrawAll,
+                        VisibilityStats {
+                            camera_leaf: 0,
+                            total_faces: 0,
+                            pvs_faces: 0,
+                            frustum_faces: 0,
+                        },
+                    ),
                 };
+
+                // Log diagnostics at debug level.
+                let pos = self.camera.position;
+                log::debug!(
+                    "[Diagnostics] leaf:{} | faces: {}/{}/{} (total/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
+                    stats.camera_leaf,
+                    stats.total_faces,
+                    stats.pvs_faces,
+                    stats.frustum_faces,
+                    pos.x,
+                    pos.y,
+                    pos.z,
+                );
+
+                // Update window title with diagnostic summary.
+                if let Some(ws) = self.window_state.as_ref() {
+                    ws.window.set_title(&format!(
+                        "Postretro | leaf:{} | faces: {}/{}/{} (total/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
+                        stats.camera_leaf,
+                        stats.total_faces,
+                        stats.pvs_faces,
+                        stats.frustum_faces,
+                        pos.x,
+                        pos.y,
+                        pos.z,
+                    ));
+                }
 
                 // Upload view-projection and render.
                 if let Some(renderer) = self.renderer.as_ref() {

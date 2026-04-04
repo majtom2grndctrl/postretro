@@ -21,13 +21,17 @@ pub enum BspLoadError {
     ParseError(#[from] qbsp::BspParseError),
     #[error("BSP contains no models (missing worldspawn)")]
     NoModels,
-    #[error("face {face_idx} references out-of-bounds edge index {edge_idx} (surface_edges len: {surf_edges_len})")]
+    #[error(
+        "face {face_idx} references out-of-bounds edge index {edge_idx} (surface_edges len: {surf_edges_len})"
+    )]
     EdgeOutOfBounds {
         face_idx: usize,
         edge_idx: u32,
         surf_edges_len: usize,
     },
-    #[error("face {face_idx} references out-of-bounds vertex index {vertex_idx} (vertices len: {vertices_len})")]
+    #[error(
+        "face {face_idx} references out-of-bounds vertex index {vertex_idx} (vertices len: {vertices_len})"
+    )]
     VertexOutOfBounds {
         face_idx: usize,
         vertex_idx: u32,
@@ -46,6 +50,8 @@ pub struct FaceMeta {
     pub index_count: u32,
     /// BSP leaf index this face belongs to. A face may appear in multiple leaves via
     /// mark_surfaces, but we store the first leaf encountered during the build pass.
+    /// Currently informational — may be consumed by future diagnostics or debug visualization.
+    #[allow(dead_code)]
     pub leaf_index: u32,
 }
 

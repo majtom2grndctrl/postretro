@@ -116,9 +116,7 @@ impl Renderer {
             if force_line_list {
                 log::info!("[Renderer] Forced LineList wireframe mode via CLI flag");
             } else {
-                log::info!(
-                    "[Renderer] POLYGON_MODE_LINE not supported, falling back to LineList"
-                );
+                log::info!("[Renderer] POLYGON_MODE_LINE not supported, falling back to LineList");
             }
             WireframeMode::LineList
         };
@@ -129,14 +127,13 @@ impl Renderer {
             wgpu::Features::empty()
         };
 
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("Postretro Device"),
-                required_features,
-                required_limits: wgpu::Limits::default(),
-                ..Default::default()
-            }))
-            .context("failed to create GPU device")?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("Postretro Device"),
+            required_features,
+            required_limits: wgpu::Limits::default(),
+            ..Default::default()
+        }))
+        .context("failed to create GPU device")?;
 
         // Configure surface.
         let surface_caps = surface.get_capabilities(&adapter);
@@ -160,12 +157,12 @@ impl Renderer {
         surface.configure(&device, &surface_config);
 
         // Upload geometry buffers.
-        let has_geometry = bsp_world
-            .is_some_and(|w| !w.vertices.is_empty() && !w.indices.is_empty());
+        let has_geometry =
+            bsp_world.is_some_and(|w| !w.vertices.is_empty() && !w.indices.is_empty());
 
-        let (vertex_data, index_data, index_count) = if let Some(world) = bsp_world.filter(|w| {
-            !w.vertices.is_empty() && !w.indices.is_empty()
-        }) {
+        let (vertex_data, index_data, index_count) = if let Some(world) =
+            bsp_world.filter(|w| !w.vertices.is_empty() && !w.indices.is_empty())
+        {
             let verts = &world.vertices;
 
             let indices = match wireframe_mode {
@@ -215,20 +212,19 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("ViewProj Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ViewProj Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
 
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ViewProj Bind Group"),
@@ -256,10 +252,7 @@ impl Renderer {
                 wgpu::PrimitiveTopology::TriangleList,
                 wgpu::PolygonMode::Line,
             ),
-            WireframeMode::LineList => (
-                wgpu::PrimitiveTopology::LineList,
-                wgpu::PolygonMode::Fill,
-            ),
+            WireframeMode::LineList => (wgpu::PrimitiveTopology::LineList, wgpu::PolygonMode::Fill),
         };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -362,17 +355,14 @@ impl Renderer {
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
             wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
-                self.surface
-                    .configure(&self.device, &self.surface_config);
+                self.surface.configure(&self.device, &self.surface_config);
                 tex
             }
-            wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded => {
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 return Ok(());
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface
-                    .configure(&self.device, &self.surface_config);
+                self.surface.configure(&self.device, &self.surface_config);
                 return Ok(());
             }
             wgpu::CurrentSurfaceTexture::Lost => {
@@ -387,11 +377,11 @@ impl Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder =
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Frame Encoder"),
-                });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Frame Encoder"),
+            });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -418,10 +408,8 @@ impl Renderer {
                 render_pass.set_pipeline(&self.pipeline);
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                render_pass.set_index_buffer(
-                    self.index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
+                render_pass
+                    .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
                 // LineList mode uses a rebuilt index buffer with different offsets,
                 // so face-level draw ranges from PVS don't apply. Fall back to draw-all.
@@ -449,11 +437,7 @@ impl Renderer {
     }
 
     /// Issue one `draw_indexed` call per visible face range.
-    fn draw_ranges<'a>(
-        &'a self,
-        render_pass: &mut wgpu::RenderPass<'a>,
-        ranges: &[DrawRange],
-    ) {
+    fn draw_ranges<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>, ranges: &[DrawRange]) {
         for range in ranges {
             let start = range.index_offset;
             let end = start + range.index_count;
@@ -489,10 +473,7 @@ fn build_default_view_projection(aspect: f32) -> Mat4 {
 /// For each face, extracts the unique edges from its fan triangulation and emits them
 /// as line segments. This avoids drawing interior fan edges that don't correspond to
 /// actual BSP face edges.
-fn build_line_list_indices(
-    tri_indices: &[u32],
-    face_meta: &[crate::bsp::FaceMeta],
-) -> Vec<u32> {
+fn build_line_list_indices(tri_indices: &[u32], face_meta: &[crate::bsp::FaceMeta]) -> Vec<u32> {
     let mut line_indices = Vec::with_capacity(tri_indices.len() * 2);
 
     for face in face_meta {
@@ -556,7 +537,7 @@ fn cast_f32_slice_to_bytes(data: &[f32]) -> Vec<u8> {
 
 /// Cast a slice of `[f32; 3]` vertex positions to raw bytes.
 fn bytemuck_cast_slice_f32x3(data: &[[f32; 3]]) -> Vec<u8> {
-    let byte_len = data.len() * std::mem::size_of::<[f32; 3]>();
+    let byte_len = std::mem::size_of_val(data);
     let mut bytes = Vec::with_capacity(byte_len);
     for vertex in data {
         for component in vertex {
@@ -568,7 +549,7 @@ fn bytemuck_cast_slice_f32x3(data: &[[f32; 3]]) -> Vec<u8> {
 
 /// Cast a slice of `u32` indices to raw bytes.
 fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
-    let byte_len = data.len() * std::mem::size_of::<u32>();
+    let byte_len = std::mem::size_of_val(data);
     let mut bytes = Vec::with_capacity(byte_len);
     for &val in data {
         bytes.extend_from_slice(&val.to_ne_bytes());

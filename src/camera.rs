@@ -318,7 +318,10 @@ mod tests {
         // For 16:9, vertical FOV should be narrower than horizontal.
         let cam = Camera::new(Vec3::ZERO, 0.0, 0.0);
         let vfov = 2.0 * ((HFOV / 2.0).tan() / cam.aspect).atan();
-        assert!(vfov < HFOV, "vfov ({vfov}) should be less than hfov ({HFOV})");
+        assert!(
+            vfov < HFOV,
+            "vfov ({vfov}) should be less than hfov ({HFOV})"
+        );
     }
 
     #[test]

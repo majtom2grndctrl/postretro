@@ -22,6 +22,19 @@ pub enum VisibleFaces {
     DrawAll,
 }
 
+/// Per-frame visibility pipeline statistics for diagnostics.
+#[derive(Debug, Clone)]
+pub struct VisibilityStats {
+    /// BSP leaf the camera currently occupies.
+    pub camera_leaf: u32,
+    /// Total faces in the BSP.
+    pub total_faces: u32,
+    /// Faces visible after PVS culling, before frustum culling.
+    pub pvs_faces: u32,
+    /// Faces visible after both PVS and frustum culling.
+    pub frustum_faces: u32,
+}
+
 // --- Frustum culling ---
 
 /// A plane in Hessian normal form: dot(normal, point) + dist >= 0 for points on the inside.
@@ -96,9 +109,21 @@ fn is_aabb_outside_frustum(mins: Vec3, maxs: Vec3, frustum: &Frustum) -> bool {
     for plane in &frustum.planes {
         // Select the AABB vertex farthest along the plane normal (positive vertex).
         let p_vertex = Vec3::new(
-            if plane.normal.x >= 0.0 { maxs.x } else { mins.x },
-            if plane.normal.y >= 0.0 { maxs.y } else { mins.y },
-            if plane.normal.z >= 0.0 { maxs.z } else { mins.z },
+            if plane.normal.x >= 0.0 {
+                maxs.x
+            } else {
+                mins.x
+            },
+            if plane.normal.y >= 0.0 {
+                maxs.y
+            } else {
+                mins.y
+            },
+            if plane.normal.z >= 0.0 {
+                maxs.z
+            } else {
+                mins.z
+            },
         );
 
         // If the positive vertex is behind the plane, the AABB is fully outside.
@@ -206,6 +231,13 @@ pub fn decompress_pvs(leaf_index: u32, world: &BspWorld) -> Option<Vec<bool>> {
     Some(visible)
 }
 
+/// Result of collecting visible faces, including separate PVS and frustum counts.
+pub(crate) struct CollectedFaces {
+    pub ranges: Vec<DrawRange>,
+    /// Number of faces visible after PVS alone (before frustum culling).
+    pub pvs_face_count: u32,
+}
+
 /// Collect draw ranges for all faces belonging to visible leaves.
 ///
 /// Given a visibility bitfield (from `decompress_pvs`), iterates visible leaves and
@@ -213,25 +245,37 @@ pub fn decompress_pvs(leaf_index: u32, world: &BspWorld) -> Option<Vec<bool>> {
 ///
 /// When a frustum is provided, each PVS-visible leaf is further tested against the
 /// frustum planes. Leaves whose AABB falls entirely outside the frustum are skipped.
+/// The returned `pvs_face_count` reflects the count before frustum culling is applied.
 pub fn collect_visible_faces(
     visible_leaves: &[bool],
     camera_leaf: u32,
     world: &BspWorld,
     frustum: Option<&Frustum>,
-) -> Vec<DrawRange> {
+) -> CollectedFaces {
     let mut ranges = Vec::new();
+    let mut pvs_face_count: u32 = 0;
 
     for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
         // Include this leaf if it's marked visible in the PVS or it's the camera's leaf.
-        let is_visible = visible_leaves
-            .get(leaf_idx)
-            .copied()
-            .unwrap_or(false);
+        let is_visible = visible_leaves.get(leaf_idx).copied().unwrap_or(false);
         let is_camera_leaf = leaf_idx as u32 == camera_leaf;
 
         if !is_visible && !is_camera_leaf {
             continue;
         }
+
+        // Count faces for PVS stats before frustum culling.
+        let leaf_face_count = leaf
+            .face_indices
+            .iter()
+            .filter(|&&fi| {
+                world
+                    .face_meta
+                    .get(fi as usize)
+                    .is_some_and(|f| f.index_count > 0)
+            })
+            .count() as u32;
+        pvs_face_count += leaf_face_count;
 
         // Frustum cull: skip leaves whose bounding box is entirely outside the view frustum.
         if let Some(frustum) = frustum {
@@ -252,7 +296,10 @@ pub fn collect_visible_faces(
         }
     }
 
-    ranges
+    CollectedFaces {
+        ranges,
+        pvs_face_count,
+    }
 }
 
 /// Perform full visibility determination for a single frame.
@@ -261,14 +308,23 @@ pub fn collect_visible_faces(
 /// leaves whose bounding box falls entirely outside the view frustum.
 ///
 /// Returns `VisibleFaces::Culled` with draw ranges when PVS data is available,
-/// or `VisibleFaces::DrawAll` when it is not.
+/// or `VisibleFaces::DrawAll` when it is not. Always returns `VisibilityStats`
+/// with per-frame diagnostic counters.
 pub fn determine_visibility(
     camera_position: Vec3,
     view_proj: Mat4,
     world: &BspWorld,
-) -> VisibleFaces {
+) -> (VisibleFaces, VisibilityStats) {
+    let total_faces = world.face_meta.len() as u32;
+
     if world.nodes.is_empty() || world.leaves.is_empty() {
-        return VisibleFaces::DrawAll;
+        let stats = VisibilityStats {
+            camera_leaf: 0,
+            total_faces,
+            pvs_faces: total_faces,
+            frustum_faces: total_faces,
+        };
+        return (VisibleFaces::DrawAll, stats);
     }
 
     let camera_leaf = find_camera_leaf(camera_position, world);
@@ -276,22 +332,39 @@ pub fn determine_visibility(
 
     match decompress_pvs(camera_leaf, world) {
         Some(visible_leaves) => {
-            let ranges =
+            let collected =
                 collect_visible_faces(&visible_leaves, camera_leaf, world, Some(&frustum));
+            let frustum_faces = collected.ranges.len() as u32;
+            let pvs_faces = collected.pvs_face_count;
+
             log::trace!(
-                "[Visibility] leaf={}, visible_ranges={}, total_faces={}",
+                "[Visibility] leaf={}, pvs_faces={}, frustum_faces={}, total_faces={}",
                 camera_leaf,
-                ranges.len(),
-                world.face_meta.len(),
+                pvs_faces,
+                frustum_faces,
+                total_faces,
             );
-            VisibleFaces::Culled(ranges)
+
+            let stats = VisibilityStats {
+                camera_leaf,
+                total_faces,
+                pvs_faces,
+                frustum_faces,
+            };
+            (VisibleFaces::Culled(collected.ranges), stats)
         }
         None => {
             log::trace!(
                 "[Visibility] leaf={}, no PVS data — drawing all faces",
                 camera_leaf,
             );
-            VisibleFaces::DrawAll
+            let stats = VisibilityStats {
+                camera_leaf,
+                total_faces,
+                pvs_faces: total_faces,
+                frustum_faces: total_faces,
+            };
+            (VisibleFaces::DrawAll, stats)
         }
     }
 }
@@ -324,9 +397,9 @@ mod tests {
         let nodes = vec![BspNodeData {
             plane_normal: Vec3::X,
             plane_dist: 0.0,
-            front: 1,      // leaf 1
+            front: 1, // leaf 1
             front_is_leaf: true,
-            back: 2,        // leaf 2
+            back: 2, // leaf 2
             back_is_leaf: true,
         }];
 
@@ -416,18 +489,18 @@ mod tests {
             BspNodeData {
                 plane_normal: Vec3::X,
                 plane_dist: 0.0,
-                front: 1,           // node 1
+                front: 1, // node 1
                 front_is_leaf: false,
-                back: 1,            // leaf 1
+                back: 1, // leaf 1
                 back_is_leaf: true,
             },
             // Node 1: split on Y=0
             BspNodeData {
                 plane_normal: Vec3::Y,
                 plane_dist: 0.0,
-                front: 2,           // leaf 2
+                front: 2, // leaf 2
                 front_is_leaf: true,
-                back: 3,            // leaf 3
+                back: 3, // leaf 3
                 back_is_leaf: true,
             },
         ];
@@ -558,7 +631,16 @@ mod tests {
         // Use the same test data as qbsp's own test suite.
         // TEST_VISDATA: [0b1010_0111, 0, 5, 0b0000_0001, 0b0001_0000, 0, 12, 0b1000_0000]
         // Expected visible leaves: 1, 2, 3, 6, 8, 49, 61, 168
-        let visdata = vec![0b1010_0111, 0, 5, 0b0000_0001, 0b0001_0000, 0, 12, 0b1000_0000];
+        let visdata = vec![
+            0b1010_0111,
+            0,
+            5,
+            0b0000_0001,
+            0b0001_0000,
+            0,
+            12,
+            0b1000_0000,
+        ];
 
         let mut world = empty_world();
         world.leaves = (0..256)
@@ -594,11 +676,24 @@ mod tests {
         let world = two_leaf_world();
         // Both leaves visible.
         let visible = vec![false, true, true];
-        let ranges = collect_visible_faces(&visible, 1, &world, None);
+        let collected = collect_visible_faces(&visible, 1, &world, None);
 
-        assert_eq!(ranges.len(), 2);
-        assert_eq!(ranges[0], DrawRange { index_offset: 0, index_count: 3 });
-        assert_eq!(ranges[1], DrawRange { index_offset: 3, index_count: 6 });
+        assert_eq!(collected.ranges.len(), 2);
+        assert_eq!(
+            collected.ranges[0],
+            DrawRange {
+                index_offset: 0,
+                index_count: 3
+            }
+        );
+        assert_eq!(
+            collected.ranges[1],
+            DrawRange {
+                index_offset: 3,
+                index_count: 6
+            }
+        );
+        assert_eq!(collected.pvs_face_count, 2);
     }
 
     #[test]
@@ -606,10 +701,17 @@ mod tests {
         let world = two_leaf_world();
         // Only leaf 1 is visible (PVS says nothing else visible).
         let visible = vec![false, true, false];
-        let ranges = collect_visible_faces(&visible, 1, &world, None);
+        let collected = collect_visible_faces(&visible, 1, &world, None);
 
-        assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0], DrawRange { index_offset: 0, index_count: 3 });
+        assert_eq!(collected.ranges.len(), 1);
+        assert_eq!(
+            collected.ranges[0],
+            DrawRange {
+                index_offset: 0,
+                index_count: 3
+            }
+        );
+        assert_eq!(collected.pvs_face_count, 1);
     }
 
     #[test]
@@ -617,18 +719,30 @@ mod tests {
         let world = two_leaf_world();
         // PVS says nothing visible at all — but camera leaf is always included.
         let visible = vec![false, false, false];
-        let ranges = collect_visible_faces(&visible, 1, &world, None);
+        let collected = collect_visible_faces(&visible, 1, &world, None);
 
-        assert_eq!(ranges.len(), 1, "camera leaf should always be included");
-        assert_eq!(ranges[0], DrawRange { index_offset: 0, index_count: 3 });
+        assert_eq!(
+            collected.ranges.len(),
+            1,
+            "camera leaf should always be included"
+        );
+        assert_eq!(
+            collected.ranges[0],
+            DrawRange {
+                index_offset: 0,
+                index_count: 3
+            }
+        );
+        assert_eq!(collected.pvs_face_count, 1);
     }
 
     #[test]
     fn collect_faces_empty_world() {
         let world = empty_world();
         let visible: Vec<bool> = Vec::new();
-        let ranges = collect_visible_faces(&visible, 0, &world, None);
-        assert!(ranges.is_empty());
+        let collected = collect_visible_faces(&visible, 0, &world, None);
+        assert!(collected.ranges.is_empty());
+        assert_eq!(collected.pvs_face_count, 0);
     }
 
     // -- determine_visibility integration tests --
@@ -650,13 +764,17 @@ mod tests {
     fn determine_visibility_with_pvs() {
         let world = two_leaf_world();
         let vp = wide_view_proj(Vec3::new(10.0, 0.0, 0.0));
-        let result = determine_visibility(Vec3::new(10.0, 0.0, 0.0), vp, &world);
+        let (result, stats) = determine_visibility(Vec3::new(10.0, 0.0, 0.0), vp, &world);
         match result {
             VisibleFaces::Culled(ranges) => {
                 assert!(!ranges.is_empty(), "should have draw ranges");
             }
             VisibleFaces::DrawAll => panic!("expected Culled, got DrawAll"),
         }
+        assert_eq!(stats.total_faces, 2);
+        assert_eq!(stats.camera_leaf, 1);
+        assert!(stats.pvs_faces > 0);
+        assert!(stats.frustum_faces <= stats.pvs_faces);
     }
 
     #[test]
@@ -664,19 +782,25 @@ mod tests {
         let mut world = two_leaf_world();
         world.visdata.clear();
         let vp = wide_view_proj(Vec3::new(10.0, 0.0, 0.0));
-        let result = determine_visibility(Vec3::new(10.0, 0.0, 0.0), vp, &world);
+        let (result, stats) = determine_visibility(Vec3::new(10.0, 0.0, 0.0), vp, &world);
         assert!(
             matches!(result, VisibleFaces::DrawAll),
             "should draw all when visdata is empty"
         );
+        // Without PVS, stats report total for both pvs and frustum.
+        assert_eq!(stats.total_faces, 2);
+        assert_eq!(stats.pvs_faces, 2);
+        assert_eq!(stats.frustum_faces, 2);
     }
 
     #[test]
     fn determine_visibility_empty_world_draws_all() {
         let world = empty_world();
         let vp = wide_view_proj(Vec3::ZERO);
-        let result = determine_visibility(Vec3::ZERO, vp, &world);
+        let (result, stats) = determine_visibility(Vec3::ZERO, vp, &world);
         assert!(matches!(result, VisibleFaces::DrawAll));
+        assert_eq!(stats.total_faces, 0);
+        assert_eq!(stats.camera_leaf, 0);
     }
 
     // -- Frustum plane extraction tests --
@@ -717,7 +841,10 @@ mod tests {
                 break;
             }
         }
-        assert!(inside, "point just in front of camera should be inside frustum");
+        assert!(
+            inside,
+            "point just in front of camera should be inside frustum"
+        );
     }
 
     #[test]
@@ -888,7 +1015,7 @@ mod tests {
         );
         let vp = proj * view;
 
-        let result = determine_visibility(position, vp, &world);
+        let (result, stats) = determine_visibility(position, vp, &world);
         match result {
             VisibleFaces::Culled(ranges) => {
                 // Leaf 2 should be culled (it's behind/to the side of the camera).
@@ -898,10 +1025,19 @@ mod tests {
                     1,
                     "should only draw camera leaf's face when looking away from leaf 2"
                 );
-                assert_eq!(ranges[0], DrawRange { index_offset: 0, index_count: 3 });
+                assert_eq!(
+                    ranges[0],
+                    DrawRange {
+                        index_offset: 0,
+                        index_count: 3
+                    }
+                );
             }
             VisibleFaces::DrawAll => panic!("expected Culled, got DrawAll"),
         }
+        // PVS sees both leaves (2 faces), frustum culls leaf 2 (1 face remains).
+        assert_eq!(stats.pvs_faces, 2);
+        assert_eq!(stats.frustum_faces, 1);
     }
 
     #[test]
@@ -910,15 +1046,10 @@ mod tests {
         // Camera in leaf 1 (positive X), looking toward leaf 2 (negative X).
         let position = Vec3::new(50.0, 0.0, 0.0);
         let view = Mat4::look_at_rh(position, position + Vec3::NEG_X, Vec3::Y);
-        let proj = Mat4::perspective_rh(
-            std::f32::consts::FRAC_PI_2,
-            16.0 / 9.0,
-            0.1,
-            4096.0,
-        );
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 16.0 / 9.0, 0.1, 4096.0);
         let vp = proj * view;
 
-        let result = determine_visibility(position, vp, &world);
+        let (result, stats) = determine_visibility(position, vp, &world);
         match result {
             VisibleFaces::Culled(ranges) => {
                 // Both leaves should be visible — leaf 2 is in front of the camera.
@@ -930,5 +1061,31 @@ mod tests {
             }
             VisibleFaces::DrawAll => panic!("expected Culled, got DrawAll"),
         }
+        // Both PVS and frustum should see all 2 faces.
+        assert_eq!(stats.pvs_faces, 2);
+        assert_eq!(stats.frustum_faces, 2);
+    }
+
+    // -- VisibilityStats tests --
+
+    #[test]
+    fn stats_reflect_pvs_vs_frustum_difference() {
+        // When frustum culls some PVS-visible faces, pvs_faces > frustum_faces.
+        let world = two_leaf_world();
+        let position = Vec3::new(50.0, 0.0, 0.0);
+        // Narrow FOV looking away from leaf 2 to force frustum culling.
+        let view = Mat4::look_at_rh(position, position + Vec3::X, Vec3::Y);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 4096.0);
+        let vp = proj * view;
+
+        let (_, stats) = determine_visibility(position, vp, &world);
+        assert_eq!(stats.total_faces, 2);
+        assert_eq!(stats.camera_leaf, 1);
+        assert!(
+            stats.pvs_faces > stats.frustum_faces,
+            "frustum should cull some PVS-visible faces: pvs={} frustum={}",
+            stats.pvs_faces,
+            stats.frustum_faces,
+        );
     }
 }

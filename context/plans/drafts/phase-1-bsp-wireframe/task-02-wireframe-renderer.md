@@ -16,7 +16,7 @@ Create the renderer module. Upload vertex and index buffers to GPU. Build a wgpu
 
 ### Renderer module
 
-Create a renderer module that owns all wgpu state: device, queue, surface, pipelines, buffers. Other modules never import wgpu types.
+Create a renderer module that owns all wgpu state: device, queue, surface, pipelines, buffers. Other modules never import wgpu types. The GPU initialization currently in `main.rs` (`create_gpu_state()`, `GpuState` struct) moves into the renderer module — the renderer takes ownership of device/adapter creation and feature negotiation.
 
 Upload the vertex buffer (`[f32; 3]` positions) and index buffer (`u32` indices) produced by task-01 to GPU buffers via `device.create_buffer_init()` or equivalent.
 
@@ -58,5 +58,5 @@ Wireframe rendering doesn't need a depth buffer. Phase 3 adds one with solid ren
 1. Running `cargo run -- assets/maps/test.bsp` shows BSP geometry as wireframe in the window.
 2. Wireframe is recognizable as the test map — no missing faces, no degenerate triangles, no coordinate-space errors.
 3. Renderer module owns all wgpu state. No wgpu imports outside the renderer.
-4. Polygon mode fallback path exists (line-list topology) even if the primary adapter supports `PolygonMode::Line`.
+4. Polygon mode fallback path compiles and can be forced via a CLI flag (e.g., `--force-line-list`). Verified on at least one path at runtime.
 5. Uniform buffer for view-projection is in place and updatable per frame.

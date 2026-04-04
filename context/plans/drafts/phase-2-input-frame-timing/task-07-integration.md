@@ -33,7 +33,7 @@ The camera module should have zero dependency on winit types. It reads the actio
 | Frame timing stability | Camera motion is smooth at 30 Hz, 60 Hz, and 144+ Hz render rates. No stuttering at non-multiple rates. |
 | Long stall recovery | Simulate with a sleep or breakpoint. Camera does not teleport. Accumulator clamp limits catch-up ticks. |
 | Cursor capture | Cursor locks during gameplay. Alt-tab releases. Re-focus re-captures. |
-| Invert-Y | Toggle invert-Y for mouse and gamepad. Pitch axis negates correctly. |
+| Invert-Y | Set invert-Y to true (hardcoded or debug keybind). Pitch axis negates correctly for both mouse and gamepad. |
 | First frame | No blending artifact on startup -- initial state renders correctly. |
 
 ### Cleanup scope

@@ -17,7 +17,7 @@ Build the action-mapping layer: action types, binding resolution, and the per-fr
 
 | Type | Role |
 |------|------|
-| Action ID | Enum of all logical actions: MoveForward, MoveRight, LookYaw, LookPitch, Jump, Use, Shoot, AltFire, Reload. Define all known actions now even if unused -- avoids breaking changes when later phases add consumers. |
+| Action ID | Enum of all logical actions: MoveForward, MoveRight, MoveUp, LookYaw, LookPitch, Sprint, Jump, Use, Shoot, AltFire, Reload. Define all known actions now even if unused -- avoids breaking changes when later phases add consumers. |
 | Button state | Pressed (just activated), Held (still active), Released (just deactivated), Inactive. |
 | Axis value | f32 in [-1, 1]. |
 | Binding | Maps a physical input (key, mouse axis, gamepad button/axis) to an action ID. |
@@ -40,6 +40,12 @@ When multiple inputs map to the same action in a single frame:
 
 - **Button actions:** any bound input active = action active (logical OR).
 - **Axis actions:** highest-magnitude input wins. Keyboard axis inputs produce -1, 0, or +1; analog inputs produce continuous values.
+
+### Axis source tagging
+
+Axis values carry a source tag: displacement (mouse delta) or velocity (gamepad stick). Mouse look is displacement-based (axis value = rotation in radians, apply directly). Gamepad look is velocity-based (axis value = rotation speed, multiply by tick delta). Tag each axis value with its source type when writing it into the snapshot. Task-06 (action camera) consumes these tags to apply the correct look model.
+
+**Concurrent input resolution:** When both mouse and gamepad contribute to the same look axis in the same frame, they are additive rather than competing — mouse displacement is applied first, then gamepad velocity contribution is added. These represent different physical actions (a hand movement and a thumb deflection) and don't conflict. The "highest-magnitude wins" rule applies only within the same source type (e.g., two keyboard bindings on the same axis).
 
 ### Per-frame flow
 
@@ -87,3 +93,4 @@ Input subsystem lives in `src/input/`. Entry point is `mod.rs` or a barrel file.
 4. Keyboard input (winit events) produces correct action state for bound keys.
 5. Action snapshot is immutable once produced -- game logic cannot write back to it.
 6. Input subsystem is structured so mouse (Task 03) and gamepad (Task 04) plug in without restructuring the core.
+7. Unit tests cover all six button state transitions. Unit tests verify binding resolution: OR across multiple button bindings, highest-magnitude across multiple axis bindings, and additive cross-source resolution for look axes.

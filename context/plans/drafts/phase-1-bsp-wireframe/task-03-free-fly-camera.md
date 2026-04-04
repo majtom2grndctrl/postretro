@@ -8,7 +8,7 @@
 
 ## Goal
 
-Implement a free-fly camera with raw winit keyboard/mouse input. Compute view and projection matrices and upload the combined view-projection uniform each frame. This is a temporary navigation camera — Phase 2 replaces the input handling with an action-mapped system, but the projection parameters carry forward.
+Implement a free-fly camera with raw winit keyboard/mouse input. Compute view and projection matrices and upload the combined view-projection uniform each frame. This is a temporary navigation camera — Phase 2 replaces the input handling with an action-mapped system, but the projection parameters carry forward. Keep projection (FOV, clip planes, aspect ratio) separable from input handling so Phase 2 can replace input without rewriting projection.
 
 ---
 
@@ -41,7 +41,7 @@ Movement direction: forward is derived from yaw only (no pitch component in move
 |-----------|-------|
 | Input | Raw mouse delta from winit `DeviceEvent::MouseMotion` |
 | Conversion | `delta_pixels * sensitivity` produces rotation in radians |
-| Sensitivity | 0.003 rad/pixel (tune by feel) |
+| Sensitivity | 0.002 rad/pixel (approximate — Phase 2 tunes the canonical value) |
 | Yaw | Horizontal mouse delta rotates around world Y axis |
 | Pitch | Vertical mouse delta rotates around camera's local X axis |
 | Pitch clamp | +/- 89 degrees from horizontal (prevents gimbal lock at poles) |

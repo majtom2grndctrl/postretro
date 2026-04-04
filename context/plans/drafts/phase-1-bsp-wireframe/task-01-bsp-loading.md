@@ -41,7 +41,7 @@ Produce:
 
 ### Coordinate transform
 
-Quake BSP uses right-handed Z-up. The engine uses Y-up (glam default). During vertex loading, apply: swap Y and Z, negate the new Z. Verify visually in task-02 that geometry is correct (walls are walls, floors are floors).
+Quake BSP uses right-handed Z-up (+X forward, +Y left, +Z up). The engine uses right-handed Y-up (+X right, +Y up, -Z forward). The exact coordinate swizzle needs empirical verification with the test map — try swapping Y/Z and negating as needed until walls are walls and floors are floors. Place an asymmetric landmark (L-shaped room) in the test map to detect mirroring or rotation errors.
 
 ### BSP file path
 
@@ -102,3 +102,4 @@ The test map persists across all phases as a development fixture.
 4. Visibility data and BSP tree structure are stored for consumption by task-04.
 5. Loader module contains zero wgpu imports.
 6. Missing BSP file produces a clear error message, not a panic with a cryptic path.
+7. Unit tests verify fan-triangulation produces correct triangle indices for known polygon vertex counts (3, 4, 5+ vertices). Tests verify coordinate transform produces Y-up output from Z-up input.

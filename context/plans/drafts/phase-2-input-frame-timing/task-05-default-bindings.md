@@ -19,8 +19,10 @@ Define the complete default binding set for keyboard/mouse and gamepad. Bindings
 |--------|------|----------|
 | Move forward/back | Axis | W (+1), S (-1) |
 | Move left/right | Axis | A (-1), D (+1) |
+| Move up/down | Axis | Q (+1), Z (-1) — changed from Phase 1's Q/E because E is now Use/Interact |
 | Look yaw | Axis | Mouse X delta |
 | Look pitch | Axis | Mouse Y delta |
+| Sprint | Button | Left Shift |
 | Jump | Button | Space |
 | Use / interact | Button | E |
 | Shoot | Button | Left mouse button |
@@ -33,8 +35,10 @@ Define the complete default binding set for keyboard/mouse and gamepad. Bindings
 |--------|------|----------|
 | Move forward/back | Axis | Left stick Y |
 | Move left/right | Axis | Left stick X |
+| Move up/down | Axis | D-pad Up (+1), D-pad Down (-1) |
 | Look yaw | Axis | Right stick X |
 | Look pitch | Axis | Right stick Y |
+| Sprint | Button | Left stick click (L3) |
 | Jump | Button | A / Cross |
 | Use / interact | Button | X / Square |
 | Shoot | Button | Right trigger (threshold 0.5) |

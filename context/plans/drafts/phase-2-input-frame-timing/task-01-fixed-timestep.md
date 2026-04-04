@@ -36,11 +36,15 @@ Replace the current per-frame update with an accumulator-based fixed-timestep lo
 
 Maintain two copies of interpolable state (camera position and orientation). After each tick, swap current into previous, write new current. Renderer reads both and lerps by alpha.
 
-The interpolable state struct should be generic enough to extend in later phases (entity positions, etc.), but for now it only holds camera position and orientation.
+The interpolable state struct is a plain struct with named fields. Add fields in later phases as needed (entity positions, etc.). For now it only holds camera position and orientation. Do not introduce traits, generics, or macros for extensibility — a flat struct is sufficient.
+
+**Angular interpolation:** Yaw angles wrap around 360°. Naive lerp between 350° and 10° goes the wrong way through 180°. Use shortest-path angular interpolation: compute the signed difference, wrap to [-180°, 180°], then lerp. Pitch does not wrap (clamped to ±89°) so linear lerp is fine for pitch.
 
 ### Integration point
 
 The fixed-timestep loop wraps the game logic update call. The call signature should accept an action snapshot (built in Task 02) and produce updated game state. For this task, stub the action snapshot as an empty struct or use the existing raw input -- Task 06 wires the real action snapshot into the loop.
+
+**Restructuring Phase 1's loop:** Phase 1 has a simple loop: poll winit events, update camera with wall-clock dt, render. Restructure into: poll events → produce action snapshot → fixed-tick updates (accumulate, tick, subtract) → compute interpolation alpha → render with interpolated state. The camera update moves from per-frame to per-tick. Keep winit event loop ownership intact (`event_loop.run()` still controls top-level flow).
 
 ---
 

@@ -65,7 +65,7 @@ Phase 2 establishes two foundational pieces of infrastructure: the fixed-timeste
                  │     │ 03 Mouse │ │ 04 Gamepd│ │ 05 Bindings  │
                  │     └──────┬───┘ └─────┬────┘ └───┬──────────┘
                  │            │           │           │
-                 │            └─────┬─────┘───────────┘
+                 │            └─────┴─────┴───────────┘
                  │                  │
                  └──────────┬───────┘
                             │

@@ -19,16 +19,18 @@ Camera reads these actions from the snapshot each tick:
 
 | Action | Use |
 |--------|-----|
-| MoveForward | Forward/back movement along camera facing |
-| MoveRight | Strafe left/right |
+| MoveForward | Forward/back movement along camera facing (yaw-projected onto XZ plane) |
+| MoveRight | Strafe left/right (perpendicular to forward in XZ plane) |
+| MoveUp | World-relative vertical movement (Y axis) |
 | LookYaw | Horizontal rotation |
 | LookPitch | Vertical rotation |
+| Sprint | 2x movement speed while active |
 
 ### Movement
 
-Direction is relative to camera yaw: forward is the camera facing projected onto the XZ plane. Speed is 320 units/sec (from Phase 1 defaults, `rendering_pipeline.md` §9).
+Direction is relative to camera yaw: forward is the camera facing projected onto the XZ plane. Speed is 320 units/sec (from Phase 1 task-03 defaults).
 
-Still a free-fly camera -- no gravity, no collision. Vertical movement comes from look direction, same as Phase 1. The difference from Phase 1 is the input source, not the movement model.
+Still a free-fly camera -- no gravity, no collision. Vertical movement is world-relative on the Y axis via the MoveUp action, same as Phase 1 (Q/E). Forward/back movement is derived from yaw only -- looking down doesn't slow forward movement. The difference from Phase 1 is the input source, not the movement model.
 
 ### Look
 
@@ -43,7 +45,7 @@ Mouse and gamepad look feel different because they represent different physical 
 | Mouse | Displacement | Axis value = rotation amount (radians). Apply directly. |
 | Gamepad | Velocity | Axis value = stick deflection = rotation speed. Multiply by gamepad look sensitivity and tick delta to get rotation amount. |
 
-The action snapshot provides raw axis values. The camera must distinguish the source to apply the correct model. Options: tag axis values with their source in the snapshot, or use separate actions for mouse look vs. gamepad look. Use judgment on which is cleaner.
+The action snapshot provides axis values tagged with their source type (displacement or velocity), as defined in Task 02. The camera reads the tag and applies the correct model.
 
 ### Gamepad look defaults
 
@@ -77,3 +79,5 @@ Camera position and orientation are the interpolable state from Task 01. Each ti
 4. Gamepad sticks drive movement and look. Look is velocity-based (deflection = rotation speed).
 5. Camera updates run inside the fixed-timestep loop. Position and orientation interpolate smoothly between ticks.
 6. Pitch is clamped to +/-89 degrees. No gimbal lock or flip at extremes.
+7. Sprint doubles movement speed when active.
+8. MoveUp (Q/Z on keyboard, D-pad on gamepad) moves the camera on the world Y axis.

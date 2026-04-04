@@ -53,7 +53,7 @@ Extract from `$ARGUMENTS`:
 
 ### 2. Spawn all agents in parallel
 
-Launch all agents simultaneously in a single message. All run with `isolation: "worktree"` (read-only, concurrent).
+Launch all agents simultaneously in a single message. No `isolation: "worktree"` needed — reviewers read code and report findings, they don't write files.
 
 **Code review agents (N instances):**
 Full content of `.claude/skills/code-review/SKILL.md` as instructions, plus review target. Specified model (default: opus).

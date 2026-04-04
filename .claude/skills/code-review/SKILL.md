@@ -6,6 +6,8 @@ description: >
   library docs and the task spec before reviewing. Use after implementing a
   feature or before opening a pull request.
 disable-model-invocation: true
+context: fork
+allowed-tools: Read, Glob, Grep, Bash
 argument-hint: "[file-path | plan-name]"
 ---
 

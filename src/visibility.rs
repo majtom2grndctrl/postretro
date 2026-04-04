@@ -1,7 +1,8 @@
-// PVS-based visibility culling: point-in-leaf, PVS decompression, visible face collection.
+// PVS-based visibility culling with frustum culling: point-in-leaf, PVS decompression,
+// frustum plane extraction, AABB-frustum test, visible face collection.
 // See: context/plans/phase_1/task_04_pvs_culling.md
 
-use glam::Vec3;
+use glam::{Mat4, Vec3, Vec4};
 
 use crate::bsp::BspWorld;
 
@@ -19,6 +20,94 @@ pub enum VisibleFaces {
     Culled(Vec<DrawRange>),
     /// No PVS data; draw everything.
     DrawAll,
+}
+
+// --- Frustum culling ---
+
+/// A plane in Hessian normal form: dot(normal, point) + dist >= 0 for points on the inside.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrustumPlane {
+    pub normal: Vec3,
+    pub dist: f32,
+}
+
+/// The six planes of a view frustum, extracted from a view-projection matrix.
+#[derive(Debug, Clone)]
+pub(crate) struct Frustum {
+    pub planes: [FrustumPlane; 6],
+}
+
+/// Extract the six frustum planes from a combined view-projection matrix.
+///
+/// Uses the Griess-Hartmann method for a right-handed projection:
+/// each plane is a combination of rows from the 4x4 matrix. The resulting
+/// planes point inward (a point satisfying all six is inside the frustum).
+fn extract_frustum_planes(view_proj: Mat4) -> Frustum {
+    // glam stores matrices column-major. To get row N, we read element N from each column.
+    let row = |n: usize| -> Vec4 {
+        Vec4::new(
+            view_proj.col(0)[n],
+            view_proj.col(1)[n],
+            view_proj.col(2)[n],
+            view_proj.col(3)[n],
+        )
+    };
+
+    let r0 = row(0);
+    let r1 = row(1);
+    let r2 = row(2);
+    let r3 = row(3);
+
+    let raw_planes = [
+        r3 + r0, // Left
+        r3 - r0, // Right
+        r3 + r1, // Bottom
+        r3 - r1, // Top
+        r3 + r2, // Near
+        r3 - r2, // Far
+    ];
+
+    let mut planes = [FrustumPlane {
+        normal: Vec3::ZERO,
+        dist: 0.0,
+    }; 6];
+
+    for (i, raw) in raw_planes.iter().enumerate() {
+        let normal = Vec3::new(raw.x, raw.y, raw.z);
+        let length = normal.length();
+        if length > 0.0 {
+            let inv_len = 1.0 / length;
+            planes[i] = FrustumPlane {
+                normal: normal * inv_len,
+                dist: raw.w * inv_len,
+            };
+        }
+    }
+
+    Frustum { planes }
+}
+
+/// Test whether an axis-aligned bounding box is completely outside the frustum.
+///
+/// Uses the "positive vertex" (p-vertex) test: for each frustum plane, find the AABB
+/// corner most in the direction of the plane normal. If that corner is behind the plane,
+/// the entire AABB is outside. This is conservative — partially-outside boxes pass.
+fn is_aabb_outside_frustum(mins: Vec3, maxs: Vec3, frustum: &Frustum) -> bool {
+    for plane in &frustum.planes {
+        // Select the AABB vertex farthest along the plane normal (positive vertex).
+        let p_vertex = Vec3::new(
+            if plane.normal.x >= 0.0 { maxs.x } else { mins.x },
+            if plane.normal.y >= 0.0 { maxs.y } else { mins.y },
+            if plane.normal.z >= 0.0 { maxs.z } else { mins.z },
+        );
+
+        // If the positive vertex is behind the plane, the AABB is fully outside.
+        if plane.normal.dot(p_vertex) + plane.dist < 0.0 {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Walk the BSP node tree to find which leaf contains the given point.
@@ -121,10 +210,14 @@ pub fn decompress_pvs(leaf_index: u32, world: &BspWorld) -> Option<Vec<bool>> {
 ///
 /// Given a visibility bitfield (from `decompress_pvs`), iterates visible leaves and
 /// gathers their face draw ranges. The camera's own leaf is always included.
+///
+/// When a frustum is provided, each PVS-visible leaf is further tested against the
+/// frustum planes. Leaves whose AABB falls entirely outside the frustum are skipped.
 pub fn collect_visible_faces(
     visible_leaves: &[bool],
     camera_leaf: u32,
     world: &BspWorld,
+    frustum: Option<&Frustum>,
 ) -> Vec<DrawRange> {
     let mut ranges = Vec::new();
 
@@ -138,6 +231,13 @@ pub fn collect_visible_faces(
 
         if !is_visible && !is_camera_leaf {
             continue;
+        }
+
+        // Frustum cull: skip leaves whose bounding box is entirely outside the view frustum.
+        if let Some(frustum) = frustum {
+            if is_aabb_outside_frustum(leaf.mins, leaf.maxs, frustum) {
+                continue;
+            }
         }
 
         for &face_idx in &leaf.face_indices {
@@ -157,18 +257,27 @@ pub fn collect_visible_faces(
 
 /// Perform full visibility determination for a single frame.
 ///
+/// Pipeline: PVS narrows the visible leaf set, then frustum culling discards
+/// leaves whose bounding box falls entirely outside the view frustum.
+///
 /// Returns `VisibleFaces::Culled` with draw ranges when PVS data is available,
 /// or `VisibleFaces::DrawAll` when it is not.
-pub fn determine_visibility(camera_position: Vec3, world: &BspWorld) -> VisibleFaces {
+pub fn determine_visibility(
+    camera_position: Vec3,
+    view_proj: Mat4,
+    world: &BspWorld,
+) -> VisibleFaces {
     if world.nodes.is_empty() || world.leaves.is_empty() {
         return VisibleFaces::DrawAll;
     }
 
     let camera_leaf = find_camera_leaf(camera_position, world);
+    let frustum = extract_frustum_planes(view_proj);
 
     match decompress_pvs(camera_leaf, world) {
         Some(visible_leaves) => {
-            let ranges = collect_visible_faces(&visible_leaves, camera_leaf, world);
+            let ranges =
+                collect_visible_faces(&visible_leaves, camera_leaf, world, Some(&frustum));
             log::trace!(
                 "[Visibility] leaf={}, visible_ranges={}, total_faces={}",
                 camera_leaf,
@@ -485,7 +594,7 @@ mod tests {
         let world = two_leaf_world();
         // Both leaves visible.
         let visible = vec![false, true, true];
-        let ranges = collect_visible_faces(&visible, 1, &world);
+        let ranges = collect_visible_faces(&visible, 1, &world, None);
 
         assert_eq!(ranges.len(), 2);
         assert_eq!(ranges[0], DrawRange { index_offset: 0, index_count: 3 });
@@ -497,7 +606,7 @@ mod tests {
         let world = two_leaf_world();
         // Only leaf 1 is visible (PVS says nothing else visible).
         let visible = vec![false, true, false];
-        let ranges = collect_visible_faces(&visible, 1, &world);
+        let ranges = collect_visible_faces(&visible, 1, &world, None);
 
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0], DrawRange { index_offset: 0, index_count: 3 });
@@ -508,7 +617,7 @@ mod tests {
         let world = two_leaf_world();
         // PVS says nothing visible at all — but camera leaf is always included.
         let visible = vec![false, false, false];
-        let ranges = collect_visible_faces(&visible, 1, &world);
+        let ranges = collect_visible_faces(&visible, 1, &world, None);
 
         assert_eq!(ranges.len(), 1, "camera leaf should always be included");
         assert_eq!(ranges[0], DrawRange { index_offset: 0, index_count: 3 });
@@ -518,16 +627,30 @@ mod tests {
     fn collect_faces_empty_world() {
         let world = empty_world();
         let visible: Vec<bool> = Vec::new();
-        let ranges = collect_visible_faces(&visible, 0, &world);
+        let ranges = collect_visible_faces(&visible, 0, &world, None);
         assert!(ranges.is_empty());
     }
 
     // -- determine_visibility integration tests --
 
+    /// Build a view-projection matrix that sees everything in front along -Z.
+    /// Camera at the given position, looking down -Z, with a wide FOV.
+    fn wide_view_proj(position: Vec3) -> Mat4 {
+        let view = Mat4::look_at_rh(position, position + Vec3::NEG_Z, Vec3::Y);
+        let proj = Mat4::perspective_rh(
+            std::f32::consts::FRAC_PI_2, // 90-degree vertical FOV
+            16.0 / 9.0,
+            0.1,
+            4096.0,
+        );
+        proj * view
+    }
+
     #[test]
     fn determine_visibility_with_pvs() {
         let world = two_leaf_world();
-        let result = determine_visibility(Vec3::new(10.0, 0.0, 0.0), &world);
+        let vp = wide_view_proj(Vec3::new(10.0, 0.0, 0.0));
+        let result = determine_visibility(Vec3::new(10.0, 0.0, 0.0), vp, &world);
         match result {
             VisibleFaces::Culled(ranges) => {
                 assert!(!ranges.is_empty(), "should have draw ranges");
@@ -540,7 +663,8 @@ mod tests {
     fn determine_visibility_without_pvs_draws_all() {
         let mut world = two_leaf_world();
         world.visdata.clear();
-        let result = determine_visibility(Vec3::new(10.0, 0.0, 0.0), &world);
+        let vp = wide_view_proj(Vec3::new(10.0, 0.0, 0.0));
+        let result = determine_visibility(Vec3::new(10.0, 0.0, 0.0), vp, &world);
         assert!(
             matches!(result, VisibleFaces::DrawAll),
             "should draw all when visdata is empty"
@@ -550,7 +674,261 @@ mod tests {
     #[test]
     fn determine_visibility_empty_world_draws_all() {
         let world = empty_world();
-        let result = determine_visibility(Vec3::ZERO, &world);
+        let vp = wide_view_proj(Vec3::ZERO);
+        let result = determine_visibility(Vec3::ZERO, vp, &world);
         assert!(matches!(result, VisibleFaces::DrawAll));
+    }
+
+    // -- Frustum plane extraction tests --
+
+    #[test]
+    fn frustum_planes_are_normalized() {
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        for (i, plane) in frustum.planes.iter().enumerate() {
+            let len = plane.normal.length();
+            assert!(
+                (len - 1.0).abs() < 1e-5,
+                "plane {i} normal not normalized: length = {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn frustum_planes_count() {
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+        assert_eq!(frustum.planes.len(), 6, "should have exactly 6 planes");
+    }
+
+    #[test]
+    fn frustum_origin_is_inside() {
+        // Camera at origin looking down -Z. The origin should be inside the frustum.
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        // A point just in front of the camera (past the near plane) should be inside.
+        let test_point = Vec3::new(0.0, 0.0, -1.0);
+        let mut inside = true;
+        for plane in &frustum.planes {
+            if plane.normal.dot(test_point) + plane.dist < 0.0 {
+                inside = false;
+                break;
+            }
+        }
+        assert!(inside, "point just in front of camera should be inside frustum");
+    }
+
+    #[test]
+    fn point_behind_camera_is_outside() {
+        // Camera at origin looking down -Z. A point behind (+Z) should be outside.
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        let test_point = Vec3::new(0.0, 0.0, 10.0);
+        let mut outside = false;
+        for plane in &frustum.planes {
+            if plane.normal.dot(test_point) + plane.dist < 0.0 {
+                outside = true;
+                break;
+            }
+        }
+        assert!(outside, "point behind camera should be outside frustum");
+    }
+
+    // -- AABB-frustum tests --
+
+    #[test]
+    fn aabb_fully_inside_frustum_is_not_culled() {
+        // Camera at origin looking down -Z. Box centered at (0, 0, -50).
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        let mins = Vec3::new(-10.0, -10.0, -60.0);
+        let maxs = Vec3::new(10.0, 10.0, -40.0);
+        assert!(
+            !is_aabb_outside_frustum(mins, maxs, &frustum),
+            "box directly in front should not be culled"
+        );
+    }
+
+    #[test]
+    fn aabb_fully_behind_camera_is_culled() {
+        // Camera at origin looking down -Z. Box behind at (0, 0, +50).
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        let mins = Vec3::new(-10.0, -10.0, 40.0);
+        let maxs = Vec3::new(10.0, 10.0, 60.0);
+        assert!(
+            is_aabb_outside_frustum(mins, maxs, &frustum),
+            "box behind camera should be culled"
+        );
+    }
+
+    #[test]
+    fn aabb_far_left_is_culled() {
+        // Camera at origin looking down -Z. Box far to the left.
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        let mins = Vec3::new(-500.0, -10.0, -60.0);
+        let maxs = Vec3::new(-490.0, 10.0, -40.0);
+        assert!(
+            is_aabb_outside_frustum(mins, maxs, &frustum),
+            "box far to the left should be culled"
+        );
+    }
+
+    #[test]
+    fn aabb_far_right_is_culled() {
+        // Camera at origin looking down -Z. Box far to the right.
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        let mins = Vec3::new(490.0, -10.0, -60.0);
+        let maxs = Vec3::new(500.0, 10.0, -40.0);
+        assert!(
+            is_aabb_outside_frustum(mins, maxs, &frustum),
+            "box far to the right should be culled"
+        );
+    }
+
+    #[test]
+    fn aabb_far_above_is_culled() {
+        // Camera at origin looking down -Z. Box far above.
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        let mins = Vec3::new(-10.0, 490.0, -60.0);
+        let maxs = Vec3::new(10.0, 500.0, -40.0);
+        assert!(
+            is_aabb_outside_frustum(mins, maxs, &frustum),
+            "box far above should be culled"
+        );
+    }
+
+    #[test]
+    fn aabb_far_below_is_culled() {
+        // Camera at origin looking down -Z. Box far below.
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        let mins = Vec3::new(-10.0, -500.0, -60.0);
+        let maxs = Vec3::new(10.0, -490.0, -40.0);
+        assert!(
+            is_aabb_outside_frustum(mins, maxs, &frustum),
+            "box far below should be culled"
+        );
+    }
+
+    #[test]
+    fn aabb_beyond_far_plane_is_culled() {
+        // Camera at origin looking down -Z. Box beyond the far plane (4096).
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        let mins = Vec3::new(-10.0, -10.0, -5000.0);
+        let maxs = Vec3::new(10.0, 10.0, -4500.0);
+        assert!(
+            is_aabb_outside_frustum(mins, maxs, &frustum),
+            "box beyond far plane should be culled"
+        );
+    }
+
+    #[test]
+    fn aabb_straddling_frustum_edge_is_not_culled() {
+        // Camera at origin looking down -Z. Large box that straddles the left edge.
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        // This box extends from inside to outside the left plane — conservative test keeps it.
+        let mins = Vec3::new(-100.0, -10.0, -60.0);
+        let maxs = Vec3::new(0.0, 10.0, -40.0);
+        assert!(
+            !is_aabb_outside_frustum(mins, maxs, &frustum),
+            "box straddling frustum edge should not be culled (conservative)"
+        );
+    }
+
+    #[test]
+    fn aabb_enclosing_camera_is_not_culled() {
+        // Camera at origin, box encloses the camera entirely.
+        let vp = wide_view_proj(Vec3::ZERO);
+        let frustum = extract_frustum_planes(vp);
+
+        let mins = Vec3::splat(-1000.0);
+        let maxs = Vec3::splat(1000.0);
+        assert!(
+            !is_aabb_outside_frustum(mins, maxs, &frustum),
+            "box enclosing the camera should not be culled"
+        );
+    }
+
+    // -- Frustum culling + PVS integration tests --
+
+    #[test]
+    fn frustum_culling_reduces_draw_count_for_behind_leaves() {
+        let world = two_leaf_world();
+        // Camera in leaf 1 (positive X), looking down -Z.
+        // Leaf 2 is at negative X — its AABB spans (-100,-100,-100) to (0,100,100).
+        // The camera at (50,0,0) looking -Z: leaf 2's box extends from x=-100 to x=0,
+        // which is to the left. With a 90-degree FOV the half-angle is ~45 degrees,
+        // so some of leaf 2 may be in view. Let's use a narrow FOV camera pointed
+        // away from leaf 2 to guarantee culling.
+        let position = Vec3::new(50.0, 0.0, 0.0);
+        // Looking straight down +X (away from leaf 2).
+        let view = Mat4::look_at_rh(position, position + Vec3::X, Vec3::Y);
+        let proj = Mat4::perspective_rh(
+            std::f32::consts::FRAC_PI_4, // 45-degree narrow FOV
+            1.0,
+            0.1,
+            4096.0,
+        );
+        let vp = proj * view;
+
+        let result = determine_visibility(position, vp, &world);
+        match result {
+            VisibleFaces::Culled(ranges) => {
+                // Leaf 2 should be culled (it's behind/to the side of the camera).
+                // Only leaf 1's face should remain.
+                assert_eq!(
+                    ranges.len(),
+                    1,
+                    "should only draw camera leaf's face when looking away from leaf 2"
+                );
+                assert_eq!(ranges[0], DrawRange { index_offset: 0, index_count: 3 });
+            }
+            VisibleFaces::DrawAll => panic!("expected Culled, got DrawAll"),
+        }
+    }
+
+    #[test]
+    fn frustum_culling_keeps_leaves_in_view() {
+        let world = two_leaf_world();
+        // Camera in leaf 1 (positive X), looking toward leaf 2 (negative X).
+        let position = Vec3::new(50.0, 0.0, 0.0);
+        let view = Mat4::look_at_rh(position, position + Vec3::NEG_X, Vec3::Y);
+        let proj = Mat4::perspective_rh(
+            std::f32::consts::FRAC_PI_2,
+            16.0 / 9.0,
+            0.1,
+            4096.0,
+        );
+        let vp = proj * view;
+
+        let result = determine_visibility(position, vp, &world);
+        match result {
+            VisibleFaces::Culled(ranges) => {
+                // Both leaves should be visible — leaf 2 is in front of the camera.
+                assert_eq!(
+                    ranges.len(),
+                    2,
+                    "should draw both leaves when looking toward leaf 2"
+                );
+            }
+            VisibleFaces::DrawAll => panic!("expected Culled, got DrawAll"),
+        }
     }
 }

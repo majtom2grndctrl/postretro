@@ -275,15 +275,18 @@ impl ApplicationHandler for App {
 
                 self.camera.position += move_dir * speed * dt;
 
-                // Determine visibility: find camera leaf, decompress PVS, collect visible faces.
+                // Determine visibility: PVS + frustum culling.
+                let view_proj = self.camera.view_projection();
                 let visible = match self.bsp_world.as_ref() {
-                    Some(world) => visibility::determine_visibility(self.camera.position, world),
+                    Some(world) => {
+                        visibility::determine_visibility(self.camera.position, view_proj, world)
+                    }
                     None => VisibleFaces::DrawAll,
                 };
 
                 // Upload view-projection and render.
                 if let Some(renderer) = self.renderer.as_ref() {
-                    renderer.update_view_projection(self.camera.view_projection());
+                    renderer.update_view_projection(view_proj);
                     if renderer.is_ready() {
                         if let Err(err) = renderer.render_frame(&visible) {
                             self.exit_result = Err(err);

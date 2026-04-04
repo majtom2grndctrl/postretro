@@ -24,6 +24,8 @@ Read the user's description of what they want to build. If the scope is unclear,
 - What outcome matters
 - What constraints apply
 - What subsystems are involved
+- **What "done" looks like** — work with the user to define concrete, verifiable completion criteria for the overall plan. Not vague ("it works") but specific ("BSP faces render with correct lightmap UVs, fallback to white when RGB lump missing").
+- **Quality gates** — how will we measure whether the work meets the bar? Examples: all tests pass, no clippy warnings, specific behaviors verified manually, performance within a threshold. Quality gates become the acceptance criteria on individual tasks.
 
 ### 2. Research
 

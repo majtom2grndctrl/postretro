@@ -86,6 +86,14 @@ Encoding follows the common Quake engine deluxemap convention. ericw-tools 2.0.0
 
 Ambient occlusion is baked directly into lightmap data via worldspawn key `_dirt 1`. This is **not** a separate BSPX lump. AO modulates lightmap samples at bake time — crevices and corners receive less light. No engine-side parsing or special handling required; AO is present in every lightmap sample when the map is compiled with dirt enabled.
 
+### DECOUPLED_LM
+
+Per-face independent lightmap projection and dimensions. Standard Quake lightmaps derive their UV mapping and resolution from the face's texture projection — DECOUPLED_LM breaks this coupling, giving each face its own lightmap projection vectors and explicit dimensions. This allows lightmap resolution independent of texture scale.
+
+qbsp parses this lump natively into typed data (per-face size, offset, and projection).
+
+When present, the loader uses DECOUPLED_LM dimensions and projection for lightmap atlas packing and UV computation instead of deriving them from texture info. When absent, the standard texinfo-based computation applies.
+
 ### LIGHTGRID_OCTREE
 
 Volumetric light probes for dynamic object lighting: sprites, particles, weapon models. Stores irradiance samples in an octree structure that covers the playable volume. Look up the probe nearest to a dynamic object's position and apply its lighting.
@@ -104,6 +112,7 @@ Every optional lump has a defined fallback. Missing data is not an error — it 
 |--------------|----------|
 | **RGBLIGHTING** | Fall back to monochrome LIGHTING lump (standard BSP lighting). If both absent, use a flat white lightmap — geometry is fully lit with no shadows. |
 | **LIGHTINGDIR** | Diffuse-only lighting. Same lightmap sampling, no specular term. Surfaces appear flat-lit. |
+| **DECOUPLED_LM** | Standard texinfo-based lightmap dimension computation and UV derivation. |
 | **LIGHTGRID_OCTREE** | Sample nearest lightmap face for dynamic object lighting. If no suitable face, use ambient light plus nearest-light approximation. Sprites and particles still receive plausible illumination. |
 
 Log a warning at load time for each absent optional lump. Do not log per-frame.

@@ -31,7 +31,7 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 
 | Principle | Invariant |
 |-----------|-----------|
-| **Renderer owns GL** | All glow calls live in the renderer module. Other subsystems never touch GL. |
+| **Renderer owns GPU** | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
 | **Baked over computed** | Lighting, AO, light probes, and directional maps are baked offline by ericw-tools. Dynamic lights supplement, not replace. |
 | **Subsystem boundaries** | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |

@@ -11,8 +11,7 @@
 | Concern | Crate |
 |---------|-------|
 | Windowing | winit 0.30 |
-| GL context | glutin 0.32 + glutin-winit 0.5 |
-| GL calls | glow 0.17 (OpenGL 3.3 core) |
+| GPU | wgpu (Vulkan, Metal, DX12) |
 | Math | glam 0.30 (pinned — qbsp compatibility) |
 | BSP loading | qbsp 0.14 |
 | Audio | kira 0.12 |
@@ -169,7 +168,7 @@ Traits earn their existence when there are (or will concretely be) multiple impl
 
 ### 3.5 No `unsafe`
 
-Do not write `unsafe` blocks. The crate stack (glow, winit, glutin, kira, gilrs, glam, qbsp) provides safe APIs — there is no routine need for `unsafe` in engine code.
+Do not write `unsafe` blocks. The crate stack (wgpu, winit, kira, gilrs, glam, qbsp) provides safe APIs — there is no routine need for `unsafe` in engine code.
 
 If a situation appears to require `unsafe`, stop and consult the project owner. Do not proceed until the need is confirmed and a risk mitigation approach is agreed on. If `unsafe` is approved, document the rationale and invariants with a `// SAFETY:` comment.
 
@@ -177,19 +176,17 @@ If a situation appears to require `unsafe`, stop and consult the project owner. 
 
 ## 4) Engine Constraints
 
-### 4.1 Renderer owns GL
+### 4.1 Renderer owns GPU
 
-All `glow` calls live in the renderer module. Other subsystems do not depend on `glow` types or call GL functions directly. This keeps the rendering logic cohesive and prevents GL concerns from leaking across the codebase.
+All `wgpu` calls live in the renderer module. Other subsystems do not depend on `wgpu` types or interact with GPU resources directly. This keeps the rendering logic cohesive and prevents GPU concerns from leaking across the codebase.
 
-GPU resources are created and destroyed through glow's safe API. The engine is responsible for calling the appropriate creation and deletion functions — glow does not automatically clean up resources.
-
-Within the renderer, separate data logic (BSP traversal, visibility determination, atlas packing, vertex generation) from GL interaction (buffer uploads, draw calls, shader compilation). Data logic operates on engine types and is testable without a GL context. GL interaction is a thin layer that consumes the output.
+Within the renderer, separate data logic (BSP traversal, visibility determination, atlas packing, vertex generation) from GPU interaction (buffer uploads, render passes, pipeline creation). Data logic operates on engine types and is testable without a GPU context. GPU interaction is a thin layer that consumes the output.
 
 ### 4.2 Event loop ownership
 
 winit owns the event loop. Once `event_loop.run()` is called, winit controls the top-level control flow. Engine subsystems respond to events dispatched by the loop — they never block it.
 
-Blocking the event loop freezes the window, breaks input handling, and on some platforms triggers an OS "not responding" state. Long-running work (asset parsing, BSP decompression) must be done before entering the loop or on a background thread for CPU-side processing. GL calls remain on the main thread — GL contexts are single-threaded.
+Blocking the event loop freezes the window, breaks input handling, and on some platforms triggers an OS "not responding" state. Long-running work (asset parsing, BSP decompression) must be done before entering the loop or on a background thread for CPU-side processing.
 
 ### 4.3 Frame ordering
 
@@ -203,11 +200,9 @@ Each frame follows a fixed sequence. Subsystems run in this order because later 
 
 Game logic runs at a fixed timestep decoupled from the render rate. Render interpolates between the last two game states for smooth visuals at variable framerates.
 
-### 4.4 GL state discipline
+### 4.4 Pipeline state discipline
 
-OpenGL is a global state machine. Subsystems that touch GL state must leave it in a known state when they're done, or explicitly document what state they leave dirty for the next stage to consume.
-
-The principle: **each rendering stage owns its setup.** Don't rely on state left behind by a previous stage unless that dependency is documented in both stages.
+wgpu uses explicit render pipelines and bind groups — there is no hidden global state. Each rendering stage creates or references the pipelines and bind groups it needs. Shared resources (textures, uniform buffers) are passed explicitly.
 
 ---
 
@@ -216,7 +211,7 @@ The principle: **each rendering stage owns its setup.** Don't rely on state left
 ### 5.1 Comments that earn their keep
 
 - **Why, not what.** Explain rationale. The code shows behavior.
-- **Non-obvious context.** Why a capability lives in this module, ordering dependencies, OpenGL quirks, performance-sensitive paths. Things a reader can't derive from the code alone.
+- **Non-obvious context.** Why a capability lives in this module, ordering dependencies, wgpu quirks, performance-sensitive paths. Things a reader can't derive from the code alone.
 - **Spec pointers.** Brief reference to the governing context file or contract when code implements a specific architectural decision.
 
 ### 5.2 File headers
@@ -233,8 +228,8 @@ File headers orient a reader, not educate them. Two lines: what this file owns, 
 ```
 // This module handles the full lightmap lifecycle: parsing baked
 // lightmap data from BSP faces, packing them into a texture atlas
-// using a shelf-packing algorithm, uploading to OpenGL via
-// gl.tex_sub_image_2d, and providing UV offset/scale lookups for
+// using a shelf-packing algorithm, uploading to wgpu via
+// queue.write_texture, and providing UV offset/scale lookups for
 // the renderer to use during face drawing...
 ```
 
@@ -270,4 +265,4 @@ When you find a misleading, stale, or code-restating comment in a file you're al
 - **Never panic in subsystem code** for recoverable conditions. Return `Result`.
 - **`unwrap()` and `expect()` are allowed** only when the invariant is structurally guaranteed — e.g., a mutex lock in single-threaded code, an index into a vec you just checked the length of.
 - **`expect()` over `unwrap()`** when the invariant isn't obvious from immediate context. The message documents what went wrong.
-- **Panics in initialization are acceptable.** If the GL context can't be created or a required asset is missing at startup, crashing with a clear message is better than limping along.
+- **Panics in initialization are acceptable.** If the GPU adapter can't be acquired or a required asset is missing at startup, crashing with a clear message is better than limping along.

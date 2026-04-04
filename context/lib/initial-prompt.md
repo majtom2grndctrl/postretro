@@ -5,8 +5,7 @@ I'm exploring building a lean, retro-style FPS engine in Rust. This is a hobby/e
 **The stack we've settled on:**
 - **Rust** as the language
 - **winit** for windowing
-- **glutin** for OpenGL context creation
-- **glow** for OpenGL 3.3 calls
+- **wgpu** for GPU access (Vulkan, Metal, DX12 — no direct OpenGL dependency)
 - **kira** for audio
 - **gilrs** for gamepad input
 - **glam** for math
@@ -22,10 +21,10 @@ I'm exploring building a lean, retro-style FPS engine in Rust. This is a hobby/e
   - **Ambient occlusion** (baked via ericw-tools `-dirt` flag) for depth in corners, recesses, and contact edges
   - **Volumetric light probes** (`LIGHTGRID_OCTREE` lump via `-lightgrid`) for consistently lighting dynamic objects — billboard sprites, particles, the player's weapon — so they don't look flat against the baked world
 - Billboard sprites for characters/enemies (camera-facing textured quads), lit by sampling the nearest light probe
-- A small number of dynamic point lights (muzzle flash, neon signs, explosions) via forward rendering — these supplement the baked lighting, not replace it
+- A small number of dynamic point lights (muzzle flash, neon signs, explosions) via forward rendering — these supplement the baked lighting, not replace it. wgpu's explicit render pipeline makes multi-pass forward lighting straightforward
 - Emissive textures (fullbright surfaces for neon, screens, indicators)
 - Post-processing pass for bloom, fog, and optional CRT/scanline effects
-- Custom vertex format: position, base texture UV, lightmap UV, vertex color
+- Custom vertex format: position, base texture UV, lightmap UV, vertex color (defined as a wgpu `VertexBufferLayout`)
 
 **Baked data strategy — using ericw-tools to the fullest without extending it:**
 
@@ -49,7 +48,7 @@ The FGD file defining these entities is a project deliverable alongside the engi
 A technical spec document covering the engine architecture. This should include:
 1. Crate/module structure and responsibility boundaries
 2. The rendering pipeline in detail (what happens each frame, in order), including how each BSPX lump is consumed (directional lightmaps → specular, lightgrid → sprite/particle lighting, AO → occlusion modulation)
-3. BSP loading pipeline (how qbsp data and BSPX lumps map to OpenGL buffers and engine data structures)
+3. BSP loading pipeline (how qbsp data and BSPX lumps map to wgpu buffers and engine data structures)
 4. The resource management approach (textures, meshes, materials, cubemaps)
 5. Input handling architecture
 6. Game loop structure (fixed timestep vs variable, how frames are scheduled)
@@ -61,3 +60,8 @@ A technical spec document covering the engine architecture. This should include:
 12. A phased implementation roadmap starting from "empty window" to "walking through a lit BSP level with billboard sprites"
 
 Keep the spec grounded in what a solo hobbyist can realistically build incrementally. Each phase should produce something visible and testable. Don't over-engineer — this is a retro shooter, not a general purpose engine.
+
+**When this prompt is fully executed**, move this file to the reference folder:
+```bash
+git mv context/lib/initial-prompt.md context/reference/initial-prompt.md
+```

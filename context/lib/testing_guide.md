@@ -74,9 +74,9 @@ Game engine code is full of floating-point math (positions, UVs, colors, interpo
 
 Game logic tests must control time. Inject a fixed delta time rather than reading wall-clock time. This makes tests reproducible and eliminates timing-dependent flakiness.
 
-### No GL context in tests
+### No GPU context in tests
 
-Tests run via `cargo test` with no window and no GL context. The renderer's data-logic/GL-interaction split ([Development Guide](./development_guide.md) §4.1) makes this a non-issue: data logic is testable as pure functions, and the thin GL layer is verified by running the engine.
+Tests run via `cargo test` with no window and no GPU context. The renderer's data-logic/GPU-interaction split ([Development Guide](./development_guide.md) §4.1) makes this a non-issue: data logic is testable as pure functions, and the thin GPU layer is verified by running the engine.
 
 ---
 
@@ -104,4 +104,4 @@ Prefer minimal, purpose-built test data over production assets. A test BSP shoul
 - **100% coverage targets** — coverage is a tool, not a goal.
 - **Testing crate behavior** — if glam's `Vec3::normalize()` is wrong, that's glam's problem.
 - **Visual verification in CI** — rendering correctness is verified manually. Tests cover the logic that *produces* render data, not the rendered output.
-- **Testing the GL layer** — the thin GL interaction layer is verified by running the engine, not by unit tests. See §3.
+- **Testing the GPU layer** — the thin GPU interaction layer is verified by running the engine, not by unit tests. See §3.

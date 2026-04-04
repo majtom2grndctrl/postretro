@@ -69,7 +69,7 @@ Renderer pipeline: src/<subsystem>/pipeline.rs
 **Describe behavior in prose:**
 ```
 Loader parses BSP and BSPX lumps into engine-side structs, uploads
-vertex/lightmap data to OpenGL buffers. Renderer consumes handles,
+vertex/lightmap data to GPU buffers. Renderer consumes handles,
 never raw BSP data.
 ```
 
@@ -95,7 +95,7 @@ Context files describe what survives refactoring. Task descriptions describe wha
 - Lifecycle ordering constraints and why alternatives fail
 - Data contracts at module boundaries (what a subsystem expects to receive and promises to emit)
 - Architectural invariants
-- Unsafe/FFI boundary rules (OpenGL calls, raw pointer contracts)
+- Unsafe/FFI boundary rules (raw pointer contracts)
 
 **Belongs in task descriptions (ephemeral):**
 - Function, struct, enum, and field names internal to a module

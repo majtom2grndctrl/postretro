@@ -4,6 +4,7 @@
 mod bsp;
 mod camera;
 mod render;
+mod visibility;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -19,6 +20,7 @@ use winit::window::{CursorGrabMode, Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::render::Renderer;
+use crate::visibility::VisibleFaces;
 
 /// CLI flag to force the line-list wireframe fallback path.
 const FORCE_LINE_LIST_FLAG: &str = "--force-line-list";
@@ -35,6 +37,12 @@ fn main() -> Result<()> {
     let bsp_world = match bsp::load_bsp(&bsp_path) {
         Ok(world) => {
             log::info!("[Engine] BSP loaded successfully from {bsp_path}");
+            if world.visdata.is_empty() {
+                log::warn!(
+                    "[Visibility] BSP has no visdata — PVS culling disabled, drawing all faces. \
+                     Compile the map with vis to enable culling."
+                );
+            }
             Some(world)
         }
         Err(bsp::BspLoadError::FileNotFound(path)) => {
@@ -267,11 +275,17 @@ impl ApplicationHandler for App {
 
                 self.camera.position += move_dir * speed * dt;
 
+                // Determine visibility: find camera leaf, decompress PVS, collect visible faces.
+                let visible = match self.bsp_world.as_ref() {
+                    Some(world) => visibility::determine_visibility(self.camera.position, world),
+                    None => VisibleFaces::DrawAll,
+                };
+
                 // Upload view-projection and render.
                 if let Some(renderer) = self.renderer.as_ref() {
                     renderer.update_view_projection(self.camera.view_projection());
                     if renderer.is_ready() {
-                        if let Err(err) = renderer.render_frame() {
+                        if let Err(err) = renderer.render_frame(&visible) {
                             self.exit_result = Err(err);
                             event_loop.exit();
                         }

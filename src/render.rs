@@ -9,6 +9,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::bsp::BspWorld;
+use crate::visibility::{DrawRange, VisibleFaces};
 
 // --- WGSL Shaders ---
 
@@ -353,8 +354,11 @@ impl Renderer {
         self.is_surface_configured
     }
 
-    /// Render a frame: clear to dark background, draw wireframe geometry if loaded.
-    pub fn render_frame(&self) -> Result<()> {
+    /// Render a frame with visibility-based culling.
+    ///
+    /// When `visible` is `VisibleFaces::Culled`, issues one `draw_indexed` call per visible
+    /// face range. When `DrawAll`, draws everything in a single call (fallback for missing PVS).
+    pub fn render_frame(&self, visible: &VisibleFaces) -> Result<()> {
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
             wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
@@ -418,7 +422,23 @@ impl Renderer {
                     self.index_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,
                 );
-                render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+
+                // LineList mode uses a rebuilt index buffer with different offsets,
+                // so face-level draw ranges from PVS don't apply. Fall back to draw-all.
+                let effective_visible = if self.wireframe_mode == WireframeMode::LineList {
+                    &VisibleFaces::DrawAll
+                } else {
+                    visible
+                };
+
+                match effective_visible {
+                    VisibleFaces::DrawAll => {
+                        render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+                    }
+                    VisibleFaces::Culled(ranges) => {
+                        self.draw_ranges(&mut render_pass, ranges);
+                    }
+                }
             }
         }
 
@@ -426,6 +446,19 @@ impl Renderer {
         output.present();
 
         Ok(())
+    }
+
+    /// Issue one `draw_indexed` call per visible face range.
+    fn draw_ranges<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        ranges: &[DrawRange],
+    ) {
+        for range in ranges {
+            let start = range.index_offset;
+            let end = start + range.index_count;
+            render_pass.draw_indexed(start..end, 0, 0..1);
+        }
     }
 }
 

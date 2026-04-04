@@ -1,5 +1,5 @@
 // Free-fly camera: position, orientation, projection, and view matrix computation.
-// See: context/plans/phase_1/task_03_free_fly_camera.md
+// See: context/lib/input.md
 
 use glam::{Mat4, Vec3};
 

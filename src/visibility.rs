@@ -1,6 +1,6 @@
 // PVS-based visibility culling with frustum culling: point-in-leaf, PVS decompression,
 // frustum plane extraction, AABB-frustum test, visible face collection.
-// See: context/plans/phase_1/task_04_pvs_culling.md
+// See: context/lib/rendering_pipeline.md
 
 use glam::{Mat4, Vec3, Vec4};
 

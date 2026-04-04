@@ -1,5 +1,5 @@
 // BSP loading: parse BSP2 files via qbsp, produce engine-side geometry.
-// See: context/plans/phase_1/task_01_bsp_loading.md
+// See: context/lib/rendering_pipeline.md
 
 use std::path::Path;
 

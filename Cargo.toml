@@ -1,0 +1,46 @@
+[package]
+name = "postretro"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A retro-style FPS engine inspired by Doom/Quake"
+license = "MIT"
+
+[dependencies]
+# Windowing and OpenGL
+winit = "0.30"
+glutin = "0.32"
+glutin-winit = "0.5"
+glow = "0.17"
+raw-window-handle = "0.6"
+
+# Math
+glam = "0.30"  # pinned for qbsp compatibility
+
+# BSP loading
+qbsp = "0.14"
+
+# Audio
+kira = "0.12"
+
+# Gamepad input
+gilrs = "0.11"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

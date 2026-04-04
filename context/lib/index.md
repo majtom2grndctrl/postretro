@@ -45,10 +45,10 @@ Rather than extending ericw-tools, we consume its existing BSPX output and suppl
 
 | Data | Source | How |
 |------|--------|-----|
-| Colored lightmaps | ericw-tools (standard) | RGB lighting lump |
-| Directional lightmaps | ericw-tools (`-bspxlux`) | `LIGHTINGDIR` BSPX lump → per-pixel specular |
-| Ambient occlusion | ericw-tools (`-dirt`) | Baked into lightmaps |
-| Volumetric light probes | ericw-tools (`-lightgrid`) | `LIGHTGRID_OCTREE` BSPX lump → sprite/particle lighting |
+| Colored lightmaps | ericw-tools (`light -bspx`) | `RGBLIGHTING` BSPX lump |
+| Directional lightmaps | ericw-tools (`light -bspx`) | `LIGHTINGDIR` BSPX lump → per-pixel specular |
+| Ambient occlusion | ericw-tools (worldspawn `_dirt 1`) | Baked into lightmap data, no separate lump |
+| Volumetric light probes | ericw-tools (`light -lightgrid`) | `LIGHTGRID_OCTREE` BSPX lump → sprite/particle lighting (experimental for Q1) |
 | Surface material types | Texture naming convention | Prefix lookup table → footsteps, impacts, decals |
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity → baked cubemap |

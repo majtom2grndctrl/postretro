@@ -1,6 +1,6 @@
 # PostRetro
 
-Retro-style FPS engine (Doom/Quake boomer shooter, cyberpunk aesthetic). Rust + OpenGL 3.3 core.
+Retro-style FPS engine (Doom/Quake boomer shooter, cyberpunk aesthetic, modder-friendly). Rust + wgpu core.
 
 ## Start here
 

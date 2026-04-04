@@ -17,11 +17,11 @@ I'm building a lean, retro-style FPS engine in Rust. This is a hobby/experimenta
 
 **The renderer should support:**
 - BSP tree traversal for visibility and front-to-back rendering
-- Baked lighting from ericw-tools consumed via BSPX lumps:
-  - **Colored lightmaps** (RGB, standard `RGBLIGHTING` lump) sampled as a second texture per face
-  - **Directional lightmaps** (`LIGHTINGDIR` lump via `-bspxlux`) storing dominant light direction per texel, enabling per-pixel specular on wet streets, metal, chrome — cheap and fully baked
-  - **Ambient occlusion** (baked via ericw-tools `-dirt` flag) for depth in corners, recesses, and contact edges
-  - **Volumetric light probes** (`LIGHTGRID_OCTREE` lump via `-lightgrid`) for consistently lighting dynamic objects — billboard sprites, particles, the player's weapon — so they don't look flat against the baked world
+- Baked lighting from ericw-tools, consumed via BSPX lumps and lightmap data:
+  - **Colored lightmaps** (`RGBLIGHTING` BSPX lump, written by `light -bspx`) sampled as a second texture per face. The qbsp crate parses this natively.
+  - **Directional lightmaps** (`LIGHTINGDIR` BSPX lump, also written by `light -bspx`) storing dominant light direction per texel, enabling per-pixel specular on wet streets, metal, chrome — cheap and fully baked. The qbsp crate does not parse this natively — access via `get_unparsed("LIGHTINGDIR")`.
+  - **Ambient occlusion** (baked into lightmap data via worldspawn key `_dirt 1`) for depth in corners, recesses, and contact edges. Not a separate lump — AO modulates the lightmap samples directly.
+  - **Volumetric light probes** (`LIGHTGRID_OCTREE` BSPX lump via `light -lightgrid`) for consistently lighting dynamic objects — billboard sprites, particles, the player's weapon — so they don't look flat against the baked world. Note: `-lightgrid` was developed primarily for Quake 2 and is marked experimental. Verify it produces usable output for Q1 BSP2 maps early in development.
 - Billboard sprites for characters/enemies (camera-facing textured quads), lit by sampling the nearest light probe
 - A small number of dynamic point lights (muzzle flash, neon signs, explosions) via forward rendering — these supplement the baked lighting, not replace it. wgpu's explicit render pipeline makes multi-pass forward lighting straightforward
 - Emissive textures (fullbright surfaces for neon, screens, indicators)
@@ -30,12 +30,12 @@ I'm building a lean, retro-style FPS engine in Rust. This is a hobby/experimenta
 
 **Asset pipeline — PNG across the board, no WAD files:**
 
-TrenchBroom supports loose PNG textures via a custom game configuration, eliminating the need for WAD files entirely. ericw-tools 2.0.0-alpha reads PNGs for texture dimensions and metadata via `-notex -path`.
+TrenchBroom supports loose PNG textures via a custom game configuration, eliminating the need for WAD files entirely. ericw-tools 2.0.0-alpha reads PNGs for texture dimensions when `-notex` is set.
 
 The full pipeline:
 1. **Author textures** as PNG files in `textures/<collection>/<name>.png` (TrenchBroom requires exactly one subdirectory level)
 2. **TrenchBroom** displays them via a custom `PostRetro` game configuration that points at the textures directory
-3. **ericw-tools** reads PNGs for dimensions only: `qbsp -bsp2 -notex -path assets/ map.map` — the BSP stores texture headers (name + dimensions) with no pixel data
+3. **ericw-tools** reads PNGs for dimensions only. qbsp auto-adds the map file's parent directory as a search path, so if `textures/` is alongside the `.map` file, no extra flags are needed: `qbsp -bsp2 -notex map.map`. For textures in a separate location, use `-path <dir>` to add search paths. The BSP stores texture headers (name + dimensions) with no pixel data.
 4. **Engine** loads PNGs at runtime, matched by the texture name strings in the BSP
 
 This applies to all visual assets: world textures, billboard sprites, UI elements. Sprite animations use sequentially-named frames within a collection directory.
@@ -47,8 +47,8 @@ A custom FGD file defining PostRetro entities for TrenchBroom is a project deliv
 We're building a custom BSP renderer, which means we control what data we consume and how. Rather than extending ericw-tools (C++, GPLv2), we lean on its existing BSPX output and supplement with authored metadata through TrenchBroom's entity system.
 
 *Computed by ericw-tools (mapper gets this for free):*
-- Colored lightmaps, directional lightmaps, AO/dirt, and volumetric light probes — all enabled by compile flags, no mapper effort required
-- Build flags: `-bspxlux` (directional lightmaps), `-dirt` (AO), `-lightgrid` (volumetric probes), plus standard RGB lighting
+- Colored lightmaps, directional lightmaps, AO/dirt, and volumetric light probes — all enabled by compile flags or worldspawn keys, no mapper effort required
+- The build pipeline runs three tools in sequence: `qbsp` (compile geometry) -> `vis` (compute visibility) -> `light` (calculate lighting). Key `light` flags: `-bspx` (writes `RGBLIGHTING` + `LIGHTINGDIR` BSPX lumps), `-lightgrid` (writes `LIGHTGRID_OCTREE` BSPX lump). AO is enabled via worldspawn key `_dirt 1` (bakes directly into lightmap data, no separate lump).
 
 *Derived from texture naming conventions (implicit authoring):*
 - **Surface material types** — texture name prefixes map to material enums (`metal_floor_01` -> Metal, `concrete_wall_03` -> Concrete, `grate_rusty_02` -> Grate). Drives footstep sounds, bullet impact particles, ricochet behavior, decal selection. Lookup table maintained alongside the engine, no special mapper workflow.
@@ -64,7 +64,7 @@ A set of architecture documents for the engine, written as **separate context fi
 
 Each file should cover topics that an agent working on that subsystem needs, without overloading context with unrelated information. The files should match the agent router in `context/lib/index.md`:
 
-1. **`rendering_pipeline.md`** — The rendering pipeline in detail: what happens each frame (in order), how each BSPX lump is consumed (directional lightmaps -> specular, lightgrid -> sprite/particle lighting, AO -> occlusion modulation), BSP loading pipeline (how qbsp data and BSPX lumps map to wgpu buffers and engine data structures), the custom vertex format
+1. **`rendering_pipeline.md`** — The rendering pipeline in detail: what happens each frame (in order), how each BSPX lump is consumed (directional lightmaps -> specular, lightgrid -> sprite/particle lighting), BSP loading pipeline (how qbsp data and BSPX lumps map to wgpu buffers and engine data structures), the custom vertex format. Note that AO is baked into lightmap data (not a separate lump) and `LIGHTINGDIR` requires custom BSPX parsing via `get_unparsed()`.
 2. **`resource_management.md`** — Resource management approach: textures (PNG loading, atlas packing), materials (texture name -> material enum derivation), sprites, cubemaps
 3. **`input.md`** — Input handling architecture: keyboard/mouse via winit, gamepad via gilrs, input mapping
 4. **`audio.md`** — Audio integration: kira setup, how `env_reverb_zone` data drives spatial audio, sound triggering from game events
@@ -73,7 +73,7 @@ Each file should cover topics that an agent working on that subsystem needs, wit
 
 Additionally, produce:
 
-7. **`context/plans/ready/wgpu-migration.md`** — Task to replace the current glow/glutin code with a wgpu backend (empty window with clear color). This is the prerequisite for all other work.
+7. **`context/plans/ready/wgpu-migration.md`** — Task to replace the current glow/glutin code with a wgpu backend (empty window with clear color). Note: the context docs already assume wgpu throughout; this task is about migrating the code in `src/main.rs` and `Cargo.toml`. This is the prerequisite for all other work.
 8. **`context/plans/drafts/grounded-movement.md`** — Task for player controller with BSP collision, gravity, and ground detection.
 9. **`context/plans/drafts/entity-types.md`** — Task to define and implement specific entity types (enemies, doors, pickups, triggers, projectiles).
 10. **`context/plans/drafts/cubemap-bake-tool.md`** — Task to build the tool that renders cubemaps from `env_cubemap` positions.
@@ -82,7 +82,7 @@ Also update `context/lib/index.md` to reflect any changes to the agent router or
 
 **Game loop and roadmap:**
 
-The spec should cover game loop structure (fixed timestep for game logic, variable framerate rendering with interpolation) within whichever context file is most appropriate.
+The spec should cover game loop structure (fixed timestep for game logic, variable framerate rendering with interpolation) in `rendering_pipeline.md`, since frame scheduling is tightly coupled with the render loop.
 
 Include a **phased implementation roadmap** at `context/plans/roadmap.md`, starting from "wgpu window exists" through "free-fly camera in a lit BSP level with billboard sprites," followed by a phase for grounded player movement (BSP collision, gravity, ground detection). Each phase should produce something visible and testable.
 

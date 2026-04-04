@@ -16,14 +16,16 @@
 - **Build pipeline / ericw-tools / FGD / TrenchBroom** → `build_pipeline.md`
 - **Input handling / gamepad** → `input.md`
 - **Resource management / textures / materials** → `resource_management.md`
-
-Docs that don't exist yet are planned — the spec will produce them.
+- **Collision / player movement** → `entity_model.md` §7 · `build_pipeline.md` (BRUSHLIST flags) · `plans/drafts/grounded-movement/index.md`
+- **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
+- **Roadmap / implementation phases** → `plans/roadmap.md`
+- **Draft plans / future features** → `plans/drafts/`
 
 ---
 
 ## 1. Product Definition
 
-Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Low-poly 3D environments with baked lightmaps, billboard sprite characters, and modern embellishments (dynamic colored lights, bloom, particles). Prodeus's visual targets achieved through genuinely retro technology, not a modern engine with retro filters. Near-instant boot, tiny binary.
+Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Low-poly 3D environments with baked lightmaps, billboard sprite characters, and modern embellishments (dynamic colored lights, bloom, particles). Visual fidelity through genuinely retro technology — not a modern engine with retro filters. Near-instant boot, tiny binary.
 
 ---
 
@@ -54,7 +56,7 @@ Rather than extending ericw-tools, we consume its existing BSPX output and suppl
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity → baked cubemap |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |
 
-Full detail: `build_pipeline.md` (once written).
+Full detail: `build_pipeline.md`.
 
 ---
 

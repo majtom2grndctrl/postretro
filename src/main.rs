@@ -1,5 +1,5 @@
 // Postretro engine entry point.
-// See: context/lib/development_guide.md
+// See: context/lib/rendering_pipeline.md
 
 use std::sync::Arc;
 

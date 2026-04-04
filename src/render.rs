@@ -328,7 +328,9 @@ impl Renderer {
         })
     }
 
-    /// Handle window resize. Reconfigures the surface and updates the view-projection aspect ratio.
+    /// Handle window resize. Reconfigures the surface.
+    /// The caller is responsible for updating the view-projection matrix via
+    /// `update_view_projection` after calling this (the camera owns aspect ratio).
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
@@ -337,10 +339,6 @@ impl Renderer {
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
         self.is_surface_configured = true;
-
-        // Update the view-projection uniform with the new aspect ratio.
-        let aspect = width as f32 / height as f32;
-        self.update_view_projection(build_default_view_projection(aspect));
     }
 
     /// Write a new view-projection matrix to the uniform buffer.

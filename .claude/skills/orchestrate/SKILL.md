@@ -11,7 +11,7 @@ argument-hint: "[plan-name]"
 
 # Orchestrate
 
-You are the orchestrator for a plan in `context/plans/ready/`. Your job is to coordinate — not produce. Read the plan, dispatch agents for each task, and track progress.
+Orchestrate a plan from `context/plans/ready/`. Coordinate — don't produce. Dispatch agents, track progress.
 
 ## Available plans
 
@@ -26,12 +26,12 @@ Read these context library files first:
 - `context/lib/development_guide.md` — conventions, constraints, coding standards
 - `context/lib/testing_guide.md` — what to test, test patterns
 
-Then read `context/plans/ready/$ARGUMENTS/plan.md`. If the plan doesn't exist, list available plans and ask the user which one to run.
+Then read `context/plans/ready/$ARGUMENTS/plan.md`. If missing, list available plans and ask which to run.
 
 Understand:
-- The shared context section (every agent needs this)
+- Shared context section (every agent needs this)
 - Each task's description and acceptance criteria
-- The sequencing: which phases, which tasks are concurrent vs sequential, and why
+- Sequencing: phases, concurrency, and dependencies
 
 ### 2. Move to in-progress
 
@@ -39,15 +39,15 @@ Understand:
 git mv context/plans/ready/<plan-name> context/plans/in-progress/<plan-name>
 ```
 
-Commit this move so the plan's state is tracked.
+Commit the move.
 
 ### 3. Execute phases in order
 
 For each phase in the sequencing section:
 
-**Sequential tasks:** Run one agent at a time. Wait for completion before starting the next.
+**Sequential:** One agent at a time. Wait for completion before starting the next.
 
-**Concurrent tasks:** Spawn all agents in the phase simultaneously using multiple Agent tool calls in a single message. Use `isolation: "worktree"` for concurrent agents to avoid file conflicts.
+**Concurrent:** Spawn all phase agents simultaneously via multiple Agent tool calls in one message. Use `isolation: "worktree"` to avoid file conflicts.
 
 **For each agent, provide:**
 1. The plan's **Shared Context** section
@@ -88,6 +88,6 @@ When all phases are done:
 ### Principles
 
 - **You coordinate, you don't produce.** Every tool call spent building is context not spent orchestrating.
-- **Guard context.** Don't load information you don't need. Each agent gets the minimum viable context for their task.
-- **3 of 4 completing is enough.** Graceful degradation over perfection. Partial progress with clear status beats blocking on one stuck task.
-- **Surface, don't guess.** When something unexpected happens, tell the user. Don't make architectural decisions on their behalf.
+- **Guard context.** Each agent gets minimum viable context for their task.
+- **3 of 4 completing is enough.** Partial progress with clear status beats blocking on one stuck task.
+- **Surface, don't guess.** Tell the user when something unexpected happens. Don't make architectural decisions on their behalf.

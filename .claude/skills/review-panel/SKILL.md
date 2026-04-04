@@ -14,9 +14,9 @@ argument-hint: "[file-path | plan-name] [reviewers:N] [model:opus|sonnet]"
 
 # Review Panel
 
-You are the review panel coordinator, running in an isolated context separate from the agent that did the implementation work. This isolation is intentional — reviewers must evaluate the code on its own merits, without access to the implementing agent's reasoning or conversation history.
+Review panel coordinator, isolated from the implementing agent's context. Reviewers evaluate code on its own merits — no access to prior reasoning or conversation history.
 
-You spawn parallel review agents, collect their findings, and present a unified review. You do not review code yourself.
+Spawn parallel review agents, collect findings, present a unified review. Do not review code yourself.
 
 ## Defaults
 
@@ -28,11 +28,11 @@ Override with arguments:
 - `reviewers:3` — run 3 code review agents instead of 2
 - `model:sonnet` — use Sonnet for code reviewers instead of Opus
 
-The comment drift checker always runs as 1 Sonnet agent regardless of overrides.
+Comment drift checker: always 1 Sonnet agent, unaffected by overrides.
 
 ## Scope detection
 
-Determine what to review from the first argument (same rules as `/code-review`):
+Determine review target from first argument (same rules as `/code-review`):
 
 - **Plan name:** all files touched by the plan's tasks
 - **File path:** that file and closely related files
@@ -53,15 +53,13 @@ Extract from `$ARGUMENTS`:
 
 ### 2. Spawn all agents in parallel
 
-Launch all agents simultaneously in a single message:
+Launch all agents simultaneously in a single message. All run with `isolation: "worktree"` (read-only, concurrent).
 
 **Code review agents (N instances):**
-Each agent gets the full content of `.claude/skills/code-review/SKILL.md` as their instructions, plus the review target. Use the specified model (default: opus).
+Full content of `.claude/skills/code-review/SKILL.md` as instructions, plus review target. Specified model (default: opus).
 
 **Comment drift agent (1 instance, always Sonnet):**
-This agent gets the comment drift instructions below, plus the review target. Use sonnet model.
-
-All agents run with `isolation: "worktree"` since they are read-only and concurrent.
+Comment drift instructions below, plus review target.
 
 ### 3. Aggregate results
 
@@ -114,16 +112,16 @@ Omit empty severity categories. If the panel unanimously approves with no findin
 
 ## Comment Drift Checker Instructions
 
-The following instructions are provided to the comment drift agent. Do not modify them — pass them verbatim.
+Pass these instructions to the comment drift agent verbatim.
 
 ```
-You are a **Comment Integrity Reviewer** for the PostRetro engine. Comments in this project are living documentation — agents read them to make informed decisions. A stale or misleading comment is worse than no comment, because it actively sets agents up for failure.
+You are a **Comment Integrity Reviewer** for PostRetro. Comments are living documentation — agents read them to make decisions. A stale or misleading comment is worse than no comment; it actively sets agents up for failure.
 
 Read these files first:
 - `context/lib/development_guide.md` §5 (Code Comments)
 - `context/lib/context_style_guide.md` (persistent vs ephemeral content)
 
-Then review the changed files AND adjacent code (files that import from, are imported by, or share a subsystem boundary with changed files).
+Review changed files and adjacent code (importers, importees, shared subsystem boundaries).
 
 Check for:
 

@@ -10,7 +10,7 @@ argument-hint: "[skill-name]"
 
 # Create Skill
 
-You are designing a new Claude Code skill for this project. Your goal is to produce a well-structured `SKILL.md` file in `.claude/skills/<name>/SKILL.md`.
+Design a new Claude Code skill. Output: `.claude/skills/<name>/SKILL.md`.
 
 ## Existing skills
 
@@ -20,13 +20,13 @@ You are designing a new Claude Code skill for this project. Your goal is to prod
 
 ### 1. Gather requirements
 
-If the user provided a name and clear description, proceed. Otherwise, ask clarifying questions. Keep questions focused — don't interrogate. Ask about:
+If name and description are clear, proceed. Otherwise ask focused questions — don't interrogate:
 
-- **Purpose:** What does this skill do? What problem does it solve?
-- **Trigger:** Should the user invoke it explicitly (`disable-model-invocation: true`) or should Claude activate it automatically when relevant?
-- **Scope:** Is this a single-step task or a multi-step workflow?
-- **Side effects:** Does it modify files, run commands, push to git, or call external services?
-- **Isolation:** Should it run in the main conversation or fork into a subagent (`context: fork`)?
+- **Purpose:** What problem does it solve?
+- **Trigger:** User-invoked (`disable-model-invocation: true`) or auto-activated?
+- **Scope:** Single-step task or multi-step workflow?
+- **Side effects:** Modifies files, runs commands, pushes to git, calls external services?
+- **Isolation:** Main conversation or forked subagent (`context: fork`)?
 
 ### 2. Design the skill
 
@@ -51,7 +51,7 @@ Based on requirements, decide on:
 
 ### 3. Write the skill
 
-Create the skill directory and `SKILL.md` file. If the skill needs reference material, templates, or scripts, create those as separate files in the skill directory.
+Create the skill directory and `SKILL.md`. Reference material, templates, or scripts go in separate files within the skill directory.
 
 ### 4. Verify
 

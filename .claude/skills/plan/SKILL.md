@@ -10,7 +10,7 @@ argument-hint: "[feature-name]"
 
 # Plan
 
-You are planning a feature or epic for Postretro. Your output is a plan folder in `context/plans/drafts/` that an agent can pick up and execute from `context/plans/ready/`.
+Plan a feature or epic for PostRetro. Output: a plan folder in `context/plans/drafts/` that moves to `context/plans/ready/` after review.
 
 ## Current project state
 
@@ -20,16 +20,16 @@ You are planning a feature or epic for Postretro. Your output is a plan folder i
 
 ### 1. Understand the goal
 
-Read the user's description of what they want to build. If the scope is unclear, ask focused questions — but don't over-interrogate. Understand:
+Read the user's description. If scope is unclear, ask focused questions — don't over-interrogate. Understand:
 - What outcome matters
 - What constraints apply
 - What subsystems are involved
-- **What "done" looks like** — work with the user to define concrete, verifiable completion criteria for the overall plan. Not vague ("it works") but specific ("BSP faces render with correct lightmap UVs, fallback to white when RGB lump missing").
-- **Quality gates** — how will we measure whether the work meets the bar? Examples: all tests pass, no clippy warnings, specific behaviors verified manually, performance within a threshold. Quality gates become the acceptance criteria on individual tasks.
+- **What "done" looks like** — define concrete, verifiable completion criteria with the user. Not "it works" but "BSP faces render with correct lightmap UVs, fallback to white when RGB lump missing."
+- **Quality gates** — measurable bar for the work. Examples: tests pass, no clippy warnings, specific behaviors verified manually, performance within a threshold. These become acceptance criteria on individual tasks.
 
 ### 2. Research
 
-Before writing the spec, read `context/lib/context_style_guide.md` — all plan content and context file updates must follow this style. Then load other relevant context library files:
+Read `context/lib/context_style_guide.md` first — all plan content and context file updates follow this style. Then load relevant context library files:
 
 !`ls context/lib/`
 
@@ -95,16 +95,16 @@ Before the plan can move to `ready/`, capture durable decisions in `context/lib/
 - New subsystem contracts or boundaries
 - Updates to existing context files that reflect planning decisions
 
-This ensures agents working the plan have full context in the codebase — they shouldn't need to derive architectural knowledge from the plan alone.
+Agents working the plan should find full context in the codebase, not derive it from the plan.
 
 ### 5. Commit
 
-Stage and commit the plan folder and any context file updates together. The plan is now in `drafts/` for review.
+Stage and commit plan folder and context file updates together.
 
 ### 6. Done
 
-Tell the user:
-- What you planned and why
-- How many tasks, what the sequencing looks like
-- What context files were updated
-- The plan is in `drafts/` — review it, and `git mv` to `ready/` when satisfied
+Report to the user:
+- What was planned and why
+- Task count and sequencing summary
+- Context files updated
+- Plan is in `drafts/` — `git mv` to `ready/` when satisfied

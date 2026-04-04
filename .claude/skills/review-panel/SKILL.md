@@ -3,15 +3,20 @@ name: review-panel
 description: >
   Runs a multi-agent review panel: parallel code reviewers plus a dedicated
   comment drift checker. Aggregates findings with deduplication and severity
-  merging. Use after implementing a feature or before opening a pull request
-  when you want thorough, multi-perspective review.
+  merging. Runs in a forked context so the active agent's context window stays
+  clean and reviewers have no bias from prior work. Use mid-session after
+  implementing a feature, or before opening a pull request.
 disable-model-invocation: true
+context: fork
+allowed-tools: Read, Glob, Grep, Bash, Agent
 argument-hint: "[file-path | plan-name] [reviewers:N] [model:opus|sonnet]"
 ---
 
 # Review Panel
 
-You are the review panel coordinator. You spawn parallel review agents, collect their findings, and present a unified review. You do not review code yourself.
+You are the review panel coordinator, running in an isolated context separate from the agent that did the implementation work. This isolation is intentional — reviewers must evaluate the code on its own merits, without access to the implementing agent's reasoning or conversation history.
+
+You spawn parallel review agents, collect their findings, and present a unified review. You do not review code yourself.
 
 ## Defaults
 

@@ -1,6 +1,8 @@
 // Postretro engine entry point.
 // See: context/lib/rendering_pipeline.md
 
+mod bsp;
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -13,6 +15,23 @@ use winit::window::{Window, WindowAttributes};
 fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
+
+    // Load BSP before entering the event loop (heavy I/O must not block the loop).
+    let args: Vec<String> = std::env::args().collect();
+    let bsp_path = bsp::resolve_bsp_path(&args);
+    let _bsp_world = match bsp::load_bsp(&bsp_path) {
+        Ok(world) => {
+            log::info!("[Engine] BSP loaded successfully from {bsp_path}");
+            Some(world)
+        }
+        Err(bsp::BspLoadError::FileNotFound(path)) => {
+            log::warn!("[Engine] BSP file not found: {path} — starting without map");
+            None
+        }
+        Err(err) => {
+            anyhow::bail!("failed to load BSP: {err}");
+        }
+    };
 
     let event_loop = EventLoop::new().context("failed to create event loop")?;
 

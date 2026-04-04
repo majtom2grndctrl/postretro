@@ -6,7 +6,6 @@ use std::path::Path;
 use glam::Vec3;
 use thiserror::Error;
 
-/// Default BSP file path when none is provided via CLI.
 const DEFAULT_BSP_PATH: &str = "assets/maps/test.bsp";
 
 // --- Error types ---
@@ -41,7 +40,6 @@ pub enum BspLoadError {
 
 // --- Engine types ---
 
-/// Per-face metadata linking a face to its position in the index buffer and its BSP leaf.
 #[derive(Debug, Clone)]
 pub struct FaceMeta {
     /// Byte offset (in indices, not bytes) into the index buffer where this face's triangles start.
@@ -55,7 +53,6 @@ pub struct FaceMeta {
     pub leaf_index: u32,
 }
 
-/// Stored BSP node for point-in-leaf queries (consumed by PVS culling in a later task).
 #[derive(Debug, Clone)]
 pub struct BspNodeData {
     pub plane_normal: Vec3,
@@ -70,7 +67,6 @@ pub struct BspNodeData {
     pub back_is_leaf: bool,
 }
 
-/// Stored BSP leaf data for visibility and spatial queries.
 #[derive(Debug, Clone)]
 pub struct BspLeafData {
     pub mins: Vec3,
@@ -81,20 +77,15 @@ pub struct BspLeafData {
     pub visdata_offset: i32,
 }
 
-/// All geometry and spatial data extracted from a BSP file, ready for the renderer to consume.
 #[derive(Debug)]
 pub struct BspWorld {
     /// Flat vertex positions, Y-up coordinate system.
     pub vertices: Vec<[f32; 3]>,
-    /// Triangle indices (u32) into `vertices`.
     pub indices: Vec<u32>,
-    /// Per-face metadata: index offset, count, and leaf membership.
     pub face_meta: Vec<FaceMeta>,
     /// BSP tree nodes for point-in-leaf traversal.
     pub nodes: Vec<BspNodeData>,
-    /// BSP leaves with bounding boxes and face lists.
     pub leaves: Vec<BspLeafData>,
-    /// Raw compressed PVS bitfield, consumed by later PVS task.
     pub visdata: Vec<u8>,
     /// Root node index for the world model (model 0).
     pub root_node: u32,
@@ -161,7 +152,6 @@ fn build_face_to_leaf_map(bsp: &qbsp::BspData) -> Vec<u32> {
 
 // --- BSP loading ---
 
-/// Resolve the BSP file path from CLI args, falling back to the default.
 pub fn resolve_bsp_path(args: &[String]) -> String {
     // First positional argument after the binary name is the BSP path.
     if args.len() > 1 {
@@ -171,7 +161,6 @@ pub fn resolve_bsp_path(args: &[String]) -> String {
     }
 }
 
-/// Load and process a BSP file into engine-ready geometry.
 pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
     let path_ref = Path::new(path);
     if !path_ref.exists() {
@@ -193,7 +182,6 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
     let world_model = &bsp.models[0];
     let face_to_leaf = build_face_to_leaf_map(&bsp);
 
-    // Extract world model faces (model 0).
     let first_face = world_model.first_face as usize;
     let num_faces = world_model.num_faces as usize;
 
@@ -240,13 +228,11 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
             vertices.push(pos.to_array());
         }
 
-        // Fan-triangulate.
         let index_offset = indices.len() as u32;
         let tri_indices = fan_triangulate(face_base_vertex, face_num_edges);
         let index_count = tri_indices.len() as u32;
         indices.extend(tri_indices);
 
-        // Log face normal direction for Phase 3 winding verification.
         if face_num_edges >= 3 {
             let v0 = Vec3::from(vertices[face_base_vertex as usize]);
             let v1 = Vec3::from(vertices[face_base_vertex as usize + 1]);
@@ -275,7 +261,6 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
         });
     }
 
-    // Build engine-side BSP tree nodes.
     let nodes: Vec<BspNodeData> = bsp
         .nodes
         .iter()
@@ -309,7 +294,6 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
         })
         .collect();
 
-    // Build engine-side leaf data.
     let leaves: Vec<BspLeafData> = bsp
         .leaves
         .iter()
@@ -349,10 +333,8 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
         })
         .collect();
 
-    // Store raw visdata for PVS consumption later.
     let visdata = bsp.visibility.visdata.clone();
 
-    // Root node from world model.
     let root_node = match bsp.models[0].hulls.root {
         qbsp::data::nodes::BspNodeRef::Node(i) => i,
         qbsp::data::nodes::BspNodeRef::Leaf(_) => 0,

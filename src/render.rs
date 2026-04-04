@@ -55,7 +55,6 @@ enum WireframeMode {
 
 // --- Renderer ---
 
-/// Owns all GPU state and renders BSP geometry as wireframe.
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -104,7 +103,6 @@ impl Renderer {
 
         log::info!("[Renderer] GPU adapter: {}", adapter.get_info().name);
 
-        // Determine wireframe mode: prefer PolygonMode::Line if supported and not overridden.
         let supports_polygon_mode_line = adapter
             .features()
             .contains(wgpu::Features::POLYGON_MODE_LINE);
@@ -135,7 +133,6 @@ impl Renderer {
         }))
         .context("failed to create GPU device")?;
 
-        // Configure surface.
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
             .formats
@@ -156,7 +153,6 @@ impl Renderer {
         };
         surface.configure(&device, &surface_config);
 
-        // Upload geometry buffers.
         let has_geometry =
             bsp_world.is_some_and(|w| !w.vertices.is_empty() && !w.indices.is_empty());
 
@@ -199,7 +195,6 @@ impl Renderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        // Uniform buffer for view-projection matrix.
         let view_proj = build_default_view_projection(
             surface_config.width as f32 / surface_config.height as f32,
         );
@@ -235,7 +230,6 @@ impl Renderer {
             }],
         });
 
-        // Pipeline.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Wireframe Pipeline Layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
@@ -279,7 +273,7 @@ impl Renderer {
                 cull_mode: None, // No culling for wireframe.
                 ..Default::default()
             },
-            depth_stencil: None, // No depth buffer for Phase 1.
+            depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -335,14 +329,12 @@ impl Renderer {
         self.is_surface_configured = true;
     }
 
-    /// Write a new view-projection matrix to the uniform buffer.
     pub fn update_view_projection(&self, view_proj: Mat4) {
         let data = view_proj.to_cols_array();
         self.queue
             .write_buffer(&self.uniform_buffer, 0, &cast_f32_slice_to_bytes(&data));
     }
 
-    /// Returns true if the surface is configured and ready for rendering.
     pub fn is_ready(&self) -> bool {
         self.is_surface_configured
     }
@@ -436,7 +428,6 @@ impl Renderer {
         Ok(())
     }
 
-    /// Issue one `draw_indexed` call per visible face range.
     fn draw_ranges<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>, ranges: &[DrawRange]) {
         for range in ranges {
             let start = range.index_offset;
@@ -448,7 +439,6 @@ impl Renderer {
 
 // --- Hardcoded view-projection ---
 
-/// Build a default view-projection matrix for initial testing (before task-03 camera).
 /// Camera at (0, 200, 500) looking at origin.
 fn build_default_view_projection(aspect: f32) -> Mat4 {
     let eye = glam::Vec3::new(0.0, 200.0, 500.0);
@@ -504,17 +494,14 @@ fn build_line_list_indices(tri_indices: &[u32], face_meta: &[crate::bsp::FaceMet
             ring.push(tri_indices[base + 2]);
         }
 
-        // Emit edge from hub to first ring vertex.
         line_indices.push(hub);
         line_indices.push(ring[0]);
 
-        // Emit edges along the ring.
         for i in 0..ring.len() - 1 {
             line_indices.push(ring[i]);
             line_indices.push(ring[i + 1]);
         }
 
-        // Close the polygon: last ring vertex back to hub.
         if let Some(&last) = ring.last() {
             line_indices.push(last);
             line_indices.push(hub);
@@ -526,7 +513,6 @@ fn build_line_list_indices(tri_indices: &[u32], face_meta: &[crate::bsp::FaceMet
 
 // --- Byte casting helpers ---
 
-/// Cast a slice of `f32` values to raw bytes.
 fn cast_f32_slice_to_bytes(data: &[f32]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(data.len() * 4);
     for &val in data {
@@ -535,7 +521,6 @@ fn cast_f32_slice_to_bytes(data: &[f32]) -> Vec<u8> {
     bytes
 }
 
-/// Cast a slice of `[f32; 3]` vertex positions to raw bytes.
 fn bytemuck_cast_slice_f32x3(data: &[[f32; 3]]) -> Vec<u8> {
     let byte_len = std::mem::size_of_val(data);
     let mut bytes = Vec::with_capacity(byte_len);
@@ -547,7 +532,6 @@ fn bytemuck_cast_slice_f32x3(data: &[[f32; 3]]) -> Vec<u8> {
     bytes
 }
 
-/// Cast a slice of `u32` indices to raw bytes.
 fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
     let byte_len = std::mem::size_of_val(data);
     let mut bytes = Vec::with_capacity(byte_len);

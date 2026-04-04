@@ -22,7 +22,6 @@ use crate::camera::Camera;
 use crate::render::Renderer;
 use crate::visibility::{VisibilityStats, VisibleFaces};
 
-/// CLI flag to force the line-list wireframe fallback path.
 const FORCE_LINE_LIST_FLAG: &str = "--force-line-list";
 
 fn main() -> Result<()> {
@@ -114,7 +113,6 @@ fn capture_cursor(window: &Window) {
     window.set_cursor_visible(false);
 }
 
-/// Release the mouse cursor.
 fn release_cursor(window: &Window) {
     let _ = window.set_cursor_grab(CursorGrabMode::None);
     window.set_cursor_visible(true);
@@ -142,7 +140,6 @@ impl ApplicationHandler for App {
             }
         };
 
-        // Update camera aspect ratio from the initial window size.
         let size = window.inner_size();
         self.camera.update_aspect(size.width, size.height);
 
@@ -217,7 +214,6 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                // Compute delta time.
                 let now = Instant::now();
                 let dt = now.duration_since(self.last_frame).as_secs_f32();
                 self.last_frame = now;
@@ -225,13 +221,11 @@ impl ApplicationHandler for App {
                 // Clamp dt to avoid huge jumps after window drag or similar stalls.
                 let dt = dt.min(0.1);
 
-                // Apply mouse rotation.
                 let yaw_delta = -self.mouse_delta.0 as f32 * camera::SENSITIVITY;
                 let pitch_delta = -self.mouse_delta.1 as f32 * camera::SENSITIVITY;
                 self.camera.rotate(yaw_delta, pitch_delta);
                 self.mouse_delta = (0.0, 0.0);
 
-                // Compute movement from held keys.
                 let speed = if self.keys_held.contains(&KeyCode::ShiftLeft)
                     || self.keys_held.contains(&KeyCode::ShiftRight)
                 {
@@ -271,7 +265,6 @@ impl ApplicationHandler for App {
 
                 self.camera.position += move_dir * speed * dt;
 
-                // Determine visibility: PVS + frustum culling.
                 let view_proj = self.camera.view_projection();
                 let (visible, stats) = match self.bsp_world.as_ref() {
                     Some(world) => {
@@ -288,7 +281,6 @@ impl ApplicationHandler for App {
                     ),
                 };
 
-                // Log diagnostics at debug level.
                 let pos = self.camera.position;
                 log::debug!(
                     "[Diagnostics] leaf:{} | faces: {}/{}/{} (total/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
@@ -301,7 +293,6 @@ impl ApplicationHandler for App {
                     pos.z,
                 );
 
-                // Update window title with diagnostic summary.
                 if let Some(ws) = self.window_state.as_ref() {
                     ws.window.set_title(&format!(
                         "Postretro | leaf:{} | faces: {}/{}/{} (total/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
@@ -315,7 +306,6 @@ impl ApplicationHandler for App {
                     ));
                 }
 
-                // Upload view-projection and render.
                 if let Some(renderer) = self.renderer.as_ref() {
                     renderer.update_view_projection(view_proj);
                     if renderer.is_ready() {

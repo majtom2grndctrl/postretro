@@ -6,10 +6,7 @@ use glam::{Mat4, Vec3};
 /// Horizontal field of view in radians (100 degrees).
 const HFOV: f32 = 100.0 * std::f32::consts::PI / 180.0;
 
-/// Near clipping plane distance.
 const NEAR: f32 = 0.1;
-
-/// Far clipping plane distance.
 const FAR: f32 = 4096.0;
 
 /// Maximum pitch angle in radians (+/- 89 degrees from horizontal).
@@ -21,7 +18,6 @@ pub const SENSITIVITY: f32 = 0.002;
 /// Base movement speed in units per second (Quake player speed).
 pub const MOVE_SPEED: f32 = 320.0;
 
-/// Sprint speed multiplier.
 pub const SPRINT_MULTIPLIER: f32 = 2.0;
 
 /// Free-fly camera with Euler angle orientation and perspective projection.
@@ -66,21 +62,17 @@ impl Camera {
         Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos())
     }
 
-    /// Right vector, perpendicular to forward in the XZ plane.
     pub fn right(&self) -> Vec3 {
         Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin())
     }
 
-    /// Compute the combined view-projection matrix.
     pub fn view_projection(&self) -> Mat4 {
         let view = self.view_matrix();
         let projection = self.projection_matrix();
         projection * view
     }
 
-    /// Compute the view matrix from position and yaw/pitch angles.
     fn view_matrix(&self) -> Mat4 {
-        // The camera's look direction uses both yaw and pitch.
         let look_dir = Vec3::new(
             -self.yaw.sin() * self.pitch.cos(),
             self.pitch.sin(),

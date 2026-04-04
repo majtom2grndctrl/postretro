@@ -140,7 +140,6 @@ fn is_aabb_outside_frustum(mins: Vec3, maxs: Vec3, frustum: &Frustum) -> bool {
 /// Returns the leaf index into `bsp_world.leaves`. At each internal node, tests the
 /// point against the split plane and descends into the appropriate child.
 pub fn find_camera_leaf(position: Vec3, world: &BspWorld) -> u32 {
-    // Start at the root node.
     let mut node_idx = world.root_node;
     let mut is_leaf = false;
 
@@ -207,7 +206,6 @@ pub fn decompress_pvs(leaf_index: u32, world: &BspWorld) -> Option<Vec<bool>> {
         pos += 1;
 
         if byte == 0 {
-            // RLE: next byte is the count of zero bytes to expand.
             if pos >= data.len() {
                 break;
             }
@@ -215,7 +213,6 @@ pub fn decompress_pvs(leaf_index: u32, world: &BspWorld) -> Option<Vec<bool>> {
             pos += 1;
             leaf_bit += 8 * count;
         } else {
-            // Raw visibility byte: 8 bits, LSB first.
             for bit in 0..8 {
                 if leaf_bit >= num_leaves {
                     break;
@@ -256,7 +253,6 @@ pub fn collect_visible_faces(
     let mut pvs_face_count: u32 = 0;
 
     for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
-        // Include this leaf if it's marked visible in the PVS or it's the camera's leaf.
         let is_visible = visible_leaves.get(leaf_idx).copied().unwrap_or(false);
         let is_camera_leaf = leaf_idx as u32 == camera_leaf;
 
@@ -277,7 +273,6 @@ pub fn collect_visible_faces(
             .count() as u32;
         pvs_face_count += leaf_face_count;
 
-        // Frustum cull: skip leaves whose bounding box is entirely outside the view frustum.
         if let Some(frustum) = frustum {
             if is_aabb_outside_frustum(leaf.mins, leaf.maxs, frustum) {
                 continue;

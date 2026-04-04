@@ -6,7 +6,6 @@ description: >
   merging. Runs in a forked context so the active agent's context window stays
   clean and reviewers have no bias from prior work. Use mid-session after
   implementing a feature, or before opening a pull request.
-disable-model-invocation: true
 context: fork
 allowed-tools: Read, Glob, Grep, Bash, Agent
 argument-hint: "[file-path | plan-name] [reviewers:N] [model:opus|sonnet]"

@@ -11,12 +11,13 @@
 | Concern | Crate |
 |---------|-------|
 | Windowing | winit 0.30 |
-| GPU | wgpu (Vulkan, Metal, DX12) |
-| Math | glam 0.30 (pinned — qbsp compatibility) |
+| GPU | wgpu 29 (Vulkan, Metal, DX12) |
+| Math | glam 0.30 (pinned — qbsp compatibility; kira pulls glam 0.32 transitively, which is fine since kira's math types don't cross into engine code) |
 | BSP loading | qbsp 0.14 |
 | Audio | kira 0.12 |
 | Gamepad | gilrs 0.11 |
 | Errors | thiserror 2 (subsystems), anyhow 1 (top-level) |
+| Async blocking | pollster 0.4 (wgpu adapter/device init only) |
 | Logging | log 0.4 + env_logger 0.11 |
 
 ---

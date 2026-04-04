@@ -157,13 +157,13 @@ Some topics need more words: unsafe boundaries, cross-subsystem contracts, non-o
 ```
 The BSP loader needs to handle the case where the BSPX LIGHTINGDIR
 lump is missing because not all maps will be compiled with the
--bspxlux flag, and in that case the renderer should fall back to
+-bspx flag, and in that case the renderer should fall back to
 standard diffuse-only lighting without directional specular.
 ```
 
 **After:**
 ```
-LIGHTINGDIR lump is optional — not all maps compile with `-bspxlux`.
+LIGHTINGDIR lump is optional — not all maps compile with `-bspx`.
 Loader signals absence via an `Option`. Renderer degrades to
 diffuse-only lighting: same lightmap sampling, no specular term.
 Missing lump is not an error — it's a valid, lower-fidelity path.

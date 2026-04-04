@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md
 
 mod bsp;
+mod render;
 
 use std::sync::Arc;
 
@@ -12,14 +13,21 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes};
 
+use crate::render::Renderer;
+
+/// CLI flag to force the line-list wireframe fallback path.
+const FORCE_LINE_LIST_FLAG: &str = "--force-line-list";
+
 fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
 
-    // Load BSP before entering the event loop (heavy I/O must not block the loop).
     let args: Vec<String> = std::env::args().collect();
+    let force_line_list = args.iter().any(|a| a == FORCE_LINE_LIST_FLAG);
+
+    // Load BSP before entering the event loop (heavy I/O must not block the loop).
     let bsp_path = bsp::resolve_bsp_path(&args);
-    let _bsp_world = match bsp::load_bsp(&bsp_path) {
+    let bsp_world = match bsp::load_bsp(&bsp_path) {
         Ok(world) => {
             log::info!("[Engine] BSP loaded successfully from {bsp_path}");
             Some(world)
@@ -36,8 +44,10 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::new().context("failed to create event loop")?;
 
     let mut app = App {
-        gpu: None,
+        renderer: None,
         window_state: None,
+        bsp_world,
+        force_line_list,
         exit_result: Ok(()),
     };
 
@@ -57,17 +67,12 @@ fn window_attributes() -> WindowAttributes {
 // --- Application state ---
 
 struct App {
-    gpu: Option<GpuState>,
+    renderer: Option<Renderer>,
     window_state: Option<WindowState>,
+    /// BSP world data, held until the renderer is created (ownership transfers on resume).
+    bsp_world: Option<bsp::BspWorld>,
+    force_line_list: bool,
     exit_result: Result<()>,
-}
-
-struct GpuState {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
-    is_surface_configured: bool,
 }
 
 struct WindowState {
@@ -87,8 +92,12 @@ impl ApplicationHandler for App {
             }
         };
 
-        let gpu = match create_gpu_state(&window) {
-            Ok(gpu) => gpu,
+        let renderer = match Renderer::new(
+            &window,
+            self.bsp_world.as_ref(),
+            self.force_line_list,
+        ) {
+            Ok(r) => r,
             Err(err) => {
                 self.exit_result = Err(err);
                 event_loop.exit();
@@ -96,7 +105,7 @@ impl ApplicationHandler for App {
             }
         };
 
-        self.gpu = Some(gpu);
+        self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
 
         log::info!("[Engine] Window ready");
@@ -104,7 +113,7 @@ impl ApplicationHandler for App {
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         self.window_state = None;
-        self.gpu = None;
+        self.renderer = None;
         log::info!("[Engine] Suspended");
     }
 
@@ -115,12 +124,9 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         match event {
-            WindowEvent::Resized(size) if size.width != 0 && size.height != 0 => {
-                if let Some(gpu) = self.gpu.as_mut() {
-                    gpu.surface_config.width = size.width;
-                    gpu.surface_config.height = size.height;
-                    gpu.surface.configure(&gpu.device, &gpu.surface_config);
-                    gpu.is_surface_configured = true;
+            WindowEvent::Resized(size) => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.resize(size.width, size.height);
                 }
             }
             WindowEvent::CloseRequested
@@ -136,9 +142,9 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                if let Some(gpu) = self.gpu.as_ref() {
-                    if gpu.is_surface_configured {
-                        if let Err(err) = render_frame(gpu) {
+                if let Some(renderer) = self.renderer.as_ref() {
+                    if renderer.is_ready() {
+                        if let Err(err) = renderer.render_frame() {
                             self.exit_result = Err(err);
                             event_loop.exit();
                         }
@@ -156,132 +162,8 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        self.gpu = None;
+        self.renderer = None;
         self.window_state = None;
         log::info!("[Engine] Exited");
     }
-}
-
-// --- wgpu setup ---
-
-fn create_gpu_state(window: &Arc<Window>) -> Result<GpuState> {
-    let size = window.inner_size();
-
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-
-    let surface = instance
-        .create_surface(window.clone())
-        .context("failed to create wgpu surface")?;
-
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::default(),
-        compatible_surface: Some(&surface),
-        force_fallback_adapter: false,
-    }))
-    .context("no suitable GPU adapter found")?;
-
-    log::info!("[Engine] GPU adapter: {}", adapter.get_info().name);
-
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("Postretro Device"),
-        required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
-        ..Default::default()
-    }))
-    .context("failed to create GPU device")?;
-
-    let surface_caps = surface.get_capabilities(&adapter);
-    let surface_format = surface_caps
-        .formats
-        .iter()
-        .copied()
-        .find(|f| f.is_srgb())
-        .unwrap_or(surface_caps.formats[0]);
-
-    let surface_config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: surface_format,
-        width: size.width.max(1),
-        height: size.height.max(1),
-        present_mode: wgpu::PresentMode::AutoVsync,
-        alpha_mode: surface_caps.alpha_modes[0],
-        desired_maximum_frame_latency: 2,
-        view_formats: vec![],
-    };
-
-    surface.configure(&device, &surface_config);
-
-    Ok(GpuState {
-        device,
-        queue,
-        surface,
-        surface_config,
-        is_surface_configured: true,
-    })
-}
-
-// --- Rendering ---
-
-fn render_frame(gpu: &GpuState) -> Result<()> {
-    let output = match gpu.surface.get_current_texture() {
-        wgpu::CurrentSurfaceTexture::Success(tex) => tex,
-        wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
-            gpu.surface.configure(&gpu.device, &gpu.surface_config);
-            tex
-        }
-        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-            return Ok(());
-        }
-        wgpu::CurrentSurfaceTexture::Outdated => {
-            gpu.surface.configure(&gpu.device, &gpu.surface_config);
-            return Ok(());
-        }
-        wgpu::CurrentSurfaceTexture::Lost => {
-            anyhow::bail!("surface lost");
-        }
-        wgpu::CurrentSurfaceTexture::Validation => {
-            anyhow::bail!("surface validation error");
-        }
-    };
-
-    let view = output
-        .texture
-        .create_view(&wgpu::TextureViewDescriptor::default());
-
-    let mut encoder = gpu
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Clear Encoder"),
-        });
-
-    // Dark cyberpunk clear color (same as the previous GL clear).
-    {
-        let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Clear Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.05,
-                        g: 0.05,
-                        b: 0.08,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
-    }
-
-    gpu.queue.submit(std::iter::once(encoder.finish()));
-    output.present();
-
-    Ok(())
 }

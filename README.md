@@ -1,4 +1,4 @@
-# PostRetro
+# Postretro
 
 Retro-style FPS engine inspired by Doom and Quake. Cyberpunk aesthetic, baked lightmaps, billboard sprites, modern embellishments (dynamic colored lights, bloom, particles). Near-instant boot, tiny binary.
 
@@ -37,7 +37,7 @@ Five architectural invariants govern the engine:
 
 ## Project Documentation
 
-PostRetro separates **durable knowledge** from **ephemeral work artifacts**. The code is the source of truth for implementation details. Documentation outside the codebase that describes specific code decisions — function signatures, struct layouts, algorithm choices — becomes stale the moment the code changes. The more detail a document carries about code, the faster it drifts.
+Postretro separates **durable knowledge** from **ephemeral work artifacts**. The code is the source of truth for implementation details. Documentation outside the codebase that describes specific code decisions — function signatures, struct layouts, algorithm choices — becomes stale the moment the code changes. The more detail a document carries about code, the faster it drifts.
 
 This drives a deliberate split:
 

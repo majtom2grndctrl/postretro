@@ -34,13 +34,13 @@ TrenchBroom supports loose PNG textures via a custom game configuration, elimina
 
 The full pipeline:
 1. **Author textures** as PNG files in `textures/<collection>/<name>.png` (TrenchBroom requires exactly one subdirectory level)
-2. **TrenchBroom** displays them via a custom `PostRetro` game configuration that points at the textures directory
+2. **TrenchBroom** displays them via a custom `Postretro` game configuration that points at the textures directory
 3. **ericw-tools** reads PNGs for dimensions only. qbsp auto-adds the map file's parent directory as a search path, so if `textures/` is alongside the `.map` file, no extra flags are needed: `qbsp -bsp2 -notex map.map`. For textures in a separate location, use `-path <dir>` to add search paths. The BSP stores texture headers (name + dimensions) with no pixel data.
 4. **Engine** loads PNGs at runtime, matched by the texture name strings in the BSP
 
 This applies to all visual assets: world textures, billboard sprites, UI elements. Sprite animations use sequentially-named frames within a collection directory.
 
-A custom FGD file defining PostRetro entities for TrenchBroom is a project deliverable alongside the engine.
+A custom FGD file defining Postretro entities for TrenchBroom is a project deliverable alongside the engine.
 
 **Baked data strategy — using ericw-tools to the fullest without extending it:**
 

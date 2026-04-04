@@ -1,4 +1,4 @@
-# Testing Guide - for Skaffa, not PostRetro
+# Testing Guide - for Skaffa, not Postretro
 
 > **Read this when:** writing new tests, deciding what to test, or setting up test infrastructure.
 > **Key invariant:** tests document Skaffa-specific behavior and cross-boundary interactions — not language or framework basics.

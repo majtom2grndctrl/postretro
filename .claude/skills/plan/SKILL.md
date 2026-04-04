@@ -10,7 +10,7 @@ argument-hint: "[feature-name]"
 
 # Plan
 
-You are planning a feature or epic for PostRetro. Your output is a plan folder in `context/plans/drafts/` that an agent can pick up and execute from `context/plans/ready/`.
+You are planning a feature or epic for Postretro. Your output is a plan folder in `context/plans/drafts/` that an agent can pick up and execute from `context/plans/ready/`.
 
 ## Current project state
 

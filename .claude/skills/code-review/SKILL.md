@@ -73,7 +73,7 @@ Work through each category. Only flag real issues — not style nitpicks that `c
 
 ### 4. Tests
 
-- [ ] Tests cover PostRetro-specific behavior, not language features or crate internals
+- [ ] Tests cover Postretro-specific behavior, not language features or crate internals
 - [ ] Test names follow `<subject>_<verb>_<expected_outcome>` pattern
 - [ ] Tests assert observable outcomes, not internal implementation details
 - [ ] No exact float equality — uses approximate comparison with epsilon

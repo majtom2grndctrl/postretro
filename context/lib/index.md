@@ -1,4 +1,4 @@
-# PostRetro – Architecture Index
+# Postretro – Architecture Index
 
 > **Use as a router:** pick 2–3 linked docs for the task, don't load everything.
 > **Source of truth for:** product definition, architectural principles, and where contracts live.

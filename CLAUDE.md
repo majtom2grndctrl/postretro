@@ -1,4 +1,4 @@
-# PostRetro
+# Postretro
 
 Retro-style FPS engine (Doom/Quake boomer shooter, cyberpunk aesthetic, modder-friendly). Rust + wgpu core.
 

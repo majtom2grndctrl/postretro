@@ -1,4 +1,4 @@
-// PostRetro engine entry point.
+// Postretro engine entry point.
 // See: context/lib/development_guide.md
 
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use winit::window::{Window, WindowAttributes};
 
 fn main() -> Result<()> {
     env_logger::init();
-    log::info!("[Engine] PostRetro starting");
+    log::info!("[Engine] Postretro starting");
 
     let event_loop = EventLoop::new().context("failed to create event loop")?;
 
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
 
 fn window_attributes() -> WindowAttributes {
     Window::default_attributes()
-        .with_title("PostRetro")
+        .with_title("Postretro")
         .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
 }
 
@@ -167,7 +167,7 @@ fn create_gpu_state(window: &Arc<Window>) -> Result<GpuState> {
     log::info!("[Engine] GPU adapter: {}", adapter.get_info().name);
 
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("PostRetro Device"),
+        label: Some("Postretro Device"),
         required_features: wgpu::Features::empty(),
         required_limits: wgpu::Limits::default(),
         ..Default::default()

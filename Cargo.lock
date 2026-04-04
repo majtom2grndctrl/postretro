@@ -3,6 +3,23 @@
 version = 4
 
 [[package]]
+name = "Postretro"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "gilrs",
+ "glam 0.30.10",
+ "kira",
+ "log",
+ "pollster",
+ "qbsp",
+ "thiserror 2.0.18",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1767,23 +1784,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "091397be61a01d4be58e7841595bd4bfedb15f1cd54977d79b8271e94ed799a3"
 dependencies = [
  "portable-atomic",
-]
-
-[[package]]
-name = "postretro"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "env_logger",
- "gilrs",
- "glam 0.30.10",
- "kira",
- "log",
- "pollster",
- "qbsp",
- "thiserror 2.0.18",
- "wgpu",
- "winit",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-# Skaffa – Architecture Index - not for PostRetro
+# Skaffa – Architecture Index - not for Postretro
 
 > **Use as a router:** pick 2–4 linked docs for the task, don't load everything.
 > **Source of truth for:** product definition, process model, source layout, and where contracts live.

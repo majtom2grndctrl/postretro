@@ -1,7 +1,7 @@
 # Testing Guide
 
 > **Read this when:** writing new tests, deciding what to test, or reasoning about test strategy.
-> **Key invariant:** tests document PostRetro-specific behavior and cross-subsystem interactions — not language features or crate internals.
+> **Key invariant:** tests document Postretro-specific behavior and cross-subsystem interactions — not language features or crate internals.
 > **Related:** [Development Guide](./development_guide.md)
 
 ---
@@ -21,7 +21,7 @@
 ### Decision criteria
 
 Test it if **all** of these hold:
-- PostRetro-specific behavior (not a language feature or crate API)
+- Postretro-specific behavior (not a language feature or crate API)
 - Crosses a boundary or shows how the system behaves at a seam
 - Captures a real scenario or documents a contract for future readers
 

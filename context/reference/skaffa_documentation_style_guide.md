@@ -1,4 +1,4 @@
-# Documentation Style Guide - for Skaffa, not PostRetro
+# Documentation Style Guide - for Skaffa, not Postretro
 
 Short sentences. Clear words. No waste.
 

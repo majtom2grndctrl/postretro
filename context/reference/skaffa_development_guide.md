@@ -1,4 +1,4 @@
-# Skaffa Development Guide - for Skaffa, not PostRetro
+# Skaffa Development Guide - for Skaffa, not Postretro
 
 > **Read this when:** setting up the repo, adding a feature, or onboarding. Covers dev setup, conventions, and coding standards.
 > **Key invariant:** code lives where it runs — respect process boundaries, validate at every crossing.

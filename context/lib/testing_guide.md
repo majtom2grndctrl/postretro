@@ -86,11 +86,30 @@ Rust convention: unit tests co-locate with source in `#[cfg(test)] mod tests` bl
 
 | Location | Purpose |
 |----------|---------|
-| `mod tests` (in source file) | Unit tests for the module's internal logic |
+| `mod tests` (in source file) | `#[test]` functions for the module's internal logic |
+| `*_test_fixtures.rs` (sibling module) | Test infrastructure: geometry builders, struct constructors, shared helpers |
 | `tests/` | Integration tests that exercise subsystem interactions across module boundaries |
 | `tests/fixtures/` | Test data: minimal BSP files, texture samples, config files |
 
-Test files are exempt from the source file size guidance in [Development Guide](./development_guide.md) §2.1. Test suites are flat and linear — large is fine.
+### Co-location rule of thumb
+
+`#[test]` functions belong next to the code they verify. **Test infrastructure** — fixture builders, helpers, procedural data constructors — belongs in a separate `#[cfg(test)]` sibling module when large enough to obscure feature code or tests.
+
+Extract into a sibling fixture module when:
+- Helper/builder code exceeds ~200 lines
+- Fixtures obscure `#[test]` functions
+- Multiple test modules need the same builders
+
+```
+// Parent module declares the fixture module:
+#[cfg(test)]
+mod <module>_test_fixtures;
+
+// <module>.rs — feature code + #[test] functions
+// <module>_test_fixtures.rs — builders, helpers
+```
+
+Test files (both `mod tests` blocks and fixture modules) are exempt from the source file size guidance in [Development Guide](./development_guide.md) §2.1. Test suites are flat and linear — large is fine.
 
 ### Test fixtures
 

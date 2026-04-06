@@ -151,13 +151,27 @@ Unknown prefix falls back to a default material with a warning at load time.
 
 The PRL compiler (`prl-build`) reads `.map` files directly via shambler and produces `.prl` binary level files. It replaces ericw-tools' three-step pipeline with a single tool.
 
-Key differences from the BSP path:
-- **Cluster-based visibility** instead of per-leaf BSP PVS. BSP tree is used internally during compilation but not stored in the output.
+### Compiler pipeline
+
+```
+parse .map → voxelize brushes → spatial grid (cell classification) → PVS (ray-cast) → geometry → pack .prl
+```
+
+1. **Parse.** Shambler extracts brush volumes, faces, and entities from the `.map` file.
+2. **Voxelize.** Brush volumes are rasterized into a 3D solid/empty bitmap (compile-time only, not stored in output). This enables point-in-solid classification and efficient ray occlusion testing.
+3. **Spatial grid.** Faces are assigned to uniform grid cells by centroid. Cells are classified as solid, air, or boundary using the voxel bitmap. Solid cells are discarded. Boundary cells (straddling walls) are subdivided. Air cells are merged into their nearest face-containing cell (expanding its bounds for camera containment).
+4. **PVS.** Ray-cast visibility between cluster pairs using 3D-DDA ray marching through the voxel grid. Sample points in solid space are rejected. Adjacent clusters are always mutually visible.
+5. **Geometry.** Faces are fan-triangulated into vertex/index buffers in engine-native Y-up coordinates.
+6. **Pack.** Geometry and visibility sections are written to the `.prl` binary format.
+
+### Key differences from the BSP path
+
+- **Cluster-based visibility** instead of per-leaf BSP PVS. No BSP tree — the compiler uses a voxel grid for spatial queries.
 - **Engine-native coordinates** (Y-up). No runtime coordinate transform.
 - **Section-based binary format** with independent versioning. New data types (lighting, nav mesh, audio) are added as sections without breaking existing levels.
 - **Self-describing levels.** Everything the engine needs is in one `.prl` file — no secondary data files or string parsing at load time.
 
-Full spec: `plans/prl-spec-draft.md`. Implementation plan: `plans/ready/prl-phase-1-minimum-viable-compiler/`.
+Full spec: `plans/prl-spec-draft.md`.
 
 ---
 

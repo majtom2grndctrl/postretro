@@ -49,7 +49,7 @@ Two authoring pipelines, both consuming TrenchBroom `.map` files:
 - **BSP path** (current): ericw-tools compiles to `.bsp`. Engine consumes BSP/BSPX lumps.
 - **PRL path** (in development): prl-build compiles to `.prl`. Engine consumes cluster-based binary sections.
 
-The PRL format replaces per-leaf BSP visibility with cluster-based PVS, stores geometry in engine-native coordinates, and is designed to subsume the baked data currently provided by BSPX lumps. See `plans/prl-spec-draft.md` for the full format spec.
+The PRL format replaces per-leaf BSP visibility with cluster-based PVS, stores geometry in engine-native coordinates, and is designed to subsume the baked data currently provided by BSPX lumps. The compiler uses a voxel grid for solid/empty classification and ray-cast visibility — no BSP tree. See `plans/prl-spec-draft.md` for the full format spec and `build_pipeline.md` §PRL for the compiler pipeline.
 
 ### BSP baked data (current)
 

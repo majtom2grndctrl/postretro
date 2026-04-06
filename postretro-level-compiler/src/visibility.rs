@@ -74,15 +74,8 @@ pub fn compute_visibility(
         })
         .collect();
 
-    // Air clusters (no faces) are adjacency-only: they get no PVS sample
-    // points and rely entirely on the adjacency override for visibility.
-    // Without face centroids, random AABB samples in air cells near corridor
-    // openings can trace diagonal rays through multiple corridors, creating
-    // false visibility between rooms separated by two turns.
-    let adjacency_only: Vec<bool> = clusters
-        .iter()
-        .map(|c| c.face_indices.is_empty())
-        .collect();
+    // No clusters are adjacency-only — all participate in ray-casting.
+    let adjacency_only: Vec<bool> = vec![false; cluster_count];
 
     // Compute PVS via voxel-based ray marching
     let pvs_result = pvs::compute_pvs_raycast(

@@ -3,8 +3,8 @@
 
 use glam::Vec3;
 
-use crate::voxel_grid::VoxelGrid;
 use crate::partition::Aabb;
+use crate::voxel_grid::VoxelGrid;
 
 /// Compute the number of bytes needed for a cluster bitset.
 pub fn bytes_for_clusters(cluster_count: usize) -> usize {
@@ -149,8 +149,7 @@ pub fn ray_blocked_by_voxels(grid: &VoxelGrid, start: Vec3, end: Vec3) -> bool {
     // Walk through voxels until we exit the ray segment or the grid.
     // The ray segment ends at t=1.0 (normalized). When the smallest
     // t_max exceeds 1.0, the next step would be past the endpoint.
-    let max_steps =
-        grid.resolution[0] + grid.resolution[1] + grid.resolution[2] + 3;
+    let max_steps = grid.resolution[0] + grid.resolution[1] + grid.resolution[2] + 3;
 
     for _ in 0..max_steps {
         // Check current voxel
@@ -334,7 +333,7 @@ pub fn compute_pvs_raycast(
     // Filters narrow diagonal sightlines that thread through multiple
     // corridor openings — these produce very few unblocked rays (1-4%)
     // compared to legitimate sightlines through single openings (>10%).
-    const MIN_VISIBILITY_RATIO: f32 = 0.05;
+    const MIN_VISIBILITY_RATIO: f32 = 0.03;
 
     // Start with identity: every cluster sees itself
     let mut pvs: Vec<Vec<u8>> = (0..cluster_count)
@@ -1052,8 +1051,14 @@ mod tests {
         let grid = VoxelGrid::from_brushes(&[wall], &world, 4.0);
         let result = compute_pvs_raycast(2, &bounds, &grid, &[], &[], true);
         let conf = result.confidence.expect("confidence should be Some");
-        assert!((conf[0][1]).abs() < 1e-6, "blocked pair should have 0 confidence");
-        assert!((conf[1][0]).abs() < 1e-6, "blocked pair should have 0 confidence");
+        assert!(
+            (conf[0][1]).abs() < 1e-6,
+            "blocked pair should have 0 confidence"
+        );
+        assert!(
+            (conf[1][0]).abs() < 1e-6,
+            "blocked pair should have 0 confidence"
+        );
     }
 
     #[test]

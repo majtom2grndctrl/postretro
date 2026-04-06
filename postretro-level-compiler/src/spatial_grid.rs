@@ -784,10 +784,57 @@ pub fn assign_to_grid(faces: Vec<Face>, voxel_grid: Option<&VoxelGrid>) -> Spati
             }
         }
 
+        // Merge reachable air cells into their nearest face-containing cell.
+        // This prevents air cell explosion (thousands of faceless clusters)
+        // while extending face-containing clusters' bounds to cover the air
+        // space around them, so the camera always falls within a real cluster.
+        //
+        // For each reachable air cell, find the nearest face-containing cell
+        // (by AABB centroid distance) and expand that cell's bounds to cover
+        // the air cell.
+        let face_cell_ids: Vec<usize> = cells
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !c.face_indices.is_empty())
+            .map(|(i, _)| i)
+            .collect();
+
+        let mut merged_air = 0usize;
+        for i in 0..cells.len() {
+            let dominated_by_air = cells[i].cell_type == Some(CellType::Air)
+                && cells[i].face_indices.is_empty()
+                && reachable.contains(&cells[i].id);
+
+            if !dominated_by_air {
+                continue;
+            }
+
+            let air_center = (cells[i].bounds.min + cells[i].bounds.max) * 0.5;
+            let nearest = face_cell_ids
+                .iter()
+                .min_by(|&&a, &&b| {
+                    let ca = (cells[a].bounds.min + cells[a].bounds.max) * 0.5;
+                    let cb = (cells[b].bounds.min + cells[b].bounds.max) * 0.5;
+                    let da = (ca - air_center).length_squared();
+                    let db = (cb - air_center).length_squared();
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .copied();
+
+            if let Some(donor) = nearest {
+                // Expand the donor cell's bounds to cover the air cell
+                let air_bounds = cells[i].bounds.clone();
+                cells[donor].bounds.min = cells[donor].bounds.min.min(air_bounds.min);
+                cells[donor].bounds.max = cells[donor].bounds.max.max(air_bounds.max);
+                merged_air += 1;
+            }
+        }
+
+        // Remove cells that are not face-containing (air cells are now merged)
         cells.retain(|c| match c.cell_type {
             Some(CellType::Solid) => false,
             Some(CellType::Boundary) => !c.face_indices.is_empty(),
-            Some(CellType::Air) => reachable.contains(&c.id),
+            Some(CellType::Air) => !c.face_indices.is_empty(),
             None => !c.face_indices.is_empty(),
         });
 
@@ -796,18 +843,14 @@ pub fn assign_to_grid(faces: Vec<Face>, voxel_grid: Option<&VoxelGrid>) -> Spati
             cell.id = i;
         }
 
-        let retained_air = cells
-            .iter()
-            .filter(|c| c.cell_type == Some(CellType::Air))
-            .count();
         let retained_boundary = cells
             .iter()
             .filter(|c| c.cell_type == Some(CellType::Boundary))
             .count();
         log::info!(
-            "[Compiler] After filtering: {} cells retained ({} air, {} boundary)",
+            "[Compiler] After merging: {} air cells absorbed into face-containing clusters, {} cells retained ({} boundary)",
+            merged_air,
             cells.len(),
-            retained_air,
             retained_boundary,
         );
     }
@@ -1432,11 +1475,15 @@ mod tests {
         );
     }
 
-    /// Air cells with no faces should be retained as clusters.
+    /// Air space in a hollow room is covered by expanded cluster bounds.
+    ///
+    /// Faceless air cells are merged into their nearest face-containing cluster
+    /// (expanding its bounds) rather than kept as separate clusters. This
+    /// prevents cluster explosion while ensuring the camera always falls
+    /// within a cluster's bounds.
     #[test]
-    fn air_cells_retained_as_clusters_even_without_faces() {
+    fn air_space_covered_by_expanded_cluster_bounds() {
         // Build a hollow room: 6 wall brushes enclosing air space.
-        // Interior grid cells have no face centroids but should still become clusters.
         let wt = 16.0; // wall thickness
         let mut faces = Vec::new();
         let mut volumes = Vec::new();
@@ -1457,26 +1504,36 @@ mod tests {
         let vg = build_test_voxel_grid(&faces, &volumes);
         let result = assign_to_grid(faces, Some(&vg));
 
-        // Some cells should be classified as Air and have no faces
-        let air_no_faces = result
-            .cells
-            .iter()
-            .filter(|c| c.cell_type == Some(CellType::Air) && c.face_indices.is_empty())
-            .count();
-        assert!(
-            air_no_faces > 0,
-            "hollow room should have air cells with no faces (got 0)"
-        );
-
-        // Air cells should have valid bounds
+        // All remaining clusters should have faces (air cells were merged in)
         for cell in &result.cells {
-            if cell.cell_type == Some(CellType::Air) {
-                assert!(
-                    cell.bounds.is_valid(),
-                    "air cell {} should have valid bounds",
-                    cell.id
-                );
-            }
+            assert!(
+                !cell.face_indices.is_empty(),
+                "cluster {} should have faces after air cell merging",
+                cell.id
+            );
+        }
+
+        // Sample points in the room's air volume should fall within some
+        // cluster's bounds (the expanded bounds cover the air space).
+        let air_points = [
+            Vec3::new(128.0, 128.0, 64.0), // room center
+            Vec3::new(32.0, 32.0, 32.0),   // near corner
+            Vec3::new(224.0, 224.0, 96.0),  // far corner
+        ];
+        for point in &air_points {
+            let in_some_cluster = result.cells.iter().any(|c| {
+                point.x >= c.bounds.min.x
+                    && point.x <= c.bounds.max.x
+                    && point.y >= c.bounds.min.y
+                    && point.y <= c.bounds.max.y
+                    && point.z >= c.bounds.min.z
+                    && point.z <= c.bounds.max.z
+            });
+            assert!(
+                in_some_cluster,
+                "air point {:?} should fall within some cluster's bounds",
+                point
+            );
         }
     }
 

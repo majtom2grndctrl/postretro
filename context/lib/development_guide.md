@@ -6,7 +6,19 @@
 
 ---
 
+## Workspace
+
+Three crates in a Cargo workspace:
+
+| Crate | Type | Purpose |
+|-------|------|---------|
+| `postretro` | binary | Engine / game runtime |
+| `postretro-level-format` | library | Shared PRL binary format types. Depended on by both engine and compiler. |
+| `postretro-level-compiler` | binary | Offline level compiler. TrenchBroom `.map` → `.prl` binary. |
+
 ## Stack
+
+### Engine (`postretro`)
 
 | Concern | Crate |
 |---------|-------|
@@ -14,11 +26,20 @@
 | GPU | wgpu 29 (Vulkan, Metal, DX12) |
 | Math | glam 0.30 (pinned — qbsp compatibility; kira pulls glam 0.32 transitively, which is fine since kira's math types don't cross into engine code) |
 | BSP loading | qbsp 0.14 |
+| PRL loading | postretro-level-format |
 | Audio | kira 0.12 |
 | Gamepad | gilrs 0.11 |
 | Errors | thiserror 2 (subsystems), anyhow 1 (top-level) |
 | Async blocking | pollster 0.4 (wgpu adapter/device init only) |
 | Logging | log 0.4 + env_logger 0.11 |
+
+### Level compiler (`postretro-level-compiler`)
+
+| Concern | Crate |
+|---------|-------|
+| .map parsing | shambler (re-exports shalrath). Uses nalgebra internally — convert to glam at boundary. |
+| PRL format | postretro-level-format |
+| Math | glam 0.30 |
 
 ---
 

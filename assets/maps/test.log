@@ -1,0 +1,101 @@
+---- qbsp / ericw-tools 2.0.0-alpha10 ----
+
+--- Options Summary ---
+    "bsp2" was set to "1" (from command line)
+    "notex" was set to "1" (from command line)
+    "wrbrushes" was set to "1" (from command line)
+
+Input file: /Users/dhiester/Projects/Personal/postretro/assets/maps/test.map
+Output file: /Users/dhiester/Projects/Personal/postretro/assets/maps/test.bsp
+
+INFO: using built-in palette.
+WARNING: No wad or _wad key exists in the worldmodel
+     2 entities
+     2 unique textures
+    16 texinfos
+    24 unique planes
+
+INFO: world extents calculated to 440 units
+     6 brushes
+    36 sides
+
+            0 texture frames added
+WARNING: unable to find texture skip
+WARNING: unable to find texture __TB_empty
+Processing hull 0...
+    6 SOLID brushes
+    6 brushes total
+    36 visible sides
+INFO: calculating BSP for 6 brushes with 36 sides
+     6 brushes
+    36 visible faces
+    24 nodes
+    24 expensive split nodes
+    25 leaves
+     6 SOLID leafs
+    19 EMPTY leafs
+    25 leafs total
+    8 max tree height
+    6 avg tree height
+    114 tree portals
+    18 outside leaves
+    0 detail filled leafs
+     6 brushes
+     6 visible faces
+    30 non-visible faces
+    24 nodes
+    18 non-visible nodes
+    24 expensive split nodes
+    25 leaves
+     6 SOLID leafs
+    19 EMPTY leafs
+    25 leafs total
+    8 max tree height
+    6 avg tree height
+    114 tree portals
+    18 outside leaves
+    0 detail filled leafs
+    114 tree portals
+    12 sides visible
+    6 makefaces
+    18 nodes pruned
+    1 player-occupiable leaves
+    1 clusters of leaves
+    1 EMPTY leafs
+    6 SOLID leafs
+    7 leafs total
+    7 max tree height
+    4 avg tree height
+     6 faces optimized through MWT
+    12 triangles computed from MWT
+    12 edges
+     6 faces
+Processing hull 1...
+Processing hull 2...
+WARNING: No entities in empty space -- no filling performed (hull 2)
+Writing assets/maps/test.bsp as Quake BSP2 bsp2
+Wrote assets/maps/test.bsp
+
+count   lump name    byte size 
+      1 models               64
+     26 planes              520
+      8 vertexes             96
+      6 nodes               264
+      3 texinfos            120
+      6 faces               168
+     97 clipnodes          1164
+      2 leafs                88
+      6 marksurfaces         24
+     13 edges               104
+     24 surfedges            96
+      2 textures             12
+        lightdata             0
+        visdata               0
+        entdata              86
+
+BSPX lump name   byte size 
+BRUSHLIST               184
+
+0.011s seconds elapsed
+
+

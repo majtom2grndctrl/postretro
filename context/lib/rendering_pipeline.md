@@ -24,23 +24,31 @@ Game logic runs at a fixed timestep decoupled from render rate. Renderer interpo
 
 ---
 
-## 2. BSP Visibility and Traversal
+## 2. Visibility and Traversal
 
-Visibility is determined per-frame using Potentially Visible Set (PVS) data baked into the BSP file by the compiler.
+Visibility is determined per-frame using precomputed Potentially Visible Set (PVS) data. Two formats provide PVS differently, but the rendering result is the same: a set of face ranges to draw.
 
-**Per-frame sequence:**
+### BSP path (current)
 
-1. Determine which BSP leaf contains the camera position.
+1. Determine which BSP leaf contains the camera position (BSP tree traversal).
 2. Look up the PVS for that leaf — a compressed bitfield of which other leaves are potentially visible.
 3. Decompress the PVS into a visible leaf set.
 4. Collect all faces belonging to visible leaves.
 5. Submit collected faces as the frame's draw set.
 
-PVS culling is conservative: it may include faces that are technically occluded, but never excludes a visible face. This is a solved trade-off — slight overdraw is cheaper than per-face occlusion tests.
+### PRL path (in development)
 
-Frustum culling can further reduce the draw set by discarding faces outside the camera's view volume. PVS runs first (coarse), frustum culling runs second (fine).
+1. Determine which cluster contains the camera position (bounding volume scan).
+2. Look up the PVS for that cluster — a compressed bitfield of which other clusters are potentially visible.
+3. Frustum-cull visible clusters by bounding volume.
+4. Collect face ranges for surviving clusters.
+5. Submit collected faces as the frame's draw set.
 
-**Missing PVS:** When vis data is absent (Fast build profile, or corrupted BSP), draw all faces. Slower but correct. Frustum culling still applies.
+PVS culling is conservative in both paths: it may include faces that are technically occluded, but never excludes a visible face. Slight overdraw is cheaper than per-face occlusion tests.
+
+Frustum culling further reduces the draw set by discarding faces/clusters outside the camera's view volume. PVS runs first (coarse), frustum culling runs second (fine).
+
+**Missing PVS:** When vis data is absent (Fast build profile, corrupted BSP, or PRL without a visibility section), draw all faces. Slower but correct. Frustum culling still applies.
 
 ---
 
@@ -254,7 +262,7 @@ Camera position and orientation produce a view matrix each frame. The view matri
 ## 10. Non-Goals
 
 - **Deferred rendering** — forward pipeline is sufficient for the target light count and aesthetic. Deferred adds complexity without benefit here.
-- **Runtime BSP compilation** — maps are compiled offline by ericw-tools. The engine is a consumer, not a compiler.
+- **Runtime level compilation** — maps are compiled offline (ericw-tools for BSP, prl-build for PRL). The engine is a consumer, not a compiler.
 - **PBR materials** — baked lightmaps and simple Blinn-Phong specular achieve the retro aesthetic. Metallic/roughness workflows are out of scope.
 - **Ray tracing** — baked lighting plus a small number of dynamic lights covers the visual needs.
 - **Multiplayer / networking** — single-player engine. Network synchronization is not a rendering concern and is excluded from the project scope entirely.

@@ -5,7 +5,6 @@ description: >
   loads relevant context via the agent router, examines dependent code, and
   builds the feature. Use when working a specific task from a plan, or when
   given a focused implementation request.
-disable-model-invocation: true
 context: fork
 allowed-tools: Read, Glob, Grep, Bash, Edit, Write
 argument-hint: "[plan-name/task-name | task description]"
@@ -31,15 +30,13 @@ Use the description as the task spec. Ask clarifying questions only if acceptanc
 
 ### 2. Load context
 
-Read `context/lib/index.md` — use the agent router to identify which context files are relevant to this task. Load only what you need:
-
-!`cat context/lib/index.md`
-
-Read the development guide for conventions and constraints:
+Read the development guide carefully for engineering guidelines:
 - `context/lib/development_guide.md`
 
-Read the testing guide if the task involves testable behavior:
+Read the testing guide carefully for guidance on how to write tests:
 - `context/lib/testing_guide.md`
+
+Read `context/lib/index.md` — use agent router to identify which context files are relevant to this task. Load only what you need.
 
 ### 3. Examine dependencies
 

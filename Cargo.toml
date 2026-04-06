@@ -1,12 +1,18 @@
-[package]
-name = "Postretro"
+[workspace]
+members = [
+    "postretro",
+    "postretro-level-format",
+    "postretro-level-compiler",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "A retro-style FPS engine inspired by Doom/Quake"
 license = "MIT"
 
-[dependencies]
+[workspace.dependencies]
 # Windowing and GPU
 winit = "0.30"
 wgpu = "29"
@@ -17,6 +23,9 @@ glam = "0.30"  # pinned for qbsp compatibility
 
 # BSP loading
 qbsp = "0.14"
+
+# Map parsing (level compiler)
+shambler = "0.2"
 
 # Audio
 kira = "0.12"
@@ -31,6 +40,9 @@ anyhow = "1"
 # Logging
 log = "0.4"
 env_logger = "0.11"
+
+# Workspace members
+postretro-level-format = { path = "postretro-level-format" }
 
 [profile.release]
 opt-level = 3

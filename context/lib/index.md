@@ -11,6 +11,7 @@
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
 - **Rendering pipeline / BSP / lighting / BSPX** → `rendering_pipeline.md`
+- **PRL format / level compiler / clusters / PVS** → `plans/prl-spec-draft.md` · `build_pipeline.md` §PRL
 - **Audio / spatial sound / reverb zones** → `audio.md`
 - **Entity model / game objects / sprites** → `entity_model.md`
 - **Build pipeline / ericw-tools / FGD / TrenchBroom** → `build_pipeline.md`
@@ -34,7 +35,7 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 | Principle | Invariant |
 |-----------|-----------|
 | **Renderer owns GPU** | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
-| **Baked over computed** | Lighting, AO, light probes, and directional maps are baked offline by ericw-tools. Dynamic lights supplement, not replace. |
+| **Baked over computed** | Lighting, visibility, and spatial data are baked offline. BSP levels use ericw-tools; PRL levels use prl-build. Dynamic lights supplement, not replace. |
 | **Subsystem boundaries** | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |
 | **No `unsafe`** | The crate stack provides safe APIs. If `unsafe` appears necessary, stop and consult the project owner. |
@@ -43,7 +44,14 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 
 ## 3. Baked Data Strategy
 
-Rather than extending ericw-tools, we consume its existing BSPX output and supplement with authored metadata through TrenchBroom's entity system.
+Two authoring pipelines, both consuming TrenchBroom `.map` files:
+
+- **BSP path** (current): ericw-tools compiles to `.bsp`. Engine consumes BSP/BSPX lumps.
+- **PRL path** (in development): prl-build compiles to `.prl`. Engine consumes cluster-based binary sections.
+
+The PRL format replaces per-leaf BSP visibility with cluster-based PVS, stores geometry in engine-native coordinates, and is designed to subsume the baked data currently provided by BSPX lumps. See `plans/prl-spec-draft.md` for the full format spec.
+
+### BSP baked data (current)
 
 | Data | Source | How |
 |------|--------|-----|
@@ -66,5 +74,5 @@ Full detail: `build_pipeline.md`.
 - ECS architecture
 - Deferred rendering
 - Extending or forking ericw-tools
-- Runtime BSP compilation
+- Runtime level compilation
 - Multiplayer / networking

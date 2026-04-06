@@ -1,0 +1,20 @@
+[package]
+name = "postretro-level-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Level compiler for Postretro"
+license.workspace = true
+
+[[bin]]
+name = "prl-build"
+path = "src/main.rs"
+
+[dependencies]
+postretro-level-format.workspace = true
+shambler.workspace = true
+glam.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+thiserror.workspace = true

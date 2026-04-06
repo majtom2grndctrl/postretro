@@ -1,0 +1,11 @@
+[package]
+name = "postretro-level-format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Shared level format types for Postretro"
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,320 @@
+// .map file parsing via shambler: brush classification and face extraction.
+// See: context/lib/index.md
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use glam::Vec3;
+use shambler::GeoMap;
+use shambler::brush::{BrushId, brush_hulls};
+use shambler::entity::EntityId;
+use shambler::face::face_planes;
+use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
+
+use crate::map_data::{BrushPlane, BrushVolume, EntityInfo, Face, MapData};
+
+/// Convert a shambler nalgebra Vector3 to glam Vec3.
+fn to_glam(v: &shambler::Vector3) -> Vec3 {
+    Vec3::new(v.x, v.y, v.z)
+}
+
+/// Parse an origin string like "-192 25.6 167.736" into a Vec3.
+fn parse_origin(s: &str) -> Option<Vec3> {
+    let parts: Vec<f32> = s
+        .split_whitespace()
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    if parts.len() == 3 {
+        Some(Vec3::new(parts[0], parts[1], parts[2]))
+    } else {
+        None
+    }
+}
+
+/// Look up a property value by key from shambler's entity properties.
+fn get_property(geo_map: &GeoMap, entity_id: &EntityId, key: &str) -> Option<String> {
+    let props = geo_map.entity_properties.get(entity_id)?;
+    props.iter().find(|p| p.key == key).map(|p| p.value.clone())
+}
+
+/// Read and parse a .map file, classify brushes, and extract face geometry.
+pub fn parse_map_file(path: &Path) -> Result<MapData> {
+    let map_text = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read map file: {}", path.display()))?;
+
+    let shalrath_map: shambler::shalrath::repr::Map = map_text
+        .parse()
+        .map_err(|e| anyhow::anyhow!("failed to parse .map syntax: {e}"))?;
+
+    let geo_map = GeoMap::new(shalrath_map);
+
+    // Identify worldspawn entity
+    let worldspawn_id = geo_map
+        .entities
+        .iter()
+        .find(|id| get_property(&geo_map, id, "classname").as_deref() == Some("worldspawn"))
+        .copied()
+        .context("no worldspawn entity found in .map file")?;
+
+    // Classify brushes: world vs entity
+    let world_brush_ids: Vec<BrushId> = geo_map
+        .entity_brushes
+        .get(&worldspawn_id)
+        .cloned()
+        .unwrap_or_default();
+
+    // Collect entity info and entity brush counts
+    let mut entities = Vec::new();
+    let mut entity_brushes_summary = Vec::new();
+    let mut entity_classnames: Vec<String> = Vec::new();
+
+    for entity_id in geo_map.entities.iter() {
+        let classname =
+            get_property(&geo_map, entity_id, "classname").unwrap_or_else(|| "unknown".to_string());
+        let origin = get_property(&geo_map, entity_id, "origin").and_then(|s| parse_origin(&s));
+
+        entities.push(EntityInfo {
+            classname: classname.clone(),
+            origin,
+        });
+
+        if !entity_classnames.contains(&classname) {
+            entity_classnames.push(classname.clone());
+        }
+
+        if *entity_id != worldspawn_id {
+            let brush_count = geo_map
+                .entity_brushes
+                .get(entity_id)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            entity_brushes_summary.push((classname, brush_count));
+        }
+    }
+
+    // Compute geometry for world brushes only
+    let geo_planes = face_planes(&geo_map.face_planes);
+
+    // Build brush_faces subset for world brushes only
+    let world_brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = world_brush_ids
+        .iter()
+        .filter_map(|bid| {
+            geo_map
+                .brush_faces
+                .get(bid)
+                .map(|faces| (*bid, faces.clone()))
+        })
+        .collect();
+
+    let brush_hulls = brush_hulls(&world_brush_faces, &geo_planes);
+    let (face_verts, _face_vert_planes) =
+        face_vertices(&world_brush_faces, &geo_planes, &brush_hulls);
+    let face_ctrs = face_centers(&face_verts);
+    let face_idx = face_indices(
+        &geo_map.face_planes,
+        &geo_planes,
+        &face_verts,
+        &face_ctrs,
+        FaceWinding::CounterClockwise,
+    );
+
+    // Extract brush volumes (convex hulls defined by face planes) for solid classification
+    let mut brush_volumes = Vec::new();
+    for brush_id in &world_brush_ids {
+        let face_ids = match geo_map.brush_faces.get(brush_id) {
+            Some(ids) => ids,
+            None => continue,
+        };
+
+        let planes: Vec<BrushPlane> = face_ids
+            .iter()
+            .filter_map(|fid| {
+                let plane = geo_planes.get(fid)?;
+                Some(BrushPlane {
+                    normal: to_glam(plane.normal()),
+                    distance: plane.distance(),
+                })
+            })
+            .collect();
+
+        if !planes.is_empty() {
+            brush_volumes.push(BrushVolume { planes });
+        }
+    }
+
+    // Extract faces from world brushes
+    let mut world_faces = Vec::new();
+    let mut total_vertex_count: usize = 0;
+
+    for brush_id in &world_brush_ids {
+        let face_ids = match geo_map.brush_faces.get(brush_id) {
+            Some(ids) => ids,
+            None => continue,
+        };
+
+        for face_id in face_ids {
+            let vertices_raw = match face_verts.get(face_id) {
+                Some(v) => v,
+                None => continue,
+            };
+
+            // Skip degenerate faces
+            if vertices_raw.len() < 3 {
+                continue;
+            }
+
+            let indices = match face_idx.get(face_id) {
+                Some(i) => i,
+                None => continue,
+            };
+
+            // Reorder vertices by winding indices
+            let vertices: Vec<Vec3> = indices.iter().map(|&i| to_glam(&vertices_raw[i])).collect();
+
+            let plane = &geo_planes[face_id];
+            let normal = to_glam(plane.normal());
+            let distance = plane.distance();
+
+            // Look up texture name
+            let texture = geo_map
+                .face_textures
+                .get(face_id)
+                .and_then(|tex_id| geo_map.textures.get(tex_id))
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+
+            total_vertex_count += vertices.len();
+
+            world_faces.push(Face {
+                vertices,
+                normal,
+                distance,
+                texture,
+            });
+        }
+    }
+
+    // Stat logging
+    let total_brushes = geo_map.brushes.len();
+    let world_brush_count = world_brush_ids.len();
+    let entity_brush_count = total_brushes - world_brush_count;
+
+    log::info!("[Compiler] Total brushes: {total_brushes}");
+    log::info!("[Compiler] World brushes: {world_brush_count}");
+    log::info!("[Compiler] Entity brushes: {entity_brush_count}");
+    log::info!("[Compiler] World faces: {}", world_faces.len());
+    log::info!("[Compiler] Total vertices: {total_vertex_count}");
+    log::info!(
+        "[Compiler] Entity classnames: {}",
+        entity_classnames.join(", ")
+    );
+
+    Ok(MapData {
+        world_faces,
+        brush_volumes,
+        entity_brushes: entity_brushes_summary,
+        entities,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn test_map_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join("assets/maps/test.map")
+    }
+
+    #[test]
+    fn parses_test_map() {
+        let map_data =
+            parse_map_file(&test_map_path()).expect("test.map should parse without error");
+
+        // The test map has 10 world brushes
+        assert!(!map_data.world_faces.is_empty(), "should have world faces");
+    }
+
+    #[test]
+    fn classifies_brushes_correctly() {
+        let map_data =
+            parse_map_file(&test_map_path()).expect("test.map should parse without error");
+
+        // info_player_start has 0 brushes
+        assert!(
+            map_data.entity_brushes.iter().all(|(_, count)| *count == 0),
+            "info_player_start should have 0 brushes"
+        );
+
+        // Should have worldspawn + info_player_start
+        let classnames: Vec<&str> = map_data
+            .entities
+            .iter()
+            .map(|e| e.classname.as_str())
+            .collect();
+        assert!(classnames.contains(&"worldspawn"));
+        assert!(classnames.contains(&"info_player_start"));
+    }
+
+    #[test]
+    fn faces_have_valid_vertices() {
+        let map_data =
+            parse_map_file(&test_map_path()).expect("test.map should parse without error");
+
+        for face in &map_data.world_faces {
+            assert!(
+                face.vertices.len() >= 3,
+                "face should have at least 3 vertices, got {}",
+                face.vertices.len()
+            );
+        }
+    }
+
+    #[test]
+    fn faces_have_unit_normals() {
+        let map_data =
+            parse_map_file(&test_map_path()).expect("test.map should parse without error");
+
+        for face in &map_data.world_faces {
+            let len = face.normal.length();
+            assert!(
+                (len - 1.0).abs() < 0.01,
+                "normal should be unit length, got {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn extracts_player_start_origin() {
+        let map_data =
+            parse_map_file(&test_map_path()).expect("test.map should parse without error");
+
+        let player_start = map_data
+            .entities
+            .iter()
+            .find(|e| e.classname == "info_player_start")
+            .expect("should have info_player_start");
+
+        let origin = player_start
+            .origin
+            .expect("info_player_start should have origin");
+        assert!(origin.x.is_finite(), "origin x should be finite");
+        assert!(origin.y.is_finite(), "origin y should be finite");
+        assert!(origin.z.is_finite(), "origin z should be finite");
+    }
+
+    #[test]
+    fn missing_file_returns_error() {
+        let result = parse_map_file(Path::new("nonexistent.map"));
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("failed to read"),
+            "error should mention file reading, got: {msg}"
+        );
+    }
+}

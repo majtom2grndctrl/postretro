@@ -1,0 +1,36 @@
+[package]
+name = "postretro"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "A retro-style FPS engine inspired by Doom/Quake"
+license.workspace = true
+
+[dependencies]
+# Windowing and GPU
+winit.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+
+# Math
+glam.workspace = true
+
+# BSP loading
+qbsp.workspace = true
+
+# Audio
+kira.workspace = true
+
+# Gamepad input
+gilrs.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+log.workspace = true
+env_logger.workspace = true
+
+# Workspace members
+postretro-level-format.workspace = true

@@ -1,27 +1,30 @@
 # Build Pipeline
 
 > **Read this when:** setting up the map authoring toolchain, modifying the asset pipeline, adding custom entities, or debugging map compilation issues.
-> **Key invariant:** engine never modifies ericw-tools output. We consume baked BSP data and supplement with authored metadata through TrenchBroom entities and texture naming conventions.
+> **Key invariant:** all maps are authored in TrenchBroom. Two compilation paths exist: BSP (ericw-tools) and PRL (prl-build). Engine loads either format.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md)
 
 ---
 
 ## Pipeline Overview
 
+All maps start as TrenchBroom `.map` files. Two compilation paths:
+
 ```
 TrenchBroom (.map)
     │
-    ▼
-ericw-tools (qbsp → vis → light)
+    ├──► ericw-tools (qbsp → vis → light)  ──► BSP2 file (.bsp)
     │
-    ▼
-BSP2 file (.bsp)
-    │
-    ▼
-Engine loads BSP + PNGs at runtime
+    └──► prl-build (postretro-level-compiler)──► PRL file (.prl)
+
+Engine loads either format + PNGs at runtime
 ```
 
-Author maps in TrenchBroom using the custom Postretro game configuration. Compile with ericw-tools. Engine loads the resulting BSP2 file, resolves entities, and loads PNG textures by name at runtime.
+**BSP path** (current, stable): ericw-tools compiles geometry, visibility, and lighting into a standard BSP2 file. Engine loads via qbsp crate.
+
+**PRL path** (in development): prl-build bakes geometry, cluster-based visibility, and future sections (lighting, nav mesh, audio) into a custom binary format. Engine loads via postretro-level-format crate. See `plans/prl-spec-draft.md` for the full format spec.
+
+Both paths share the same TrenchBroom authoring workflow, FGD entity definitions, and PNG texture pipeline.
 
 ---
 
@@ -144,10 +147,23 @@ Unknown prefix falls back to a default material with a warning at load time.
 
 ---
 
+## PRL Compilation
+
+The PRL compiler (`prl-build`) reads `.map` files directly via shambler and produces `.prl` binary level files. It replaces ericw-tools' three-step pipeline with a single tool.
+
+Key differences from the BSP path:
+- **Cluster-based visibility** instead of per-leaf BSP PVS. BSP tree is used internally during compilation but not stored in the output.
+- **Engine-native coordinates** (Y-up). No runtime coordinate transform.
+- **Section-based binary format** with independent versioning. New data types (lighting, nav mesh, audio) are added as sections without breaking existing levels.
+- **Self-describing levels.** Everything the engine needs is in one `.prl` file — no secondary data files or string parsing at load time.
+
+Full spec: `plans/prl-spec-draft.md`. Implementation plan: `plans/ready/prl-phase-1-minimum-viable-compiler/`.
+
+---
+
 ## Non-Goals
 
 - Extending or forking ericw-tools
-- Runtime BSP compilation
+- Runtime level compilation
 - WAD file support
 - Runtime lightmap baking
-- Custom BSP compiler

@@ -16,7 +16,10 @@ Load `context/lib/index.md` — it routes to the right docs for your task.
 ## Build and run
 
 ```bash
-cargo run              # debug build
-cargo run --release    # optimized build
-RUST_LOG=info cargo run  # with logging
+cargo run -p postretro                        # engine (debug)
+cargo run -p postretro -- assets/maps/test.bsp  # engine with a BSP map
+cargo run -p postretro -- assets/maps/test.prl  # engine with a PRL map
+cargo run -p postretro-level-compiler -- input.map -o output.prl  # compile a level (binary: prl-build)
+cargo run --release -p postretro              # optimized engine build
+RUST_LOG=info cargo run -p postretro          # with logging
 ```

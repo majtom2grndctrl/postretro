@@ -11,6 +11,13 @@ pub mod spatial_grid;
 pub mod visibility;
 pub mod voxel_grid;
 
+#[cfg(test)]
+mod test_fixtures;
+#[cfg(test)]
+mod spatial_grid_test_fixtures;
+#[cfg(test)]
+mod visibility_test_fixtures;
+
 use crate::partition::{Aabb, Cluster};
 use crate::voxel_grid::VoxelGrid;
 

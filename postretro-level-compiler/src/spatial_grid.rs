@@ -950,23 +950,7 @@ mod tests {
     use super::*;
     use glam::Vec3;
 
-    fn make_face(vertices: Vec<Vec3>) -> Face {
-        let normal = Vec3::Z;
-        Face {
-            vertices,
-            normal,
-            distance: 0.0,
-            texture: "test".to_string(),
-        }
-    }
-
-    fn make_triangle(center: Vec3) -> Face {
-        make_face(vec![
-            center + Vec3::new(-1.0, -1.0, 0.0),
-            center + Vec3::new(1.0, -1.0, 0.0),
-            center + Vec3::new(0.0, 1.0, 0.0),
-        ])
-    }
+    use crate::spatial_grid_test_fixtures::{make_box_for_centroid_test, make_triangle};
 
     #[test]
     fn single_face_assigned_to_one_cell() {
@@ -1187,114 +1171,42 @@ mod tests {
         // different walls and objects should end up in spatially correct cells.
         let mut faces = Vec::new();
 
-        // Helper to create the 6 faces of a box brush
-        let make_box = |min: Vec3, max: Vec3| -> Vec<Face> {
-            vec![
-                Face {
-                    vertices: vec![
-                        Vec3::new(min.x, min.y, min.z),
-                        Vec3::new(min.x, max.y, min.z),
-                        Vec3::new(min.x, max.y, max.z),
-                        Vec3::new(min.x, min.y, max.z),
-                    ],
-                    normal: Vec3::NEG_X,
-                    distance: -min.x,
-                    texture: "test".to_string(),
-                },
-                Face {
-                    vertices: vec![
-                        Vec3::new(max.x, min.y, min.z),
-                        Vec3::new(max.x, min.y, max.z),
-                        Vec3::new(max.x, max.y, max.z),
-                        Vec3::new(max.x, max.y, min.z),
-                    ],
-                    normal: Vec3::X,
-                    distance: max.x,
-                    texture: "test".to_string(),
-                },
-                Face {
-                    vertices: vec![
-                        Vec3::new(min.x, min.y, min.z),
-                        Vec3::new(min.x, min.y, max.z),
-                        Vec3::new(max.x, min.y, max.z),
-                        Vec3::new(max.x, min.y, min.z),
-                    ],
-                    normal: Vec3::NEG_Y,
-                    distance: -min.y,
-                    texture: "test".to_string(),
-                },
-                Face {
-                    vertices: vec![
-                        Vec3::new(min.x, max.y, min.z),
-                        Vec3::new(max.x, max.y, min.z),
-                        Vec3::new(max.x, max.y, max.z),
-                        Vec3::new(min.x, max.y, max.z),
-                    ],
-                    normal: Vec3::Y,
-                    distance: max.y,
-                    texture: "test".to_string(),
-                },
-                Face {
-                    vertices: vec![
-                        Vec3::new(min.x, min.y, min.z),
-                        Vec3::new(max.x, min.y, min.z),
-                        Vec3::new(max.x, max.y, min.z),
-                        Vec3::new(min.x, max.y, min.z),
-                    ],
-                    normal: Vec3::NEG_Z,
-                    distance: -min.z,
-                    texture: "test".to_string(),
-                },
-                Face {
-                    vertices: vec![
-                        Vec3::new(min.x, min.y, max.z),
-                        Vec3::new(max.x, min.y, max.z),
-                        Vec3::new(max.x, max.y, max.z),
-                        Vec3::new(min.x, max.y, max.z),
-                    ],
-                    normal: Vec3::Z,
-                    distance: max.z,
-                    texture: "test".to_string(),
-                },
-            ]
-        };
-
         // Room enclosure (walls, floor, ceiling)
-        faces.extend(make_box(
+        faces.extend(make_box_for_centroid_test(
             Vec3::new(-16.0, -16.0, -16.0),
             Vec3::new(0.0, 528.0, 144.0),
         )); // -X wall
-        faces.extend(make_box(
+        faces.extend(make_box_for_centroid_test(
             Vec3::new(528.0, -16.0, -16.0),
             Vec3::new(544.0, 528.0, 144.0),
         )); // +X wall
-        faces.extend(make_box(
+        faces.extend(make_box_for_centroid_test(
             Vec3::new(0.0, -16.0, -16.0),
             Vec3::new(528.0, 0.0, 144.0),
         )); // -Y wall
-        faces.extend(make_box(
+        faces.extend(make_box_for_centroid_test(
             Vec3::new(0.0, 528.0, -16.0),
             Vec3::new(528.0, 544.0, 144.0),
         )); // +Y wall
-        faces.extend(make_box(
+        faces.extend(make_box_for_centroid_test(
             Vec3::new(0.0, 0.0, -16.0),
             Vec3::new(528.0, 528.0, 0.0),
         )); // floor
-        faces.extend(make_box(
+        faces.extend(make_box_for_centroid_test(
             Vec3::new(0.0, 0.0, 128.0),
             Vec3::new(528.0, 528.0, 144.0),
         )); // ceiling
 
         // Interior objects spread across the room
-        faces.extend(make_box(
+        faces.extend(make_box_for_centroid_test(
             Vec3::new(32.0, 32.0, 0.0),
             Vec3::new(96.0, 96.0, 64.0),
         )); // cube near origin
-        faces.extend(make_box(
+        faces.extend(make_box_for_centroid_test(
             Vec3::new(400.0, 400.0, 0.0),
             Vec3::new(496.0, 496.0, 64.0),
         )); // cube far corner
-        faces.extend(make_box(
+        faces.extend(make_box_for_centroid_test(
             Vec3::new(200.0, 200.0, 0.0),
             Vec3::new(328.0, 328.0, 96.0),
         )); // cube in center
@@ -1346,101 +1258,7 @@ mod tests {
 
     // -- Voxel-aware classification tests --
 
-    use crate::map_data::{BrushPlane, BrushVolume};
-
-    fn box_brush(min: Vec3, max: Vec3) -> BrushVolume {
-        BrushVolume {
-            planes: vec![
-                BrushPlane { normal: Vec3::X, distance: max.x },
-                BrushPlane { normal: Vec3::NEG_X, distance: -min.x },
-                BrushPlane { normal: Vec3::Y, distance: max.y },
-                BrushPlane { normal: Vec3::NEG_Y, distance: -min.y },
-                BrushPlane { normal: Vec3::Z, distance: max.z },
-                BrushPlane { normal: Vec3::NEG_Z, distance: -min.z },
-            ],
-        }
-    }
-
-    fn make_box_faces(min: Vec3, max: Vec3) -> Vec<Face> {
-        let texture = "test".to_string();
-        vec![
-            Face {
-                vertices: vec![
-                    Vec3::new(min.x, min.y, min.z),
-                    Vec3::new(min.x, max.y, min.z),
-                    Vec3::new(min.x, max.y, max.z),
-                    Vec3::new(min.x, min.y, max.z),
-                ],
-                normal: Vec3::NEG_X, distance: -min.x, texture: texture.clone(),
-            },
-            Face {
-                vertices: vec![
-                    Vec3::new(max.x, min.y, min.z),
-                    Vec3::new(max.x, min.y, max.z),
-                    Vec3::new(max.x, max.y, max.z),
-                    Vec3::new(max.x, max.y, min.z),
-                ],
-                normal: Vec3::X, distance: max.x, texture: texture.clone(),
-            },
-            Face {
-                vertices: vec![
-                    Vec3::new(min.x, min.y, min.z),
-                    Vec3::new(min.x, min.y, max.z),
-                    Vec3::new(max.x, min.y, max.z),
-                    Vec3::new(max.x, min.y, min.z),
-                ],
-                normal: Vec3::NEG_Y, distance: -min.y, texture: texture.clone(),
-            },
-            Face {
-                vertices: vec![
-                    Vec3::new(min.x, max.y, min.z),
-                    Vec3::new(max.x, max.y, min.z),
-                    Vec3::new(max.x, max.y, max.z),
-                    Vec3::new(min.x, max.y, max.z),
-                ],
-                normal: Vec3::Y, distance: max.y, texture: texture.clone(),
-            },
-            Face {
-                vertices: vec![
-                    Vec3::new(min.x, min.y, min.z),
-                    Vec3::new(max.x, min.y, min.z),
-                    Vec3::new(max.x, max.y, min.z),
-                    Vec3::new(min.x, max.y, min.z),
-                ],
-                normal: Vec3::NEG_Z, distance: -min.z, texture: texture.clone(),
-            },
-            Face {
-                vertices: vec![
-                    Vec3::new(min.x, min.y, max.z),
-                    Vec3::new(max.x, min.y, max.z),
-                    Vec3::new(max.x, max.y, max.z),
-                    Vec3::new(min.x, max.y, max.z),
-                ],
-                normal: Vec3::Z, distance: max.z, texture: texture.clone(),
-            },
-        ]
-    }
-
-    /// Build a VoxelGrid from faces and brush volumes for test use.
-    fn build_test_voxel_grid(faces: &[Face], brush_volumes: &[BrushVolume]) -> VoxelGrid {
-        let mut world_bounds = Aabb::empty();
-        for face in faces {
-            for &v in &face.vertices {
-                world_bounds.expand_point(v);
-            }
-        }
-        if !world_bounds.is_valid() {
-            world_bounds = Aabb { min: Vec3::ZERO, max: Vec3::splat(1.0) };
-        }
-        let pad = Vec3::splat(crate::voxel_grid::DEFAULT_VOXEL_SIZE);
-        world_bounds.min -= pad;
-        world_bounds.max += pad;
-        VoxelGrid::from_brushes(
-            brush_volumes,
-            &world_bounds,
-            crate::voxel_grid::DEFAULT_VOXEL_SIZE,
-        )
-    }
+    use crate::test_fixtures::{box_brush, build_voxel_grid_from_faces, make_box_faces};
 
     /// Solid cells should be excluded from the grid output.
     #[test]
@@ -1449,7 +1267,7 @@ mod tests {
         // No air space — all cells should be solid or at least partially solid.
         let brush = box_brush(Vec3::ZERO, Vec3::new(256.0, 256.0, 128.0));
         let faces = make_box_faces(Vec3::ZERO, Vec3::new(256.0, 256.0, 128.0));
-        let vg = build_test_voxel_grid(&faces, &[brush]);
+        let vg = build_voxel_grid_from_faces(&faces, &[brush]);
 
         let result = assign_to_grid(faces, Some(&vg));
 
@@ -1501,7 +1319,7 @@ mod tests {
         add_brush(Vec3::new(0.0, 0.0, -wt), Vec3::new(256.0, 256.0, 0.0));               // floor
         add_brush(Vec3::new(0.0, 0.0, 128.0), Vec3::new(256.0, 256.0, 128.0 + wt));     // ceiling
 
-        let vg = build_test_voxel_grid(&faces, &volumes);
+        let vg = build_voxel_grid_from_faces(&faces, &volumes);
         let result = assign_to_grid(faces, Some(&vg));
 
         // All remaining clusters should have faces (air cells were merged in)
@@ -1563,7 +1381,7 @@ mod tests {
         add_brush(Vec3::new(0.0, 0.0, -wt), Vec3::new(256.0, 256.0, 0.0));
         add_brush(Vec3::new(0.0, 0.0, 128.0), Vec3::new(256.0, 256.0, 128.0 + wt));
 
-        let vg = build_test_voxel_grid(&faces, &volumes);
+        let vg = build_voxel_grid_from_faces(&faces, &volumes);
         let result = assign_to_grid(faces, Some(&vg));
 
         let total = result.cell_count;

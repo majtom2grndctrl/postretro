@@ -33,7 +33,19 @@ fn main() -> anyhow::Result<()> {
     log::info!("[Compiler] Parsing complete.");
 
     // Build voxel grid from brush volumes (shared between spatial grid and PVS)
-    let voxel_grid = build_voxel_grid(&map_data.world_faces, &map_data.brush_volumes);
+    let mut voxel_grid = build_voxel_grid(&map_data.world_faces, &map_data.brush_volumes);
+
+    // Seal exterior void: flood-fill from player spawn to find interior air,
+    // then mark all unreached empty voxels as solid so rays can't travel
+    // through the void outside the map.
+    if let Some(seed) = find_player_start_origin(&map_data.entities) {
+        voxel_grid.seal_exterior(seed);
+    } else {
+        log::warn!(
+            "[Compiler] No info_player_start with origin found; \
+             skipping exterior void seal"
+        );
+    }
 
     let grid_result =
         spatial_grid::assign_to_grid(map_data.world_faces, Some(&voxel_grid));
@@ -120,6 +132,17 @@ fn grid_cells_to_clusters(cells: &[spatial_grid::GridCell]) -> Vec<Cluster> {
             face_indices: cell.face_indices.clone(),
         })
         .collect()
+}
+
+/// Find the `info_player_start` entity origin for exterior void sealing.
+///
+/// Entity origins are in Quake coordinates (Z-up), which matches the voxel
+/// grid's coordinate space. No transform needed.
+fn find_player_start_origin(entities: &[crate::map_data::EntityInfo]) -> Option<Vec3> {
+    entities
+        .iter()
+        .find(|e| e.classname == "info_player_start")
+        .and_then(|e| e.origin)
 }
 
 struct Args {

@@ -1,13 +1,15 @@
 // 3D voxel bitmap for solid/empty classification and ray marching.
 // See: context/plans/ready/voxel-pvs-rework/plan.md
 
+use std::collections::VecDeque;
+
 use glam::Vec3;
 
 use crate::map_data::BrushVolume;
 use crate::partition::Aabb;
 
 /// Maximum voxels per axis. Grids exceeding this auto-coarsen.
-const MAX_VOXELS_PER_AXIS: usize = 512;
+const MAX_VOXELS_PER_AXIS: usize = 1024;
 
 /// Default voxel size in world units.
 pub const DEFAULT_VOXEL_SIZE: f32 = 4.0;
@@ -148,6 +150,131 @@ impl VoxelGrid {
         }
         let idx = x + y * self.resolution[0] + z * self.resolution[0] * self.resolution[1];
         (self.bits[idx / 8] & (1 << (idx % 8))) != 0
+    }
+
+    /// Flood-fill from a known interior point, then mark all unreached empty
+    /// voxels as solid. This seals exterior void so rays cannot travel around
+    /// the outside of the map.
+    ///
+    /// `interior_seed` is a world-space point guaranteed to be in playable air
+    /// (typically `info_player_start` origin). If it falls inside a solid voxel,
+    /// the grid is left unchanged and a warning is logged.
+    pub fn seal_exterior(&mut self, interior_seed: Vec3) {
+        let offset = interior_seed - self.bounds.min;
+        let sx = (offset.x / self.voxel_size).floor() as isize;
+        let sy = (offset.y / self.voxel_size).floor() as isize;
+        let sz = (offset.z / self.voxel_size).floor() as isize;
+
+        if sx < 0
+            || sy < 0
+            || sz < 0
+            || sx >= self.resolution[0] as isize
+            || sy >= self.resolution[1] as isize
+            || sz >= self.resolution[2] as isize
+        {
+            log::warn!(
+                "[VoxelGrid] Seal seed point {:?} is outside grid bounds, skipping exterior seal",
+                interior_seed,
+            );
+            return;
+        }
+
+        let (sx, sy, sz) = (sx as usize, sy as usize, sz as usize);
+
+        if self.is_solid(sx, sy, sz) {
+            log::warn!(
+                "[VoxelGrid] Seal seed point {:?} (voxel [{}, {}, {}]) is inside solid, \
+                 skipping exterior seal",
+                interior_seed,
+                sx,
+                sy,
+                sz,
+            );
+            return;
+        }
+
+        let [rx, ry, rz] = self.resolution;
+        let total_voxels = rx * ry * rz;
+        let visited_bytes = total_voxels.div_ceil(8);
+        let mut visited = vec![0u8; visited_bytes];
+
+        // BFS flood fill from the seed through 6-connected empty neighbors
+        let mut queue = VecDeque::new();
+        let seed_idx = sx + sy * rx + sz * rx * ry;
+        visited[seed_idx / 8] |= 1 << (seed_idx % 8);
+        queue.push_back((sx, sy, sz));
+
+        while let Some((x, y, z)) = queue.pop_front() {
+            let neighbors: [(isize, isize, isize); 6] = [
+                (1, 0, 0),
+                (-1, 0, 0),
+                (0, 1, 0),
+                (0, -1, 0),
+                (0, 0, 1),
+                (0, 0, -1),
+            ];
+
+            for (dx, dy, dz) in neighbors {
+                let nx = x as isize + dx;
+                let ny = y as isize + dy;
+                let nz = z as isize + dz;
+
+                if nx < 0
+                    || ny < 0
+                    || nz < 0
+                    || nx >= rx as isize
+                    || ny >= ry as isize
+                    || nz >= rz as isize
+                {
+                    continue;
+                }
+
+                let (nx, ny, nz) = (nx as usize, ny as usize, nz as usize);
+                let idx = nx + ny * rx + nz * rx * ry;
+
+                // Skip already-visited
+                if (visited[idx / 8] & (1 << (idx % 8))) != 0 {
+                    continue;
+                }
+
+                // Skip solid voxels
+                if (self.bits[idx / 8] & (1 << (idx % 8))) != 0 {
+                    continue;
+                }
+
+                visited[idx / 8] |= 1 << (idx % 8);
+                queue.push_back((nx, ny, nz));
+            }
+        }
+
+        // Mark unreached empty voxels as solid
+        let empty_before = total_voxels - count_set_bits(&self.bits, total_voxels);
+        let mut sealed_count = 0usize;
+
+        for i in 0..total_voxels {
+            let byte = i / 8;
+            let bit = 1u8 << (i % 8);
+            let is_solid = (self.bits[byte] & bit) != 0;
+            let is_visited = (visited[byte] & bit) != 0;
+
+            if !is_solid && !is_visited {
+                self.bits[byte] |= bit;
+                sealed_count += 1;
+            }
+        }
+
+        let pct = if empty_before > 0 {
+            sealed_count as f64 / empty_before as f64 * 100.0
+        } else {
+            0.0
+        };
+
+        log::info!(
+            "[VoxelGrid] Sealed {} exterior void voxels ({:.1}% of {} originally empty)",
+            sealed_count,
+            pct,
+            empty_before,
+        );
     }
 
     /// Query whether a world-space point is in solid space.
@@ -385,12 +512,12 @@ mod tests {
 
     #[test]
     fn auto_coarsen_produces_valid_grid_for_large_world() {
-        let brush = box_brush(Vec3::new(1000.0, 1000.0, 1000.0), Vec3::new(1100.0, 1100.0, 1100.0));
+        let brush = box_brush(Vec3::new(2000.0, 2000.0, 2000.0), Vec3::new(2100.0, 2100.0, 2100.0));
         let bounds = Aabb {
             min: Vec3::ZERO,
-            max: Vec3::splat(4096.0),
+            max: Vec3::splat(8192.0),
         };
-        // 4096 / 4.0 = 1024 voxels per axis, which exceeds MAX_VOXELS_PER_AXIS (512).
+        // 8192 / 4.0 = 2048 voxels per axis, which exceeds MAX_VOXELS_PER_AXIS (1024).
         // The grid must auto-coarsen to fit.
         let grid = VoxelGrid::from_brushes(&[brush], &bounds, 4.0);
 
@@ -409,7 +536,7 @@ mod tests {
         );
 
         assert!(
-            grid.is_point_solid(Vec3::splat(1050.0)),
+            grid.is_point_solid(Vec3::splat(2050.0)),
             "brush center should still be classified as solid after coarsening"
         );
 
@@ -442,5 +569,123 @@ mod tests {
 
         // Grid index out of range
         assert!(!grid.is_solid(999, 999, 999), "huge index should return false");
+    }
+
+    /// Build 6 wall brushes forming a hollow room with `wall_thickness` walls.
+    /// Room interior spans from `wall_thickness` to `room_size - wall_thickness`
+    /// on each axis.
+    fn hollow_room_brushes(room_size: f32, wall_thickness: f32) -> Vec<BrushVolume> {
+        let t = wall_thickness;
+        let s = room_size;
+        vec![
+            // Floor (Y-)
+            box_brush(Vec3::ZERO, Vec3::new(s, t, s)),
+            // Ceiling (Y+)
+            box_brush(Vec3::new(0.0, s - t, 0.0), Vec3::new(s, s, s)),
+            // Wall X-
+            box_brush(Vec3::ZERO, Vec3::new(t, s, s)),
+            // Wall X+
+            box_brush(Vec3::new(s - t, 0.0, 0.0), Vec3::new(s, s, s)),
+            // Wall Z-
+            box_brush(Vec3::ZERO, Vec3::new(s, s, t)),
+            // Wall Z+
+            box_brush(Vec3::new(0.0, 0.0, s - t), Vec3::new(s, s, s)),
+        ]
+    }
+
+    #[test]
+    fn seal_exterior_marks_void_as_solid() {
+        let room_size = 64.0;
+        let wall_thickness = 8.0;
+        let brushes = hollow_room_brushes(room_size, wall_thickness);
+        // Grid extends beyond the room to create exterior void
+        let bounds = Aabb {
+            min: Vec3::splat(-32.0),
+            max: Vec3::splat(96.0),
+        };
+        let mut grid = VoxelGrid::from_brushes(&brushes, &bounds, 4.0);
+
+        // Seed inside the room (center)
+        let seed = Vec3::splat(32.0);
+        assert!(!grid.is_point_solid(seed), "seed should be in air before seal");
+
+        grid.seal_exterior(seed);
+
+        // Interior air remains empty
+        assert!(
+            !grid.is_point_solid(seed),
+            "room center should remain empty after seal"
+        );
+
+        // Exterior void (outside the room walls, inside the grid) is now solid
+        let exterior = Vec3::splat(-16.0);
+        assert!(
+            grid.is_point_solid(exterior),
+            "exterior void should be solid after seal"
+        );
+
+        // Wall brushes remain solid
+        assert!(
+            grid.is_point_solid(Vec3::new(2.0, 32.0, 32.0)),
+            "wall brush should remain solid"
+        );
+    }
+
+    #[test]
+    fn seal_exterior_skips_when_seed_in_solid() {
+        let brush = box_brush(Vec3::ZERO, Vec3::splat(32.0));
+        let bounds = Aabb {
+            min: Vec3::ZERO,
+            max: Vec3::splat(32.0),
+        };
+        let mut grid = VoxelGrid::from_brushes(&[brush], &bounds, 4.0);
+
+        // Snapshot the grid state before sealing
+        let bits_before = grid.bits.clone();
+
+        // Seed inside the solid brush
+        grid.seal_exterior(Vec3::splat(16.0));
+
+        // Grid should be unchanged
+        assert_eq!(grid.bits, bits_before, "grid should be unchanged when seed is in solid");
+    }
+
+    #[test]
+    fn seal_exterior_preserves_interior_air() {
+        let room_size = 64.0;
+        let wall_thickness = 8.0;
+        let brushes = hollow_room_brushes(room_size, wall_thickness);
+        let bounds = Aabb {
+            min: Vec3::splat(-32.0),
+            max: Vec3::splat(96.0),
+        };
+        let mut grid = VoxelGrid::from_brushes(&brushes, &bounds, 4.0);
+
+        // Collect interior air voxels before sealing
+        let interior_min = (wall_thickness + 2.0) as usize; // safely inside walls
+        let interior_max = (room_size - wall_thickness - 2.0) as usize;
+        let mut interior_points = Vec::new();
+        // Sample several points well inside the room
+        for coord in (interior_min..interior_max).step_by(8) {
+            let p = Vec3::new(coord as f32, coord as f32, coord as f32);
+            if !grid.is_point_solid(p) {
+                interior_points.push(p);
+            }
+        }
+        assert!(
+            !interior_points.is_empty(),
+            "should have some interior air points to test"
+        );
+
+        grid.seal_exterior(Vec3::splat(32.0));
+
+        // All previously-empty interior points should remain empty
+        for p in &interior_points {
+            assert!(
+                !grid.is_point_solid(*p),
+                "interior air at {:?} should remain empty after seal",
+                p,
+            );
+        }
     }
 }

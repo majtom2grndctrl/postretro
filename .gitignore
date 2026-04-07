@@ -16,6 +16,12 @@ target
 # Claude Code (local settings — project rules live in context/)
 .claude/settings.local.json
 
+# Compiled map assets (only *.map source files are tracked)
+*.bsp
+*.prl
+assets/maps/*
+!assets/maps/*.map
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

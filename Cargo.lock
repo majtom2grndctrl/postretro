@@ -1917,6 +1917,7 @@ dependencies = [
  "glam 0.30.10",
  "log",
  "postretro-level-format",
+ "rayon",
  "shambler",
  "thiserror 2.0.18",
 ]

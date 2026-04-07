@@ -1,25 +1,26 @@
 // Geometry section data types: vertex/index buffers, per-face metadata.
-// See: context/plans/ready/prl-phase-1-minimum-viable-compiler/
+// See: context/lib/build_pipeline.md §PRL
 
 use crate::FormatError;
 
 /// Per-face metadata referencing into the index buffer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FaceMeta {
-    /// Byte offset into the index buffer is not stored; this is the index
-    /// into the index array where this face's triangle indices begin.
+    /// Index into the index array where this face's triangle indices begin.
     pub index_offset: u32,
     /// Number of indices (always a multiple of 3).
     pub index_count: u32,
-    /// Which cluster this face belongs to.
+    /// Sequential empty-leaf index this face belongs to.
     pub cluster_index: u32,
 }
 
 /// Geometry section: vertex positions, triangle indices, and per-face metadata.
 ///
-/// Faces are ordered by cluster (all cluster-0 faces, then cluster-1, etc.)
-/// so that contiguous ranges in the face metadata array correspond to
-/// per-cluster draw calls.
+/// **Leaf ordering invariant:** faces are ordered contiguously by BSP leaf.
+/// All faces for leaf 0 come first, then all faces for leaf 1, etc. Only empty
+/// leaves contribute faces; solid leaves are skipped. The `face_start` /
+/// `face_count` fields in `BspLeavesSection` index into this ordering, enabling
+/// per-leaf draw calls without an index lookup.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeometrySection {
     pub vertices: Vec<[f32; 3]>,

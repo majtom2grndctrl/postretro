@@ -3,6 +3,7 @@
 
 mod bsp;
 mod camera;
+mod portal_vis;
 mod prl;
 mod render;
 mod visibility;
@@ -204,7 +205,7 @@ impl ApplicationHandler for App {
                     .iter()
                     .map(|f| (f.index_offset, f.index_count))
                     .collect(),
-                face_cluster_indices: Some(prl::face_cluster_indices(world)),
+                face_cluster_indices: Some(prl::face_leaf_indices(world)),
             },
         });
 
@@ -362,10 +363,7 @@ impl ApplicationHandler for App {
                 };
 
                 let pos = self.camera.position;
-                let region_label = match self.level.as_ref() {
-                    Some(Level::Prl(_)) => "cluster",
-                    _ => "leaf",
-                };
+                let region_label = "leaf";
                 log::debug!(
                     "[Diagnostics] {region_label}:{} | faces: {}/{}/{} (total/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
                     stats.camera_leaf,

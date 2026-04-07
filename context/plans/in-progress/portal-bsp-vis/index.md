@@ -1,16 +1,14 @@
 # Portal-Based BSP Vis
 
-> **Status:** ready for implementation
+> **Status:** tasks 00–07 complete; task 08 ready for implementation
 > **Depends on:** PRL Phase 1 (complete). Compiler produces .prl files. Engine loads them.
 > **Related:** `context/lib/build_pipeline.md` · `context/lib/development_guide.md` · `context/lib/testing_guide.md`
-> **Pre-flight:** Archive the stale plan before orchestrating:
-> `git mv context/plans/ready/voxel-pvs-rework context/plans/done/voxel-pvs-rework`
 
 ---
 
 ## Goal
 
-Replace the voxel ray-cast PVS with portal-based BSP visibility. The compiler builds a proper BSP tree, extracts portal polygons at each splitting plane, and floods visibility through those portals to produce per-leaf PVS bitsets. The PRL format gains BSP tree and leaf sections so the engine can use O(log n) point-in-leaf lookup and leaf-native PVS culling. The voxel grid, spatial grid, and cluster abstraction are removed entirely.
+Replace the voxel ray-cast PVS with portal-based BSP visibility. The compiler builds a BSP tree, extracts portal polygons at splitting planes, and stores them in the PRL file. At runtime, the engine walks the portal graph with frustum clipping for per-frame visibility that naturally handles corners and narrow apertures. A precomputed flood-fill PVS mode is retained as a compiler option (`--pvs`). The PRL format gains BSP tree, leaf, and portal sections. The voxel grid, spatial grid, and cluster abstraction are removed entirely.
 
 ---
 
@@ -21,17 +19,18 @@ Replace the voxel ray-cast PVS with portal-based BSP visibility. The compiler bu
 - Coordinate transform in the compiler: Quake Z-up → engine Y-up at parse time
 - BSP compiler hardening: solid/empty leaf classification, correct empty-leaf topology
 - Portal generation: clip splitting-plane polygons against ancestor planes to produce portal geometry
-- Portal vis: per-empty-leaf PVS bitsets via portal flood-fill, parallelized with rayon
-- New PRL sections: BSP nodes, BSP leaves (with face ranges and PVS references), leaf PVS bitsets
+- Portal vis (precomputed): per-empty-leaf PVS bitsets via portal flood-fill, retained as `--pvs` compiler mode
+- New PRL sections: BSP nodes, BSP leaves, leaf PVS bitsets, portal geometry
 - Engine loader rewrite: BSP tree descent for point-in-leaf, leaf-based PVS culling
+- Runtime portal traversal: per-frame frustum-clipped portal walk as default visibility mode
 - Cleanup: remove voxel grid, spatial grid, cluster types (qbsp retained — `.bsp` loading still active)
 
 ### Out of scope
 
-- Portal geometry stored in .prl (portals are compile-time only in this plan)
-- Full antipenumbra/angular-set vis optimization (conservative flood-fill is sufficient for now)
+- Antipenumbra/angular-set precomputed vis (replaced by runtime portal traversal in Task 08)
 - Texture sections, lighting sections, or nav mesh sections
 - Incremental recompilation
+- Dynamic portal open/close at runtime (future work enabled by Task 08's architecture)
 
 ---
 
@@ -70,13 +69,14 @@ All tasks operate within the `postretro` workspace (three crates: `postretro`, `
 | 05 | New PRL sections | `task-05-prl-sections.md` | 04 |
 | 06 | Engine loader | `task-06-engine-loader.md` | 05 |
 | 07 | Cleanup | `task-07-cleanup.md` | 06 |
+| 08 | Runtime portal traversal | `task-08-runtime-portal-vis.md` | 07 |
 
 ---
 
 ## Execution Order
 
 ```
-T00 → T01 → T02 → T03 → T04 → T05 → T06 → T07
+T00 → T01 → T02 → T03 → T04 → T05 → T06 → T07 → T08
 ```
 
 Strictly sequential. Each task's output is the next task's input.
@@ -91,6 +91,7 @@ Strictly sequential. Each task's output is the next task's input.
 | 5 | 05 | PRL format additions. New sections in postretro-level-format. |
 | 6 | 06 | Engine loader rewrite. BSP descent, leaf PVS culling. |
 | 7 | 07 | Remove voxel/cluster code, drop qbsp, relax glam pin. |
+| 8 | 08 | Runtime portal traversal with frustum clipping. Default mode; PVS retained via `--pvs`. |
 
 ---
 
@@ -99,11 +100,12 @@ Strictly sequential. Each task's output is the next task's input.
 1. `cargo test -p postretro-level-compiler` — zero failures.
 2. `cargo test -p postretro-level-format` — zero failures.
 3. `cargo test` (workspace) — zero failures.
-4. `prl-build assets/maps/test.map -o assets/maps/test.prl` — compiles without error. Logs show leaf count, portal count, and per-leaf PVS stats.
-5. `cargo run -p postretro -- assets/maps/test.prl` — engine loads and renders the map. Camera navigates the level. PVS culling is active (fewer draw calls than total leaf count when inside the level).
-6. `cargo fmt --check && cargo clippy -- -D warnings` — clean.
-7. No references to `VoxelGrid`, `SpatialGrid`, or `Cluster` remain in the compiler.
-8. `qbsp` remains a dependency of `postretro` (`.bsp` loading path is retained).
+4. `prl-build assets/maps/test.map -o assets/maps/test.prl` (default mode) — compiles without error, produces .prl with Portals section (15). Logs show leaf count, portal count, and per-leaf visibility stats.
+5. `prl-build assets/maps/test.map --pvs -o assets/maps/test.prl` — produces .prl with LeafPvs section (14) instead of Portals section.
+6. `cargo run -p postretro -- assets/maps/test.prl` — engine loads and renders the map with runtime portal traversal. Camera navigates the level. Visibility culling is active (fewer draw calls than total leaf count when inside the level). Geometry around corners is culled.
+7. `cargo fmt --check && cargo clippy -- -D warnings` — clean.
+8. No references to `VoxelGrid`, `SpatialGrid`, or `Cluster` remain in the compiler.
+9. `qbsp` remains a dependency of `postretro` (`.bsp` loading path is retained).
 
 ---
 
@@ -114,4 +116,5 @@ Strictly sequential. Each task's output is the next task's input.
 | BSP tree in .prl | Engine point-in-leaf lookup; future collision, audio zone resolution |
 | Leaf PVS bitsets | Renderer visibility culling; future audio propagation |
 | Engine-native coordinates from parse.rs | All compiler stages; all future PRL sections |
-| Portal flood-fill vis | Future: upgrade to angular-set optimization without changing format |
+| Portal flood-fill vis (`--pvs`) | Fallback/comparison mode; retained for levels where compile-time PVS is preferred |
+| Runtime portal traversal (default) | Per-frame frustum-clipped portal walk; enables dynamic geometry in future |

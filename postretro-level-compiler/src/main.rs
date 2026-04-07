@@ -2,10 +2,12 @@
 // See: context/lib/build_pipeline.md §PRL
 
 pub mod geometry;
+pub mod geometry_utils;
 pub mod map_data;
 pub mod pack;
 pub mod parse;
 pub mod partition;
+pub mod portals;
 pub mod visibility;
 
 use std::path::PathBuf;
@@ -34,12 +36,37 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("[Compiler] Geometry extraction complete.");
 
-    let vis_result = visibility::build_passthrough_pvs(&result.tree);
-    visibility::log_stats(&vis_result);
+    let (vis_result, generated_portals) = visibility::build_portal_pvs(&result.tree);
+    let portal_count = generated_portals.len();
+    if portal_count == 0 {
+        log::warn!(
+            "[Compiler] Portal generation produced 0 portals. Vis will treat all leaves as mutually visible."
+        );
+    }
+    visibility::log_stats(&vis_result, portal_count);
 
     log::info!("[Compiler] Visibility computation complete.");
 
-    pack::pack_and_write(&args.output, &geometry_section, &vis_result.section)?;
+    if args.pvs {
+        log::info!("[Compiler] Writing precomputed PVS mode (--pvs).");
+        pack::pack_and_write_pvs(
+            &args.output,
+            &geometry_section,
+            &vis_result.nodes_section,
+            &vis_result.leaves_section,
+            &vis_result.leaf_pvs_section,
+        )?;
+    } else {
+        log::info!("[Compiler] Writing portal graph mode (default).");
+        let portals_section = pack::encode_portals(&generated_portals);
+        pack::pack_and_write_portals(
+            &args.output,
+            &geometry_section,
+            &vis_result.nodes_section,
+            &vis_result.leaves_section,
+            &portals_section,
+        )?;
+    }
 
     let elapsed = started.elapsed();
     log::info!("[Compiler] Done in {elapsed:.2?}.");
@@ -50,6 +77,8 @@ fn main() -> anyhow::Result<()> {
 struct Args {
     input: PathBuf,
     output: PathBuf,
+    /// When true, emit precomputed PVS (LeafPvs section) instead of portal graph.
+    pvs: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -62,6 +91,7 @@ where
 {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
+    let mut pvs = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -70,6 +100,9 @@ where
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("-o requires an output path"))?;
                 output = Some(PathBuf::from(path));
+            }
+            "--pvs" => {
+                pvs = true;
             }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
@@ -80,12 +113,13 @@ where
         }
     }
 
-    let input =
-        input.ok_or_else(|| anyhow::anyhow!("usage: prl-build <input.map> [-o <output.prl>]"))?;
+    let input = input.ok_or_else(|| {
+        anyhow::anyhow!("usage: prl-build <input.map> [-o <output.prl>] [--pvs]")
+    })?;
 
     let output = output.unwrap_or_else(|| input.with_extension("prl"));
 
-    Ok(Args { input, output })
+    Ok(Args { input, output, pvs })
 }
 
 #[cfg(test)]
@@ -98,6 +132,7 @@ mod tests {
         let parsed = parse_args_from(args.into_iter()).unwrap();
         assert_eq!(parsed.input, PathBuf::from("input.map"));
         assert_eq!(parsed.output, PathBuf::from("input.prl"));
+        assert!(!parsed.pvs);
     }
 
     #[test]
@@ -108,6 +143,26 @@ mod tests {
             "out.prl".to_string(),
         ];
         let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.output, PathBuf::from("out.prl"));
+    }
+
+    #[test]
+    fn parse_args_pvs_flag() {
+        let args = vec!["input.map".to_string(), "--pvs".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(parsed.pvs);
+    }
+
+    #[test]
+    fn parse_args_pvs_flag_with_output() {
+        let args = vec![
+            "input.map".to_string(),
+            "--pvs".to_string(),
+            "-o".to_string(),
+            "out.prl".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(parsed.pvs);
         assert_eq!(parsed.output, PathBuf::from("out.prl"));
     }
 

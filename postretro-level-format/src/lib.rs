@@ -1,7 +1,10 @@
 // PRL binary container format: header, section table, read/write API.
-// See: context/plans/ready/prl-phase-1-minimum-viable-compiler/
+// See: context/lib/build_pipeline.md §PRL
 
+pub mod bsp;
 pub mod geometry;
+pub mod leaf_pvs;
+pub mod portals;
 pub mod visibility;
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -46,9 +49,27 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 #[repr(u32)]
 pub enum SectionId {
     Geometry = 1,
+
+    /// Retired. Old .prl files may contain this section; the loader skips
+    /// unknown IDs gracefully. Replaced by BspLeaves + LeafPvs.
     ClusterVisibility = 2,
+
     // Reserved: Collision=3, LightInfluence=4, LightProbes=5,
     // NavMesh=6, Audio=7, Zones=8, Spawns=9, Textures=10
+    /// Retired. Was never shipped in a stable format version.
+    VisibilityConfidence = 11,
+
+    /// Flat array of BSP interior nodes (splitting planes + child references).
+    BspNodes = 12,
+
+    /// Flat array of BSP leaf records (face ranges, bounds, PVS references).
+    BspLeaves = 13,
+
+    /// Per-leaf RLE-compressed PVS bitsets (concatenated blob).
+    LeafPvs = 14,
+
+    /// Portal graph for runtime portal traversal.
+    Portals = 15,
 }
 
 impl SectionId {
@@ -56,6 +77,11 @@ impl SectionId {
         match value {
             1 => Some(Self::Geometry),
             2 => Some(Self::ClusterVisibility),
+            11 => Some(Self::VisibilityConfidence),
+            12 => Some(Self::BspNodes),
+            13 => Some(Self::BspLeaves),
+            14 => Some(Self::LeafPvs),
+            15 => Some(Self::Portals),
             _ => None,
         }
     }
@@ -270,7 +296,7 @@ mod tests {
                 data: vec![0xDE, 0xAD, 0xBE, 0xEF],
             },
             SectionBlob {
-                section_id: SectionId::ClusterVisibility as u32,
+                section_id: SectionId::LeafPvs as u32,
                 version: 1,
                 data: vec![0xCA, 0xFE],
             },
@@ -290,20 +316,17 @@ mod tests {
         assert_eq!(meta.header.section_count, 2);
         assert_eq!(meta.sections.len(), 2);
         assert_eq!(meta.sections[0].section_id, SectionId::Geometry as u32);
-        assert_eq!(
-            meta.sections[1].section_id,
-            SectionId::ClusterVisibility as u32
-        );
+        assert_eq!(meta.sections[1].section_id, SectionId::LeafPvs as u32);
 
         let geom = read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)
             .unwrap()
             .unwrap();
         assert_eq!(geom, vec![0xDE, 0xAD, 0xBE, 0xEF]);
 
-        let vis = read_section_data(&mut cursor, &meta, SectionId::ClusterVisibility as u32)
+        let pvs = read_section_data(&mut cursor, &meta, SectionId::LeafPvs as u32)
             .unwrap()
             .unwrap();
-        assert_eq!(vis, vec![0xCA, 0xFE]);
+        assert_eq!(pvs, vec![0xCA, 0xFE]);
     }
 
     #[test]
@@ -370,8 +393,7 @@ mod tests {
 
         let mut cursor = Cursor::new(&buf);
         let meta = read_container(&mut cursor).unwrap();
-        let result =
-            read_section_data(&mut cursor, &meta, SectionId::ClusterVisibility as u32).unwrap();
+        let result = read_section_data(&mut cursor, &meta, SectionId::LeafPvs as u32).unwrap();
         assert!(result.is_none());
     }
 

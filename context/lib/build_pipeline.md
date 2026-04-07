@@ -22,7 +22,7 @@ Engine loads either format + PNGs at runtime
 
 **BSP path** (current, stable): ericw-tools compiles geometry, visibility, and lighting into a standard BSP2 file. Engine loads via qbsp crate.
 
-**PRL path** (in development): prl-build builds a BSP tree, computes portal-based PVS, and packs geometry into a custom binary format. Future sections: lighting, nav mesh, audio. Engine loads via postretro-level-format crate.
+**PRL path** (in development): prl-build builds a BSP tree, generates portal geometry, and packs geometry into a custom binary format. Default mode stores portal geometry for runtime traversal; `--pvs` mode computes a precomputed PVS instead. Future sections: lighting, nav mesh, audio. Engine loads via postretro-level-format crate.
 
 Both paths share the same TrenchBroom authoring workflow, FGD entity definitions, and PNG texture pipeline.
 
@@ -159,17 +159,31 @@ parse .map → BSP compilation → portal generation → portal vis → geometry
 
 1. **Parse.** Shambler extracts brush volumes, faces, and entities. Coordinate transform (Quake Z-up → engine Y-up) applied at the parse boundary. All downstream stages receive engine-native coordinates.
 2. **BSP compilation.** Builds a BSP tree from world faces. Produces interior nodes (splitting planes) and leaves (convex regions). Leaves classified solid or empty via brush half-plane test. Solid leaves represent brush interiors. Empty leaves represent navigable space.
-3. **Portal generation.** For each BSP internal node, clips the splitting-plane polygon against ancestor splitting planes to produce the portal polygon bounding that node's partition. Each portal is a convex polygon connecting two adjacent empty leaves. Portals are compile-time only — not stored in `.prl`.
-4. **Portal vis.** Per empty leaf, floods through the portal graph. A leaf L' is potentially visible from L if any sequence of portals connects them. Output: per-leaf PVS bitsets, RLE-compressed. Computed in parallel (one task per leaf).
+3. **Portal generation.** For each BSP internal node, clips the splitting-plane polygon against ancestor splitting planes to produce the portal polygon bounding that node's partition. Each portal is a convex polygon connecting two adjacent empty leaves. In default mode, portals are stored in the `.prl` file (section 15) for runtime traversal. In `--pvs` mode, portals are used as intermediate data and discarded.
+4. **Portal vis** (`--pvs` mode only). Per empty leaf, floods through the portal graph. A leaf L' is potentially visible from L if any sequence of portals connects them. Output: per-leaf PVS bitsets, RLE-compressed. Computed in parallel (one task per leaf).
 5. **Geometry.** Fan-triangulates faces into vertex/index buffers. Faces grouped by leaf index for efficient per-leaf draw calls.
-6. **Pack.** Writes BSP tree nodes, BSP leaves (face ranges, bounds, PVS references), leaf PVS bitsets, and geometry to the `.prl` binary format.
+6. **Pack.** Writes BSP tree nodes, BSP leaves (face ranges, bounds), and geometry to the `.prl` binary format. Default mode also writes the Portals section (15). `--pvs` mode writes the LeafPvs section (14) instead.
+
+### PRL section IDs
+
+| Section | ID | When present |
+|---------|-----|-------------|
+| Geometry | 1 | Always |
+| BspNodes | 12 | Always |
+| BspLeaves | 13 | Always |
+| LeafPvs | 14 | `--pvs` mode only |
+| Portals | 15 | Default mode |
+
+### Runtime visibility
+
+When a `.prl` file contains a Portals section (15), the engine walks the portal graph per frame with frustum clipping. This is the preferred path: visibility naturally handles corners and narrow apertures without precomputation. When only a LeafPvs section (14) is present, the engine falls back to precomputed PVS culling.
 
 ### Key differences from the former voxel approach
 
 - No voxel grid. Solid/empty classification uses brush half-plane geometry directly.
-- Leaf-based PVS replaces cluster-based PVS. BSP leaves are the visibility units.
+- Leaf-based visibility replaces cluster-based PVS. BSP leaves are the visibility units.
 - BSP tree stored in `.prl` — enables O(log n) point-in-leaf at runtime.
-- Portals are compile-time intermediate data; not stored in `.prl`.
+- Portal geometry stored in `.prl` by default — enables per-frame frustum-clipped portal traversal.
 
 ---
 

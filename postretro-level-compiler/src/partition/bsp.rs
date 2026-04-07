@@ -5,6 +5,7 @@ use anyhow::Result;
 use glam::Vec3;
 
 use super::types::*;
+use crate::geometry_utils::split_polygon;
 use crate::map_data::{BrushVolume, Face};
 
 const PLANE_EPSILON: f32 = 0.1;
@@ -77,68 +78,26 @@ fn classify_face(face: &Face, plane: &Plane) -> FaceSide {
 /// Split a face polygon by a plane using Sutherland-Hodgman clipping.
 /// Returns (front_fragment, back_fragment). Either may be None if the
 /// split produces a degenerate polygon (< 3 vertices).
+///
+/// Delegates to `split_polygon` for the vertex math, then re-attaches
+/// Face metadata (normal, distance, texture) to each fragment.
 fn split_face(face: &Face, plane: &Plane) -> (Option<Face>, Option<Face>) {
-    let mut front_verts = Vec::new();
-    let mut back_verts = Vec::new();
+    let (front_verts, back_verts) =
+        split_polygon(&face.vertices, plane.normal, plane.distance, PLANE_EPSILON);
 
-    let n = face.vertices.len();
-    for i in 0..n {
-        let current = face.vertices[i];
-        let next = face.vertices[(i + 1) % n];
-        let current_side = classify_point(current, plane);
-        let next_side = classify_point(next, plane);
+    let front = front_verts.map(|verts| Face {
+        vertices: verts,
+        normal: face.normal,
+        distance: face.distance,
+        texture: face.texture.clone(),
+    });
 
-        match current_side {
-            FaceSide::Front => {
-                front_verts.push(current);
-            }
-            FaceSide::Back => {
-                back_verts.push(current);
-            }
-            FaceSide::On => {
-                front_verts.push(current);
-                back_verts.push(current);
-            }
-            FaceSide::Spanning => unreachable!(),
-        }
-
-        // Edge crosses the plane — compute intersection
-        let needs_split = matches!(
-            (current_side, next_side),
-            (FaceSide::Front, FaceSide::Back) | (FaceSide::Back, FaceSide::Front)
-        );
-
-        if needs_split {
-            let d_current = current.dot(plane.normal) - plane.distance;
-            let d_next = next.dot(plane.normal) - plane.distance;
-            let t = d_current / (d_current - d_next);
-            let intersection = current + t * (next - current);
-            front_verts.push(intersection);
-            back_verts.push(intersection);
-        }
-    }
-
-    let front = if front_verts.len() >= 3 {
-        Some(Face {
-            vertices: front_verts,
-            normal: face.normal,
-            distance: face.distance,
-            texture: face.texture.clone(),
-        })
-    } else {
-        None
-    };
-
-    let back = if back_verts.len() >= 3 {
-        Some(Face {
-            vertices: back_verts,
-            normal: face.normal,
-            distance: face.distance,
-            texture: face.texture.clone(),
-        })
-    } else {
-        None
-    };
+    let back = back_verts.map(|verts| Face {
+        vertices: verts,
+        normal: face.normal,
+        distance: face.distance,
+        texture: face.texture.clone(),
+    });
 
     (front, back)
 }

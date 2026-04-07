@@ -1,0 +1,722 @@
+// Portal generation: extract portal polygons between adjacent BSP leaves.
+// See: context/plans/in-progress/portal-bsp-vis/task-03-portal-generation.md
+//
+// Portals are compile-time only — used by the vis stage, then discarded.
+// Algorithm: recursive portal distribution (ericw-tools approach).
+
+use glam::Vec3;
+
+use crate::geometry_utils::{clip_polygon_to_front, split_polygon};
+use crate::partition::{BspChild, BspTree};
+
+/// Tighter epsilon for portal clipping. Portals are clipped against many
+/// ancestor planes in sequence; the generous PLANE_EPSILON (0.1) used for
+/// BSP face classification would accumulate too much error. Consistent with
+/// ericw-tools' ON_EPSILON for winding operations.
+const PORTAL_EPSILON: f32 = 0.01;
+
+/// Half-extent of the initial portal winding. Large enough to cover any
+/// reasonable level geometry.
+const WINDING_HALF_EXTENT: f32 = 16384.0;
+
+/// Minimum polygon area to keep a portal winding. Slivers below this
+/// threshold are discarded to prevent accumulation of degenerate geometry
+/// from numerical precision loss.
+const MIN_WINDING_AREA: f32 = 0.1;
+
+/// A portal connecting two adjacent BSP leaves through a splitting plane.
+pub struct Portal {
+    /// Convex polygon in engine coordinates.
+    pub polygon: Vec<Vec3>,
+    /// Index into `BspTree::leaves` for the front side.
+    pub front_leaf: usize,
+    /// Index into `BspTree::leaves` for the back side.
+    pub back_leaf: usize,
+}
+
+/// Generate portals for all adjacent empty leaf pairs in the BSP tree.
+///
+/// Walks the tree recursively, creating a portal winding at each internal
+/// node by clipping a large initial polygon against ancestor splitting planes,
+/// then distributing the surviving winding through both subtrees to find
+/// actual leaf pairs.
+pub fn generate_portals(tree: &BspTree) -> Vec<Portal> {
+    if tree.nodes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut portals = Vec::new();
+    let ancestor_planes: Vec<(Vec3, f32)> = Vec::new();
+
+    generate_recursive(tree, 0, &ancestor_planes, &mut portals);
+
+    portals
+}
+
+/// Plane representation for ancestor stack entries: (normal, distance).
+type PlaneEntry = (Vec3, f32);
+
+/// Phase 1: walk the BSP tree, generate portal windings at each node,
+/// then distribute them (Phase 2) to find leaf pairs.
+fn generate_recursive(
+    tree: &BspTree,
+    node_idx: usize,
+    ancestor_planes: &[PlaneEntry],
+    portals: &mut Vec<Portal>,
+) {
+    let node = &tree.nodes[node_idx];
+    let plane_normal = node.plane_normal;
+    let plane_distance = node.plane_distance;
+
+    // Phase 1: create initial winding on this node's splitting plane,
+    // clipped against all ancestor planes.
+    if let Some(winding) = make_node_portal(plane_normal, plane_distance, ancestor_planes) {
+        // Phase 2: distribute the winding through both subtrees.
+        distribute_portal(tree, &winding, &node.front, &node.back, portals);
+    }
+
+    // Recurse into front child (plane as-is: normal points to front).
+    let mut front_ancestors = ancestor_planes.to_vec();
+    front_ancestors.push((plane_normal, plane_distance));
+
+    if let BspChild::Node(child_idx) = node.front {
+        generate_recursive(tree, child_idx, &front_ancestors, portals);
+    }
+
+    // Recurse into back child (negated plane: normal reversed, distance negated).
+    let mut back_ancestors = ancestor_planes.to_vec();
+    back_ancestors.push((-plane_normal, -plane_distance));
+
+    if let BspChild::Node(child_idx) = node.back {
+        generate_recursive(tree, child_idx, &back_ancestors, portals);
+    }
+}
+
+/// Create a portal winding for a node's splitting plane, clipped against
+/// all ancestor splitting planes.
+///
+/// Returns `None` if the winding is clipped away entirely or becomes degenerate.
+fn make_node_portal(
+    plane_normal: Vec3,
+    plane_distance: f32,
+    ancestor_planes: &[PlaneEntry],
+) -> Option<Vec<Vec3>> {
+    // Build an initial large quad on the splitting plane.
+    let mut winding = make_base_winding(plane_normal, plane_distance);
+
+    // Clip against each ancestor plane, keeping the front (positive) side.
+    for &(anc_normal, anc_distance) in ancestor_planes {
+        winding = clip_polygon_to_front(&winding, anc_normal, anc_distance, PORTAL_EPSILON)?;
+
+        if winding.len() < 3 || polygon_area(&winding) < MIN_WINDING_AREA {
+            return None;
+        }
+    }
+
+    if winding.len() < 3 || polygon_area(&winding) < MIN_WINDING_AREA {
+        return None;
+    }
+
+    Some(winding)
+}
+
+/// Construct a large quad centered on a plane, suitable for clipping down
+/// to the actual portal polygon.
+///
+/// Cross the plane normal with a reference axis to get basis vectors, then
+/// form a quad from +/-basis1 +/-basis2 offset to lie on the plane.
+fn make_base_winding(normal: Vec3, distance: f32) -> Vec<Vec3> {
+    // Choose a reference axis that isn't near-parallel to the normal.
+    // If the normal is near +Z or -Z, use +X. Otherwise use +Z.
+    let reference = if normal.z.abs() > 0.9 {
+        Vec3::X
+    } else {
+        Vec3::Z
+    };
+
+    let basis1 = normal.cross(reference).normalize();
+    let basis2 = normal.cross(basis1).normalize();
+
+    let center = normal * distance;
+    let half = WINDING_HALF_EXTENT;
+
+    // Quad winding order: consistent CCW when viewed from the front (positive normal side).
+    vec![
+        center - basis1 * half - basis2 * half,
+        center + basis1 * half - basis2 * half,
+        center + basis1 * half + basis2 * half,
+        center - basis1 * half + basis2 * half,
+    ]
+}
+
+/// Phase 2: distribute a portal winding through the BSP subtrees to find
+/// the leaf pairs it actually connects.
+fn distribute_portal(
+    tree: &BspTree,
+    winding: &[Vec3],
+    front_child: &BspChild,
+    back_child: &BspChild,
+    portals: &mut Vec<Portal>,
+) {
+    match (front_child, back_child) {
+        // Base case: both sides are leaves.
+        (BspChild::Leaf(f), BspChild::Leaf(b)) => {
+            let front_leaf = &tree.leaves[*f];
+            let back_leaf = &tree.leaves[*b];
+            if !front_leaf.is_solid && !back_leaf.is_solid {
+                portals.push(Portal {
+                    polygon: winding.to_vec(),
+                    front_leaf: *f,
+                    back_leaf: *b,
+                });
+            }
+        }
+
+        // Front is a node: split winding by that node's plane, recurse.
+        (BspChild::Node(n), _) => {
+            let split_node = &tree.nodes[*n];
+            let (front_winding, back_winding) = split_polygon(
+                winding,
+                split_node.plane_normal,
+                split_node.plane_distance,
+                PORTAL_EPSILON,
+            );
+
+            if let Some(fw) = front_winding {
+                if fw.len() >= 3 && polygon_area(&fw) >= MIN_WINDING_AREA {
+                    distribute_portal(tree, &fw, &split_node.front, back_child, portals);
+                }
+            }
+            if let Some(bw) = back_winding {
+                if bw.len() >= 3 && polygon_area(&bw) >= MIN_WINDING_AREA {
+                    distribute_portal(tree, &bw, &split_node.back, back_child, portals);
+                }
+            }
+        }
+
+        // Back is a node: split winding by that node's plane, recurse.
+        (_, BspChild::Node(n)) => {
+            let split_node = &tree.nodes[*n];
+            let (front_winding, back_winding) = split_polygon(
+                winding,
+                split_node.plane_normal,
+                split_node.plane_distance,
+                PORTAL_EPSILON,
+            );
+
+            if let Some(fw) = front_winding {
+                if fw.len() >= 3 && polygon_area(&fw) >= MIN_WINDING_AREA {
+                    distribute_portal(tree, &fw, front_child, &split_node.front, portals);
+                }
+            }
+            if let Some(bw) = back_winding {
+                if bw.len() >= 3 && polygon_area(&bw) >= MIN_WINDING_AREA {
+                    distribute_portal(tree, &bw, front_child, &split_node.back, portals);
+                }
+            }
+        }
+    }
+}
+
+/// Compute the area of a convex polygon using the cross-product method.
+fn polygon_area(vertices: &[Vec3]) -> f32 {
+    if vertices.len() < 3 {
+        return 0.0;
+    }
+
+    let mut area = Vec3::ZERO;
+    let v0 = vertices[0];
+    for i in 1..vertices.len() - 1 {
+        let edge1 = vertices[i] - v0;
+        let edge2 = vertices[i + 1] - v0;
+        area += edge1.cross(edge2);
+    }
+    area.length() * 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map_data::{BrushPlane, BrushVolume, Face};
+    use crate::partition::{self, BspTree};
+
+    // -- Helper: build a box room's faces and brush volumes --
+
+    fn make_box_faces(min: Vec3, max: Vec3) -> Vec<Face> {
+        let texture = "test".to_string();
+        vec![
+            Face {
+                vertices: vec![
+                    Vec3::new(min.x, min.y, min.z),
+                    Vec3::new(min.x, max.y, min.z),
+                    Vec3::new(min.x, max.y, max.z),
+                    Vec3::new(min.x, min.y, max.z),
+                ],
+                normal: Vec3::NEG_X,
+                distance: -min.x,
+                texture: texture.clone(),
+            },
+            Face {
+                vertices: vec![
+                    Vec3::new(max.x, min.y, min.z),
+                    Vec3::new(max.x, min.y, max.z),
+                    Vec3::new(max.x, max.y, max.z),
+                    Vec3::new(max.x, max.y, min.z),
+                ],
+                normal: Vec3::X,
+                distance: max.x,
+                texture: texture.clone(),
+            },
+            Face {
+                vertices: vec![
+                    Vec3::new(min.x, min.y, min.z),
+                    Vec3::new(min.x, min.y, max.z),
+                    Vec3::new(max.x, min.y, max.z),
+                    Vec3::new(max.x, min.y, min.z),
+                ],
+                normal: Vec3::NEG_Y,
+                distance: -min.y,
+                texture: texture.clone(),
+            },
+            Face {
+                vertices: vec![
+                    Vec3::new(min.x, max.y, min.z),
+                    Vec3::new(max.x, max.y, min.z),
+                    Vec3::new(max.x, max.y, max.z),
+                    Vec3::new(min.x, max.y, max.z),
+                ],
+                normal: Vec3::Y,
+                distance: max.y,
+                texture: texture.clone(),
+            },
+            Face {
+                vertices: vec![
+                    Vec3::new(min.x, min.y, min.z),
+                    Vec3::new(max.x, min.y, min.z),
+                    Vec3::new(max.x, max.y, min.z),
+                    Vec3::new(min.x, max.y, min.z),
+                ],
+                normal: Vec3::NEG_Z,
+                distance: -min.z,
+                texture: texture.clone(),
+            },
+            Face {
+                vertices: vec![
+                    Vec3::new(min.x, min.y, max.z),
+                    Vec3::new(max.x, min.y, max.z),
+                    Vec3::new(max.x, max.y, max.z),
+                    Vec3::new(min.x, max.y, max.z),
+                ],
+                normal: Vec3::Z,
+                distance: max.z,
+                texture: texture.clone(),
+            },
+        ]
+    }
+
+    fn box_brush(min: Vec3, max: Vec3) -> BrushVolume {
+        BrushVolume {
+            planes: vec![
+                BrushPlane {
+                    normal: Vec3::X,
+                    distance: max.x,
+                },
+                BrushPlane {
+                    normal: Vec3::NEG_X,
+                    distance: -min.x,
+                },
+                BrushPlane {
+                    normal: Vec3::Y,
+                    distance: max.y,
+                },
+                BrushPlane {
+                    normal: Vec3::NEG_Y,
+                    distance: -min.y,
+                },
+                BrushPlane {
+                    normal: Vec3::Z,
+                    distance: max.z,
+                },
+                BrushPlane {
+                    normal: Vec3::NEG_Z,
+                    distance: -min.z,
+                },
+            ],
+        }
+    }
+
+    /// Build a hollow room from 6 wall brushes (floor, ceiling, 4 walls).
+    fn hollow_room(min: Vec3, max: Vec3, wall: f32) -> (Vec<Face>, Vec<BrushVolume>) {
+        let mut faces = Vec::new();
+        let mut brushes = Vec::new();
+
+        // Floor slab
+        let b_min = Vec3::new(min.x, min.y, min.z);
+        let b_max = Vec3::new(max.x, min.y + wall, max.z);
+        faces.extend(make_box_faces(b_min, b_max));
+        brushes.push(box_brush(b_min, b_max));
+
+        // Ceiling slab
+        let b_min = Vec3::new(min.x, max.y - wall, min.z);
+        let b_max = Vec3::new(max.x, max.y, max.z);
+        faces.extend(make_box_faces(b_min, b_max));
+        brushes.push(box_brush(b_min, b_max));
+
+        // Wall -X
+        let b_min = Vec3::new(min.x, min.y, min.z);
+        let b_max = Vec3::new(min.x + wall, max.y, max.z);
+        faces.extend(make_box_faces(b_min, b_max));
+        brushes.push(box_brush(b_min, b_max));
+
+        // Wall +X
+        let b_min = Vec3::new(max.x - wall, min.y, min.z);
+        let b_max = Vec3::new(max.x, max.y, max.z);
+        faces.extend(make_box_faces(b_min, b_max));
+        brushes.push(box_brush(b_min, b_max));
+
+        // Wall -Z
+        let b_min = Vec3::new(min.x, min.y, min.z);
+        let b_max = Vec3::new(max.x, max.y, min.z + wall);
+        faces.extend(make_box_faces(b_min, b_max));
+        brushes.push(box_brush(b_min, b_max));
+
+        // Wall +Z
+        let b_min = Vec3::new(min.x, min.y, max.z - wall);
+        let b_max = Vec3::new(max.x, max.y, max.z);
+        faces.extend(make_box_faces(b_min, b_max));
+        brushes.push(box_brush(b_min, b_max));
+
+        (faces, brushes)
+    }
+
+    // -- Unit test helpers --
+
+    fn assert_portal_polygon_valid(portal: &Portal) {
+        assert!(
+            portal.polygon.len() >= 3,
+            "portal polygon has {} vertices, need at least 3",
+            portal.polygon.len()
+        );
+
+        // Compute portal plane from first 3 vertices.
+        let v0 = portal.polygon[0];
+        let v1 = portal.polygon[1];
+        let v2 = portal.polygon[2];
+        let normal = (v1 - v0).cross(v2 - v0);
+        if normal.length() < 1e-6 {
+            // Degenerate triangle — skip planarity check.
+            return;
+        }
+        let normal = normal.normalize();
+        let distance = v0.dot(normal);
+
+        // All vertices should be within epsilon of the portal plane.
+        for (i, v) in portal.polygon.iter().enumerate() {
+            let d = v.dot(normal) - distance;
+            assert!(
+                d.abs() < 0.05,
+                "portal vertex {i} is {d:.6} off the portal plane (limit 0.05)"
+            );
+        }
+    }
+
+    // -- Tests --
+
+    #[test]
+    fn base_winding_lies_on_plane() {
+        let normal = Vec3::Y;
+        let distance = 5.0;
+        let winding = make_base_winding(normal, distance);
+
+        assert_eq!(winding.len(), 4);
+        for v in &winding {
+            let d = v.dot(normal) - distance;
+            assert!(d.abs() < 1e-4, "winding vertex {v} not on plane (d={d})");
+        }
+    }
+
+    #[test]
+    fn base_winding_non_degenerate_for_axis_aligned_normals() {
+        for normal in [
+            Vec3::X,
+            Vec3::Y,
+            Vec3::Z,
+            Vec3::NEG_X,
+            Vec3::NEG_Y,
+            Vec3::NEG_Z,
+        ] {
+            let winding = make_base_winding(normal, 0.0);
+            let area = polygon_area(&winding);
+            assert!(
+                area > 1.0,
+                "winding for normal {normal} has area {area}, expected large"
+            );
+        }
+    }
+
+    #[test]
+    fn polygon_area_of_unit_square() {
+        let verts = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let area = polygon_area(&verts);
+        assert!((area - 1.0).abs() < 1e-4, "expected area 1.0, got {area}");
+    }
+
+    #[test]
+    fn empty_tree_produces_no_portals() {
+        let tree = BspTree {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+        };
+        let portals = generate_portals(&tree);
+        assert!(portals.is_empty());
+    }
+
+    #[test]
+    fn single_box_room_produces_portals() {
+        // A box room has 6 faces. The BSP tree will split them into leaves.
+        // Portal generation should find portals between adjacent empty leaves.
+        let faces = make_box_faces(Vec3::ZERO, Vec3::new(64.0, 64.0, 64.0));
+        let brushes = vec![box_brush(Vec3::ZERO, Vec3::new(64.0, 64.0, 64.0))];
+
+        let result = partition::partition(faces, &brushes).expect("partition should succeed");
+
+        let portals = generate_portals(&result.tree);
+
+        // With a single box, all leaves are likely solid (the box is a solid brush),
+        // so we expect 0 portals between empty leaves. This is correct behavior:
+        // a solid box has no air space.
+        // All portals (if any) should have valid polygons.
+        for portal in &portals {
+            assert_portal_polygon_valid(portal);
+        }
+    }
+
+    #[test]
+    fn minimal_room_divided_by_one_plane_produces_one_portal() {
+        // Construct a minimal BSP tree manually: one node splitting two empty leaves.
+        use crate::partition::{Aabb, BspChild, BspLeaf, BspNode};
+
+        let tree = BspTree {
+            nodes: vec![BspNode {
+                plane_normal: Vec3::X,
+                plane_distance: 32.0,
+                front: BspChild::Leaf(0),
+                back: BspChild::Leaf(1),
+                parent: None,
+            }],
+            leaves: vec![
+                BspLeaf {
+                    face_indices: vec![0],
+                    bounds: Aabb {
+                        min: Vec3::new(32.0, 0.0, 0.0),
+                        max: Vec3::new(64.0, 64.0, 64.0),
+                    },
+                    is_solid: false,
+                },
+                BspLeaf {
+                    face_indices: vec![1],
+                    bounds: Aabb {
+                        min: Vec3::new(0.0, 0.0, 0.0),
+                        max: Vec3::new(32.0, 64.0, 64.0),
+                    },
+                    is_solid: false,
+                },
+            ],
+        };
+
+        let portals = generate_portals(&tree);
+        assert_eq!(
+            portals.len(),
+            1,
+            "one splitting plane between two empty leaves should produce exactly 1 portal"
+        );
+        assert_portal_polygon_valid(&portals[0]);
+
+        // The portal should reference both leaves.
+        let leaf_set = [portals[0].front_leaf, portals[0].back_leaf];
+        assert!(leaf_set.contains(&0), "portal should reference leaf 0");
+        assert!(leaf_set.contains(&1), "portal should reference leaf 1");
+    }
+
+    #[test]
+    fn solid_leaves_excluded_from_portals() {
+        // One node splitting a solid leaf and an empty leaf — no portal emitted.
+        use crate::partition::{Aabb, BspChild, BspLeaf, BspNode};
+
+        let tree = BspTree {
+            nodes: vec![BspNode {
+                plane_normal: Vec3::X,
+                plane_distance: 32.0,
+                front: BspChild::Leaf(0),
+                back: BspChild::Leaf(1),
+                parent: None,
+            }],
+            leaves: vec![
+                BspLeaf {
+                    face_indices: vec![0],
+                    bounds: Aabb {
+                        min: Vec3::new(32.0, 0.0, 0.0),
+                        max: Vec3::new(64.0, 64.0, 64.0),
+                    },
+                    is_solid: true, // solid
+                },
+                BspLeaf {
+                    face_indices: vec![1],
+                    bounds: Aabb {
+                        min: Vec3::new(0.0, 0.0, 0.0),
+                        max: Vec3::new(32.0, 64.0, 64.0),
+                    },
+                    is_solid: false,
+                },
+            ],
+        };
+
+        let portals = generate_portals(&tree);
+        assert!(
+            portals.is_empty(),
+            "portal between solid and empty leaf should not be emitted"
+        );
+    }
+
+    #[test]
+    fn portal_polygons_are_planar() {
+        // Three empty leaves in a chain: leaf0 | leaf1 | leaf2
+        use crate::partition::{Aabb, BspChild, BspLeaf, BspNode};
+
+        let tree = BspTree {
+            nodes: vec![
+                // Root: split at X=32
+                BspNode {
+                    plane_normal: Vec3::X,
+                    plane_distance: 32.0,
+                    front: BspChild::Node(1),
+                    back: BspChild::Leaf(0),
+                    parent: None,
+                },
+                // Child: split at X=64
+                BspNode {
+                    plane_normal: Vec3::X,
+                    plane_distance: 64.0,
+                    front: BspChild::Leaf(2),
+                    back: BspChild::Leaf(1),
+                    parent: Some(0),
+                },
+            ],
+            leaves: vec![
+                BspLeaf {
+                    face_indices: vec![],
+                    bounds: Aabb {
+                        min: Vec3::ZERO,
+                        max: Vec3::new(32.0, 64.0, 64.0),
+                    },
+                    is_solid: false,
+                },
+                BspLeaf {
+                    face_indices: vec![],
+                    bounds: Aabb {
+                        min: Vec3::new(32.0, 0.0, 0.0),
+                        max: Vec3::new(64.0, 64.0, 64.0),
+                    },
+                    is_solid: false,
+                },
+                BspLeaf {
+                    face_indices: vec![],
+                    bounds: Aabb {
+                        min: Vec3::new(64.0, 0.0, 0.0),
+                        max: Vec3::new(96.0, 64.0, 64.0),
+                    },
+                    is_solid: false,
+                },
+            ],
+        };
+
+        let portals = generate_portals(&tree);
+        assert_eq!(portals.len(), 2, "chain of 3 leaves should have 2 portals");
+
+        for portal in &portals {
+            assert_portal_polygon_valid(portal);
+        }
+    }
+
+    #[test]
+    fn two_room_map_produces_portals_at_doorway() {
+        let wall = 16.0;
+
+        // Room A
+        let (mut faces, mut brushes) = hollow_room(Vec3::ZERO, Vec3::splat(128.0), wall);
+
+        // Corridor connecting rooms
+        let (corr_faces, corr_brushes) = hollow_room(
+            Vec3::new(112.0, 0.0, 40.0),
+            Vec3::new(272.0, 128.0, 88.0),
+            wall,
+        );
+        faces.extend(corr_faces);
+        brushes.extend(corr_brushes);
+
+        // Room B
+        let (room_b_faces, room_b_brushes) = hollow_room(
+            Vec3::new(256.0, 0.0, 0.0),
+            Vec3::new(384.0, 128.0, 128.0),
+            wall,
+        );
+        faces.extend(room_b_faces);
+        brushes.extend(room_b_brushes);
+
+        let result = partition::partition(faces, &brushes).expect("partition should succeed");
+
+        let portals = generate_portals(&result.tree);
+
+        // Should have at least 1 portal (doorway connections).
+        assert!(
+            !portals.is_empty(),
+            "two-room map with corridor should produce at least 1 portal"
+        );
+
+        // Every portal should be a valid polygon.
+        for portal in &portals {
+            assert_portal_polygon_valid(portal);
+        }
+
+        // Every portal should connect two empty leaves.
+        for portal in &portals {
+            let fl = &result.tree.leaves[portal.front_leaf];
+            let bl = &result.tree.leaves[portal.back_leaf];
+            assert!(!fl.is_solid, "portal front_leaf should not be solid");
+            assert!(!bl.is_solid, "portal back_leaf should not be solid");
+        }
+    }
+
+    #[test]
+    fn portals_with_test_map() {
+        let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join("assets/maps/test.map");
+
+        let map_data = crate::parse::parse_map_file(&map_path).expect("test.map should parse");
+
+        let result = partition::partition(map_data.world_faces, &map_data.brush_volumes)
+            .expect("partition should succeed on test map");
+
+        let portals = generate_portals(&result.tree);
+
+        // All portals should be valid polygons between empty leaves.
+        for portal in &portals {
+            assert_portal_polygon_valid(portal);
+            assert!(
+                !result.tree.leaves[portal.front_leaf].is_solid,
+                "portal front_leaf should not be solid"
+            );
+            assert!(
+                !result.tree.leaves[portal.back_leaf].is_solid,
+                "portal back_leaf should not be solid"
+            );
+        }
+    }
+}

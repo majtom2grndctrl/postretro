@@ -6,6 +6,7 @@
 use glam::{Mat4, Vec3, Vec4};
 
 use crate::bsp::BspWorld;
+use crate::portal_vis;
 use crate::prl::LevelWorld;
 
 /// A draw range referencing a contiguous run of indices in the shared index buffer.
@@ -46,10 +47,14 @@ pub(crate) struct FrustumPlane {
     pub dist: f32,
 }
 
-/// The six planes of a view frustum, extracted from a view-projection matrix.
+/// The planes of a view frustum, extracted from a view-projection matrix.
+///
+/// The initial camera frustum always contains exactly 6 planes in
+/// left/right/bottom/top/near/far order. After portal traversal narrows the
+/// frustum, it may contain more planes (one per portal edge plus near/far).
 #[derive(Debug, Clone)]
 pub(crate) struct Frustum {
-    pub planes: [FrustumPlane; 6],
+    pub planes: Vec<FrustumPlane>,
 }
 
 /// Extract the six frustum planes from a combined view-projection matrix.
@@ -82,20 +87,22 @@ fn extract_frustum_planes(view_proj: Mat4) -> Frustum {
         r3 - r2, // Far
     ];
 
-    let mut planes = [FrustumPlane {
-        normal: Vec3::ZERO,
-        dist: 0.0,
-    }; 6];
+    let mut planes = Vec::with_capacity(6);
 
-    for (i, raw) in raw_planes.iter().enumerate() {
+    for raw in &raw_planes {
         let normal = Vec3::new(raw.x, raw.y, raw.z);
         let length = normal.length();
         if length > 0.0 {
             let inv_len = 1.0 / length;
-            planes[i] = FrustumPlane {
+            planes.push(FrustumPlane {
                 normal: normal * inv_len,
                 dist: raw.w * inv_len,
-            };
+            });
+        } else {
+            planes.push(FrustumPlane {
+                normal: Vec3::ZERO,
+                dist: 0.0,
+            });
         }
     }
 
@@ -368,9 +375,13 @@ pub fn determine_visibility(
 
 /// Perform full visibility determination for a PRL level.
 ///
-/// Pipeline: cluster bounding volume scan to find camera cluster, PVS lookup
-/// for visible clusters, then frustum culling discards clusters whose bounding
-/// box falls entirely outside the view frustum.
+/// Pipeline: BSP tree descent to find camera leaf, PVS lookup for visible
+/// leaves, then frustum culling discards leaves whose bounding box falls
+/// entirely outside the view frustum.
+///
+/// Solid leaf fallback: if the camera lands in a solid leaf (clipped into
+/// geometry), all leaves are drawn. This avoids complexity of finding the
+/// "nearest empty leaf" for a rare edge case.
 pub fn determine_prl_visibility(
     camera_position: Vec3,
     view_proj: Mat4,
@@ -378,7 +389,7 @@ pub fn determine_prl_visibility(
 ) -> (VisibleFaces, VisibilityStats) {
     let total_faces = world.face_meta.len() as u32;
 
-    if world.clusters.is_empty() {
+    if world.leaves.is_empty() {
         let stats = VisibilityStats {
             camera_leaf: 0,
             total_faces,
@@ -388,26 +399,32 @@ pub fn determine_prl_visibility(
         return (VisibleFaces::DrawAll, stats);
     }
 
-    let camera_cluster = world.find_cluster(camera_position);
+    let camera_leaf_idx = world.find_leaf(camera_position);
     let frustum = extract_frustum_planes(view_proj);
 
-    let camera_cluster_idx = camera_cluster.unwrap_or(0);
+    // Solid leaf fallback: draw all leaves.
+    let in_solid = world
+        .leaves
+        .get(camera_leaf_idx)
+        .is_some_and(|l| l.is_solid);
 
-    if !world.has_pvs {
-        // No PVS data: draw all clusters, applying frustum culling only.
+    if in_solid {
+        log::warn!(
+            "[Visibility] Camera in solid leaf {} — drawing all leaves",
+            camera_leaf_idx,
+        );
         let mut ranges = Vec::new();
         let mut frustum_faces = 0u32;
 
-        for cluster in &world.clusters {
-            let cluster_mins = cluster.bounds_min;
-            let cluster_maxs = cluster.bounds_max;
-
-            if is_aabb_outside_frustum(cluster_mins, cluster_maxs, &frustum) {
+        for leaf in &world.leaves {
+            if leaf.is_solid || leaf.face_count == 0 {
                 continue;
             }
-
-            let start = cluster.face_start as usize;
-            let count = cluster.face_count as usize;
+            if is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, &frustum) {
+                continue;
+            }
+            let start = leaf.face_start as usize;
+            let count = leaf.face_count as usize;
             for face in world.face_meta.iter().skip(start).take(count) {
                 if face.index_count > 0 {
                     ranges.push(DrawRange {
@@ -420,7 +437,7 @@ pub fn determine_prl_visibility(
         }
 
         let stats = VisibilityStats {
-            camera_leaf: camera_cluster_idx as u32,
+            camera_leaf: camera_leaf_idx as u32,
             total_faces,
             pvs_faces: total_faces,
             frustum_faces,
@@ -428,34 +445,135 @@ pub fn determine_prl_visibility(
         return (VisibleFaces::Culled(ranges), stats);
     }
 
-    // PVS available: determine visible clusters.
-    let pvs = &world.clusters[camera_cluster_idx].pvs;
+    if world.has_portals {
+        // Runtime portal traversal (preferred when portal data is present).
+        let portal_visible =
+            portal_vis::portal_traverse(camera_position, camera_leaf_idx, &frustum, world);
+
+        let mut ranges = Vec::new();
+        let mut pvs_faces = 0u32;
+        let mut frustum_faces = 0u32;
+
+        for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
+            if leaf.is_solid || leaf.face_count == 0 {
+                continue;
+            }
+
+            let is_visible = portal_visible.get(leaf_idx).copied().unwrap_or(false);
+            if !is_visible {
+                continue;
+            }
+
+            let start = leaf.face_start as usize;
+            let count = leaf.face_count as usize;
+            let leaf_face_count = world
+                .face_meta
+                .iter()
+                .skip(start)
+                .take(count)
+                .filter(|f| f.index_count > 0)
+                .count() as u32;
+            pvs_faces += leaf_face_count;
+
+            if is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, &frustum) {
+                continue;
+            }
+
+            for face in world.face_meta.iter().skip(start).take(count) {
+                if face.index_count > 0 {
+                    ranges.push(DrawRange {
+                        index_offset: face.index_offset,
+                        index_count: face.index_count,
+                    });
+                    frustum_faces += 1;
+                }
+            }
+        }
+
+        log::trace!(
+            "[Visibility] leaf={}, portal_vis_faces={}, frustum_faces={}, total_faces={}",
+            camera_leaf_idx,
+            pvs_faces,
+            frustum_faces,
+            total_faces,
+        );
+
+        let stats = VisibilityStats {
+            camera_leaf: camera_leaf_idx as u32,
+            total_faces,
+            pvs_faces,
+            frustum_faces,
+        };
+        return (VisibleFaces::Culled(ranges), stats);
+    }
+
+    if !world.has_pvs {
+        // No PVS data: draw all non-solid leaves, applying frustum culling only.
+        let mut ranges = Vec::new();
+        let mut frustum_faces = 0u32;
+
+        for leaf in &world.leaves {
+            if leaf.is_solid || leaf.face_count == 0 {
+                continue;
+            }
+            if is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, &frustum) {
+                continue;
+            }
+
+            let start = leaf.face_start as usize;
+            let count = leaf.face_count as usize;
+            for face in world.face_meta.iter().skip(start).take(count) {
+                if face.index_count > 0 {
+                    ranges.push(DrawRange {
+                        index_offset: face.index_offset,
+                        index_count: face.index_count,
+                    });
+                    frustum_faces += 1;
+                }
+            }
+        }
+
+        let stats = VisibilityStats {
+            camera_leaf: camera_leaf_idx as u32,
+            total_faces,
+            pvs_faces: total_faces,
+            frustum_faces,
+        };
+        return (VisibleFaces::Culled(ranges), stats);
+    }
+
+    // PVS available: determine visible leaves.
+    let pvs = &world.leaves[camera_leaf_idx].pvs;
 
     let mut ranges = Vec::new();
     let mut pvs_faces = 0u32;
     let mut frustum_faces = 0u32;
 
-    for (cluster_idx, cluster) in world.clusters.iter().enumerate() {
-        let is_camera_cluster = cluster_idx == camera_cluster_idx;
-        let is_pvs_visible = pvs.get(cluster_idx).copied().unwrap_or(false);
+    for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
+        if leaf.is_solid || leaf.face_count == 0 {
+            continue;
+        }
 
-        if !is_pvs_visible && !is_camera_cluster {
+        let is_camera_leaf = leaf_idx == camera_leaf_idx;
+        let is_pvs_visible = pvs.get(leaf_idx).copied().unwrap_or(false);
+
+        if !is_pvs_visible && !is_camera_leaf {
             continue;
         }
 
         // Count faces for PVS stats before frustum culling.
-        let start = cluster.face_start as usize;
-        let count = cluster.face_count as usize;
-        let cluster_face_count = world
+        let start = leaf.face_start as usize;
+        let count = leaf.face_count as usize;
+        let leaf_face_count = world
             .face_meta
             .iter()
             .skip(start)
             .take(count)
             .filter(|f| f.index_count > 0)
             .count() as u32;
-        pvs_faces += cluster_face_count;
+        pvs_faces += leaf_face_count;
 
-        if is_aabb_outside_frustum(cluster.bounds_min, cluster.bounds_max, &frustum) {
+        if is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, &frustum) {
             continue;
         }
 
@@ -471,15 +589,15 @@ pub fn determine_prl_visibility(
     }
 
     log::trace!(
-        "[Visibility] cluster={}, pvs_faces={}, frustum_faces={}, total_faces={}",
-        camera_cluster_idx,
+        "[Visibility] leaf={}, pvs_faces={}, frustum_faces={}, total_faces={}",
+        camera_leaf_idx,
         pvs_faces,
         frustum_faces,
         total_faces,
     );
 
     let stats = VisibilityStats {
-        camera_leaf: camera_cluster_idx as u32,
+        camera_leaf: camera_leaf_idx as u32,
         total_faces,
         pvs_faces,
         frustum_faces,
@@ -1207,11 +1325,13 @@ mod tests {
         );
     }
 
-    // -- PRL cluster-based visibility tests --
+    // -- PRL leaf-based visibility tests --
 
-    use crate::prl::{ClusterData, FaceMeta as PrlFaceMeta, LevelWorld};
+    use crate::prl::{BspChild, FaceMeta as PrlFaceMeta, LeafData, LevelWorld, NodeData};
 
-    fn two_cluster_world() -> LevelWorld {
+    /// Build a two-leaf PRL world: one BSP node splits space at X=0.
+    /// Front (X >= 0) -> leaf 0, back (X < 0) -> leaf 1.
+    fn two_leaf_prl_world() -> LevelWorld {
         LevelWorld {
             vertices: vec![[0.0; 3]; 6],
             indices: vec![0, 1, 2, 3, 4, 5],
@@ -1225,29 +1345,41 @@ mod tests {
                     index_count: 3,
                 },
             ],
-            clusters: vec![
-                ClusterData {
+            nodes: vec![NodeData {
+                plane_normal: Vec3::X,
+                plane_distance: 0.0,
+                front: BspChild::Leaf(0),
+                back: BspChild::Leaf(1),
+            }],
+            leaves: vec![
+                LeafData {
                     bounds_min: Vec3::new(0.0, -100.0, -100.0),
                     bounds_max: Vec3::new(100.0, 100.0, 100.0),
                     face_start: 0,
                     face_count: 1,
                     pvs: vec![true, true],
+                    is_solid: false,
                 },
-                ClusterData {
+                LeafData {
                     bounds_min: Vec3::new(-100.0, -100.0, -100.0),
                     bounds_max: Vec3::new(0.0, 100.0, 100.0),
                     face_start: 1,
                     face_count: 1,
                     pvs: vec![true, true],
+                    is_solid: false,
                 },
             ],
+            root: BspChild::Node(0),
             has_pvs: true,
+            portals: vec![],
+            leaf_portals: vec![vec![], vec![]],
+            has_portals: false,
         }
     }
 
     #[test]
     fn prl_visibility_with_pvs() {
-        let world = two_cluster_world();
+        let world = two_leaf_prl_world();
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let (result, stats) = determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world);
         match result {
@@ -1261,7 +1393,7 @@ mod tests {
 
     #[test]
     fn prl_visibility_without_pvs_draws_all_with_frustum() {
-        let mut world = two_cluster_world();
+        let mut world = two_leaf_prl_world();
         world.has_pvs = false;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let (result, stats) = determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world);
@@ -1280,8 +1412,13 @@ mod tests {
             vertices: vec![],
             indices: vec![],
             face_meta: vec![],
-            clusters: vec![],
+            nodes: vec![],
+            leaves: vec![],
+            root: BspChild::Leaf(0),
             has_pvs: false,
+            portals: vec![],
+            leaf_portals: vec![],
+            has_portals: false,
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let (result, stats) = determine_prl_visibility(Vec3::ZERO, vp, &world);
@@ -1291,9 +1428,9 @@ mod tests {
 
     #[test]
     fn prl_frustum_culling_reduces_draw_count() {
-        let world = two_cluster_world();
+        let world = two_leaf_prl_world();
         let position = Vec3::new(50.0, 0.0, 0.0);
-        // Looking straight down +X (away from cluster 1 at negative X).
+        // Looking straight down +X (away from leaf 1 at negative X).
         let view = Mat4::look_at_rh(position, position + Vec3::X, Vec3::Y);
         let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 4096.0);
         let vp = proj * view;
@@ -1301,11 +1438,11 @@ mod tests {
         let (result, stats) = determine_prl_visibility(position, vp, &world);
         match result {
             VisibleFaces::Culled(ranges) => {
-                // Cluster 1 (negative X) should be frustum-culled.
+                // Leaf 1 (negative X) should be frustum-culled.
                 assert_eq!(
                     ranges.len(),
                     1,
-                    "should only draw camera cluster's face when looking away"
+                    "should only draw camera leaf's face when looking away"
                 );
             }
             VisibleFaces::DrawAll => panic!("expected Culled"),
@@ -1315,20 +1452,81 @@ mod tests {
     }
 
     #[test]
-    fn prl_camera_cluster_always_drawn() {
-        // Even if PVS says nothing visible, camera cluster is always included.
-        let mut world = two_cluster_world();
-        // Set cluster 0's PVS to see nothing.
-        world.clusters[0].pvs = vec![false, false];
+    fn prl_camera_leaf_always_drawn() {
+        // Even if PVS says nothing visible, camera leaf is always included.
+        let mut world = two_leaf_prl_world();
+        // Set leaf 0's PVS to see nothing.
+        world.leaves[0].pvs = vec![false, false];
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let (result, _stats) = determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world);
         match result {
             VisibleFaces::Culled(ranges) => {
-                assert_eq!(ranges.len(), 1, "camera cluster should always be drawn");
+                assert_eq!(ranges.len(), 1, "camera leaf should always be drawn");
                 assert_eq!(ranges[0].index_offset, 0);
                 assert_eq!(ranges[0].index_count, 3);
             }
             VisibleFaces::DrawAll => panic!("expected Culled"),
         }
+    }
+
+    #[test]
+    fn prl_solid_leaf_fallback_draws_all() {
+        // Camera in a solid leaf should draw all non-solid leaves.
+        let world = LevelWorld {
+            vertices: vec![[0.0; 3]; 6],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            face_meta: vec![
+                PrlFaceMeta {
+                    index_offset: 0,
+                    index_count: 3,
+                },
+                PrlFaceMeta {
+                    index_offset: 3,
+                    index_count: 3,
+                },
+            ],
+            nodes: vec![NodeData {
+                plane_normal: Vec3::X,
+                plane_distance: 0.0,
+                front: BspChild::Leaf(0), // solid
+                back: BspChild::Leaf(1),  // empty
+            }],
+            leaves: vec![
+                LeafData {
+                    bounds_min: Vec3::new(0.0, -100.0, -100.0),
+                    bounds_max: Vec3::new(100.0, 100.0, 100.0),
+                    face_start: 0,
+                    face_count: 1,
+                    pvs: vec![false, false],
+                    is_solid: true,
+                },
+                LeafData {
+                    bounds_min: Vec3::new(-100.0, -100.0, -100.0),
+                    bounds_max: Vec3::new(0.0, 100.0, 100.0),
+                    face_start: 1,
+                    face_count: 1,
+                    pvs: vec![true, true],
+                    is_solid: false,
+                },
+            ],
+            root: BspChild::Node(0),
+            has_pvs: true,
+            portals: vec![],
+            leaf_portals: vec![vec![], vec![]],
+            has_portals: false,
+        };
+
+        // Camera at X=50 lands in solid leaf 0.
+        let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
+        let (result, stats) = determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world);
+        match result {
+            VisibleFaces::Culled(ranges) => {
+                // Should draw all non-solid leaf faces (leaf 1's face).
+                assert!(!ranges.is_empty(), "should draw non-solid leaf faces");
+            }
+            VisibleFaces::DrawAll => panic!("expected Culled with solid-leaf fallback"),
+        }
+        // PVS stats should show all faces as pvs_faces (solid fallback = draw all).
+        assert_eq!(stats.pvs_faces, stats.total_faces);
     }
 }

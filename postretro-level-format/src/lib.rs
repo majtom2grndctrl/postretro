@@ -1,7 +1,6 @@
 // PRL binary container format: header, section table, read/write API.
 // See: context/plans/ready/prl-phase-1-minimum-viable-compiler/
 
-pub mod confidence;
 pub mod geometry;
 pub mod visibility;
 
@@ -50,8 +49,6 @@ pub enum SectionId {
     ClusterVisibility = 2,
     // Reserved: Collision=3, LightInfluence=4, LightProbes=5,
     // NavMesh=6, Audio=7, Zones=8, Spawns=9, Textures=10
-    /// Diagnostic-only: per-cluster-pair visibility confidence ratios.
-    VisibilityConfidence = 11,
 }
 
 impl SectionId {
@@ -59,7 +56,6 @@ impl SectionId {
         match value {
             1 => Some(Self::Geometry),
             2 => Some(Self::ClusterVisibility),
-            11 => Some(Self::VisibilityConfidence),
             _ => None,
         }
     }

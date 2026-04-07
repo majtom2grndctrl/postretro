@@ -1,5 +1,5 @@
 // BSP tree construction: plane selection, face splitting, recursive partitioning.
-// See: context/plans/ready/prl-phase-1-minimum-viable-compiler/
+// See: context/lib/build_pipeline.md §PRL
 
 use anyhow::Result;
 use glam::Vec3;
@@ -11,6 +11,16 @@ const PLANE_EPSILON: f32 = 0.1;
 const SPLIT_PENALTY: i32 = 8;
 const IMBALANCE_PENALTY: i32 = 1;
 const MAX_LEAF_FACES: usize = 4;
+
+/// Tolerance for the overall-centroid inside-brush test. Generous because
+/// the average of multiple face centroids is naturally displaced from any
+/// single brush surface.
+const SOLID_EPSILON: f32 = 0.5;
+
+/// Tolerance for the per-face-centroid inside-brush test. Tight because
+/// individual face centroids sit exactly on their generating brush surface;
+/// a generous epsilon would classify every leaf touching a brush as solid.
+const FACE_SOLID_EPSILON: f32 = -0.1;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FaceSide {
@@ -255,30 +265,51 @@ pub fn build_bsp_tree(faces: Vec<Face>) -> Result<(BspTree, Vec<Face>)> {
 
 /// Classify each BSP leaf as solid or empty based on brush volumes.
 ///
-/// A leaf is solid when a representative point from its face geometry lies inside
+/// A leaf is solid when any candidate point from its face geometry lies inside
 /// a brush volume. "Inside" means the point is on the back side (negative
 /// half-space) of every plane in the brush:
 /// `dot(point, plane.normal) - plane.distance <= epsilon` for all planes.
 ///
-/// Leaves whose face centroids are inside brush volumes represent wall/floor/ceiling
-/// geometry. Leaves in air space have face normals pointing inward — their
-/// centroids are displaced outward from the brush surface into empty space.
+/// Candidate points: the overall leaf face centroid plus each individual face's
+/// centroid. A leaf is solid if **any** candidate is inside a brush. Faceless
+/// leaves are classified as solid — empty space always has bounding faces.
+///
+/// The individual face centroid test uses a tighter epsilon than the overall
+/// centroid because face centroids sit exactly on their generating brush surface.
+/// A generous epsilon would false-positive every face as "inside", defeating the
+/// purpose of solid/empty classification.
 pub fn classify_leaf_solidity(tree: &mut BspTree, faces: &[Face], brush_volumes: &[BrushVolume]) {
     if brush_volumes.is_empty() {
         return;
     }
 
     for leaf in &mut tree.leaves {
+        // Faceless leaves are solid: empty space always has bounding faces.
         if leaf.face_indices.is_empty() {
+            leaf.is_solid = true;
             continue;
         }
 
-        // Use the centroid of the leaf's face geometry as the test point.
-        // For a leaf containing wall faces, the centroid sits within the wall's
-        // brush volume. For a leaf in air space, the centroid is outside all brushes.
-        let test_point = leaf_face_centroid(faces, &leaf.face_indices);
+        // Test the overall leaf centroid first (primary test). Uses a generous
+        // epsilon because this centroid averages multiple face positions and is
+        // naturally displaced from brush surfaces.
+        let overall_centroid = leaf_face_centroid(faces, &leaf.face_indices);
+        if point_inside_any_brush(overall_centroid, brush_volumes, SOLID_EPSILON) {
+            leaf.is_solid = true;
+            continue;
+        }
 
-        leaf.is_solid = point_inside_any_brush(test_point, brush_volumes);
+        // Test each individual face centroid. Uses a tight epsilon to avoid
+        // false-positiving on face centroids that sit on (not inside) their
+        // generating brush surface.
+        let any_face_inside = leaf.face_indices.iter().any(|&fi| {
+            let face = &faces[fi];
+            let face_center: Vec3 =
+                face.vertices.iter().copied().sum::<Vec3>() / face.vertices.len() as f32;
+            point_inside_any_brush(face_center, brush_volumes, FACE_SOLID_EPSILON)
+        });
+
+        leaf.is_solid = any_face_inside;
     }
 }
 
@@ -303,14 +334,15 @@ fn leaf_face_centroid(faces: &[Face], face_indices: &[usize]) -> Vec3 {
 }
 
 /// Test whether a point is inside any brush volume.
-fn point_inside_any_brush(point: Vec3, brush_volumes: &[BrushVolume]) -> bool {
-    const SOLID_EPSILON: f32 = 0.5;
-
+///
+/// `epsilon` controls how close to the surface counts as "inside". Positive
+/// values expand the brush (generous), negative values shrink it (strict).
+fn point_inside_any_brush(point: Vec3, brush_volumes: &[BrushVolume], epsilon: f32) -> bool {
     brush_volumes.iter().any(|brush| {
         brush
             .planes
             .iter()
-            .all(|plane| point.dot(plane.normal) - plane.distance <= SOLID_EPSILON)
+            .all(|plane| point.dot(plane.normal) - plane.distance <= epsilon)
     })
 }
 
@@ -420,7 +452,6 @@ fn make_leaf(tree: &mut BspTree, all_faces: &[Face], face_indices: &[usize]) -> 
     tree.leaves.push(BspLeaf {
         face_indices: face_indices.to_vec(),
         bounds,
-        cluster: 0,      // assigned later by clustering
         is_solid: false, // assigned later by classify_leaf_solidity
     });
     BspChild::Leaf(leaf_idx)

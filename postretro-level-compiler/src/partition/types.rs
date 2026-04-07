@@ -1,5 +1,5 @@
-// BSP partition types: tree nodes, leaves, clusters, bounding volumes.
-// See: context/plans/ready/prl-phase-1-minimum-viable-compiler/
+// BSP partition types: tree nodes, leaves, bounding volumes.
+// See: context/lib/build_pipeline.md §PRL
 
 use crate::map_data::Face;
 use glam::Vec3;
@@ -65,7 +65,6 @@ pub struct BspNode {
 pub struct BspLeaf {
     pub face_indices: Vec<usize>,
     pub bounds: Aabb,
-    pub cluster: usize,
     /// True if this leaf represents solid space (inside a brush volume).
     /// Solid leaves block portal generation and are excluded from PVS.
     pub is_solid: bool,
@@ -78,18 +77,9 @@ pub struct BspTree {
     pub leaves: Vec<BspLeaf>,
 }
 
-/// Spatial cluster grouping BSP leaves.
-#[derive(Debug, Clone)]
-pub struct Cluster {
-    pub id: usize,
-    pub bounds: Aabb,
-    pub face_indices: Vec<usize>,
-}
-
-/// Complete partition result: BSP tree, post-split faces, and clusters.
+/// Complete partition result: BSP tree and post-split faces.
 #[derive(Debug)]
 pub struct PartitionResult {
     pub tree: BspTree,
     pub faces: Vec<Face>,
-    pub clusters: Vec<Cluster>,
 }

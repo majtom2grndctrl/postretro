@@ -90,16 +90,6 @@ pub struct LevelGeometry<'a> {
     /// When `Some`, each entry corresponds to the face at the same index in `face_ranges`.
     /// When `None`, all faces use the default wireframe color (BSP levels).
     pub face_cluster_indices: Option<Vec<u32>>,
-    /// Diagnostic: per-cluster-pair visibility confidence from the PRL file.
-    /// When present, enables confidence-based coloring instead of palette coloring.
-    pub confidence: Option<ConfidenceData>,
-}
-
-/// Confidence data passed to the renderer for diagnostic coloring.
-pub struct ConfidenceData {
-    pub cluster_count: u32,
-    /// Flat row-major matrix: `data[from * cluster_count + to]` = confidence ratio.
-    pub data: Vec<f32>,
 }
 
 // --- Renderer ---
@@ -120,21 +110,6 @@ pub struct Renderer {
 
     wireframe_mode: WireframeMode,
     has_geometry: bool,
-
-    /// Stored geometry data for confidence-based recoloring per frame.
-    /// Only populated when confidence data is available.
-    confidence_state: Option<ConfidenceState>,
-}
-
-/// Retained state for per-frame confidence-based vertex recoloring.
-struct ConfidenceState {
-    positions: Vec<[f32; 3]>,
-    indices: Vec<u32>,
-    face_ranges: Vec<(u32, u32)>,
-    face_cluster_indices: Vec<u32>,
-    confidence: ConfidenceData,
-    /// Last camera cluster used for coloring, to avoid redundant uploads.
-    last_camera_cluster: Option<usize>,
 }
 
 impl Renderer {
@@ -220,11 +195,7 @@ impl Renderer {
         let has_geometry =
             geometry.is_some_and(|g| !g.vertices.is_empty() && !g.indices.is_empty());
 
-        let has_confidence = geometry
-            .as_ref()
-            .is_some_and(|g| g.confidence.is_some());
-
-        let (vertex_data, index_data, index_count, confidence_state) = if let Some(geom) =
+        let (vertex_data, index_data, index_count) = if let Some(geom) =
             geometry.filter(|g| !g.vertices.is_empty() && !g.indices.is_empty())
         {
             let colored_verts = build_colored_vertices(
@@ -241,32 +212,11 @@ impl Renderer {
                 }
             };
 
-            // Build confidence state if diagnostic data is available
-            let conf_state = match geom.confidence {
-                Some(ref conf) if geom.face_cluster_indices.is_some() => Some(ConfidenceState {
-                    positions: geom.vertices.to_vec(),
-                    indices: geom.indices.to_vec(),
-                    face_ranges: geom.face_ranges.clone(),
-                    face_cluster_indices: geom
-                        .face_cluster_indices
-                        .as_ref()
-                        .expect("checked above")
-                        .clone(),
-                    confidence: ConfidenceData {
-                        cluster_count: conf.cluster_count,
-                        data: conf.data.clone(),
-                    },
-                    last_camera_cluster: None,
-                }),
-                _ => None,
-            };
-
             let count = indices.len() as u32;
             (
                 bytemuck_cast_slice_f32x6(&colored_verts),
                 bytemuck_cast_slice_u32(&indices),
                 count,
-                conf_state,
             )
         } else {
             // Empty placeholder buffers (wgpu requires non-zero size for some backends).
@@ -274,21 +224,13 @@ impl Renderer {
                 vec![0u8; 24], // one dummy vertex (6 floats: pos + color)
                 vec![0u8; 4],  // one dummy index
                 0u32,
-                None,
             )
-        };
-
-        // Use COPY_DST when confidence mode needs per-frame vertex color updates.
-        let vertex_usage = if has_confidence {
-            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
-        } else {
-            wgpu::BufferUsages::VERTEX
         };
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BSP Vertex Buffer"),
             contents: &vertex_data,
-            usage: vertex_usage,
+            usage: wgpu::BufferUsages::VERTEX,
         });
 
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -422,7 +364,6 @@ impl Renderer {
             uniform_bind_group,
             wireframe_mode,
             has_geometry,
-            confidence_state,
         })
     }
 
@@ -437,35 +378,6 @@ impl Renderer {
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
         self.is_surface_configured = true;
-    }
-
-    /// Update vertex colors based on visibility confidence from the camera's cluster.
-    ///
-    /// Only has an effect when confidence data is present (diagnostic PRL files).
-    /// Skips the upload when the camera hasn't moved to a different cluster.
-    pub fn update_confidence_colors(&mut self, camera_cluster: Option<usize>) {
-        let state = match self.confidence_state.as_mut() {
-            Some(s) => s,
-            None => return,
-        };
-
-        if state.last_camera_cluster == camera_cluster {
-            return;
-        }
-        state.last_camera_cluster = camera_cluster;
-
-        let colored_verts = build_confidence_colored_vertices(
-            &state.positions,
-            &state.indices,
-            &state.face_ranges,
-            &state.face_cluster_indices,
-            &state.confidence,
-            camera_cluster,
-        );
-
-        let vertex_data = bytemuck_cast_slice_f32x6(&colored_verts);
-        self.queue
-            .write_buffer(&self.vertex_buffer, 0, &vertex_data);
     }
 
     pub fn update_view_projection(&self, view_proj: Mat4) {
@@ -696,81 +608,6 @@ fn build_colored_vertices(
                     v[4] = color[1];
                     v[5] = color[2];
                 }
-            }
-        }
-    }
-
-    colored
-}
-
-// --- Confidence-based coloring ---
-
-/// Confidence color thresholds.
-const COLOR_WHITE: [f32; 3] = [1.0, 1.0, 1.0];
-const COLOR_GREEN: [f32; 3] = [0.0, 1.0, 0.0];
-const COLOR_YELLOW: [f32; 3] = [1.0, 1.0, 0.0];
-const COLOR_RED: [f32; 3] = [1.0, 0.0, 0.0];
-const COLOR_BLUE: [f32; 3] = [0.3, 0.5, 1.0];
-
-/// Build vertex colors based on visibility confidence from the camera's cluster.
-///
-/// Colors each cluster's faces by how confidently the camera's cluster sees it:
-/// - Camera's own cluster: white
-/// - High confidence (>0.75): green
-/// - Medium confidence (0.25-0.75): yellow
-/// - Low confidence (<0.25): red
-/// - Not visible in PVS but drawn (adjacency override): blue
-fn build_confidence_colored_vertices(
-    positions: &[[f32; 3]],
-    indices: &[u32],
-    face_ranges: &[(u32, u32)],
-    face_cluster_indices: &[u32],
-    confidence: &ConfidenceData,
-    camera_cluster: Option<usize>,
-) -> Vec<[f32; 6]> {
-    let mut colored: Vec<[f32; 6]> = positions
-        .iter()
-        .map(|pos| [pos[0], pos[1], pos[2], 0.5, 0.5, 0.5])
-        .collect();
-
-    let cam = match camera_cluster {
-        Some(c) => c,
-        None => return colored,
-    };
-
-    let cc = confidence.cluster_count as usize;
-
-    for (face_idx, &(index_offset, index_count)) in face_ranges.iter().enumerate() {
-        let target_cluster = face_cluster_indices
-            .get(face_idx)
-            .copied()
-            .unwrap_or(0) as usize;
-
-        let color = if target_cluster == cam {
-            COLOR_WHITE
-        } else if cam < cc && target_cluster < cc {
-            let conf_value = confidence.data[cam * cc + target_cluster];
-            if conf_value < 1e-6 {
-                // Not visible via ray-cast; drawn because of adjacency or draw-all
-                COLOR_BLUE
-            } else if conf_value < 0.25 {
-                COLOR_RED
-            } else if conf_value < 0.75 {
-                COLOR_YELLOW
-            } else {
-                COLOR_GREEN
-            }
-        } else {
-            COLOR_BLUE
-        };
-
-        let start = index_offset as usize;
-        let end = start + index_count as usize;
-        for &vert_idx in indices.get(start..end).unwrap_or(&[]) {
-            if let Some(v) = colored.get_mut(vert_idx as usize) {
-                v[3] = color[0];
-                v[4] = color[1];
-                v[5] = color[2];
             }
         }
     }

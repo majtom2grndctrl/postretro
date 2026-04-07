@@ -1,8 +1,7 @@
-// BSP tree construction and spatial clustering.
-// See: context/plans/ready/prl-phase-1-minimum-viable-compiler/
+// BSP tree construction and leaf classification.
+// See: context/lib/build_pipeline.md §PRL
 
 mod bsp;
-mod cluster;
 mod types;
 
 pub use types::*;
@@ -10,10 +9,10 @@ pub use types::*;
 use crate::map_data::{BrushVolume, Face};
 use anyhow::Result;
 
-/// Partition world faces into a BSP tree and spatial clusters.
+/// Partition world faces into a BSP tree with solid/empty leaf classification.
 ///
-/// Operates in shambler's native coordinate space (right-handed, Z-up).
-/// Coordinate transforms happen in later pipeline stages.
+/// All coordinates are expected in engine space (Y-up) — the Quake-to-engine
+/// transform is applied at the parse boundary.
 ///
 /// `brush_volumes` provides the convex hull planes for each world brush,
 /// used to classify leaves as solid (inside brush) or empty (air).
@@ -25,7 +24,6 @@ pub fn partition(faces: Vec<Face>, brush_volumes: &[BrushVolume]) -> Result<Part
                 leaves: Vec::new(),
             },
             faces,
-            clusters: Vec::new(),
         });
     }
 
@@ -37,33 +35,29 @@ pub fn partition(faces: Vec<Face>, brush_volumes: &[BrushVolume]) -> Result<Part
     let empty_count = tree.leaves.len() - solid_count;
     log::info!("[Compiler] BSP leaves: {solid_count} solid, {empty_count} empty");
 
-    let clusters = cluster::assign_clusters(&mut tree)?;
-
-    log_stats(&tree, &split_faces, &clusters);
-    validate(&tree, &split_faces, &clusters)?;
+    log_stats(&tree, &split_faces);
+    validate(&tree, &split_faces)?;
 
     Ok(PartitionResult {
         tree,
         faces: split_faces,
-        clusters,
     })
 }
 
-fn log_stats(tree: &BspTree, faces: &[Face], clusters: &[Cluster]) {
+fn log_stats(tree: &BspTree, faces: &[Face]) {
     let max_depth = compute_max_depth(tree);
-    let avg_faces: f32 = if clusters.is_empty() {
+    let avg_faces: f32 = if tree.leaves.is_empty() {
         0.0
     } else {
-        let total: usize = clusters.iter().map(|c| c.face_indices.len()).sum();
-        total as f32 / clusters.len() as f32
+        let total: usize = tree.leaves.iter().map(|l| l.face_indices.len()).sum();
+        total as f32 / tree.leaves.len() as f32
     };
 
     log::info!("[Compiler] BSP nodes: {}", tree.nodes.len());
     log::info!("[Compiler] BSP leaves: {}", tree.leaves.len());
     log::info!("[Compiler] BSP max depth: {max_depth}");
-    log::info!("[Compiler] Clusters: {}", clusters.len());
     log::info!("[Compiler] Total faces (after splits): {}", faces.len());
-    log::info!("[Compiler] Average faces per cluster: {avg_faces:.1}");
+    log::info!("[Compiler] Average faces per leaf: {avg_faces:.1}");
 }
 
 fn compute_max_depth(tree: &BspTree) -> usize {
@@ -89,7 +83,7 @@ fn compute_max_depth(tree: &BspTree) -> usize {
     front.max(back)
 }
 
-fn validate(tree: &BspTree, faces: &[Face], clusters: &[Cluster]) -> Result<()> {
+fn validate(tree: &BspTree, faces: &[Face]) -> Result<()> {
     // Every face appears in exactly one leaf
     let mut face_leaf_count = vec![0usize; faces.len()];
     for leaf in &tree.leaves {
@@ -108,32 +102,13 @@ fn validate(tree: &BspTree, faces: &[Face], clusters: &[Cluster]) -> Result<()> 
         );
     }
 
-    // Every leaf is assigned to exactly one cluster
+    // Leaf bounding volumes are finite
     for (i, leaf) in tree.leaves.iter().enumerate() {
-        anyhow::ensure!(
-            leaf.cluster < clusters.len(),
-            "leaf {i} assigned to non-existent cluster {}",
-            leaf.cluster
-        );
-    }
-
-    // Every face is transitively in exactly one cluster
-    let mut face_cluster_count = vec![0usize; faces.len()];
-    for cluster in clusters {
-        for &fi in &cluster.face_indices {
-            face_cluster_count[fi] += 1;
+        // Faceless leaves have empty bounds, which is expected
+        if leaf.face_indices.is_empty() {
+            continue;
         }
-    }
-    for (i, count) in face_cluster_count.iter().enumerate() {
-        anyhow::ensure!(
-            *count == 1,
-            "face {i} appears in {count} clusters (expected exactly 1)"
-        );
-    }
-
-    // Cluster bounding volumes are finite
-    for cluster in clusters {
-        let b = &cluster.bounds;
+        let b = &leaf.bounds;
         anyhow::ensure!(
             b.min.x.is_finite()
                 && b.min.y.is_finite()
@@ -141,13 +116,11 @@ fn validate(tree: &BspTree, faces: &[Face], clusters: &[Cluster]) -> Result<()> 
                 && b.max.x.is_finite()
                 && b.max.y.is_finite()
                 && b.max.z.is_finite(),
-            "cluster {} has non-finite bounding volume",
-            cluster.id
+            "leaf {i} has non-finite bounding volume"
         );
         anyhow::ensure!(
             b.min.x <= b.max.x && b.min.y <= b.max.y && b.min.z <= b.max.z,
-            "cluster {} has inverted bounding volume",
-            cluster.id
+            "leaf {i} has inverted bounding volume"
         );
     }
 
@@ -165,6 +138,7 @@ fn validate(tree: &BspTree, faces: &[Face], clusters: &[Cluster]) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map_data::{BrushPlane, BrushVolume};
     use glam::Vec3;
 
     fn make_box_faces(min: Vec3, max: Vec3) -> Vec<Face> {
@@ -248,25 +222,16 @@ mod tests {
     }
 
     #[test]
-    fn single_brush_produces_one_cluster() {
+    fn single_brush_produces_leaves() {
         let faces = make_box_faces(Vec3::ZERO, Vec3::new(64.0, 64.0, 64.0));
         let result = partition(faces, &[]).expect("partition should succeed");
 
-        assert_eq!(
-            result.clusters.len(),
-            1,
-            "single brush should produce one cluster"
-        );
+        assert!(!result.tree.leaves.is_empty(), "should produce leaves");
         assert!(!result.faces.is_empty());
-        assert_eq!(
-            result.clusters[0].face_indices.len(),
-            result.faces.len(),
-            "the single cluster should contain all faces"
-        );
     }
 
     #[test]
-    fn two_disjoint_brushes_produce_at_least_two_clusters() {
+    fn two_disjoint_brushes_produce_multiple_leaves() {
         let mut faces = make_box_faces(Vec3::ZERO, Vec3::new(64.0, 64.0, 64.0));
         faces.extend(make_box_faces(
             Vec3::new(1000.0, 1000.0, 1000.0),
@@ -276,9 +241,9 @@ mod tests {
         let result = partition(faces, &[]).expect("partition should succeed");
 
         assert!(
-            result.clusters.len() >= 2,
-            "two distant brushes should produce at least 2 clusters, got {}",
-            result.clusters.len()
+            result.tree.leaves.len() >= 2,
+            "two distant brushes should produce at least 2 leaves, got {}",
+            result.tree.leaves.len()
         );
     }
 
@@ -287,12 +252,11 @@ mod tests {
         let result = partition(Vec::new(), &[]).expect("empty partition should succeed");
         assert!(result.tree.nodes.is_empty());
         assert!(result.tree.leaves.is_empty());
-        assert!(result.clusters.is_empty());
         assert!(result.faces.is_empty());
     }
 
     #[test]
-    fn every_face_maps_to_exactly_one_cluster() {
+    fn every_face_maps_to_exactly_one_leaf() {
         let mut faces = make_box_faces(Vec3::ZERO, Vec3::new(64.0, 64.0, 64.0));
         faces.extend(make_box_faces(
             Vec3::new(200.0, 0.0, 0.0),
@@ -305,28 +269,27 @@ mod tests {
 
         let result = partition(faces, &[]).expect("partition should succeed");
 
-        let mut face_cluster = vec![None; result.faces.len()];
-        for cluster in &result.clusters {
-            for &fi in &cluster.face_indices {
-                assert!(
-                    face_cluster[fi].is_none(),
-                    "face {fi} assigned to multiple clusters"
-                );
-                face_cluster[fi] = Some(cluster.id);
+        let mut face_leaf_count = vec![0usize; result.faces.len()];
+        for leaf in &result.tree.leaves {
+            for &fi in &leaf.face_indices {
+                face_leaf_count[fi] += 1;
             }
         }
-        for (i, c) in face_cluster.iter().enumerate() {
-            assert!(c.is_some(), "face {i} not assigned to any cluster");
+        for (i, count) in face_leaf_count.iter().enumerate() {
+            assert_eq!(*count, 1, "face {i} appears in {count} leaves (expected 1)");
         }
     }
 
     #[test]
-    fn cluster_bounds_are_valid() {
+    fn leaf_bounds_are_valid() {
         let faces = make_box_faces(Vec3::ZERO, Vec3::new(64.0, 64.0, 64.0));
         let result = partition(faces, &[]).expect("partition should succeed");
 
-        for cluster in &result.clusters {
-            let b = &cluster.bounds;
+        for leaf in &result.tree.leaves {
+            if leaf.face_indices.is_empty() {
+                continue;
+            }
+            let b = &leaf.bounds;
             assert!(b.min.x <= b.max.x);
             assert!(b.min.y <= b.max.y);
             assert!(b.min.z <= b.max.z);
@@ -347,15 +310,141 @@ mod tests {
         let result = partition(map_data.world_faces, &map_data.brush_volumes)
             .expect("partition should succeed on test map");
 
-        assert!(!result.clusters.is_empty(), "should produce clusters");
         assert!(!result.tree.leaves.is_empty(), "should produce leaves");
         assert!(!result.faces.is_empty(), "should have faces");
 
-        // Reasonable cluster count for a 10-brush map
+        // Reasonable leaf count for a 10-brush map
         assert!(
-            result.clusters.len() <= 100,
-            "too many clusters ({}) for a small map",
-            result.clusters.len()
+            result.tree.leaves.len() <= 500,
+            "too many leaves ({}) for a small map",
+            result.tree.leaves.len()
+        );
+
+        // Should have both solid and empty leaves
+        let solid_count = result.tree.leaves.iter().filter(|l| l.is_solid).count();
+        let empty_count = result.tree.leaves.len() - solid_count;
+        assert!(solid_count >= 1, "should have at least 1 solid leaf");
+        assert!(empty_count >= 1, "should have at least 1 empty leaf");
+    }
+
+    /// Two box rooms connected by a corridor. The brush volumes define the
+    /// solid walls; the inward-facing surfaces define air-space boundaries.
+    /// Portal generation depends on this topology producing both solid and
+    /// empty leaves.
+    #[test]
+    fn two_room_map_produces_solid_and_empty_leaves() {
+        // Build a hollow room from 6 wall brushes (floor, ceiling, 4 walls).
+        // Room interior is the air space between walls.
+        fn hollow_room(min: Vec3, max: Vec3, wall: f32) -> (Vec<Face>, Vec<BrushVolume>) {
+            let mut faces = Vec::new();
+            let mut brushes = Vec::new();
+
+            // Floor slab
+            let b_min = Vec3::new(min.x, min.y, min.z);
+            let b_max = Vec3::new(max.x, min.y + wall, max.z);
+            faces.extend(make_box_faces(b_min, b_max));
+            brushes.push(box_brush(b_min, b_max));
+
+            // Ceiling slab
+            let b_min = Vec3::new(min.x, max.y - wall, min.z);
+            let b_max = Vec3::new(max.x, max.y, max.z);
+            faces.extend(make_box_faces(b_min, b_max));
+            brushes.push(box_brush(b_min, b_max));
+
+            // Wall -X
+            let b_min = Vec3::new(min.x, min.y, min.z);
+            let b_max = Vec3::new(min.x + wall, max.y, max.z);
+            faces.extend(make_box_faces(b_min, b_max));
+            brushes.push(box_brush(b_min, b_max));
+
+            // Wall +X
+            let b_min = Vec3::new(max.x - wall, min.y, min.z);
+            let b_max = Vec3::new(max.x, max.y, max.z);
+            faces.extend(make_box_faces(b_min, b_max));
+            brushes.push(box_brush(b_min, b_max));
+
+            // Wall -Z
+            let b_min = Vec3::new(min.x, min.y, min.z);
+            let b_max = Vec3::new(max.x, max.y, min.z + wall);
+            faces.extend(make_box_faces(b_min, b_max));
+            brushes.push(box_brush(b_min, b_max));
+
+            // Wall +Z
+            let b_min = Vec3::new(min.x, min.y, max.z - wall);
+            let b_max = Vec3::new(max.x, max.y, max.z);
+            faces.extend(make_box_faces(b_min, b_max));
+            brushes.push(box_brush(b_min, b_max));
+
+            (faces, brushes)
+        }
+
+        fn box_brush(min: Vec3, max: Vec3) -> BrushVolume {
+            BrushVolume {
+                planes: vec![
+                    BrushPlane {
+                        normal: Vec3::X,
+                        distance: max.x,
+                    },
+                    BrushPlane {
+                        normal: Vec3::NEG_X,
+                        distance: -min.x,
+                    },
+                    BrushPlane {
+                        normal: Vec3::Y,
+                        distance: max.y,
+                    },
+                    BrushPlane {
+                        normal: Vec3::NEG_Y,
+                        distance: -min.y,
+                    },
+                    BrushPlane {
+                        normal: Vec3::Z,
+                        distance: max.z,
+                    },
+                    BrushPlane {
+                        normal: Vec3::NEG_Z,
+                        distance: -min.z,
+                    },
+                ],
+            }
+        }
+
+        let wall = 16.0;
+
+        // Room A: (0,0,0) to (128,128,128)
+        let (mut faces, mut brushes) = hollow_room(Vec3::ZERO, Vec3::splat(128.0), wall);
+
+        // Corridor connecting rooms: from room A's +X wall to room B's -X wall.
+        // Corridor spans X=128..256, Y=0..128, Z=48..80 (narrow passage).
+        let (corr_faces, corr_brushes) = hollow_room(
+            Vec3::new(112.0, 0.0, 40.0),
+            Vec3::new(272.0, 128.0, 88.0),
+            wall,
+        );
+        faces.extend(corr_faces);
+        brushes.extend(corr_brushes);
+
+        // Room B: (256,0,0) to (384,128,128)
+        let (room_b_faces, room_b_brushes) = hollow_room(
+            Vec3::new(256.0, 0.0, 0.0),
+            Vec3::new(384.0, 128.0, 128.0),
+            wall,
+        );
+        faces.extend(room_b_faces);
+        brushes.extend(room_b_brushes);
+
+        let result = partition(faces, &brushes).expect("two-room partition should succeed");
+
+        let solid_count = result.tree.leaves.iter().filter(|l| l.is_solid).count();
+        let empty_count = result.tree.leaves.len() - solid_count;
+
+        assert!(
+            empty_count >= 2,
+            "two-room map should produce at least 2 empty leaves, got {empty_count}"
+        );
+        assert!(
+            solid_count >= 1,
+            "two-room map should produce at least 1 solid leaf, got {solid_count}"
         );
     }
 }

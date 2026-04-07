@@ -1242,7 +1242,6 @@ mod tests {
                 },
             ],
             has_pvs: true,
-            confidence: None,
         }
     }
 
@@ -1283,7 +1282,6 @@ mod tests {
             face_meta: vec![],
             clusters: vec![],
             has_pvs: false,
-            confidence: None,
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let (result, stats) = determine_prl_visibility(Vec3::ZERO, vp, &world);

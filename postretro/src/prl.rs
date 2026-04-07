@@ -4,7 +4,6 @@
 use std::path::Path;
 
 use glam::Vec3;
-use postretro_level_format::confidence::VisibilityConfidenceSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::visibility::{ClusterVisibilitySection, decompress_pvs};
 use postretro_level_format::{self as prl_format, SectionId};
@@ -51,9 +50,6 @@ pub struct LevelWorld {
     pub clusters: Vec<ClusterData>,
     /// Whether PVS data was present in the file.
     pub has_pvs: bool,
-    /// Diagnostic: per-cluster-pair visibility confidence.
-    /// Present only when the PRL was compiled with `--diagnostics`.
-    pub confidence: Option<VisibilityConfidenceSection>,
 }
 
 impl LevelWorld {
@@ -155,22 +151,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
     };
 
-    let confidence_section = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::VisibilityConfidence as u32,
-    )? {
-        Some(data) => {
-            let section = VisibilityConfidenceSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] Loaded visibility confidence section ({} clusters)",
-                section.cluster_count,
-            );
-            Some(section)
-        }
-        None => None,
-    };
-
     let has_pvs = vis_section.is_some();
 
     let face_meta: Vec<FaceMeta> = geom
@@ -200,7 +180,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         face_meta,
         clusters,
         has_pvs,
-        confidence: confidence_section,
     })
 }
 
@@ -475,7 +454,6 @@ mod tests {
                 },
             ],
             has_pvs: false,
-            confidence: None,
         };
 
         assert_eq!(world.find_cluster(Vec3::new(5.0, 5.0, 5.0)), Some(0));
@@ -496,7 +474,6 @@ mod tests {
                 pvs: vec![],
             }],
             has_pvs: false,
-            confidence: None,
         };
 
         assert_eq!(world.find_cluster(Vec3::new(50.0, 50.0, 50.0)), None);
@@ -525,7 +502,6 @@ mod tests {
                 },
             ],
             has_pvs: false,
-            confidence: None,
         };
 
         // Point at (7, 5, 5) is in both clusters; first match wins.
@@ -546,7 +522,6 @@ mod tests {
                 pvs: vec![],
             }],
             has_pvs: false,
-            confidence: None,
         };
 
         // Points on the boundary are inside (inclusive bounds).

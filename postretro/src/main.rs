@@ -195,7 +195,6 @@ impl ApplicationHandler for App {
                     .map(|f| (f.index_offset, f.index_count))
                     .collect(),
                 face_cluster_indices: None,
-                confidence: None,
             },
             Level::Prl(world) => render::LevelGeometry {
                 vertices: &world.vertices,
@@ -206,10 +205,6 @@ impl ApplicationHandler for App {
                     .map(|f| (f.index_offset, f.index_count))
                     .collect(),
                 face_cluster_indices: Some(prl::face_cluster_indices(world)),
-                confidence: world.confidence.as_ref().map(|c| render::ConfidenceData {
-                    cluster_count: c.cluster_count,
-                    data: c.data.clone(),
-                }),
             },
         });
 
@@ -397,15 +392,6 @@ impl ApplicationHandler for App {
 
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.update_view_projection(view_proj);
-
-                    // Update confidence coloring when the camera moves to a new cluster.
-                    let camera_cluster = match self.level.as_ref() {
-                        Some(Level::Prl(world)) => {
-                            world.find_cluster(self.camera.position)
-                        }
-                        _ => None,
-                    };
-                    renderer.update_confidence_colors(camera_cluster);
 
                     if renderer.is_ready() {
                         if let Err(err) = renderer.render_frame(&visible) {

@@ -1,32 +1,27 @@
 // Pack and write: serialize sections to .prl binary, validate via read-back.
-// See: context/plans/in-progress/prl-phase-1-minimum-viable-compiler/task-06-pack-write.md
+// See: context/lib/build_pipeline.md §PRL
 
 use std::fs;
 use std::io::Cursor;
 use std::path::Path;
 
-use postretro_level_format::confidence::VisibilityConfidenceSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::visibility::ClusterVisibilitySection;
 use postretro_level_format::{
     SectionBlob, SectionId, read_container, read_section_data, write_prl,
 };
 
-/// Write geometry, visibility, and optional confidence sections to a .prl file,
-/// then validate via read-back.
-///
-/// `confidence` is the per-cluster-pair confidence matrix from diagnostic mode.
-/// When `None`, the confidence section is omitted (normal compilation).
+/// Write geometry and visibility sections to a .prl file, then validate via
+/// read-back.
 pub fn pack_and_write(
     output: &Path,
     geometry: &GeometrySection,
     visibility: &ClusterVisibilitySection,
-    confidence: Option<&[Vec<f32>]>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geometry.to_bytes();
     let visibility_bytes = visibility.to_bytes();
 
-    let mut sections = vec![
+    let sections = vec![
         SectionBlob {
             section_id: SectionId::Geometry as u32,
             version: 1,
@@ -38,24 +33,6 @@ pub fn pack_and_write(
             data: visibility_bytes.clone(),
         },
     ];
-
-    let confidence_bytes = if let Some(conf_matrix) = confidence {
-        let cluster_count = conf_matrix.len() as u32;
-        let flat: Vec<f32> = conf_matrix.iter().flat_map(|row| row.iter().copied()).collect();
-        let section = VisibilityConfidenceSection {
-            cluster_count,
-            data: flat,
-        };
-        let bytes = section.to_bytes();
-        sections.push(SectionBlob {
-            section_id: SectionId::VisibilityConfidence as u32,
-            version: 1,
-            data: bytes.clone(),
-        });
-        Some(bytes)
-    } else {
-        None
-    };
 
     // Validate output directory exists before writing
     if let Some(parent) = output.parent() {
@@ -80,20 +57,9 @@ pub fn pack_and_write(
         "[Compiler]   ClusterVisibility: {} bytes",
         visibility_bytes.len()
     );
-    if let Some(ref conf_bytes) = confidence_bytes {
-        log::info!(
-            "[Compiler]   VisibilityConfidence: {} bytes",
-            conf_bytes.len()
-        );
-    }
 
     // Read-back validation
-    validate_readback(
-        &file_buf,
-        &geometry_bytes,
-        &visibility_bytes,
-        confidence_bytes.as_deref(),
-    )?;
+    validate_readback(&file_buf, &geometry_bytes, &visibility_bytes)?;
     log::info!("[Compiler] Read-back validation passed.");
 
     Ok(())
@@ -104,16 +70,13 @@ fn validate_readback(
     file_buf: &[u8],
     expected_geometry: &[u8],
     expected_visibility: &[u8],
-    expected_confidence: Option<&[u8]>,
 ) -> anyhow::Result<()> {
     let mut cursor = Cursor::new(file_buf);
     let meta = read_container(&mut cursor)?;
 
-    let expected_section_count = if expected_confidence.is_some() { 3 } else { 2 };
     anyhow::ensure!(
-        meta.header.section_count == expected_section_count,
-        "expected {} sections, got {}",
-        expected_section_count,
+        meta.header.section_count == 2,
+        "expected 2 sections, got {}",
         meta.header.section_count
     );
 
@@ -150,60 +113,14 @@ fn validate_readback(
     GeometrySection::from_bytes(&geom_data)?;
     ClusterVisibilitySection::from_bytes(&vis_data)?;
 
-    // Validate confidence section if expected
-    if let Some(expected_conf) = expected_confidence {
-        let conf_data =
-            read_section_data(&mut cursor, &meta, SectionId::VisibilityConfidence as u32)?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("VisibilityConfidence section data missing from read-back")
-                })?;
-        anyhow::ensure!(
-            conf_data == expected_conf,
-            "VisibilityConfidence section data mismatch after read-back"
-        );
-        VisibilityConfidenceSection::from_bytes(&conf_data)?;
-    }
-
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3;
     use postretro_level_format::geometry::FaceMeta;
     use postretro_level_format::visibility::ClusterInfo;
-
-    /// Build a VoxelGrid covering clusters and faces, matching the main pipeline logic.
-    fn build_test_voxel_grid(
-        clusters: &[crate::partition::Cluster],
-        faces: &[crate::map_data::Face],
-        brush_volumes: &[crate::map_data::BrushVolume],
-    ) -> crate::voxel_grid::VoxelGrid {
-        let mut world_bounds = crate::partition::Aabb::empty();
-        for c in clusters {
-            world_bounds.expand_aabb(&c.bounds);
-        }
-        for face in faces {
-            for &v in &face.vertices {
-                world_bounds.expand_point(v);
-            }
-        }
-        if !world_bounds.is_valid() {
-            world_bounds = crate::partition::Aabb {
-                min: Vec3::ZERO,
-                max: Vec3::splat(1.0),
-            };
-        }
-        let pad = Vec3::splat(crate::voxel_grid::DEFAULT_VOXEL_SIZE);
-        world_bounds.min -= pad;
-        world_bounds.max += pad;
-        crate::voxel_grid::VoxelGrid::from_brushes(
-            brush_volumes,
-            &world_bounds,
-            crate::voxel_grid::DEFAULT_VOXEL_SIZE,
-        )
-    }
 
     fn sample_geometry() -> GeometrySection {
         GeometrySection {
@@ -240,8 +157,7 @@ mod tests {
         let geometry = sample_geometry();
         let visibility = sample_visibility();
 
-        pack_and_write(&output, &geometry, &visibility, None)
-            .expect("pack_and_write should succeed");
+        pack_and_write(&output, &geometry, &visibility).expect("pack_and_write should succeed");
 
         // Verify file exists and starts with magic bytes
         let data = std::fs::read(&output).expect("should read output file");
@@ -285,34 +201,13 @@ mod tests {
         let geometry = sample_geometry();
         let visibility = sample_visibility();
 
-        let result = pack_and_write(output, &geometry, &visibility, None);
+        let result = pack_and_write(output, &geometry, &visibility);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("output directory does not exist"),
             "expected directory error, got: {msg}"
         );
-    }
-
-    /// Helper: convert grid cells to Cluster type for test compatibility.
-    fn grid_cells_to_clusters(
-        cells: &[crate::spatial_grid::GridCell],
-    ) -> Vec<crate::partition::Cluster> {
-        cells
-            .iter()
-            .filter(|c| {
-                !c.face_indices.is_empty()
-                    || c.cell_type.map_or(false, |t| {
-                        t != crate::spatial_grid::CellType::Solid
-                    })
-            })
-            .enumerate()
-            .map(|(new_id, cell)| crate::partition::Cluster {
-                id: new_id,
-                bounds: cell.bounds.clone(),
-                face_indices: cell.face_indices.clone(),
-            })
-            .collect()
     }
 
     #[test]
@@ -323,31 +218,17 @@ mod tests {
             .join("assets/maps/test.map");
 
         let map_data = crate::parse::parse_map_file(&map_path).expect("test.map should parse");
-        let grid_result = crate::spatial_grid::assign_to_grid(map_data.world_faces, None);
-        let clusters = grid_cells_to_clusters(&grid_result.cells);
+        let result = crate::partition::partition(map_data.world_faces, &map_data.brush_volumes)
+            .expect("partition should succeed");
 
-        let geometry = crate::geometry::extract_geometry(&grid_result.faces, &clusters);
-        let min_cell_dim = grid_result
-            .cell_size
-            .x
-            .min(grid_result.cell_size.y)
-            .min(grid_result.cell_size.z)
-            .max(1.0);
-        let vg = build_test_voxel_grid(&clusters, &grid_result.faces, &map_data.brush_volumes);
-        let vis_result = crate::visibility::compute_visibility(
-            &clusters,
-            &map_data.entities,
-            &vg,
-            min_cell_dim,
-            &grid_result.faces,
-            false,
-        );
+        let geometry = crate::geometry::extract_geometry(&result.faces, &result.tree);
+        let vis_result = crate::visibility::build_passthrough_pvs(&result.tree);
 
         let dir = std::env::temp_dir().join("postretro_test_pipeline");
         let _ = std::fs::create_dir_all(&dir);
         let output = dir.join("test_pipeline.prl");
 
-        pack_and_write(&output, &geometry, &vis_result.section, None)
+        pack_and_write(&output, &geometry, &vis_result.section)
             .expect("full pipeline pack should succeed");
 
         // Verify full round-trip from file

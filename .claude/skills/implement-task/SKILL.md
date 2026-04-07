@@ -16,7 +16,17 @@ Implement a single task. Read the spec, load context, understand dependencies, b
 
 ## Process
 
-### 1. Load the task
+### 1. Load context
+
+Read the development guide carefully for engineering guidelines:
+- `context/lib/development_guide.md`
+
+Read the testing guide carefully for guidance on how to write tests:
+- `context/lib/testing_guide.md`
+
+Read `context/lib/index.md` — use agent router to identify which context files are relevant to this task. Load only what you need.
+
+### 2. Load the task
 
 **If given a plan/task path:**
 Read the plan from `context/plans/in-progress/<plan-name>/plan.md`. Extract:
@@ -27,16 +37,6 @@ Read the plan from `context/plans/in-progress/<plan-name>/plan.md`. Extract:
 Use the description as the task spec. Ask clarifying questions only if acceptance criteria are ambiguous.
 
 !`ls context/plans/in-progress/ 2>/dev/null`
-
-### 2. Load context
-
-Read the development guide carefully for engineering guidelines:
-- `context/lib/development_guide.md`
-
-Read the testing guide carefully for guidance on how to write tests:
-- `context/lib/testing_guide.md`
-
-Read `context/lib/index.md` — use agent router to identify which context files are relevant to this task. Load only what you need.
 
 ### 3. Examine dependencies
 
@@ -51,8 +51,8 @@ Before writing code, understand the systems your task touches:
 Build the feature according to the task spec and context file conventions.
 
 - Deliver the acceptance criteria. No more, no less.
-- Follow development guide conventions (§1–§5).
-- Write tests for cross-subsystem interactions, boundary parsing, and domain logic per testing guide.
+- Follow development guide conventions. They help.
+- Follow testing guide conventions. They help.
 - Handle error states and degradation paths within scope.
 - Do not add scope the task didn't ask for.
 

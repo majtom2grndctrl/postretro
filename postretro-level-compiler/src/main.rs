@@ -23,10 +23,12 @@ use crate::voxel_grid::VoxelGrid;
 
 use glam::Vec3;
 use std::path::PathBuf;
+use std::time::Instant;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    let started = Instant::now();
     let args = parse_args()?;
 
     log::info!("[Compiler] Input: {}", args.input.display());
@@ -90,7 +92,8 @@ fn main() -> anyhow::Result<()> {
         vis_result.confidence.as_deref(),
     )?;
 
-    log::info!("[Compiler] Done.");
+    let elapsed = started.elapsed();
+    log::info!("[Compiler] Done in {elapsed:.2?}.");
 
     Ok(())
 }

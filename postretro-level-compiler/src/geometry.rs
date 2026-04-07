@@ -1,14 +1,15 @@
 // Geometry extraction: fan-triangulate faces, build vertex/index buffers.
 // See: context/plans/ready/prl-phase-1-minimum-viable-compiler/
 
-use glam::Vec3;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection};
 
 use crate::map_data::Face;
 use crate::partition::Cluster;
 
-/// Fan-triangulate faces, apply coordinate transform, and build
-/// a `GeometrySection` with faces ordered by cluster.
+/// Fan-triangulate faces and build a `GeometrySection` with faces ordered by cluster.
+///
+/// Coordinates are expected to be in engine space (Y-up) — the Quake-to-engine
+/// transform is applied earlier, at the parse boundary in `parse.rs`.
 pub fn extract_geometry(faces: &[Face], clusters: &[Cluster]) -> GeometrySection {
     if faces.is_empty() {
         return GeometrySection {
@@ -32,10 +33,9 @@ pub fn extract_geometry(faces: &[Face], clusters: &[Cluster]) -> GeometrySection
 
         let base_vertex = vertices.len() as u32;
 
-        // Add transformed vertices for this face
+        // Vertices are already in engine space (transform applied at parse boundary)
         for &v in &face.vertices {
-            let transformed = quake_to_engine(v);
-            vertices.push([transformed.x, transformed.y, transformed.z]);
+            vertices.push([v.x, v.y, v.z]);
         }
 
         // Fan-triangulate: (0, 1, 2), (0, 2, 3), ..., (0, n-2, n-1)
@@ -81,17 +81,6 @@ fn build_cluster_ordered_faces(clusters: &[Cluster]) -> Vec<(usize, usize)> {
     ordered
 }
 
-/// Convert a position from Quake coordinates (right-handed, Z-up) to
-/// engine coordinates (right-handed, Y-up).
-///
-/// Quake: +X forward, +Y left, +Z up
-/// Engine: +X right, +Y up, -Z forward
-///
-/// engine_x = -quake_y, engine_y = quake_z, engine_z = -quake_x
-fn quake_to_engine(v: Vec3) -> Vec3 {
-    Vec3::new(-v.y, v.z, -v.x)
-}
-
 /// Log geometry extraction statistics.
 pub fn log_stats(section: &GeometrySection, cluster_count: usize) {
     let triangle_count = section.indices.len() / 3;
@@ -106,6 +95,7 @@ pub fn log_stats(section: &GeometrySection, cluster_count: usize) {
 mod tests {
     use super::*;
     use crate::partition::Aabb;
+    use glam::Vec3;
 
     fn triangle_face() -> Face {
         Face {
@@ -332,26 +322,19 @@ mod tests {
         assert_eq!(sum, section.indices.len() as u32);
     }
 
-    // -- Coordinate transform --
+    // -- Vertex passthrough --
+    // Coordinates arrive in engine space from parse.rs; extract_geometry writes them verbatim.
 
     #[test]
-    fn coordinate_transform_applied() {
-        // Quake point (1, 2, 3) should become engine (-2, 3, -1)
-        let result = quake_to_engine(Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(result.x, -2.0);
-        assert_eq!(result.y, 3.0);
-        assert_eq!(result.z, -1.0);
-    }
-
-    #[test]
-    fn vertices_are_transformed() {
+    fn vertices_are_passed_through_unchanged() {
+        // Inputs are already in engine space — geometry must not re-transform them.
         let faces = vec![Face {
             vertices: vec![
-                Vec3::new(1.0, 2.0, 3.0),
-                Vec3::new(4.0, 5.0, 6.0),
-                Vec3::new(7.0, 8.0, 9.0),
+                Vec3::new(-2.0, 3.0, -1.0),
+                Vec3::new(-5.0, 6.0, -4.0),
+                Vec3::new(-8.0, 9.0, -7.0),
             ],
-            normal: Vec3::Z,
+            normal: Vec3::Y,
             distance: 0.0,
             texture: "test".to_string(),
         }];
@@ -366,11 +349,8 @@ mod tests {
 
         let section = extract_geometry(&faces, &clusters);
 
-        // (1,2,3) -> (-2, 3, -1)
         assert_eq!(section.vertices[0], [-2.0, 3.0, -1.0]);
-        // (4,5,6) -> (-5, 6, -4)
         assert_eq!(section.vertices[1], [-5.0, 6.0, -4.0]);
-        // (7,8,9) -> (-8, 9, -7)
         assert_eq!(section.vertices[2], [-8.0, 9.0, -7.0]);
     }
 

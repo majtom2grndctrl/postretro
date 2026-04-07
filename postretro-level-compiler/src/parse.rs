@@ -19,6 +19,20 @@ fn to_glam(v: &shambler::Vector3) -> Vec3 {
     Vec3::new(v.x, v.y, v.z)
 }
 
+/// Convert a position from Quake coordinates (right-handed, Z-up) to
+/// engine coordinates (right-handed, Y-up).
+///
+/// Quake: +X forward, +Y left, +Z up
+/// Engine: +X right, +Y up, -Z forward
+///
+/// engine_x = -quake_y, engine_y = quake_z, engine_z = -quake_x
+///
+/// This is an orthonormal rotation (pure axis swizzle) — plane distances are
+/// invariant under this transform. Do not transform `distance` fields.
+fn quake_to_engine(v: Vec3) -> Vec3 {
+    Vec3::new(-v.y, v.z, -v.x)
+}
+
 /// Parse an origin string like "-192 25.6 167.736" into a Vec3.
 fn parse_origin(s: &str) -> Option<Vec3> {
     let parts: Vec<f32> = s
@@ -72,7 +86,9 @@ pub fn parse_map_file(path: &Path) -> Result<MapData> {
     for entity_id in geo_map.entities.iter() {
         let classname =
             get_property(&geo_map, entity_id, "classname").unwrap_or_else(|| "unknown".to_string());
-        let origin = get_property(&geo_map, entity_id, "origin").and_then(|s| parse_origin(&s));
+        let origin = get_property(&geo_map, entity_id, "origin")
+            .and_then(|s| parse_origin(&s))
+            .map(quake_to_engine);
 
         entities.push(EntityInfo {
             classname: classname.clone(),
@@ -132,7 +148,7 @@ pub fn parse_map_file(path: &Path) -> Result<MapData> {
             .filter_map(|fid| {
                 let plane = geo_planes.get(fid)?;
                 Some(BrushPlane {
-                    normal: to_glam(plane.normal()),
+                    normal: quake_to_engine(to_glam(plane.normal())),
                     distance: plane.distance(),
                 })
             })
@@ -169,11 +185,14 @@ pub fn parse_map_file(path: &Path) -> Result<MapData> {
                 None => continue,
             };
 
-            // Reorder vertices by winding indices
-            let vertices: Vec<Vec3> = indices.iter().map(|&i| to_glam(&vertices_raw[i])).collect();
+            // Reorder vertices by winding indices; transform from Quake to engine coords
+            let vertices: Vec<Vec3> = indices
+                .iter()
+                .map(|&i| quake_to_engine(to_glam(&vertices_raw[i])))
+                .collect();
 
             let plane = &geo_planes[face_id];
-            let normal = to_glam(plane.normal());
+            let normal = quake_to_engine(to_glam(plane.normal()));
             let distance = plane.distance();
 
             // Look up texture name
@@ -222,6 +241,31 @@ pub fn parse_map_file(path: &Path) -> Result<MapData> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // -- Coordinate transform --
+
+    #[test]
+    fn quake_to_engine_z_up_maps_to_y_up() {
+        // Quake Z-up → engine Y-up
+        let result = quake_to_engine(Vec3::new(0.0, 0.0, 1.0));
+        assert_eq!(result, Vec3::new(0.0, 1.0, 0.0));
+    }
+
+    #[test]
+    fn quake_to_engine_x_forward_maps_to_negative_z_forward() {
+        // Quake +X forward → engine -Z forward
+        let result = quake_to_engine(Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(result, Vec3::new(0.0, 0.0, -1.0));
+    }
+
+    #[test]
+    fn quake_to_engine_y_left_maps_to_negative_x() {
+        // Quake +Y left → engine -X
+        let result = quake_to_engine(Vec3::new(0.0, 1.0, 0.0));
+        assert_eq!(result, Vec3::new(-1.0, 0.0, 0.0));
+    }
+
+    // -- Map parsing --
 
     fn test_map_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

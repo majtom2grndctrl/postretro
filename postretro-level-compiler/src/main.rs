@@ -211,7 +211,10 @@ where
         anyhow::anyhow!("usage: prl-build <input.map> [-o <output.prl>] [--diagnostics] [--bsp]")
     })?;
 
-    let output = output.unwrap_or_else(|| input.with_extension("prl"));
+    let output = output.unwrap_or_else(|| {
+        let ext = if bsp { "bsp.prl" } else { "prl" };
+        input.with_extension(ext)
+    });
 
     Ok(Args {
         input,
@@ -230,5 +233,12 @@ mod tests {
         let args = vec!["input.map".to_string(), "--bsp".to_string()];
         let parsed = parse_args_from(args.into_iter()).unwrap();
         assert!(parsed.bsp);
+    }
+
+    #[test]
+    fn parse_args_sets_default_bsp_extension() {
+        let args = vec!["test.map".to_string(), "--bsp".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.output.to_str().unwrap(), "test.bsp.prl");
     }
 }

@@ -38,7 +38,7 @@ The algorithm has two phases: (1) generate a portal winding at each internal nod
 
 Walk the BSP tree recursively, maintaining a stack of clipping planes (the ancestor nodes' splitting planes, oriented relative to the traversal side). At each internal node:
 
-1. Create an initial polygon (winding) — a large square (e.g., 16384 units per side) centered on the node's splitting plane, axis-aligned to the plane normal.
+1. Create an initial polygon (winding) — a large square (e.g., 16384 units per side) centered on the node's splitting plane, axis-aligned to the plane normal. To construct it: cross the plane normal with a reference axis (use +X if the normal is near-parallel to +Z, otherwise use +Z) to get the first basis vector, then cross that result with the normal to get the second basis vector. Normalize both, scale each to the desired half-extent, and form a quad from ±basis1 ±basis2, offset by `normal * distance` to center it on the plane. The reference-axis selection must avoid near-parallel normals — skipping this check produces a degenerate or zero-length first cross product.
 2. Clip this polygon against all planes in the ancestor stack. Each clip discards the portion of the polygon on the wrong side of the ancestor plane. If the polygon becomes degenerate (< 3 vertices or area below a minimum threshold), discard — no portal at this node.
 3. Pass the surviving winding to Phase 2 (distribute).
 4. Recurse into both children, extending the ancestor plane stack.
@@ -83,7 +83,25 @@ This produces the correct set of portals — one for each pair of adjacent empty
 
 **Degenerate winding rejection:** After every clip or split, reject windings with fewer than 3 vertices or with area below a minimum threshold (e.g., 0.1 square units). This prevents accumulation of slivers from numerical precision loss. This is a key robustness improvement from ericw-tools over the original Quake source.
 
-**Polygon clipping:** Use Sutherland-Hodgman clipping. For each edge of the polygon, check if it crosses the clipping plane; if so, compute and insert the intersection point. This is the same clipping logic used in `bsp.rs` — extract or duplicate as needed.
+**Polygon clipping:** Use Sutherland-Hodgman clipping. Extract a shared utility function in a new `src/geometry_utils.rs` (or similar):
+
+```rust
+pub fn split_polygon(
+    vertices: &[Vec3],
+    plane_normal: Vec3,
+    plane_distance: f32,
+) -> (Option<Vec<Vec3>>, Option<Vec<Vec3>>)
+```
+
+Rewrite the existing `split_face` in `bsp.rs` to call `split_polygon` internally, re-attaching the `Face` metadata after the split. Portal generation calls `split_polygon` directly. This keeps the Sutherland-Hodgman intersection math in one place and prevents the two call sites from diverging.
+
+**Epsilon for portal clipping:** The existing `PLANE_EPSILON = 0.1` in `bsp.rs` is appropriate for face classification during BSP building, but is too generous for portal clipping — portals are clipped against many ancestor planes in sequence and accumulate error at each step. Portal clipping should use a tighter epsilon, consistent with ericw-tools' `ON_EPSILON` for winding operations. Define this constant in the portal module:
+
+```rust
+const PORTAL_EPSILON: f32 = 0.01;
+```
+
+Do not change `PLANE_EPSILON` in `bsp.rs`.
 
 ---
 

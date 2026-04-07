@@ -11,7 +11,7 @@
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
 - **Rendering pipeline / BSP / lighting / BSPX** → `rendering_pipeline.md`
-- **PRL format / level compiler / clusters / PVS** → `plans/prl-spec-draft.md` · `build_pipeline.md` §PRL
+- **PRL format / level compiler / BSP / PVS** → `build_pipeline.md` §PRL
 - **Audio / spatial sound / reverb zones** → `audio.md`
 - **Entity model / game objects / sprites** → `entity_model.md`
 - **Build pipeline / ericw-tools / FGD / TrenchBroom** → `build_pipeline.md`
@@ -47,9 +47,9 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 Two authoring pipelines, both consuming TrenchBroom `.map` files:
 
 - **BSP path** (current): ericw-tools compiles to `.bsp`. Engine consumes BSP/BSPX lumps.
-- **PRL path** (in development): prl-build compiles to `.prl`. Engine consumes cluster-based binary sections.
+- **PRL path** (in development): prl-build compiles to `.prl`. Engine consumes BSP tree, per-leaf PVS, and geometry sections.
 
-The PRL format replaces per-leaf BSP visibility with cluster-based PVS, stores geometry in engine-native coordinates, and is designed to subsume the baked data currently provided by BSPX lumps. The compiler uses a voxel grid for solid/empty classification and ray-cast visibility — no BSP tree. See `plans/prl-spec-draft.md` for the full format spec and `build_pipeline.md` §PRL for the compiler pipeline.
+The PRL format stores BSP tree, per-leaf PVS, and geometry in engine-native coordinates. The compiler builds a BSP tree from brush geometry, extracts portals at each splitting plane, and computes PVS by flooding through the portal graph. Designed to subsume baked data currently provided by BSPX lumps. See `build_pipeline.md` §PRL for the compiler pipeline.
 
 ### BSP baked data (current)
 

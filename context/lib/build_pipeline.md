@@ -22,7 +22,7 @@ Engine loads either format + PNGs at runtime
 
 **BSP path** (current, stable): ericw-tools compiles geometry, visibility, and lighting into a standard BSP2 file. Engine loads via qbsp crate.
 
-**PRL path** (in development): prl-build bakes geometry, cluster-based visibility, and future sections (lighting, nav mesh, audio) into a custom binary format. Engine loads via postretro-level-format crate. See `plans/prl-spec-draft.md` for the full format spec.
+**PRL path** (in development): prl-build builds a BSP tree, computes portal-based PVS, and packs geometry into a custom binary format. Future sections: lighting, nav mesh, audio. Engine loads via postretro-level-format crate.
 
 Both paths share the same TrenchBroom authoring workflow, FGD entity definitions, and PNG texture pipeline.
 
@@ -154,24 +154,22 @@ The PRL compiler (`prl-build`) reads `.map` files directly via shambler and prod
 ### Compiler pipeline
 
 ```
-parse .map → voxelize brushes → spatial grid (cell classification) → PVS (ray-cast) → geometry → pack .prl
+parse .map → BSP compilation → portal generation → portal vis → geometry → pack .prl
 ```
 
-1. **Parse.** Shambler extracts brush volumes, faces, and entities from the `.map` file.
-2. **Voxelize.** Brush volumes are rasterized into a 3D solid/empty bitmap (compile-time only, not stored in output). This enables point-in-solid classification and efficient ray occlusion testing.
-3. **Spatial grid.** Faces are assigned to uniform grid cells by centroid. Cells are classified as solid, air, or boundary using the voxel bitmap. Solid cells are discarded. Boundary cells (straddling walls) are subdivided. Air cells are merged into their nearest face-containing cell (expanding its bounds for camera containment).
-4. **PVS.** Ray-cast visibility between cluster pairs using 3D-DDA ray marching through the voxel grid. Sample points in solid space are rejected. Adjacent clusters are always mutually visible.
-5. **Geometry.** Faces are fan-triangulated into vertex/index buffers in engine-native Y-up coordinates.
-6. **Pack.** Geometry and visibility sections are written to the `.prl` binary format.
+1. **Parse.** Shambler extracts brush volumes, faces, and entities. Coordinate transform (Quake Z-up → engine Y-up) applied at the parse boundary. All downstream stages receive engine-native coordinates.
+2. **BSP compilation.** Builds a BSP tree from world faces. Produces interior nodes (splitting planes) and leaves (convex regions). Leaves classified solid or empty via brush half-plane test. Solid leaves represent brush interiors. Empty leaves represent navigable space.
+3. **Portal generation.** For each BSP internal node, clips the splitting-plane polygon against ancestor splitting planes to produce the portal polygon bounding that node's partition. Each portal is a convex polygon connecting two adjacent empty leaves. Portals are compile-time only — not stored in `.prl`.
+4. **Portal vis.** Per empty leaf, floods through the portal graph. A leaf L' is potentially visible from L if any sequence of portals connects them. Output: per-leaf PVS bitsets, RLE-compressed. Computed in parallel (one task per leaf).
+5. **Geometry.** Fan-triangulates faces into vertex/index buffers. Faces grouped by leaf index for efficient per-leaf draw calls.
+6. **Pack.** Writes BSP tree nodes, BSP leaves (face ranges, bounds, PVS references), leaf PVS bitsets, and geometry to the `.prl` binary format.
 
-### Key differences from the BSP path
+### Key differences from the former voxel approach
 
-- **Cluster-based visibility** instead of per-leaf BSP PVS. No BSP tree — the compiler uses a voxel grid for spatial queries.
-- **Engine-native coordinates** (Y-up). No runtime coordinate transform.
-- **Section-based binary format** with independent versioning. New data types (lighting, nav mesh, audio) are added as sections without breaking existing levels.
-- **Self-describing levels.** Everything the engine needs is in one `.prl` file — no secondary data files or string parsing at load time.
-
-Full spec: `plans/prl-spec-draft.md`.
+- No voxel grid. Solid/empty classification uses brush half-plane geometry directly.
+- Leaf-based PVS replaces cluster-based PVS. BSP leaves are the visibility units.
+- BSP tree stored in `.prl` — enables O(log n) point-in-leaf at runtime.
+- Portals are compile-time intermediate data; not stored in `.prl`.
 
 ---
 

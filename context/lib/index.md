@@ -17,7 +17,7 @@
 - **Build pipeline / ericw-tools / FGD / TrenchBroom** → `build_pipeline.md`
 - **Input handling / gamepad** → `input.md`
 - **Resource management / textures / materials** → `resource_management.md`
-- **Collision / player movement** → `entity_model.md` §7 · `build_pipeline.md` (BRUSHLIST flags) · `plans/drafts/grounded-movement/index.md`
+- **Collision / player movement** → `entity_model.md` §7 · `reference/collision-without-bsp.md` · `plans/drafts/grounded-movement/index.md`
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **Roadmap / implementation phases** → `plans/roadmap.md`
 - **Draft plans / future features** → `plans/drafts/`

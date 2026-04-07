@@ -1,7 +1,7 @@
 # Rendering Pipeline
 
-> **Read this when:** implementing or modifying the renderer, BSP loader, lighting, or any visual pass.
-> **Key invariant:** renderer owns all wgpu calls. Other subsystems never touch GPU types. BSP loader produces handles; renderer consumes them.
+> **Read this when:** implementing or modifying the renderer, level loading, lighting, or any visual pass.
+> **Key invariant:** renderer owns all wgpu calls. Other subsystems never touch GPU types. Level loaders produce handles; renderer consumes them.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) §4.1, §4.3
 
 ---
@@ -15,7 +15,7 @@ Each frame runs five stages in fixed order. Later stages depend on results from 
 | **Input** | Poll events, update input state |
 | **Game logic** | Fixed-timestep update: entity movement, collision, game rules |
 | **Audio** | Update listener position, trigger sounds from game events |
-| **Render** | Traverse BSP, draw visible geometry, dynamic lights, sprites, post-processing |
+| **Render** | Determine visible set (BSP leaves or PRL clusters), draw visible geometry, dynamic lights, sprites, post-processing |
 | **Present** | Swap buffers |
 
 Game logic runs at a fixed timestep decoupled from render rate. Renderer interpolates between the last two game states for smooth visuals at variable framerates. Simulation is deterministic at any refresh rate. Rendering never blocks or drives the simulation clock.
@@ -36,13 +36,15 @@ Visibility is determined per-frame using precomputed Potentially Visible Set (PV
 4. Collect all faces belonging to visible leaves.
 5. Submit collected faces as the frame's draw set.
 
-### PRL path (in development)
+### PRL path
 
-1. Determine which cluster contains the camera position (bounding volume scan).
+1. Determine which cluster contains the camera position (bounding volume scan; clusters have expanded bounds from air cell merging to ensure full coverage).
 2. Look up the PVS for that cluster — a compressed bitfield of which other clusters are potentially visible.
 3. Frustum-cull visible clusters by bounding volume.
 4. Collect face ranges for surviving clusters.
 5. Submit collected faces as the frame's draw set.
+
+PVS data is precomputed by the level compiler using voxel-based ray-casting (3D-DDA through a solid/empty bitmap). See `build_pipeline.md` §PRL for compiler details.
 
 PVS culling is conservative in both paths: it may include faces that are technically occluded, but never excludes a visible face. Slight overdraw is cheaper than per-face occlusion tests.
 

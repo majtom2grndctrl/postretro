@@ -74,6 +74,8 @@ Validate probe-only surface lighting before committing to lightmaps or a custom 
 
 **Decision gate:** if probe-only lighting looks right, lightmaps may never enter the engine. If it doesn't, fall back to lightmap atlas (RGBLIGHTING lump) in Phase 5. Either way, the experiment cost is one phase.
 
+**Shadow implication:** probe baking captures static light occlusion. Shadow maps are only needed for dynamic lights — muzzle flash, explosions, scripted events. This reduces runtime shadow cost to near-zero for typical static levels.
+
 ---
 
 ## Phase 5: Lighting Refinement
@@ -81,7 +83,8 @@ Validate probe-only surface lighting before committing to lightmaps or a custom 
 Direction depends on Phase 4 outcome.
 
 **If probe-only lighting works:**
-- [ ] Dynamic point lights (forward pass): muzzle flash, neon signs, explosions — supplementing probe lighting
+- [ ] Dynamic point lights (forward pass): muzzle flash, explosions — supplementing probe lighting. Shadow-casting dynamic lights need shadow maps; static lights rely on probe occlusion and need none.
+- [ ] Shadow maps for dynamic lights: low-resolution depth maps, nearest-neighbor sampling. Low res is intentional — produces chunky pixel shadow edges matching the target aesthetic.
 - [ ] Emissive / fullbright surfaces (neon, screens)
 - [ ] Evaluate whether custom probe placement/density justifies a custom compiler stage
 

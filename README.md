@@ -1,8 +1,26 @@
 # Postretro
 
-Retro-style FPS engine inspired by Doom and Quake. Cyberpunk aesthetic, baked lightmaps, billboard sprites, modern embellishments (dynamic colored lights, bloom, particles). Near-instant boot, tiny binary.
+Postretro is an experiment: can you build a Doom/Quake-style FPS engine in Rust that genuinely looks and feels retro, without faking it through post-processing filters on a modern renderer?
 
-The visual target is Prodeus's look achieved through genuinely retro technology — not a modern engine with retro filters.
+The visual target is something like Prodeus — chunky pixels, billboard sprites, baked lighting, cyberpunk atmosphere. But the goal is to earn that look through genuinely old-school rendering techniques. No modern deferred pipeline underneath with a retro filter slapped on top.
+
+It's early days. Right now Postretro loads BSP levels, flies through them in wireframe, and culls non-visible areas using portal-based PVS. Everything else is ahead of us — and that's kind of the fun part.
+
+## Planned Milestones
+
+The engine is being built in phases, each of which produces something you can actually see and test. Here's the rough shape of the road ahead:
+
+- **Phases 1–1.5** ✅ — BSP and PRL level loading, portal-based BSP visibility with frustum clipping at runtime, free-fly camera, wireframe rendering, custom PRL level compiler
+- **Phase 2** — Fixed-timestep game loop, action-mapped input (keyboard, mouse, gamepad)
+- **Phase 3** — Textured world with solid rendering, depth buffer, material system
+- **Phase 4** — Light probes: bake lighting offline, sample at runtime for spatially varying illumination — no lightmap atlas, no per-face UVs
+- **Phase 5** — Lighting refinement: dynamic point lights, shadow maps for moving lights (intentionally low-res for chunky pixel shadows), emissives, billboard sprites, fog
+- **Phase 6** — Post-processing: bloom on emissive surfaces, optional CRT filter, cubemap reflections
+- **Phase 7** — Grounded player movement: gravity, collision, slide, step-up, jump
+- **Phase 8** — Entity framework: doors, pickups, triggers, game event system
+- **Future** — Audio, enemies, weapons, HUD, and whatever else a boomer shooter needs
+
+The full phased plan with acceptance criteria lives in `context/plans/roadmap.md`.
 
 ## Tech Stack
 
@@ -13,14 +31,20 @@ The visual target is Prodeus's look achieved through genuinely retro technology 
 - **BSP loading:** qbsp
 - **Audio:** kira
 - **Gamepad input:** gilrs
-- **Level editor:** TrenchBroom + ericw-tools 2.0.0-alpha
+- **Level editor:** TrenchBroom
+- **Level compiler:** custom (postretro-level-compiler)
 
 ## Building
 
+This is a Cargo workspace with multiple crates.
+
 ```bash
-cargo run                  # debug build
-cargo run --release        # optimized build
-RUST_LOG=info cargo run    # with logging
+cargo run -p postretro                                          # engine (debug)
+cargo run -p postretro -- assets/maps/test.bsp                 # load a BSP map
+cargo run -p postretro -- assets/maps/test.prl                 # load a PRL map
+cargo run -p postretro-level-compiler -- input.map -o out.prl  # compile a level
+cargo run --release -p postretro                               # optimized build
+RUST_LOG=info cargo run -p postretro                           # with logging
 ```
 
 ## Architecture
@@ -30,9 +54,9 @@ Five architectural invariants govern the engine:
 | Principle | Rule |
 |-----------|------|
 | Renderer owns GPU | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
-| Baked over computed | Lighting, AO, light probes baked offline by ericw-tools. Dynamic lights supplement, not replace. |
+| Baked over computed | Lighting and light probes baked offline by the level compiler. Dynamic lights supplement, not replace. |
 | Subsystem boundaries | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
-| Frame ordering | Input -> Game logic -> Audio -> Render -> Present. |
+| Frame ordering | Input → Game logic → Audio → Render → Present. |
 | No `unsafe` | If `unsafe` appears necessary, stop and consult the project owner. |
 
 ## Project Documentation

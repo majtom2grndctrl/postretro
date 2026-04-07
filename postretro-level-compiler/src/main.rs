@@ -5,7 +5,6 @@ pub mod geometry;
 pub mod map_data;
 pub mod pack;
 pub mod parse;
-#[allow(dead_code)]
 pub mod partition;
 pub mod spatial_grid;
 pub mod visibility;
@@ -36,6 +35,9 @@ fn main() -> anyhow::Result<()> {
     if args.diagnostics {
         log::info!("[Compiler] Diagnostics mode enabled (computing visibility confidence)");
     }
+    if args.bsp {
+        log::info!("[Compiler] BSP partitioning enabled");
+    }
 
     let map_data = parse::parse_map_file(&args.input)?;
 
@@ -56,29 +58,34 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    let grid_result =
-        spatial_grid::assign_to_grid(map_data.world_faces, Some(&voxel_grid));
-    let clusters = grid_cells_to_clusters(&grid_result.cells);
+    let (clusters, world_faces, min_cell_dim) = if args.bsp {
+        let res = partition::partition(map_data.world_faces, &map_data.brush_volumes)?;
+        log::info!("[Compiler] BSP partitioning complete.");
+        // Use a default min_cell_dim for BSP since it doesn't have fixed cells
+        (res.clusters, res.faces, 32.0f32)
+    } else {
+        let res = spatial_grid::assign_to_grid(map_data.world_faces, Some(&voxel_grid));
+        log::info!("[Compiler] Spatial grid assignment complete.");
+        let min_dim = res
+            .cell_size
+            .x
+            .min(res.cell_size.y)
+            .min(res.cell_size.z)
+            .max(1.0);
+        (grid_cells_to_clusters(&res.cells), res.faces, min_dim)
+    };
 
-    log::info!("[Compiler] Spatial grid assignment complete.");
-
-    let geometry_section = geometry::extract_geometry(&grid_result.faces, &clusters);
+    let geometry_section = geometry::extract_geometry(&world_faces, &clusters);
     geometry::log_stats(&geometry_section, clusters.len());
 
     log::info!("[Compiler] Geometry extraction complete.");
 
-    let min_cell_dim = grid_result
-        .cell_size
-        .x
-        .min(grid_result.cell_size.y)
-        .min(grid_result.cell_size.z)
-        .max(1.0);
     let vis_result = visibility::compute_visibility(
         &clusters,
         &map_data.entities,
         &voxel_grid,
         min_cell_dim,
-        &grid_result.faces,
+        &world_faces,
         args.diagnostics,
     );
     visibility::log_stats(&vis_result);
@@ -160,13 +167,22 @@ struct Args {
     output: PathBuf,
     /// Compute per-pair visibility confidence (slower, for diagnostics).
     diagnostics: bool,
+    /// Use BSP partitioning instead of spatial grid.
+    bsp: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
-    let mut args = std::env::args().skip(1);
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from<I>(mut args: I) -> anyhow::Result<Args>
+where
+    I: Iterator<Item = String>,
+{
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut diagnostics = false;
+    let mut bsp = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -179,6 +195,9 @@ fn parse_args() -> anyhow::Result<Args> {
             "--diagnostics" => {
                 diagnostics = true;
             }
+            "--bsp" => {
+                bsp = true;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -189,7 +208,7 @@ fn parse_args() -> anyhow::Result<Args> {
     }
 
     let input = input.ok_or_else(|| {
-        anyhow::anyhow!("usage: prl-build <input.map> [-o <output.prl>] [--diagnostics]")
+        anyhow::anyhow!("usage: prl-build <input.map> [-o <output.prl>] [--diagnostics] [--bsp]")
     })?;
 
     let output = output.unwrap_or_else(|| input.with_extension("prl"));
@@ -198,5 +217,18 @@ fn parse_args() -> anyhow::Result<Args> {
         input,
         output,
         diagnostics,
+        bsp,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_args_enables_bsp_flag() {
+        let args = vec!["input.map".to_string(), "--bsp".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(parsed.bsp);
+    }
 }

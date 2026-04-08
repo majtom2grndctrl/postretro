@@ -2,9 +2,13 @@
 // See: context/lib/input.md
 
 mod bindings;
+pub mod cursor;
 mod types;
 
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
+
+/// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
+pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
 
 use std::collections::HashMap;
 
@@ -62,6 +66,12 @@ pub struct InputSystem {
 
     /// Gamepad axis values for the current frame (Task 04 populates this).
     gamepad_axes: HashMap<Action, f32>,
+
+    /// Radians per raw mouse unit. Converts OS mouse units to look rotation.
+    mouse_sensitivity: f32,
+
+    /// When true, negate the Y (pitch) mouse axis. Applied after sensitivity.
+    invert_y: bool,
 }
 
 impl InputSystem {
@@ -73,7 +83,29 @@ impl InputSystem {
             mouse_delta: (0.0, 0.0),
             mouse_axes: HashMap::new(),
             gamepad_axes: HashMap::new(),
+            mouse_sensitivity: DEFAULT_MOUSE_SENSITIVITY,
+            invert_y: false,
         }
+    }
+
+    /// Set mouse sensitivity (radians per raw mouse unit).
+    pub fn set_mouse_sensitivity(&mut self, sensitivity: f32) {
+        self.mouse_sensitivity = sensitivity;
+    }
+
+    /// Get the current mouse sensitivity.
+    pub fn mouse_sensitivity(&self) -> f32 {
+        self.mouse_sensitivity
+    }
+
+    /// Enable or disable invert-Y for mouse look.
+    pub fn set_invert_y(&mut self, invert: bool) {
+        self.invert_y = invert;
+    }
+
+    /// Whether invert-Y is currently enabled.
+    pub fn invert_y(&self) -> bool {
+        self.invert_y
     }
 
     /// Process a winit keyboard event.
@@ -168,20 +200,30 @@ impl InputSystem {
     }
 
     /// Convert accumulated mouse delta into action axis values.
-    /// Finds bindings for MouseAxisX/Y and maps them to the bound actions.
+    /// Applies sensitivity (raw units -> radians) and invert-Y, then the binding's
+    /// scale factor for direction. Sensitivity converts units; binding scale handles
+    /// direction (e.g., -1 for inverted axis mapping).
     fn resolve_mouse_axes(&mut self) {
         let (dx, dy) = self.mouse_delta;
+
+        // Apply sensitivity to convert raw mouse units to radians.
+        let dx_rad = dx as f32 * self.mouse_sensitivity;
+        let mut dy_rad = dy as f32 * self.mouse_sensitivity;
+
+        // Invert-Y negates pitch after sensitivity, before binding scale.
+        if self.invert_y {
+            dy_rad = -dy_rad;
+        }
 
         for binding in &self.bindings {
             match binding.input {
                 PhysicalInput::MouseAxisX => {
-                    let value = dx as f32 * binding.scale;
+                    let value = dx_rad * binding.scale;
                     let entry = self.mouse_axes.entry(binding.action).or_insert(0.0);
-                    // For mouse axes, accumulate (there should typically be one binding per axis).
                     *entry += value;
                 }
                 PhysicalInput::MouseAxisY => {
-                    let value = dy as f32 * binding.scale;
+                    let value = dy_rad * binding.scale;
                     let entry = self.mouse_axes.entry(binding.action).or_insert(0.0);
                     *entry += value;
                 }
@@ -287,16 +329,26 @@ mod tests {
         sys.handle_mouse_delta(10.0, -5.0);
         let snap = sys.snapshot();
 
-        // MouseAxisX -> LookYaw with scale -1.0, so 10.0 * -1.0 = -10.0
+        // MouseAxisX -> LookYaw with scale -1.0
+        // Value = 10.0 * sensitivity(0.002) * scale(-1.0) = -0.02
         let yaw = snap.axis(Action::LookYaw);
         assert_eq!(yaw.len(), 1);
         assert_eq!(yaw[0].source, AxisSource::Displacement);
-        assert!((yaw[0].value - (-10.0)).abs() < f32::EPSILON);
+        assert!(
+            (yaw[0].value - (-0.02)).abs() < 1e-6,
+            "expected -0.02, got {}",
+            yaw[0].value
+        );
 
-        // MouseAxisY -> LookPitch with scale -1.0, so -5.0 * -1.0 = 5.0
+        // MouseAxisY -> LookPitch with scale -1.0
+        // Value = -5.0 * sensitivity(0.002) * scale(-1.0) = 0.01
         let pitch = snap.axis(Action::LookPitch);
         assert_eq!(pitch.len(), 1);
-        assert!((pitch[0].value - 5.0).abs() < f32::EPSILON);
+        assert!(
+            (pitch[0].value - 0.01).abs() < 1e-6,
+            "expected 0.01, got {}",
+            pitch[0].value
+        );
     }
 
     #[test]
@@ -309,6 +361,125 @@ mod tests {
         let snap = sys.snapshot();
         assert!(snap.axis(Action::LookYaw).is_empty());
         assert!(snap.axis(Action::LookPitch).is_empty());
+    }
+
+    // --- Sensitivity ---
+
+    #[test]
+    fn sensitivity_scales_mouse_delta_to_radians() {
+        let mut sys = InputSystem::new(test_bindings());
+        sys.set_mouse_sensitivity(0.004); // double the default
+        sys.handle_mouse_delta(100.0, 0.0);
+        let snap = sys.snapshot();
+
+        // 100.0 * 0.004 * scale(-1.0) = -0.4
+        let yaw = snap.axis(Action::LookYaw);
+        assert_eq!(yaw.len(), 1);
+        assert!(
+            (yaw[0].value - (-0.4)).abs() < 1e-6,
+            "expected -0.4, got {}",
+            yaw[0].value
+        );
+    }
+
+    #[test]
+    fn sensitivity_change_affects_look_speed() {
+        let bindings = test_bindings();
+
+        // Low sensitivity
+        let mut low = InputSystem::new(bindings.clone());
+        low.set_mouse_sensitivity(0.001);
+        low.handle_mouse_delta(100.0, 0.0);
+        let snap_low = low.snapshot();
+
+        // High sensitivity
+        let mut high = InputSystem::new(bindings);
+        high.set_mouse_sensitivity(0.004);
+        high.handle_mouse_delta(100.0, 0.0);
+        let snap_high = high.snapshot();
+
+        let yaw_low = snap_low.axis_value(Action::LookYaw).abs();
+        let yaw_high = snap_high.axis_value(Action::LookYaw).abs();
+        assert!(
+            yaw_high > yaw_low,
+            "higher sensitivity should produce larger axis value"
+        );
+    }
+
+    // --- Invert Y ---
+
+    #[test]
+    fn invert_y_negates_pitch_axis() {
+        let bindings = test_bindings();
+
+        // Normal
+        let mut normal = InputSystem::new(bindings.clone());
+        normal.handle_mouse_delta(0.0, 10.0);
+        let snap_normal = normal.snapshot();
+
+        // Inverted
+        let mut inverted = InputSystem::new(bindings);
+        inverted.set_invert_y(true);
+        inverted.handle_mouse_delta(0.0, 10.0);
+        let snap_inverted = inverted.snapshot();
+
+        let pitch_normal = snap_normal.axis_value(Action::LookPitch);
+        let pitch_inverted = snap_inverted.axis_value(Action::LookPitch);
+        assert!(
+            (pitch_normal + pitch_inverted).abs() < 1e-6,
+            "inverted pitch should negate normal: {} vs {}",
+            pitch_normal,
+            pitch_inverted
+        );
+    }
+
+    #[test]
+    fn invert_y_does_not_affect_yaw() {
+        let bindings = test_bindings();
+
+        let mut normal = InputSystem::new(bindings.clone());
+        normal.handle_mouse_delta(10.0, 0.0);
+        let snap_normal = normal.snapshot();
+
+        let mut inverted = InputSystem::new(bindings);
+        inverted.set_invert_y(true);
+        inverted.handle_mouse_delta(10.0, 0.0);
+        let snap_inverted = inverted.snapshot();
+
+        let yaw_normal = snap_normal.axis_value(Action::LookYaw);
+        let yaw_inverted = snap_inverted.axis_value(Action::LookYaw);
+        assert!(
+            (yaw_normal - yaw_inverted).abs() < 1e-6,
+            "invert-Y should not affect yaw"
+        );
+    }
+
+    // --- Delta accumulation ---
+
+    #[test]
+    fn multiple_mouse_deltas_accumulate_between_snapshots() {
+        let mut sys = InputSystem::new(test_bindings());
+        sys.handle_mouse_delta(5.0, 3.0);
+        sys.handle_mouse_delta(7.0, -1.0);
+        sys.handle_mouse_delta(-2.0, 4.0);
+        let snap = sys.snapshot();
+
+        // Total dx=10.0, dy=6.0
+        // Yaw = 10.0 * 0.002 * -1.0 = -0.02
+        let yaw = snap.axis_value(Action::LookYaw);
+        assert!(
+            (yaw - (-0.02)).abs() < 1e-6,
+            "expected -0.02, got {}",
+            yaw
+        );
+
+        // Pitch = 6.0 * 0.002 * -1.0 = -0.012
+        let pitch = snap.axis_value(Action::LookPitch);
+        assert!(
+            (pitch - (-0.012)).abs() < 1e-6,
+            "expected -0.012, got {}",
+            pitch
+        );
     }
 
     // --- Mouse button ---
@@ -342,7 +513,12 @@ mod tests {
         let velocity = yaw.iter().find(|v| v.source == AxisSource::Velocity);
         assert!(displacement.is_some());
         assert!(velocity.is_some());
-        assert!((displacement.unwrap().value - (-10.0)).abs() < f32::EPSILON);
+        // Mouse: 10.0 * sensitivity(0.002) * scale(-1.0) = -0.02
+        assert!(
+            (displacement.unwrap().value - (-0.02)).abs() < 1e-6,
+            "expected -0.02, got {}",
+            displacement.unwrap().value
+        );
         assert!((velocity.unwrap().value - 0.5).abs() < f32::EPSILON);
     }
 

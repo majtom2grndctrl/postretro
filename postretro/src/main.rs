@@ -22,7 +22,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
-use winit::window::{CursorGrabMode, Window, WindowAttributes};
+use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameTiming, InterpolableState};
@@ -162,23 +162,6 @@ struct WindowState {
     window: Arc<Window>,
 }
 
-// --- Cursor capture ---
-
-/// Attempt to capture the mouse cursor, trying Locked first then Confined.
-fn capture_cursor(window: &Window) {
-    if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
-        if let Err(err) = window.set_cursor_grab(CursorGrabMode::Confined) {
-            log::warn!("[Input] Failed to grab cursor: {err}");
-        }
-    }
-    window.set_cursor_visible(false);
-}
-
-fn release_cursor(window: &Window) {
-    let _ = window.set_cursor_grab(CursorGrabMode::None);
-    window.set_cursor_visible(true);
-}
-
 // --- ApplicationHandler ---
 
 impl ApplicationHandler for App {
@@ -227,7 +210,7 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
         self.camera.update_aspect(size.width, size.height);
 
-        capture_cursor(&window);
+        input::cursor::capture_cursor(&window);
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
@@ -257,7 +240,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CloseRequested => {
                 if let Some(ws) = self.window_state.as_ref() {
-                    release_cursor(&ws.window);
+                    input::cursor::release_cursor(&ws.window);
                 }
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
@@ -271,7 +254,7 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 if let Some(ws) = self.window_state.as_ref() {
-                    release_cursor(&ws.window);
+                    input::cursor::release_cursor(&ws.window);
                 }
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
@@ -289,10 +272,8 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Focused(focused) => {
                 if let Some(ws) = self.window_state.as_ref() {
-                    if focused {
-                        capture_cursor(&ws.window);
-                    } else {
-                        release_cursor(&ws.window);
+                    input::cursor::handle_focus_change(focused, &ws.window);
+                    if !focused {
                         self.keys_held.clear();
                     }
                 }

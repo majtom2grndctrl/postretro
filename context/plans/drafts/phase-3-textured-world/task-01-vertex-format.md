@@ -8,7 +8,7 @@
 
 ## Goal
 
-Upgrade the vertex buffer from Phase 1's position-only format to the full vertex format. Compute base texture UVs from BSP texture projection data. Lightmap UVs are placeholder (0,0) — task-02 fills them in. Vertex color is white (1,1,1,1) — Phase 5 uses it for dynamic lighting. Update the vertex buffer layout in the renderer to match the new stride.
+Replace the Phase 1 wireframe vertex format (`[f32; 6]`: position + wireframe color) with the full textured vertex format. Compute base texture UVs from BSP texture projection data. Lightmap UVs are placeholder (0,0) — task-02 fills them in. Vertex color is white (1,1,1,1) — Phase 5 uses it for dynamic lighting. Update the vertex buffer layout in the renderer to match the new stride.
 
 ---
 
@@ -28,7 +28,7 @@ Create PNG textures for every texture name referenced by the test map. Place und
 
 ### Vertex format upgrade
 
-Replace the Phase 1 `[f32; 3]` vertex with a struct containing all four attributes:
+Phase 1 uses a `[f32; 6]` vertex (position + wireframe color, 24-byte stride) with `Float32x3` at locations 0 and 1. The wireframe color is computed per-vertex from cluster palette or a constant cyan. Replace this with a struct containing all four textured attributes:
 
 | Field | Type | Default |
 |-------|------|---------|
@@ -60,7 +60,7 @@ Extend the per-face metadata from Phase 1 to include:
 
 ### Vertex buffer layout
 
-Update the wgpu `VertexBufferLayout` in the renderer to match the new stride (44 bytes) and attribute offsets:
+Update the wgpu `VertexBufferLayout` in the renderer (currently `size_of::<[f32; 6]>()` stride at `render.rs:303`) to the new stride (44 bytes) and attribute offsets:
 
 | Location | Offset | Format |
 |----------|--------|--------|
@@ -68,6 +68,10 @@ Update the wgpu `VertexBufferLayout` in the renderer to match the new stride (44
 | 1 | 12 | Float32x2 (base_uv) |
 | 2 | 20 | Float32x2 (lightmap_uv) |
 | 3 | 28 | Float32x4 (vertex_color) |
+
+### LevelGeometry update
+
+The renderer's `LevelGeometry<'a>` struct currently passes `&'a [[f32; 3]]` vertices. Update to pass the new vertex format data. The `face_cluster_indices` field is wireframe-specific and can be removed (task-05 removes the wireframe pipeline entirely).
 
 ### Shader update
 

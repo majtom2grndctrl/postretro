@@ -106,7 +106,7 @@ This adds LIGHTING and RGBLIGHTING lumps. DECOUPLED_LM may or may not be present
 
 | ID | Task | File | Dependencies | Description |
 |----|------|------|-------------|-------------|
-| 01 | Full Vertex Format and Base Texture UVs | `task-01-vertex-format.md` | none | Upgrade vertex from position-only to full format. Compute base texture UVs. Bootstrap: recompile test map with lighting. |
+| 01 | Full Vertex Format and Base Texture UVs | `task-01-vertex-format.md` | none | Replace wireframe vertex format (position + color) with full textured format. Compute base texture UVs. Update LevelGeometry. Bootstrap: recompile test map with lighting. |
 | 02 | Lightmap Atlas Construction | `task-02-lightmap-atlas.md` | 01 | Compute per-face lightmap dimensions, extract samples, shelf-pack into atlas, compute atlas-space UVs. |
 | 03 | Texture Loading | `task-03-texture-loading.md` | none | Load PNGs matched by BSP texture names. Checkerboard fallback. Hand CPU-side RGBA8 data to renderer. |
 | 04 | Material Derivation | `task-04-material-derivation.md` | none | Parse texture name prefix, map to material enum, attach to per-face metadata. |
@@ -148,7 +148,7 @@ This adds LIGHTING and RGBLIGHTING lumps. DECOUPLED_LM may or may not be present
 
 - Task 01 includes a test map recompile bootstrap step. The existing `assets/maps/test.bsp` must be recompiled with `light -bspx` before lightmap work can proceed. Task 01 also requires PNG textures to exist under `textures/`.
 - Tasks 03 and 04 produce CPU-side data only. Neither touches wgpu. They can run fully in parallel with 01 and 02.
-- Task 05 is the integration point. It consumes vertex buffers (01), lightmap atlas (02), and loaded textures (03). The implementing agent needs familiarity with the renderer module established in Phase 1.
+- Task 05 is the integration point. It consumes vertex buffers (01), lightmap atlas (02), and loaded textures (03). It also removes Phase 1's wireframe infrastructure (WireframeMode, LineList fallback, cluster coloring, build_colored_vertices). The implementing agent needs familiarity with the renderer module established in Phase 1.
 - Task 04 is the lowest-risk task and has no dependents within this phase.
 
 ---

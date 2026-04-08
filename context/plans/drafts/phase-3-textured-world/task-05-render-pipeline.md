@@ -97,7 +97,17 @@ Integrate with PVS and frustum culling: only draw faces in the visible set. Grou
 
 ### Removing wireframe
 
-Remove or disable the wireframe render pipeline from Phase 1. If useful for debugging, keep wireframe behind a debug flag — default path is solid textured.
+Phase 1's wireframe renderer has significant infrastructure to remove or gate behind a debug flag:
+
+- `WireframeMode` enum (`PolygonModeLine` vs `LineList` fallback)
+- `build_line_list_indices()` — reconstructs face edges for LineList topology
+- `build_colored_vertices()` — assigns cluster palette or default cyan to each vertex
+- `CLUSTER_PALETTE` and `DEFAULT_WIREFRAME_COLOR` constants
+- LineList-specific draw path branch in `render_frame()`
+- `LevelGeometry::face_cluster_indices` field (wireframe-only)
+- `--force-line-list` CLI flag handling
+
+Default path becomes solid textured. If wireframe is useful for debugging, keep it behind a debug flag — but do not maintain two parallel vertex buffer construction paths.
 
 ### Pipeline descriptor
 

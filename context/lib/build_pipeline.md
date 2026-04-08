@@ -1,7 +1,7 @@
 # Build Pipeline
 
 > **Read this when:** setting up the map authoring toolchain, modifying the asset pipeline, adding custom entities, or debugging map compilation issues.
-> **Key invariant:** all maps are authored in TrenchBroom. Two compilation paths exist: BSP (ericw-tools) and PRL (prl-build). Engine loads either format.
+> **Key invariant:** maps are authored in idTech-compatible editors; TrenchBroom is the default. Engine canonical unit: 1 unit = 1 meter. Two compilation paths exist: BSP (ericw-tools) and PRL (prl-build). Engine loads either format.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md)
 
 ---
@@ -157,7 +157,7 @@ The PRL compiler (`prl-build`) reads `.map` files directly via shambler and prod
 parse .map → BSP compilation → portal generation → portal vis → geometry → pack .prl
 ```
 
-1. **Parse.** Shambler extracts brush volumes, faces, and entities. Coordinate transform (Quake Z-up → engine Y-up) applied at the parse boundary. All downstream stages receive engine-native coordinates.
+1. **Parse.** Shambler extracts brush volumes, faces, and entities. Two transforms are applied at the parse boundary: (a) axis swizzle (Quake Z-up → engine Y-up) and (b) unit scale (idTech2: 0.0254 m/unit, exact). Vertex positions, entity origins, and plane distances are converted to engine meters; plane normals receive the swizzle only (direction vectors — scale must not be applied). The scale is sourced from `MapFormat::units_to_meters()`, not hardcoded at use sites. All downstream stages receive engine-native coordinates in meters.
 2. **BSP compilation.** Builds a BSP tree from world faces. Produces interior nodes (splitting planes) and leaves (convex regions). Leaves classified solid or empty via brush half-plane test. Solid leaves represent brush interiors. Empty leaves represent navigable space.
 3. **Portal generation.** For each BSP internal node, clips the splitting-plane polygon against ancestor splitting planes to produce the portal polygon bounding that node's partition. Each portal is a convex polygon connecting two adjacent empty leaves. In default mode, portals are stored in the `.prl` file (section 15) for runtime traversal. In `--pvs` mode, portals are used as intermediate data and discarded.
 4. **Portal vis** (`--pvs` mode only). Per empty leaf, floods through the portal graph. A leaf L' is potentially visible from L if any sequence of portals connects them. Output: per-leaf PVS bitsets, RLE-compressed. Computed in parallel (one task per leaf).

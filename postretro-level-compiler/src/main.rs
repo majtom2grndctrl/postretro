@@ -4,6 +4,7 @@
 pub mod geometry;
 pub mod geometry_utils;
 pub mod map_data;
+pub mod map_format;
 pub mod pack;
 pub mod parse;
 pub mod partition;
@@ -22,7 +23,7 @@ fn main() -> anyhow::Result<()> {
     log::info!("[Compiler] Input: {}", args.input.display());
     log::info!("[Compiler] Output: {}", args.output.display());
 
-    let map_data = parse::parse_map_file(&args.input)?;
+    let map_data = parse::parse_map_file(&args.input, map_format::MapFormat::IdTech2)?;
 
     log::info!("[Compiler] Parsing complete.");
 

@@ -13,6 +13,9 @@ pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInp
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
 pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
 
+/// Gamepad look sensitivity: radians per second at full stick deflection.
+pub const GAMEPAD_LOOK_SENSITIVITY: f32 = 2.5;
+
 use std::collections::HashMap;
 
 use gilrs::Axis as GilrsAxis;

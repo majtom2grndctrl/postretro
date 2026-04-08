@@ -32,9 +32,6 @@ use crate::visibility::{VisibilityStats, VisibleFaces};
 const FORCE_LINE_LIST_FLAG: &str = "--force-line-list";
 const DEFAULT_MAP_PATH: &str = "assets/maps/test.bsp";
 
-/// Gamepad look sensitivity: radians per second at full stick deflection.
-const GAMEPAD_LOOK_SENSITIVITY: f32 = 2.5;
-
 /// Loaded level data: either BSP or PRL format.
 enum Level {
     Bsp(bsp::BspWorld),
@@ -315,7 +312,7 @@ impl ApplicationHandler for App {
                                 yaw_delta += av.value / ticks as f32;
                             }
                             AxisSource::Velocity => {
-                                yaw_delta += av.value * GAMEPAD_LOOK_SENSITIVITY * tick_dt;
+                                yaw_delta += av.value * input::GAMEPAD_LOOK_SENSITIVITY * tick_dt;
                             }
                         }
                     }
@@ -325,7 +322,7 @@ impl ApplicationHandler for App {
                                 pitch_delta += av.value / ticks as f32;
                             }
                             AxisSource::Velocity => {
-                                pitch_delta += av.value * GAMEPAD_LOOK_SENSITIVITY * tick_dt;
+                                pitch_delta += av.value * input::GAMEPAD_LOOK_SENSITIVITY * tick_dt;
                             }
                         }
                     }

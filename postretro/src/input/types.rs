@@ -36,7 +36,7 @@ impl Action {
 }
 
 /// Button state machine: tracks pressed/held/released/inactive transitions per frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ButtonState {
     /// Just activated this frame.
     Pressed,
@@ -45,6 +45,7 @@ pub enum ButtonState {
     /// Just deactivated this frame.
     Released,
     /// Not active (was Released or Inactive last frame, still inactive).
+    #[default]
     Inactive,
 }
 
@@ -66,12 +67,6 @@ impl ButtonState {
     /// Whether this state counts as "active" (Pressed or Held).
     pub fn is_active(self) -> bool {
         matches!(self, ButtonState::Pressed | ButtonState::Held)
-    }
-}
-
-impl Default for ButtonState {
-    fn default() -> Self {
-        ButtonState::Inactive
     }
 }
 

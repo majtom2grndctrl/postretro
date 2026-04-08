@@ -25,7 +25,10 @@ pub fn default_keyboard_mouse_bindings() -> Vec<Binding> {
         Binding::new(PhysicalInput::Key(KeyCode::Space), Action::Jump),
         Binding::new(PhysicalInput::Key(KeyCode::KeyE), Action::Use),
         Binding::new(PhysicalInput::MouseButton(MouseButton::Left), Action::Shoot),
-        Binding::new(PhysicalInput::MouseButton(MouseButton::Right), Action::AltFire),
+        Binding::new(
+            PhysicalInput::MouseButton(MouseButton::Right),
+            Action::AltFire,
+        ),
         Binding::new(PhysicalInput::Key(KeyCode::KeyR), Action::Reload),
     ]
 }
@@ -74,10 +77,7 @@ pub fn default_gamepad_bindings() -> Vec<Binding> {
             PhysicalInput::GamepadButton(GilrsButton::South),
             Action::Jump,
         ),
-        Binding::new(
-            PhysicalInput::GamepadButton(GilrsButton::West),
-            Action::Use,
-        ),
+        Binding::new(PhysicalInput::GamepadButton(GilrsButton::West), Action::Use),
         Binding::new(
             PhysicalInput::GamepadButton(GilrsButton::RightTrigger2),
             Action::Shoot,
@@ -167,8 +167,14 @@ mod tests {
             .filter(|b| matches!(b.input, PhysicalInput::Key(_)))
             .map(|b| b.scale)
             .collect();
-        assert!(forward_scales.contains(&1.0), "MoveForward missing positive binding");
-        assert!(forward_scales.contains(&-1.0), "MoveForward missing negative binding");
+        assert!(
+            forward_scales.contains(&1.0),
+            "MoveForward missing positive binding"
+        );
+        assert!(
+            forward_scales.contains(&-1.0),
+            "MoveForward missing negative binding"
+        );
 
         // MoveRight should have both directions.
         let right_scales: Vec<f32> = bindings
@@ -177,8 +183,14 @@ mod tests {
             .filter(|b| matches!(b.input, PhysicalInput::Key(_)))
             .map(|b| b.scale)
             .collect();
-        assert!(right_scales.contains(&1.0), "MoveRight missing positive binding");
-        assert!(right_scales.contains(&-1.0), "MoveRight missing negative binding");
+        assert!(
+            right_scales.contains(&1.0),
+            "MoveRight missing positive binding"
+        );
+        assert!(
+            right_scales.contains(&-1.0),
+            "MoveRight missing negative binding"
+        );
 
         // MoveUp should have both directions.
         let up_scales: Vec<f32> = bindings

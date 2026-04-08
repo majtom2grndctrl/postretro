@@ -1,5 +1,5 @@
 // Gamepad input via gilrs: polling, dead zones, trigger thresholds.
-// See: context/lib/input.md §5, context/plans/ready/phase-2-input-frame-timing/task-04-gamepad.md
+// See: context/lib/input.md §5
 
 use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs};
 
@@ -106,11 +106,11 @@ impl GamepadSystem {
 
         // Read digital buttons.
         const BUTTONS: &[Button] = &[
-            Button::South,       // A / Cross
-            Button::East,        // B / Circle
-            Button::West,        // X / Square
-            Button::North,       // Y / Triangle
-            Button::LeftTrigger, // LB / L1
+            Button::South,        // A / Cross
+            Button::East,         // B / Circle
+            Button::West,         // X / Square
+            Button::North,        // Y / Triangle
+            Button::LeftTrigger,  // LB / L1
             Button::RightTrigger, // RB / R1
             Button::Select,
             Button::Start,
@@ -217,10 +217,7 @@ mod tests {
         let (x, _y) = apply_radial_dead_zone(input, 0.0, DEAD_ZONE);
         // Expected: (0.01) / (0.85) ≈ 0.01176
         let expected = 0.01 / (1.0 - DEAD_ZONE);
-        assert!(
-            approx_eq(x, expected),
-            "expected {expected}, got {x}"
-        );
+        assert!(approx_eq(x, expected), "expected {expected}, got {x}");
     }
 
     #[test]
@@ -255,7 +252,10 @@ mod tests {
         let (x, y) = apply_radial_dead_zone(0.5, 0.5, DEAD_ZONE);
         assert!(x > 0.0);
         assert!(y > 0.0);
-        assert!(approx_eq(x, y), "diagonal should be symmetric: x={x}, y={y}");
+        assert!(
+            approx_eq(x, y),
+            "diagonal should be symmetric: x={x}, y={y}"
+        );
     }
 
     #[test]

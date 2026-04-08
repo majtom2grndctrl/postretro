@@ -4,16 +4,11 @@
 use winit::window::{CursorGrabMode, Window};
 
 /// Whether the cursor is currently captured for gameplay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum CursorState {
     Captured,
+    #[default]
     Released,
-}
-
-impl Default for CursorState {
-    fn default() -> Self {
-        CursorState::Released
-    }
 }
 
 /// Attempt to capture the mouse cursor, trying Locked first then Confined.

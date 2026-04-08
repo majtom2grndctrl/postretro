@@ -28,9 +28,9 @@ pub(crate) fn resolve_button_state(
     prev_button_states: &HashMap<Action, ButtonState>,
 ) -> ButtonState {
     // OR across all bindings: if any bound input is active, the action is active.
-    let any_active = bindings.iter().any(|b| {
-        b.action == action && *key_state.get(&b.input).unwrap_or(&false)
-    });
+    let any_active = bindings
+        .iter()
+        .any(|b| b.action == action && *key_state.get(&b.input).unwrap_or(&false));
 
     let prev = prev_button_states
         .get(&action)
@@ -77,7 +77,9 @@ pub(crate) fn resolve_axis_values(
             }
             PhysicalInput::GamepadButton(button) => {
                 // D-pad buttons can act as axis inputs (e.g., DPadUp → MoveUp +1).
-                let active = *key_state.get(&PhysicalInput::GamepadButton(button)).unwrap_or(&false);
+                let active = *key_state
+                    .get(&PhysicalInput::GamepadButton(button))
+                    .unwrap_or(&false);
                 if active {
                     let value = binding.scale;
                     if value.abs() > acc.velocity.abs() {
@@ -134,12 +136,7 @@ mod tests {
         key_state.insert(PhysicalInput::Key(KeyCode::Space), false);
         key_state.insert(PhysicalInput::Key(KeyCode::KeyC), true);
 
-        let state = resolve_button_state(
-            Action::Jump,
-            &bindings,
-            &key_state,
-            &HashMap::new(),
-        );
+        let state = resolve_button_state(Action::Jump, &bindings, &key_state, &HashMap::new());
         assert_eq!(state, ButtonState::Pressed);
     }
 
@@ -149,12 +146,7 @@ mod tests {
         let mut key_state = HashMap::new();
         key_state.insert(PhysicalInput::Key(KeyCode::Space), false);
 
-        let state = resolve_button_state(
-            Action::Jump,
-            &bindings,
-            &key_state,
-            &HashMap::new(),
-        );
+        let state = resolve_button_state(Action::Jump, &bindings, &key_state, &HashMap::new());
         assert_eq!(state, ButtonState::Inactive);
     }
 
@@ -237,9 +229,7 @@ mod tests {
 
     #[test]
     fn resolve_axis_mouse_displacement_and_keyboard_velocity_are_additive() {
-        let bindings = vec![
-            key_binding_scaled(KeyCode::KeyA, Action::LookYaw, -1.0),
-        ];
+        let bindings = vec![key_binding_scaled(KeyCode::KeyA, Action::LookYaw, -1.0)];
         let mut key_state = HashMap::new();
         key_state.insert(PhysicalInput::Key(KeyCode::KeyA), true);
 
@@ -255,17 +245,21 @@ mod tests {
         );
         // Should have both displacement (mouse) and velocity (keyboard).
         assert_eq!(values.len(), 2);
-        let displacement = values.iter().find(|v| v.source == AxisSource::Displacement).unwrap();
-        let velocity = values.iter().find(|v| v.source == AxisSource::Velocity).unwrap();
+        let displacement = values
+            .iter()
+            .find(|v| v.source == AxisSource::Displacement)
+            .unwrap();
+        let velocity = values
+            .iter()
+            .find(|v| v.source == AxisSource::Velocity)
+            .unwrap();
         assert!((displacement.value - 0.05).abs() < f32::EPSILON);
         assert!((velocity.value - (-1.0)).abs() < f32::EPSILON);
     }
 
     #[test]
     fn resolve_axis_returns_empty_when_no_input_active() {
-        let bindings = vec![
-            key_binding_scaled(KeyCode::KeyW, Action::MoveForward, 1.0),
-        ];
+        let bindings = vec![key_binding_scaled(KeyCode::KeyW, Action::MoveForward, 1.0)];
         let key_state = HashMap::new();
 
         let values = resolve_axis_values(
@@ -282,7 +276,11 @@ mod tests {
     fn resolve_axis_gamepad_velocity_wins_over_keyboard_when_higher_magnitude() {
         let bindings = vec![
             key_binding_scaled(KeyCode::KeyW, Action::MoveForward, 1.0),
-            Binding::with_scale(PhysicalInput::GamepadAxis(GilrsAxis::LeftStickY), Action::MoveForward, -1.0),
+            Binding::with_scale(
+                PhysicalInput::GamepadAxis(GilrsAxis::LeftStickY),
+                Action::MoveForward,
+                -1.0,
+            ),
         ];
         let mut key_state = HashMap::new();
         key_state.insert(PhysicalInput::Key(KeyCode::KeyW), true);
@@ -308,7 +306,11 @@ mod tests {
     fn resolve_axis_gamepad_velocity_wins_over_keyboard_when_keyboard_inactive() {
         let bindings = vec![
             key_binding_scaled(KeyCode::KeyW, Action::MoveForward, 1.0),
-            Binding::with_scale(PhysicalInput::GamepadAxis(GilrsAxis::LeftStickY), Action::MoveForward, 1.0),
+            Binding::with_scale(
+                PhysicalInput::GamepadAxis(GilrsAxis::LeftStickY),
+                Action::MoveForward,
+                1.0,
+            ),
         ];
         let key_state = HashMap::new(); // No keys pressed.
 

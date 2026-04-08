@@ -93,33 +93,35 @@ impl InputSystem {
     }
 
     /// Set mouse sensitivity (radians per raw mouse unit).
+    #[allow(dead_code)]
     pub fn set_mouse_sensitivity(&mut self, sensitivity: f32) {
         self.mouse_sensitivity = sensitivity;
     }
 
     /// Get the current mouse sensitivity.
+    #[allow(dead_code)]
     pub fn mouse_sensitivity(&self) -> f32 {
         self.mouse_sensitivity
     }
 
     /// Enable or disable invert-Y for mouse look.
+    #[allow(dead_code)]
     pub fn set_invert_y(&mut self, invert: bool) {
         self.invert_y = invert;
     }
 
     /// Whether invert-Y is currently enabled.
+    #[allow(dead_code)]
     pub fn invert_y(&self) -> bool {
         self.invert_y
     }
 
     /// Process a winit keyboard event.
     pub fn handle_keyboard_event(&mut self, key: KeyCode, pressed: bool) {
-        self.physical_state
-            .insert(PhysicalInput::Key(key), pressed);
+        self.physical_state.insert(PhysicalInput::Key(key), pressed);
     }
 
     /// Accumulate mouse delta. Called for each DeviceEvent::MouseMotion.
-    /// Task 03 extends this with sensitivity, invert-Y, and raw motion handling.
     pub fn handle_mouse_delta(&mut self, dx: f64, dy: f64) {
         self.mouse_delta.0 += dx;
         self.mouse_delta.1 += dy;
@@ -463,11 +465,7 @@ mod tests {
         // Total dx=10.0, dy=6.0
         // Yaw = 10.0 * 0.002 * -1.0 = -0.02
         let yaw = snap.axis_value(Action::LookYaw);
-        assert!(
-            (yaw - (-0.02)).abs() < 1e-6,
-            "expected -0.02, got {}",
-            yaw
-        );
+        assert!((yaw - (-0.02)).abs() < 1e-6, "expected -0.02, got {}", yaw);
 
         // Pitch = 6.0 * 0.002 * -1.0 = -0.012
         let pitch = snap.axis_value(Action::LookPitch);

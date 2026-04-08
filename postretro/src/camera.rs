@@ -1,9 +1,9 @@
 // Free-fly camera: position, orientation, projection, and view matrix computation.
 // See: context/lib/input.md
 
-use glam::Vec3;
 #[cfg(test)]
 use glam::Mat4;
+use glam::Vec3;
 
 /// Horizontal field of view in radians (100 degrees).
 pub const HFOV: f32 = 100.0 * std::f32::consts::PI / 180.0;
@@ -13,9 +13,6 @@ pub const FAR: f32 = 4096.0;
 
 /// Maximum pitch angle in radians (+/- 89 degrees from horizontal).
 const PITCH_LIMIT: f32 = 89.0 * std::f32::consts::PI / 180.0;
-
-/// Mouse sensitivity in radians per pixel of mouse delta.
-pub const SENSITIVITY: f32 = 0.002;
 
 /// Base movement speed in units per second (Quake player speed).
 pub const MOVE_SPEED: f32 = 320.0;

@@ -142,7 +142,8 @@ impl FrameTiming {
 
     /// Compute the interpolated state for rendering.
     pub fn interpolated_state(&self) -> InterpolableState {
-        self.previous_state.lerp(&self.current_state, self.current_alpha())
+        self.previous_state
+            .lerp(&self.current_state, self.current_alpha())
     }
 
     fn current_alpha(&self) -> f32 {
@@ -162,7 +163,6 @@ impl FrameTiming {
     pub fn tick_dt(&self) -> f32 {
         self.tick_duration.as_secs_f32()
     }
-
 }
 
 pub struct FrameTickResult {
@@ -408,11 +408,7 @@ mod tests {
         let mut timing = FrameTiming::new(state);
 
         // Push a new state so previous and current differ.
-        timing.push_state(InterpolableState::new(
-            Vec3::new(100.0, 0.0, 0.0),
-            0.0,
-            0.0,
-        ));
+        timing.push_state(InterpolableState::new(Vec3::new(100.0, 0.0, 0.0), 0.0, 0.0));
 
         // Set accumulator to half a tick for alpha ≈ 0.5.
         timing.accumulator = Duration::from_micros(TICK_DURATION.as_micros() as u64 / 2);

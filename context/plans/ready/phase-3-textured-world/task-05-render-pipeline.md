@@ -81,13 +81,22 @@ Flat lighting is multiplicative: `ambient_light = [1.0, 1.0, 1.0]` is fully lit.
 
 ### Draw call structure
 
-Group faces by texture index. For each texture group:
-1. Set bind group 1 to the texture's bind group.
-2. Issue one `draw_indexed()` covering the contiguous index range.
+Sort the index buffer by **(leaf_index, texture_index)** at load time. This preserves the PRL invariant that faces are contiguous per leaf (PVS depends on `face_start + face_count`) while grouping same-texture faces within each leaf.
 
-Sort the index buffer by texture index at load time so faces sharing a texture are contiguous. One draw call per texture group in the visible set.
+**Pre-compute per-leaf texture sub-ranges at load time.** For each leaf, build a list of `(texture_index, index_offset, index_count)` tuples representing contiguous same-texture face groups within that leaf's index range. Store these alongside the existing leaf metadata.
 
-Integrate with PVS and frustum culling: only draw faces in the visible set. Group visible faces by texture, then draw.
+**Runtime draw loop:**
+1. PVS + frustum culling selects visible leaves (existing infrastructure).
+2. For each visible leaf, iterate its pre-computed texture sub-ranges.
+3. For each sub-range: set bind group 1 to the texture's bind group, issue one `draw_indexed()`.
+
+One draw call per (visible_leaf, texture) pair. No per-frame sorting, hashing, or allocation.
+
+**Antipatterns to avoid:**
+- Don't sort globally by texture — breaks leaf contiguity and PVS face collection.
+- Don't rebuild the draw list per frame — sub-ranges are pre-computed at load time.
+- Don't issue one draw call per face — merge contiguous same-texture faces within a leaf.
+- Don't duplicate index buffer data — sub-ranges are metadata (offset + count), not copies.
 
 ### Removing wireframe
 
@@ -126,7 +135,7 @@ Default path becomes solid textured. If wireframe is useful for debugging, keep 
 | Base texture filtering | Nearest (retro pixel aesthetic). |
 | Base texture format | Rgba8UnormSrgb (hardware sRGB decode). |
 | Bind group structure | 2 groups: per-frame uniforms (including ambient), per-texture base texture. |
-| Draw call grouping | Sort index buffer by texture at load time. One draw call per texture group in visible set. |
+| Draw call grouping | Sort index buffer by (leaf, texture) at load time. Pre-compute per-leaf texture sub-ranges. One draw call per (visible_leaf, texture) pair. |
 | Winding order | Ccw front face. Verify empirically — flip if back-face culling hides interior faces. |
 
 ---

@@ -32,10 +32,12 @@ Build a list of unique texture names from BSP data. Each face references a textu
 
 ### File search
 
-Textures live under `textures/` with one subdirectory level: `textures/<collection>/<name>.png`.
+The texture loader receives a **texture root path** as a parameter. The engine resolves this from the map file's asset root — given `assets/maps/test.bsp`, the texture root is `assets/textures/`. The loader does not assume or hardcode any path; it searches whatever root it is given.
+
+Textures live under the texture root with one subdirectory level: `<texture_root>/<collection>/<name>.png`.
 
 For each BSP texture name:
-1. Search all `textures/<collection>/` directories for a file whose stem matches the texture name.
+1. Search all `<texture_root>/<collection>/` directories for a file whose stem matches the texture name.
 2. Case-insensitive match on the filename stem (BSP names may be lowercase; filenames may vary).
 3. First match wins. If multiple collections contain the same name, log a warning and use the first found.
 
@@ -73,7 +75,7 @@ The texture loader produces CPU-side data. It does not create wgpu textures, tex
 | Item | Resolution |
 |------|------------|
 | Image crate features | PNG only. No default features. |
-| Search strategy | Recursive scan of `textures/` at load time. Case-insensitive stem matching. |
+| Search strategy | Recursive scan of the texture root path (passed as parameter) at load time. Case-insensitive stem matching. |
 | Duplicate names across collections | First match wins. Log warning. |
 | Placeholder dimensions | 64x64 checkerboard, magenta/black, 8x8 squares. |
 | Output format | RGBA8 for all textures, including placeholders. Uniform format simplifies GPU upload. |
@@ -82,7 +84,7 @@ The texture loader produces CPU-side data. It does not create wgpu textures, tex
 
 ## Acceptance Criteria
 
-1. All BSP-referenced textures loaded from `textures/` when PNG files exist. Pixel data is RGBA8.
+1. All BSP-referenced textures loaded from the provided texture root when PNG files exist. Pixel data is RGBA8.
 2. Missing textures produce a checkerboard placeholder. Warning logged per missing texture.
 3. Case-insensitive matching works: `METAL_FLOOR_01` in BSP matches `metal_floor_01.png` on disk.
 4. Texture loader module contains zero wgpu imports.

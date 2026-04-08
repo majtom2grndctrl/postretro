@@ -1,6 +1,6 @@
 # Phase 3: Textured World
 
-> **Status:** draft
+> **Status:** ready
 > **Depends on:** Phase 1 (BSP loading, wireframe renderer, PVS/frustum culling), Phase 2 (fixed-timestep loop, action-mapped camera).
 > **Related:** `context/lib/rendering_pipeline.md` · `context/lib/resource_management.md` · `context/lib/development_guide.md`
 
@@ -49,7 +49,7 @@ Replace wireframe rendering with textured solid geometry using flat uniform ligh
 
 The PRL compiler parses texture names from `.map` files but discards them at pack time. The PRL format has no texture data section. Phase 3 textured rendering targets BSP exclusively. PRL levels fall back to wireframe or solid-unlit rendering. Texture data in PRL is a future task, unscheduled.
 
-CSG face clipping (Task 05) is PRL-only — it runs in the compiler to fix z-fighting in PRL geometry. BSP already handles this via BSP tree construction.
+CSG face clipping (Task 01) is PRL-only — it runs in the compiler to fix z-fighting in PRL geometry. BSP already handles this via BSP tree construction.
 
 ---
 
@@ -79,7 +79,7 @@ Phase 3 fragment shader applies a flat ambient factor rather than sampled lightm
 
 ### Texture name matching
 
-BSP stores texture names in `BspMipTexture.header.name`. Engine searches `textures/` recursively for `<name>.png` (case-insensitive match on filename stem). The collection subdirectory is not stored in BSP — search all collections.
+BSP stores texture names in `BspMipTexture.header.name`. The texture loader receives a texture root path (resolved by the engine from the map file's asset root — e.g., `assets/textures/` when loading `assets/maps/test.bsp`). It searches the texture root recursively for `<name>.png` (case-insensitive match on filename stem). The collection subdirectory is not stored in BSP — search all collections under the texture root.
 
 ### Missing data degradation
 
@@ -142,7 +142,7 @@ BSP stores texture names in `BspMipTexture.header.name`. Engine searches `textur
 - Task 03 (texture loading) creates a new module and adds the `image` crate. No existing file modifications beyond `Cargo.toml` and `main.rs` (mod declaration).
 - Task 04 (material derivation) reads `FaceMeta` fields that Task 02 adds. Running it in Wave 2 avoids both agents extending the same struct.
 - Task 05 is the integration point. Rewrites `render.rs` — removes wireframe infrastructure, adds textured pipeline. The implementing agent needs familiarity with the Phase 1 renderer.
-- Task 05 runs in the PRL compiler, not the engine. Independent of the BSP rendering tasks. Can run in any wave.
+- Task 01 runs in the PRL compiler, not the engine. Independent of the BSP rendering tasks. Can run in any wave.
 
 ---
 
@@ -157,6 +157,59 @@ BSP stores texture names in `BspMipTexture.header.name`. Engine searches `textur
 7. **Module boundary holds.** BSP loader and texture loader contain zero wgpu imports. Renderer does not parse BSP structures or PNG files.
 8. **CSG clipping compiles.** Compiling a `.map` with overlapping brushes to PRL produces geometry without z-fighting in the output.
 9. **PRL levels still load.** PRL levels render in wireframe or solid-unlit. No crash, no missing texture errors (expected — PRL has no texture data).
+
+---
+
+## Open Questions
+
+Identified during plan review (2026-04-08). Resolve before moving to ready.
+
+### Completeness gaps
+
+**Q1 — Task 01: Brush index on Face struct.**
+The compiler's `Face` struct has no `brush_index` field. Task 01 says "clip against all brushes except the one that generated this face" but doesn't mention adding this field. Should the task say "add a `brush_index: usize` field to `Face` during parsing" and leave details to the implementer, or is there a different way to track face-to-brush origin?
+
+- [x] Resolved — No `brush_index` needed. Classic CSG approach: clip each face against *all* brush volumes including its own. A face on its own brush's boundary plane is not geometrically "inside" that brush (it sits on the plane, not behind all half-planes), so no self-clipping occurs. Epsilon for the inside test must be strictly negative. This matches the id Tech approach from Quake through Doom 3. AABB early-out recommended for performance. Task 01 updated.
+
+**Q2 — Task 02: `load_bsp` texture data access.**
+`load_bsp` currently drops the `BspData` after extracting vertex positions. Accessing `tex_info`, `textures`, and `get_texture_name()` requires significant restructuring of that function. Should the task include explicit guidance about this, or is it enough to flag that BSP data needs to remain accessible during face iteration and trust the implementing agent?
+
+- [x] Resolved — Restructuring `load_bsp` to retain texture metadata access during face iteration is expected and in scope. Task 02 updated with explicit permission to refactor and three guardrails: don't clone or store `BspData` as runtime data, don't explode struct fields into separate function parameters, don't add wgpu types to the BSP loader.
+
+**Q3 — Task 02: `None` handling for texture data.**
+`texture_idx` is `TextureIdxField(Option<u32>)` and `bsp.textures` is `Vec<Option<BspMipTexture>>` — entries can be `None`. Proposed default: treat as missing texture → checkerboard fallback, log warning. Correct?
+
+- [x] Resolved — Confirmed. `None` in `texture_idx` or `bsp.textures` entry is treated as missing texture — checkerboard fallback, log warning. Consistent with the Missing data degradation table. Task 02 updated.
+
+**Q4 — Task 02: `FixedStr<16>` → String conversion.**
+BSP names are `FixedStr<16>`, not `String`. The `BspData::get_texture_name()` helper exists and returns `Option<TextureName>` where `TextureName = FixedStr<32>`. Plan should reference this helper. No question — will add.
+
+- [x] Resolved — Not a question — added reference to `BspData::get_texture_name()` helper in Task 02. Returns `Option<TextureName>` (`FixedStr<32>`). Task 02 updated.
+
+### Suggestions
+
+**Q5 — Task 03: Texture base path resolution.**
+Where should the texture loader search? Relative to CWD? Relative to the BSP file? `assets/textures/` to match existing `assets/maps/` convention? Current `cargo run` examples use `assets/maps/test.bsp`.
+
+- [x] Resolved — The texture loader takes a base path parameter (the "texture root"), not a hardcoded location. The engine resolves the texture root from the map file's parent directory: given `assets/maps/test.bsp`, the texture root is `assets/textures/`. Convention: `<asset_root>/textures/<collection>/<name>.png`, searched recursively from the texture root. The texture root is a parameter so that a future sample-game crate or alternative asset layout can pass its own root without engine changes. Phase 3 default: sibling `textures/` directory relative to the map file's `<asset_root>`. Task 03 updated.
+
+**Q6 — Task 02 AC 6: Wireframe backward compatibility.**
+Task 02's acceptance criterion 6 says "Existing wireframe rendering still works with the new vertex format (or a debug flag toggles it)." This is ambiguous. Proposal: drop wireframe entirely in Task 05; don't require Task 02 to maintain it. Task 02 can break wireframe since Task 05 replaces it in the same phase.
+
+- [x] Resolved — Keep wireframe working through Task 02. The new vertex format is a superset — wireframe shader ignores UV and color attributes, only the vertex buffer layout stride needs updating to match the new 36-byte format. Task 05 replaces wireframe with the textured pipeline. Task 02 AC 6 clarified.
+
+**Q7 — Task 05: PVS + per-texture draw grouping.**
+The plan says "integrate with PVS and frustum culling: only draw faces in the visible set. Group visible faces by texture, then draw." This is non-trivial — the implementer needs to decide between pre-sorting the index buffer by texture at load time, maintaining separate index ranges per texture per leaf, or rebuilding a draw list each frame. Add guidance, or leave as a design decision for the implementing agent?
+
+- [x] Resolved — Sort by **(leaf, texture_index)**, not by texture_index alone. This preserves the PRL invariant that faces are contiguous per leaf (PVS depends on `face_start + face_count`) while enabling texture batching within each leaf. Pre-compute per-leaf texture sub-ranges at load time. The draw loop becomes: for each visible leaf, for each texture sub-range in that leaf, set bind group + `draw_indexed()`. One draw call per (visible_leaf, texture) pair.
+
+  Implementation guardrails (antipatterns to avoid):
+  - **Don't sort globally by texture.** A global texture sort breaks leaf contiguity, which breaks PVS face collection. The sort key is `(leaf_index, texture_index)`.
+  - **Don't rebuild the draw list per frame.** Pre-compute `Vec<TextureSubRange>` per leaf at load time (texture_index, index_offset, index_count). At runtime, PVS selects visible leaves; the renderer iterates their pre-built sub-ranges. No per-frame sorting, hashing, or allocation.
+  - **Don't issue one draw call per face.** Merge contiguous same-texture faces within a leaf into one `draw_indexed()` range. The sort-by-(leaf, texture) guarantees same-texture faces are adjacent within each leaf's range.
+  - **Don't duplicate index buffer data.** The global index buffer remains shared. Per-leaf texture sub-ranges are metadata (offset + count into the shared buffer), not copies.
+
+  Task 05 updated to replace the "sort by texture index" guidance with the (leaf, texture) scheme.
 
 ---
 

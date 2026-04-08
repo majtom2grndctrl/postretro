@@ -53,7 +53,19 @@ Extend the per-face metadata from Phase 1 to include:
 
 - Texture index (into BSP's miptexture array) — needed by task-02 and task-04 for texture binding.
 - Texture dimensions (width, height) — available for future phases; stored here while parsing.
-- Texture name string — needed by task-02 for PNG matching and task-03 for material derivation.
+- Texture name string — needed by task-03 for PNG matching and task-04 for material derivation.
+
+Use `BspData::get_texture_name(texture_idx)` to retrieve the texture name — it returns `Option<TextureName>` where `TextureName = FixedStr<32>`. Convert to `String` (or `&str`) for storage in face metadata. Do not manually index into `bsp.textures` and extract the name field.
+
+If `texture_idx` is `None` or the `bsp.textures` entry is `None`, treat as missing texture data: store an empty/placeholder texture name so downstream systems apply the checkerboard fallback, and log a warning. This is consistent with the "Missing data degradation" table in the index.
+
+### BSP data access during face iteration
+
+Restructuring `load_bsp` to retain access to texture metadata during face iteration is expected and in scope for this task.
+
+- Do not clone `BspData` or store it alongside `LevelGeometry` — it is a parsing artifact, not runtime data.
+- Do not thread `tex_info`, `textures`, or `mip_textures` as separate function parameters — that explodes the struct across the call signature without solving the underlying scoping problem.
+- Do not add wgpu types to the BSP loader — the renderer owns all GPU types (project constraint from `CLAUDE.md`).
 
 ### Vertex buffer layout
 
@@ -67,7 +79,7 @@ Update the wgpu `VertexBufferLayout` in the renderer to the new stride (36 bytes
 
 ### LevelGeometry update
 
-The renderer's `LevelGeometry<'a>` struct currently passes `&'a [[f32; 3]]` vertices. Update to pass the new vertex format data. The `face_cluster_indices` field is wireframe-specific — remove it (task-04 removes the wireframe pipeline entirely).
+The renderer's `LevelGeometry<'a>` struct currently passes `&'a [[f32; 3]]` vertices. Update to pass the new vertex format data. The `face_cluster_indices` field is wireframe-specific — remove it (task-05 removes the wireframe pipeline entirely).
 
 ### Shader stub
 
@@ -94,4 +106,4 @@ Update the vertex shader to accept the three attributes. For this task, the frag
 3. Vertex color is white for all vertices.
 4. Per-face metadata includes texture index, dimensions, and name for every face.
 5. Vertex buffer layout in the renderer matches the new stride and attribute offsets. Shader compiles without errors.
-6. Existing wireframe rendering still works with the new vertex format (or a debug flag toggles it).
+6. Wireframe rendering continues to work with the new vertex format. The wireframe shader reads only `position` and ignores UV and color attributes. The vertex buffer layout stride must be updated to 36 bytes to match the new format — no other wireframe changes are needed. No debug flag required. Task 05 replaces wireframe with the textured pipeline entirely.

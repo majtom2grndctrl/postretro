@@ -38,7 +38,7 @@ For each face in the compiled geometry:
 3. **Discard test.** If clipping reduces the polygon to nothing (fully inside a brush), discard the face entirely.
 4. **Partial clip.** If partially inside, keep the remaining polygon. Re-triangulate if needed.
 
-Clip against all brushes except the one that generated this face.
+Clip against all brush volumes, including the face's own brush. A face on its own brush's boundary plane is not "inside" that brush (it sits on the plane, not behind all half-planes), so the face's own brush will not clip it. No `brush_index` tracking is needed. The epsilon for the inside test must be strictly negative — a point exactly on a plane is not behind it.
 
 ### Input data
 
@@ -68,7 +68,7 @@ Compile a `.map` with two overlapping room brushes sharing a wall plane. Without
 | Compiler vs engine | Compile-time only. No engine changes. PRL already stores the clipped result. |
 | Algorithm | Sutherland-Hodgman geometric clip via existing `geometry_utils.rs`. Voxel discard as fallback if geometric clip is impractical. |
 | AABB pre-filter | Required. Naive O(faces × brushes) without it is too slow for large maps. |
-| Brush generating the face | Excluded from clip. A face is not clipped against its own brush's half-planes. |
+| Brush generating the face | Not excluded. Clip against all brushes including own. A face on its own brush boundary is not geometrically "inside" that brush (on the plane, not behind all half-planes), so no self-clipping occurs. No `brush_index` field needed. Epsilon must be strictly negative for inside test. |
 | Re-triangulation | Required when partial clip produces a non-triangle polygon. Fan triangulation from centroid is sufficient. |
 
 ---

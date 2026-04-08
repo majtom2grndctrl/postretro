@@ -94,12 +94,16 @@ pub struct BspWorld {
 
 // --- Coordinate transform ---
 
-/// Convert a Quake Z-up position to engine Y-up.
-/// Quake: +X forward, +Y left, +Z up
-/// Engine: +X right, +Y up, -Z forward
+/// Scale factor: Quake units (inches) to engine units (meters). 1 inch = 0.0254 meters.
+const QUAKE_TO_METERS: f32 = 0.0254;
+
+/// Convert a Quake Z-up position to engine Y-up, scaled to meters.
+/// Quake: +X forward, +Y left, +Z up (units = inches)
+/// Engine: +X right, +Y up, -Z forward (units = meters)
 /// Swizzle: engine_x = -quake_y, engine_y = quake_z, engine_z = -quake_x
+/// Scale: multiply by QUAKE_TO_METERS to convert inches to meters.
 fn quake_to_engine(v: Vec3) -> Vec3 {
-    Vec3::new(-v.y, v.z, -v.x)
+    Vec3::new(-v.y, v.z, -v.x) * QUAKE_TO_METERS
 }
 
 // --- Fan triangulation ---
@@ -269,12 +273,12 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
         .map(|node| {
             let plane = &bsp.planes[node.plane_idx as usize];
             let plane_normal = quake_to_engine(plane.normal);
-            // The plane distance needs adjustment for the coordinate transform.
-            // d = dot(normal, point_on_plane). After swizzle the dot product changes,
-            // so we recompute: the original point_on_plane = normal * dist, then
-            // new_dist = dot(new_normal, new_point). Since the transform is an
-            // orthonormal rotation, distance magnitude is preserved.
-            let plane_dist = plane.dist;
+            // The plane normal is converted via quake_to_engine (swizzle + scale).
+            // The plane equation is dot(normal, point) = dist. The normal passed
+            // through quake_to_engine has its magnitude scaled by QUAKE_TO_METERS,
+            // so the distance must be scaled by the same factor to keep the plane
+            // equation consistent with scaled vertex positions.
+            let plane_dist = plane.dist * QUAKE_TO_METERS;
 
             let (front, front_is_leaf) = match *node.front {
                 qbsp::data::nodes::BspNodeRef::Node(i) => (i, false),
@@ -427,45 +431,50 @@ mod tests {
 
     #[test]
     fn coordinate_transform_z_up_to_y_up() {
-        // Quake: point straight up = (0, 0, 1)
-        // Engine Y-up: should become (0, 1, 0)
+        // Quake: point straight up = (0, 0, 1) inch
+        // Engine Y-up: should become (0, 0.0254, 0) meters
         let result = quake_to_engine(Vec3::new(0.0, 0.0, 1.0));
-        assert_vec3_approx(result, Vec3::new(0.0, 1.0, 0.0));
+        assert_vec3_approx(result, Vec3::new(0.0, QUAKE_TO_METERS, 0.0));
     }
 
     #[test]
     fn coordinate_transform_forward_axis() {
-        // Quake: +X is forward = (1, 0, 0)
-        // Engine: forward is -Z, so (1, 0, 0) -> (0, 0, -1)
+        // Quake: +X is forward = (1, 0, 0) inch
+        // Engine: forward is -Z, so (1, 0, 0) -> (0, 0, -0.0254) meters
         let result = quake_to_engine(Vec3::new(1.0, 0.0, 0.0));
-        assert_vec3_approx(result, Vec3::new(0.0, 0.0, -1.0));
+        assert_vec3_approx(result, Vec3::new(0.0, 0.0, -QUAKE_TO_METERS));
     }
 
     #[test]
     fn coordinate_transform_left_axis() {
-        // Quake: +Y is left = (0, 1, 0)
-        // Engine: left becomes -X, so (0, 1, 0) -> (-1, 0, 0)
+        // Quake: +Y is left = (0, 1, 0) inch
+        // Engine: left becomes -X, so (0, 1, 0) -> (-0.0254, 0, 0) meters
         let result = quake_to_engine(Vec3::new(0.0, 1.0, 0.0));
-        assert_vec3_approx(result, Vec3::new(-1.0, 0.0, 0.0));
+        assert_vec3_approx(result, Vec3::new(-QUAKE_TO_METERS, 0.0, 0.0));
     }
 
     #[test]
     fn coordinate_transform_preserves_distance() {
+        // The transform is a rotation + uniform scale by QUAKE_TO_METERS.
+        // The output magnitude equals the input magnitude times the scale factor.
         let original = Vec3::new(3.0, 4.0, 5.0);
         let transformed = quake_to_engine(original);
+        let expected_length = original.length() * QUAKE_TO_METERS;
         let epsilon = 1e-6;
         assert!(
-            (original.length() - transformed.length()).abs() < epsilon,
-            "distance changed: {} vs {}",
-            original.length(),
+            (transformed.length() - expected_length).abs() < epsilon,
+            "expected length {}, got {}",
+            expected_length,
             transformed.length(),
         );
     }
 
     #[test]
     fn coordinate_transform_roundtrip_orthogonality() {
-        // Verify the transform is a pure rotation (orthogonal): applying it to
-        // all three basis vectors should produce three mutually orthogonal vectors.
+        // Verify the transform preserves orthogonality: applying it to all three
+        // basis vectors produces three mutually orthogonal vectors. The uniform
+        // QUAKE_TO_METERS scale does not affect this — dot products between
+        // distinct output axes remain zero.
         let ex = quake_to_engine(Vec3::X);
         let ey = quake_to_engine(Vec3::Y);
         let ez = quake_to_engine(Vec3::Z);

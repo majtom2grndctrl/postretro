@@ -11,7 +11,7 @@ pub struct FaceMeta {
     /// Number of indices (always a multiple of 3).
     pub index_count: u32,
     /// Sequential empty-leaf index this face belongs to.
-    pub cluster_index: u32,
+    pub leaf_index: u32,
 }
 
 /// Geometry section: vertex positions, triangle indices, and per-face metadata.
@@ -34,7 +34,7 @@ pub struct GeometrySection {
 //   u32  face_count
 //   [f32; 3] * vertex_count   (vertex positions)
 //   u32 * index_count          (triangle indices)
-//   FaceMeta * face_count      (12 bytes each: offset, count, cluster)
+//   FaceMeta * face_count      (12 bytes each: offset, count, leaf_index)
 
 impl GeometrySection {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -63,7 +63,7 @@ impl GeometrySection {
         for face in &self.faces {
             buf.extend_from_slice(&face.index_offset.to_le_bytes());
             buf.extend_from_slice(&face.index_count.to_le_bytes());
-            buf.extend_from_slice(&face.cluster_index.to_le_bytes());
+            buf.extend_from_slice(&face.leaf_index.to_le_bytes());
         }
 
         buf
@@ -144,7 +144,7 @@ impl GeometrySection {
                 data[offset + 6],
                 data[offset + 7],
             ]);
-            let cluster_index = u32::from_le_bytes([
+            let leaf_index = u32::from_le_bytes([
                 data[offset + 8],
                 data[offset + 9],
                 data[offset + 10],
@@ -153,7 +153,7 @@ impl GeometrySection {
             faces.push(FaceMeta {
                 index_offset,
                 index_count,
-                cluster_index,
+                leaf_index,
             });
             offset += 12;
         }
@@ -183,12 +183,12 @@ mod tests {
                 FaceMeta {
                     index_offset: 0,
                     index_count: 3,
-                    cluster_index: 0,
+                    leaf_index: 0,
                 },
                 FaceMeta {
                     index_offset: 3,
                     index_count: 3,
-                    cluster_index: 1,
+                    leaf_index: 1,
                 },
             ],
         }

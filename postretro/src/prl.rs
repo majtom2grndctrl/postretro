@@ -321,17 +321,31 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             .map(|pr| {
                 let start = pr.vertex_start as usize;
                 let count = pr.vertex_count as usize;
-                let polygon: Vec<Vec3> = ps.vertices[start..start + count]
+                let end = start + count;
+                if end > ps.vertices.len() {
+                    return Err(PrlLoadError::FormatError(prl_format::FormatError::Io(
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "portal vertex range {}..{} exceeds vertex count {}",
+                                start,
+                                end,
+                                ps.vertices.len()
+                            ),
+                        ),
+                    )));
+                }
+                let polygon: Vec<Vec3> = ps.vertices[start..end]
                     .iter()
                     .map(|v| Vec3::from(*v))
                     .collect();
-                PortalData {
+                Ok(PortalData {
                     polygon,
                     front_leaf: pr.front_leaf as usize,
                     back_leaf: pr.back_leaf as usize,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Build per-leaf adjacency.
         let mut adjacency = vec![Vec::new(); leaves.len()];
@@ -670,12 +684,12 @@ mod tests {
                 FormatFaceMeta {
                     index_offset: 0,
                     index_count: 3,
-                    cluster_index: 0,
+                    leaf_index: 0,
                 },
                 FormatFaceMeta {
                     index_offset: 3,
                     index_count: 3,
-                    cluster_index: 1,
+                    leaf_index: 1,
                 },
             ],
         }

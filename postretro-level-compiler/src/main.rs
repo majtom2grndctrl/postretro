@@ -113,9 +113,8 @@ where
         }
     }
 
-    let input = input.ok_or_else(|| {
-        anyhow::anyhow!("usage: prl-build <input.map> [-o <output.prl>] [--pvs]")
-    })?;
+    let input = input
+        .ok_or_else(|| anyhow::anyhow!("usage: prl-build <input.map> [-o <output.prl>] [--pvs]"))?;
 
     let output = output.unwrap_or_else(|| input.with_extension("prl"));
 

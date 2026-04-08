@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use glam::Vec3;
 
 use crate::prl::LevelWorld;
-use crate::visibility::Frustum;
+use crate::visibility::{Frustum, is_aabb_outside_frustum};
 
 /// Perform frustum-clipped portal traversal to determine which leaves are
 /// visible from the camera's current leaf.
@@ -94,36 +94,6 @@ fn portal_aabb(polygon: &[Vec3]) -> (Vec3, Vec3) {
     (mins, maxs)
 }
 
-/// Test whether an AABB is fully outside any frustum plane.
-fn is_aabb_outside_frustum(mins: Vec3, maxs: Vec3, frustum: &Frustum) -> bool {
-    for plane in &frustum.planes {
-        // Select the AABB vertex farthest along the plane normal (positive vertex).
-        let p_vertex = Vec3::new(
-            if plane.normal.x >= 0.0 {
-                maxs.x
-            } else {
-                mins.x
-            },
-            if plane.normal.y >= 0.0 {
-                maxs.y
-            } else {
-                mins.y
-            },
-            if plane.normal.z >= 0.0 {
-                maxs.z
-            } else {
-                mins.z
-            },
-        );
-
-        if plane.normal.dot(p_vertex) + plane.dist < 0.0 {
-            return true;
-        }
-    }
-
-    false
-}
-
 /// Test whether all vertices of a polygon are outside any single frustum plane.
 fn is_polygon_outside_frustum(polygon: &[Vec3], frustum: &Frustum) -> bool {
     for plane in &frustum.planes {
@@ -185,6 +155,7 @@ pub fn narrow_frustum(
     // Edge planes: for each edge of the portal, construct a plane through
     // the camera position and that edge.
     let n = portal_polygon.len();
+    let centroid = portal_polygon.iter().copied().sum::<Vec3>() / n as f32;
     for i in 0..n {
         let edge_a = portal_polygon[i];
         let edge_b = portal_polygon[(i + 1) % n];
@@ -201,7 +172,6 @@ pub fn narrow_frustum(
         // The edge plane should face inward (toward the interior of the
         // frustum pyramid). Verify by checking that the portal centroid is
         // on the positive side.
-        let centroid = portal_polygon.iter().copied().sum::<Vec3>() / n as f32;
         if edge_normal.dot(centroid - edge_a) < 0.0 {
             edge_normal = -edge_normal;
         }
@@ -397,8 +367,14 @@ mod tests {
         let visible = portal_traverse(camera_pos, 0, &frustum, &world);
         assert!(visible[0], "camera leaf should be visible");
         // Portals are at X=32 and X=64, camera looks toward -X, so they're behind.
-        assert!(!visible[1], "leaf B should not be visible when looking away");
-        assert!(!visible[2], "leaf C should not be visible when looking away");
+        assert!(
+            !visible[1],
+            "leaf B should not be visible when looking away"
+        );
+        assert!(
+            !visible[2],
+            "leaf C should not be visible when looking away"
+        );
     }
 
     #[test]
@@ -498,11 +474,7 @@ mod tests {
             root: BspChild::Leaf(0),
             has_pvs: false,
             portals: vec![portal_0, portal_1],
-            leaf_portals: vec![
-                vec![0],
-                vec![0, 1],
-                vec![1],
-            ],
+            leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
             has_portals: true,
         };
 
@@ -512,7 +484,10 @@ mod tests {
         let visible = portal_traverse(camera_pos, 0, &frustum, &world);
         assert!(visible[0], "camera leaf A should be visible");
         assert!(visible[1], "leaf B should be visible through portal 0");
-        assert!(!visible[2], "leaf C should not be visible — portal 1 is around the corner at Z=200");
+        assert!(
+            !visible[2],
+            "leaf C should not be visible — portal 1 is around the corner at Z=200"
+        );
     }
 
     #[test]

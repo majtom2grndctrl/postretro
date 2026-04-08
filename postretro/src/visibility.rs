@@ -114,7 +114,7 @@ fn extract_frustum_planes(view_proj: Mat4) -> Frustum {
 /// Uses the "positive vertex" (p-vertex) test: for each frustum plane, find the AABB
 /// corner most in the direction of the plane normal. If that corner is behind the plane,
 /// the entire AABB is outside. This is conservative — partially-outside boxes pass.
-fn is_aabb_outside_frustum(mins: Vec3, maxs: Vec3, frustum: &Frustum) -> bool {
+pub(crate) fn is_aabb_outside_frustum(mins: Vec3, maxs: Vec3, frustum: &Frustum) -> bool {
     for plane in &frustum.planes {
         // Select the AABB vertex farthest along the plane normal (positive vertex).
         let p_vertex = Vec3::new(

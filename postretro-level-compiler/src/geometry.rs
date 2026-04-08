@@ -13,7 +13,7 @@ use crate::partition::BspTree;
 /// transform is applied earlier, at the parse boundary in `parse.rs`.
 ///
 /// Only empty leaves contribute geometry. Solid leaves are skipped. The
-/// `cluster_index` field in `FaceMeta` stores the sequential index among empty
+/// `leaf_index` field in `FaceMeta` stores the sequential index among empty
 /// leaves (not the raw leaf index in the BSP tree).
 pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometrySection {
     if faces.is_empty() {
@@ -55,7 +55,7 @@ pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometrySection {
         face_metas.push(FaceMeta {
             index_offset,
             index_count,
-            cluster_index: leaf_seq_idx as u32,
+            leaf_index: leaf_seq_idx as u32,
         });
     }
 
@@ -70,7 +70,7 @@ pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometrySection {
 /// sequential empty-leaf index.
 ///
 /// Iterates BSP leaves in order, skipping solid leaves. Each empty leaf gets a
-/// sequential index (0, 1, 2, ...) used as the `cluster_index` in face metadata.
+/// sequential index (0, 1, 2, ...) used as the `leaf_index` in face metadata.
 fn build_leaf_ordered_faces(tree: &BspTree) -> Vec<(usize, usize)> {
     let capacity: usize = tree
         .leaves
@@ -337,9 +337,9 @@ mod tests {
         let section = extract_geometry(&faces, &tree);
 
         assert_eq!(section.faces.len(), 3);
-        assert_eq!(section.faces[0].cluster_index, 0);
-        assert_eq!(section.faces[1].cluster_index, 1);
-        assert_eq!(section.faces[2].cluster_index, 1);
+        assert_eq!(section.faces[0].leaf_index, 0);
+        assert_eq!(section.faces[1].leaf_index, 1);
+        assert_eq!(section.faces[2].leaf_index, 1);
     }
 
     #[test]
@@ -356,8 +356,8 @@ mod tests {
 
         // Only faces from the empty leaf should appear
         assert_eq!(section.faces.len(), 2);
-        assert_eq!(section.faces[0].cluster_index, 0);
-        assert_eq!(section.faces[1].cluster_index, 0);
+        assert_eq!(section.faces[0].leaf_index, 0);
+        assert_eq!(section.faces[1].leaf_index, 0);
     }
 
     #[test]
@@ -379,12 +379,12 @@ mod tests {
         let last_leaf0_idx = section
             .faces
             .iter()
-            .rposition(|f| f.cluster_index == 0)
+            .rposition(|f| f.leaf_index == 0)
             .unwrap();
         let first_leaf1_idx = section
             .faces
             .iter()
-            .position(|f| f.cluster_index == 1)
+            .position(|f| f.leaf_index == 1)
             .unwrap();
         assert!(last_leaf0_idx < first_leaf1_idx);
     }
@@ -474,13 +474,10 @@ mod tests {
         assert_eq!(sum, section.indices.len() as u32);
 
         // Faces are ordered by leaf index
-        let mut prev_cluster = 0u32;
+        let mut prev_leaf = 0u32;
         for face in &section.faces {
-            assert!(
-                face.cluster_index >= prev_cluster,
-                "faces not ordered by leaf"
-            );
-            prev_cluster = face.cluster_index;
+            assert!(face.leaf_index >= prev_leaf, "faces not ordered by leaf");
+            prev_leaf = face.leaf_index;
         }
 
         // Round-trip serialization

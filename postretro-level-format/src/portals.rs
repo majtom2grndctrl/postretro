@@ -36,8 +36,7 @@ impl PortalsSection {
         let portal_count = self.portals.len() as u32;
         let vertex_count = self.vertices.len() as u32;
 
-        let size =
-            8 + (self.vertices.len() * 12) + (self.portals.len() * PORTAL_RECORD_SIZE);
+        let size = 8 + (self.vertices.len() * 12) + (self.portals.len() * PORTAL_RECORD_SIZE);
         let mut buf = Vec::with_capacity(size);
 
         buf.extend_from_slice(&portal_count.to_le_bytes());
@@ -67,13 +66,10 @@ impl PortalsSection {
             )));
         }
 
-        let portal_count =
-            u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-        let vertex_count =
-            u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let portal_count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let vertex_count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
 
-        let expected_size =
-            8 + (vertex_count * 12) + (portal_count * PORTAL_RECORD_SIZE);
+        let expected_size = 8 + (vertex_count * 12) + (portal_count * PORTAL_RECORD_SIZE);
         if data.len() < expected_size {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -205,10 +201,8 @@ mod tests {
         let section = sample_section();
         let bytes = section.to_bytes();
 
-        let portal_count =
-            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        let vertex_count =
-            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let portal_count = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let vertex_count = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
 
         assert_eq!(portal_count, 2);
         assert_eq!(vertex_count, 7);

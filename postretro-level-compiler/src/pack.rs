@@ -155,10 +155,7 @@ pub fn pack_and_write_portals(
 }
 
 /// Write sections to disk and validate via read-back.
-fn write_and_validate_sections(
-    output: &Path,
-    sections: &[SectionBlob],
-) -> anyhow::Result<()> {
+fn write_and_validate_sections(output: &Path, sections: &[SectionBlob]) -> anyhow::Result<()> {
     // Validate output directory exists before writing
     if let Some(parent) = output.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
@@ -210,10 +207,7 @@ fn validate_readback(file_buf: &[u8], expected_sections: &[SectionBlob]) -> anyh
 
     for expected in expected_sections {
         let entry = meta.find_section(expected.section_id).ok_or_else(|| {
-            anyhow::anyhow!(
-                "section ID {} missing from read-back",
-                expected.section_id
-            )
+            anyhow::anyhow!("section ID {} missing from read-back", expected.section_id)
         })?;
         anyhow::ensure!(
             entry.size > 0,
@@ -221,8 +215,8 @@ fn validate_readback(file_buf: &[u8], expected_sections: &[SectionBlob]) -> anyh
             expected.section_id
         );
 
-        let actual = read_section_data(&mut cursor, &meta, expected.section_id)?
-            .ok_or_else(|| {
+        let actual =
+            read_section_data(&mut cursor, &meta, expected.section_id)?.ok_or_else(|| {
                 anyhow::anyhow!(
                     "section ID {} data missing from read-back",
                     expected.section_id
@@ -251,7 +245,7 @@ mod tests {
             faces: vec![FaceMeta {
                 index_offset: 0,
                 index_count: 3,
-                cluster_index: 0,
+                leaf_index: 0,
             }],
         }
     }
@@ -433,8 +427,7 @@ mod tests {
             .expect("partition should succeed");
 
         let geometry = crate::geometry::extract_geometry(&result.faces, &result.tree);
-        let (vis_result, generated_portals) =
-            crate::visibility::build_portal_pvs(&result.tree);
+        let (vis_result, generated_portals) = crate::visibility::build_portal_pvs(&result.tree);
 
         let portals_section = encode_portals(&generated_portals);
 

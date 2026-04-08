@@ -2,8 +2,10 @@
 // See: context/lib/input.md
 
 mod bindings;
+mod defaults;
 mod types;
 
+pub use defaults::default_bindings;
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
 
 use std::collections::HashMap;
@@ -195,22 +197,9 @@ impl InputSystem {
 mod tests {
     use super::*;
 
-    /// Default bindings matching the current free-fly camera controls.
+    /// Returns the default keyboard/mouse bindings for use in tests.
     fn test_bindings() -> Vec<Binding> {
-        vec![
-            Binding::with_scale(PhysicalInput::Key(KeyCode::KeyW), Action::MoveForward, 1.0),
-            Binding::with_scale(PhysicalInput::Key(KeyCode::KeyS), Action::MoveForward, -1.0),
-            Binding::with_scale(PhysicalInput::Key(KeyCode::KeyD), Action::MoveRight, 1.0),
-            Binding::with_scale(PhysicalInput::Key(KeyCode::KeyA), Action::MoveRight, -1.0),
-            Binding::with_scale(PhysicalInput::Key(KeyCode::KeyE), Action::MoveUp, 1.0),
-            Binding::with_scale(PhysicalInput::Key(KeyCode::KeyQ), Action::MoveUp, -1.0),
-            Binding::new(PhysicalInput::Key(KeyCode::ShiftLeft), Action::Sprint),
-            Binding::new(PhysicalInput::Key(KeyCode::Space), Action::Jump),
-            Binding::new(PhysicalInput::MouseButton(MouseButton::Left), Action::Shoot),
-            Binding::new(PhysicalInput::MouseButton(MouseButton::Right), Action::AltFire),
-            Binding::with_scale(PhysicalInput::MouseAxisX, Action::LookYaw, -1.0),
-            Binding::with_scale(PhysicalInput::MouseAxisY, Action::LookPitch, -1.0),
-        ]
+        defaults::default_keyboard_mouse_bindings()
     }
 
     // --- InputSystem keyboard handling ---

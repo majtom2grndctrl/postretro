@@ -294,7 +294,11 @@ mod tests {
         // A point at Quake Z=1 (1 inch up) → engine Y = 0.0254 m
         let scale = MapFormat::IdTech2.units_to_meters();
         let result = quake_to_engine(Vec3::new(0.0, 0.0, 1.0)) * scale;
-        assert!((result.y - 0.0254).abs() < 1e-6, "expected y=0.0254, got {}", result.y);
+        assert!(
+            (result.y - 0.0254).abs() < 1e-6,
+            "expected y=0.0254, got {}",
+            result.y
+        );
         assert!(result.x.abs() < 1e-6);
         assert!(result.z.abs() < 1e-6);
     }
@@ -322,8 +326,8 @@ mod tests {
 
     #[test]
     fn parses_test_map() {
-        let map_data =
-            parse_map_file(&test_map_path(), MapFormat::IdTech2).expect("test.map should parse without error");
+        let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
+            .expect("test.map should parse without error");
 
         // The test map has 10 world brushes
         assert!(!map_data.world_faces.is_empty(), "should have world faces");
@@ -331,8 +335,8 @@ mod tests {
 
     #[test]
     fn classifies_brushes_correctly() {
-        let map_data =
-            parse_map_file(&test_map_path(), MapFormat::IdTech2).expect("test.map should parse without error");
+        let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
+            .expect("test.map should parse without error");
 
         // info_player_start has 0 brushes
         assert!(
@@ -352,8 +356,8 @@ mod tests {
 
     #[test]
     fn faces_have_valid_vertices() {
-        let map_data =
-            parse_map_file(&test_map_path(), MapFormat::IdTech2).expect("test.map should parse without error");
+        let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
+            .expect("test.map should parse without error");
 
         for face in &map_data.world_faces {
             assert!(
@@ -366,8 +370,8 @@ mod tests {
 
     #[test]
     fn faces_have_unit_normals() {
-        let map_data =
-            parse_map_file(&test_map_path(), MapFormat::IdTech2).expect("test.map should parse without error");
+        let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
+            .expect("test.map should parse without error");
 
         for face in &map_data.world_faces {
             let len = face.normal.length();
@@ -380,8 +384,8 @@ mod tests {
 
     #[test]
     fn extracts_player_start_origin() {
-        let map_data =
-            parse_map_file(&test_map_path(), MapFormat::IdTech2).expect("test.map should parse without error");
+        let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
+            .expect("test.map should parse without error");
 
         let player_start = map_data
             .entities

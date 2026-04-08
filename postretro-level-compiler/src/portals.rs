@@ -699,7 +699,9 @@ mod tests {
             .expect("workspace root")
             .join("assets/maps/test.map");
 
-        let map_data = crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2).expect("test.map should parse");
+        let map_data =
+            crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
+                .expect("test.map should parse");
 
         let result = partition::partition(map_data.world_faces, &map_data.brush_volumes)
             .expect("partition should succeed on test map");

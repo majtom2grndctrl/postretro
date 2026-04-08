@@ -3,6 +3,7 @@
 
 mod bsp;
 mod camera;
+mod input;
 mod portal_vis;
 mod prl;
 mod render;

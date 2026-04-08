@@ -3,6 +3,7 @@
 
 mod bindings;
 pub mod cursor;
+pub mod gamepad;
 mod types;
 
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
@@ -12,6 +13,7 @@ pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
 
 use std::collections::HashMap;
 
+use gilrs::Axis as GilrsAxis;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
@@ -64,8 +66,8 @@ pub struct InputSystem {
     /// Mouse axis values resolved from accumulated delta for the current frame.
     mouse_axes: HashMap<Action, f32>,
 
-    /// Gamepad axis values for the current frame (Task 04 populates this).
-    gamepad_axes: HashMap<Action, f32>,
+    /// Raw gamepad axis values keyed by gilrs Axis. Resolved through bindings.
+    gamepad_axes: HashMap<GilrsAxis, f32>,
 
     /// Radians per raw mouse unit. Converts OS mouse units to look rotation.
     mouse_sensitivity: f32,
@@ -127,14 +129,19 @@ impl InputSystem {
             .insert(PhysicalInput::MouseButton(button), pressed);
     }
 
-    /// Hook for gamepad input. Task 04 will implement full gilrs polling here.
-    /// For now, this allows setting gamepad axis values directly for testing.
-    pub fn set_gamepad_axis(&mut self, action: Action, value: f32) {
+    /// Set a raw gamepad axis value. Called by GamepadSystem after dead zone processing.
+    /// The value is resolved through bindings to produce action axis values.
+    pub fn set_gamepad_axis(&mut self, axis: GilrsAxis, value: f32) {
         if value.abs() > f32::EPSILON {
-            self.gamepad_axes.insert(action, value);
+            self.gamepad_axes.insert(axis, value);
         } else {
-            self.gamepad_axes.remove(&action);
+            self.gamepad_axes.remove(&axis);
         }
+    }
+
+    /// Set the state of a physical input directly. Used by GamepadSystem for buttons.
+    pub fn set_physical_input(&mut self, input: PhysicalInput, active: bool) {
+        self.physical_state.insert(input, active);
     }
 
     /// Clear all physical input state. Useful when window loses focus.
@@ -496,13 +503,20 @@ mod tests {
 
     #[test]
     fn input_system_combines_mouse_displacement_and_gamepad_velocity_additively() {
-        let mut sys = InputSystem::new(test_bindings());
+        let mut bindings = test_bindings();
+        // Add a gamepad binding for LookYaw so gamepad axis resolves to the action.
+        bindings.push(Binding::with_scale(
+            PhysicalInput::GamepadAxis(gilrs::Axis::RightStickX),
+            Action::LookYaw,
+            1.0,
+        ));
+        let mut sys = InputSystem::new(bindings);
 
         // Mouse contributes displacement to LookYaw.
         sys.handle_mouse_delta(10.0, 0.0);
 
-        // Gamepad contributes velocity to LookYaw.
-        sys.set_gamepad_axis(Action::LookYaw, 0.5);
+        // Gamepad contributes velocity to LookYaw via raw axis.
+        sys.set_gamepad_axis(gilrs::Axis::RightStickX, 0.5);
 
         let snap = sys.snapshot();
         let yaw = snap.axis(Action::LookYaw);

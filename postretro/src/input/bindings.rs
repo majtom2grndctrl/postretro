@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use gilrs::Axis as GilrsAxis;
+
 use crate::input::types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
 
 /// Accumulated axis contributions for a single action, separated by source type.
@@ -48,11 +50,11 @@ pub(crate) fn resolve_axis_values(
     bindings: &[Binding],
     key_state: &HashMap<PhysicalInput, bool>,
     mouse_axes: &HashMap<Action, f32>,
-    _gamepad_axes: &HashMap<Action, f32>,
+    gamepad_axes: &HashMap<GilrsAxis, f32>,
 ) -> Vec<AxisValue> {
     let mut acc = AxisAccumulator::default();
 
-    // Keyboard contributions (produce Velocity source with discrete -1/0/+1).
+    // Keyboard and gamepad axis contributions resolved through bindings.
     for binding in bindings.iter().filter(|b| b.action == action) {
         match binding.input {
             PhysicalInput::Key(_) | PhysicalInput::MouseButton(_) => {
@@ -64,11 +66,27 @@ pub(crate) fn resolve_axis_values(
                     }
                 }
             }
+            PhysicalInput::GamepadAxis(axis) => {
+                // Resolve gamepad axis through binding: raw value * scale.
+                if let Some(&raw_val) = gamepad_axes.get(&axis) {
+                    let value = raw_val * binding.scale;
+                    if value.abs() > acc.velocity.abs() {
+                        acc.velocity = value;
+                    }
+                }
+            }
+            PhysicalInput::GamepadButton(button) => {
+                // D-pad buttons can act as axis inputs (e.g., DPadUp → MoveUp +1).
+                let active = *key_state.get(&PhysicalInput::GamepadButton(button)).unwrap_or(&false);
+                if active {
+                    let value = binding.scale;
+                    if value.abs() > acc.velocity.abs() {
+                        acc.velocity = value;
+                    }
+                }
+            }
             PhysicalInput::MouseAxisX | PhysicalInput::MouseAxisY => {
                 // Mouse axis contributions come from the mouse_axes map.
-            }
-            PhysicalInput::GamepadAxis(_) | PhysicalInput::GamepadButton(_) => {
-                // Gamepad contributions come from gamepad_axes map (Task 04).
             }
         }
     }
@@ -77,14 +95,6 @@ pub(crate) fn resolve_axis_values(
     if let Some(&mouse_val) = mouse_axes.get(&action) {
         if mouse_val.abs() > acc.displacement.abs() {
             acc.displacement = mouse_val;
-        }
-    }
-
-    // Gamepad axis contributions (Velocity source) — Task 04 will fill this in.
-    if let Some(&gamepad_val) = _gamepad_axes.get(&action) {
-        // Gamepad is velocity source; pick highest magnitude between keyboard and gamepad.
-        if gamepad_val.abs() > acc.velocity.abs() {
-            acc.velocity = gamepad_val;
         }
     }
 
@@ -272,13 +282,15 @@ mod tests {
     fn resolve_axis_gamepad_velocity_wins_over_keyboard_when_higher_magnitude() {
         let bindings = vec![
             key_binding_scaled(KeyCode::KeyW, Action::MoveForward, 1.0),
+            Binding::with_scale(PhysicalInput::GamepadAxis(GilrsAxis::LeftStickY), Action::MoveForward, -1.0),
         ];
         let mut key_state = HashMap::new();
         key_state.insert(PhysicalInput::Key(KeyCode::KeyW), true);
 
         let mut gamepad_axes = HashMap::new();
-        // Gamepad reports -0.5 velocity, keyboard reports +1.0. Keyboard wins (higher magnitude).
-        gamepad_axes.insert(Action::MoveForward, -0.5_f32);
+        // Gamepad raw = 0.5, binding scale = -1.0, resolved = -0.5.
+        // Keyboard = +1.0. Keyboard wins (higher magnitude).
+        gamepad_axes.insert(GilrsAxis::LeftStickY, 0.5_f32);
 
         let values = resolve_axis_values(
             Action::MoveForward,
@@ -289,7 +301,6 @@ mod tests {
         );
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].source, AxisSource::Velocity);
-        // Keyboard magnitude (1.0) > gamepad magnitude (0.5), keyboard wins.
         assert!((values[0].value - 1.0).abs() < f32::EPSILON);
     }
 
@@ -297,11 +308,12 @@ mod tests {
     fn resolve_axis_gamepad_velocity_wins_over_keyboard_when_keyboard_inactive() {
         let bindings = vec![
             key_binding_scaled(KeyCode::KeyW, Action::MoveForward, 1.0),
+            Binding::with_scale(PhysicalInput::GamepadAxis(GilrsAxis::LeftStickY), Action::MoveForward, 1.0),
         ];
         let key_state = HashMap::new(); // No keys pressed.
 
         let mut gamepad_axes = HashMap::new();
-        gamepad_axes.insert(Action::MoveForward, 0.75_f32);
+        gamepad_axes.insert(GilrsAxis::LeftStickY, 0.75_f32);
 
         let values = resolve_axis_values(
             Action::MoveForward,

@@ -28,6 +28,21 @@ impl MapFormat {
     pub fn is_supported(&self) -> bool {
         matches!(self, Self::IdTech2)
     }
+
+    /// Scale factor from map-native units to engine meters.
+    ///
+    /// Apply to vertex positions and plane distances. Do NOT apply to normals —
+    /// normals are direction vectors; only the axis swizzle applies to them.
+    ///
+    /// For IdTech2: 1 Quake unit = 0.0254 m (exact, since 1 inch = 0.0254 m).
+    pub fn units_to_meters(&self) -> f32 {
+        match self {
+            Self::IdTech2 => 0.0254,
+            // IdTech3 and IdTech4 are unsupported — unreachable in practice
+            // because is_supported() gates entry. Add their scales when implemented.
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 // .map file parsing via shambler: brush classification and face extraction.
-// See: context/lib/index.md
+// See: context/lib/build_pipeline.md §PRL Compilation
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -20,16 +20,18 @@ fn to_glam(v: &shambler::Vector3) -> Vec3 {
     Vec3::new(v.x, v.y, v.z)
 }
 
-/// Convert a position from Quake coordinates (right-handed, Z-up) to
-/// engine coordinates (right-handed, Y-up).
+/// Swizzle a direction vector from Quake coordinates (right-handed, Z-up) to
+/// engine coordinates (right-handed, Y-up). For use on normals and other
+/// direction vectors — does NOT apply unit scale.
 ///
 /// Quake: +X forward, +Y left, +Z up
 /// Engine: +X right, +Y up, -Z forward
 ///
 /// engine_x = -quake_y, engine_y = quake_z, engine_z = -quake_x
 ///
-/// This is an orthonormal rotation (pure axis swizzle) — plane distances are
-/// invariant under this transform. Do not transform `distance` fields.
+/// For positions and plane distances, also multiply by `MapFormat::units_to_meters()`
+/// after swizzling. Normals are direction vectors — scale must not be applied
+/// to them (only the swizzle).
 fn quake_to_engine(v: Vec3) -> Vec3 {
     Vec3::new(-v.y, v.z, -v.x)
 }
@@ -55,9 +57,12 @@ fn get_property(geo_map: &GeoMap, entity_id: &EntityId, key: &str) -> Option<Str
 
 /// Read and parse a .map file, classify brushes, and extract face geometry.
 ///
-/// `format` is accepted for future use — a subsequent task will use it to
-/// drive unit scale and dialect-specific parsing branches.
-pub fn parse_map_file(path: &Path, _format: MapFormat) -> Result<MapData> {
+/// The `format` parameter identifies the source map format. Its `units_to_meters()`
+/// scale is applied at this boundary alongside the axis swizzle: vertex positions,
+/// entity origins, and plane distances are all converted to engine meters here.
+/// All downstream stages receive engine-native coordinates and meters.
+pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
+    let scale = format.units_to_meters();
     let map_text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read map file: {}", path.display()))?;
 
@@ -90,9 +95,10 @@ pub fn parse_map_file(path: &Path, _format: MapFormat) -> Result<MapData> {
     for entity_id in geo_map.entities.iter() {
         let classname =
             get_property(&geo_map, entity_id, "classname").unwrap_or_else(|| "unknown".to_string());
+        // Swizzle axes then apply unit scale: origin is a position, not a direction.
         let origin = get_property(&geo_map, entity_id, "origin")
             .and_then(|s| parse_origin(&s))
-            .map(quake_to_engine);
+            .map(|v| quake_to_engine(v) * scale);
 
         entities.push(EntityInfo {
             classname: classname.clone(),
@@ -151,9 +157,13 @@ pub fn parse_map_file(path: &Path, _format: MapFormat) -> Result<MapData> {
             .iter()
             .filter_map(|fid| {
                 let plane = geo_planes.get(fid)?;
+                // Normal: swizzle only — normals are direction vectors, scale must not be applied.
+                // Distance: scaled explicitly. A plane n·x = d in Quake units becomes
+                // n·x' = d * scale where x' is in meters. Scale and swizzle are independent
+                // for this scalar; the swizzle is already embedded in `normal`.
                 Some(BrushPlane {
                     normal: quake_to_engine(to_glam(plane.normal())),
-                    distance: plane.distance(),
+                    distance: plane.distance() * scale,
                 })
             })
             .collect();
@@ -189,15 +199,19 @@ pub fn parse_map_file(path: &Path, _format: MapFormat) -> Result<MapData> {
                 None => continue,
             };
 
-            // Reorder vertices by winding indices; transform from Quake to engine coords
+            // Reorder vertices by winding indices; swizzle axes and apply unit scale.
+            // Vertices are positions — both the axis swizzle and the meter scale apply.
             let vertices: Vec<Vec3> = indices
                 .iter()
-                .map(|&i| quake_to_engine(to_glam(&vertices_raw[i])))
+                .map(|&i| quake_to_engine(to_glam(&vertices_raw[i])) * scale)
                 .collect();
 
             let plane = &geo_planes[face_id];
+            // Normal: swizzle only — direction vector, no unit scale.
             let normal = quake_to_engine(to_glam(plane.normal()));
-            let distance = plane.distance();
+            // Distance: scaled explicitly. A plane n·x = d in Quake units becomes
+            // n·x' = d * scale where x' is in meters.
+            let distance = plane.distance() * scale;
 
             // Look up texture name
             let texture = geo_map
@@ -246,27 +260,55 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    // -- Coordinate transform --
+    // -- Coordinate transform (axis swizzle only) --
+    // These tests verify the swizzle in isolation; they do not include the unit
+    // scale because `quake_to_engine` is a direction-vector transform used for
+    // normals as well as positions. Positions are scaled separately via
+    // `MapFormat::units_to_meters()`.
 
     #[test]
     fn quake_to_engine_z_up_maps_to_y_up() {
-        // Quake Z-up → engine Y-up
+        // Quake Z-up → engine Y-up (swizzle only)
         let result = quake_to_engine(Vec3::new(0.0, 0.0, 1.0));
         assert_eq!(result, Vec3::new(0.0, 1.0, 0.0));
     }
 
     #[test]
     fn quake_to_engine_x_forward_maps_to_negative_z_forward() {
-        // Quake +X forward → engine -Z forward
+        // Quake +X forward → engine -Z forward (swizzle only)
         let result = quake_to_engine(Vec3::new(1.0, 0.0, 0.0));
         assert_eq!(result, Vec3::new(0.0, 0.0, -1.0));
     }
 
     #[test]
     fn quake_to_engine_y_left_maps_to_negative_x() {
-        // Quake +Y left → engine -X
+        // Quake +Y left → engine -X (swizzle only)
         let result = quake_to_engine(Vec3::new(0.0, 1.0, 0.0));
         assert_eq!(result, Vec3::new(-1.0, 0.0, 0.0));
+    }
+
+    // -- Unit scale (position transform = swizzle + scale) --
+
+    #[test]
+    fn position_transform_z_up_scales_to_meters() {
+        // A point at Quake Z=1 (1 inch up) → engine Y = 0.0254 m
+        let scale = MapFormat::IdTech2.units_to_meters();
+        let result = quake_to_engine(Vec3::new(0.0, 0.0, 1.0)) * scale;
+        assert!((result.y - 0.0254).abs() < 1e-6, "expected y=0.0254, got {}", result.y);
+        assert!(result.x.abs() < 1e-6);
+        assert!(result.z.abs() < 1e-6);
+    }
+
+    #[test]
+    fn plane_distance_scales_to_meters() {
+        // A face plane with Quake distance 64.0 → engine distance 1.6256 m (64 × 0.0254)
+        let scale = MapFormat::IdTech2.units_to_meters();
+        let quake_distance: f32 = 64.0;
+        let engine_distance = quake_distance * scale;
+        assert!(
+            (engine_distance - 1.6256).abs() < 1e-5,
+            "expected 1.6256, got {engine_distance}"
+        );
     }
 
     // -- Map parsing --

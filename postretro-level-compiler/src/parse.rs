@@ -13,6 +13,7 @@ use shambler::face::face_planes;
 use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
 use crate::map_data::{BrushPlane, BrushVolume, EntityInfo, Face, MapData};
+use crate::map_format::MapFormat;
 
 /// Convert a shambler nalgebra Vector3 to glam Vec3.
 fn to_glam(v: &shambler::Vector3) -> Vec3 {
@@ -53,7 +54,10 @@ fn get_property(geo_map: &GeoMap, entity_id: &EntityId, key: &str) -> Option<Str
 }
 
 /// Read and parse a .map file, classify brushes, and extract face geometry.
-pub fn parse_map_file(path: &Path) -> Result<MapData> {
+///
+/// `format` is accepted for future use — a subsequent task will use it to
+/// drive unit scale and dialect-specific parsing branches.
+pub fn parse_map_file(path: &Path, _format: MapFormat) -> Result<MapData> {
     let map_text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read map file: {}", path.display()))?;
 
@@ -277,7 +281,7 @@ mod tests {
     #[test]
     fn parses_test_map() {
         let map_data =
-            parse_map_file(&test_map_path()).expect("test.map should parse without error");
+            parse_map_file(&test_map_path(), MapFormat::IdTech2).expect("test.map should parse without error");
 
         // The test map has 10 world brushes
         assert!(!map_data.world_faces.is_empty(), "should have world faces");
@@ -286,7 +290,7 @@ mod tests {
     #[test]
     fn classifies_brushes_correctly() {
         let map_data =
-            parse_map_file(&test_map_path()).expect("test.map should parse without error");
+            parse_map_file(&test_map_path(), MapFormat::IdTech2).expect("test.map should parse without error");
 
         // info_player_start has 0 brushes
         assert!(
@@ -307,7 +311,7 @@ mod tests {
     #[test]
     fn faces_have_valid_vertices() {
         let map_data =
-            parse_map_file(&test_map_path()).expect("test.map should parse without error");
+            parse_map_file(&test_map_path(), MapFormat::IdTech2).expect("test.map should parse without error");
 
         for face in &map_data.world_faces {
             assert!(
@@ -321,7 +325,7 @@ mod tests {
     #[test]
     fn faces_have_unit_normals() {
         let map_data =
-            parse_map_file(&test_map_path()).expect("test.map should parse without error");
+            parse_map_file(&test_map_path(), MapFormat::IdTech2).expect("test.map should parse without error");
 
         for face in &map_data.world_faces {
             let len = face.normal.length();
@@ -335,7 +339,7 @@ mod tests {
     #[test]
     fn extracts_player_start_origin() {
         let map_data =
-            parse_map_file(&test_map_path()).expect("test.map should parse without error");
+            parse_map_file(&test_map_path(), MapFormat::IdTech2).expect("test.map should parse without error");
 
         let player_start = map_data
             .entities
@@ -353,7 +357,7 @@ mod tests {
 
     #[test]
     fn missing_file_returns_error() {
-        let result = parse_map_file(Path::new("nonexistent.map"));
+        let result = parse_map_file(Path::new("nonexistent.map"), MapFormat::IdTech2);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(

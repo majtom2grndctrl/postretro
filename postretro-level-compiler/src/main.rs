@@ -4,6 +4,7 @@
 pub mod geometry;
 pub mod geometry_utils;
 pub mod map_data;
+pub mod map_format;
 pub mod pack;
 pub mod parse;
 pub mod partition;
@@ -13,6 +14,8 @@ pub mod visibility;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use map_format::{DEFAULT_MAP_FORMAT, MapFormat};
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -21,8 +24,13 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("[Compiler] Input: {}", args.input.display());
     log::info!("[Compiler] Output: {}", args.output.display());
+    log::info!("[Compiler] Map format: {:?}", args.format);
 
-    let map_data = parse::parse_map_file(&args.input)?;
+    if !args.format.is_supported() {
+        anyhow::bail!("map format '{:?}' is not yet supported", args.format);
+    }
+
+    let map_data = parse::parse_map_file(&args.input, args.format)?;
 
     log::info!("[Compiler] Parsing complete.");
 
@@ -74,11 +82,14 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
 struct Args {
     input: PathBuf,
     output: PathBuf,
     /// When true, emit precomputed PVS (LeafPvs section) instead of portal graph.
     pvs: bool,
+    /// Map dialect to parse (default: IdTech2).
+    format: MapFormat,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -92,6 +103,7 @@ where
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut pvs = false;
+    let mut format = DEFAULT_MAP_FORMAT;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -104,6 +116,13 @@ where
             "--pvs" => {
                 pvs = true;
             }
+            "--format" => {
+                let fmt_str = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--format requires a value"))?;
+                format = MapFormat::from_str(&fmt_str)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -114,11 +133,11 @@ where
     }
 
     let input = input
-        .ok_or_else(|| anyhow::anyhow!("usage: prl-build <input.map> [-o <output.prl>] [--pvs]"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: prl-build <input.map> [-o <output.prl>] [--pvs] [--format <FORMAT>]"))?;
 
     let output = output.unwrap_or_else(|| input.with_extension("prl"));
 
-    Ok(Args { input, output, pvs })
+    Ok(Args { input, output, pvs, format })
 }
 
 #[cfg(test)]
@@ -132,6 +151,7 @@ mod tests {
         assert_eq!(parsed.input, PathBuf::from("input.map"));
         assert_eq!(parsed.output, PathBuf::from("input.prl"));
         assert!(!parsed.pvs);
+        assert_eq!(parsed.format, MapFormat::IdTech2);
     }
 
     #[test]
@@ -168,6 +188,48 @@ mod tests {
     #[test]
     fn parse_args_rejects_unknown_flags() {
         let args = vec!["input.map".to_string(), "--bsp".to_string()];
+        let result = parse_args_from(args.into_iter());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_args_format_idtech2() {
+        let args = vec![
+            "input.map".to_string(),
+            "--format".to_string(),
+            "idtech2".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.format, MapFormat::IdTech2);
+    }
+
+    #[test]
+    fn parse_args_format_idtech3() {
+        let args = vec![
+            "input.map".to_string(),
+            "--format".to_string(),
+            "idtech3".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.format, MapFormat::IdTech3);
+    }
+
+    #[test]
+    fn parse_args_format_rejects_unknown() {
+        let args = vec![
+            "input.map".to_string(),
+            "--format".to_string(),
+            "bogus".to_string(),
+        ];
+        let result = parse_args_from(args.into_iter());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("unknown map format"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_args_format_requires_value() {
+        let args = vec!["input.map".to_string(), "--format".to_string()];
         let result = parse_args_from(args.into_iter());
         assert!(result.is_err());
     }

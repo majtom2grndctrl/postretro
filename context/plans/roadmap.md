@@ -106,7 +106,7 @@ Either path:
 ## Phase 6: Post-Processing and Polish
 
 - [ ] Post-processing pass: bloom on emissive/bright surfaces
-- [ ] Optional CRT/scanline effect (low priority)
+- [ ] Optional CRT/scanline effect (low priority -- consider running exclusively on UI elements?)
 - [ ] Cubemap loading and environment-mapped reflections (consume pre-baked cubemaps from `env_cubemap` positions)
 
 **Testable outcome:** bloom on neon surfaces, reflective surfaces. Optional retro CRT filter.
@@ -145,4 +145,4 @@ Either path:
 - HUD and UI
 - Specific entity type implementations (see `context/plans/drafts/entity-types/`)
 - Cubemap bake tool (see `context/plans/drafts/cubemap-bake-tool/`)
-- Custom level compiler (justified when ericw-tools can't produce needed baked data — nav mesh, audio propagation, custom probe density, destruction/movement state variants)
+- Custom level compiler (justified when ericw-tools can't produce needed baked data — nav mesh, audio propagation, custom probe density, light influence maps (per-light face lists replacing runtime raycasts), destruction/movement state variants)

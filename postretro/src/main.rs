@@ -3,6 +3,7 @@
 
 mod bsp;
 mod camera;
+mod frame_timing;
 mod portal_vis;
 mod prl;
 mod render;
@@ -22,6 +23,7 @@ use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowAttributes};
 
 use crate::camera::Camera;
+use crate::frame_timing::{FrameTiming, InterpolableState};
 use crate::render::Renderer;
 use crate::visibility::{VisibilityStats, VisibleFaces};
 
@@ -110,6 +112,8 @@ fn main() -> Result<()> {
 
     let event_loop = EventLoop::new().context("failed to create event loop")?;
 
+    let initial_state = InterpolableState::new(initial_camera_pos, 0.0, 0.0);
+
     let mut app = App {
         renderer: None,
         window_state: None,
@@ -119,7 +123,7 @@ fn main() -> Result<()> {
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
         keys_held: HashSet::new(),
         mouse_delta: (0.0, 0.0),
-        last_frame: Instant::now(),
+        frame_timing: FrameTiming::new(initial_state),
     };
 
     event_loop
@@ -149,7 +153,7 @@ struct App {
     keys_held: HashSet<KeyCode>,
     /// Accumulated mouse delta since last frame (dx, dy).
     mouse_delta: (f64, f64),
-    last_frame: Instant,
+    frame_timing: FrameTiming,
 }
 
 struct WindowState {
@@ -225,7 +229,7 @@ impl ApplicationHandler for App {
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
-        self.last_frame = Instant::now();
+        self.frame_timing.last_frame = Instant::now();
 
         log::info!("[Engine] Window ready");
     }
@@ -292,64 +296,92 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Fixed-timestep loop: accumulate wall-clock time, tick at
+                // constant rate, interpolate for rendering.
+                // See: context/lib/rendering_pipeline.md §1
                 let now = Instant::now();
-                let dt = now.duration_since(self.last_frame).as_secs_f32();
-                self.last_frame = now;
+                let frame_result = self.frame_timing.begin_frame(now);
+                let tick_dt = self.frame_timing.tick_dt();
 
-                // Clamp dt to avoid huge jumps after window drag or similar stalls.
-                let dt = dt.min(0.1);
-
-                let yaw_delta = -self.mouse_delta.0 as f32 * camera::SENSITIVITY;
-                let pitch_delta = -self.mouse_delta.1 as f32 * camera::SENSITIVITY;
-                self.camera.rotate(yaw_delta, pitch_delta);
+                // Consume mouse delta once per frame — apply evenly across
+                // all ticks this frame to avoid input spikes.
+                let mouse_dx = self.mouse_delta.0;
+                let mouse_dy = self.mouse_delta.1;
                 self.mouse_delta = (0.0, 0.0);
 
-                let speed = if self.keys_held.contains(&KeyCode::ShiftLeft)
-                    || self.keys_held.contains(&KeyCode::ShiftRight)
-                {
-                    camera::MOVE_SPEED * camera::SPRINT_MULTIPLIER
+                let ticks = frame_result.ticks;
+                let yaw_per_tick = if ticks > 0 {
+                    -mouse_dx as f32 * camera::SENSITIVITY / ticks as f32
                 } else {
-                    camera::MOVE_SPEED
+                    0.0
+                };
+                let pitch_per_tick = if ticks > 0 {
+                    -mouse_dy as f32 * camera::SENSITIVITY / ticks as f32
+                } else {
+                    0.0
                 };
 
-                let forward = self.camera.forward();
-                let right = self.camera.right();
-                let mut move_dir = Vec3::ZERO;
+                // Run fixed-rate game logic ticks.
+                for _ in 0..ticks {
+                    self.camera.rotate(yaw_per_tick, pitch_per_tick);
 
-                if self.keys_held.contains(&KeyCode::KeyW) {
-                    move_dir += forward;
-                }
-                if self.keys_held.contains(&KeyCode::KeyS) {
-                    move_dir -= forward;
-                }
-                if self.keys_held.contains(&KeyCode::KeyD) {
-                    move_dir += right;
-                }
-                if self.keys_held.contains(&KeyCode::KeyA) {
-                    move_dir -= right;
-                }
-                if self.keys_held.contains(&KeyCode::KeyE) {
-                    move_dir += Vec3::Y;
-                }
-                if self.keys_held.contains(&KeyCode::KeyQ) {
-                    move_dir -= Vec3::Y;
+                    let speed = if self.keys_held.contains(&KeyCode::ShiftLeft)
+                        || self.keys_held.contains(&KeyCode::ShiftRight)
+                    {
+                        camera::MOVE_SPEED * camera::SPRINT_MULTIPLIER
+                    } else {
+                        camera::MOVE_SPEED
+                    };
+
+                    let forward = self.camera.forward();
+                    let right = self.camera.right();
+                    let mut move_dir = Vec3::ZERO;
+
+                    if self.keys_held.contains(&KeyCode::KeyW) {
+                        move_dir += forward;
+                    }
+                    if self.keys_held.contains(&KeyCode::KeyS) {
+                        move_dir -= forward;
+                    }
+                    if self.keys_held.contains(&KeyCode::KeyD) {
+                        move_dir += right;
+                    }
+                    if self.keys_held.contains(&KeyCode::KeyA) {
+                        move_dir -= right;
+                    }
+                    if self.keys_held.contains(&KeyCode::KeyE) {
+                        move_dir += Vec3::Y;
+                    }
+                    if self.keys_held.contains(&KeyCode::KeyQ) {
+                        move_dir -= Vec3::Y;
+                    }
+
+                    // Normalize to prevent faster diagonal movement, but only
+                    // if there's actual movement input.
+                    if move_dir.length_squared() > 0.0 {
+                        move_dir = move_dir.normalize();
+                    }
+
+                    self.camera.position += move_dir * speed * tick_dt;
+
+                    // Push updated camera state for interpolation.
+                    self.frame_timing.push_state(InterpolableState::new(
+                        self.camera.position,
+                        self.camera.yaw,
+                        self.camera.pitch,
+                    ));
                 }
 
-                // Normalize to prevent faster diagonal movement, but only
-                // if there's actual movement input.
-                if move_dir.length_squared() > 0.0 {
-                    move_dir = move_dir.normalize();
-                }
+                // Interpolate between previous and current state for rendering.
+                let interp = self.frame_timing.interpolated_state();
+                let view_proj = interp.view_projection(self.camera.aspect());
 
-                self.camera.position += move_dir * speed * dt;
-
-                let view_proj = self.camera.view_projection();
                 let (visible, stats) = match self.level.as_ref() {
                     Some(Level::Bsp(world)) => {
-                        visibility::determine_visibility(self.camera.position, view_proj, world)
+                        visibility::determine_visibility(interp.position, view_proj, world)
                     }
                     Some(Level::Prl(world)) => {
-                        visibility::determine_prl_visibility(self.camera.position, view_proj, world)
+                        visibility::determine_prl_visibility(interp.position, view_proj, world)
                     }
                     None => (
                         VisibleFaces::DrawAll,
@@ -362,7 +394,7 @@ impl ApplicationHandler for App {
                     ),
                 };
 
-                let pos = self.camera.position;
+                let pos = interp.position;
                 let region_label = "leaf";
                 log::debug!(
                     "[Diagnostics] {region_label}:{} | faces: {}/{}/{} (total/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",

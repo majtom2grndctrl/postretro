@@ -1,13 +1,15 @@
 // Free-fly camera: position, orientation, projection, and view matrix computation.
 // See: context/lib/input.md
 
-use glam::{Mat4, Vec3};
+use glam::Vec3;
+#[cfg(test)]
+use glam::Mat4;
 
 /// Horizontal field of view in radians (100 degrees).
-const HFOV: f32 = 100.0 * std::f32::consts::PI / 180.0;
+pub const HFOV: f32 = 100.0 * std::f32::consts::PI / 180.0;
 
-const NEAR: f32 = 0.1;
-const FAR: f32 = 4096.0;
+pub const NEAR: f32 = 0.1;
+pub const FAR: f32 = 4096.0;
 
 /// Maximum pitch angle in radians (+/- 89 degrees from horizontal).
 const PITCH_LIMIT: f32 = 89.0 * std::f32::consts::PI / 180.0;
@@ -50,6 +52,11 @@ impl Camera {
         }
     }
 
+    /// Current aspect ratio, for use by interpolation rendering.
+    pub fn aspect(&self) -> f32 {
+        self.aspect
+    }
+
     /// Apply yaw and pitch deltas from mouse input. Pitch is clamped to +/- 89 degrees.
     pub fn rotate(&mut self, yaw_delta: f32, pitch_delta: f32) {
         self.yaw += yaw_delta;
@@ -66,12 +73,16 @@ impl Camera {
         Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin())
     }
 
+    /// Combined view-projection matrix. Used by tests; production rendering
+    /// uses `InterpolableState::view_projection` for interpolated state.
+    #[cfg(test)]
     pub fn view_projection(&self) -> Mat4 {
         let view = self.view_matrix();
         let projection = self.projection_matrix();
         projection * view
     }
 
+    #[cfg(test)]
     fn view_matrix(&self) -> Mat4 {
         let look_dir = Vec3::new(
             -self.yaw.sin() * self.pitch.cos(),
@@ -82,9 +93,7 @@ impl Camera {
         Mat4::look_at_rh(self.position, target, Vec3::Y)
     }
 
-    /// Compute the perspective projection matrix.
-    /// Derives vertical FOV from horizontal FOV and aspect ratio:
-    /// `vfov = 2 * atan(tan(hfov/2) * height/width)`
+    #[cfg(test)]
     fn projection_matrix(&self) -> Mat4 {
         let vfov = 2.0 * ((HFOV / 2.0).tan() / self.aspect.max(0.001)).atan();
         Mat4::perspective_rh(vfov, self.aspect, NEAR, FAR)

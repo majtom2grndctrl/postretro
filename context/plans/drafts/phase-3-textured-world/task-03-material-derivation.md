@@ -1,7 +1,7 @@
-# Task 04: Material Derivation
+# Task 03: Material Derivation
 
 > **Phase:** 3 — Textured World
-> **Dependencies:** none. Can run in parallel with tasks 01, 02, and 03.
+> **Dependencies:** none. Can run in parallel with tasks 01, 02, and 05.
 > **Produces:** material enum assignment per face, attached to per-face metadata. Consumed by Phase 4 (footstep sounds), Phase 5 (emissive rendering bypass), Phase 7 (surface interactions).
 
 ---
@@ -19,9 +19,9 @@ Derive material type from texture name prefix for every face. Build the material
 Parse the first `_`-delimited token of each texture name as the material prefix.
 
 Examples:
-- `metal_floor_01` -> prefix `metal`
-- `concrete_wall_03` -> prefix `concrete`
-- `neon_sign_01` -> prefix `neon`
+- `metal_floor_01` → prefix `metal`
+- `concrete_wall_03` → prefix `concrete`
+- `neon_sign_01` → prefix `neon`
 
 Edge cases:
 - No underscore in name (e.g., `lava`): the entire name is the prefix.

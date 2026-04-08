@@ -1,8 +1,8 @@
-# Task 03: Texture Loading
+# Task 02: Texture Loading
 
 > **Phase:** 3 — Textured World
-> **Dependencies:** none. Can run in parallel with tasks 01 and 04.
-> **Produces:** CPU-side RGBA8 texture data for each BSP-referenced texture, indexed by texture index. Consumed by task-05 (renderer uploads to GPU and creates per-texture bind groups).
+> **Dependencies:** none. Can run in parallel with tasks 01, 03, and 05.
+> **Produces:** CPU-side RGBA8 texture data for each BSP-referenced texture, indexed by texture index. Consumed by task-04 (renderer uploads to GPU and creates per-texture bind groups).
 
 ---
 
@@ -28,7 +28,7 @@ Disable default features to avoid pulling in unused codec support. Only PNG deco
 
 BSP stores texture references as `BspMipTexture` entries. Each entry has `header.name` (texture name string) and `header.width`/`header.height` (dimensions used by qbsp for UV mapping).
 
-Build a list of unique texture names from the BSP data. Each face references a texture via `BspTexInfo.texture_idx` pointing into this list.
+Build a list of unique texture names from BSP data. Each face references a texture via `BspTexInfo.texture_idx` pointing into this list.
 
 ### File search
 
@@ -39,20 +39,19 @@ For each BSP texture name:
 2. Case-insensitive match on the filename stem (BSP names may be lowercase; filenames may vary).
 3. First match wins. If multiple collections contain the same name, log a warning and use the first found.
 
-The search happens once at level load. Cache the name-to-path mapping.
+Search happens once at level load. Cache the name-to-path mapping.
 
 ### PNG loading
 
 For each found PNG:
 1. Open with `image::open()` or `image::io::Reader`.
 2. Convert to RGBA8 via `.to_rgba8()`.
-3. Store the pixel data, width, and height.
+3. Store pixel data, width, and height.
 
 ### Checkerboard placeholder
 
 For missing textures, generate a 64x64 RGBA8 checkerboard:
 - 8x8 pixel squares alternating magenta (`[255, 0, 255, 255]`) and black (`[0, 0, 0, 255]`).
-- Classic "missing texture" visual.
 
 Log a warning per missing texture at load time: texture name and "using checkerboard placeholder."
 
@@ -65,7 +64,7 @@ Indexed collection: texture index (matching BSP miptexture array index) maps to 
 
 ### Module boundary
 
-The texture loader produces CPU-side data. It does not create wgpu textures, texture views, or samplers. The renderer receives loaded texture data and performs all GPU uploads in task-05.
+The texture loader produces CPU-side data. It does not create wgpu textures, texture views, or samplers. The renderer receives loaded texture data and performs all GPU uploads in task-04.
 
 ---
 

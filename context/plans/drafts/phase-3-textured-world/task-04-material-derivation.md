@@ -1,8 +1,8 @@
-# Task 03: Material Derivation
+# Task 04: Material Derivation
 
 > **Phase:** 3 — Textured World
-> **Dependencies:** none. Can run in parallel with tasks 01, 02, and 05.
-> **Produces:** material enum assignment per face, attached to per-face metadata. Consumed by Phase 4 (footstep sounds), Phase 5 (emissive rendering bypass), Phase 7 (surface interactions).
+> **Dependencies:** task-02 (face metadata with texture names).
+> **Produces:** material enum assignment per face, attached to per-face metadata. Consumed by Phase 4+ (footstep sounds, emissive rendering bypass, surface interactions).
 
 ---
 

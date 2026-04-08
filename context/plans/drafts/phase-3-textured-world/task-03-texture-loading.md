@@ -1,8 +1,8 @@
-# Task 02: Texture Loading
+# Task 03: Texture Loading
 
 > **Phase:** 3 — Textured World
-> **Dependencies:** none. Can run in parallel with tasks 01, 03, and 05.
-> **Produces:** CPU-side RGBA8 texture data for each BSP-referenced texture, indexed by texture index. Consumed by task-04 (renderer uploads to GPU and creates per-texture bind groups).
+> **Dependencies:** none. Can run in parallel with tasks 01, 02, and 04.
+> **Produces:** CPU-side RGBA8 texture data for each BSP-referenced texture, indexed by texture index. Consumed by task-05 (renderer uploads to GPU and creates per-texture bind groups).
 
 ---
 

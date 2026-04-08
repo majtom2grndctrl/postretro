@@ -95,11 +95,11 @@ BSP stores texture names in `BspMipTexture.header.name`. Engine searches `textur
 
 | ID | Task | File | Dependencies | Description |
 |----|------|------|-------------|-------------|
-| 01 | Vertex Format and Base Texture UVs | `task-01-vertex-format.md` | none | Replace wireframe vertex format with textured format (no lightmap_uv). Compute base texture UVs. Extend face metadata. Update LevelGeometry. |
-| 02 | Texture Loading | `task-02-texture-loading.md` | none | Load PNGs matched by BSP texture names. Checkerboard fallback. CPU-side RGBA8 output to renderer. |
-| 03 | Material Derivation | `task-03-material-derivation.md` | none | Parse texture name prefix, map to material enum, attach to per-face metadata. |
-| 04 | Render Pipeline | `task-04-render-pipeline.md` | 01, 02 | Replace wireframe with solid single-texture pipeline. Depth buffer, back-face culling, flat uniform lighting. |
-| 05 | CSG Face Clipping | `task-05-csg-face-clipping.md` | none | Clip PRL faces against overlapping brush volumes at compile time. Removes faces inside solid space, eliminates z-fighting. |
+| 01 | CSG Face Clipping | `task-01-csg-face-clipping.md` | none | Clip PRL faces against overlapping brush volumes at compile time using existing `geometry_utils.rs` clipping. Eliminates z-fighting. |
+| 02 | Vertex Format and Base Texture UVs | `task-02-vertex-format.md` | none | Replace wireframe vertex format with textured format (no lightmap_uv). Compute base texture UVs. Extend face metadata. Update LevelGeometry. |
+| 03 | Texture Loading | `task-03-texture-loading.md` | none | Load PNGs matched by BSP texture names. Checkerboard fallback. CPU-side RGBA8 output to renderer. |
+| 04 | Material Derivation | `task-04-material-derivation.md` | 02 | Parse texture name prefix from face metadata, map to material enum, attach to per-face metadata. |
+| 05 | Render Pipeline | `task-05-render-pipeline.md` | 02, 03 | Replace wireframe with solid single-texture pipeline. Depth buffer, back-face culling, flat uniform lighting. |
 
 ---
 
@@ -108,32 +108,40 @@ BSP stores texture names in `BspMipTexture.header.name`. Engine searches `textur
 ### Dependency graph
 
 ```
-  +-------------------+     +------------------+     +------------------+     +------------------+
-  | 01 Vertex format  |     | 02 Texture        |     | 03 Material       |     | 05 CSG face      |
-  | and base UVs      |     | loading           |     | derivation        |     | clipping         |
-  +--------+----------+     +--------+----------+     +------------------+     +------------------+
-           |                         |
-           +-------------------------+
-                       |
-              +--------v---------+
-              | 04 Render        |
-              | pipeline         |
-              +------------------+
+  +------------------+     +------------------+     +------------------+
+  | 01 CSG face      |     | 02 Vertex format |     | 03 Texture       |
+  | clipping         |     | and base UVs     |     | loading          |
+  | (compiler)       |     | (engine)         |     | (engine)         |
+  +------------------+     +--------+---------+     +--------+---------+
+                                    |                        |
+                           +--------v---------+              |
+                           | 04 Material      |              |
+                           | derivation       |              |
+                           +--------+---------+              |
+                                    |                        |
+                                    +------------------------+
+                                    |
+                           +--------v---------+
+                           | 05 Render        |
+                           | pipeline         |
+                           +------------------+
 ```
 
 ### Concurrency rules
 
 | Wave | Tasks | Notes |
 |------|-------|-------|
-| Wave 1 (parallel) | 01, 02, 03, 05 | No dependencies. Start all in parallel. Task 01 is on the critical path to 04. |
-| Wave 2 | 04 | Depends on 01 and 02. Run after both complete. Task 03 output (material metadata) does not block 04 — ship for data completeness. |
+| Wave 1 (parallel) | 01, 02, 03 | Zero overlap. Task 01 is compiler-only (`postretro-level-compiler`). Task 02 touches `bsp.rs`/`render.rs`. Task 03 creates new files only. |
+| Wave 2 | 04 | Reads face metadata (texture names) added by Task 02. Sequential to avoid FaceMeta merge conflicts. |
+| Wave 3 | 05 | Rewrites `render.rs` using vertex format (02) and loaded textures (03). Must be last. |
 
 ### Orchestrator notes
 
-- Task 01 requires a test map with PNG textures under `textures/` for verification. The BSP does not need recompilation for Phase 3 — flat uniform lighting requires no baked data. Create simple solid-color 64x64 PNGs if none exist.
-- Tasks 02, 03, and 05 produce CPU-side data only. None touch wgpu. All can run in parallel with Task 01.
-- Task 04 is the integration point. Consumes vertex buffers (01) and loaded textures (02). Removes Phase 1 wireframe infrastructure. The implementing agent needs familiarity with the renderer module from Phase 1.
-- Task 03 has no dependents within Phase 3. Lowest-risk task. Material data is consumed by Phase 4+ systems.
+- Task 01 (CSG) runs in `postretro-level-compiler` — different crate, zero file overlap with engine tasks. Safe to parallelize with anything.
+- Task 02 requires a test map with PNG textures under `textures/` for verification. The BSP does not need recompilation — flat uniform lighting requires no baked data. Simple solid-color 64x64 PNGs suffice.
+- Task 03 (texture loading) creates a new module and adds the `image` crate. No existing file modifications beyond `Cargo.toml` and `main.rs` (mod declaration).
+- Task 04 (material derivation) reads `FaceMeta` fields that Task 02 adds. Running it in Wave 2 avoids both agents extending the same struct.
+- Task 05 is the integration point. Rewrites `render.rs` — removes wireframe infrastructure, adds textured pipeline. The implementing agent needs familiarity with the Phase 1 renderer.
 - Task 05 runs in the PRL compiler, not the engine. Independent of the BSP rendering tasks. Can run in any wave.
 
 ---

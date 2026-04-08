@@ -1,8 +1,8 @@
-# Task 01: Vertex Format and Base Texture UVs
+# Task 02: Vertex Format and Base Texture UVs
 
 > **Phase:** 3 — Textured World
-> **Dependencies:** none. First task in the phase. Requires Phase 1/2 complete.
-> **Produces:** vertex buffer with textured format (position, base UV, vertex color), face metadata extended with texture name, index, and dimensions. Consumed by task-04 (render pipeline).
+> **Dependencies:** none. Requires Phase 1/2 complete.
+> **Produces:** vertex buffer with textured format (position, base UV, vertex color), face metadata extended with texture name, index, and dimensions. Consumed by task-04 (material derivation) and task-05 (render pipeline).
 
 ---
 

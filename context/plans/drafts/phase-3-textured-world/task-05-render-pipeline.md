@@ -1,7 +1,7 @@
-# Task 04: Render Pipeline
+# Task 05: Render Pipeline
 
 > **Phase:** 3 — Textured World
-> **Dependencies:** task-01 (full vertex format), task-02 (loaded textures).
+> **Dependencies:** task-02 (full vertex format), task-03 (loaded textures).
 > **Produces:** solid textured rendering of BSP geometry with flat uniform lighting. Replaces the Phase 1 wireframe pipeline.
 
 ---
@@ -41,7 +41,7 @@ Front face winding: `FrontFace::Ccw` (counter-clockwise). Verify this matches fa
 
 ### GPU texture upload
 
-For each loaded texture from task-02:
+For each loaded texture from task-03:
 1. Create a wgpu `Texture` (`Rgba8UnormSrgb` format, dimensions from loaded data).
 2. Write pixel data via `queue.write_texture()`.
 3. Create a `TextureView`.

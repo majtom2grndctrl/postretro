@@ -1,4 +1,4 @@
-# Task 05: CSG Face Clipping
+# Task 01: CSG Face Clipping
 
 > **Phase:** 3 — Textured World
 > **Dependencies:** none. Runs in the PRL compiler, independent of engine rendering tasks.
@@ -20,13 +20,22 @@ See `context/reference/csg-face-clipping.md` for background and algorithm detail
 
 BSP already handles this via BSP tree construction — splitting geometry along brush planes eliminates overlaps structurally. PRL geometry is extracted directly from brush faces without BSP splitting, so overlapping brushes produce duplicate geometry at shared surfaces.
 
+### Existing clipping utilities
+
+The compiler already has Sutherland-Hodgman clipping in `geometry_utils.rs`:
+
+- `split_polygon(vertices, normal, distance, epsilon)` → `(Option<front>, Option<back>)` — splits a convex polygon by a plane
+- `clip_polygon_to_front(vertices, normal, distance, epsilon)` → `Option<Vec<Vec3>>` — keeps the front side, discards back
+
+These are currently used by BSP partitioning and portal generation. This task wires them into a new CSG elimination pass — no new clipping algorithm needed.
+
 ### Algorithm
 
 For each face in the compiled geometry:
 
 1. **AABB pre-filter.** Test the face's bounding box against every other brush. Skip brushes whose AABB doesn't intersect the face AABB.
-2. **Sutherland-Hodgman clip.** For each intersecting brush, clip the face polygon against the brush's half-planes. A half-plane clips away the inside-solid side.
-3. **Discard test.** If the clipped polygon has zero area (fully inside a brush), discard the face entirely.
+2. **Clip against brush half-planes.** For each intersecting brush, use `clip_polygon_to_front()` against each of the brush's half-planes (negated, to clip away the inside-solid side). If the polygon survives all planes, it's outside that brush.
+3. **Discard test.** If clipping reduces the polygon to nothing (fully inside a brush), discard the face entirely.
 4. **Partial clip.** If partially inside, keep the remaining polygon. Re-triangulate if needed.
 
 Clip against all brushes except the one that generated this face.
@@ -36,8 +45,7 @@ Clip against all brushes except the one that generated this face.
 The compiler already has:
 - Brush volumes with half-planes (parsed from `.map` via shambler)
 - Face polygons (vertices extracted per-brush-face)
-
-Sutherland-Hodgman is a standard polygon clipping algorithm. No external crate needed — implement directly using the half-plane formulation.
+- Clipping utilities in `geometry_utils.rs`
 
 ### Voxel grid alternative
 
@@ -58,7 +66,7 @@ Compile a `.map` with two overlapping room brushes sharing a wall plane. Without
 | Item | Resolution |
 |------|------------|
 | Compiler vs engine | Compile-time only. No engine changes. PRL already stores the clipped result. |
-| Algorithm | Sutherland-Hodgman geometric clip. Voxel discard as fallback if geometric clip is impractical. |
+| Algorithm | Sutherland-Hodgman geometric clip via existing `geometry_utils.rs`. Voxel discard as fallback if geometric clip is impractical. |
 | AABB pre-filter | Required. Naive O(faces × brushes) without it is too slow for large maps. |
 | Brush generating the face | Excluded from clip. A face is not clipped against its own brush's half-planes. |
 | Re-triangulation | Required when partial clip produces a non-triangle polygon. Fan triangulation from centroid is sufficient. |

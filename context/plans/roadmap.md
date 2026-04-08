@@ -37,15 +37,15 @@
 
 ---
 
-## Phase 2: Input and Frame Timing
+## Phase 2: Input and Frame Timing ✓
 
-- [ ] Fixed-timestep frame loop: accumulator, interpolation factor, delta-time clamping
-- [ ] Input subsystem: action mapping (keyboard/mouse via winit, gamepad via gilrs)
-- [ ] Mouse capture, sensitivity, invert-Y
-- [ ] Replace raw free-fly camera with action-driven camera (still no collision)
-- [ ] Gamepad support: analog sticks, dead zones, trigger axes
+- [x] Fixed-timestep frame loop: accumulator, interpolation factor, delta-time clamping
+- [x] Input subsystem: action mapping (keyboard/mouse via winit, gamepad via gilrs)
+- [x] Mouse capture, sensitivity, invert-Y
+- [x] Replace raw free-fly camera with action-driven camera (still no collision)
+- [x] Gamepad support: analog sticks, dead zones, trigger axes
 
-**Testable outcome:** action-driven camera navigating wireframe levels with stable frame timing. Keyboard, mouse, and gamepad all work.
+**Testable outcome:** action-driven camera navigating wireframe levels with stable frame timing. Keyboard, mouse, and gamepad all work. ✓
 
 ---
 

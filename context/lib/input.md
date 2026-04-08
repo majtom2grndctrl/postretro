@@ -28,14 +28,27 @@ Physical inputs map to logical actions. Game logic never queries "is W pressed" 
 | Button | Binary on/off, with pressed/held/released states | Shoot, jump, use, reload |
 | Axis | Scalar value in [-1, 1] | Move forward/back, strafe left/right, look yaw, look pitch |
 
-A single action can have multiple physical bindings. W key and left stick Y both map to the forward/back movement axis. Bindings are data, not code -- stored in configuration, rebindable at runtime.
+A single action can have multiple physical bindings. W key and left stick Y both map to the forward/back movement axis. Bindings are data, not code — currently hardcoded defaults, with config file loading and runtime rebinding planned as follow-up work.
+
+### Axis source tagging
+
+Axis values carry a source tag that determines how game logic integrates them:
+
+| Source | Tag | Meaning | Integration |
+|--------|-----|---------|-------------|
+| Mouse delta | Displacement | Value is rotation in radians | Apply directly (divide evenly across ticks in a frame) |
+| Keyboard | Velocity | Value is -1, 0, or +1 | Multiply by speed and tick delta |
+| Gamepad stick | Velocity | Value is stick deflection in [-1, 1] | Multiply by sensitivity and tick delta |
+
+The distinction matters for look axes: mouse displacement is framerate-independent (accumulated raw deltas converted to radians by sensitivity), while gamepad velocity produces rotation proportional to how long the stick is held.
 
 ### Binding resolution
 
 When multiple inputs map to the same action in the same frame, the subsystem resolves them:
 
 - **Button actions:** any bound input active means the action is active (logical OR).
-- **Axis actions:** highest-magnitude input wins. Keyboard axis inputs produce -1, 0, or +1; analog stick inputs produce the stick's continuous value.
+- **Axis actions within the same source type:** highest-magnitude wins. Keyboard axis inputs produce -1, 0, or +1; analog stick inputs produce the stick's continuous value.
+- **Axis actions across source types:** displacement and velocity are additive. When both mouse and gamepad contribute to the same look axis, both contributions are applied — they represent different physical actions (hand movement and thumb deflection) that don't conflict.
 
 ---
 

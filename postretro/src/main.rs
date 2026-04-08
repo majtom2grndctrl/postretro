@@ -11,7 +11,6 @@ mod prl;
 mod render;
 mod visibility;
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -21,16 +20,20 @@ use glam::Vec3;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameTiming, InterpolableState};
+use crate::input::{Action, AxisSource};
 use crate::render::Renderer;
 use crate::visibility::{VisibilityStats, VisibleFaces};
 
 const FORCE_LINE_LIST_FLAG: &str = "--force-line-list";
 const DEFAULT_MAP_PATH: &str = "assets/maps/test.bsp";
+
+/// Gamepad look sensitivity: radians per second at full stick deflection.
+const GAMEPAD_LOOK_SENSITIVITY: f32 = 2.5;
 
 /// Loaded level data: either BSP or PRL format.
 enum Level {
@@ -123,8 +126,8 @@ fn main() -> Result<()> {
         force_line_list,
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
-        keys_held: HashSet::new(),
-        mouse_delta: (0.0, 0.0),
+        input_system: input::InputSystem::new(input::default_bindings()),
+        gamepad_system: input::gamepad::GamepadSystem::new(),
         frame_timing: FrameTiming::new(initial_state),
     };
 
@@ -152,9 +155,8 @@ struct App {
     exit_result: Result<()>,
 
     camera: Camera,
-    keys_held: HashSet<KeyCode>,
-    /// Accumulated mouse delta since last frame (dx, dy).
-    mouse_delta: (f64, f64),
+    input_system: input::InputSystem,
+    gamepad_system: Option<input::gamepad::GamepadSystem>,
     frame_timing: FrameTiming,
 }
 
@@ -263,18 +265,19 @@ impl ApplicationHandler for App {
                 event: key_event, ..
             } => {
                 if let PhysicalKey::Code(code) = key_event.physical_key {
-                    if key_event.state.is_pressed() {
-                        self.keys_held.insert(code);
-                    } else {
-                        self.keys_held.remove(&code);
-                    }
+                    self.input_system
+                        .handle_keyboard_event(code, key_event.state.is_pressed());
                 }
+            }
+            WindowEvent::MouseInput { button, state, .. } => {
+                self.input_system
+                    .handle_mouse_button(button, state.is_pressed());
             }
             WindowEvent::Focused(focused) => {
                 if let Some(ws) = self.window_state.as_ref() {
                     input::cursor::handle_focus_change(focused, &ws.window);
                     if !focused {
-                        self.keys_held.clear();
+                        self.input_system.clear_all();
                     }
                 }
             }
@@ -285,32 +288,57 @@ impl ApplicationHandler for App {
                 let now = Instant::now();
                 let frame_result = self.frame_timing.begin_frame(now);
                 let tick_dt = self.frame_timing.tick_dt();
-
-                // Consume mouse delta once per frame — apply evenly across
-                // all ticks this frame to avoid input spikes.
-                let mouse_dx = self.mouse_delta.0;
-                let mouse_dy = self.mouse_delta.1;
-                self.mouse_delta = (0.0, 0.0);
-
                 let ticks = frame_result.ticks;
-                let yaw_per_tick = if ticks > 0 {
-                    -mouse_dx as f32 * camera::SENSITIVITY / ticks as f32
-                } else {
-                    0.0
-                };
-                let pitch_per_tick = if ticks > 0 {
-                    -mouse_dy as f32 * camera::SENSITIVITY / ticks as f32
-                } else {
-                    0.0
-                };
+
+                // Poll gamepad before taking the snapshot.
+                if let Some(gp) = &mut self.gamepad_system {
+                    gp.update(&mut self.input_system);
+                }
+
+                // Take a single snapshot for this frame. All ticks read from it.
+                let snapshot = self.input_system.snapshot();
+
+                // Pre-compute look deltas from axis values, split by source.
+                let look_yaw_values = snapshot.axis(Action::LookYaw);
+                let look_pitch_values = snapshot.axis(Action::LookPitch);
 
                 // Run fixed-rate game logic ticks.
                 for _ in 0..ticks {
-                    self.camera.rotate(yaw_per_tick, pitch_per_tick);
+                    // Look: displacement sources (mouse) divided evenly across
+                    // ticks; velocity sources (gamepad) multiplied by tick_dt.
+                    let mut yaw_delta = 0.0f32;
+                    let mut pitch_delta = 0.0f32;
 
-                    let speed = if self.keys_held.contains(&KeyCode::ShiftLeft)
-                        || self.keys_held.contains(&KeyCode::ShiftRight)
-                    {
+                    for av in look_yaw_values {
+                        match av.source {
+                            AxisSource::Displacement => {
+                                yaw_delta += av.value / ticks as f32;
+                            }
+                            AxisSource::Velocity => {
+                                yaw_delta += av.value * GAMEPAD_LOOK_SENSITIVITY * tick_dt;
+                            }
+                        }
+                    }
+                    for av in look_pitch_values {
+                        match av.source {
+                            AxisSource::Displacement => {
+                                pitch_delta += av.value / ticks as f32;
+                            }
+                            AxisSource::Velocity => {
+                                pitch_delta += av.value * GAMEPAD_LOOK_SENSITIVITY * tick_dt;
+                            }
+                        }
+                    }
+
+                    self.camera.rotate(yaw_delta, pitch_delta);
+
+                    // Movement from action snapshot.
+                    let forward_axis = snapshot.axis_value(Action::MoveForward);
+                    let right_axis = snapshot.axis_value(Action::MoveRight);
+                    let up_axis = snapshot.axis_value(Action::MoveUp);
+                    let sprint = snapshot.button(Action::Sprint).is_active();
+
+                    let speed = if sprint {
                         camera::MOVE_SPEED * camera::SPRINT_MULTIPLIER
                     } else {
                         camera::MOVE_SPEED
@@ -318,26 +346,8 @@ impl ApplicationHandler for App {
 
                     let forward = self.camera.forward();
                     let right = self.camera.right();
-                    let mut move_dir = Vec3::ZERO;
-
-                    if self.keys_held.contains(&KeyCode::KeyW) {
-                        move_dir += forward;
-                    }
-                    if self.keys_held.contains(&KeyCode::KeyS) {
-                        move_dir -= forward;
-                    }
-                    if self.keys_held.contains(&KeyCode::KeyD) {
-                        move_dir += right;
-                    }
-                    if self.keys_held.contains(&KeyCode::KeyA) {
-                        move_dir -= right;
-                    }
-                    if self.keys_held.contains(&KeyCode::KeyE) {
-                        move_dir += Vec3::Y;
-                    }
-                    if self.keys_held.contains(&KeyCode::KeyQ) {
-                        move_dir -= Vec3::Y;
-                    }
+                    let mut move_dir =
+                        forward * forward_axis + right * right_axis + Vec3::Y * up_axis;
 
                     // Normalize to prevent faster diagonal movement, but only
                     // if there's actual movement input.
@@ -425,8 +435,7 @@ impl ApplicationHandler for App {
         event: DeviceEvent,
     ) {
         if let DeviceEvent::MouseMotion { delta } = event {
-            self.mouse_delta.0 += delta.0;
-            self.mouse_delta.1 += delta.1;
+            self.input_system.handle_mouse_delta(delta.0, delta.1);
         }
     }
 

@@ -60,10 +60,6 @@ impl InterpolableState {
     }
 }
 
-/// Stub action snapshot — Task 02 builds the real one. Task 06 wires it in.
-#[allow(dead_code)]
-pub struct ActionSnapshot;
-
 /// Fixed-timestep accumulator. Tracks wall-clock time and ticks game logic
 /// at a constant rate, independent of render framerate.
 pub struct FrameTiming {

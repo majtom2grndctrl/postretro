@@ -14,16 +14,22 @@ pub enum MapFormat {
 
 pub const DEFAULT_MAP_FORMAT: MapFormat = MapFormat::IdTech2;
 
-impl MapFormat {
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl std::str::FromStr for MapFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "idtech2" => Ok(Self::IdTech2),
             "idtech3" => Ok(Self::IdTech3),
             "idtech4" => Ok(Self::IdTech4),
-            other => Err(format!("unknown map format '{other}'; expected idtech2, idtech3, or idtech4")),
+            other => Err(format!(
+                "unknown map format '{other}'; expected idtech2, idtech3, or idtech4"
+            )),
         }
     }
+}
 
+impl MapFormat {
     /// False for variants whose parsers are not yet implemented.
     pub fn is_supported(&self) -> bool {
         matches!(self, Self::IdTech2)
@@ -48,6 +54,7 @@ impl MapFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn from_str_parses_idtech2() {

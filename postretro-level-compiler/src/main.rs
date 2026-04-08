@@ -120,7 +120,8 @@ where
                 let fmt_str = args
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--format requires a value"))?;
-                format = MapFormat::from_str(&fmt_str)
+                format = fmt_str
+                    .parse::<MapFormat>()
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
             _ if input.is_none() => {
@@ -132,12 +133,20 @@ where
         }
     }
 
-    let input = input
-        .ok_or_else(|| anyhow::anyhow!("usage: prl-build <input.map> [-o <output.prl>] [--pvs] [--format <FORMAT>]"))?;
+    let input = input.ok_or_else(|| {
+        anyhow::anyhow!(
+            "usage: prl-build <input.map> [-o <output.prl>] [--pvs] [--format <FORMAT>]"
+        )
+    })?;
 
     let output = output.unwrap_or_else(|| input.with_extension("prl"));
 
-    Ok(Args { input, output, pvs, format })
+    Ok(Args {
+        input,
+        output,
+        pvs,
+        format,
+    })
 }
 
 #[cfg(test)]

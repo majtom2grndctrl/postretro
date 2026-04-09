@@ -26,7 +26,7 @@ Read these context library files first:
 - `context/lib/development_guide.md` — conventions, constraints, coding standards
 - `context/lib/testing_guide.md` — what to test, test patterns
 
-Then read `context/plans/ready/$ARGUMENTS/plan.md`. If missing, list available plans and ask which to run.
+Then read `context/plans/ready/$ARGUMENTS/index.md`. If missing, list available plans and ask which to run.
 
 Understand:
 - Shared context section (every agent needs this)

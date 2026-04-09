@@ -90,6 +90,7 @@ fn split_face(face: &Face, plane: &Plane) -> (Option<Face>, Option<Face>) {
         normal: face.normal,
         distance: face.distance,
         texture: face.texture.clone(),
+        tex_projection: face.tex_projection.clone(),
     });
 
     let back = back_verts.map(|verts| Face {
@@ -97,6 +98,7 @@ fn split_face(face: &Face, plane: &Plane) -> (Option<Face>, Option<Face>) {
         normal: face.normal,
         distance: face.distance,
         texture: face.texture.clone(),
+        tex_projection: face.tex_projection.clone(),
     });
 
     (front, back)
@@ -426,6 +428,7 @@ mod tests {
             normal,
             distance,
             texture: "test".to_string(),
+            tex_projection: Default::default(),
         }
     }
 
@@ -550,6 +553,7 @@ mod tests {
             normal: Vec3::NEG_Z,
             distance: 0.0,
             texture: "test".to_string(),
+            tex_projection: Default::default(),
         };
 
         let (front, back) = split_face(&face, &plane);
@@ -580,6 +584,7 @@ mod tests {
             normal: Vec3::Z,
             distance: 0.0,
             texture: "test".to_string(),
+            tex_projection: Default::default(),
         };
 
         let (tree, faces) = build_bsp_tree(vec![face]).expect("should build");

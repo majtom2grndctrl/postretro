@@ -79,6 +79,7 @@ pub fn csg_clip_faces(faces: &[Face], brush_volumes: &[BrushVolume]) -> Vec<Face
                     normal: face.normal,
                     distance: face.distance,
                     texture: face.texture.clone(),
+                    tex_projection: face.tex_projection.clone(),
                 });
             }
         }
@@ -256,6 +257,7 @@ mod tests {
             normal,
             distance,
             texture: "test".to_string(),
+            tex_projection: Default::default(),
         }
     }
 
@@ -517,8 +519,8 @@ mod tests {
         let result = crate::partition::partition(clipped, &map_data.brush_volumes)
             .expect("partition should succeed on clipped faces");
 
-        let section = crate::geometry::extract_geometry(&result.faces, &result.tree);
-        assert!(!section.faces.is_empty(), "should produce geometry");
+        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree);
+        assert!(!geo_result.geometry.faces.is_empty(), "should produce geometry");
     }
 
     // -- Helper --

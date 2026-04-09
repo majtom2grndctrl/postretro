@@ -6,13 +6,13 @@ use std::io::Cursor;
 use std::path::Path;
 
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
-use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::{
     SectionBlob, SectionId, read_container, read_section_data, write_prl,
 };
 
+use crate::geometry::GeometryResult;
 use crate::portals::Portal;
 
 /// Convert compiler portal data into a `PortalsSection` for the format crate.
@@ -42,24 +42,31 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
     }
 }
 
-/// Write geometry, BSP nodes, BSP leaves, and leaf PVS sections to a .prl file (--pvs mode).
+/// Write geometry, texture names, BSP nodes, BSP leaves, and leaf PVS sections
+/// to a .prl file (--pvs mode).
 pub fn pack_and_write_pvs(
     output: &Path,
-    geometry: &GeometrySection,
+    geo_result: &GeometryResult,
     nodes: &BspNodesSection,
     leaves: &BspLeavesSection,
     leaf_pvs: &LeafPvsSection,
 ) -> anyhow::Result<()> {
-    let geometry_bytes = geometry.to_bytes();
+    let geometry_bytes = geo_result.geometry.to_bytes();
+    let texture_names_bytes = geo_result.texture_names.to_bytes();
     let nodes_bytes = nodes.to_bytes();
     let leaves_bytes = leaves.to_bytes();
     let leaf_pvs_bytes = leaf_pvs.to_bytes();
 
     let sections = vec![
         SectionBlob {
-            section_id: SectionId::Geometry as u32,
+            section_id: SectionId::GeometryV2 as u32,
             version: 1,
             data: geometry_bytes.clone(),
+        },
+        SectionBlob {
+            section_id: SectionId::TextureNames as u32,
+            version: 1,
+            data: texture_names_bytes.clone(),
         },
         SectionBlob {
             section_id: SectionId::BspNodes as u32,
@@ -81,7 +88,11 @@ pub fn pack_and_write_pvs(
     write_and_validate_sections(output, &sections)?;
 
     log::info!("[Compiler] Sections: {}", sections.len());
-    log::info!("[Compiler]   Geometry: {} bytes", geometry_bytes.len());
+    log::info!("[Compiler]   GeometryV2: {} bytes", geometry_bytes.len());
+    log::info!(
+        "[Compiler]   TextureNames: {} bytes",
+        texture_names_bytes.len()
+    );
     log::info!("[Compiler]   BspNodes: {} bytes", nodes_bytes.len());
     log::info!("[Compiler]   BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("[Compiler]   LeafPvs: {} bytes", leaf_pvs_bytes.len());
@@ -89,12 +100,13 @@ pub fn pack_and_write_pvs(
     Ok(())
 }
 
-/// Write geometry, BSP nodes, BSP leaves, and portals sections to a .prl file (default mode).
+/// Write geometry, texture names, BSP nodes, BSP leaves, and portals sections
+/// to a .prl file (default mode).
 ///
 /// Clears pvs_offset and pvs_size in leaf records since no PVS section is written.
 pub fn pack_and_write_portals(
     output: &Path,
-    geometry: &GeometrySection,
+    geo_result: &GeometryResult,
     nodes: &BspNodesSection,
     leaves: &BspLeavesSection,
     portals: &PortalsSection,
@@ -115,16 +127,22 @@ pub fn pack_and_write_portals(
             .collect(),
     };
 
-    let geometry_bytes = geometry.to_bytes();
+    let geometry_bytes = geo_result.geometry.to_bytes();
+    let texture_names_bytes = geo_result.texture_names.to_bytes();
     let nodes_bytes = nodes.to_bytes();
     let leaves_bytes = portal_leaves.to_bytes();
     let portals_bytes = portals.to_bytes();
 
     let sections = vec![
         SectionBlob {
-            section_id: SectionId::Geometry as u32,
+            section_id: SectionId::GeometryV2 as u32,
             version: 1,
             data: geometry_bytes.clone(),
+        },
+        SectionBlob {
+            section_id: SectionId::TextureNames as u32,
+            version: 1,
+            data: texture_names_bytes.clone(),
         },
         SectionBlob {
             section_id: SectionId::BspNodes as u32,
@@ -146,7 +164,11 @@ pub fn pack_and_write_portals(
     write_and_validate_sections(output, &sections)?;
 
     log::info!("[Compiler] Sections: {}", sections.len());
-    log::info!("[Compiler]   Geometry: {} bytes", geometry_bytes.len());
+    log::info!("[Compiler]   GeometryV2: {} bytes", geometry_bytes.len());
+    log::info!(
+        "[Compiler]   TextureNames: {} bytes",
+        texture_names_bytes.len()
+    );
     log::info!("[Compiler]   BspNodes: {} bytes", nodes_bytes.len());
     log::info!("[Compiler]   BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("[Compiler]   Portals: {} bytes", portals_bytes.len());
@@ -236,17 +258,28 @@ fn validate_readback(file_buf: &[u8], expected_sections: &[SectionBlob]) -> anyh
 mod tests {
     use super::*;
     use postretro_level_format::bsp::{BspLeafRecord, BspNodeRecord};
-    use postretro_level_format::geometry::FaceMeta;
+    use postretro_level_format::geometry::{FaceMetaV2, GeometrySectionV2};
+    use postretro_level_format::texture_names::TextureNamesSection;
 
-    fn sample_geometry() -> GeometrySection {
-        GeometrySection {
-            vertices: vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
-            indices: vec![0, 1, 2],
-            faces: vec![FaceMeta {
-                index_offset: 0,
-                index_count: 3,
-                leaf_index: 0,
-            }],
+    fn sample_geo_result() -> GeometryResult {
+        GeometryResult {
+            geometry: GeometrySectionV2 {
+                vertices: vec![
+                    [1.0, 2.0, 3.0, 0.25, 0.75],
+                    [4.0, 5.0, 6.0, 0.5, 0.0],
+                    [7.0, 8.0, 9.0, 1.0, 1.0],
+                ],
+                indices: vec![0, 1, 2],
+                faces: vec![FaceMetaV2 {
+                    index_offset: 0,
+                    index_count: 3,
+                    leaf_index: 0,
+                    texture_index: 0,
+                }],
+            },
+            texture_names: TextureNamesSection {
+                names: vec!["test_texture".to_string()],
+            },
         }
     }
 
@@ -298,12 +331,12 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let output = dir.join("test_pack_pvs.prl");
 
-        let geometry = sample_geometry();
+        let geo_result = sample_geo_result();
         let nodes = sample_nodes();
         let leaves = sample_leaves();
         let leaf_pvs = sample_leaf_pvs();
 
-        pack_and_write_pvs(&output, &geometry, &nodes, &leaves, &leaf_pvs)
+        pack_and_write_pvs(&output, &geo_result, &nodes, &leaves, &leaf_pvs)
             .expect("pack_and_write_pvs should succeed");
 
         let data = std::fs::read(&output).expect("should read output file");
@@ -311,9 +344,12 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 4);
+        assert_eq!(meta.header.section_count, 5);
 
-        assert!(meta.find_section(SectionId::Geometry as u32).is_some());
+        assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
+        assert!(meta
+            .find_section(SectionId::TextureNames as u32)
+            .is_some());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
@@ -328,7 +364,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let output = dir.join("test_pack_portals.prl");
 
-        let geometry = sample_geometry();
+        let geo_result = sample_geo_result();
         let nodes = sample_nodes();
         let leaves = sample_leaves();
         let portals = PortalsSection {
@@ -341,7 +377,7 @@ mod tests {
             }],
         };
 
-        pack_and_write_portals(&output, &geometry, &nodes, &leaves, &portals)
+        pack_and_write_portals(&output, &geo_result, &nodes, &leaves, &portals)
             .expect("pack_and_write_portals should succeed");
 
         let data = std::fs::read(&output).expect("should read output file");
@@ -349,9 +385,12 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 4);
+        assert_eq!(meta.header.section_count, 5);
 
-        assert!(meta.find_section(SectionId::Geometry as u32).is_some());
+        assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
+        assert!(meta
+            .find_section(SectionId::TextureNames as u32)
+            .is_some());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
@@ -363,12 +402,12 @@ mod tests {
     #[test]
     fn pack_write_rejects_nonexistent_directory() {
         let output = Path::new("/nonexistent/deeply/nested/dir/test.prl");
-        let geometry = sample_geometry();
+        let geo_result = sample_geo_result();
         let nodes = sample_nodes();
         let leaves = sample_leaves();
         let leaf_pvs = sample_leaf_pvs();
 
-        let result = pack_and_write_pvs(output, &geometry, &nodes, &leaves, &leaf_pvs);
+        let result = pack_and_write_pvs(output, &geo_result, &nodes, &leaves, &leaf_pvs);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -390,7 +429,7 @@ mod tests {
         let result = crate::partition::partition(map_data.world_faces, &map_data.brush_volumes)
             .expect("partition should succeed");
 
-        let geometry = crate::geometry::extract_geometry(&result.faces, &result.tree);
+        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree);
         let (vis_result, _portals) = crate::visibility::build_portal_pvs(&result.tree);
 
         let dir = std::env::temp_dir().join("postretro_test_pipeline");
@@ -399,7 +438,7 @@ mod tests {
 
         pack_and_write_pvs(
             &output,
-            &geometry,
+            &geo_result,
             &vis_result.nodes_section,
             &vis_result.leaves_section,
             &vis_result.leaf_pvs_section,
@@ -410,7 +449,11 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 4);
+        assert_eq!(meta.header.section_count, 5);
+        assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
+        assert!(meta
+            .find_section(SectionId::TextureNames as u32)
+            .is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
@@ -430,7 +473,7 @@ mod tests {
         let result = crate::partition::partition(map_data.world_faces, &map_data.brush_volumes)
             .expect("partition should succeed");
 
-        let geometry = crate::geometry::extract_geometry(&result.faces, &result.tree);
+        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree);
         let (vis_result, generated_portals) = crate::visibility::build_portal_pvs(&result.tree);
 
         let portals_section = encode_portals(&generated_portals);
@@ -441,7 +484,7 @@ mod tests {
 
         pack_and_write_portals(
             &output,
-            &geometry,
+            &geo_result,
             &vis_result.nodes_section,
             &vis_result.leaves_section,
             &portals_section,
@@ -452,7 +495,11 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 4);
+        assert_eq!(meta.header.section_count, 5);
+        assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
+        assert!(meta
+            .find_section(SectionId::TextureNames as u32)
+            .is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());

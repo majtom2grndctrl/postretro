@@ -12,7 +12,7 @@ use shambler::entity::EntityId;
 use shambler::face::face_planes;
 use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
-use crate::map_data::{BrushPlane, BrushVolume, EntityInfo, Face, MapData};
+use crate::map_data::{BrushPlane, BrushVolume, EntityInfo, Face, MapData, TextureProjection};
 use crate::map_format::MapFormat;
 
 /// Convert a shambler nalgebra Vector3 to glam Vec3.
@@ -232,6 +232,44 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 .cloned()
                 .unwrap_or_else(|| "unknown".to_string());
 
+            // Extract texture projection data (Quake space).
+            let face_offset = geo_map.face_offsets.get(face_id).copied();
+            let face_angle = geo_map.face_angles.get(face_id).copied().unwrap_or(0.0);
+            let face_scale = geo_map.face_scales.get(face_id);
+
+            let (scale_u, scale_v) = face_scale
+                .map(|s| (s.x, s.y))
+                .unwrap_or((1.0, 1.0));
+
+            let tex_projection = match face_offset {
+                Some(shambler::shalrath::repr::TextureOffset::Valve { u, v }) => {
+                    TextureProjection::Valve {
+                        u_axis: Vec3::new(u.x, u.y, u.z),
+                        u_offset: u.d,
+                        v_axis: Vec3::new(v.x, v.y, v.z),
+                        v_offset: v.d,
+                        scale_u,
+                        scale_v,
+                    }
+                }
+                Some(shambler::shalrath::repr::TextureOffset::Standard { u, v }) => {
+                    TextureProjection::Standard {
+                        u_offset: u,
+                        v_offset: v,
+                        angle: face_angle,
+                        scale_u,
+                        scale_v,
+                    }
+                }
+                None => TextureProjection::Standard {
+                    u_offset: 0.0,
+                    v_offset: 0.0,
+                    angle: 0.0,
+                    scale_u: 1.0,
+                    scale_v: 1.0,
+                },
+            };
+
             total_vertex_count += vertices.len();
 
             world_faces.push(Face {
@@ -239,6 +277,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 normal,
                 distance,
                 texture,
+                tex_projection,
             });
         }
     }
@@ -264,6 +303,12 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         entity_brushes: entity_brushes_summary,
         entities,
     })
+}
+
+/// Re-export `quake_to_engine` for cross-module tests (geometry round-trip).
+#[cfg(test)]
+pub fn quake_to_engine_for_test(v: Vec3) -> Vec3 {
+    quake_to_engine(v)
 }
 
 #[cfg(test)]

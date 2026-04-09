@@ -120,11 +120,13 @@ parse .map → CSG face clipping → BSP compilation → portal generation → p
 
 | Section | ID | When present |
 |---------|-----|-------------|
-| Geometry | 1 | Always |
+| Geometry | 1 | Legacy (pre-texture support) |
+| GeometryV2 | 3 | Always (position + UV vertices, texture index per face) |
 | BspNodes | 12 | Always |
 | BspLeaves | 13 | Always |
 | LeafPvs | 14 | `--pvs` mode only |
 | Portals | 15 | Default mode |
+| TextureNames | 16 | Always (deduplicated texture name list) |
 
 ### Runtime visibility
 

@@ -255,6 +255,7 @@ mod tests {
                 normal: Vec3::NEG_X,
                 distance: -min.x,
                 texture: texture.clone(),
+                tex_projection: Default::default(),
             },
             Face {
                 vertices: vec![
@@ -266,6 +267,7 @@ mod tests {
                 normal: Vec3::X,
                 distance: max.x,
                 texture: texture.clone(),
+                tex_projection: Default::default(),
             },
             Face {
                 vertices: vec![
@@ -277,6 +279,7 @@ mod tests {
                 normal: Vec3::NEG_Y,
                 distance: -min.y,
                 texture: texture.clone(),
+                tex_projection: Default::default(),
             },
             Face {
                 vertices: vec![
@@ -288,6 +291,7 @@ mod tests {
                 normal: Vec3::Y,
                 distance: max.y,
                 texture: texture.clone(),
+                tex_projection: Default::default(),
             },
             Face {
                 vertices: vec![
@@ -299,6 +303,7 @@ mod tests {
                 normal: Vec3::NEG_Z,
                 distance: -min.z,
                 texture: texture.clone(),
+                tex_projection: Default::default(),
             },
             Face {
                 vertices: vec![
@@ -310,6 +315,7 @@ mod tests {
                 normal: Vec3::Z,
                 distance: max.z,
                 texture: texture.clone(),
+                tex_projection: Default::default(),
             },
         ]
     }

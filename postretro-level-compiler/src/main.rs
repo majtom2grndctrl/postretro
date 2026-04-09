@@ -45,9 +45,9 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("[Compiler] BSP partitioning complete.");
 
-    let geometry_section = geometry::extract_geometry(&result.faces, &result.tree);
+    let geo_result = geometry::extract_geometry(&result.faces, &result.tree);
     let empty_leaf_count = result.tree.leaves.iter().filter(|l| !l.is_solid).count();
-    geometry::log_stats(&geometry_section, empty_leaf_count);
+    geometry::log_stats(&geo_result, empty_leaf_count);
 
     log::info!("[Compiler] Geometry extraction complete.");
 
@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
         log::info!("[Compiler] Writing precomputed PVS mode (--pvs).");
         pack::pack_and_write_pvs(
             &args.output,
-            &geometry_section,
+            &geo_result,
             &vis_result.nodes_section,
             &vis_result.leaves_section,
             &vis_result.leaf_pvs_section,
@@ -76,7 +76,7 @@ fn main() -> anyhow::Result<()> {
         let portals_section = pack::encode_portals(&generated_portals);
         pack::pack_and_write_portals(
             &args.output,
-            &geometry_section,
+            &geo_result,
             &vis_result.nodes_section,
             &vis_result.leaves_section,
             &portals_section,

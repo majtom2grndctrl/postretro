@@ -1,45 +1,76 @@
-// Geometry extraction: fan-triangulate faces, build vertex/index buffers.
+// Geometry extraction: fan-triangulate faces, compute UVs, build vertex/index buffers.
 // See: context/lib/build_pipeline.md §PRL
 
-use postretro_level_format::geometry::{FaceMeta, GeometrySection};
+use glam::Vec3;
+use postretro_level_format::geometry::{FaceMetaV2, GeometrySectionV2};
+use postretro_level_format::texture_names::TextureNamesSection;
 
-use crate::map_data::Face;
+use crate::map_data::{Face, TextureProjection};
+use crate::map_format::MapFormat;
 use crate::partition::BspTree;
 
-/// Fan-triangulate faces and build a `GeometrySection` with faces ordered by
-/// empty BSP leaf.
+/// Result of geometry extraction: V2 geometry section plus texture name table.
+pub struct GeometryResult {
+    pub geometry: GeometrySectionV2,
+    pub texture_names: TextureNamesSection,
+}
+
+/// Fan-triangulate faces, compute texel-space UVs, and build a
+/// `GeometrySectionV2` with faces ordered by empty BSP leaf.
 ///
 /// Coordinates are expected to be in engine space (Y-up) -- the Quake-to-engine
-/// transform is applied earlier, at the parse boundary in `parse.rs`.
+/// transform is applied earlier, at the parse boundary in `parse.rs`. UV
+/// computation reverses this transform per-vertex to recover Quake-space
+/// positions for texture projection.
 ///
 /// Only empty leaves contribute geometry. Solid leaves are skipped. The
-/// `leaf_index` field in `FaceMeta` stores the sequential index among empty
+/// `leaf_index` field in `FaceMetaV2` stores the sequential index among empty
 /// leaves (not the raw leaf index in the BSP tree).
-pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometrySection {
+pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometryResult {
     if faces.is_empty() {
-        return GeometrySection {
-            vertices: Vec::new(),
-            indices: Vec::new(),
-            faces: Vec::new(),
+        return GeometryResult {
+            geometry: GeometrySectionV2 {
+                vertices: Vec::new(),
+                indices: Vec::new(),
+                faces: Vec::new(),
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
         };
     }
 
-    // Build a face ordering sorted by empty-leaf index. Each entry is
-    // (face_index, empty_leaf_sequential_index).
+    // Build deduplicated texture name list (encounter order).
+    let mut texture_names: Vec<String> = Vec::new();
+    let mut texture_indices: Vec<u32> = Vec::with_capacity(faces.len());
+    for face in faces {
+        let idx = texture_names
+            .iter()
+            .position(|n| n == &face.texture)
+            .unwrap_or_else(|| {
+                texture_names.push(face.texture.clone());
+                texture_names.len() - 1
+            });
+        texture_indices.push(idx as u32);
+    }
+
+    // Build a face ordering sorted by empty-leaf index.
     let ordered_faces = build_leaf_ordered_faces(tree);
 
-    let mut vertices: Vec<[f32; 3]> = Vec::new();
+    let inverse_scale = 1.0 / MapFormat::IdTech2.units_to_meters();
+
+    let mut vertices: Vec<[f32; 5]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
-    let mut face_metas: Vec<FaceMeta> = Vec::new();
+    let mut face_metas: Vec<FaceMetaV2> = Vec::new();
 
     for &(face_idx, leaf_seq_idx) in &ordered_faces {
         let face = &faces[face_idx];
 
         let base_vertex = vertices.len() as u32;
 
-        // Vertices are already in engine space (transform applied at parse boundary)
+        // Emit vertices with position (engine space) + UV (texel space).
         for &v in &face.vertices {
-            vertices.push([v.x, v.y, v.z]);
+            let quake_pos = engine_to_quake(v) * inverse_scale;
+            let (u, v_coord) = compute_texel_uv(quake_pos, face);
+            vertices.push([v.x, v.y, v.z, u, v_coord]);
         }
 
         // Fan-triangulate: (0, 1, 2), (0, 2, 3), ..., (0, n-2, n-1)
@@ -52,18 +83,137 @@ pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometrySection {
         }
         let index_count = (indices.len() as u32) - index_offset;
 
-        face_metas.push(FaceMeta {
+        face_metas.push(FaceMetaV2 {
             index_offset,
             index_count,
             leaf_index: leaf_seq_idx as u32,
+            texture_index: texture_indices[face_idx],
         });
     }
 
-    GeometrySection {
-        vertices,
-        indices,
-        faces: face_metas,
+    GeometryResult {
+        geometry: GeometrySectionV2 {
+            vertices,
+            indices,
+            faces: face_metas,
+        },
+        texture_names: TextureNamesSection {
+            names: texture_names,
+        },
     }
+}
+
+/// Convert engine-space position (Y-up) back to Quake-space (Z-up).
+///
+/// Inverse of the `quake_to_engine` transform in parse.rs:
+///   engine = (-qy, qz, -qx)
+///   quake  = (-engine_z, -engine_x, engine_y)
+fn engine_to_quake(v: Vec3) -> Vec3 {
+    Vec3::new(-v.z, -v.x, v.y)
+}
+
+/// Convert engine-space normal back to Quake-space normal.
+/// Same transform as positions (direction vector, no scale).
+fn engine_normal_to_quake(n: Vec3) -> Vec3 {
+    engine_to_quake(n)
+}
+
+/// Compute un-normalized texel-space UV for a vertex in Quake space.
+///
+/// Returns (u, v) in texel units. The engine normalizes by dividing by
+/// texture width/height at load time.
+fn compute_texel_uv(quake_pos: Vec3, face: &Face) -> (f32, f32) {
+    match &face.tex_projection {
+        TextureProjection::Standard {
+            u_offset,
+            v_offset,
+            angle,
+            scale_u,
+            scale_v,
+        } => {
+            let quake_normal = engine_normal_to_quake(face.normal);
+            standard_texel_uv(
+                quake_pos,
+                quake_normal,
+                *u_offset,
+                *v_offset,
+                *angle,
+                *scale_u,
+                *scale_v,
+            )
+        }
+        TextureProjection::Valve {
+            u_axis,
+            u_offset,
+            v_axis,
+            v_offset,
+            scale_u,
+            scale_v,
+        } => valve_texel_uv(
+            quake_pos, *u_axis, *u_offset, *v_axis, *v_offset, *scale_u, *scale_v,
+        ),
+    }
+}
+
+/// Standard (idTech2) texel-space UV: project onto closest axis plane,
+/// apply rotation, then scale and offset.
+///
+/// Mirrors shambler's `standard_uv` but omits the texture-size division,
+/// producing texel-space coordinates instead of normalized UVs.
+fn standard_texel_uv(
+    vertex: Vec3,
+    quake_normal: Vec3,
+    u_offset: f32,
+    v_offset: f32,
+    angle: f32,
+    scale_u: f32,
+    scale_v: f32,
+) -> (f32, f32) {
+    // Choose projection axes from closest axis to face normal (Quake convention).
+    let du = quake_normal.z.abs(); // up axis (Z in Quake)
+    let dr = quake_normal.y.abs(); // right axis (Y in Quake)
+    let df = quake_normal.x.abs(); // forward axis (X in Quake)
+
+    let (x, y) = if du >= dr && du >= df {
+        // Face is most upward/downward: project onto XY plane
+        (vertex.x, -vertex.y)
+    } else if dr >= du && dr >= df {
+        // Face is most left/right: project onto XZ plane
+        (vertex.x, -vertex.z)
+    } else {
+        // Face is most forward/backward: project onto YZ plane
+        (vertex.y, -vertex.z)
+    };
+
+    // Apply texture rotation
+    let rot_rad = angle.to_radians();
+    let cos_r = rot_rad.cos();
+    let sin_r = rot_rad.sin();
+    let rx = x * cos_r - y * sin_r;
+    let ry = x * sin_r + y * cos_r;
+
+    // Scale then offset (texel space — no texture-size division).
+    let u = rx / scale_u + u_offset;
+    let v = ry / scale_v + v_offset;
+
+    (u, v)
+}
+
+/// Valve 220 texel-space UV: explicit projection axes with per-axis offset.
+///
+/// Mirrors shambler's `valve_uv` but omits the texture-size division.
+fn valve_texel_uv(
+    vertex: Vec3,
+    u_axis: Vec3,
+    u_offset: f32,
+    v_axis: Vec3,
+    v_offset: f32,
+    scale_u: f32,
+    scale_v: f32,
+) -> (f32, f32) {
+    let u = u_axis.dot(vertex) / scale_u + u_offset;
+    let v = v_axis.dot(vertex) / scale_v + v_offset;
+    (u, v)
 }
 
 /// Build a list of (face_index, empty_leaf_sequential_index) pairs ordered by
@@ -95,20 +245,35 @@ fn build_leaf_ordered_faces(tree: &BspTree) -> Vec<(usize, usize)> {
 }
 
 /// Log geometry extraction statistics.
-pub fn log_stats(section: &GeometrySection, empty_leaf_count: usize) {
+pub fn log_stats(result: &GeometryResult, empty_leaf_count: usize) {
+    let section = &result.geometry;
     let triangle_count = section.indices.len() / 3;
     log::info!("[Compiler] Vertices: {}", section.vertices.len());
     log::info!("[Compiler] Indices: {}", section.indices.len());
     log::info!("[Compiler] Triangles: {triangle_count}");
     log::info!("[Compiler] Faces: {}", section.faces.len());
     log::info!("[Compiler] Empty leaves: {empty_leaf_count}");
+    log::info!(
+        "[Compiler] Unique textures: {}",
+        result.texture_names.names.len()
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::partition::{Aabb, BspLeaf};
-    use glam::Vec3;
+    use postretro_level_format::geometry::NO_TEXTURE;
+
+    fn default_projection() -> TextureProjection {
+        TextureProjection::Standard {
+            u_offset: 0.0,
+            v_offset: 0.0,
+            angle: 0.0,
+            scale_u: 1.0,
+            scale_v: 1.0,
+        }
+    }
 
     fn triangle_face() -> Face {
         Face {
@@ -120,6 +285,7 @@ mod tests {
             normal: Vec3::Z,
             distance: 0.0,
             texture: "test".to_string(),
+            tex_projection: default_projection(),
         }
     }
 
@@ -134,6 +300,7 @@ mod tests {
             normal: Vec3::Z,
             distance: 0.0,
             texture: "test".to_string(),
+            tex_projection: default_projection(),
         }
     }
 
@@ -149,6 +316,7 @@ mod tests {
             normal: Vec3::Z,
             distance: 0.0,
             texture: "test".to_string(),
+            tex_projection: default_projection(),
         }
     }
 
@@ -165,6 +333,7 @@ mod tests {
             normal: Vec3::Z,
             distance: 0.0,
             texture: "test".to_string(),
+            tex_projection: default_projection(),
         }
     }
 
@@ -194,7 +363,8 @@ mod tests {
         let faces = vec![triangle_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         assert_eq!(section.faces.len(), 1);
         assert_eq!(
@@ -210,7 +380,8 @@ mod tests {
         let faces = vec![quad_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         assert_eq!(section.indices.len(), 6, "quad should produce 6 indices");
         assert_eq!(section.faces[0].index_count, 6);
@@ -229,7 +400,8 @@ mod tests {
         let faces = vec![pentagon_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         assert_eq!(
             section.indices.len(),
@@ -244,7 +416,8 @@ mod tests {
         let faces = vec![hexagon_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         assert_eq!(
             section.indices.len(),
@@ -272,7 +445,8 @@ mod tests {
         let faces = vec![quad_face(), pentagon_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0, 1], false)]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         let vertex_count = section.vertices.len() as u32;
         for &idx in &section.indices {
@@ -295,16 +469,17 @@ mod tests {
         ];
         let tree = make_tree_with_empty_leaves(vec![(vec![0, 1, 2, 3], false)]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         let sum: u32 = section.faces.iter().map(|f| f.index_count).sum();
         assert_eq!(sum, section.indices.len() as u32);
     }
 
-    // -- Vertex passthrough --
+    // -- Vertex positions passthrough --
 
     #[test]
-    fn vertices_are_passed_through_unchanged() {
+    fn vertex_positions_are_passed_through_unchanged() {
         let faces = vec![Face {
             vertices: vec![
                 Vec3::new(-2.0, 3.0, -1.0),
@@ -314,14 +489,22 @@ mod tests {
             normal: Vec3::Y,
             distance: 0.0,
             texture: "test".to_string(),
+            tex_projection: default_projection(),
         }];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
-        assert_eq!(section.vertices[0], [-2.0, 3.0, -1.0]);
-        assert_eq!(section.vertices[1], [-5.0, 6.0, -4.0]);
-        assert_eq!(section.vertices[2], [-8.0, 9.0, -7.0]);
+        assert_eq!(section.vertices[0][0], -2.0);
+        assert_eq!(section.vertices[0][1], 3.0);
+        assert_eq!(section.vertices[0][2], -1.0);
+        assert_eq!(section.vertices[1][0], -5.0);
+        assert_eq!(section.vertices[1][1], 6.0);
+        assert_eq!(section.vertices[1][2], -4.0);
+        assert_eq!(section.vertices[2][0], -8.0);
+        assert_eq!(section.vertices[2][1], 9.0);
+        assert_eq!(section.vertices[2][2], -7.0);
     }
 
     // -- Leaf ordering --
@@ -334,7 +517,8 @@ mod tests {
             (vec![1, 2], false), // empty leaf 1
         ]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         assert_eq!(section.faces.len(), 3);
         assert_eq!(section.faces[0].leaf_index, 0);
@@ -352,7 +536,8 @@ mod tests {
             (vec![1, 2], false), // empty leaf 0
         ]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         // Only faces from the empty leaf should appear
         assert_eq!(section.faces.len(), 2);
@@ -373,7 +558,8 @@ mod tests {
             (vec![2, 3], false), // empty leaf 1
         ]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         // Empty leaf 0 faces should come before empty leaf 1 faces
         let last_leaf0_idx = section
@@ -398,11 +584,13 @@ mod tests {
             nodes: Vec::new(),
             leaves: Vec::new(),
         };
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         assert!(section.vertices.is_empty());
         assert!(section.indices.is_empty());
         assert!(section.faces.is_empty());
+        assert!(result.texture_names.names.is_empty());
     }
 
     // -- Every face produces at least one triangle --
@@ -417,7 +605,8 @@ mod tests {
         ];
         let tree = make_tree_with_empty_leaves(vec![(vec![0, 1, 2, 3], false)]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
 
         for (i, face) in section.faces.iter().enumerate() {
             assert!(
@@ -428,18 +617,174 @@ mod tests {
         }
     }
 
-    // -- Geometry section round-trip --
+    // -- GeometrySectionV2 round-trip --
 
     #[test]
     fn geometry_section_round_trip() {
         let faces = vec![triangle_face(), quad_face(), pentagon_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false), (vec![1, 2], false)]);
 
-        let section = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
         let bytes = section.to_bytes();
-        let restored = GeometrySection::from_bytes(&bytes).unwrap();
+        let restored = GeometrySectionV2::from_bytes(&bytes).unwrap();
 
-        assert_eq!(section, restored);
+        assert_eq!(*section, restored);
+    }
+
+    // -- Texture name deduplication --
+
+    #[test]
+    fn texture_names_deduplicated() {
+        let mut face_a = triangle_face();
+        face_a.texture = "metal/floor".to_string();
+        let mut face_b = quad_face();
+        face_b.texture = "concrete/wall".to_string();
+        let mut face_c = pentagon_face();
+        face_c.texture = "metal/floor".to_string(); // duplicate
+
+        let faces = vec![face_a, face_b, face_c];
+        let tree = make_tree_with_empty_leaves(vec![(vec![0, 1, 2], false)]);
+
+        let result = extract_geometry(&faces, &tree);
+
+        assert_eq!(result.texture_names.names.len(), 2);
+        assert_eq!(result.texture_names.names[0], "metal/floor");
+        assert_eq!(result.texture_names.names[1], "concrete/wall");
+    }
+
+    #[test]
+    fn same_texture_gets_same_index() {
+        let mut face_a = triangle_face();
+        face_a.texture = "metal/floor".to_string();
+        let mut face_b = quad_face();
+        face_b.texture = "concrete/wall".to_string();
+        let mut face_c = pentagon_face();
+        face_c.texture = "metal/floor".to_string();
+
+        let faces = vec![face_a, face_b, face_c];
+        let tree = make_tree_with_empty_leaves(vec![(vec![0, 1, 2], false)]);
+
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
+
+        // Face 0 and 2 share texture "metal/floor" -> index 0
+        // Face 1 has "concrete/wall" -> index 1
+        assert_eq!(section.faces[0].texture_index, 0);
+        assert_eq!(section.faces[1].texture_index, 1);
+        assert_eq!(section.faces[2].texture_index, 0);
+    }
+
+    // -- UV computation --
+
+    #[test]
+    fn vertices_have_uv_coordinates() {
+        let faces = vec![triangle_face()];
+        let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
+
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
+
+        // Every vertex should have 5 floats (x, y, z, u, v)
+        for vert in &section.vertices {
+            assert!(vert[3].is_finite(), "u should be finite");
+            assert!(vert[4].is_finite(), "v should be finite");
+        }
+    }
+
+    #[test]
+    fn valve_projection_produces_nonzero_uvs() {
+        // A face with Valve projection on non-axis-aligned axes should produce
+        // non-zero UVs for vertices away from origin.
+        let face = Face {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, -2.54),  // 100 Quake units forward
+                Vec3::new(-2.54, 0.0, -2.54), // 100 right, 100 forward
+                Vec3::new(-2.54, 0.0, 0.0),   // 100 right
+            ],
+            normal: Vec3::Y,
+            distance: 0.0,
+            texture: "test_valve".to_string(),
+            tex_projection: TextureProjection::Valve {
+                u_axis: Vec3::new(1.0, 0.0, 0.0),
+                u_offset: 0.0,
+                v_axis: Vec3::new(0.0, 0.0, -1.0),
+                v_offset: 0.0,
+                scale_u: 1.0,
+                scale_v: 1.0,
+            },
+        };
+
+        let faces = vec![face];
+        let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
+
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
+
+        // At least one vertex should have non-zero UVs
+        let has_nonzero = section
+            .vertices
+            .iter()
+            .any(|v| v[3].abs() > 0.01 || v[4].abs() > 0.01);
+        assert!(has_nonzero, "Valve projection should produce non-zero UVs");
+    }
+
+    #[test]
+    fn standard_projection_with_offset_produces_nonzero_uvs() {
+        // A face with non-zero offsets and scale
+        let face = Face {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(2.54, 0.0, 0.0),  // 100 Quake units in engine X
+                Vec3::new(2.54, 2.54, 0.0),
+                Vec3::new(0.0, 2.54, 0.0),
+            ],
+            normal: Vec3::NEG_Z,
+            distance: 0.0,
+            texture: "test_offset".to_string(),
+            tex_projection: TextureProjection::Standard {
+                u_offset: 32.0,
+                v_offset: 16.0,
+                angle: 0.0,
+                scale_u: 1.0,
+                scale_v: 1.0,
+            },
+        };
+
+        let faces = vec![face];
+        let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
+
+        let result = extract_geometry(&faces, &tree);
+        let section = &result.geometry;
+
+        // The vertex at origin should have UVs equal to the offsets (32, 16)
+        let v0 = &section.vertices[0];
+        assert!(
+            (v0[3] - 32.0).abs() < 0.01,
+            "u at origin should be offset (32.0), got {}",
+            v0[3]
+        );
+        assert!(
+            (v0[4] - 16.0).abs() < 0.01,
+            "v at origin should be offset (16.0), got {}",
+            v0[4]
+        );
+    }
+
+    // -- Coordinate transform round-trip --
+
+    #[test]
+    fn engine_to_quake_inverts_quake_to_engine() {
+        use crate::parse::quake_to_engine_for_test;
+
+        let original = Vec3::new(100.0, -50.0, 75.0);
+        let engine = quake_to_engine_for_test(original);
+        let recovered = engine_to_quake(engine);
+
+        assert!(
+            (recovered - original).length() < 1e-5,
+            "round trip failed: {original} -> {engine} -> {recovered}"
+        );
     }
 
     // -- Integration test with real map --
@@ -455,10 +800,12 @@ mod tests {
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
                 .expect("test.map should parse");
 
-        let result = crate::partition::partition(map_data.world_faces, &map_data.brush_volumes)
-            .expect("partition should succeed on test map");
+        let partition_result =
+            crate::partition::partition(map_data.world_faces, &map_data.brush_volumes)
+                .expect("partition should succeed on test map");
 
-        let section = extract_geometry(&result.faces, &result.tree);
+        let result = extract_geometry(&partition_result.faces, &partition_result.tree);
+        let section = &result.geometry;
 
         // Every face should produce triangles
         for face in &section.faces {
@@ -482,9 +829,37 @@ mod tests {
             prev_leaf = face.leaf_index;
         }
 
+        // UVs are finite
+        for vert in &section.vertices {
+            assert!(vert[3].is_finite(), "u should be finite");
+            assert!(vert[4].is_finite(), "v should be finite");
+        }
+
+        // Texture names should be non-empty
+        assert!(
+            !result.texture_names.names.is_empty(),
+            "should have at least one texture name"
+        );
+
+        // All texture indices valid
+        let tex_count = result.texture_names.names.len() as u32;
+        for face in &section.faces {
+            assert!(
+                face.texture_index < tex_count || face.texture_index == NO_TEXTURE,
+                "texture_index {} out of range (count: {})",
+                face.texture_index,
+                tex_count
+            );
+        }
+
         // Round-trip serialization
         let bytes = section.to_bytes();
-        let restored = GeometrySection::from_bytes(&bytes).unwrap();
-        assert_eq!(section, restored);
+        let restored = GeometrySectionV2::from_bytes(&bytes).unwrap();
+        assert_eq!(*section, restored);
+
+        // TextureNames round-trip
+        let tex_bytes = result.texture_names.to_bytes();
+        let tex_restored = TextureNamesSection::from_bytes(&tex_bytes).unwrap();
+        assert_eq!(result.texture_names, tex_restored);
     }
 }

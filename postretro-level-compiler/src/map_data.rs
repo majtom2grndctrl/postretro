@@ -3,17 +3,60 @@
 
 use glam::Vec3;
 
+impl Default for TextureProjection {
+    fn default() -> Self {
+        TextureProjection::Standard {
+            u_offset: 0.0,
+            v_offset: 0.0,
+            angle: 0.0,
+            scale_u: 1.0,
+            scale_v: 1.0,
+        }
+    }
+}
+
+/// Texture projection data extracted from the .map file, stored in Quake space.
+///
+/// Two variants match the .map format (Standard vs Valve). UV computation in
+/// `geometry.rs` handles both. Stored in Quake-space coordinates because the
+/// projection math depends on matching the original axis convention.
+#[derive(Debug, Clone)]
+pub enum TextureProjection {
+    /// Standard (idTech2) format: project onto closest axis-aligned plane,
+    /// then apply rotation, scale, and offset.
+    Standard {
+        u_offset: f32,
+        v_offset: f32,
+        angle: f32,
+        scale_u: f32,
+        scale_v: f32,
+    },
+    /// Valve 220 format: explicit U/V projection axes with per-axis offset.
+    Valve {
+        u_axis: Vec3,
+        u_offset: f32,
+        v_axis: Vec3,
+        v_offset: f32,
+        scale_u: f32,
+        scale_v: f32,
+    },
+}
+
 /// A convex face polygon extracted from a world brush.
 #[derive(Debug, Clone)]
 pub struct Face {
-    /// Vertex positions in winding order.
+    /// Vertex positions in winding order (engine space, Y-up, meters).
     pub vertices: Vec<Vec3>,
-    /// Face plane normal (unit length).
+    /// Face plane normal (unit length, engine space).
     pub normal: Vec3,
-    /// Face plane distance from origin.
+    /// Face plane distance from origin (engine space).
     pub distance: f32,
     /// Texture name from the .map file.
     pub texture: String,
+    /// Texture projection parameters from the .map file (Quake space).
+    /// UV computation in `geometry.rs` converts engine-space vertices back to
+    /// Quake space before applying these parameters.
+    pub tex_projection: TextureProjection,
 }
 
 /// A convex brush volume defined by its bounding half-planes.

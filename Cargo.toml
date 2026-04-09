@@ -40,6 +40,9 @@ anyhow = "1"
 # Parallelism
 rayon = "1"
 
+# Image loading
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # Logging
 log = "0.4"
 env_logger = "0.11"

@@ -24,6 +24,9 @@ kira.workspace = true
 # Gamepad input
 gilrs.workspace = true
 
+# Image loading
+image.workspace = true
+
 # Error handling
 thiserror.workspace = true
 anyhow.workspace = true

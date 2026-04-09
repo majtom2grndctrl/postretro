@@ -97,14 +97,14 @@ Context files describe what survives refactoring. Task descriptions describe wha
 - Architectural invariants
 - Unsafe/FFI boundary rules (raw pointer contracts)
 
-**Belongs in task descriptions (ephemeral):**
+**Belongs in plans / task descriptions (ephemeral):**
 - Function, struct, enum, and field names internal to a module
 - Line numbers and exact file locations
 - Specific algorithms and implementation choices
 - "What to change" instructions with code snippets
 - Error messages and log output strings
 
-Implementation detail helps agents start fast. Put it in task descriptions — consumed once and done. In context files, it becomes maintenance debt.
+Implementation detail helps agents start fast. Put it in plans — consumed once and done. In context files, it becomes maintenance debt.
 
 **Example — pipeline stage description:**
 
@@ -173,16 +173,17 @@ The "after" is longer. That's fine — the optional-lump contract and its degrad
 
 ## Documentation Lifecycle
 
-Context files are the durable layer. Specs for specific features are the ephemeral layer.
+Context files are the durable layer. Plans are the ephemeral layer.
 
-**Feature specs** live in task descriptions or, when they outgrow that format, in `context/tmp/`. They align on what to build and why, then get consumed during implementation.
+**Plans** live in `context/plans/`, moving through four stages: `drafts/` → `ready/` → `in-progress/` → `done/`. Plans contain detailed implementation specs — function names, algorithms, task breakdowns, acceptance criteria. That detail earns its place during planning but becomes maintenance debt once the code exists.
 
-**After a feature ships:**
-- Delete the spec. Temp files in `context/tmp/` are removed when the work is complete.
-- **Context files** (`context/`) capture what's durable — design principles, subsystem boundaries, contracts, pipeline topology. Content that survives a rewrite.
-- **Code comments** capture implementation-level "why" decisions. Rationale a reader can't derive from the code alone.
+**Before a plan moves from `drafts/` to `ready/`:** capture durable decisions in `context/lib/`. New architectural constraints, subsystem contracts, and pipeline topology belong there — not in the plan. Agents working the plan find full context in the codebase, not in plan documents.
 
-**What doesn't belong in `context/`:**
-- Specs for specific features (use task descriptions or `context/tmp/`)
+**After a plan ships:** the plan moves to `done/` and stays as a historical record. Don't maintain it. The implementation is the source of truth; `context/lib/` holds the durable architectural layer.
+
+**Code comments** capture implementation-level "why" decisions — rationale a reader can't derive from the code alone.
+
+**What doesn't belong in `context/lib/`:**
+- Specs for specific features (use `context/plans/`)
 - Implementation plans or task breakdowns
 - Content that names specific functions, types, or file paths as load-bearing detail (see *Persistent vs. Ephemeral Content* above)

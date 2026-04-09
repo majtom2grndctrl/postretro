@@ -28,23 +28,23 @@ Game logic runs at a fixed timestep decoupled from render rate. Renderer interpo
 
 Visibility is determined per-frame using precomputed Potentially Visible Set (PVS) data. Two formats provide PVS differently, but the rendering result is the same: a set of face ranges to draw.
 
-### BSP path (current)
+### PRL path (primary)
+
+1. Determine which BSP leaf contains the camera position (BSP tree traversal).
+2. Either walk the portal graph per-frame (Portals section) or look up the precomputed PVS bitset (LeafPvs section).
+3. Frustum-cull visible leaves by bounding volume.
+4. Collect face ranges for surviving leaves.
+5. Submit collected faces as the frame's draw set.
+
+See `build_pipeline.md` §PRL for compiler details.
+
+### BSP path (legacy support)
 
 1. Determine which BSP leaf contains the camera position (BSP tree traversal).
 2. Look up the PVS for that leaf — a compressed bitfield of which other leaves are potentially visible.
 3. Decompress the PVS into a visible leaf set.
 4. Collect all faces belonging to visible leaves.
 5. Submit collected faces as the frame's draw set.
-
-### PRL path
-
-1. Determine which cluster contains the camera position (bounding volume scan; clusters have expanded bounds from air cell merging to ensure full coverage).
-2. Look up the PVS for that cluster — a compressed bitfield of which other clusters are potentially visible.
-3. Frustum-cull visible clusters by bounding volume.
-4. Collect face ranges for surviving clusters.
-5. Submit collected faces as the frame's draw set.
-
-PVS data is precomputed by the level compiler using voxel-based ray-casting (3D-DDA through a solid/empty bitmap). See `build_pipeline.md` §PRL for compiler details.
 
 PVS culling is conservative in both paths: it may include faces that are technically occluded, but never excludes a visible face. Slight overdraw is cheaper than per-face occlusion tests.
 
@@ -54,11 +54,11 @@ Frustum culling further reduces the draw set by discarding faces/clusters outsid
 
 ---
 
-## 3. BSP Loading Pipeline
+## 3. Level Loading Pipeline
 
-**Target format:** BSP2 (`qbsp -bsp2`). BSP2 removes BSP29's geometry limits (face counts, vertex counts, coordinate range). The qbsp crate auto-detects format.
+Loader parses level data into engine-side structs, produces GPU-ready data. Renderer consumes handles, never raw level types. This boundary is strict: raw format types do not appear in renderer code.
 
-Loader parses BSP lumps into engine-side structs, produces GPU-ready data. Renderer consumes handles, never raw BSP data. This boundary is strict: raw BSP types do not appear in renderer code.
+The load sequence below applies to both PRL (primary) and BSP (legacy). BSP loading uses the qbsp crate; PRL loading uses the postretro-level-format crate. Both produce the same engine-side types consumed by the renderer.
 
 **Load sequence:**
 
@@ -72,58 +72,19 @@ Loader parses BSP lumps into engine-side structs, produces GPU-ready data. Rende
 
 ---
 
-## 4. BSPX Lump Consumption
+## 4. Phase 4 Lighting (Planned)
 
-> **Phase 4+. Not yet implemented.** BSPX parsing is planned for the lighting phase. The section below describes intended behavior.
+> **Phase 4. Not yet designed.** Flat white ambient lighting is the current state. Phase 4 will add baked lighting baked into PRL by prl-build — not via BSPX lumps.
 
-BSPX lumps are optional extensions baked into the BSP file by ericw-tools. Each lump enriches rendering fidelity when present and degrades gracefully when absent (see §5).
+Lighting data will live in PRL sections produced by the compiler. The exact mechanism (lightmaps, light probes, irradiance volumes) is a Phase 4 design decision. Desired properties to preserve from the aspirational design:
 
-### RGBLIGHTING
+- Per-face colored lighting with directional component for approximate specular
+- Ambient occlusion baked into lightmap samples
+- Volumetric light probes for dynamic object lighting (sprites, particles)
 
-Colored lightmaps. Each texel stores RGB instead of monochrome intensity. Sampled as a texture layer per face, modulating base texture color.
-
-qbsp parses this lump natively into typed data.
-
-### LIGHTINGDIR
-
-Dominant light direction per lightmap texel. Enables approximate per-pixel specular highlights — surfaces respond to their baked light direction rather than looking uniformly flat.
-
-qbsp does **not** parse this lump natively. Access raw bytes via the unparsed-lump API.
-
-**Byte layout:** Runs parallel to RGBLIGHTING — same sample count, same ordering. Each sample is 3 bytes encoding a unit direction in world space: each byte maps to [-1, 1] via `(byte / 255.0) * 2.0 - 1.0`. Follows the common Quake deluxemap convention. ericw-tools 2.0.0-alpha may use a different normalization — verify early.
-
-### AO (Dirt)
-
-Ambient occlusion baked directly into lightmap data via worldspawn key `_dirt 1`. Not a separate lump. No engine-side parsing required — AO is present in every lightmap sample when compiled with dirt enabled.
-
-### DECOUPLED_LM
-
-Per-face independent lightmap projection and dimensions. Breaks the standard coupling between texture UV scale and lightmap resolution.
-
-qbsp parses this lump natively (per-face size, offset, projection). When present, use its dimensions and projection for UV computation instead of the texinfo-derived values.
-
-### LIGHTGRID_OCTREE
-
-Volumetric light probes for dynamic object lighting: sprites, particles, weapon models. Irradiance samples in an octree covering the playable volume.
-
-qbsp parses this lump natively. **Caveat:** `-lightgrid` was developed for Quake 2 BSP and is experimental for Q1 BSP2. Verify probe data is usable early; fall back to degradation path (§5) if not.
+Missing lighting data is not an error. Current fallback — flat white ambient — remains the default until Phase 4 ships.
 
 ---
-
-## 5. Degradation Behavior
-
-> **Phase 4+.** Degradation paths for BSPX lumps become relevant when Phase 4 implements lump parsing. Current behavior: flat white ambient lighting regardless of what lumps are present.
-
-Every optional lump has a defined fallback. Missing data is not an error — it is a valid, lower-fidelity path. Loader signals absence via `Option`. Renderer selects the appropriate path at draw time.
-
-| Missing lump | Fallback |
-|--------------|----------|
-| **RGBLIGHTING** | Monochrome LIGHTING lump. If both absent: flat white lightmap — fully lit, no shadows. |
-| **LIGHTINGDIR** | Diffuse-only. Same lightmap sampling, no specular term. |
-| **DECOUPLED_LM** | Standard texinfo-based lightmap UV computation. |
-| **LIGHTGRID_OCTREE** | Sample nearest lightmap face for dynamic object lighting. If none suitable: ambient plus nearest-light approximation. |
-
-Log a warning at load time per absent optional lump. Do not log per-frame.
 
 ---
 
@@ -165,11 +126,11 @@ Forward point lights supplementing baked lighting: muzzle flashes, neon glow, ex
 
 > **Phase 5+. Not yet implemented.**
 
-Camera-facing textured quads for characters, pickups, and decorative elements. Classic Doom-style billboarding. Lit by nearest LIGHTGRID_OCTREE probe; falls back to §5 when absent.
+Camera-facing textured quads for characters, pickups, and decorative elements. Classic Doom-style billboarding. Lit by nearest light probe from Phase 4 lighting data; fallback to flat ambient when absent.
 
 ### 7.4 Emissive / Fullbright Surfaces
 
-> **Rendering behavior Phase 5+.** Material flag is derived and stored during BSP load. The rendering bypass is not yet implemented.
+> **Rendering behavior Phase 5+.** Material flag is derived and stored during level load. The rendering bypass is not yet implemented.
 
 Neon signs, screens, glowing panels: bypass lighting modulation, render at full brightness. Identified by the emissive flag on the material enum variant. See `resource_management.md` §3.
 

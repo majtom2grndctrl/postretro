@@ -44,22 +44,21 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 
 ## 3. Baked Data Strategy
 
-Two authoring pipelines, both consuming TrenchBroom `.map` files:
+Single authoring pipeline: TrenchBroom `.map` → `prl-build` → `.prl`. Engine loads `.prl` as the primary format.
 
-- **BSP path** (current): ericw-tools compiles to `.bsp`. Engine consumes BSP/BSPX lumps.
-- **PRL path** (in development): prl-build compiles to `.prl`. Engine consumes BSP tree, per-leaf PVS, and geometry sections.
+**PRL path (primary):** prl-build compiles geometry, BSP tree, portal graph, and PVS. Engine consumes BSP tree, per-leaf PVS/portals, and geometry sections. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md` §PRL.
 
-The PRL format stores BSP tree, per-leaf PVS, and geometry in engine-native coordinates. The compiler builds a BSP tree from brush geometry, extracts portals at each splitting plane, and computes PVS by flooding through the portal graph. Designed to subsume baked data currently provided by BSPX lumps. See `build_pipeline.md` §PRL for the compiler pipeline.
+**BSP path (legacy support):** Engine can still load `.bsp` files compiled with ericw-tools. No active development on the BSP authoring pipeline. Useful for loading existing assets during the transition. See `build_pipeline.md` §BSP.
 
-### BSP baked data (current)
+### PRL baked data
 
 | Data | Source | How |
 |------|--------|-----|
-| Colored lightmaps | ericw-tools (`light -bspx`) | `RGBLIGHTING` BSPX lump |
-| Directional lightmaps | ericw-tools (`light -bspx`) | `LIGHTINGDIR` BSPX lump → per-pixel specular |
-| Ambient occlusion | ericw-tools (worldspawn `_dirt 1`) | Baked into lightmap data, no separate lump |
-| Volumetric light probes | ericw-tools (`light -lightgrid`) | `LIGHTGRID_OCTREE` BSPX lump → sprite/particle lighting (experimental for Q1) |
+| Geometry | prl-build (CSG clip → BSP → pack) | Geometry section — positions, indices, per-face metadata |
+| BSP tree | prl-build | BspNodes + BspLeaves sections |
+| Visibility | prl-build (portal traversal or PVS) | Portals section (default) or LeafPvs section (`--pvs` mode) |
 | Surface material types | Texture naming convention | Prefix lookup table → footsteps, impacts, decals |
+| Lighting | prl-build (Phase 4) | PRL-native sections — details TBD |
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity → baked cubemap |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |

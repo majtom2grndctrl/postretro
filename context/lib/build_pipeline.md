@@ -1,82 +1,34 @@
 # Build Pipeline
 
 > **Read this when:** setting up the map authoring toolchain, modifying the asset pipeline, adding custom entities, or debugging map compilation issues.
-> **Key invariant:** maps are authored in idTech-compatible editors; TrenchBroom is the default. Engine canonical unit: 1 unit = 1 meter. Two compilation paths exist: BSP (ericw-tools) and PRL (prl-build). Engine loads either format.
+> **Key invariant:** maps are authored in TrenchBroom. Engine canonical unit: 1 unit = 1 meter. PRL is the primary compilation target; BSP loading remains for legacy asset support.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md)
 
 ---
 
 ## Pipeline Overview
 
-All maps start as TrenchBroom `.map` files. Two compilation paths:
+Maps are authored in TrenchBroom, compiled to PRL with prl-build:
 
 ```
-TrenchBroom (.map)
-    │
-    ├──► ericw-tools (qbsp → vis → light)  ──► BSP2 file (.bsp)
-    │
-    └──► prl-build (postretro-level-compiler)──► PRL file (.prl)
+TrenchBroom (.map) ──► prl-build (postretro-level-compiler) ──► PRL file (.prl)
 
-Engine loads either format + PNGs at runtime
+Engine loads PRL + PNGs at runtime
 ```
 
-**BSP path** (current, stable): ericw-tools compiles geometry, visibility, and lighting into a standard BSP2 file. Engine loads via qbsp crate.
+**PRL path (primary):** prl-build builds a BSP tree, generates portal geometry, and packs geometry into a custom binary format. Default mode stores portal geometry for runtime traversal; `--pvs` mode computes a precomputed PVS instead. Engine loads via the postretro-level-format crate.
 
-**PRL path** (in development): prl-build builds a BSP tree, generates portal geometry, and packs geometry into a custom binary format. Default mode stores portal geometry for runtime traversal; `--pvs` mode computes a precomputed PVS instead. Future sections: lighting, nav mesh, audio. Engine loads via postretro-level-format crate.
+**BSP path (legacy support):** Engine can load `.bsp` files compiled by ericw-tools. No active development on this path. See §BSP below.
 
-Both paths share the same TrenchBroom authoring workflow, FGD entity definitions, and PNG texture pipeline.
-
----
-
-## ericw-tools Compilation
-
-Version: **2.0.0-alpha**. Three tools run in sequence:
-
-| Step | Command | Purpose |
-|------|---------|---------|
-| 1 | `qbsp -bsp2 -notex -wrbrushes map.map` | Compile geometry into BSP2 format. No embedded textures. Emit BRUSHLIST BSPX lump for collision. |
-| 2 | `vis map.bsp` | Compute potentially visible set (PVS) data. |
-| 3 | `light -bspx -lightgrid map.bsp` | Calculate colored lightmaps, directional lightmaps, and light grid. |
-
-### qbsp
-
-`-bsp2` selects BSP2 format. `-notex` omits texture pixel data from the BSP — engine loads PNGs at runtime instead. `-wrbrushes` writes a `BRUSHLIST` BSPX lump containing convex brush hulls for collision detection — enables arbitrary collision sizes, not limited to Q1's fixed hull system. Do not use `-wrbrushesonly` — that drops clipnodes, removing the fallback collision path.
-
-qbsp typically auto-adds the map file's parent directory as a texture search path — if `textures/` sits alongside the `.map` file, no extra flags are needed. If not, pass `-path <dir>` to point at the textures directory. qbsp reads PNGs for dimensions only (needed for UV mapping).
-
-### vis
-
-No special flags. Computes PVS data used by the engine for visibility culling.
-
-### light
-
-`-bspx` writes extended lighting data as BSPX lumps: colored lightmaps (`RGBLIGHTING`), directional lightmaps (`LIGHTINGDIR`).
-
-`-lightgrid` writes a `LIGHTGRID_OCTREE` BSPX lump — volumetric light probes for lighting sprites and particles.
-
-**Ambient occlusion:** enabled via worldspawn key `_dirt 1` in the map file (or `-dirt 1` CLI override). AO data bakes directly into lightmap samples — no separate lump.
-
-**Caveat:** `-lightgrid` was developed primarily for Quake 2. Its behavior with Q1 BSP2 is experimental. Verify early in development that it produces usable probe data. If output is unusable, fall back to nearest-lightmap sampling or ambient plus nearest-light approximation.
+Both paths share the TrenchBroom authoring workflow, FGD entity definitions, and PNG texture pipeline.
 
 ---
 
-## Build Profiles
+## BSP (Legacy Support)
 
-Different stages of level development need different compilation fidelity. Fast iteration during layout and blockout matters more than final lighting quality. Full compilation matters for testing the final result.
+Engine loads `.bsp` files via the qbsp crate. BSP2 format (removes BSP29 geometry limits). No active development on this path — it exists to load existing assets while content migrates to PRL.
 
-| Profile | qbsp | vis | light | Use case |
-|---------|------|-----|-------|----------|
-| **Fast** | `qbsp -bsp2 -notex -wrbrushes map.map` | skip | skip | Geometry blockout, collision testing. No vis, no lighting. |
-| **Draft** | `qbsp -bsp2 -notex -wrbrushes map.map` | `vis map.bsp` | `light -bspx map.bsp` | Layout iteration with basic lighting. No light grid. |
-| **Full** | `qbsp -bsp2 -notex -wrbrushes map.map` | `vis map.bsp` | `light -bspx -lightgrid map.bsp` | Final quality. All BSPX lumps, full vis, light grid. |
-
-The engine handles missing data gracefully at each level: no PVS → draw everything (slower but correct), no lightmaps → flat white lighting, no light grid → fallback sprite lighting. Build profiles are a content workflow concern — the engine makes no assumptions about which profile produced the BSP.
-
----
-
-## BSP2 Format
-
-BSP2 removes the geometry limits of BSP29: 65K face cap, 32K clipnode cap, and +/-32K coordinate range. No downside for a custom engine. The qbsp Rust crate auto-detects BSP29 vs. BSP2 at load time.
+Existing BSP files compiled with ericw-tools continue to render via the BSP loader. New levels should target PRL.
 
 ---
 
@@ -135,12 +87,11 @@ Unknown prefix falls back to a default material with a warning at load time.
 
 | Data | Source | How |
 |------|--------|-----|
-| Colored lightmaps | ericw-tools (`light -bspx`) | RGBLIGHTING BSPX lump |
-| Directional lightmaps | ericw-tools (`light -bspx`) | LIGHTINGDIR BSPX lump — per-pixel specular |
-| Ambient occlusion | ericw-tools (worldspawn `_dirt 1`) | Baked into lightmap data |
-| Volumetric light probes | ericw-tools (`light -lightgrid`) | LIGHTGRID_OCTREE BSPX lump (experimental for Q1) |
-| Brush collision hulls | ericw-tools (`qbsp -wrbrushes`) | BRUSHLIST BSPX lump — convex hulls for collision |
+| Geometry | prl-build (CSG clip → BSP → pack) | Geometry section |
+| BSP tree | prl-build | BspNodes + BspLeaves sections |
+| Visibility | prl-build | Portals section (default) or LeafPvs section (`--pvs`) |
 | Surface material types | Texture naming convention | Prefix lookup table |
+| Lighting | prl-build (Phase 4) | PRL-native sections — details TBD |
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity — offline cubemap bake |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |

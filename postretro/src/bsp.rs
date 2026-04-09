@@ -1,10 +1,13 @@
 // BSP loading: parse BSP2 files via qbsp, produce engine-side geometry.
 // See: context/lib/rendering_pipeline.md
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use glam::Vec3;
 use thiserror::Error;
+
+use crate::material::{self, Material};
 
 #[cfg(test)]
 const DEFAULT_BSP_PATH: &str = "assets/maps/test.bsp";
@@ -70,17 +73,15 @@ pub struct FaceMeta {
     #[allow(dead_code)]
     pub leaf_index: u32,
     /// Index into the BSP's miptexture array. `None` if the face has no texture data.
-    /// Consumed by task-04 (material derivation) and task-05 (render pipeline).
     #[allow(dead_code)]
     pub texture_index: Option<u32>,
     /// Texture dimensions (width, height) from the BSP miptexture header.
-    /// Consumed by task-03 (texture loading) and task-04 (material derivation).
     #[allow(dead_code)]
     pub texture_dimensions: (u32, u32),
-    /// Texture name from the BSP. Empty string if missing.
-    /// Consumed by task-03 (PNG matching) and task-04 (material derivation).
-    #[allow(dead_code)]
+    /// Texture name from BSP data. Empty string if texture data is missing.
     pub texture_name: String,
+    /// Material type derived from texture name prefix.
+    pub material: Material,
 }
 
 #[derive(Debug, Clone)]
@@ -278,6 +279,7 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
     let mut vertices: Vec<TexturedVertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut face_meta: Vec<FaceMeta> = Vec::with_capacity(num_faces);
+    let mut warned_prefixes = HashSet::new();
 
     for face_offset in 0..num_faces {
         let face_idx = first_face + face_offset;
@@ -287,6 +289,8 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
         let tex_info = &bsp.tex_info[face.texture_info_idx.0 as usize];
         let (texture_index, texture_dimensions, texture_name) =
             resolve_face_texture(&bsp, tex_info, face_idx);
+
+        let material_type = material::derive_material(&texture_name, &mut warned_prefixes);
 
         let face_base_vertex = vertices.len() as u32;
         let face_first_edge = face.first_edge;
@@ -364,6 +368,7 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
             texture_index,
             texture_dimensions,
             texture_name,
+            material: material_type,
         });
     }
 

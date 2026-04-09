@@ -671,6 +671,7 @@ mod tests {
                 texture_index: None,
                 texture_dimensions: (64, 64),
                 texture_name: String::new(),
+                material: crate::material::Material::Default,
             },
             FaceMeta {
                 index_offset: 3,
@@ -679,6 +680,7 @@ mod tests {
                 texture_index: None,
                 texture_dimensions: (64, 64),
                 texture_name: String::new(),
+                material: crate::material::Material::Default,
             },
         ];
 

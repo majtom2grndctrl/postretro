@@ -9,6 +9,7 @@ mod input;
 mod portal_vis;
 mod prl;
 mod render;
+mod texture;
 mod visibility;
 
 use std::path::Path;

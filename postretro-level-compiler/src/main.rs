@@ -1,6 +1,7 @@
 // postretro-level-compiler: level compiler entry point.
 // See: context/lib/build_pipeline.md §PRL
 
+pub mod csg;
 pub mod geometry;
 pub mod geometry_utils;
 pub mod map_data;
@@ -34,7 +35,13 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("[Compiler] Parsing complete.");
 
-    let result = partition::partition(map_data.world_faces, &map_data.brush_volumes)?;
+    // CSG face clipping: remove faces inside solid brush volumes to
+    // eliminate z-fighting at overlapping brush boundaries.
+    let clipped_faces = csg::csg_clip_faces(&map_data.world_faces, &map_data.brush_volumes);
+
+    log::info!("[Compiler] CSG face clipping complete.");
+
+    let result = partition::partition(clipped_faces, &map_data.brush_volumes)?;
 
     log::info!("[Compiler] BSP partitioning complete.");
 

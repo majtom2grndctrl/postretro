@@ -40,6 +40,25 @@ impl Aabb {
             && self.min.is_finite()
             && self.max.is_finite()
     }
+
+    /// Test whether two AABBs overlap (share any interior volume).
+    pub fn intersects(&self, other: &Aabb) -> bool {
+        self.min.x <= other.max.x
+            && self.max.x >= other.min.x
+            && self.min.y <= other.max.y
+            && self.max.y >= other.min.y
+            && self.min.z <= other.max.z
+            && self.max.z >= other.min.z
+    }
+
+    /// Build an AABB from a set of points.
+    pub fn from_points(points: &[Vec3]) -> Self {
+        let mut aabb = Self::empty();
+        for &p in points {
+            aabb.expand_point(p);
+        }
+        aabb
+    }
 }
 
 /// Reference to a BSP tree child (node or leaf).

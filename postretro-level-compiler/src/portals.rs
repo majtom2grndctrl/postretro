@@ -342,6 +342,7 @@ mod tests {
                     distance: -min.z,
                 },
             ],
+            aabb: crate::partition::Aabb { min, max },
         }
     }
 

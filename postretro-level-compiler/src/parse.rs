@@ -145,7 +145,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         FaceWinding::CounterClockwise,
     );
 
-    // Extract brush volumes (convex hulls defined by face planes) for solid classification
+    // Extract brush volumes (convex hulls defined by face planes) for solid classification.
+    // Also compute the AABB of each brush from its face vertices for CSG pre-filtering.
     let mut brush_volumes = Vec::new();
     for brush_id in &world_brush_ids {
         let face_ids = match geo_map.brush_faces.get(brush_id) {
@@ -168,8 +169,18 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             })
             .collect();
 
+        // Compute AABB from this brush's face vertices (already in engine space).
+        let mut aabb = crate::partition::Aabb::empty();
+        for fid in face_ids {
+            if let Some(verts) = face_verts.get(fid) {
+                for v in verts {
+                    aabb.expand_point(quake_to_engine(to_glam(v)) * scale);
+                }
+            }
+        }
+
         if !planes.is_empty() {
-            brush_volumes.push(BrushVolume { planes });
+            brush_volumes.push(BrushVolume { planes, aabb });
         }
     }
 

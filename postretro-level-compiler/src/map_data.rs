@@ -23,6 +23,9 @@ pub struct Face {
 #[derive(Debug, Clone)]
 pub struct BrushVolume {
     pub planes: Vec<BrushPlane>,
+    /// Axis-aligned bounding box of the brush volume, computed from face vertices
+    /// at parse time. Used for AABB pre-filtering in CSG face clipping.
+    pub aabb: crate::partition::Aabb,
 }
 
 /// A single bounding half-plane of a brush volume.

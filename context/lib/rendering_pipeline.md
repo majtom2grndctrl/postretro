@@ -58,74 +58,72 @@ Frustum culling further reduces the draw set by discarding faces/clusters outsid
 
 **Target format:** BSP2 (`qbsp -bsp2`). BSP2 removes BSP29's geometry limits (face counts, vertex counts, coordinate range). The qbsp crate auto-detects format.
 
-Loader parses BSP and BSPX lumps into engine-side structs, uploads vertex and lightmap data to GPU buffers. Renderer consumes handles, never raw BSP data. This boundary is strict: raw BSP types do not appear in renderer code.
+Loader parses BSP lumps into engine-side structs, produces GPU-ready data. Renderer consumes handles, never raw BSP data. This boundary is strict: raw BSP types do not appear in renderer code.
 
 **Load sequence:**
 
-1. Parse BSP file via qbsp. This produces typed access to standard lumps (vertices, edges, faces, textures, visibility, lighting) and BSPX extension lumps.
-2. Build engine-side vertex data in the custom vertex format (see §6).
-3. Pack per-face lightmap samples into a shared atlas texture (CPU-side).
-4. Parse optional BSPX lumps (see §4) and attach results to the appropriate engine structures.
-5. Build per-face metadata: material type, lightmap atlas region, draw command parameters.
-6. Hand prepared data to the renderer. The renderer performs all GPU uploads (vertex buffer, index buffer, lightmap atlas) — the loader never calls wgpu.
+1. Parse BSP file via qbsp. Typed access to vertices, edges, faces, textures, and visibility data.
+2. Build engine-side vertex data: positions (coordinate-transformed to engine Y-up), texture UVs (computed from BSP face projection data), vertex color (white default). See §6.
+3. Load PNG textures matched by BSP texture name strings. Generate checkerboard placeholders for missing textures.
+4. Build per-face metadata: material type (from texture name prefix), texture index, draw command parameters.
+5. Sort faces by (leaf, texture) for draw batching. Pre-compute per-leaf texture sub-ranges.
+6. Hand prepared data to the renderer. Renderer performs all GPU uploads — loader never calls wgpu.
 7. Renderer returns opaque handles. All subsequent draw operations reference these handles.
 
 ---
 
 ## 4. BSPX Lump Consumption
 
+> **Phase 4+. Not yet implemented.** BSPX parsing is planned for the lighting phase. The section below describes intended behavior.
+
 BSPX lumps are optional extensions baked into the BSP file by ericw-tools. Each lump enriches rendering fidelity when present and degrades gracefully when absent (see §5).
 
 ### RGBLIGHTING
 
-Colored lightmaps. Each texel stores RGB instead of monochrome intensity. Sampled as a second texture layer per face, modulating base texture color.
+Colored lightmaps. Each texel stores RGB instead of monochrome intensity. Sampled as a texture layer per face, modulating base texture color.
 
 qbsp parses this lump natively into typed data.
 
 ### LIGHTINGDIR
 
-Dominant light direction per lightmap texel. Enables approximate per-pixel specular highlights via Blinn-Phong shading — surfaces appear to respond to their baked light direction rather than looking uniformly flat.
+Dominant light direction per lightmap texel. Enables approximate per-pixel specular highlights — surfaces respond to their baked light direction rather than looking uniformly flat.
 
-qbsp does **not** parse this lump natively. Access the raw bytes via the unparsed-lump API and implement custom parsing.
+qbsp does **not** parse this lump natively. Access raw bytes via the unparsed-lump API.
 
-**Byte layout:** The lump runs parallel to RGBLIGHTING — same number of samples, same ordering (face by face, row by row within each face's lightmap). Each sample is 3 bytes encoding a unit direction vector: `[x, y, z]` where each byte maps to the range [-1, 1] via `component = (byte / 255.0) * 2.0 - 1.0`. The vector points in the dominant light direction for that texel in world space.
-
-Encoding follows the common Quake engine deluxemap convention. ericw-tools 2.0.0-alpha may use a different normalization or coordinate basis.
+**Byte layout:** Runs parallel to RGBLIGHTING — same sample count, same ordering. Each sample is 3 bytes encoding a unit direction in world space: each byte maps to [-1, 1] via `(byte / 255.0) * 2.0 - 1.0`. Follows the common Quake deluxemap convention. ericw-tools 2.0.0-alpha may use a different normalization — verify early.
 
 ### AO (Dirt)
 
-Ambient occlusion is baked directly into lightmap data via worldspawn key `_dirt 1`. This is **not** a separate BSPX lump. AO modulates lightmap samples at bake time — crevices and corners receive less light. No engine-side parsing or special handling required; AO is present in every lightmap sample when the map is compiled with dirt enabled.
+Ambient occlusion baked directly into lightmap data via worldspawn key `_dirt 1`. Not a separate lump. No engine-side parsing required — AO is present in every lightmap sample when compiled with dirt enabled.
 
 ### DECOUPLED_LM
 
-Per-face independent lightmap projection and dimensions. Standard Quake lightmaps derive their UV mapping and resolution from the face's texture projection — DECOUPLED_LM breaks this coupling, giving each face its own lightmap projection vectors and explicit dimensions. This allows lightmap resolution independent of texture scale.
+Per-face independent lightmap projection and dimensions. Breaks the standard coupling between texture UV scale and lightmap resolution.
 
-qbsp parses this lump natively into typed data (per-face size, offset, and projection).
-
-When present, the loader uses DECOUPLED_LM dimensions and projection for lightmap atlas packing and UV computation instead of deriving them from texture info. When absent, the standard texinfo-based computation applies.
+qbsp parses this lump natively (per-face size, offset, projection). When present, use its dimensions and projection for UV computation instead of the texinfo-derived values.
 
 ### LIGHTGRID_OCTREE
 
-Volumetric light probes for dynamic object lighting: sprites, particles, weapon models. Stores irradiance samples in an octree structure that covers the playable volume. Look up the probe nearest to a dynamic object's position and apply its lighting.
+Volumetric light probes for dynamic object lighting: sprites, particles, weapon models. Irradiance samples in an octree covering the playable volume.
 
-qbsp parses this lump natively into a typed octree structure.
-
-**Caveat:** `-lightgrid` was developed primarily for Quake 2 BSP and is experimental for Q1 BSP2. Data may be absent or malformed for Q1 BSP2 maps. If unreliable, fall back to the degradation path in §5.
+qbsp parses this lump natively. **Caveat:** `-lightgrid` was developed for Quake 2 BSP and is experimental for Q1 BSP2. Verify probe data is usable early; fall back to degradation path (§5) if not.
 
 ---
 
 ## 5. Degradation Behavior
 
-Every optional lump has a defined fallback. Missing data is not an error — it is a valid, lower-fidelity rendering path. Loader signals absence via an Option. Renderer selects the appropriate path at draw time.
+> **Phase 4+.** Degradation paths for BSPX lumps become relevant when Phase 4 implements lump parsing. Current behavior: flat white ambient lighting regardless of what lumps are present.
+
+Every optional lump has a defined fallback. Missing data is not an error — it is a valid, lower-fidelity path. Loader signals absence via `Option`. Renderer selects the appropriate path at draw time.
 
 | Missing lump | Fallback |
 |--------------|----------|
-| **RGBLIGHTING** | Fall back to monochrome LIGHTING lump (standard BSP lighting). If both absent, use a flat white lightmap — geometry is fully lit with no shadows. |
-| **LIGHTINGDIR** | Diffuse-only lighting. Same lightmap sampling, no specular term. Surfaces appear flat-lit. |
-| **DECOUPLED_LM** | Standard texinfo-based lightmap dimension computation and UV derivation. |
-| **LIGHTGRID_OCTREE** | Sample nearest lightmap face for dynamic object lighting. If no suitable face, use ambient light plus nearest-light approximation. Sprites and particles still receive plausible illumination. |
+| **RGBLIGHTING** | Monochrome LIGHTING lump. If both absent: flat white lightmap — fully lit, no shadows. |
+| **LIGHTINGDIR** | Diffuse-only. Same lightmap sampling, no specular term. |
+| **DECOUPLED_LM** | Standard texinfo-based lightmap UV computation. |
+| **LIGHTGRID_OCTREE** | Sample nearest lightmap face for dynamic object lighting. If none suitable: ambient plus nearest-light approximation. |
 
-Log a warning at load time for each absent optional lump. Do not log per-frame.
+Log a warning at load time per absent optional lump. Do not log per-frame.
 
 ---
 
@@ -135,14 +133,13 @@ Custom vertex format used for all BSP world geometry.
 
 | Attribute | Content | Purpose |
 |-----------|---------|---------|
-| Position | 3D world-space coordinate | Geometry placement |
-| Base texture UV | Texture-space coordinate | Diffuse texture sampling |
-| Lightmap UV | Atlas-space coordinate | Lightmap atlas sampling |
-| Vertex color | RGBA per-vertex tint | Dynamic lighting contribution, editor visualization, debug overlays |
+| Position | 3D world-space coordinate (Y-up, engine meters) | Geometry placement |
+| Base UV | Texture-space coordinate, normalized by texture dimensions | Diffuse texture sampling |
+| Vertex color | RGBA per-vertex tint (white default) | Dynamic lighting accumulation (Phase 5+) |
 
-Lightmap UVs reference regions within the shared lightmap atlas, not individual textures. Atlas region is determined during BSP load and baked into the vertex buffer.
+UVs are computed from BSP face projection data (s-axis, t-axis, offsets) during load. The GPU sampler uses repeat addressing — UVs outside [0, 1] tile correctly.
 
-Vertex color is a runtime-writable channel. Base use: per-vertex dynamic light accumulation (muzzle flash falloff, explosion glow). Also available for editor coloring and debug visualization without changing the vertex layout.
+Vertex color carries per-vertex lighting contributions in later phases. Currently unused beyond providing a tint channel (white = no effect). Phase 5 adds dynamic light accumulation.
 
 ---
 
@@ -152,58 +149,44 @@ Forward rendering pipeline. Each stage runs as a distinct render pass or draw ca
 
 ### 7.1 BSP World Geometry
 
-Draw visible faces from the PVS-culled draw set (§2). Each face samples its base diffuse texture and its region of the lightmap atlas.
+Draw visible faces from the PVS-culled draw set (§2). Draw calls grouped by (leaf, texture) — one call per visible leaf × texture pair. Minimizes bind group switches without breaking leaf contiguity required by PVS.
 
-When a normal map is present for the surface (see `resource_management.md` §4), the shader samples per-texel surface normals for fine detail. When LIGHTINGDIR data is also present, the normal map and light direction combine for view-dependent Blinn-Phong specular highlights — surfaces respond to both their baked light direction and their fine surface detail as the camera moves.
+Each face samples its base texture at its UV coordinate. Flat ambient lighting applied uniformly: `output = base_texture × ambient_light × vertex_color`. Phase 4 replaces the flat ambient factor with probe-sampled per-surface values.
 
-Fallback tiers (baked lighting only — dynamic lights in §7.2 always use normal maps when present):
-- Normal map + LIGHTINGDIR → full specular with surface detail
-- LIGHTINGDIR only → specular from lightmap normals, no fine detail
-- Normal map only → no baked directional data; no visible baked lighting effect
-- Neither → diffuse-only, flat lightmap modulation
+Depth testing (Less, write enabled) and back-face culling (counter-clockwise front face) are permanent from this phase forward.
 
 ### 7.2 Dynamic Lights
 
-Small number of forward point lights that supplement baked lighting: muzzle flashes, neon glow, explosions, projectile trails. These are not a replacement for baked lightmaps — they handle transient, gameplay-driven illumination only.
+> **Phase 5+. Not yet implemented.**
 
-Dynamic lights accumulate into vertex color or are evaluated per-fragment for nearby faces. Keep the light count low; the baked lightmaps carry the bulk of the lighting work.
-
-When a surface has a normal map, per-fragment dynamic light evaluation should sample it for accurate light response — a bumpy metal panel reacts to a muzzle flash differently than a flat wall. This only applies to per-fragment evaluation; vertex-color accumulation is too coarse for normal map detail.
+Forward point lights supplementing baked lighting: muzzle flashes, neon glow, explosions, projectile trails. Transient, gameplay-driven illumination — not a replacement for baked lighting. Accumulate into vertex color or evaluate per-fragment.
 
 ### 7.3 Billboard Sprites
 
-Camera-facing textured quads for characters, pickups, and decorative elements. Sprites always face the camera (classic Doom-style billboarding).
+> **Phase 5+. Not yet implemented.**
 
-Lit by the nearest light probe from the LIGHTGRID_OCTREE when available. When the octree is absent, use the fallback described in §5. Sprite lighting should feel consistent with the surrounding environment — a sprite in a dark room appears dark.
+Camera-facing textured quads for characters, pickups, and decorative elements. Classic Doom-style billboarding. Lit by nearest LIGHTGRID_OCTREE probe; falls back to §5 when absent.
 
 ### 7.4 Emissive / Fullbright Surfaces
 
-Surfaces that emit light or ignore lightmap attenuation: neon signs, screens, status indicators, glowing panels. These bypass lightmap modulation entirely — their base texture renders at full brightness regardless of baked or dynamic lighting state.
+> **Rendering behavior Phase 5+.** Material flag is derived and stored during BSP load. The rendering bypass is not yet implemented.
 
-Identified by the emissive flag on the surface's material type (see `resource_management.md` §3). The material prefix determines whether a surface is emissive — resolved during BSP load when materials are derived from texture names.
+Neon signs, screens, glowing panels: bypass lighting modulation, render at full brightness. Identified by the emissive flag on the material enum variant. See `resource_management.md` §3.
 
 ### 7.5 Fog Volumes
 
-Per-volume fog defined by `env_fog_volume` brush entities. Each fog entity resolves to a set of BSP leaves at load time. At runtime, the camera's current BSP leaf determines the active fog volume (if any). When a leaf belongs to multiple fog volumes, the smallest volume (fewest leaves) wins — same rule as reverb zones (see `audio.md` §6).
+> **Phase 5+. Not yet implemented.**
 
-Fog is a per-fragment effect applied during geometry rendering, not a screen-space post-process. Fragment shader checks leaf membership in the active fog volume, blends fog color by distance from camera. Fragments outside any fog volume are unaffected.
-
-| Parameter | Source | Effect |
-|-----------|--------|--------|
-| `color` | `env_fog_volume` entity | Fog blend color |
-| `density` | `env_fog_volume` entity | How quickly fog thickens with distance |
-| `falloff` | `env_fog_volume` entity | Attenuation curve (linear, exponential, etc.) |
-
-When the camera is outside all fog volumes, fog is disabled — no per-fragment cost.
+Per-volume fog via `env_fog_volume` brush entities. Resolved to BSP leaves at load time. Per-fragment effect — not a screen-space post-process. Camera's current leaf determines the active fog volume. Smallest volume wins when a leaf belongs to multiple. See `audio.md` §6 for the same rule applied to reverb zones.
 
 ### 7.6 Post-Processing
 
-Screen-space effects applied after all geometry is drawn.
+> **Phase 5+. Not yet implemented.**
 
 | Effect | Description |
 |--------|-------------|
-| **Bloom** | Bright pixels (emissive surfaces, dynamic lights, specular highlights) bleed into surrounding area. Reinforces neon cyberpunk aesthetic. |
-| **CRT / Scanline** | Low priority. Optional retro display effects: scanlines, slight curvature, color fringing. Off by default. |
+| **Bloom** | Bright pixels bleed into surrounding area. Reinforces neon cyberpunk aesthetic. |
+| **CRT / Scanline** | Optional retro display effects: scanlines, curvature, color fringing. Off by default. |
 
 ---
 
@@ -213,20 +196,20 @@ Screen-space effects applied after all geometry is drawn.
 
 | Output | Description |
 |--------|-------------|
-| Vertex buffer | All BSP face vertices in custom vertex format (§6) |
-| Index buffer | Triangle indices for all faces |
-| Lightmap atlas texture | Packed lightmap samples for all faces, RGB when RGBLIGHTING present |
-| Per-face metadata | Material type, lightmap atlas region, draw command parameters (index offset, index count) |
-| Optional BSPX data | Parsed LIGHTINGDIR directions, LIGHTGRID_OCTREE probes — each wrapped in Option |
+| Vertex buffer | BSP face vertices in custom vertex format (§6); sorted by (leaf, texture) |
+| Index buffer | Triangle indices; sorted by (leaf, texture) for draw batching |
+| Loaded textures | CPU-side RGBA8 data per texture, indexed by BSP texture index. Checkerboard for missing. |
+| Per-face metadata | Material type, texture index, draw command parameters (index offset, index count) |
+| Per-leaf texture sub-ranges | Pre-computed (texture_index, index_offset, index_count) tuples per leaf for the draw loop |
 
 ### Renderer consumes
 
 | Input | Description |
 |-------|-------------|
 | GPU buffer handles | Vertex buffer, index buffer — opaque handles, not raw data |
-| Atlas texture handle | Lightmap atlas bound as a texture for sampling |
-| Per-face draw commands | Index offset and count per face, grouped by material for batching |
-| Optional lighting data | LIGHTINGDIR texture, light probe octree — presence determines shader path |
+| Per-texture bind groups | One wgpu bind group per unique texture (texture view + sampler) |
+| Per-frame uniform | View-projection matrix, ambient light factor |
+| Per-leaf texture sub-ranges | Drive the draw loop: one draw_indexed() per (visible_leaf, texture) pair |
 
 ### Boundary rule
 

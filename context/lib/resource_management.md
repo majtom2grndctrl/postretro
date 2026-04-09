@@ -38,15 +38,21 @@ Frame ordering derives from the numeric suffix. Playback rate is defined by the 
 
 ---
 
-## 2. Texture Atlas Packing
+## 2. Texture Binding
+
+World textures are currently bound individually — one bind group per unique texture. Draw calls are grouped by (leaf, texture) to minimize bind group changes without allocating an atlas.
 
 ### 2.1 Lightmap Atlas
 
-Per-face lightmap data is packed into a shared atlas texture. Renderer references atlas regions via UV coordinates baked into the vertex buffer during BSP load. One atlas per level. Atlas dimensions are determined at load time based on the total lightmap area across all faces.
+> **Phase 4/5+. Not yet implemented.**
+
+Per-face lightmap data packed into a shared atlas. Renderer references atlas regions via UV coordinates baked into the vertex buffer. One atlas per level; dimensions determined at load time from total lightmap area.
 
 ### 2.2 World Texture Atlas
 
-World textures may also be packed into a shared atlas for draw-call reduction. Same UV-remapping approach: atlas region coordinates are baked into vertex data at load time. Textures that exceed atlas capacity (large or numerous) fall back to individual binds.
+> **Unscheduled optimization.**
+
+Pack world textures into a shared atlas for further draw-call reduction. Same UV-remapping approach. Textures exceeding atlas capacity fall back to individual binds.
 
 ---
 
@@ -64,16 +70,18 @@ Example prefixes (illustrative, not exhaustive):
 | `concrete` | Concrete |
 | `grate` | Grate |
 
-Material drives six behaviors:
+The material enum and prefix derivation are implemented. Behavior hooks are planned for later phases:
 
-1. **Footstep sounds** — played when player or NPC walks on the surface.
-2. **Bullet impact particles** — visual effect at the point of impact.
-3. **Ricochet behavior** — whether projectiles bounce and produce ricochet sounds.
-4. **Decal selection** — bullet holes, scorch marks, and other surface marks.
-5. **Emissive rendering** — surface bypasses lightmap modulation, rendered at full brightness. Neon signs, screens, glowing panels. See `rendering_pipeline.md` §7.4.
-6. **Environment-mapped reflections** — surface samples the nearest `env_cubemap` probe. Wet floors, chrome, glass. See §5.
+| Behavior | Status |
+|----------|--------|
+| **Emissive flag** | Flag set on enum variant. Rendering bypass is Phase 5+. |
+| **Footstep sounds** | Phase 4. |
+| **Bullet impact particles** | Phase 5+. |
+| **Ricochet behavior** | Phase 5+. |
+| **Decal selection** | Phase 5+. |
+| **Environment-mapped reflections** | Phase 5+. See §5. |
 
-Each behavior is a property of the material enum variant. A material like Neon might carry the emissive flag; Chrome might carry the reflective flag. Which prefixes carry which flags is a content concern — the engine provides the mechanism.
+Each behavior is a property of the material enum variant. Which prefixes carry which flags is a content concern — the engine provides the mechanism.
 
 Mappers use the naming convention; no special tooling or workflow required on the authoring side.
 
@@ -83,33 +91,11 @@ Unknown prefix maps to a default material. Engine logs a warning at load time id
 
 ## 4. Normal Maps
 
-Optional per-texture normal maps add fine surface detail to world geometry. Normal maps are an authoring concern — the engine loads and consumes them, it does not generate them.
+> **Phase 5+. Not yet implemented.**
 
-### Convention
+Optional per-texture normal maps for fine surface detail. Convention: `_n` suffix alongside the diffuse texture (`floor_01.png` / `floor_01_n.png`). Absence is the common case — no warning. Tangent-space RGB PNGs matching the diffuse dimensions.
 
-Normal maps use a `_n` suffix alongside the diffuse texture:
-
-```
-textures/metal/floor_01.png      ← diffuse (required)
-textures/metal/floor_01_n.png    ← normal map (optional)
-```
-
-### Load-time behavior
-
-| Condition | Result |
-|-----------|--------|
-| `_n.png` present | Load and bind as normal map for that surface |
-| `_n.png` absent | Flat normals — surface has no fine detail, diffuse + lightmap only |
-
-No warning for absent normal maps. Absence is the common case, not an error.
-
-### Authoring
-
-Normal map creation is the author's choice of tooling (Krita, Photoshop, Laigter, etc.). The engine imposes no requirement on how they're produced — only the naming convention and that they're tangent-space RGB PNGs matching the diffuse texture dimensions.
-
-### Interaction with lighting
-
-Normal maps combine with LIGHTINGDIR data at render time. The normal map provides per-texel surface direction; LIGHTINGDIR provides per-texel light direction. Together they produce view-dependent specular highlights. See `rendering_pipeline.md` §7.1.
+When implemented, normal maps combine with LIGHTINGDIR data for view-dependent specular highlights. See `rendering_pipeline.md` §7.1.
 
 ---
 
@@ -158,7 +144,7 @@ The resource subsystem owns logical assets: loaded PNGs, atlas layouts, metadata
 
 | Phase | Action |
 |-------|--------|
-| Level load | Parse BSP texture headers. Load all referenced PNGs. Pack atlases. Upload to GPU. Distribute handles. |
+| Level load | Parse BSP texture headers. Load all referenced PNGs. Upload to GPU. Distribute handles. |
 | Gameplay | Handles are stable. No allocation or deallocation during gameplay. |
 | Level unload | Release all GPU resources. Drop all texture data. Handles become invalid. |
 

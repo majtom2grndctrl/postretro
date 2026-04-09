@@ -260,10 +260,7 @@ const NO_TEXTURE_INDEX: u32 = u32::MAX;
 /// Sort the index buffer by (leaf_index, texture_index) and rebuild face_meta offsets.
 /// After sorting, faces within each leaf are grouped by texture, enabling efficient
 /// draw call batching.
-fn sort_indices_by_leaf_and_texture(
-    indices: &mut Vec<u32>,
-    face_meta: &mut Vec<FaceMeta>,
-) {
+fn sort_indices_by_leaf_and_texture(indices: &mut Vec<u32>, face_meta: &mut Vec<FaceMeta>) {
     // Build sort key and original face index pairs.
     let mut sorted_faces: Vec<usize> = (0..face_meta.len()).collect();
     sorted_faces.sort_by(|&a, &b| {
@@ -310,10 +307,7 @@ fn sort_indices_by_leaf_and_texture(
 
 /// Build per-leaf texture sub-ranges from sorted face_meta.
 /// Assumes the index buffer is already sorted by (leaf_index, texture_index).
-fn build_leaf_texture_sub_ranges(
-    leaves: &mut [BspLeafData],
-    face_meta: &[FaceMeta],
-) {
+fn build_leaf_texture_sub_ranges(leaves: &mut [BspLeafData], face_meta: &[FaceMeta]) {
     for leaf in leaves.iter_mut() {
         leaf.texture_sub_ranges.clear();
 
@@ -342,7 +336,8 @@ fn build_leaf_texture_sub_ranges(
                 // Flush previous range.
                 if range_count > 0 {
                     leaf.texture_sub_ranges.push(TextureSubRange {
-                        texture_index: current_tex.expect("range_count > 0 implies current_tex is set"),
+                        texture_index: current_tex
+                            .expect("range_count > 0 implies current_tex is set"),
                         index_offset: range_start,
                         index_count: range_count,
                     });
@@ -374,7 +369,10 @@ fn rebuild_leaf_face_indices(leaves: &mut [BspLeafData], face_meta: &[FaceMeta])
     let mut leaf_faces: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
     for (fi, face) in face_meta.iter().enumerate() {
         if face.index_count > 0 {
-            leaf_faces.entry(face.leaf_index).or_default().push(fi as u32);
+            leaf_faces
+                .entry(face.leaf_index)
+                .or_default()
+                .push(fi as u32);
         }
     }
 
@@ -779,7 +777,10 @@ mod tests {
     #[test]
     fn textured_vertex_stride_matches_layout() {
         // 3 floats (position) + 2 floats (uv) + 4 floats (color) = 9 * 4 = 36 bytes
-        assert_eq!(std::mem::size_of::<TexturedVertex>(), TexturedVertex::STRIDE);
+        assert_eq!(
+            std::mem::size_of::<TexturedVertex>(),
+            TexturedVertex::STRIDE
+        );
     }
 
     #[test]
@@ -809,8 +810,16 @@ mod tests {
         let uv = compute_base_uv(&projection, pos, dims);
         // 128 / 64 = 2.0, 64 / 64 = 1.0
         let epsilon = 1e-5;
-        assert!((uv[0] - 2.0).abs() < epsilon, "u: expected 2.0, got {}", uv[0]);
-        assert!((uv[1] - 1.0).abs() < epsilon, "v: expected 1.0, got {}", uv[1]);
+        assert!(
+            (uv[0] - 2.0).abs() < epsilon,
+            "u: expected 2.0, got {}",
+            uv[0]
+        );
+        assert!(
+            (uv[1] - 1.0).abs() < epsilon,
+            "v: expected 1.0, got {}",
+            uv[1]
+        );
     }
 
     #[test]
@@ -828,8 +837,16 @@ mod tests {
         // u: (64 + 32) / 128 = 0.75
         // v: (64 - 16) / 128 = 0.375
         let epsilon = 1e-5;
-        assert!((uv[0] - 0.75).abs() < epsilon, "u: expected 0.75, got {}", uv[0]);
-        assert!((uv[1] - 0.375).abs() < epsilon, "v: expected 0.375, got {}", uv[1]);
+        assert!(
+            (uv[0] - 0.75).abs() < epsilon,
+            "u: expected 0.75, got {}",
+            uv[0]
+        );
+        assert!(
+            (uv[1] - 0.375).abs() < epsilon,
+            "v: expected 0.375, got {}",
+            uv[1]
+        );
     }
 
     #[test]

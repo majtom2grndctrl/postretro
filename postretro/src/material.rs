@@ -20,6 +20,7 @@ pub enum Material {
 
 /// Per-material property flags. Later phases consume these to drive
 /// rendering and audio behaviors.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaterialProperties {
     /// Surface bypasses lightmap modulation, rendered at full brightness.
@@ -30,6 +31,7 @@ pub struct MaterialProperties {
 
 impl Material {
     /// Property flags for this material variant.
+    #[allow(dead_code)]
     pub fn properties(self) -> MaterialProperties {
         match self {
             Material::Metal => MaterialProperties {
@@ -140,13 +142,19 @@ mod tests {
     #[test]
     fn derive_material_maps_metal_prefix() {
         let mut warned = HashSet::new();
-        assert_eq!(derive_material("metal_floor_01", &mut warned), Material::Metal);
+        assert_eq!(
+            derive_material("metal_floor_01", &mut warned),
+            Material::Metal
+        );
     }
 
     #[test]
     fn derive_material_maps_concrete_prefix() {
         let mut warned = HashSet::new();
-        assert_eq!(derive_material("concrete_wall_03", &mut warned), Material::Concrete);
+        assert_eq!(
+            derive_material("concrete_wall_03", &mut warned),
+            Material::Concrete
+        );
     }
 
     #[test]
@@ -160,31 +168,46 @@ mod tests {
     #[test]
     fn derive_material_maps_grate_prefix() {
         let mut warned = HashSet::new();
-        assert_eq!(derive_material("grate_walkway_02", &mut warned), Material::Grate);
+        assert_eq!(
+            derive_material("grate_walkway_02", &mut warned),
+            Material::Grate
+        );
     }
 
     #[test]
     fn derive_material_maps_glass_prefix() {
         let mut warned = HashSet::new();
-        assert_eq!(derive_material("glass_window_01", &mut warned), Material::Glass);
+        assert_eq!(
+            derive_material("glass_window_01", &mut warned),
+            Material::Glass
+        );
     }
 
     #[test]
     fn derive_material_maps_wood_prefix() {
         let mut warned = HashSet::new();
-        assert_eq!(derive_material("wood_crate_03", &mut warned), Material::Wood);
+        assert_eq!(
+            derive_material("wood_crate_03", &mut warned),
+            Material::Wood
+        );
     }
 
     #[test]
     fn derive_material_unknown_prefix_returns_default() {
         let mut warned = HashSet::new();
-        assert_eq!(derive_material("brick_wall_01", &mut warned), Material::Default);
+        assert_eq!(
+            derive_material("brick_wall_01", &mut warned),
+            Material::Default
+        );
     }
 
     #[test]
     fn derive_material_case_insensitive() {
         let mut warned = HashSet::new();
-        assert_eq!(derive_material("Metal_floor_01", &mut warned), Material::Metal);
+        assert_eq!(
+            derive_material("Metal_floor_01", &mut warned),
+            Material::Metal
+        );
         assert_eq!(derive_material("NEON_sign_01", &mut warned), Material::Neon);
     }
 
@@ -264,7 +287,12 @@ mod tests {
 
     #[test]
     fn concrete_grate_glass_wood_have_no_special_properties() {
-        for mat in [Material::Concrete, Material::Grate, Material::Glass, Material::Wood] {
+        for mat in [
+            Material::Concrete,
+            Material::Grate,
+            Material::Glass,
+            Material::Wood,
+        ] {
             let props = mat.properties();
             assert!(!props.emissive, "{:?} should not be emissive", mat);
             assert!(!props.ricochet, "{:?} should not ricochet", mat);

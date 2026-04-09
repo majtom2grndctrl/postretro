@@ -14,6 +14,7 @@ pub struct LoadedTexture {
     /// Texture height in pixels.
     pub height: u32,
     /// True if this is a checkerboard placeholder (missing or corrupt source).
+    #[allow(dead_code)]
     pub is_placeholder: bool,
 }
 
@@ -97,10 +98,7 @@ fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
             let file_path = file_entry.path();
 
             // Only consider .png files.
-            let ext = file_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !ext.eq_ignore_ascii_case("png") {
                 continue;
             }
@@ -198,6 +196,7 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
 /// Extract texture names from parsed BSP data. Returns one `Option<String>` per
 /// entry in the BSP miptexture array. `None` entries correspond to BSP texture
 /// slots that are empty.
+#[allow(dead_code)]
 pub fn extract_texture_names(bsp: &qbsp::BspData) -> Vec<Option<String>> {
     bsp.textures
         .iter()
@@ -455,7 +454,8 @@ mod tests {
     /// name-to-path mapping tests where actual pixel content doesn't matter.
     fn minimal_png() -> Vec<u8> {
         use image::{ImageBuffer, Rgba};
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(1, 1, Rgba([255, 0, 0, 255]));
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(1, 1, Rgba([255, 0, 0, 255]));
         let mut buf = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut buf);
         img.write_to(&mut cursor, image::ImageFormat::Png).unwrap();

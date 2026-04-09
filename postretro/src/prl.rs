@@ -137,6 +137,7 @@ impl LevelWorld {
 ///
 /// Returns a Vec where entry `i` is the leaf index that face `i` belongs to.
 /// Used by the renderer to assign per-leaf wireframe colors.
+#[allow(dead_code)]
 pub fn face_leaf_indices(world: &LevelWorld) -> Vec<u32> {
     let mut indices = vec![0u32; world.face_meta.len()];
     for (leaf_idx, leaf) in world.leaves.iter().enumerate() {

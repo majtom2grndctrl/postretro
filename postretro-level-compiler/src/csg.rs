@@ -137,12 +137,7 @@ fn polygon_intersects_brush_interior(vertices: &[Vec3], brush: &BrushVolume) -> 
     for plane in &brush.planes {
         // Clip to keep the back side (inside the brush). We clip to the front
         // of the negated plane.
-        let (front, _) = split_polygon(
-            &polygon,
-            -plane.normal,
-            -plane.distance,
-            ON_PLANE_EPSILON,
-        );
+        let (front, _) = split_polygon(&polygon, -plane.normal, -plane.distance, ON_PLANE_EPSILON);
 
         match front {
             Some(verts) if verts.len() >= 3 => polygon = verts,

@@ -408,10 +408,7 @@ mod tests {
                         distance: -min.z,
                     },
                 ],
-                aabb: Aabb {
-                    min,
-                    max,
-                },
+                aabb: Aabb { min, max },
             }
         }
 

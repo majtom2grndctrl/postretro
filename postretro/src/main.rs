@@ -124,10 +124,7 @@ fn main() -> Result<()> {
     let texture_set = match &level {
         Some(Level::Bsp(world)) => {
             let texture_root = resolve_texture_root(&map_path);
-            log::info!(
-                "[Engine] Loading textures from {}",
-                texture_root.display()
-            );
+            log::info!("[Engine] Loading textures from {}", texture_root.display());
             // Extract texture names from the BSP raw data and load PNGs.
             // We need to re-parse the BSP to get the raw data for texture name extraction.
             // Instead, build names from face_meta which already has texture names.
@@ -260,15 +257,14 @@ impl ApplicationHandler for App {
             None => None,
         };
 
-        let renderer =
-            match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
-                Ok(r) => r,
-                Err(err) => {
-                    self.exit_result = Err(err);
-                    event_loop.exit();
-                    return;
-                }
-            };
+        let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
+            Ok(r) => r,
+            Err(err) => {
+                self.exit_result = Err(err);
+                event_loop.exit();
+                return;
+            }
+        };
 
         let size = window.inner_size();
         self.camera.update_aspect(size.width, size.height);

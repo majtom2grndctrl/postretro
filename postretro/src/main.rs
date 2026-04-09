@@ -29,9 +29,9 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameTiming, InterpolableState};
 use crate::input::{Action, AxisSource};
 use crate::render::Renderer;
+use crate::texture::TextureSet;
 use crate::visibility::{VisibilityStats, VisibleFaces};
 
-const FORCE_LINE_LIST_FLAG: &str = "--force-line-list";
 const DEFAULT_MAP_PATH: &str = "assets/maps/test.bsp";
 
 /// Loaded level data: either BSP or PRL format.
@@ -43,9 +43,22 @@ enum Level {
 fn resolve_map_path(args: &[String]) -> String {
     args.iter()
         .skip(1)
-        .find(|a| *a != FORCE_LINE_LIST_FLAG)
+        .find(|a| !a.starts_with("--"))
         .cloned()
         .unwrap_or_else(|| DEFAULT_MAP_PATH.to_string())
+}
+
+/// Resolve the texture root directory from a map file path.
+/// For `assets/maps/test.bsp`, the texture root is `assets/textures/`.
+/// Navigates up from the map file to the asset root (parent of `maps/`),
+/// then appends `textures/`.
+fn resolve_texture_root(map_path: &str) -> std::path::PathBuf {
+    let map_dir = Path::new(map_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    // Go up one level from the maps directory to get the asset root.
+    let asset_root = map_dir.parent().unwrap_or_else(|| Path::new("."));
+    asset_root.join("textures")
 }
 
 fn load_level(path: &str) -> Result<Option<Level>> {
@@ -103,10 +116,26 @@ fn main() -> Result<()> {
     log::info!("[Engine] Postretro starting");
 
     let args: Vec<String> = std::env::args().collect();
-    let force_line_list = args.iter().any(|a| a == FORCE_LINE_LIST_FLAG);
 
     let map_path = resolve_map_path(&args);
     let level = load_level(&map_path)?;
+
+    // Load textures for BSP levels.
+    let texture_set = match &level {
+        Some(Level::Bsp(world)) => {
+            let texture_root = resolve_texture_root(&map_path);
+            log::info!(
+                "[Engine] Loading textures from {}",
+                texture_root.display()
+            );
+            // Extract texture names from the BSP raw data and load PNGs.
+            // We need to re-parse the BSP to get the raw data for texture name extraction.
+            // Instead, build names from face_meta which already has texture names.
+            let texture_names = build_texture_names_from_face_meta(&world.face_meta);
+            Some(texture::load_textures(&texture_names, &texture_root))
+        }
+        _ => None,
+    };
 
     // Position camera inside the level geometry.
     let initial_camera_pos = match &level {
@@ -122,7 +151,7 @@ fn main() -> Result<()> {
         renderer: None,
         window_state: None,
         level,
-        force_line_list,
+        texture_set,
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
         input_system: input::InputSystem::new(input::default_bindings()),
@@ -135,6 +164,27 @@ fn main() -> Result<()> {
         .context("event loop terminated with error")?;
 
     app.exit_result
+}
+
+/// Build a texture names list indexed by BSP miptexture index from face_meta.
+/// Each unique texture_index maps to its texture_name. Missing indices get `None`.
+fn build_texture_names_from_face_meta(face_meta: &[bsp::FaceMeta]) -> Vec<Option<String>> {
+    let max_tex_idx = face_meta
+        .iter()
+        .filter_map(|f| f.texture_index)
+        .max()
+        .unwrap_or(0) as usize;
+
+    let mut names = vec![None; max_tex_idx + 1];
+    for face in face_meta {
+        if let Some(idx) = face.texture_index {
+            let idx = idx as usize;
+            if idx < names.len() && names[idx].is_none() && !face.texture_name.is_empty() {
+                names[idx] = Some(face.texture_name.clone());
+            }
+        }
+    }
+    names
 }
 
 fn window_attributes() -> WindowAttributes {
@@ -150,7 +200,8 @@ struct App {
     window_state: Option<WindowState>,
     /// Loaded level data (BSP or PRL), held for the lifetime of the app.
     level: Option<Level>,
-    force_line_list: bool,
+    /// CPU-side textures loaded from disk, consumed by renderer during init.
+    texture_set: Option<TextureSet>,
     exit_result: Result<()>,
 
     camera: Camera,
@@ -176,52 +227,48 @@ impl ApplicationHandler for App {
             }
         };
 
-        // Convert PRL vertices to TexturedVertex format for the renderer.
-        // PRL has no texture data, so UVs are zero and color is white.
-        let prl_textured_verts: Vec<bsp::TexturedVertex> = match &self.level {
-            Some(Level::Prl(world)) => world
-                .vertices
-                .iter()
-                .map(|pos| bsp::TexturedVertex {
-                    position: *pos,
-                    base_uv: [0.0, 0.0],
-                    vertex_color: [1.0, 1.0, 1.0, 1.0],
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-
-        let geometry = self.level.as_ref().map(|lvl| match lvl {
-            Level::Bsp(world) => render::LevelGeometry {
+        // Build geometry for the renderer.
+        let prl_textured_verts: Vec<bsp::TexturedVertex>;
+        let geometry = match &self.level {
+            Some(Level::Bsp(world)) => Some(render::LevelGeometry {
                 vertices: &world.vertices,
                 indices: &world.indices,
-                face_ranges: world
-                    .face_meta
+                leaf_texture_sub_ranges: world
+                    .leaves
                     .iter()
-                    .map(|f| (f.index_offset, f.index_count))
+                    .map(|l| l.texture_sub_ranges.clone())
                     .collect(),
-                face_cluster_indices: None,
-            },
-            Level::Prl(world) => render::LevelGeometry {
-                vertices: &prl_textured_verts,
-                indices: &world.indices,
-                face_ranges: world
-                    .face_meta
+            }),
+            Some(Level::Prl(world)) => {
+                // PRL has no texture data. Convert to TexturedVertex with white color,
+                // zero UVs. Render with placeholder texture.
+                prl_textured_verts = world
+                    .vertices
                     .iter()
-                    .map(|f| (f.index_offset, f.index_count))
-                    .collect(),
-                face_cluster_indices: Some(prl::face_leaf_indices(world)),
-            },
-        });
-
-        let renderer = match Renderer::new(&window, geometry.as_ref(), self.force_line_list) {
-            Ok(r) => r,
-            Err(err) => {
-                self.exit_result = Err(err);
-                event_loop.exit();
-                return;
+                    .map(|pos| bsp::TexturedVertex {
+                        position: *pos,
+                        base_uv: [0.0, 0.0],
+                        vertex_color: [1.0, 1.0, 1.0, 1.0],
+                    })
+                    .collect();
+                Some(render::LevelGeometry {
+                    vertices: &prl_textured_verts,
+                    indices: &world.indices,
+                    leaf_texture_sub_ranges: Vec::new(),
+                })
             }
+            None => None,
         };
+
+        let renderer =
+            match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
+                Ok(r) => r,
+                Err(err) => {
+                    self.exit_result = Err(err);
+                    event_loop.exit();
+                    return;
+                }
+            };
 
         let size = window.inner_size();
         self.camera.update_aspect(size.width, size.height);

@@ -646,6 +646,7 @@ mod tests {
                 maxs: Vec3::ZERO,
                 face_indices: Vec::new(),
                 visdata_offset: -1,
+                texture_sub_ranges: Vec::new(),
             },
             // Leaf 1: front half, contains face 0
             BspLeafData {
@@ -653,6 +654,7 @@ mod tests {
                 maxs: Vec3::new(100.0, 100.0, 100.0),
                 face_indices: vec![0],
                 visdata_offset: 0,
+                texture_sub_ranges: Vec::new(),
             },
             // Leaf 2: back half, contains face 1
             BspLeafData {
@@ -660,6 +662,7 @@ mod tests {
                 maxs: Vec3::new(0.0, 100.0, 100.0),
                 face_indices: vec![1],
                 visdata_offset: 1,
+                texture_sub_ranges: Vec::new(),
             },
         ];
 
@@ -760,24 +763,28 @@ mod tests {
                 maxs: Vec3::ZERO,
                 face_indices: Vec::new(),
                 visdata_offset: -1,
+                texture_sub_ranges: Vec::new(),
             },
             BspLeafData {
                 mins: Vec3::splat(-100.0),
                 maxs: Vec3::new(0.0, 100.0, 100.0),
                 face_indices: Vec::new(),
                 visdata_offset: -1,
+                texture_sub_ranges: Vec::new(),
             },
             BspLeafData {
                 mins: Vec3::new(0.0, 0.0, -100.0),
                 maxs: Vec3::splat(100.0),
                 face_indices: Vec::new(),
                 visdata_offset: -1,
+                texture_sub_ranges: Vec::new(),
             },
             BspLeafData {
                 mins: Vec3::new(0.0, -100.0, -100.0),
                 maxs: Vec3::new(100.0, 0.0, 100.0),
                 face_indices: Vec::new(),
                 visdata_offset: -1,
+                texture_sub_ranges: Vec::new(),
             },
         ];
 
@@ -825,6 +832,7 @@ mod tests {
                 maxs: Vec3::ZERO,
                 face_indices: Vec::new(),
                 visdata_offset: if i == 1 { 0 } else { -1 },
+                texture_sub_ranges: Vec::new(),
             })
             .collect();
         world.visdata = visdata;
@@ -852,6 +860,7 @@ mod tests {
             maxs: Vec3::ZERO,
             face_indices: Vec::new(),
             visdata_offset: -1,
+            texture_sub_ranges: Vec::new(),
         });
         assert!(decompress_pvs(0, &world).is_none());
     }
@@ -864,6 +873,7 @@ mod tests {
             maxs: Vec3::ZERO,
             face_indices: Vec::new(),
             visdata_offset: 0,
+            texture_sub_ranges: Vec::new(),
         });
         // visdata is empty
         assert!(decompress_pvs(0, &world).is_none());
@@ -898,6 +908,7 @@ mod tests {
                 maxs: Vec3::ZERO,
                 face_indices: Vec::new(),
                 visdata_offset: if i == 1 { 0 } else { -1 },
+                texture_sub_ranges: Vec::new(),
             })
             .collect();
         world.visdata = visdata;

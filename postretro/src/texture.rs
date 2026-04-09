@@ -32,6 +32,11 @@ const CHECKER_SQUARE: u32 = 8;
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 
+/// Generate a 64x64 checkerboard placeholder for the renderer when no textures are available.
+pub fn generate_placeholder() -> LoadedTexture {
+    generate_checkerboard()
+}
+
 /// Generate a 64x64 checkerboard placeholder (magenta/black, 8x8 squares).
 fn generate_checkerboard() -> LoadedTexture {
     let pixel_count = (PLACEHOLDER_SIZE * PLACEHOLDER_SIZE) as usize;

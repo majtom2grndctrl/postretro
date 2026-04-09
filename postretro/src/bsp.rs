@@ -69,11 +69,8 @@ pub struct FaceMeta {
     pub index_count: u32,
     /// BSP leaf index this face belongs to. A face may appear in multiple leaves via
     /// mark_surfaces, but we store the first leaf encountered during the build pass.
-    /// Currently informational — may be consumed by future diagnostics or debug visualization.
-    #[allow(dead_code)]
     pub leaf_index: u32,
     /// Index into the BSP's miptexture array. `None` if the face has no texture data.
-    #[allow(dead_code)]
     pub texture_index: Option<u32>,
     /// Texture dimensions (width, height) from the BSP miptexture header.
     #[allow(dead_code)]
@@ -82,6 +79,18 @@ pub struct FaceMeta {
     pub texture_name: String,
     /// Material type derived from texture name prefix.
     pub material: Material,
+}
+
+/// A contiguous run of indices within a leaf that share the same texture.
+/// Pre-computed at load time to avoid per-frame sorting.
+#[derive(Debug, Clone)]
+pub struct TextureSubRange {
+    /// BSP miptexture index (or `u32::MAX` for faces with no texture).
+    pub texture_index: u32,
+    /// Offset into the index buffer.
+    pub index_offset: u32,
+    /// Number of indices in this sub-range.
+    pub index_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +115,9 @@ pub struct BspLeafData {
     pub face_indices: Vec<u32>,
     /// Offset into the raw visdata where this leaf's PVS begins, or -1 if none.
     pub visdata_offset: i32,
+    /// Pre-computed texture sub-ranges for draw call grouping.
+    /// Each entry is a contiguous run of indices sharing the same texture within this leaf.
+    pub texture_sub_ranges: Vec<TextureSubRange>,
 }
 
 #[derive(Debug)]
@@ -238,6 +250,140 @@ fn compute_base_uv(
     let u = if w > 0 { projected.x / w as f32 } else { 0.0 };
     let v = if h > 0 { projected.y / h as f32 } else { 0.0 };
     [u, v]
+}
+
+// --- Index buffer sorting and texture sub-range computation ---
+
+/// Sentinel value for faces with no texture assignment.
+const NO_TEXTURE_INDEX: u32 = u32::MAX;
+
+/// Sort the index buffer by (leaf_index, texture_index) and rebuild face_meta offsets.
+/// After sorting, faces within each leaf are grouped by texture, enabling efficient
+/// draw call batching.
+fn sort_indices_by_leaf_and_texture(
+    indices: &mut Vec<u32>,
+    face_meta: &mut Vec<FaceMeta>,
+) {
+    // Build sort key and original face index pairs.
+    let mut sorted_faces: Vec<usize> = (0..face_meta.len()).collect();
+    sorted_faces.sort_by(|&a, &b| {
+        let fa = &face_meta[a];
+        let fb = &face_meta[b];
+        let leaf_cmp = fa.leaf_index.cmp(&fb.leaf_index);
+        if leaf_cmp != std::cmp::Ordering::Equal {
+            return leaf_cmp;
+        }
+        let tex_a = fa.texture_index.unwrap_or(NO_TEXTURE_INDEX);
+        let tex_b = fb.texture_index.unwrap_or(NO_TEXTURE_INDEX);
+        tex_a.cmp(&tex_b)
+    });
+
+    // Rebuild the index buffer in sorted order and update face_meta offsets.
+    let old_indices = indices.clone();
+    let mut new_indices = Vec::with_capacity(old_indices.len());
+    let mut new_face_meta = Vec::with_capacity(face_meta.len());
+
+    for &orig_idx in &sorted_faces {
+        let old_face = &face_meta[orig_idx];
+        let old_offset = old_face.index_offset as usize;
+        let old_count = old_face.index_count as usize;
+
+        let new_offset = new_indices.len() as u32;
+        if old_offset + old_count <= old_indices.len() {
+            new_indices.extend_from_slice(&old_indices[old_offset..old_offset + old_count]);
+        }
+
+        new_face_meta.push(FaceMeta {
+            index_offset: new_offset,
+            index_count: old_face.index_count,
+            leaf_index: old_face.leaf_index,
+            texture_index: old_face.texture_index,
+            texture_dimensions: old_face.texture_dimensions,
+            texture_name: old_face.texture_name.clone(),
+            material: old_face.material,
+        });
+    }
+
+    *indices = new_indices;
+    *face_meta = new_face_meta;
+}
+
+/// Build per-leaf texture sub-ranges from sorted face_meta.
+/// Assumes the index buffer is already sorted by (leaf_index, texture_index).
+fn build_leaf_texture_sub_ranges(
+    leaves: &mut [BspLeafData],
+    face_meta: &[FaceMeta],
+) {
+    for leaf in leaves.iter_mut() {
+        leaf.texture_sub_ranges.clear();
+
+        if leaf.face_indices.is_empty() {
+            continue;
+        }
+
+        // Faces within this leaf are contiguous in the sorted index buffer,
+        // grouped by texture_index. Build sub-ranges.
+        let mut current_tex = None;
+        let mut range_start = 0u32;
+        let mut range_count = 0u32;
+
+        for &face_idx in &leaf.face_indices {
+            let face = match face_meta.get(face_idx as usize) {
+                Some(f) if f.index_count > 0 => f,
+                _ => continue,
+            };
+
+            let tex = face.texture_index.unwrap_or(NO_TEXTURE_INDEX);
+
+            if current_tex == Some(tex) {
+                // Extend current range.
+                range_count += face.index_count;
+            } else {
+                // Flush previous range.
+                if range_count > 0 {
+                    leaf.texture_sub_ranges.push(TextureSubRange {
+                        texture_index: current_tex.expect("range_count > 0 implies current_tex is set"),
+                        index_offset: range_start,
+                        index_count: range_count,
+                    });
+                }
+                // Start new range.
+                current_tex = Some(tex);
+                range_start = face.index_offset;
+                range_count = face.index_count;
+            }
+        }
+
+        // Flush final range.
+        if range_count > 0 {
+            if let Some(tex) = current_tex {
+                leaf.texture_sub_ranges.push(TextureSubRange {
+                    texture_index: tex,
+                    index_offset: range_start,
+                    index_count: range_count,
+                });
+            }
+        }
+    }
+}
+
+/// Update leaf face_indices to reference the new sorted face_meta order.
+/// Called after sort_indices_by_leaf_and_texture to keep leaf->face references consistent.
+fn rebuild_leaf_face_indices(leaves: &mut [BspLeafData], face_meta: &[FaceMeta]) {
+    // Build a map from leaf_index -> sorted face indices.
+    let mut leaf_faces: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    for (fi, face) in face_meta.iter().enumerate() {
+        if face.index_count > 0 {
+            leaf_faces.entry(face.leaf_index).or_default().push(fi as u32);
+        }
+    }
+
+    for (leaf_idx, leaf) in leaves.iter_mut().enumerate() {
+        if let Some(faces) = leaf_faces.get(&(leaf_idx as u32)) {
+            leaf.face_indices = faces.clone();
+        }
+        // If leaf not in map, keep existing (might be empty or out-of-model leaf).
+    }
 }
 
 // --- BSP loading ---
@@ -405,7 +551,7 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
         })
         .collect();
 
-    let leaves: Vec<BspLeafData> = bsp
+    let mut leaves: Vec<BspLeafData> = bsp
         .leaves
         .iter()
         .map(|leaf| {
@@ -440,6 +586,7 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
                 maxs: real_maxs,
                 face_indices,
                 visdata_offset,
+                texture_sub_ranges: Vec::new(),
             }
         })
         .collect();
@@ -451,14 +598,25 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
         qbsp::data::nodes::BspNodeRef::Leaf(_) => 0,
     };
 
+    // Sort index buffer by (leaf_index, texture_index) for draw call batching.
+    sort_indices_by_leaf_and_texture(&mut indices, &mut face_meta);
+
+    // Rebuild leaf face_indices to match the new sorted order.
+    rebuild_leaf_face_indices(&mut leaves, &face_meta);
+
+    // Build per-leaf texture sub-ranges for efficient draw calls.
+    build_leaf_texture_sub_ranges(&mut leaves, &face_meta);
+
+    let total_sub_ranges: usize = leaves.iter().map(|l| l.texture_sub_ranges.len()).sum();
     log::info!(
-        "[BSP] Loaded: {} vertices, {} indices ({} triangles), {} faces, {} nodes, {} leaves, {} bytes visdata",
+        "[BSP] Loaded: {} vertices, {} indices ({} triangles), {} faces, {} nodes, {} leaves, {} sub-ranges, {} bytes visdata",
         vertices.len(),
         indices.len(),
         indices.len() / 3,
         face_meta.len(),
         nodes.len(),
         leaves.len(),
+        total_sub_ranges,
         visdata.len(),
     );
 
@@ -715,6 +873,180 @@ mod tests {
         let epsilon = 1e-5;
         assert!((uv1[0] - 1.0).abs() < epsilon);
         assert!((uv2[1] - 1.0).abs() < epsilon);
+    }
+
+    // -- Index buffer sorting --
+
+    fn make_face_meta(
+        index_offset: u32,
+        index_count: u32,
+        leaf_index: u32,
+        texture_index: Option<u32>,
+    ) -> FaceMeta {
+        FaceMeta {
+            index_offset,
+            index_count,
+            leaf_index,
+            texture_index,
+            texture_dimensions: (64, 64),
+            texture_name: String::new(),
+            material: Material::Default,
+        }
+    }
+
+    #[test]
+    fn sort_indices_groups_by_leaf_then_texture() {
+        // Two faces: leaf 2 tex 0, leaf 1 tex 1. After sort: leaf 1 first, leaf 2 second.
+        let mut indices = vec![10, 11, 12, 20, 21, 22];
+        let mut face_meta = vec![
+            make_face_meta(0, 3, 2, Some(0)),
+            make_face_meta(3, 3, 1, Some(1)),
+        ];
+
+        sort_indices_by_leaf_and_texture(&mut indices, &mut face_meta);
+
+        // Face from leaf 1 should come first.
+        assert_eq!(face_meta[0].leaf_index, 1);
+        assert_eq!(face_meta[1].leaf_index, 2);
+        // Indices should be reordered accordingly.
+        assert_eq!(indices[0..3], [20, 21, 22]);
+        assert_eq!(indices[3..6], [10, 11, 12]);
+    }
+
+    #[test]
+    fn sort_indices_within_leaf_groups_by_texture() {
+        // Same leaf, different textures. Texture 2 should come before texture 5.
+        let mut indices = vec![0, 1, 2, 3, 4, 5];
+        let mut face_meta = vec![
+            make_face_meta(0, 3, 1, Some(5)),
+            make_face_meta(3, 3, 1, Some(2)),
+        ];
+
+        sort_indices_by_leaf_and_texture(&mut indices, &mut face_meta);
+
+        assert_eq!(face_meta[0].texture_index, Some(2));
+        assert_eq!(face_meta[1].texture_index, Some(5));
+    }
+
+    #[test]
+    fn sort_indices_preserves_total_index_count() {
+        let mut indices = vec![0, 1, 2, 3, 4, 5, 6, 7, 8];
+        let mut face_meta = vec![
+            make_face_meta(0, 3, 3, Some(1)),
+            make_face_meta(3, 3, 1, Some(0)),
+            make_face_meta(6, 3, 2, Some(2)),
+        ];
+
+        sort_indices_by_leaf_and_texture(&mut indices, &mut face_meta);
+
+        assert_eq!(indices.len(), 9);
+        let total_count: u32 = face_meta.iter().map(|f| f.index_count).sum();
+        assert_eq!(total_count, 9);
+    }
+
+    // -- Texture sub-range building --
+
+    #[test]
+    fn build_sub_ranges_merges_same_texture_faces() {
+        // Two faces in the same leaf with the same texture -> one sub-range.
+        let face_meta = vec![
+            make_face_meta(0, 3, 1, Some(0)),
+            make_face_meta(3, 3, 1, Some(0)),
+        ];
+        let mut leaves = vec![BspLeafData {
+            mins: Vec3::ZERO,
+            maxs: Vec3::ZERO,
+            face_indices: vec![0, 1],
+            visdata_offset: -1,
+            texture_sub_ranges: Vec::new(),
+        }];
+
+        build_leaf_texture_sub_ranges(&mut leaves, &face_meta);
+
+        assert_eq!(leaves[0].texture_sub_ranges.len(), 1);
+        assert_eq!(leaves[0].texture_sub_ranges[0].texture_index, 0);
+        assert_eq!(leaves[0].texture_sub_ranges[0].index_offset, 0);
+        assert_eq!(leaves[0].texture_sub_ranges[0].index_count, 6);
+    }
+
+    #[test]
+    fn build_sub_ranges_splits_different_textures() {
+        // Two faces in the same leaf with different textures -> two sub-ranges.
+        let face_meta = vec![
+            make_face_meta(0, 3, 1, Some(0)),
+            make_face_meta(3, 6, 1, Some(1)),
+        ];
+        let mut leaves = vec![BspLeafData {
+            mins: Vec3::ZERO,
+            maxs: Vec3::ZERO,
+            face_indices: vec![0, 1],
+            visdata_offset: -1,
+            texture_sub_ranges: Vec::new(),
+        }];
+
+        build_leaf_texture_sub_ranges(&mut leaves, &face_meta);
+
+        assert_eq!(leaves[0].texture_sub_ranges.len(), 2);
+        assert_eq!(leaves[0].texture_sub_ranges[0].texture_index, 0);
+        assert_eq!(leaves[0].texture_sub_ranges[0].index_count, 3);
+        assert_eq!(leaves[0].texture_sub_ranges[1].texture_index, 1);
+        assert_eq!(leaves[0].texture_sub_ranges[1].index_count, 6);
+    }
+
+    #[test]
+    fn build_sub_ranges_empty_leaf_produces_no_ranges() {
+        let face_meta: Vec<FaceMeta> = Vec::new();
+        let mut leaves = vec![BspLeafData {
+            mins: Vec3::ZERO,
+            maxs: Vec3::ZERO,
+            face_indices: Vec::new(),
+            visdata_offset: -1,
+            texture_sub_ranges: Vec::new(),
+        }];
+
+        build_leaf_texture_sub_ranges(&mut leaves, &face_meta);
+
+        assert!(leaves[0].texture_sub_ranges.is_empty());
+    }
+
+    #[test]
+    fn rebuild_leaf_face_indices_updates_after_sort() {
+        // After sorting, leaf face_indices should reference the new face order.
+        let face_meta = vec![
+            make_face_meta(0, 3, 1, Some(0)),
+            make_face_meta(3, 3, 2, Some(1)),
+            make_face_meta(6, 3, 1, Some(1)),
+        ];
+        let mut leaves = vec![
+            BspLeafData {
+                mins: Vec3::ZERO,
+                maxs: Vec3::ZERO,
+                face_indices: Vec::new(),
+                visdata_offset: -1,
+                texture_sub_ranges: Vec::new(),
+            },
+            BspLeafData {
+                mins: Vec3::ZERO,
+                maxs: Vec3::ZERO,
+                face_indices: vec![0, 2], // old order
+                visdata_offset: -1,
+                texture_sub_ranges: Vec::new(),
+            },
+            BspLeafData {
+                mins: Vec3::ZERO,
+                maxs: Vec3::ZERO,
+                face_indices: vec![1], // old order
+                visdata_offset: -1,
+                texture_sub_ranges: Vec::new(),
+            },
+        ];
+
+        rebuild_leaf_face_indices(&mut leaves, &face_meta);
+
+        // Leaf 1 should reference faces 0 and 2 (the two faces with leaf_index=1).
+        assert_eq!(leaves[1].face_indices.len(), 2);
+        // Leaf 2 should reference face 1 (the one face with leaf_index=2).
+        assert_eq!(leaves[2].face_indices.len(), 1);
     }
 
     // -- Helper --

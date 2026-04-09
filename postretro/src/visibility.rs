@@ -668,11 +668,15 @@ mod tests {
                 index_offset: 0,
                 index_count: 3,
                 leaf_index: 1,
+                texture_name: String::new(),
+                material: crate::material::Material::Default,
             },
             FaceMeta {
                 index_offset: 3,
                 index_count: 6,
                 leaf_index: 2,
+                texture_name: String::new(),
+                material: crate::material::Material::Default,
             },
         ];
 

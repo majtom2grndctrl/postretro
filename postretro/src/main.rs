@@ -5,6 +5,7 @@ mod bsp;
 mod camera;
 mod frame_timing;
 mod input;
+mod material;
 
 mod portal_vis;
 mod prl;

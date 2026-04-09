@@ -1,10 +1,13 @@
 // BSP loading: parse BSP2 files via qbsp, produce engine-side geometry.
 // See: context/lib/rendering_pipeline.md
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use glam::Vec3;
 use thiserror::Error;
+
+use crate::material::{self, Material};
 
 #[cfg(test)]
 const DEFAULT_BSP_PATH: &str = "assets/maps/test.bsp";
@@ -52,6 +55,10 @@ pub struct FaceMeta {
     /// Currently informational — may be consumed by future diagnostics or debug visualization.
     #[allow(dead_code)]
     pub leaf_index: u32,
+    /// Texture name from BSP data. Empty string if texture data is missing.
+    pub texture_name: String,
+    /// Material type derived from texture name prefix.
+    pub material: Material,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +201,7 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
     let mut vertices: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut face_meta: Vec<FaceMeta> = Vec::with_capacity(num_faces);
+    let mut warned_prefixes = HashSet::new();
 
     for face_offset in 0..num_faces {
         let face_idx = first_face + face_offset;
@@ -202,6 +210,15 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
         let face_base_vertex = vertices.len() as u32;
         let face_first_edge = face.first_edge;
         let face_num_edges = face.num_edges.0;
+
+        // Extract texture name for this face via tex_info indirection.
+        let tex_info = &bsp.tex_info[face.texture_info_idx.0 as usize];
+        let texture_name = bsp
+            .get_texture_name(tex_info)
+            .map(|name| name.to_string())
+            .unwrap_or_default();
+
+        let material_type = material::derive_material(&texture_name, &mut warned_prefixes);
 
         // Extract vertices for this face via the edge/surfedge indirection.
         for i in 0..face_num_edges {
@@ -264,6 +281,8 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
             index_offset,
             index_count,
             leaf_index,
+            texture_name,
+            material: material_type,
         });
     }
 

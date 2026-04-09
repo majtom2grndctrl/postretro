@@ -142,7 +142,10 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         &geo_planes,
         &face_verts,
         &face_ctrs,
-        FaceWinding::CounterClockwise,
+        // Shambler's FaceWinding naming is relative to the solid interior of the brush.
+        // FaceWinding::Clockwise produces ascending-angle (CCW-from-front) vertex order,
+        // which is what wgpu FrontFace::Ccw requires.
+        FaceWinding::Clockwise,
     );
 
     // Extract brush volumes (convex hulls defined by face planes) for solid classification.
@@ -464,5 +467,46 @@ mod tests {
             msg.contains("failed to read"),
             "error should mention file reading, got: {msg}"
         );
+    }
+
+    /// Vertex winding: for every parsed face, the first triangle's geometric normal
+    /// (cross product of the first two edges) must align with the stored face normal.
+    ///
+    /// This locks in the FaceWinding convention: vertices should appear CCW when
+    /// viewed from the front (from the direction of the face's outward normal), which
+    /// is what wgpu FrontFace::Ccw requires.
+    #[test]
+    fn face_vertex_winding_aligns_with_face_normal() {
+        let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
+            .expect("test.map should parse without error");
+
+        let mut checked = 0usize;
+        for (i, face) in map_data.world_faces.iter().enumerate() {
+            if face.vertices.len() < 3 {
+                continue;
+            }
+            let v0 = face.vertices[0];
+            let v1 = face.vertices[1];
+            let v2 = face.vertices[2];
+            let edge1 = v1 - v0;
+            let edge2 = v2 - v0;
+            let geometric_normal = edge1.cross(edge2);
+
+            // Skip degenerate triangles (collinear vertices).
+            if geometric_normal.length_squared() < 1e-10 {
+                continue;
+            }
+
+            let dot = geometric_normal.dot(face.normal);
+            assert!(
+                dot > 0.0,
+                "face {i}: geometric normal {geometric_normal:?} is opposite to face normal {:?} \
+                 (dot={dot:.4}); vertex winding is backwards",
+                face.normal
+            );
+            checked += 1;
+        }
+
+        assert!(checked > 0, "no faces were checked — test is vacuous");
     }
 }

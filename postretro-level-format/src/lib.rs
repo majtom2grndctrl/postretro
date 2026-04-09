@@ -5,6 +5,7 @@ pub mod bsp;
 pub mod geometry;
 pub mod leaf_pvs;
 pub mod portals;
+pub mod texture_names;
 pub mod visibility;
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -48,13 +49,18 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum SectionId {
+    /// Legacy geometry section: [f32; 3] vertices, 12-byte FaceMeta (no texture_index).
     Geometry = 1,
 
     /// Retired. Old .prl files may contain this section; the loader skips
     /// unknown IDs gracefully. Replaced by BspLeaves + LeafPvs.
     ClusterVisibility = 2,
 
-    // Reserved: Collision=3, LightInfluence=4, LightProbes=5,
+    /// Extended geometry section: [f32; 5] vertices (position + UV), 16-byte FaceMeta
+    /// (with texture_index). Supersedes Geometry (ID 1).
+    GeometryV2 = 3,
+
+    // Reserved: LightInfluence=4, LightProbes=5,
     // NavMesh=6, Audio=7, Zones=8, Spawns=9, Textures=10
     /// Retired. Was never shipped in a stable format version.
     VisibilityConfidence = 11,
@@ -70,6 +76,9 @@ pub enum SectionId {
 
     /// Portal graph for runtime portal traversal.
     Portals = 15,
+
+    /// Flat list of texture name strings, indexed by FaceMeta.texture_index.
+    TextureNames = 16,
 }
 
 impl SectionId {
@@ -77,11 +86,13 @@ impl SectionId {
         match value {
             1 => Some(Self::Geometry),
             2 => Some(Self::ClusterVisibility),
+            3 => Some(Self::GeometryV2),
             11 => Some(Self::VisibilityConfidence),
             12 => Some(Self::BspNodes),
             13 => Some(Self::BspLeaves),
             14 => Some(Self::LeafPvs),
             15 => Some(Self::Portals),
+            16 => Some(Self::TextureNames),
             _ => None,
         }
     }

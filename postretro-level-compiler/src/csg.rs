@@ -520,7 +520,10 @@ mod tests {
             .expect("partition should succeed on clipped faces");
 
         let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree);
-        assert!(!geo_result.geometry.faces.is_empty(), "should produce geometry");
+        assert!(
+            !geo_result.geometry.faces.is_empty(),
+            "should produce geometry"
+        );
     }
 
     // -- Helper --

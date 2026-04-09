@@ -347,9 +347,7 @@ mod tests {
         assert_eq!(meta.header.section_count, 5);
 
         assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
-        assert!(meta
-            .find_section(SectionId::TextureNames as u32)
-            .is_some());
+        assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
@@ -388,9 +386,7 @@ mod tests {
         assert_eq!(meta.header.section_count, 5);
 
         assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
-        assert!(meta
-            .find_section(SectionId::TextureNames as u32)
-            .is_some());
+        assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
@@ -451,9 +447,7 @@ mod tests {
 
         assert_eq!(meta.header.section_count, 5);
         assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
-        assert!(meta
-            .find_section(SectionId::TextureNames as u32)
-            .is_some());
+        assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
@@ -497,9 +491,7 @@ mod tests {
 
         assert_eq!(meta.header.section_count, 5);
         assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
-        assert!(meta
-            .find_section(SectionId::TextureNames as u32)
-            .is_some());
+        assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());

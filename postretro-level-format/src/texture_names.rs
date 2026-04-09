@@ -20,8 +20,7 @@ impl TextureNamesSection {
         let count = self.names.len() as u32;
 
         // Pre-compute total size: 4 (count) + for each name: 4 (length) + len(bytes)
-        let size: usize =
-            4 + self.names.iter().map(|n| 4 + n.len()).sum::<usize>();
+        let size: usize = 4 + self.names.iter().map(|n| 4 + n.len()).sum::<usize>();
         let mut buf = Vec::with_capacity(size);
 
         buf.extend_from_slice(&count.to_le_bytes());
@@ -121,11 +120,7 @@ mod tests {
     #[test]
     fn preserves_order() {
         let section = TextureNamesSection {
-            names: vec![
-                "c".to_string(),
-                "a".to_string(),
-                "b".to_string(),
-            ],
+            names: vec!["c".to_string(), "a".to_string(), "b".to_string()],
         };
 
         let bytes = section.to_bytes();

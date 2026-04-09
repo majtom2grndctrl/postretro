@@ -237,9 +237,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             let face_angle = geo_map.face_angles.get(face_id).copied().unwrap_or(0.0);
             let face_scale = geo_map.face_scales.get(face_id);
 
-            let (scale_u, scale_v) = face_scale
-                .map(|s| (s.x, s.y))
-                .unwrap_or((1.0, 1.0));
+            let (scale_u, scale_v) = face_scale.map(|s| (s.x, s.y)).unwrap_or((1.0, 1.0));
 
             let tex_projection = match face_offset {
                 Some(shambler::shalrath::repr::TextureOffset::Valve { u, v }) => {

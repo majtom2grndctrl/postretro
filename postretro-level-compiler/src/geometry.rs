@@ -698,7 +698,7 @@ mod tests {
         // non-zero UVs for vertices away from origin.
         let face = Face {
             vertices: vec![
-                Vec3::new(0.0, 0.0, -2.54),  // 100 Quake units forward
+                Vec3::new(0.0, 0.0, -2.54),   // 100 Quake units forward
                 Vec3::new(-2.54, 0.0, -2.54), // 100 right, 100 forward
                 Vec3::new(-2.54, 0.0, 0.0),   // 100 right
             ],
@@ -735,7 +735,7 @@ mod tests {
         let face = Face {
             vertices: vec![
                 Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(2.54, 0.0, 0.0),  // 100 Quake units in engine X
+                Vec3::new(2.54, 0.0, 0.0), // 100 Quake units in engine X
                 Vec3::new(2.54, 2.54, 0.0),
                 Vec3::new(0.0, 2.54, 0.0),
             ],

@@ -174,6 +174,21 @@ impl ApplicationHandler for App {
             }
         };
 
+        // Convert PRL vertices to TexturedVertex format for the renderer.
+        // PRL has no texture data, so UVs are zero and color is white.
+        let prl_textured_verts: Vec<bsp::TexturedVertex> = match &self.level {
+            Some(Level::Prl(world)) => world
+                .vertices
+                .iter()
+                .map(|pos| bsp::TexturedVertex {
+                    position: *pos,
+                    base_uv: [0.0, 0.0],
+                    vertex_color: [1.0, 1.0, 1.0, 1.0],
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+
         let geometry = self.level.as_ref().map(|lvl| match lvl {
             Level::Bsp(world) => render::LevelGeometry {
                 vertices: &world.vertices,
@@ -186,7 +201,7 @@ impl ApplicationHandler for App {
                 face_cluster_indices: None,
             },
             Level::Prl(world) => render::LevelGeometry {
-                vertices: &world.vertices,
+                vertices: &prl_textured_verts,
                 indices: &world.indices,
                 face_ranges: world
                     .face_meta

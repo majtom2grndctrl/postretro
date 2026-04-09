@@ -9,6 +9,23 @@ use thiserror::Error;
 #[cfg(test)]
 const DEFAULT_BSP_PATH: &str = "assets/maps/test.bsp";
 
+// --- Vertex format ---
+
+/// Textured vertex format for BSP world geometry.
+/// See: context/plans/in-progress/phase-3-textured-world/index.md §Vertex format
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TexturedVertex {
+    pub position: [f32; 3],
+    pub base_uv: [f32; 2],
+    pub vertex_color: [f32; 4],
+}
+
+impl TexturedVertex {
+    /// Stride in bytes: 3 + 2 + 4 = 9 floats * 4 bytes = 36 bytes.
+    pub const STRIDE: usize = 36;
+}
+
 // --- Error types ---
 
 #[derive(Debug, Error)]
@@ -52,6 +69,18 @@ pub struct FaceMeta {
     /// Currently informational — may be consumed by future diagnostics or debug visualization.
     #[allow(dead_code)]
     pub leaf_index: u32,
+    /// Index into the BSP's miptexture array. `None` if the face has no texture data.
+    /// Consumed by task-04 (material derivation) and task-05 (render pipeline).
+    #[allow(dead_code)]
+    pub texture_index: Option<u32>,
+    /// Texture dimensions (width, height) from the BSP miptexture header.
+    /// Consumed by task-03 (texture loading) and task-04 (material derivation).
+    #[allow(dead_code)]
+    pub texture_dimensions: (u32, u32),
+    /// Texture name from the BSP. Empty string if missing.
+    /// Consumed by task-03 (PNG matching) and task-04 (material derivation).
+    #[allow(dead_code)]
+    pub texture_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -80,8 +109,8 @@ pub struct BspLeafData {
 
 #[derive(Debug)]
 pub struct BspWorld {
-    /// Flat vertex positions, Y-up coordinate system.
-    pub vertices: Vec<[f32; 3]>,
+    /// Textured vertex data (position, UV, color), Y-up coordinate system.
+    pub vertices: Vec<TexturedVertex>,
     pub indices: Vec<u32>,
     pub face_meta: Vec<FaceMeta>,
     /// BSP tree nodes for point-in-leaf traversal.
@@ -155,6 +184,61 @@ fn build_face_to_leaf_map(bsp: &qbsp::BspData) -> Vec<u32> {
     face_to_leaf
 }
 
+// --- Texture helpers ---
+
+/// Resolve texture metadata for a face from its tex_info.
+/// Returns (texture_index, dimensions, name). Logs a warning for missing data.
+fn resolve_face_texture(
+    bsp: &qbsp::BspData,
+    tex_info: &qbsp::data::texture::BspTexInfo,
+    face_idx: usize,
+) -> (Option<u32>, (u32, u32), String) {
+    let texture_name = bsp
+        .get_texture_name(tex_info)
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+
+    let tex_idx_opt = tex_info.texture_idx.0;
+
+    let (texture_index, dimensions) = match tex_idx_opt {
+        Some(idx) => {
+            let miptex = bsp.textures.get(idx as usize).and_then(|t| t.as_ref());
+            match miptex {
+                Some(mt) => (Some(idx), (mt.header.width, mt.header.height)),
+                None => {
+                    log::warn!(
+                        "[BSP] face {face_idx}: texture index {idx} references missing miptexture entry"
+                    );
+                    (Some(idx), (64, 64))
+                }
+            }
+        }
+        None => {
+            if texture_name.is_empty() {
+                log::warn!("[BSP] face {face_idx}: no texture data available");
+            }
+            (None, (64, 64))
+        }
+    };
+
+    (texture_index, dimensions, texture_name)
+}
+
+/// Compute base texture UV for a vertex position in Quake Z-up space.
+/// Projects using the face's texture projection, then normalizes by texture dimensions.
+fn compute_base_uv(
+    projection: &qbsp::data::texture::PlanarTextureProjection,
+    quake_pos: Vec3,
+    texture_dimensions: (u32, u32),
+) -> [f32; 2] {
+    let projected = projection.project(quake_pos);
+    let (w, h) = texture_dimensions;
+    // Avoid division by zero for degenerate textures.
+    let u = if w > 0 { projected.x / w as f32 } else { 0.0 };
+    let v = if h > 0 { projected.y / h as f32 } else { 0.0 };
+    [u, v]
+}
+
 // --- BSP loading ---
 
 #[cfg(test)]
@@ -191,13 +275,18 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
     let first_face = world_model.first_face as usize;
     let num_faces = world_model.num_faces as usize;
 
-    let mut vertices: Vec<[f32; 3]> = Vec::new();
+    let mut vertices: Vec<TexturedVertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut face_meta: Vec<FaceMeta> = Vec::with_capacity(num_faces);
 
     for face_offset in 0..num_faces {
         let face_idx = first_face + face_offset;
         let face = &bsp.faces[face_idx];
+
+        // Resolve texture metadata for this face.
+        let tex_info = &bsp.tex_info[face.texture_info_idx.0 as usize];
+        let (texture_index, texture_dimensions, texture_name) =
+            resolve_face_texture(&bsp, tex_info, face_idx);
 
         let face_base_vertex = vertices.len() as u32;
         let face_first_edge = face.first_edge;
@@ -230,8 +319,16 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
                 });
             }
 
-            let pos = quake_to_engine(bsp.vertices[vert_idx as usize]);
-            vertices.push(pos.to_array());
+            // UV computation uses Quake-space position (Z-up) before coordinate transform.
+            let quake_pos = bsp.vertices[vert_idx as usize];
+            let base_uv = compute_base_uv(&tex_info.projection, quake_pos, texture_dimensions);
+
+            let pos = quake_to_engine(quake_pos);
+            vertices.push(TexturedVertex {
+                position: pos.to_array(),
+                base_uv,
+                vertex_color: [1.0, 1.0, 1.0, 1.0],
+            });
         }
 
         let index_offset = indices.len() as u32;
@@ -240,9 +337,9 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
         indices.extend(tri_indices);
 
         if face_num_edges >= 3 {
-            let v0 = Vec3::from(vertices[face_base_vertex as usize]);
-            let v1 = Vec3::from(vertices[face_base_vertex as usize + 1]);
-            let v2 = Vec3::from(vertices[face_base_vertex as usize + 2]);
+            let v0 = Vec3::from(vertices[face_base_vertex as usize].position);
+            let v1 = Vec3::from(vertices[face_base_vertex as usize + 1].position);
+            let v2 = Vec3::from(vertices[face_base_vertex as usize + 2].position);
             let edge_a = v1 - v0;
             let edge_b = v2 - v0;
             let normal = edge_a.cross(edge_b);
@@ -264,6 +361,9 @@ pub fn load_bsp(path: &str) -> Result<BspWorld, BspLoadError> {
             index_offset,
             index_count,
             leaf_index,
+            texture_index,
+            texture_dimensions,
+            texture_name,
         });
     }
 
@@ -509,6 +609,107 @@ mod tests {
             matches!(err, BspLoadError::FileNotFound(_)),
             "expected FileNotFound, got: {err}"
         );
+    }
+
+    // -- Vertex format --
+
+    #[test]
+    fn textured_vertex_stride_matches_layout() {
+        // 3 floats (position) + 2 floats (uv) + 4 floats (color) = 9 * 4 = 36 bytes
+        assert_eq!(std::mem::size_of::<TexturedVertex>(), TexturedVertex::STRIDE);
+    }
+
+    #[test]
+    fn textured_vertex_fields_are_contiguous() {
+        // Verify the struct layout matches the expected GPU attribute offsets.
+        // position starts at 0, base_uv at 12, vertex_color at 20, total stride 36.
+        use std::mem;
+        assert_eq!(mem::offset_of!(TexturedVertex, position), 0);
+        assert_eq!(mem::offset_of!(TexturedVertex, base_uv), 12);
+        assert_eq!(mem::offset_of!(TexturedVertex, vertex_color), 20);
+    }
+
+    // -- Base texture UV computation --
+
+    #[test]
+    fn compute_base_uv_normalizes_by_texture_dimensions() {
+        use qbsp::data::texture::PlanarTextureProjection;
+        // Simple axis-aligned projection: U along X, V along Y.
+        let projection = PlanarTextureProjection {
+            u_axis: Vec3::X,
+            u_offset: 0.0,
+            v_axis: Vec3::Y,
+            v_offset: 0.0,
+        };
+        let pos = Vec3::new(128.0, 64.0, 0.0);
+        let dims = (64, 64);
+        let uv = compute_base_uv(&projection, pos, dims);
+        // 128 / 64 = 2.0, 64 / 64 = 1.0
+        let epsilon = 1e-5;
+        assert!((uv[0] - 2.0).abs() < epsilon, "u: expected 2.0, got {}", uv[0]);
+        assert!((uv[1] - 1.0).abs() < epsilon, "v: expected 1.0, got {}", uv[1]);
+    }
+
+    #[test]
+    fn compute_base_uv_includes_projection_offset() {
+        use qbsp::data::texture::PlanarTextureProjection;
+        let projection = PlanarTextureProjection {
+            u_axis: Vec3::X,
+            u_offset: 32.0,
+            v_axis: Vec3::Y,
+            v_offset: -16.0,
+        };
+        let pos = Vec3::new(64.0, 64.0, 0.0);
+        let dims = (128, 128);
+        let uv = compute_base_uv(&projection, pos, dims);
+        // u: (64 + 32) / 128 = 0.75
+        // v: (64 - 16) / 128 = 0.375
+        let epsilon = 1e-5;
+        assert!((uv[0] - 0.75).abs() < epsilon, "u: expected 0.75, got {}", uv[0]);
+        assert!((uv[1] - 0.375).abs() < epsilon, "v: expected 0.375, got {}", uv[1]);
+    }
+
+    #[test]
+    fn compute_base_uv_zero_dimension_returns_zero() {
+        use qbsp::data::texture::PlanarTextureProjection;
+        let projection = PlanarTextureProjection {
+            u_axis: Vec3::X,
+            u_offset: 0.0,
+            v_axis: Vec3::Y,
+            v_offset: 0.0,
+        };
+        let pos = Vec3::new(100.0, 100.0, 0.0);
+        // Degenerate texture with zero width or height should not divide by zero.
+        let uv = compute_base_uv(&projection, pos, (0, 0));
+        assert_eq!(uv, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn compute_base_uv_distinct_per_vertex_on_surface() {
+        use qbsp::data::texture::PlanarTextureProjection;
+        // Verify that different vertex positions produce different UVs
+        // (acceptance criterion 2: UVs not all identical per face).
+        let projection = PlanarTextureProjection {
+            u_axis: Vec3::X,
+            u_offset: 0.0,
+            v_axis: Vec3::Y,
+            v_offset: 0.0,
+        };
+        let dims = (64, 64);
+        let uv0 = compute_base_uv(&projection, Vec3::new(0.0, 0.0, 0.0), dims);
+        let uv1 = compute_base_uv(&projection, Vec3::new(64.0, 0.0, 0.0), dims);
+        let uv2 = compute_base_uv(&projection, Vec3::new(64.0, 64.0, 0.0), dims);
+
+        // All three should be different.
+        assert_ne!(uv0, uv1, "v0 and v1 should have different UVs");
+        assert_ne!(uv1, uv2, "v1 and v2 should have different UVs");
+        assert_ne!(uv0, uv2, "v0 and v2 should have different UVs");
+
+        // None should be zero (except v0 which is at the origin).
+        assert_eq!(uv0, [0.0, 0.0]);
+        let epsilon = 1e-5;
+        assert!((uv1[0] - 1.0).abs() < epsilon);
+        assert!((uv2[1] - 1.0).abs() < epsilon);
     }
 
     // -- Helper --

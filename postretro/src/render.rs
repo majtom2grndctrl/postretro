@@ -21,25 +21,26 @@ struct Uniforms {
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
+    @location(1) base_uv: vec2<f32>,
+    @location(2) vertex_color: vec4<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) vert_color: vec3<f32>,
+    @location(0) vert_color: vec4<f32>,
 };
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = uniforms.view_proj * vec4<f32>(in.position, 1.0);
-    out.vert_color = in.color;
+    out.vert_color = in.vertex_color;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.vert_color, 1.0);
+    return in.vert_color;
 }
 "#;
 
@@ -82,7 +83,7 @@ enum WireframeMode {
 /// Geometry data the renderer needs from any level format.
 /// Both BSP and PRL loaders produce this shape of data.
 pub struct LevelGeometry<'a> {
-    pub vertices: &'a [[f32; 3]],
+    pub vertices: &'a [crate::bsp::TexturedVertex],
     pub indices: &'a [u32],
     /// Per-face index offset and count, used by LineList wireframe fallback.
     pub face_ranges: Vec<(u32, u32)>,
@@ -198,7 +199,7 @@ impl Renderer {
         let (vertex_data, index_data, index_count) = if let Some(geom) =
             geometry.filter(|g| !g.vertices.is_empty() && !g.indices.is_empty())
         {
-            let colored_verts = build_colored_vertices(
+            let colored_verts = build_wireframe_vertices(
                 geom.vertices,
                 geom.indices,
                 &geom.face_ranges,
@@ -214,14 +215,14 @@ impl Renderer {
 
             let count = indices.len() as u32;
             (
-                bytemuck_cast_slice_f32x6(&colored_verts),
+                cast_textured_vertices_to_bytes(&colored_verts),
                 bytemuck_cast_slice_u32(&indices),
                 count,
             )
         } else {
             // Empty placeholder buffers (wgpu requires non-zero size for some backends).
             (
-                vec![0u8; 24], // one dummy vertex (6 floats: pos + color)
+                vec![0u8; 36], // one dummy vertex (9 floats: pos + uv + color)
                 vec![0u8; 4],  // one dummy index
                 0u32,
             )
@@ -300,18 +301,26 @@ impl Renderer {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<[f32; 6]>() as wgpu::BufferAddress,
+                    array_stride: crate::bsp::TexturedVertex::STRIDE as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
+                        // position: vec3<f32> at offset 0
                         wgpu::VertexAttribute {
                             offset: 0,
                             shader_location: 0,
                             format: wgpu::VertexFormat::Float32x3,
                         },
+                        // base_uv: vec2<f32> at offset 12
                         wgpu::VertexAttribute {
-                            offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                            offset: 12,
                             shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x3,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        // vertex_color: vec4<f32> at offset 20
+                        wgpu::VertexAttribute {
+                            offset: 20,
+                            shader_location: 2,
+                            format: wgpu::VertexFormat::Float32x4,
                         },
                     ],
                 }],
@@ -569,30 +578,29 @@ fn build_line_list_indices_from_ranges(
 
 // --- Per-vertex color assignment ---
 
-/// Build a `[f32; 6]` vertex buffer (position + color) from positions and face metadata.
+/// Build wireframe-colored vertices from the textured vertex buffer.
 ///
+/// Copies the input vertices and overwrites vertex_color for wireframe visualization.
 /// When `face_cluster_indices` is `Some`, each face's vertices are colored by
 /// cluster index using the palette. When `None`, all vertices use the default
 /// wireframe color (BSP fallback).
-fn build_colored_vertices(
-    positions: &[[f32; 3]],
+fn build_wireframe_vertices(
+    vertices: &[crate::bsp::TexturedVertex],
     indices: &[u32],
     face_ranges: &[(u32, u32)],
     face_cluster_indices: &Option<Vec<u32>>,
-) -> Vec<[f32; 6]> {
-    let mut colored: Vec<[f32; 6]> = positions
-        .iter()
-        .map(|pos| {
-            [
-                pos[0],
-                pos[1],
-                pos[2],
-                DEFAULT_WIREFRAME_COLOR[0],
-                DEFAULT_WIREFRAME_COLOR[1],
-                DEFAULT_WIREFRAME_COLOR[2],
-            ]
-        })
-        .collect();
+) -> Vec<crate::bsp::TexturedVertex> {
+    let mut colored: Vec<crate::bsp::TexturedVertex> = vertices.to_vec();
+
+    // Set default wireframe color for all vertices.
+    for v in colored.iter_mut() {
+        v.vertex_color = [
+            DEFAULT_WIREFRAME_COLOR[0],
+            DEFAULT_WIREFRAME_COLOR[1],
+            DEFAULT_WIREFRAME_COLOR[2],
+            1.0,
+        ];
+    }
 
     // If cluster indices are available, overwrite colors per face.
     if let Some(cluster_indices) = face_cluster_indices {
@@ -604,9 +612,7 @@ fn build_colored_vertices(
             let end = start + index_count as usize;
             for &vert_idx in indices.get(start..end).unwrap_or(&[]) {
                 if let Some(v) = colored.get_mut(vert_idx as usize) {
-                    v[3] = color[0];
-                    v[4] = color[1];
-                    v[5] = color[2];
+                    v.vertex_color = [color[0], color[1], color[2], 1.0];
                 }
             }
         }
@@ -625,24 +631,18 @@ fn cast_f32_slice_to_bytes(data: &[f32]) -> Vec<u8> {
     bytes
 }
 
-fn bytemuck_cast_slice_f32x6(data: &[[f32; 6]]) -> Vec<u8> {
-    let byte_len = std::mem::size_of_val(data);
+fn cast_textured_vertices_to_bytes(data: &[crate::bsp::TexturedVertex]) -> Vec<u8> {
+    let byte_len = data.len() * crate::bsp::TexturedVertex::STRIDE;
     let mut bytes = Vec::with_capacity(byte_len);
     for vertex in data {
-        for component in vertex {
-            bytes.extend_from_slice(&component.to_ne_bytes());
+        for &c in &vertex.position {
+            bytes.extend_from_slice(&c.to_ne_bytes());
         }
-    }
-    bytes
-}
-
-#[cfg(test)]
-fn bytemuck_cast_slice_f32x3(data: &[[f32; 3]]) -> Vec<u8> {
-    let byte_len = std::mem::size_of_val(data);
-    let mut bytes = Vec::with_capacity(byte_len);
-    for vertex in data {
-        for component in vertex {
-            bytes.extend_from_slice(&component.to_ne_bytes());
+        for &c in &vertex.base_uv {
+            bytes.extend_from_slice(&c.to_ne_bytes());
+        }
+        for &c in &vertex.vertex_color {
+            bytes.extend_from_slice(&c.to_ne_bytes());
         }
     }
     bytes
@@ -718,17 +718,36 @@ mod tests {
     }
 
     #[test]
-    fn byte_cast_f32x3_roundtrips() {
-        let input = vec![[1.0f32, 2.0, 3.0], [4.0, 5.0, 6.0]];
-        let bytes = bytemuck_cast_slice_f32x3(&input);
-        assert_eq!(bytes.len(), 24); // 2 vertices * 3 floats * 4 bytes
+    fn cast_textured_vertices_roundtrips() {
+        let input = vec![
+            crate::bsp::TexturedVertex {
+                position: [1.0, 2.0, 3.0],
+                base_uv: [0.5, 0.75],
+                vertex_color: [1.0, 1.0, 1.0, 1.0],
+            },
+            crate::bsp::TexturedVertex {
+                position: [4.0, 5.0, 6.0],
+                base_uv: [0.25, 0.125],
+                vertex_color: [0.5, 0.5, 0.5, 1.0],
+            },
+        ];
+        let bytes = cast_textured_vertices_to_bytes(&input);
+        // 2 vertices * 9 floats * 4 bytes = 72 bytes
+        assert_eq!(bytes.len(), 72);
 
         // Read back.
         let mut output = Vec::new();
         for chunk in bytes.chunks_exact(4) {
             output.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
         }
-        assert_eq!(output, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        // First vertex: pos(1,2,3), uv(0.5,0.75), color(1,1,1,1)
+        assert_eq!(
+            output,
+            vec![
+                1.0, 2.0, 3.0, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0, 4.0, 5.0, 6.0, 0.25, 0.125, 0.5,
+                0.5, 0.5, 1.0
+            ]
+        );
     }
 
     #[test]

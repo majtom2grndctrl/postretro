@@ -1351,24 +1351,56 @@ mod tests {
 
     // -- PRL leaf-based visibility tests --
 
+    use crate::bsp::TexturedVertex;
+    use crate::material::Material;
     use crate::prl::{BspChild, FaceMeta as PrlFaceMeta, LeafData, LevelWorld, NodeData};
+
+    fn zero_vertex() -> TexturedVertex {
+        TexturedVertex {
+            position: [0.0; 3],
+            base_uv: [0.0; 2],
+            vertex_color: [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+
+    fn prl_face_meta(index_offset: u32, index_count: u32) -> PrlFaceMeta {
+        PrlFaceMeta {
+            index_offset,
+            index_count,
+            leaf_index: 0,
+            texture_index: None,
+            texture_dimensions: (64, 64),
+            texture_name: String::new(),
+            material: Material::Default,
+        }
+    }
+
+    fn prl_leaf(
+        bounds_min: Vec3,
+        bounds_max: Vec3,
+        face_start: u32,
+        face_count: u32,
+        pvs: Vec<bool>,
+        is_solid: bool,
+    ) -> LeafData {
+        LeafData {
+            bounds_min,
+            bounds_max,
+            face_start,
+            face_count,
+            pvs,
+            is_solid,
+            texture_sub_ranges: Vec::new(),
+        }
+    }
 
     /// Build a two-leaf PRL world: one BSP node splits space at X=0.
     /// Front (X >= 0) -> leaf 0, back (X < 0) -> leaf 1.
     fn two_leaf_prl_world() -> LevelWorld {
         LevelWorld {
-            vertices: vec![[0.0; 3]; 6],
+            vertices: vec![zero_vertex(); 6],
             indices: vec![0, 1, 2, 3, 4, 5],
-            face_meta: vec![
-                PrlFaceMeta {
-                    index_offset: 0,
-                    index_count: 3,
-                },
-                PrlFaceMeta {
-                    index_offset: 3,
-                    index_count: 3,
-                },
-            ],
+            face_meta: vec![prl_face_meta(0, 3), prl_face_meta(3, 3)],
             nodes: vec![NodeData {
                 plane_normal: Vec3::X,
                 plane_distance: 0.0,
@@ -1376,28 +1408,29 @@ mod tests {
                 back: BspChild::Leaf(1),
             }],
             leaves: vec![
-                LeafData {
-                    bounds_min: Vec3::new(0.0, -100.0, -100.0),
-                    bounds_max: Vec3::new(100.0, 100.0, 100.0),
-                    face_start: 0,
-                    face_count: 1,
-                    pvs: vec![true, true],
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(-100.0, -100.0, -100.0),
-                    bounds_max: Vec3::new(0.0, 100.0, 100.0),
-                    face_start: 1,
-                    face_count: 1,
-                    pvs: vec![true, true],
-                    is_solid: false,
-                },
+                prl_leaf(
+                    Vec3::new(0.0, -100.0, -100.0),
+                    Vec3::new(100.0, 100.0, 100.0),
+                    0,
+                    1,
+                    vec![true, true],
+                    false,
+                ),
+                prl_leaf(
+                    Vec3::new(-100.0, -100.0, -100.0),
+                    Vec3::new(0.0, 100.0, 100.0),
+                    1,
+                    1,
+                    vec![true, true],
+                    false,
+                ),
             ],
             root: BspChild::Node(0),
             has_pvs: true,
             portals: vec![],
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
+            texture_names: vec![],
         }
     }
 
@@ -1443,6 +1476,7 @@ mod tests {
             portals: vec![],
             leaf_portals: vec![],
             has_portals: false,
+            texture_names: vec![],
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let (result, stats) = determine_prl_visibility(Vec3::ZERO, vp, &world);
@@ -1497,18 +1531,9 @@ mod tests {
     fn prl_solid_leaf_fallback_draws_all() {
         // Camera in a solid leaf should draw all non-solid leaves.
         let world = LevelWorld {
-            vertices: vec![[0.0; 3]; 6],
+            vertices: vec![zero_vertex(); 6],
             indices: vec![0, 1, 2, 3, 4, 5],
-            face_meta: vec![
-                PrlFaceMeta {
-                    index_offset: 0,
-                    index_count: 3,
-                },
-                PrlFaceMeta {
-                    index_offset: 3,
-                    index_count: 3,
-                },
-            ],
+            face_meta: vec![prl_face_meta(0, 3), prl_face_meta(3, 3)],
             nodes: vec![NodeData {
                 plane_normal: Vec3::X,
                 plane_distance: 0.0,
@@ -1516,28 +1541,29 @@ mod tests {
                 back: BspChild::Leaf(1),  // empty
             }],
             leaves: vec![
-                LeafData {
-                    bounds_min: Vec3::new(0.0, -100.0, -100.0),
-                    bounds_max: Vec3::new(100.0, 100.0, 100.0),
-                    face_start: 0,
-                    face_count: 1,
-                    pvs: vec![false, false],
-                    is_solid: true,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(-100.0, -100.0, -100.0),
-                    bounds_max: Vec3::new(0.0, 100.0, 100.0),
-                    face_start: 1,
-                    face_count: 1,
-                    pvs: vec![true, true],
-                    is_solid: false,
-                },
+                prl_leaf(
+                    Vec3::new(0.0, -100.0, -100.0),
+                    Vec3::new(100.0, 100.0, 100.0),
+                    0,
+                    1,
+                    vec![false, false],
+                    true,
+                ),
+                prl_leaf(
+                    Vec3::new(-100.0, -100.0, -100.0),
+                    Vec3::new(0.0, 100.0, 100.0),
+                    1,
+                    1,
+                    vec![true, true],
+                    false,
+                ),
             ],
             root: BspChild::Node(0),
             has_pvs: true,
             portals: vec![],
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
+            texture_names: vec![],
         };
 
         // Camera at X=50 lands in solid leaf 0.

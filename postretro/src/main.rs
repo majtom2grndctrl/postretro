@@ -118,21 +118,36 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     let map_path = resolve_map_path(&args);
-    let level = load_level(&map_path)?;
+    let mut level = load_level(&map_path)?;
 
-    // Load textures for BSP levels.
+    // Load textures for BSP and PRL levels.
     let texture_set = match &level {
         Some(Level::Bsp(world)) => {
             let texture_root = resolve_texture_root(&map_path);
             log::info!("[Engine] Loading textures from {}", texture_root.display());
-            // Extract texture names from the BSP raw data and load PNGs.
-            // We need to re-parse the BSP to get the raw data for texture name extraction.
-            // Instead, build names from face_meta which already has texture names.
             let texture_names = build_texture_names_from_face_meta(&world.face_meta);
+            Some(texture::load_textures(&texture_names, &texture_root))
+        }
+        Some(Level::Prl(world)) if !world.texture_names.is_empty() => {
+            let texture_root = resolve_texture_root(&map_path);
+            log::info!(
+                "[Engine] Loading PRL textures from {}",
+                texture_root.display()
+            );
+            let texture_names: Vec<Option<String>> = world
+                .texture_names
+                .iter()
+                .map(|n| Some(n.clone()))
+                .collect();
             Some(texture::load_textures(&texture_names, &texture_root))
         }
         _ => None,
     };
+
+    // Normalize PRL UVs after texture dimensions are known.
+    if let (Some(Level::Prl(world)), Some(tex_set)) = (&mut level, &texture_set) {
+        normalize_prl_uvs(world, tex_set);
+    }
 
     // Position camera inside the level geometry.
     let initial_camera_pos = match &level {
@@ -184,6 +199,42 @@ fn build_texture_names_from_face_meta(face_meta: &[bsp::FaceMeta]) -> Vec<Option
     names
 }
 
+/// Normalize PRL texel-space UVs by dividing by texture dimensions.
+/// Called after `load_textures()` provides actual dimensions.
+/// Iterates faces, collects unique vertex indices, normalizes each vertex exactly once.
+fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
+    let mut normalized = vec![false; world.vertices.len()];
+
+    for face in &world.face_meta {
+        let tex_idx = match face.texture_index {
+            Some(idx) => idx as usize,
+            None => continue,
+        };
+        let (w, h) = match texture_set.textures.get(tex_idx) {
+            Some(tex) => (tex.width, tex.height),
+            None => continue,
+        };
+        if w == 0 || h == 0 {
+            continue;
+        }
+
+        let start = face.index_offset as usize;
+        let count = face.index_count as usize;
+        for i in start..start + count {
+            if let Some(&idx) = world.indices.get(i) {
+                let vi = idx as usize;
+                if vi < normalized.len() && !normalized[vi] {
+                    if let Some(vert) = world.vertices.get_mut(vi) {
+                        vert.base_uv[0] /= w as f32;
+                        vert.base_uv[1] /= h as f32;
+                        normalized[vi] = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn window_attributes() -> WindowAttributes {
     Window::default_attributes()
         .with_title("Postretro")
@@ -225,7 +276,6 @@ impl ApplicationHandler for App {
         };
 
         // Build geometry for the renderer.
-        let prl_textured_verts: Vec<bsp::TexturedVertex>;
         let geometry = match &self.level {
             Some(Level::Bsp(world)) => Some(render::LevelGeometry {
                 vertices: &world.vertices,
@@ -236,24 +286,15 @@ impl ApplicationHandler for App {
                     .map(|l| l.texture_sub_ranges.clone())
                     .collect(),
             }),
-            Some(Level::Prl(world)) => {
-                // PRL has no texture data. Convert to TexturedVertex with white color,
-                // zero UVs. Render with placeholder texture.
-                prl_textured_verts = world
-                    .vertices
+            Some(Level::Prl(world)) => Some(render::LevelGeometry {
+                vertices: &world.vertices,
+                indices: &world.indices,
+                leaf_texture_sub_ranges: world
+                    .leaves
                     .iter()
-                    .map(|pos| bsp::TexturedVertex {
-                        position: *pos,
-                        base_uv: [0.0, 0.0],
-                        vertex_color: [1.0, 1.0, 1.0, 1.0],
-                    })
-                    .collect();
-                Some(render::LevelGeometry {
-                    vertices: &prl_textured_verts,
-                    indices: &world.indices,
-                    leaf_texture_sub_ranges: Vec::new(),
-                })
-            }
+                    .map(|l| l.texture_sub_ranges.clone())
+                    .collect(),
+            }),
             None => None,
         };
 

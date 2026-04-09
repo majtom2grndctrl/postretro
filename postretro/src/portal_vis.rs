@@ -307,6 +307,7 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
+                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(32.0, 0.0, 0.0),
@@ -315,6 +316,7 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
+                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(64.0, 0.0, 0.0),
@@ -323,6 +325,7 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
+                    texture_sub_ranges: vec![],
                 },
             ],
             root: BspChild::Node(0),
@@ -334,6 +337,7 @@ mod tests {
                 vec![1],    // leaf 2 touches portal 1
             ],
             has_portals: true,
+            texture_names: vec![],
         }
     }
 
@@ -404,6 +408,7 @@ mod tests {
             portals: vec![],
             leaf_portals: vec![],
             has_portals: false,
+            texture_names: vec![],
         };
 
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::NEG_Z);
@@ -453,6 +458,7 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
+                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(32.0, 0.0, 0.0),
@@ -461,6 +467,7 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
+                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(32.0, 0.0, 200.0),
@@ -469,6 +476,7 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
+                    texture_sub_ranges: vec![],
                 },
             ],
             root: BspChild::Leaf(0),
@@ -476,6 +484,7 @@ mod tests {
             portals: vec![portal_0, portal_1],
             leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
             has_portals: true,
+            texture_names: vec![],
         };
 
         // Camera in leaf A, looking straight along +X toward portal 0.

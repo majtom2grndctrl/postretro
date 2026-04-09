@@ -1,16 +1,21 @@
 // PRL level loading: read .prl files, produce BSP tree + leaf-based engine data structures.
 // See: context/lib/build_pipeline.md §PRL
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use glam::Vec3;
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
-use postretro_level_format::geometry::GeometrySection;
+use postretro_level_format::geometry::{GeometrySection, GeometrySectionV2, NO_TEXTURE};
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::visibility::decompress_pvs;
 use postretro_level_format::{self as prl_format, SectionId};
 use thiserror::Error;
+
+use crate::bsp::{TextureSubRange, TexturedVertex};
+use crate::material::{self, Material};
 
 #[derive(Debug, Error)]
 pub enum PrlLoadError {
@@ -25,10 +30,22 @@ pub enum PrlLoadError {
 }
 
 /// Per-face draw metadata for PRL levels.
+/// Mirrors BSP's `FaceMeta` fields for renderer compatibility.
 #[derive(Debug, Clone)]
 pub struct FaceMeta {
     pub index_offset: u32,
     pub index_count: u32,
+    /// BSP leaf index this face belongs to.
+    pub leaf_index: u32,
+    /// Index into the texture names list. `None` for untextured faces.
+    pub texture_index: Option<u32>,
+    /// Texture dimensions (width, height). Default (64, 64) for missing textures.
+    #[allow(dead_code)]
+    pub texture_dimensions: (u32, u32),
+    /// Texture name from PRL data. Empty string if no texture data.
+    pub texture_name: String,
+    /// Material type derived from texture name prefix.
+    pub material: Material,
 }
 
 /// A BSP tree child reference: either an interior node or a leaf.
@@ -57,6 +74,9 @@ pub struct LeafData {
     /// Decompressed PVS: pvs[i] = leaf i is visible from this leaf.
     pub pvs: Vec<bool>,
     pub is_solid: bool,
+    /// Pre-computed texture sub-ranges for draw call grouping.
+    /// Each entry is a contiguous run of indices sharing the same texture within this leaf.
+    pub texture_sub_ranges: Vec<TextureSubRange>,
 }
 
 /// A portal connecting two adjacent BSP leaves, loaded from the Portals section.
@@ -71,7 +91,7 @@ pub struct PortalData {
 /// BSP tree + leaf-based level data loaded from a .prl file.
 #[derive(Debug)]
 pub struct LevelWorld {
-    pub vertices: Vec<[f32; 3]>,
+    pub vertices: Vec<TexturedVertex>,
     pub indices: Vec<u32>,
     pub face_meta: Vec<FaceMeta>,
     pub leaves: Vec<LeafData>,
@@ -87,6 +107,8 @@ pub struct LevelWorld {
     pub leaf_portals: Vec<Vec<usize>>,
     /// Whether portal data was present in the file.
     pub has_portals: bool,
+    /// Texture names from the TextureNames section, indexed by face texture_index.
+    pub texture_names: Vec<String>,
 }
 
 impl LevelWorld {
@@ -152,6 +174,108 @@ pub fn face_leaf_indices(world: &LevelWorld) -> Vec<u32> {
     indices
 }
 
+/// Sentinel value for faces with no texture assignment.
+const NO_TEXTURE_INDEX: u32 = u32::MAX;
+
+/// Sort the index buffer by (leaf_index, texture_index) and rebuild face_meta offsets.
+/// After sorting, faces within each leaf are grouped by texture, enabling efficient
+/// draw call batching. Same logic as BSP's `sort_indices_by_leaf_and_texture`.
+fn sort_indices_by_leaf_and_texture(indices: &mut Vec<u32>, face_meta: &mut Vec<FaceMeta>) {
+    let mut sorted_faces: Vec<usize> = (0..face_meta.len()).collect();
+    sorted_faces.sort_by(|&a, &b| {
+        let fa = &face_meta[a];
+        let fb = &face_meta[b];
+        let leaf_cmp = fa.leaf_index.cmp(&fb.leaf_index);
+        if leaf_cmp != std::cmp::Ordering::Equal {
+            return leaf_cmp;
+        }
+        let tex_a = fa.texture_index.unwrap_or(NO_TEXTURE_INDEX);
+        let tex_b = fb.texture_index.unwrap_or(NO_TEXTURE_INDEX);
+        tex_a.cmp(&tex_b)
+    });
+
+    let old_indices = indices.clone();
+    let mut new_indices = Vec::with_capacity(old_indices.len());
+    let mut new_face_meta = Vec::with_capacity(face_meta.len());
+
+    for &orig_idx in &sorted_faces {
+        let old_face = &face_meta[orig_idx];
+        let old_offset = old_face.index_offset as usize;
+        let old_count = old_face.index_count as usize;
+
+        let new_offset = new_indices.len() as u32;
+        if old_offset + old_count <= old_indices.len() {
+            new_indices.extend_from_slice(&old_indices[old_offset..old_offset + old_count]);
+        }
+
+        new_face_meta.push(FaceMeta {
+            index_offset: new_offset,
+            index_count: old_face.index_count,
+            leaf_index: old_face.leaf_index,
+            texture_index: old_face.texture_index,
+            texture_dimensions: old_face.texture_dimensions,
+            texture_name: old_face.texture_name.clone(),
+            material: old_face.material,
+        });
+    }
+
+    *indices = new_indices;
+    *face_meta = new_face_meta;
+}
+
+/// Build per-leaf texture sub-ranges from sorted face_meta and leaf data.
+/// Assumes the index buffer is already sorted by (leaf_index, texture_index).
+fn build_leaf_texture_sub_ranges(leaves: &mut [LeafData], face_meta: &[FaceMeta]) {
+    for leaf in leaves.iter_mut() {
+        leaf.texture_sub_ranges.clear();
+
+        if leaf.face_count == 0 {
+            continue;
+        }
+
+        let start = leaf.face_start as usize;
+        let count = leaf.face_count as usize;
+
+        let mut current_tex: Option<u32> = None;
+        let mut range_start = 0u32;
+        let mut range_count = 0u32;
+
+        for face in face_meta.iter().skip(start).take(count) {
+            if face.index_count == 0 {
+                continue;
+            }
+
+            let tex = face.texture_index.unwrap_or(NO_TEXTURE_INDEX);
+
+            if current_tex == Some(tex) {
+                range_count += face.index_count;
+            } else {
+                if range_count > 0 {
+                    leaf.texture_sub_ranges.push(TextureSubRange {
+                        texture_index: current_tex
+                            .expect("range_count > 0 implies current_tex is set"),
+                        index_offset: range_start,
+                        index_count: range_count,
+                    });
+                }
+                current_tex = Some(tex);
+                range_start = face.index_offset;
+                range_count = face.index_count;
+            }
+        }
+
+        if range_count > 0 {
+            if let Some(tex) = current_tex {
+                leaf.texture_sub_ranges.push(TextureSubRange {
+                    texture_index: tex,
+                    index_offset: range_start,
+                    index_count: range_count,
+                });
+            }
+        }
+    }
+}
+
 /// Decode a PRL sentinel-encoded child reference.
 ///
 /// Positive values are node indices; negative values encode leaves as `(-1 - leaf_index)`.
@@ -174,10 +298,100 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 
     let meta = prl_format::read_container(&mut cursor)?;
 
-    // Geometry section (required).
-    let geom_data = prl_format::read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)?
-        .ok_or(PrlLoadError::NoGeometry)?;
-    let geom = GeometrySection::from_bytes(&geom_data)?;
+    // Try GeometryV2 first (has UVs + texture indices), fall back to legacy Geometry.
+    let geom_v2_data =
+        prl_format::read_section_data(&mut cursor, &meta, SectionId::GeometryV2 as u32)?;
+    let geom_v1_data =
+        prl_format::read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)?;
+
+    // TextureNames section (optional, only meaningful with GeometryV2).
+    let texture_names_data =
+        prl_format::read_section_data(&mut cursor, &meta, SectionId::TextureNames as u32)?;
+    let texture_names_section = match texture_names_data {
+        Some(data) => Some(TextureNamesSection::from_bytes(&data)?),
+        None => None,
+    };
+
+    // Build vertices, indices, face_meta, and texture_names from whichever geometry section is present.
+    let (vertices, mut indices, mut face_meta, texture_names) = if let Some(v2_data) = geom_v2_data
+    {
+        let geom_v2 = GeometrySectionV2::from_bytes(&v2_data)?;
+        let tex_names: Vec<String> = texture_names_section.map(|s| s.names).unwrap_or_default();
+        let mut warned_prefixes = HashSet::new();
+
+        let verts: Vec<TexturedVertex> = geom_v2
+            .vertices
+            .iter()
+            .map(|v| TexturedVertex {
+                position: [v[0], v[1], v[2]],
+                // Store raw texel-space UVs; normalized in main.rs after texture dimensions are known.
+                base_uv: [v[3], v[4]],
+                vertex_color: [1.0, 1.0, 1.0, 1.0],
+            })
+            .collect();
+
+        let fm: Vec<FaceMeta> = geom_v2
+            .faces
+            .iter()
+            .map(|f| {
+                let (tex_idx, tex_name) = if f.texture_index == NO_TEXTURE {
+                    (None, String::new())
+                } else {
+                    let name = tex_names
+                        .get(f.texture_index as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    (Some(f.texture_index), name)
+                };
+                let mat = material::derive_material(&tex_name, &mut warned_prefixes);
+                FaceMeta {
+                    index_offset: f.index_offset,
+                    index_count: f.index_count,
+                    leaf_index: f.leaf_index,
+                    texture_index: tex_idx,
+                    texture_dimensions: (64, 64), // Updated after texture loading
+                    texture_name: tex_name,
+                    material: mat,
+                }
+            })
+            .collect();
+
+        log::info!("[PRL] GeometryV2: {} textures referenced", tex_names.len());
+
+        (verts, geom_v2.indices, fm, tex_names)
+    } else if let Some(v1_data) = geom_v1_data {
+        let geom = GeometrySection::from_bytes(&v1_data)?;
+
+        let verts: Vec<TexturedVertex> = geom
+            .vertices
+            .iter()
+            .map(|pos| TexturedVertex {
+                position: *pos,
+                base_uv: [0.0, 0.0],
+                vertex_color: [1.0, 1.0, 1.0, 1.0],
+            })
+            .collect();
+
+        let fm: Vec<FaceMeta> = geom
+            .faces
+            .iter()
+            .map(|f| FaceMeta {
+                index_offset: f.index_offset,
+                index_count: f.index_count,
+                leaf_index: f.leaf_index,
+                texture_index: None,
+                texture_dimensions: (64, 64),
+                texture_name: String::new(),
+                material: Material::Default,
+            })
+            .collect();
+
+        log::info!("[PRL] Legacy Geometry section (no texture data)");
+
+        (verts, geom.indices, fm, Vec::new())
+    } else {
+        return Err(PrlLoadError::NoGeometry);
+    };
 
     // BSP nodes section (optional — absent if tree is a single leaf).
     let nodes_section =
@@ -210,15 +424,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     let has_pvs = pvs_section.is_some();
     let has_portals = portals_section.is_some();
 
-    let face_meta: Vec<FaceMeta> = geom
-        .faces
-        .iter()
-        .map(|f| FaceMeta {
-            index_offset: f.index_offset,
-            index_count: f.index_count,
-        })
-        .collect();
-
     // Build runtime nodes from the nodes section.
     let nodes: Vec<NodeData> = match &nodes_section {
         Some(section) => section
@@ -235,7 +440,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     };
 
     // Build runtime leaves from the leaves section + PVS data.
-    let leaves: Vec<LeafData> = match &leaves_section {
+    let mut leaves: Vec<LeafData> = match &leaves_section {
         Some(leaf_sec) => {
             let leaf_count = leaf_sec.leaves.len();
             let pvs_byte_count = leaf_count.div_ceil(8);
@@ -282,6 +487,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                         face_count: lr.face_count,
                         pvs,
                         is_solid: lr.is_solid != 0,
+                        texture_sub_ranges: Vec::new(),
                     }
                 })
                 .collect()
@@ -291,8 +497,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             log::warn!("[PRL] No BSP leaves section — creating single-leaf fallback");
             let mut mins = Vec3::splat(f32::MAX);
             let mut maxs = Vec3::splat(f32::MIN);
-            for v in &geom.vertices {
-                let pos = Vec3::from(*v);
+            for v in &vertices {
+                let pos = Vec3::from(v.position);
                 mins = mins.min(pos);
                 maxs = maxs.max(pos);
             }
@@ -303,6 +509,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                 face_count: face_meta.len() as u32,
                 pvs: vec![true],
                 is_solid: false,
+                texture_sub_ranges: Vec::new(),
             }]
         }
     };
@@ -364,21 +571,32 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         (Vec::new(), vec![Vec::new(); leaves.len()])
     };
 
+    // Sort index buffer by (leaf_index, texture_index) for draw call batching.
+    sort_indices_by_leaf_and_texture(&mut indices, &mut face_meta);
+
+    // Rebuild leaf face_start/face_count after sorting (faces are already leaf-ordered
+    // from the compiler, and sort is stable within each leaf, so ranges stay valid).
+    // Build per-leaf texture sub-ranges for efficient draw calls.
+    build_leaf_texture_sub_ranges(&mut leaves, &face_meta);
+
+    let total_sub_ranges: usize = leaves.iter().map(|l| l.texture_sub_ranges.len()).sum();
     log::info!(
-        "[PRL] Loaded: {} vertices, {} indices ({} triangles), {} faces, {} nodes, {} leaves, pvs={}, portals={}",
-        geom.vertices.len(),
-        geom.indices.len(),
-        geom.indices.len() / 3,
+        "[PRL] Loaded: {} vertices, {} indices ({} triangles), {} faces, {} nodes, {} leaves, {} sub-ranges, pvs={}, portals={}, textures={}",
+        vertices.len(),
+        indices.len(),
+        indices.len() / 3,
         face_meta.len(),
         nodes.len(),
         leaves.len(),
+        total_sub_ranges,
         has_pvs,
         portals.len(),
+        texture_names.len(),
     );
 
     Ok(LevelWorld {
-        vertices: geom.vertices,
-        indices: geom.indices,
+        vertices,
+        indices,
         face_meta,
         leaves,
         nodes,
@@ -387,6 +605,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         portals,
         leaf_portals,
         has_portals,
+        texture_names,
     })
 }
 
@@ -402,6 +621,39 @@ mod tests {
 
     // -- find_leaf tests --
 
+    /// Helper to build a default FaceMeta with only index_offset and index_count.
+    fn simple_face_meta(index_offset: u32, index_count: u32) -> FaceMeta {
+        FaceMeta {
+            index_offset,
+            index_count,
+            leaf_index: 0,
+            texture_index: None,
+            texture_dimensions: (64, 64),
+            texture_name: String::new(),
+            material: Material::Default,
+        }
+    }
+
+    /// Helper to build a default LeafData.
+    fn simple_leaf(
+        bounds_min: Vec3,
+        bounds_max: Vec3,
+        face_start: u32,
+        face_count: u32,
+        pvs: Vec<bool>,
+        is_solid: bool,
+    ) -> LeafData {
+        LeafData {
+            bounds_min,
+            bounds_max,
+            face_start,
+            face_count,
+            pvs,
+            is_solid,
+            texture_sub_ranges: Vec::new(),
+        }
+    }
+
     /// Build a simple two-leaf BSP: one node splits space at X=0.
     /// Front (X >= 0) goes to leaf 0, back (X < 0) goes to leaf 1.
     fn two_leaf_world() -> LevelWorld {
@@ -416,28 +668,29 @@ mod tests {
                 back: BspChild::Leaf(1),
             }],
             leaves: vec![
-                LeafData {
-                    bounds_min: Vec3::new(0.0, -100.0, -100.0),
-                    bounds_max: Vec3::new(100.0, 100.0, 100.0),
-                    face_start: 0,
-                    face_count: 1,
-                    pvs: vec![true, true],
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(-100.0, -100.0, -100.0),
-                    bounds_max: Vec3::new(0.0, 100.0, 100.0),
-                    face_start: 1,
-                    face_count: 1,
-                    pvs: vec![true, true],
-                    is_solid: false,
-                },
+                simple_leaf(
+                    Vec3::new(0.0, -100.0, -100.0),
+                    Vec3::new(100.0, 100.0, 100.0),
+                    0,
+                    1,
+                    vec![true, true],
+                    false,
+                ),
+                simple_leaf(
+                    Vec3::new(-100.0, -100.0, -100.0),
+                    Vec3::new(0.0, 100.0, 100.0),
+                    1,
+                    1,
+                    vec![true, true],
+                    false,
+                ),
             ],
             root: BspChild::Node(0),
             has_pvs: true,
             portals: vec![],
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
+            texture_names: vec![],
         }
     }
 
@@ -467,19 +720,20 @@ mod tests {
             indices: vec![],
             face_meta: vec![],
             nodes: vec![],
-            leaves: vec![LeafData {
-                bounds_min: Vec3::splat(-100.0),
-                bounds_max: Vec3::splat(100.0),
-                face_start: 0,
-                face_count: 0,
-                pvs: vec![true],
-                is_solid: false,
-            }],
+            leaves: vec![simple_leaf(
+                Vec3::splat(-100.0),
+                Vec3::splat(100.0),
+                0,
+                0,
+                vec![true],
+                false,
+            )],
             root: BspChild::Leaf(0),
             has_pvs: false,
             portals: vec![],
             leaf_portals: vec![vec![]],
             has_portals: false,
+            texture_names: vec![],
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -508,36 +762,37 @@ mod tests {
                 },
             ],
             leaves: vec![
-                LeafData {
-                    bounds_min: Vec3::splat(-100.0),
-                    bounds_max: Vec3::new(0.0, 100.0, 100.0),
-                    face_start: 0,
-                    face_count: 0,
-                    pvs: vec![],
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(0.0, 0.0, -100.0),
-                    bounds_max: Vec3::splat(100.0),
-                    face_start: 0,
-                    face_count: 0,
-                    pvs: vec![],
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(0.0, -100.0, -100.0),
-                    bounds_max: Vec3::new(100.0, 0.0, 100.0),
-                    face_start: 0,
-                    face_count: 0,
-                    pvs: vec![],
-                    is_solid: false,
-                },
+                simple_leaf(
+                    Vec3::splat(-100.0),
+                    Vec3::new(0.0, 100.0, 100.0),
+                    0,
+                    0,
+                    vec![],
+                    false,
+                ),
+                simple_leaf(
+                    Vec3::new(0.0, 0.0, -100.0),
+                    Vec3::splat(100.0),
+                    0,
+                    0,
+                    vec![],
+                    false,
+                ),
+                simple_leaf(
+                    Vec3::new(0.0, -100.0, -100.0),
+                    Vec3::new(100.0, 0.0, 100.0),
+                    0,
+                    0,
+                    vec![],
+                    false,
+                ),
             ],
             root: BspChild::Node(0),
             has_pvs: false,
             portals: vec![],
             leaf_portals: vec![vec![], vec![], vec![]],
             has_portals: false,
+            texture_names: vec![],
         };
 
         // X < 0 -> leaf 0
@@ -571,34 +826,18 @@ mod tests {
         let world = LevelWorld {
             vertices: vec![],
             indices: vec![],
-            face_meta: vec![FaceMeta {
-                index_offset: 0,
-                index_count: 3,
-            }],
+            face_meta: vec![simple_face_meta(0, 3)],
             nodes: vec![],
             leaves: vec![
-                LeafData {
-                    bounds_min: Vec3::ZERO,
-                    bounds_max: Vec3::splat(10.0),
-                    face_start: 0,
-                    face_count: 1,
-                    pvs: vec![],
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::ZERO,
-                    bounds_max: Vec3::ZERO,
-                    face_start: 0,
-                    face_count: 0,
-                    pvs: vec![],
-                    is_solid: true,
-                },
+                simple_leaf(Vec3::ZERO, Vec3::splat(10.0), 0, 1, vec![], false),
+                simple_leaf(Vec3::ZERO, Vec3::ZERO, 0, 0, vec![], true),
             ],
             root: BspChild::Leaf(0),
             has_pvs: false,
             portals: vec![],
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
+            texture_names: vec![],
         };
 
         let spawn = world.spawn_position();
@@ -613,43 +852,21 @@ mod tests {
             vertices: vec![],
             indices: vec![],
             face_meta: vec![
-                FaceMeta {
-                    index_offset: 0,
-                    index_count: 3,
-                },
-                FaceMeta {
-                    index_offset: 3,
-                    index_count: 3,
-                },
-                FaceMeta {
-                    index_offset: 6,
-                    index_count: 3,
-                },
+                simple_face_meta(0, 3),
+                simple_face_meta(3, 3),
+                simple_face_meta(6, 3),
             ],
             nodes: vec![],
             leaves: vec![
-                LeafData {
-                    bounds_min: Vec3::ZERO,
-                    bounds_max: Vec3::ZERO,
-                    face_start: 0,
-                    face_count: 2,
-                    pvs: vec![],
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::ZERO,
-                    bounds_max: Vec3::ZERO,
-                    face_start: 2,
-                    face_count: 1,
-                    pvs: vec![],
-                    is_solid: false,
-                },
+                simple_leaf(Vec3::ZERO, Vec3::ZERO, 0, 2, vec![], false),
+                simple_leaf(Vec3::ZERO, Vec3::ZERO, 2, 1, vec![], false),
             ],
             root: BspChild::Leaf(0),
             has_pvs: false,
             portals: vec![],
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
+            texture_names: vec![],
         };
 
         let indices = face_leaf_indices(&world);
@@ -938,6 +1155,273 @@ mod tests {
 
         let result = load_prl(tmp.to_str().unwrap());
         assert!(result.is_err());
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    // -- GeometryV2 + TextureNames round-trip tests --
+
+    use postretro_level_format::geometry::{FaceMetaV2, GeometrySectionV2};
+    use postretro_level_format::texture_names::TextureNamesSection;
+
+    fn sample_geometry_v2() -> GeometrySectionV2 {
+        GeometrySectionV2 {
+            vertices: vec![
+                [0.0, 0.0, 0.0, 10.0, 20.0],
+                [1.0, 0.0, 0.0, 30.0, 40.0],
+                [1.0, 1.0, 0.0, 50.0, 60.0],
+                [10.0, 0.0, 0.0, 100.0, 200.0],
+                [11.0, 0.0, 0.0, 110.0, 210.0],
+                [11.0, 1.0, 0.0, 120.0, 220.0],
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            faces: vec![
+                FaceMetaV2 {
+                    index_offset: 0,
+                    index_count: 3,
+                    leaf_index: 0,
+                    texture_index: 0,
+                },
+                FaceMetaV2 {
+                    index_offset: 3,
+                    index_count: 3,
+                    leaf_index: 1,
+                    texture_index: 1,
+                },
+            ],
+        }
+    }
+
+    fn sample_texture_names() -> TextureNamesSection {
+        TextureNamesSection {
+            names: vec!["metal/floor_01".to_string(), "concrete/wall_03".to_string()],
+        }
+    }
+
+    #[test]
+    fn load_prl_geometry_v2_reads_uvs_and_texture_names() {
+        let geom = sample_geometry_v2();
+        let tex_names = sample_texture_names();
+
+        let leaves = BspLeavesSection {
+            leaves: vec![
+                BspLeafRecord {
+                    face_start: 0,
+                    face_count: 1,
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    pvs_offset: 0,
+                    pvs_size: 0,
+                    is_solid: 0,
+                },
+                BspLeafRecord {
+                    face_start: 1,
+                    face_count: 1,
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    pvs_offset: 0,
+                    pvs_size: 0,
+                    is_solid: 0,
+                },
+            ],
+        };
+
+        let nodes = BspNodesSection {
+            nodes: vec![BspNodeRecord {
+                plane_normal: [1.0, 0.0, 0.0],
+                plane_distance: 5.0,
+                front: -1,
+                back: -2,
+            }],
+        };
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::GeometryV2 as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::TextureNames as u32,
+                version: 1,
+                data: tex_names.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::BspNodes as u32,
+                version: 1,
+                data: nodes.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::BspLeaves as u32,
+                version: 1,
+                data: leaves.to_bytes(),
+            },
+        ];
+
+        let tmp = std::env::temp_dir().join("postretro_test_geom_v2.prl");
+        let mut file = std::fs::File::create(&tmp).unwrap();
+        prl_format::write_prl(&mut file, &sections).unwrap();
+
+        let world = load_prl(tmp.to_str().unwrap()).unwrap();
+
+        // Vertices should have UV data from GeometryV2.
+        assert_eq!(world.vertices.len(), 6);
+        // UVs are texel-space (not yet normalized — that happens in main.rs).
+        // After sort, face ordering may change, so check by finding the vertex.
+        let first_vert = &world.vertices[0];
+        assert!(
+            first_vert.base_uv[0] != 0.0
+                || first_vert.base_uv[1] != 0.0
+                || world.vertices.iter().any(|v| v.base_uv[0] != 0.0),
+            "at least some vertices should have non-zero UVs from GeometryV2"
+        );
+
+        // Texture names should be loaded.
+        assert_eq!(world.texture_names.len(), 2);
+        assert_eq!(world.texture_names[0], "metal/floor_01");
+        assert_eq!(world.texture_names[1], "concrete/wall_03");
+
+        // Face meta should have texture indices.
+        assert_eq!(world.face_meta.len(), 2);
+        assert!(world.face_meta.iter().any(|f| f.texture_index == Some(0)));
+        assert!(world.face_meta.iter().any(|f| f.texture_index == Some(1)));
+
+        // Face meta should have texture names.
+        assert!(
+            world
+                .face_meta
+                .iter()
+                .any(|f| f.texture_name == "metal/floor_01")
+        );
+        assert!(
+            world
+                .face_meta
+                .iter()
+                .any(|f| f.texture_name == "concrete/wall_03")
+        );
+
+        // Texture sub-ranges should be built.
+        let total_sub_ranges: usize = world
+            .leaves
+            .iter()
+            .map(|l| l.texture_sub_ranges.len())
+            .sum();
+        assert!(total_sub_ranges > 0, "should have texture sub-ranges");
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_legacy_geometry_falls_back_to_zero_uvs() {
+        let geom = sample_geometry();
+
+        let sections = vec![prl_format::SectionBlob {
+            section_id: SectionId::Geometry as u32,
+            version: 1,
+            data: geom.to_bytes(),
+        }];
+
+        let tmp = std::env::temp_dir().join("postretro_test_legacy_geom_fallback.prl");
+        let mut file = std::fs::File::create(&tmp).unwrap();
+        prl_format::write_prl(&mut file, &sections).unwrap();
+
+        let world = load_prl(tmp.to_str().unwrap()).unwrap();
+
+        // Legacy geometry should produce vertices with zero UVs.
+        assert_eq!(world.vertices.len(), 6);
+        for vert in &world.vertices {
+            assert_eq!(
+                vert.base_uv,
+                [0.0, 0.0],
+                "legacy vertices should have zero UVs"
+            );
+        }
+
+        // No texture names from legacy format.
+        assert!(world.texture_names.is_empty());
+
+        // Face meta should have no texture index.
+        for face in &world.face_meta {
+            assert!(
+                face.texture_index.is_none(),
+                "legacy faces should have no texture index"
+            );
+        }
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_geometry_v2_no_texture_sentinel_produces_none_index() {
+        let geom = GeometrySectionV2 {
+            vertices: vec![
+                [0.0, 0.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0, 0.0, 0.0],
+            ],
+            indices: vec![0, 1, 2],
+            faces: vec![FaceMetaV2 {
+                index_offset: 0,
+                index_count: 3,
+                leaf_index: 0,
+                texture_index: NO_TEXTURE,
+            }],
+        };
+
+        let sections = vec![prl_format::SectionBlob {
+            section_id: SectionId::GeometryV2 as u32,
+            version: 1,
+            data: geom.to_bytes(),
+        }];
+
+        let tmp = std::env::temp_dir().join("postretro_test_no_tex_sentinel.prl");
+        let mut file = std::fs::File::create(&tmp).unwrap();
+        prl_format::write_prl(&mut file, &sections).unwrap();
+
+        let world = load_prl(tmp.to_str().unwrap()).unwrap();
+
+        assert_eq!(world.face_meta.len(), 1);
+        assert_eq!(world.face_meta[0].texture_index, None);
+        assert_eq!(world.face_meta[0].texture_name, "");
+        assert_eq!(world.face_meta[0].material, Material::Default);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_geometry_v2_preferred_over_legacy() {
+        // When both Geometry and GeometryV2 are present, GeometryV2 wins.
+        let v1_geom = sample_geometry();
+        let v2_geom = sample_geometry_v2();
+        let tex_names = sample_texture_names();
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: v1_geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::GeometryV2 as u32,
+                version: 1,
+                data: v2_geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::TextureNames as u32,
+                version: 1,
+                data: tex_names.to_bytes(),
+            },
+        ];
+
+        let tmp = std::env::temp_dir().join("postretro_test_v2_preferred.prl");
+        let mut file = std::fs::File::create(&tmp).unwrap();
+        prl_format::write_prl(&mut file, &sections).unwrap();
+
+        let world = load_prl(tmp.to_str().unwrap()).unwrap();
+
+        // Should have texture names from V2 path, not zero UVs from legacy.
+        assert_eq!(world.texture_names.len(), 2);
+        assert!(world.face_meta.iter().any(|f| f.texture_index.is_some()));
 
         std::fs::remove_file(&tmp).ok();
     }

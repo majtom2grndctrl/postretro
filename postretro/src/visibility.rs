@@ -668,11 +668,17 @@ mod tests {
                 index_offset: 0,
                 index_count: 3,
                 leaf_index: 1,
+                texture_index: None,
+                texture_dimensions: (64, 64),
+                texture_name: String::new(),
             },
             FaceMeta {
                 index_offset: 3,
                 index_count: 6,
                 leaf_index: 2,
+                texture_index: None,
+                texture_dimensions: (64, 64),
+                texture_name: String::new(),
             },
         ];
 
@@ -682,8 +688,13 @@ mod tests {
         // Byte at offset 1 (leaf 2's PVS): bit 0 = leaf 1, bit 1 = leaf 2 -> 0b11 = 3
         let visdata = vec![0b0000_0011, 0b0000_0011];
 
+        let dummy_vert = crate::bsp::TexturedVertex {
+            position: [0.0; 3],
+            base_uv: [0.0; 2],
+            vertex_color: [1.0, 1.0, 1.0, 1.0],
+        };
         BspWorld {
-            vertices: vec![[0.0; 3]; 6],
+            vertices: vec![dummy_vert; 6],
             indices: vec![0, 1, 2, 3, 4, 5, 3, 5, 6],
             face_meta,
             nodes,

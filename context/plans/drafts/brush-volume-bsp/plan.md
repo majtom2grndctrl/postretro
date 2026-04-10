@@ -1,8 +1,8 @@
 # Brush-Volume BSP Construction
 
 > **Status:** draft
-> **Depends on:** face `brush_index` ownership tracking (in-flight parallel work), f64 precision boundary at parse (done), BSP convexity termination fix (done), narrow_frustum portal fix (done).
-> **Related:** `context/lib/build_pipeline.md` · `context/lib/development_guide.md` · `context/plans/done/portal-bsp-vis/`
+> **Depends on:** none. All prerequisites have landed: face `brush_index` ownership (`c364b2e`), f64 precision boundary at parse, BSP convexity termination fix.
+> **Related:** `context/lib/build_pipeline.md` · `context/lib/development_guide.md` · `context/plans/done/portal-bsp-vis/` · `references.md` (Doom 3 GPL `dmap` source pointers)
 
 ---
 
@@ -21,7 +21,8 @@ This has produced a recurring bug family:
 - Face centroids sitting on brush surfaces false-positive as "inside."
 - Leaves span solid and air regions because the splitter cannot see brush boundaries that no face lies on.
 - Small air gaps between adjacent brushes get classified solid because no face marks the gap.
-- Recent fixes (convexity termination, tight face-centroid epsilon, `SOLID_EPSILON`/`FACE_SOLID_EPSILON` split) are symptomatic patches for a post-hoc classification step that lacks the structural information it needs.
+- Outside-the-map void leaves classified empty when they happen to inherit any face from an outward-facing brush side — flying outside a level reveals exterior brush surfaces because the classifier has no structural way to distinguish exterior void from interior air. Observed on test-3 after the brush-ownership classifier landed.
+- Recent fixes (convexity termination, tight face-centroid epsilon, `SOLID_EPSILON`/`FACE_SOLID_EPSILON` split, brush-ownership rewrite) are symptomatic patches for a post-hoc classification step that lacks the structural information it needs.
 
 qbsp and ericw-tools avoid this by construction: they partition **space** using brush planes, track the set of brushes that contain each region as the tree descends, and terminate when a region is uniformly inside one brush set. Faces are produced last, by clipping each brush's sides against every solid region. A leaf's solid/empty state is known exactly because it was computed during construction.
 
@@ -116,7 +117,9 @@ High-level algorithm. No code.
 
 ### Phase A: Brush-volume BSP descent
 
-Replace `build_bsp_tree(faces: Vec<Face>)` with a builder that takes `&[BrushVolume]` and a world AABB. The recursion state carries:
+Replace `build_bsp_tree(faces: Vec<Face>)` with a builder that takes `&[BrushVolume]` and a derived world AABB. The world AABB is the union of all brush AABBs with a 1-meter slack margin on each axis — enough to keep the splitter from producing degenerate sub-regions at the world boundary, small enough to keep tree depth bounded. (id Tech 4's dmap uses fixed `MAX_WORLD_COORD` constants instead; deriving the bound is a deliberate modernization since the Quake-era reasons for hardcoding it — integer-coord performance, simpler arithmetic — don't apply here.)
+
+The recursion state carries:
 
 - Current region AABB (shrunk by ancestor planes — or conservative via the AABB clipped against the ancestor stack).
 - Candidate brushes (those whose AABB still overlaps the region).
@@ -126,24 +129,43 @@ At each step:
 
 1. If every candidate brush is in the inside set → **solid leaf**. Pick one such brush as "owning" the leaf (for texture attribution later; multi-owned leaves are the exception and can use the first).
 2. If the candidate list is empty → **empty leaf**.
-3. Otherwise, pick a splitting plane from the bounding planes of candidate brushes that actually partition the region (reject planes that leave one side empty). Reuse the existing score function, but count brushes on each side instead of faces.
+3. Otherwise, pick a splitting plane from the **full set** of candidate brushes' bounding planes — every plane that bounds at least one brush in the current candidate set is a candidate splitter, including planes no world face lies on. Score with the existing balance + split-count heuristic, with counts redefined as brush-spanning counts (a brush spanning the plane contributes one to the split count). Reject planes that leave one side empty. Confirmed against id Tech 4 (`facebsp.cpp:SelectSplitPlaneNum`); see `references.md` for the source.
 4. Partition candidate brushes across the plane:
    - Brushes entirely front or back go to one child's candidate list.
    - Brushes spanning the plane go to both children.
    - The inside set propagates: a brush stays in the inside set of a child only if the child's region remains behind all of that brush's planes. In practice, the child's inside set is recomputed by testing each candidate brush against the updated region stack.
-5. Recurse. Make sure the splitter-selection loop always makes progress — if no candidate plane produces a non-trivial split, make a leaf and flag the case for diagnostics (should not happen for well-formed input, but we need to not loop).
+5. Recurse. Two termination guards:
+   - The splitter-selection loop must always make progress — if no candidate plane produces a non-trivial split, make a leaf and flag the case for diagnostics (should not happen for well-formed input, but we need to not loop).
+   - Hard recursion depth cap of 256, tunable. Exceeding the cap emits a compiler error rather than stack-overflowing. 256 is comfortably above the depth our current test maps reach (largest is in the low double digits) and is the kind of failsafe id Tech 4 also has — the exact number is engineering, not architecture.
 
-### Phase B: Face extraction
+### Phase B: Face extraction (two passes)
 
-Once the tree is complete, generate world faces by walking each brush's brush sides and pushing each side polygon down the tree:
+This is the canonical id Tech / Doom 3 algorithm, verified against `neo/tools/compilers/dmap/usurface.cpp` in the Doom 3 GPL release. Two passes, with **plane-index equality** as the routing primitive — not half-space dot products. The plane-equality approach sidesteps every epsilon problem a numeric front/back test would create.
 
-1. For each brush side, start at the root with the full side polygon.
-2. At each internal node, classify and split the polygon by the node's plane (reuse `split_polygon` from `geometry_utils.rs`).
-3. Push fragments into the respective children.
-4. At each leaf:
-   - **Empty leaf adjacent to the owning brush's solid region**: emit the fragment as a world face. "Adjacent" means the brush that owns this side is in the leaf's neighboring solid region across the side's plane.
-   - **Empty leaf not adjacent**: discard (this fragment is inside another brush's air space, not a bounding wall).
-   - **Solid leaf**: discard (fragment is inside another brush — the equivalent of today's CSG clip).
+**Pass 1 — Build each brush side's visible hull** (`ClipSideByTree_r` in dmap).
+
+For each brush side, walk the side polygon down the BSP tree. At each internal node:
+
+1. If the side's own plane index equals the node's plane index, route the polygon to the **front child only**. The polygon lies on the plane; all of it is in front by construction. Do not split, do not send to back.
+2. If the side's plane index equals the node's plane index XORed with 1 (the same plane, opposite orientation), route to the **back child only**. Same reasoning.
+3. Otherwise, split the polygon by the node's plane (reuse `split_polygon` from `geometry_utils.rs`) and recurse into both children with the front and back fragments.
+
+At each leaf reached:
+
+- If the leaf is **solid**, discard the fragment.
+- If the leaf is **empty**, accumulate the fragment into the side's `visible_hull` via convex-hull union (the dmap function is `AddToConvexHull`, taking the side's plane normal as the projection axis).
+
+After Pass 1, each brush side has a `visible_hull` polygon: the convex-hull union of every fragment that survived clipping into empty leaves. Sides with no surviving fragments (entirely buried inside other brushes) have an empty hull and contribute nothing in Pass 2.
+
+**Pass 2 — Distribute visible hulls into leaves** (`PutWindingIntoAreas_r` in dmap).
+
+For each brush side that has a non-empty `visible_hull`, walk the hull polygon down the tree using the same plane-equality routing as Pass 1. At each empty leaf reached, emit a triangulated face fragment into that leaf's geometry.
+
+There is **no further geometric test at leaf time in Pass 2** — Pass 1 already filtered out everything that should not survive. The leaf check is purely "is this leaf empty?" The triangulation and the leaf assignment happen here.
+
+**Why two passes.** A single-pass version would either emit duplicated fragments (one per leaf the side touches) or require a separate dedup step. Pass 1's hull union is the dedup. The two-pass split also keeps the convex-hull math (Pass 1) separate from the per-leaf emission (Pass 2), which makes both passes simpler than a single fused loop.
+
+**Coplanar tiebreaker — stricter than dmap.** When two brush volumes share a coplanar face (e.g., two boxes touching), both brushes have a side on that plane and Pass 1 produces visible hulls for both. In Pass 2, both hulls would land in the same empty leaf. Postretro resolves this deterministically: the side from the brush with the **lower brush index wins**, and the compiler emits a warning when the conflicting brushes carry different textures. This is a deliberate improvement over id Tech 4 — dmap has *no* tiebreaker rule and emits both faces, relying on splitter selection to deduplicate them as a side effect; that side effect is not guaranteed and ships in id Tech 4 builds as occasional z-fighting on brush joins. Deterministic deduplication plus the texture-mismatch warning gives content authors immediate feedback on a class of authoring mistakes that would otherwise reach the renderer.
 
 This step replaces both CSG face clipping and the current face-oriented BSP face flow. It produces fewer, cleaner faces: no duplicates on shared brush boundaries, no stray fragments inside solids, no faces that cross leaves.
 
@@ -160,39 +182,41 @@ Solidity is assigned during Phase A. `classify_leaf_solidity` is removed — the
 ## Tasks
 
 ### Task 1: Extract brush side representation
-**Description:** Today `parse.rs` produces a flat `Vec<Face>` of world brush faces. Refactor parse output so each brush volume carries its own brush sides (the half-plane polygons that bound it) alongside its `BrushPlane`s. Retain the flat face list as a parse-boundary convenience if needed by CSG, but internally brush-keyed. This is a data model change only — no algorithm changes yet.
+**Description:** Today `parse.rs` produces a flat `Vec<Face>` of world brush faces. Refactor parse output so each brush volume carries its own brush sides (the half-plane polygons that bound it) alongside its `BrushPlane`s. The flat `Vec<Face>` is retained at the parse boundary as well — `csg_clip_faces(faces: &[Face], brush_volumes: &[BrushVolume]) -> Vec<Face>` already takes a flat slice, and csg.rs is unchanged through Phase 1. The brush-keyed sides are produced alongside the flat list as new data; both shapes coexist until Task 4 deletes csg.rs.
 
 **Acceptance criteria:**
-- [ ] `BrushVolume` or a sibling type carries the list of brush sides (polygon + texture + projection) for that brush.
-- [ ] Parser populates brush sides at parse time.
-- [ ] Existing CSG stage still compiles against the new shape (adapter over brush-keyed sides, or unchanged if it already takes a flat list).
-- [ ] Existing BSP stage still compiles and passes tests using an adapter that flattens brush-keyed sides into `Vec<Face>` (temporary shim).
+- [ ] `BrushVolume` (or a sibling type) carries the list of brush sides (polygon + texture + projection) for that brush.
+- [ ] Parser populates brush sides at parse time, in the same pass that produces the flat `Vec<Face>`.
+- [ ] csg.rs requires no changes — it continues to consume the flat `Vec<Face>`.
+- [ ] Existing BSP stage still compiles and passes tests; it continues to consume the flat `Vec<Face>` until Task 4.
 - [ ] `cargo test -p postretro-level-compiler` passes.
 
-**Depends on:** face `brush_index` work (external).
+**Depends on:** none.
 
 ### Task 2: Brush-volume BSP builder (new entry point)
-**Description:** Add a new `build_bsp_from_brushes(&[BrushVolume], world_aabb) -> BspTree` alongside the current `build_bsp_tree`. Implement the Phase A descent: candidate-brush tracking, inside-set tracking, brush-plane splitter selection, solidity assigned during construction. No face output yet — leaves have empty `face_indices`. Portal generation is not yet rewired.
+**Description:** Add a new `build_bsp_from_brushes(&[BrushVolume]) -> BspTree` alongside the current `build_bsp_tree`. The new builder derives its world AABB internally from the brush set (union of brush AABBs plus 1 m slack). Implement the Phase A descent: candidate-brush tracking, inside-set tracking, brush-plane splitter selection (full set of candidate brushes' bounding planes, not a "visible" subset), solidity assigned during construction. No face output yet — leaves have empty `face_indices`. Portal generation is not yet rewired.
 
 **Acceptance criteria:**
 - [ ] New builder produces a tree whose leaves' `is_solid` flags are correct for a hollow room, a room with a pillar, a room with a doorway, and adjacent brushes with a narrow air gap.
 - [ ] Unit tests cover each shape above, asserting leaf solidity by descending from a test point.
 - [ ] No shared state with `build_bsp_tree`; old function remains for now.
-- [ ] Plane candidate scoring reuses the existing balance/split penalty with counts redefined as brush-spanning counts.
-- [ ] Recursion terminates for well-formed input (pathological inputs return an error rather than stack-overflow).
+- [ ] World AABB derivation: union of brush AABBs with 1 m slack on each axis. Verified by a unit test that constructs brushes with known bounds and checks the derived world AABB.
+- [ ] Plane candidate pool: every plane that bounds at least one brush in the current candidate set, with no "visible plane" filtering. Scoring reuses the existing balance/split penalty with counts redefined as brush-spanning counts.
+- [ ] Recursion terminates for well-formed input. Hard depth cap of 256; pathological inputs that exceed the cap return a compiler error rather than stack-overflowing.
 
 **Depends on:** Task 1.
 
 ### Task 3: Brush-side face extraction
-**Description:** Implement Phase B: walk each brush's sides, push polygons through the tree, emit surviving fragments as world faces attached to the adjacent empty leaf. Replaces the face-population path in the builder.
+**Description:** Implement Phase B's two-pass algorithm: Pass 1 walks each brush side through the tree using plane-equality routing and accumulates a per-side visible hull at non-opaque leaves; Pass 2 walks each visible hull back through the tree and emits triangulated fragments at every empty leaf. Replaces the face-population path in the builder. See Phase B in §Approach for the routing rules and `references.md` for the dmap source.
 
 **Acceptance criteria:**
 - [ ] New function `extract_faces(tree, brushes) -> Vec<Face>` produces a face list whose members each reference exactly one leaf.
-- [ ] No duplicate faces on shared boundaries between adjacent solid brushes.
 - [ ] Every emitted face lies on the boundary of an empty leaf.
 - [ ] For a hollow-room test: face count matches the interior surface count (six quads for a simple room, no interior duplicates).
 - [ ] For two adjacent-but-not-touching brushes: the air gap between them appears as an empty leaf with bounding faces on both brush-facing sides.
-- [ ] Tests cover the three cases from Task 2 plus shared-boundary dedup.
+- [ ] **Coplanar dedup rule:** when two brush volumes share a coplanar face, the side from the brush with the **lower brush index** wins. The losing side's contribution is dropped before triangulation. Verified by a unit test on two abutting boxes that asserts exactly one face per shared surface, owned by the lower-index brush.
+- [ ] **Texture mismatch warning:** when a coplanar dedup drops a side whose texture differs from the winning side's texture, the compiler emits a warning naming both brush indices and both texture names. Verified by a unit test that constructs the conflict and captures the log output.
+- [ ] Tests cover the three Task 2 shapes plus shared-boundary dedup and texture-mismatch warning.
 
 **Depends on:** Task 2.
 
@@ -223,6 +247,8 @@ Solidity is assigned during Phase A. `classify_leaf_solidity` is removed — the
 
 ### Task 6: Documentation update
 **Description:** Update `context/lib/build_pipeline.md` §PRL Compilation to describe the brush-volume pipeline. Remove the "CSG face clipping" stage from the pipeline diagram and prose; the stage no longer exists. Clarify that leaf solidity is established during construction, not post-hoc. Reference the `Face` extraction step as "brush side projection."
+
+This is the **post-implementation** documentation update — the case described in `context/lib/context_style_guide.md` §Documentation Lifecycle. Style guide says durable decisions move into `context/lib/` *before* a plan promotes to `ready/`. For a refactor of this size, the new pipeline shape cannot be documented as current state until it actually exists; documenting it earlier would lie about the code. Task 6 is therefore deferred to land alongside Task 4's pipeline swap.
 
 **Acceptance criteria:**
 - [ ] Pipeline diagram in `build_pipeline.md` reflects: parse → BSP construction (brush-volume) → face extraction → portal generation → portal vis → geometry → pack.
@@ -260,12 +286,12 @@ These can run in parallel: Task 5 is validation, Task 6 touches only `context/li
 
 | Risk | Mitigation |
 |---|---|
-| New builder loops or stack-overflows on pathological brush configurations. | Hard recursion depth cap. Emit a compiler error rather than panic. Test maps include a deliberately messy brush pile. |
+| New builder loops or stack-overflows on pathological brush configurations. | Hard recursion depth cap of 256 (tunable). Compiler error on overflow rather than panic. Test maps include a deliberately messy brush pile. |
 | Face extraction produces fewer faces than the current pipeline on a valid map (dropped geometry). | Task 5 captures face counts pre/post per map. Any unexplained reduction blocks merge. Test on the hollow-room-with-pillar fixture that already exercises the failure mode. |
-| Face extraction produces duplicates on shared brush boundaries. | Explicit "adjacent leaf is this brush's solid" check in emission. Unit test on two abutting brushes asserts exactly one face per shared surface. |
+| Face extraction produces duplicates on shared brush boundaries. | Coplanar dedup rule in Task 3: lower brush index wins; loser is dropped before triangulation. Unit test on two abutting brushes asserts exactly one face per shared surface. |
 | Plane candidate selection from brush planes yields very different trees than the face-plane version, regressing portal counts or leaf balance. | Task 5 captures leaf/portal counts. The scoring function is tunable without changing the algorithm. Acceptable if counts differ but visual output and PVS are unchanged. |
 | Portal generation breaks because leaves are now solid where they weren't, or vice versa. | The parallel `brush_index` work already moves solidity to an ownership basis, so the portal stage should already tolerate accurate solidity. Verify with the existing portal-vis test maps in Task 5. |
-| CSG deletion loses a subtle behavior (e.g., texture priority on shared surfaces). | Before deleting `csg.rs`, document what it does and confirm face extraction's "owning brush" choice preserves the intended texture. May need a tiebreaker rule for coplanar brush sides. |
+| CSG deletion loses a subtle behavior beyond the resolved coplanar tiebreaker. | The lower-brush-index dedup rule covers shared coplanars deterministically and is stricter than dmap. Before deleting `csg.rs` in Task 4, scan it for any other behaviors not covered by Phase B (e.g., AABB pre-filter ordering, brush-pair early-out heuristics) and confirm each is either reproduced in Phase B or genuinely no longer needed. |
 | `classify_leaf_solidity`'s tight/loose epsilon tuning gets lost and a new class of tolerance bugs emerges during Phase A classification. | Phase A uses structural tests (plane-vs-plane containment), not centroid tests. Epsilons become a splitter-precision concern, not a classification concern, which is a cleaner problem domain. |
 | Task 1's data model change breaks CSG before CSG is removed. | Task 1 includes an adapter so CSG keeps working. Task 4 removes both together. |
 
@@ -322,13 +348,6 @@ Not a weekend task. Not a months-long epic. Roughly the same shape as `portal-bs
 ---
 
 ## Notes
-
-### Open questions
-
-- **Splitter candidate pool.** qbsp picks from all planes of candidate brushes, which includes internal-seeming planes. Should we include only "visible" planes (sides that bound at least one brush in the current candidate set) or the full half-plane set? Start with all candidate brushes' planes; prune if tree quality suffers.
-- **Texture attribution on shared boundaries.** When two brushes share a plane, both contribute a face at extraction time. One wins. Propose: the brush with lower index (stable), with a compiler warning if textures differ. Alternative: keep both if the engine supports it (it does — nothing forbids coincident faces on opposite leaves).
-- **World bounds.** The initial region needs a world AABB. Use the union of all brush AABBs with a small slack margin. This is cleaner than today's implicit unbounded root.
-- **Recursion budget.** Pick a hard depth cap (256?) and emit a compiler error on overflow. Today's builder doesn't cap depth; pathological inputs are a latent bug.
 
 ### Alternatives considered
 

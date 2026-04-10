@@ -4,7 +4,7 @@
 // Portals are compile-time only — used by the vis stage, then discarded.
 // Algorithm: recursive portal distribution (ericw-tools approach).
 
-use glam::Vec3;
+use glam::DVec3;
 
 use crate::geometry_utils::{clip_polygon_to_front, split_polygon};
 use crate::partition::{BspChild, BspTree};
@@ -13,21 +13,21 @@ use crate::partition::{BspChild, BspTree};
 /// ancestor planes in sequence; the generous PLANE_EPSILON (0.1) used for
 /// BSP face classification would accumulate too much error. Consistent with
 /// ericw-tools' ON_EPSILON for winding operations.
-const PORTAL_EPSILON: f32 = 0.01;
+const PORTAL_EPSILON: f64 = 0.01;
 
 /// Half-extent of the initial portal winding. Large enough to cover any
 /// reasonable level geometry.
-const WINDING_HALF_EXTENT: f32 = 16384.0;
+const WINDING_HALF_EXTENT: f64 = 16384.0;
 
 /// Minimum polygon area to keep a portal winding. Slivers below this
 /// threshold are discarded to prevent accumulation of degenerate geometry
 /// from numerical precision loss.
-const MIN_WINDING_AREA: f32 = 0.1;
+const MIN_WINDING_AREA: f64 = 0.1;
 
 /// A portal connecting two adjacent BSP leaves through a splitting plane.
 pub struct Portal {
     /// Convex polygon in engine coordinates.
-    pub polygon: Vec<Vec3>,
+    pub polygon: Vec<DVec3>,
     /// Index into `BspTree::leaves` for the front side.
     pub front_leaf: usize,
     /// Index into `BspTree::leaves` for the back side.
@@ -46,7 +46,7 @@ pub fn generate_portals(tree: &BspTree) -> Vec<Portal> {
     }
 
     let mut portals = Vec::new();
-    let ancestor_planes: Vec<(Vec3, f32)> = Vec::new();
+    let ancestor_planes: Vec<(DVec3, f64)> = Vec::new();
 
     generate_recursive(tree, 0, &ancestor_planes, &mut portals);
 
@@ -54,7 +54,7 @@ pub fn generate_portals(tree: &BspTree) -> Vec<Portal> {
 }
 
 /// Plane representation for ancestor stack entries: (normal, distance).
-type PlaneEntry = (Vec3, f32);
+type PlaneEntry = (DVec3, f64);
 
 /// Phase 1: walk the BSP tree, generate portal windings at each node,
 /// then distribute them (Phase 2) to find leaf pairs.
@@ -97,10 +97,10 @@ fn generate_recursive(
 ///
 /// Returns `None` if the winding is clipped away entirely or becomes degenerate.
 fn make_node_portal(
-    plane_normal: Vec3,
-    plane_distance: f32,
+    plane_normal: DVec3,
+    plane_distance: f64,
     ancestor_planes: &[PlaneEntry],
-) -> Option<Vec<Vec3>> {
+) -> Option<Vec<DVec3>> {
     // Build an initial large quad on the splitting plane.
     let mut winding = make_base_winding(plane_normal, plane_distance);
 
@@ -125,13 +125,13 @@ fn make_node_portal(
 ///
 /// Cross the plane normal with a reference axis to get basis vectors, then
 /// form a quad from +/-basis1 +/-basis2 offset to lie on the plane.
-fn make_base_winding(normal: Vec3, distance: f32) -> Vec<Vec3> {
+fn make_base_winding(normal: DVec3, distance: f64) -> Vec<DVec3> {
     // Choose a reference axis that isn't near-parallel to the normal.
     // If the normal is near +Z or -Z, use +X. Otherwise use +Z.
     let reference = if normal.z.abs() > 0.9 {
-        Vec3::X
+        DVec3::X
     } else {
-        Vec3::Z
+        DVec3::Z
     };
 
     let basis1 = normal.cross(reference).normalize();
@@ -153,7 +153,7 @@ fn make_base_winding(normal: Vec3, distance: f32) -> Vec<Vec3> {
 /// the leaf pairs it actually connects.
 fn distribute_portal(
     tree: &BspTree,
-    winding: &[Vec3],
+    winding: &[DVec3],
     front_child: &BspChild,
     back_child: &BspChild,
     portals: &mut Vec<Portal>,
@@ -219,12 +219,12 @@ fn distribute_portal(
 }
 
 /// Compute the area of a convex polygon using the cross-product method.
-fn polygon_area(vertices: &[Vec3]) -> f32 {
+fn polygon_area(vertices: &[DVec3]) -> f64 {
     if vertices.len() < 3 {
         return 0.0;
     }
 
-    let mut area = Vec3::ZERO;
+    let mut area = DVec3::ZERO;
     let v0 = vertices[0];
     for i in 1..vertices.len() - 1 {
         let edge1 = vertices[i] - v0;
@@ -242,77 +242,77 @@ mod tests {
 
     // -- Helper: build a box room's faces and brush volumes --
 
-    fn make_box_faces(min: Vec3, max: Vec3) -> Vec<Face> {
+    fn make_box_faces(min: DVec3, max: DVec3) -> Vec<Face> {
         let texture = "test".to_string();
         vec![
             Face {
                 vertices: vec![
-                    Vec3::new(min.x, min.y, min.z),
-                    Vec3::new(min.x, max.y, min.z),
-                    Vec3::new(min.x, max.y, max.z),
-                    Vec3::new(min.x, min.y, max.z),
+                    DVec3::new(min.x, min.y, min.z),
+                    DVec3::new(min.x, max.y, min.z),
+                    DVec3::new(min.x, max.y, max.z),
+                    DVec3::new(min.x, min.y, max.z),
                 ],
-                normal: Vec3::NEG_X,
+                normal: DVec3::NEG_X,
                 distance: -min.x,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
             },
             Face {
                 vertices: vec![
-                    Vec3::new(max.x, min.y, min.z),
-                    Vec3::new(max.x, min.y, max.z),
-                    Vec3::new(max.x, max.y, max.z),
-                    Vec3::new(max.x, max.y, min.z),
+                    DVec3::new(max.x, min.y, min.z),
+                    DVec3::new(max.x, min.y, max.z),
+                    DVec3::new(max.x, max.y, max.z),
+                    DVec3::new(max.x, max.y, min.z),
                 ],
-                normal: Vec3::X,
+                normal: DVec3::X,
                 distance: max.x,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
             },
             Face {
                 vertices: vec![
-                    Vec3::new(min.x, min.y, min.z),
-                    Vec3::new(min.x, min.y, max.z),
-                    Vec3::new(max.x, min.y, max.z),
-                    Vec3::new(max.x, min.y, min.z),
+                    DVec3::new(min.x, min.y, min.z),
+                    DVec3::new(min.x, min.y, max.z),
+                    DVec3::new(max.x, min.y, max.z),
+                    DVec3::new(max.x, min.y, min.z),
                 ],
-                normal: Vec3::NEG_Y,
+                normal: DVec3::NEG_Y,
                 distance: -min.y,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
             },
             Face {
                 vertices: vec![
-                    Vec3::new(min.x, max.y, min.z),
-                    Vec3::new(max.x, max.y, min.z),
-                    Vec3::new(max.x, max.y, max.z),
-                    Vec3::new(min.x, max.y, max.z),
+                    DVec3::new(min.x, max.y, min.z),
+                    DVec3::new(max.x, max.y, min.z),
+                    DVec3::new(max.x, max.y, max.z),
+                    DVec3::new(min.x, max.y, max.z),
                 ],
-                normal: Vec3::Y,
+                normal: DVec3::Y,
                 distance: max.y,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
             },
             Face {
                 vertices: vec![
-                    Vec3::new(min.x, min.y, min.z),
-                    Vec3::new(max.x, min.y, min.z),
-                    Vec3::new(max.x, max.y, min.z),
-                    Vec3::new(min.x, max.y, min.z),
+                    DVec3::new(min.x, min.y, min.z),
+                    DVec3::new(max.x, min.y, min.z),
+                    DVec3::new(max.x, max.y, min.z),
+                    DVec3::new(min.x, max.y, min.z),
                 ],
-                normal: Vec3::NEG_Z,
+                normal: DVec3::NEG_Z,
                 distance: -min.z,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
             },
             Face {
                 vertices: vec![
-                    Vec3::new(min.x, min.y, max.z),
-                    Vec3::new(max.x, min.y, max.z),
-                    Vec3::new(max.x, max.y, max.z),
-                    Vec3::new(min.x, max.y, max.z),
+                    DVec3::new(min.x, min.y, max.z),
+                    DVec3::new(max.x, min.y, max.z),
+                    DVec3::new(max.x, max.y, max.z),
+                    DVec3::new(min.x, max.y, max.z),
                 ],
-                normal: Vec3::Z,
+                normal: DVec3::Z,
                 distance: max.z,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
@@ -320,31 +320,31 @@ mod tests {
         ]
     }
 
-    fn box_brush(min: Vec3, max: Vec3) -> BrushVolume {
+    fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
         BrushVolume {
             planes: vec![
                 BrushPlane {
-                    normal: Vec3::X,
+                    normal: DVec3::X,
                     distance: max.x,
                 },
                 BrushPlane {
-                    normal: Vec3::NEG_X,
+                    normal: DVec3::NEG_X,
                     distance: -min.x,
                 },
                 BrushPlane {
-                    normal: Vec3::Y,
+                    normal: DVec3::Y,
                     distance: max.y,
                 },
                 BrushPlane {
-                    normal: Vec3::NEG_Y,
+                    normal: DVec3::NEG_Y,
                     distance: -min.y,
                 },
                 BrushPlane {
-                    normal: Vec3::Z,
+                    normal: DVec3::Z,
                     distance: max.z,
                 },
                 BrushPlane {
-                    normal: Vec3::NEG_Z,
+                    normal: DVec3::NEG_Z,
                     distance: -min.z,
                 },
             ],
@@ -353,43 +353,43 @@ mod tests {
     }
 
     /// Build a hollow room from 6 wall brushes (floor, ceiling, 4 walls).
-    fn hollow_room(min: Vec3, max: Vec3, wall: f32) -> (Vec<Face>, Vec<BrushVolume>) {
+    fn hollow_room(min: DVec3, max: DVec3, wall: f64) -> (Vec<Face>, Vec<BrushVolume>) {
         let mut faces = Vec::new();
         let mut brushes = Vec::new();
 
         // Floor slab
-        let b_min = Vec3::new(min.x, min.y, min.z);
-        let b_max = Vec3::new(max.x, min.y + wall, max.z);
+        let b_min = DVec3::new(min.x, min.y, min.z);
+        let b_max = DVec3::new(max.x, min.y + wall, max.z);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
         // Ceiling slab
-        let b_min = Vec3::new(min.x, max.y - wall, min.z);
-        let b_max = Vec3::new(max.x, max.y, max.z);
+        let b_min = DVec3::new(min.x, max.y - wall, min.z);
+        let b_max = DVec3::new(max.x, max.y, max.z);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
         // Wall -X
-        let b_min = Vec3::new(min.x, min.y, min.z);
-        let b_max = Vec3::new(min.x + wall, max.y, max.z);
+        let b_min = DVec3::new(min.x, min.y, min.z);
+        let b_max = DVec3::new(min.x + wall, max.y, max.z);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
         // Wall +X
-        let b_min = Vec3::new(max.x - wall, min.y, min.z);
-        let b_max = Vec3::new(max.x, max.y, max.z);
+        let b_min = DVec3::new(max.x - wall, min.y, min.z);
+        let b_max = DVec3::new(max.x, max.y, max.z);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
         // Wall -Z
-        let b_min = Vec3::new(min.x, min.y, min.z);
-        let b_max = Vec3::new(max.x, max.y, min.z + wall);
+        let b_min = DVec3::new(min.x, min.y, min.z);
+        let b_max = DVec3::new(max.x, max.y, min.z + wall);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
         // Wall +Z
-        let b_min = Vec3::new(min.x, min.y, max.z - wall);
-        let b_max = Vec3::new(max.x, max.y, max.z);
+        let b_min = DVec3::new(min.x, min.y, max.z - wall);
+        let b_max = DVec3::new(max.x, max.y, max.z);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn base_winding_lies_on_plane() {
-        let normal = Vec3::Y;
+        let normal = DVec3::Y;
         let distance = 5.0;
         let winding = make_base_winding(normal, distance);
 
@@ -445,12 +445,12 @@ mod tests {
     #[test]
     fn base_winding_non_degenerate_for_axis_aligned_normals() {
         for normal in [
-            Vec3::X,
-            Vec3::Y,
-            Vec3::Z,
-            Vec3::NEG_X,
-            Vec3::NEG_Y,
-            Vec3::NEG_Z,
+            DVec3::X,
+            DVec3::Y,
+            DVec3::Z,
+            DVec3::NEG_X,
+            DVec3::NEG_Y,
+            DVec3::NEG_Z,
         ] {
             let winding = make_base_winding(normal, 0.0);
             let area = polygon_area(&winding);
@@ -464,10 +464,10 @@ mod tests {
     #[test]
     fn polygon_area_of_unit_square() {
         let verts = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
+            DVec3::new(0.0, 0.0, 0.0),
+            DVec3::new(1.0, 0.0, 0.0),
+            DVec3::new(1.0, 1.0, 0.0),
+            DVec3::new(0.0, 1.0, 0.0),
         ];
         let area = polygon_area(&verts);
         assert!((area - 1.0).abs() < 1e-4, "expected area 1.0, got {area}");
@@ -487,8 +487,8 @@ mod tests {
     fn single_box_room_produces_portals() {
         // A box room has 6 faces. The BSP tree will split them into leaves.
         // Portal generation should find portals between adjacent empty leaves.
-        let faces = make_box_faces(Vec3::ZERO, Vec3::new(64.0, 64.0, 64.0));
-        let brushes = vec![box_brush(Vec3::ZERO, Vec3::new(64.0, 64.0, 64.0))];
+        let faces = make_box_faces(DVec3::ZERO, DVec3::new(64.0, 64.0, 64.0));
+        let brushes = vec![box_brush(DVec3::ZERO, DVec3::new(64.0, 64.0, 64.0))];
 
         let result = partition::partition(faces, &brushes).expect("partition should succeed");
 
@@ -510,7 +510,7 @@ mod tests {
 
         let tree = BspTree {
             nodes: vec![BspNode {
-                plane_normal: Vec3::X,
+                plane_normal: DVec3::X,
                 plane_distance: 32.0,
                 front: BspChild::Leaf(0),
                 back: BspChild::Leaf(1),
@@ -520,16 +520,16 @@ mod tests {
                 BspLeaf {
                     face_indices: vec![0],
                     bounds: Aabb {
-                        min: Vec3::new(32.0, 0.0, 0.0),
-                        max: Vec3::new(64.0, 64.0, 64.0),
+                        min: DVec3::new(32.0, 0.0, 0.0),
+                        max: DVec3::new(64.0, 64.0, 64.0),
                     },
                     is_solid: false,
                 },
                 BspLeaf {
                     face_indices: vec![1],
                     bounds: Aabb {
-                        min: Vec3::new(0.0, 0.0, 0.0),
-                        max: Vec3::new(32.0, 64.0, 64.0),
+                        min: DVec3::new(0.0, 0.0, 0.0),
+                        max: DVec3::new(32.0, 64.0, 64.0),
                     },
                     is_solid: false,
                 },
@@ -557,7 +557,7 @@ mod tests {
 
         let tree = BspTree {
             nodes: vec![BspNode {
-                plane_normal: Vec3::X,
+                plane_normal: DVec3::X,
                 plane_distance: 32.0,
                 front: BspChild::Leaf(0),
                 back: BspChild::Leaf(1),
@@ -567,16 +567,16 @@ mod tests {
                 BspLeaf {
                     face_indices: vec![0],
                     bounds: Aabb {
-                        min: Vec3::new(32.0, 0.0, 0.0),
-                        max: Vec3::new(64.0, 64.0, 64.0),
+                        min: DVec3::new(32.0, 0.0, 0.0),
+                        max: DVec3::new(64.0, 64.0, 64.0),
                     },
                     is_solid: true, // solid
                 },
                 BspLeaf {
                     face_indices: vec![1],
                     bounds: Aabb {
-                        min: Vec3::new(0.0, 0.0, 0.0),
-                        max: Vec3::new(32.0, 64.0, 64.0),
+                        min: DVec3::new(0.0, 0.0, 0.0),
+                        max: DVec3::new(32.0, 64.0, 64.0),
                     },
                     is_solid: false,
                 },
@@ -599,7 +599,7 @@ mod tests {
             nodes: vec![
                 // Root: split at X=32
                 BspNode {
-                    plane_normal: Vec3::X,
+                    plane_normal: DVec3::X,
                     plane_distance: 32.0,
                     front: BspChild::Node(1),
                     back: BspChild::Leaf(0),
@@ -607,7 +607,7 @@ mod tests {
                 },
                 // Child: split at X=64
                 BspNode {
-                    plane_normal: Vec3::X,
+                    plane_normal: DVec3::X,
                     plane_distance: 64.0,
                     front: BspChild::Leaf(2),
                     back: BspChild::Leaf(1),
@@ -618,24 +618,24 @@ mod tests {
                 BspLeaf {
                     face_indices: vec![],
                     bounds: Aabb {
-                        min: Vec3::ZERO,
-                        max: Vec3::new(32.0, 64.0, 64.0),
+                        min: DVec3::ZERO,
+                        max: DVec3::new(32.0, 64.0, 64.0),
                     },
                     is_solid: false,
                 },
                 BspLeaf {
                     face_indices: vec![],
                     bounds: Aabb {
-                        min: Vec3::new(32.0, 0.0, 0.0),
-                        max: Vec3::new(64.0, 64.0, 64.0),
+                        min: DVec3::new(32.0, 0.0, 0.0),
+                        max: DVec3::new(64.0, 64.0, 64.0),
                     },
                     is_solid: false,
                 },
                 BspLeaf {
                     face_indices: vec![],
                     bounds: Aabb {
-                        min: Vec3::new(64.0, 0.0, 0.0),
-                        max: Vec3::new(96.0, 64.0, 64.0),
+                        min: DVec3::new(64.0, 0.0, 0.0),
+                        max: DVec3::new(96.0, 64.0, 64.0),
                     },
                     is_solid: false,
                 },
@@ -655,12 +655,12 @@ mod tests {
         let wall = 16.0;
 
         // Room A
-        let (mut faces, mut brushes) = hollow_room(Vec3::ZERO, Vec3::splat(128.0), wall);
+        let (mut faces, mut brushes) = hollow_room(DVec3::ZERO, DVec3::splat(128.0), wall);
 
         // Corridor connecting rooms
         let (corr_faces, corr_brushes) = hollow_room(
-            Vec3::new(112.0, 0.0, 40.0),
-            Vec3::new(272.0, 128.0, 88.0),
+            DVec3::new(112.0, 0.0, 40.0),
+            DVec3::new(272.0, 128.0, 88.0),
             wall,
         );
         faces.extend(corr_faces);
@@ -668,8 +668,8 @@ mod tests {
 
         // Room B
         let (room_b_faces, room_b_brushes) = hollow_room(
-            Vec3::new(256.0, 0.0, 0.0),
-            Vec3::new(384.0, 128.0, 128.0),
+            DVec3::new(256.0, 0.0, 0.0),
+            DVec3::new(384.0, 128.0, 128.0),
             wall,
         );
         faces.extend(room_b_faces);
@@ -727,5 +727,93 @@ mod tests {
                 "portal back_leaf should not be solid"
             );
         }
+    }
+
+    #[test]
+    fn room_with_pillar_produces_portals_on_both_sides() {
+        // A hollow room divided by a wall with two doorways (one on each side
+        // of a central pillar). Portal generation must produce portals for BOTH
+        // doorways, not just one.
+        //
+        // Room interior: (16,16,16) to (240,112,112) — 224 wide x 96 tall x 96 deep.
+        // Dividing wall at X=120..136 with two doorways:
+        //   - Wall left section: Z=16..62 (blocks left part)
+        //   - LEFT DOORWAY: Z=62..64 (2 units wide)
+        //   - Central pillar: Z=64..66 (2 units wide)
+        //   - RIGHT DOORWAY: Z=66..68 (2 units wide)
+        //   - Wall right section: Z=68..112 (blocks right part)
+        let (mut faces, mut brushes) =
+            hollow_room(DVec3::ZERO, DVec3::new(256.0, 128.0, 128.0), 16.0);
+
+        // Wall left section: blocks Z=16..62
+        let wall_left_min = DVec3::new(120.0, 16.0, 16.0);
+        let wall_left_max = DVec3::new(136.0, 112.0, 62.0);
+        faces.extend(make_box_faces(wall_left_min, wall_left_max));
+        brushes.push(box_brush(wall_left_min, wall_left_max));
+
+        // Central pillar: Z=64..66
+        let pillar_min = DVec3::new(120.0, 16.0, 64.0);
+        let pillar_max = DVec3::new(136.0, 112.0, 66.0);
+        faces.extend(make_box_faces(pillar_min, pillar_max));
+        brushes.push(box_brush(pillar_min, pillar_max));
+
+        // Wall right section: blocks Z=68..112
+        let wall_right_min = DVec3::new(120.0, 16.0, 68.0);
+        let wall_right_max = DVec3::new(136.0, 112.0, 112.0);
+        faces.extend(make_box_faces(wall_right_min, wall_right_max));
+        brushes.push(box_brush(wall_right_min, wall_right_max));
+
+        let result = partition::partition(faces, &brushes).expect("partition should succeed");
+        let portals = generate_portals(&result.tree);
+
+        // The wall at X=120..136 has two doorways: left (Z=62..64) and right (Z=66..68).
+        // There must be portals through BOTH doorways — portals that cross the
+        // X=120..136 wall region. A portal crosses the wall if its polygon spans
+        // or lies within the X range and the Z range of either gap.
+        //
+        // We identify "wall-crossing" portals as portals whose polygon lies on a
+        // plane with X between 120 and 136 (inclusive) — these are the portals that
+        // pass through the wall.
+        let wall_x_min = 119.0;
+        let wall_x_max = 137.0;
+        let left_gap_z_min = 61.0;
+        let left_gap_z_max = 65.0;
+        let right_gap_z_min = 65.0;
+        let right_gap_z_max = 69.0;
+
+        let mut has_left_gap_portal = false;
+        let mut has_right_gap_portal = false;
+
+        for portal in &portals {
+            // Check if portal polygon is in the wall's X range.
+            let all_in_wall_x = portal.polygon.iter().all(|v| v.x > wall_x_min && v.x < wall_x_max);
+            if !all_in_wall_x {
+                continue;
+            }
+
+            // Check which gap this portal corresponds to by its Z range.
+            let z_min = portal.polygon.iter().map(|v| v.z).fold(f64::MAX, f64::min);
+            let z_max = portal.polygon.iter().map(|v| v.z).fold(f64::MIN, f64::max);
+
+            // Check if this portal's Z range falls within a gap.
+            if z_max > left_gap_z_min && z_min < left_gap_z_max && z_max <= left_gap_z_max {
+                has_left_gap_portal = true;
+            }
+            if z_min >= right_gap_z_min && z_min < right_gap_z_max {
+                has_right_gap_portal = true;
+            }
+        }
+
+        assert!(
+            has_left_gap_portal,
+            "no portal found through the LEFT doorway (Z=62..64). \
+             The wall's BSP splits may have clipped away the left gap portal."
+        );
+        assert!(
+            has_right_gap_portal,
+            "no portal found through the RIGHT doorway (Z=66..68). \
+             The pillar's adjacent solid brush may have caused the right gap's \
+             BSP leaf to be misclassified as solid, preventing portal generation."
+        );
     }
 }

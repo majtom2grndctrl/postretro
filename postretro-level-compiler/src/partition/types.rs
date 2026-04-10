@@ -2,24 +2,24 @@
 // See: context/lib/build_pipeline.md §PRL
 
 use crate::map_data::Face;
-use glam::Vec3;
+use glam::DVec3;
 
 /// Axis-aligned bounding box.
 #[derive(Debug, Clone)]
 pub struct Aabb {
-    pub min: Vec3,
-    pub max: Vec3,
+    pub min: DVec3,
+    pub max: DVec3,
 }
 
 impl Aabb {
     pub fn empty() -> Self {
         Self {
-            min: Vec3::splat(f32::INFINITY),
-            max: Vec3::splat(f32::NEG_INFINITY),
+            min: DVec3::splat(f64::INFINITY),
+            max: DVec3::splat(f64::NEG_INFINITY),
         }
     }
 
-    pub fn expand_point(&mut self, p: Vec3) {
+    pub fn expand_point(&mut self, p: DVec3) {
         self.min = self.min.min(p);
         self.max = self.max.max(p);
     }
@@ -29,7 +29,7 @@ impl Aabb {
         self.max = self.max.max(other.max);
     }
 
-    pub fn centroid(&self) -> Vec3 {
+    pub fn centroid(&self) -> DVec3 {
         (self.min + self.max) * 0.5
     }
 
@@ -52,7 +52,7 @@ impl Aabb {
     }
 
     /// Build an AABB from a set of points.
-    pub fn from_points(points: &[Vec3]) -> Self {
+    pub fn from_points(points: &[DVec3]) -> Self {
         let mut aabb = Self::empty();
         for &p in points {
             aabb.expand_point(p);
@@ -71,8 +71,8 @@ pub enum BspChild {
 /// Interior BSP node with a splitting plane.
 #[derive(Debug, Clone)]
 pub struct BspNode {
-    pub plane_normal: Vec3,
-    pub plane_distance: f32,
+    pub plane_normal: DVec3,
+    pub plane_distance: f64,
     pub front: BspChild,
     pub back: BspChild,
     /// Parent node index (None for root).

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use glam::Vec3;
+use glam::DVec3;
 use shambler::GeoMap;
 use shambler::brush::{BrushId, brush_hulls};
 use shambler::entity::EntityId;
@@ -15,9 +15,13 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 use crate::map_data::{BrushPlane, BrushVolume, EntityInfo, Face, MapData, TextureProjection};
 use crate::map_format::MapFormat;
 
-/// Convert a shambler nalgebra Vector3 to glam Vec3.
-fn to_glam(v: &shambler::Vector3) -> Vec3 {
-    Vec3::new(v.x, v.y, v.z)
+/// Convert a shambler nalgebra Vector3 to glam DVec3.
+///
+/// This is the **input precision boundary**: shambler stores coordinates as f32
+/// (parsed from the .map text), and we widen them to f64 here. All subsequent
+/// compile-time geometry is computed in double precision.
+fn shambler_to_dvec3(v: &shambler::Vector3) -> DVec3 {
+    DVec3::new(v.x as f64, v.y as f64, v.z as f64)
 }
 
 /// Swizzle a direction vector from Quake coordinates (right-handed, Z-up) to
@@ -32,18 +36,20 @@ fn to_glam(v: &shambler::Vector3) -> Vec3 {
 /// For positions and plane distances, also multiply by `MapFormat::units_to_meters()`
 /// after swizzling. Normals are direction vectors — scale must not be applied
 /// to them (only the swizzle).
-fn quake_to_engine(v: Vec3) -> Vec3 {
-    Vec3::new(-v.y, v.z, -v.x)
+fn quake_to_engine(v: DVec3) -> DVec3 {
+    DVec3::new(-v.y, v.z, -v.x)
 }
 
-/// Parse an origin string like "-192 25.6 167.736" into a Vec3.
-fn parse_origin(s: &str) -> Option<Vec3> {
-    let parts: Vec<f32> = s
+/// Parse an origin string like "-192 25.6 167.736" into a DVec3.
+///
+/// Parses directly to f64 — no precision cast from f32.
+fn parse_origin(s: &str) -> Option<DVec3> {
+    let parts: Vec<f64> = s
         .split_whitespace()
         .filter_map(|p| p.parse().ok())
         .collect();
     if parts.len() == 3 {
-        Some(Vec3::new(parts[0], parts[1], parts[2]))
+        Some(DVec3::new(parts[0], parts[1], parts[2]))
     } else {
         None
     }
@@ -166,8 +172,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 // n·x' = d * scale where x' is in meters. Scale and swizzle are independent
                 // for this scalar; the swizzle is already embedded in `normal`.
                 Some(BrushPlane {
-                    normal: quake_to_engine(to_glam(plane.normal())),
-                    distance: plane.distance() * scale,
+                    normal: quake_to_engine(shambler_to_dvec3(plane.normal())),
+                    distance: plane.distance() as f64 * scale,
                 })
             })
             .collect();
@@ -177,7 +183,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         for fid in face_ids {
             if let Some(verts) = face_verts.get(fid) {
                 for v in verts {
-                    aabb.expand_point(quake_to_engine(to_glam(v)) * scale);
+                    aabb.expand_point(quake_to_engine(shambler_to_dvec3(v)) * scale);
                 }
             }
         }
@@ -215,17 +221,17 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
 
             // Reorder vertices by winding indices; swizzle axes and apply unit scale.
             // Vertices are positions — both the axis swizzle and the meter scale apply.
-            let vertices: Vec<Vec3> = indices
+            let vertices: Vec<DVec3> = indices
                 .iter()
-                .map(|&i| quake_to_engine(to_glam(&vertices_raw[i])) * scale)
+                .map(|&i| quake_to_engine(shambler_to_dvec3(&vertices_raw[i])) * scale)
                 .collect();
 
             let plane = &geo_planes[face_id];
             // Normal: swizzle only — direction vector, no unit scale.
-            let normal = quake_to_engine(to_glam(plane.normal()));
+            let normal = quake_to_engine(shambler_to_dvec3(plane.normal()));
             // Distance: scaled explicitly. A plane n·x = d in Quake units becomes
             // n·x' = d * scale where x' is in meters.
-            let distance = plane.distance() * scale;
+            let distance = plane.distance() as f64 * scale;
 
             // Look up texture name
             let texture = geo_map
@@ -237,26 +243,28 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
 
             // Extract texture projection data (Quake space).
             let face_offset = geo_map.face_offsets.get(face_id).copied();
-            let face_angle = geo_map.face_angles.get(face_id).copied().unwrap_or(0.0);
+            let face_angle = geo_map.face_angles.get(face_id).copied().unwrap_or(0.0) as f64;
             let face_scale = geo_map.face_scales.get(face_id);
 
-            let (scale_u, scale_v) = face_scale.map(|s| (s.x, s.y)).unwrap_or((1.0, 1.0));
+            let (scale_u, scale_v) = face_scale
+                .map(|s| (s.x as f64, s.y as f64))
+                .unwrap_or((1.0, 1.0));
 
             let tex_projection = match face_offset {
                 Some(shambler::shalrath::repr::TextureOffset::Valve { u, v }) => {
                     TextureProjection::Valve {
-                        u_axis: Vec3::new(u.x, u.y, u.z),
-                        u_offset: u.d,
-                        v_axis: Vec3::new(v.x, v.y, v.z),
-                        v_offset: v.d,
+                        u_axis: DVec3::new(u.x as f64, u.y as f64, u.z as f64),
+                        u_offset: u.d as f64,
+                        v_axis: DVec3::new(v.x as f64, v.y as f64, v.z as f64),
+                        v_offset: v.d as f64,
                         scale_u,
                         scale_v,
                     }
                 }
                 Some(shambler::shalrath::repr::TextureOffset::Standard { u, v }) => {
                     TextureProjection::Standard {
-                        u_offset: u,
-                        v_offset: v,
+                        u_offset: u as f64,
+                        v_offset: v as f64,
                         angle: face_angle,
                         scale_u,
                         scale_v,
@@ -308,7 +316,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
 
 /// Re-export `quake_to_engine` for cross-module tests (geometry round-trip).
 #[cfg(test)]
-pub fn quake_to_engine_for_test(v: Vec3) -> Vec3 {
+pub fn quake_to_engine_for_test(v: DVec3) -> DVec3 {
     quake_to_engine(v)
 }
 
@@ -326,22 +334,22 @@ mod tests {
     #[test]
     fn quake_to_engine_z_up_maps_to_y_up() {
         // Quake Z-up → engine Y-up (swizzle only)
-        let result = quake_to_engine(Vec3::new(0.0, 0.0, 1.0));
-        assert_eq!(result, Vec3::new(0.0, 1.0, 0.0));
+        let result = quake_to_engine(DVec3::new(0.0, 0.0, 1.0));
+        assert_eq!(result, DVec3::new(0.0, 1.0, 0.0));
     }
 
     #[test]
     fn quake_to_engine_x_forward_maps_to_negative_z_forward() {
         // Quake +X forward → engine -Z forward (swizzle only)
-        let result = quake_to_engine(Vec3::new(1.0, 0.0, 0.0));
-        assert_eq!(result, Vec3::new(0.0, 0.0, -1.0));
+        let result = quake_to_engine(DVec3::new(1.0, 0.0, 0.0));
+        assert_eq!(result, DVec3::new(0.0, 0.0, -1.0));
     }
 
     #[test]
     fn quake_to_engine_y_left_maps_to_negative_x() {
         // Quake +Y left → engine -X (swizzle only)
-        let result = quake_to_engine(Vec3::new(0.0, 1.0, 0.0));
-        assert_eq!(result, Vec3::new(-1.0, 0.0, 0.0));
+        let result = quake_to_engine(DVec3::new(0.0, 1.0, 0.0));
+        assert_eq!(result, DVec3::new(-1.0, 0.0, 0.0));
     }
 
     // -- Unit scale (position transform = swizzle + scale) --
@@ -350,7 +358,7 @@ mod tests {
     fn position_transform_z_up_scales_to_meters() {
         // A point at Quake Z=1 (1 inch up) → engine Y = 0.0254 m
         let scale = MapFormat::IdTech2.units_to_meters();
-        let result = quake_to_engine(Vec3::new(0.0, 0.0, 1.0)) * scale;
+        let result = quake_to_engine(DVec3::new(0.0, 0.0, 1.0)) * scale;
         assert!(
             (result.y - 0.0254).abs() < 1e-6,
             "expected y=0.0254, got {}",
@@ -364,7 +372,7 @@ mod tests {
     fn plane_distance_scales_to_meters() {
         // A face plane with Quake distance 64.0 → engine distance 1.6256 m (64 × 0.0254)
         let scale = MapFormat::IdTech2.units_to_meters();
-        let quake_distance: f32 = 64.0;
+        let quake_distance: f64 = 64.0;
         let engine_distance = quake_distance * scale;
         assert!(
             (engine_distance - 1.6256).abs() < 1e-5,

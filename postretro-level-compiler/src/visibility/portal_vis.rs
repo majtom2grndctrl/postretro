@@ -69,12 +69,12 @@ pub fn compute_pvs(portals: &[Portal], leaf_count: usize, solid: &[bool]) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3;
+    use glam::DVec3;
 
     fn make_portal(front_leaf: usize, back_leaf: usize) -> Portal {
         // Minimal valid portal polygon (not used by PVS, only topology matters).
         Portal {
-            polygon: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
+            polygon: vec![DVec3::ZERO, DVec3::X, DVec3::Y],
             front_leaf,
             back_leaf,
         }

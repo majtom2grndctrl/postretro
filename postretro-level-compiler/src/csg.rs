@@ -1,7 +1,7 @@
 // CSG face clipping: remove faces inside solid brush volumes.
 // See: context/reference/csg-face-clipping.md
 
-use glam::Vec3;
+use glam::DVec3;
 
 use crate::geometry_utils::split_polygon;
 use crate::map_data::{BrushVolume, Face};
@@ -9,12 +9,12 @@ use crate::partition::Aabb;
 
 /// Epsilon for polygon splitting during CSG clipping. Small positive value
 /// consistent with the Sutherland-Hodgman implementation in geometry_utils.
-const CSG_SPLIT_EPSILON: f32 = 0.01;
+const CSG_SPLIT_EPSILON: f64 = 0.01;
 
 /// Epsilon for classifying a point as "on a brush plane" during the interior
 /// test. A point within this distance of a plane is considered to be on the
 /// plane surface, not behind it.
-const ON_PLANE_EPSILON: f32 = 0.02;
+const ON_PLANE_EPSILON: f64 = 0.02;
 
 /// Clip faces against brush volumes, removing geometry inside solid space.
 ///
@@ -37,7 +37,7 @@ pub fn csg_clip_faces(faces: &[Face], brush_volumes: &[BrushVolume]) -> Vec<Face
         let face_aabb = Aabb::from_points(&face.vertices);
 
         // Start with a single polygon representing the face.
-        let mut surviving_fragments: Vec<Vec<Vec3>> = vec![face.vertices.clone()];
+        let mut surviving_fragments: Vec<Vec<DVec3>> = vec![face.vertices.clone()];
 
         for brush in brush_volumes {
             if !face_aabb.intersects(&brush.aabb) {
@@ -105,7 +105,7 @@ pub fn csg_clip_faces(faces: &[Face], brush_volumes: &[BrushVolume]) -> Vec<Face
 /// surface) of any single brush plane. If so, it can't be inside the brush.
 /// Then checks if any vertex is strictly inside the brush, and finally does
 /// a geometric clip to catch edge-crossing cases.
-fn polygon_intersects_brush_interior(vertices: &[Vec3], brush: &BrushVolume) -> bool {
+fn polygon_intersects_brush_interior(vertices: &[DVec3], brush: &BrushVolume) -> bool {
     // Quick check: if all vertices are on the front side of (or on the surface
     // of) any single brush plane, the polygon can't be inside the brush.
     for plane in &brush.planes {
@@ -161,7 +161,7 @@ fn polygon_intersects_brush_interior(vertices: &[Vec3], brush: &BrushVolume) -> 
 /// this plane's half-space). The front fragment is saved as an outside piece.
 /// The back fragment continues to be tested against remaining planes. After all
 /// planes, any remaining back fragment was inside the brush and is discarded.
-fn clip_polygon_outside_brush(vertices: &[Vec3], brush: &BrushVolume) -> Vec<Vec<Vec3>> {
+fn clip_polygon_outside_brush(vertices: &[DVec3], brush: &BrushVolume) -> Vec<Vec<DVec3>> {
     // Quick rejection: if the polygon doesn't intersect the brush interior,
     // return it unchanged.
     if !polygon_intersects_brush_interior(vertices, brush) {
@@ -219,31 +219,31 @@ mod tests {
     use super::*;
     use crate::map_data::{BrushPlane, BrushVolume};
 
-    fn box_brush(min: Vec3, max: Vec3) -> BrushVolume {
+    fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
         BrushVolume {
             planes: vec![
                 BrushPlane {
-                    normal: Vec3::X,
+                    normal: DVec3::X,
                     distance: max.x,
                 },
                 BrushPlane {
-                    normal: Vec3::NEG_X,
+                    normal: DVec3::NEG_X,
                     distance: -min.x,
                 },
                 BrushPlane {
-                    normal: Vec3::Y,
+                    normal: DVec3::Y,
                     distance: max.y,
                 },
                 BrushPlane {
-                    normal: Vec3::NEG_Y,
+                    normal: DVec3::NEG_Y,
                     distance: -min.y,
                 },
                 BrushPlane {
-                    normal: Vec3::Z,
+                    normal: DVec3::Z,
                     distance: max.z,
                 },
                 BrushPlane {
-                    normal: Vec3::NEG_Z,
+                    normal: DVec3::NEG_Z,
                     distance: -min.z,
                 },
             ],
@@ -251,7 +251,7 @@ mod tests {
         }
     }
 
-    fn make_face(vertices: Vec<Vec3>, normal: Vec3, distance: f32) -> Face {
+    fn make_face(vertices: Vec<DVec3>, normal: DVec3, distance: f64) -> Face {
         Face {
             vertices,
             normal,
@@ -267,15 +267,15 @@ mod tests {
     fn face_outside_brush_is_unchanged() {
         let face = make_face(
             vec![
-                Vec3::new(10.0, 0.0, 0.0),
-                Vec3::new(11.0, 0.0, 0.0),
-                Vec3::new(11.0, 1.0, 0.0),
-                Vec3::new(10.0, 1.0, 0.0),
+                DVec3::new(10.0, 0.0, 0.0),
+                DVec3::new(11.0, 0.0, 0.0),
+                DVec3::new(11.0, 1.0, 0.0),
+                DVec3::new(10.0, 1.0, 0.0),
             ],
-            Vec3::NEG_Z,
+            DVec3::NEG_Z,
             0.0,
         );
-        let brush = box_brush(Vec3::ZERO, Vec3::new(5.0, 5.0, 5.0));
+        let brush = box_brush(DVec3::ZERO, DVec3::new(5.0, 5.0, 5.0));
 
         let result = csg_clip_faces(&[face.clone()], &[brush]);
         assert_eq!(result.len(), 1);
@@ -287,15 +287,15 @@ mod tests {
         // Face is entirely inside the brush (behind all planes)
         let face = make_face(
             vec![
-                Vec3::new(1.0, 1.0, 2.5),
-                Vec3::new(4.0, 1.0, 2.5),
-                Vec3::new(4.0, 4.0, 2.5),
-                Vec3::new(1.0, 4.0, 2.5),
+                DVec3::new(1.0, 1.0, 2.5),
+                DVec3::new(4.0, 1.0, 2.5),
+                DVec3::new(4.0, 4.0, 2.5),
+                DVec3::new(1.0, 4.0, 2.5),
             ],
-            Vec3::Z,
+            DVec3::Z,
             2.5,
         );
-        let brush = box_brush(Vec3::ZERO, Vec3::new(5.0, 5.0, 5.0));
+        let brush = box_brush(DVec3::ZERO, DVec3::new(5.0, 5.0, 5.0));
 
         let result = csg_clip_faces(&[face], &[brush]);
         assert_eq!(result.len(), 0, "face inside brush should be discarded");
@@ -307,15 +307,15 @@ mod tests {
         // are on the plane, not behind it, so the face is not inside the brush.
         let face = make_face(
             vec![
-                Vec3::new(5.0, 0.0, 0.0),
-                Vec3::new(5.0, 5.0, 0.0),
-                Vec3::new(5.0, 5.0, 5.0),
-                Vec3::new(5.0, 0.0, 5.0),
+                DVec3::new(5.0, 0.0, 0.0),
+                DVec3::new(5.0, 5.0, 0.0),
+                DVec3::new(5.0, 5.0, 5.0),
+                DVec3::new(5.0, 0.0, 5.0),
             ],
-            Vec3::X,
+            DVec3::X,
             5.0,
         );
-        let brush = box_brush(Vec3::ZERO, Vec3::new(5.0, 5.0, 5.0));
+        let brush = box_brush(DVec3::ZERO, DVec3::new(5.0, 5.0, 5.0));
 
         let result = csg_clip_faces(&[face], &[brush]);
         assert_eq!(
@@ -331,15 +331,15 @@ mod tests {
         // Brush spans [0,5] in X. Face spans [3,7] in X at y=2.5, z=2.5.
         let face = make_face(
             vec![
-                Vec3::new(3.0, 1.0, 2.5),
-                Vec3::new(7.0, 1.0, 2.5),
-                Vec3::new(7.0, 4.0, 2.5),
-                Vec3::new(3.0, 4.0, 2.5),
+                DVec3::new(3.0, 1.0, 2.5),
+                DVec3::new(7.0, 1.0, 2.5),
+                DVec3::new(7.0, 4.0, 2.5),
+                DVec3::new(3.0, 4.0, 2.5),
             ],
-            Vec3::Z,
+            DVec3::Z,
             2.5,
         );
-        let brush = box_brush(Vec3::ZERO, Vec3::new(5.0, 5.0, 5.0));
+        let brush = box_brush(DVec3::ZERO, DVec3::new(5.0, 5.0, 5.0));
 
         let result = csg_clip_faces(&[face], &[brush]);
 
@@ -349,7 +349,7 @@ mod tests {
         );
 
         // The surviving portion should be the part outside the brush
-        let total_area: f32 = result.iter().map(|f| polygon_area(&f.vertices)).sum();
+        let total_area: f64 = result.iter().map(|f| polygon_area(&f.vertices)).sum();
         // Original outside area: x=[5,7], y=[1,4] -> 2 * 3 = 6
         assert!(
             (total_area - 6.0).abs() < 0.5,
@@ -361,14 +361,14 @@ mod tests {
     fn non_overlapping_brushes_produce_no_change() {
         let face = make_face(
             vec![
-                Vec3::new(100.0, 0.0, 0.0),
-                Vec3::new(101.0, 0.0, 0.0),
-                Vec3::new(101.0, 1.0, 0.0),
+                DVec3::new(100.0, 0.0, 0.0),
+                DVec3::new(101.0, 0.0, 0.0),
+                DVec3::new(101.0, 1.0, 0.0),
             ],
-            Vec3::NEG_Z,
+            DVec3::NEG_Z,
             0.0,
         );
-        let brush = box_brush(Vec3::ZERO, Vec3::new(5.0, 5.0, 5.0));
+        let brush = box_brush(DVec3::ZERO, DVec3::new(5.0, 5.0, 5.0));
 
         let result = csg_clip_faces(&[face.clone()], &[brush]);
         assert_eq!(result.len(), 1);
@@ -379,11 +379,11 @@ mod tests {
     fn empty_brush_list_is_noop() {
         let face = make_face(
             vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(1.0, 1.0, 0.0),
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(1.0, 0.0, 0.0),
+                DVec3::new(1.0, 1.0, 0.0),
             ],
-            Vec3::NEG_Z,
+            DVec3::NEG_Z,
             0.0,
         );
 
@@ -395,28 +395,28 @@ mod tests {
     fn shared_wall_between_adjacent_brushes_survives() {
         // Two adjacent box brushes sharing a wall at x=5.
         // Both boundary faces should survive: they're on brush surfaces.
-        let brush_a = box_brush(Vec3::ZERO, Vec3::new(5.0, 5.0, 5.0));
-        let brush_b = box_brush(Vec3::new(5.0, 0.0, 0.0), Vec3::new(10.0, 5.0, 5.0));
+        let brush_a = box_brush(DVec3::ZERO, DVec3::new(5.0, 5.0, 5.0));
+        let brush_b = box_brush(DVec3::new(5.0, 0.0, 0.0), DVec3::new(10.0, 5.0, 5.0));
 
         let face_a_right = make_face(
             vec![
-                Vec3::new(5.0, 0.0, 0.0),
-                Vec3::new(5.0, 0.0, 5.0),
-                Vec3::new(5.0, 5.0, 5.0),
-                Vec3::new(5.0, 5.0, 0.0),
+                DVec3::new(5.0, 0.0, 0.0),
+                DVec3::new(5.0, 0.0, 5.0),
+                DVec3::new(5.0, 5.0, 5.0),
+                DVec3::new(5.0, 5.0, 0.0),
             ],
-            Vec3::X,
+            DVec3::X,
             5.0,
         );
 
         let face_b_left = make_face(
             vec![
-                Vec3::new(5.0, 0.0, 0.0),
-                Vec3::new(5.0, 5.0, 0.0),
-                Vec3::new(5.0, 5.0, 5.0),
-                Vec3::new(5.0, 0.0, 5.0),
+                DVec3::new(5.0, 0.0, 0.0),
+                DVec3::new(5.0, 5.0, 0.0),
+                DVec3::new(5.0, 5.0, 5.0),
+                DVec3::new(5.0, 0.0, 5.0),
             ],
-            Vec3::NEG_X,
+            DVec3::NEG_X,
             -5.0,
         );
 
@@ -435,15 +435,15 @@ mod tests {
     fn face_metadata_preserved_after_clipping() {
         let face = make_face(
             vec![
-                Vec3::new(3.0, 1.0, 2.5),
-                Vec3::new(7.0, 1.0, 2.5),
-                Vec3::new(7.0, 4.0, 2.5),
-                Vec3::new(3.0, 4.0, 2.5),
+                DVec3::new(3.0, 1.0, 2.5),
+                DVec3::new(7.0, 1.0, 2.5),
+                DVec3::new(7.0, 4.0, 2.5),
+                DVec3::new(3.0, 4.0, 2.5),
             ],
-            Vec3::Z,
+            DVec3::Z,
             2.5,
         );
-        let brush = box_brush(Vec3::ZERO, Vec3::new(5.0, 5.0, 5.0));
+        let brush = box_brush(DVec3::ZERO, DVec3::new(5.0, 5.0, 5.0));
 
         let result = csg_clip_faces(&[face.clone()], &[brush]);
         for f in &result {
@@ -456,25 +456,25 @@ mod tests {
     #[test]
     fn multiple_brushes_clip_cumulatively() {
         // Face spans two brushes. Each brush should clip its portion.
-        let brush_a = box_brush(Vec3::ZERO, Vec3::new(3.0, 5.0, 5.0));
-        let brush_b = box_brush(Vec3::new(7.0, 0.0, 0.0), Vec3::new(10.0, 5.0, 5.0));
+        let brush_a = box_brush(DVec3::ZERO, DVec3::new(3.0, 5.0, 5.0));
+        let brush_b = box_brush(DVec3::new(7.0, 0.0, 0.0), DVec3::new(10.0, 5.0, 5.0));
 
         // Face at z=2.5, spanning x=[0,10], y=[1,4]
         let face = make_face(
             vec![
-                Vec3::new(0.0, 1.0, 2.5),
-                Vec3::new(10.0, 1.0, 2.5),
-                Vec3::new(10.0, 4.0, 2.5),
-                Vec3::new(0.0, 4.0, 2.5),
+                DVec3::new(0.0, 1.0, 2.5),
+                DVec3::new(10.0, 1.0, 2.5),
+                DVec3::new(10.0, 4.0, 2.5),
+                DVec3::new(0.0, 4.0, 2.5),
             ],
-            Vec3::Z,
+            DVec3::Z,
             2.5,
         );
 
         let result = csg_clip_faces(&[face], &[brush_a, brush_b]);
 
         // The middle portion (x=[3,7]) should survive
-        let total_area: f32 = result.iter().map(|f| polygon_area(&f.vertices)).sum();
+        let total_area: f64 = result.iter().map(|f| polygon_area(&f.vertices)).sum();
         // Expected: x=[3,7], y=[1,4] -> 4*3 = 12
         assert!(
             (total_area - 12.0).abs() < 1.0,
@@ -528,11 +528,11 @@ mod tests {
 
     // -- Helper --
 
-    fn polygon_area(vertices: &[Vec3]) -> f32 {
+    fn polygon_area(vertices: &[DVec3]) -> f64 {
         if vertices.len() < 3 {
             return 0.0;
         }
-        let mut area = Vec3::ZERO;
+        let mut area = DVec3::ZERO;
         for i in 1..vertices.len() - 1 {
             let v0 = vertices[0];
             let v1 = vertices[i];

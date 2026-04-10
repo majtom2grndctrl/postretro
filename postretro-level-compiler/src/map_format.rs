@@ -41,7 +41,7 @@ impl MapFormat {
     /// normals are direction vectors; only the axis swizzle applies to them.
     ///
     /// For IdTech2: 1 Quake unit = 0.0254 m (exact, since 1 inch = 0.0254 m).
-    pub fn units_to_meters(&self) -> f32 {
+    pub fn units_to_meters(&self) -> f64 {
         match self {
             Self::IdTech2 => 0.0254,
             // IdTech3 and IdTech4 are unsupported — unreachable in practice

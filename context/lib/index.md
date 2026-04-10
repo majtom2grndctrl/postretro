@@ -11,7 +11,7 @@
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
 - **Rendering pipeline / BSP / lighting / BSPX** → `rendering_pipeline.md`
-- **PRL format / level compiler / BSP / PVS** → `build_pipeline.md` §PRL
+- **PRL format / level compiler / BSP / runtime portal vis** → `build_pipeline.md` §PRL
 - **Audio / spatial sound / reverb zones** → `audio.md`
 - **Entity model / game objects / sprites** → `entity_model.md`
 - **Build pipeline / ericw-tools / FGD / TrenchBroom** → `build_pipeline.md`
@@ -35,7 +35,7 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 | Principle | Invariant |
 |-----------|-----------|
 | **Renderer owns GPU** | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
-| **Baked over computed** | Lighting, visibility, and spatial data are baked offline. BSP levels use ericw-tools; PRL levels use prl-build. Dynamic lights supplement, not replace. |
+| **Baked over computed** | Spatial data and lighting baked offline. Visibility is the deliberate exception: PRL primary path computes visibility per frame from baked portal geometry (id Tech 4 lineage); precomputed PVS exists as a `--pvs` fallback. Dynamic lights supplement baked lighting. |
 | **Subsystem boundaries** | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |
 | **No `unsafe`** | The crate stack provides safe APIs. If `unsafe` appears necessary, stop and consult the project owner. |
@@ -46,7 +46,7 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 
 Single authoring pipeline: TrenchBroom `.map` → `prl-build` → `.prl`. Engine loads `.prl` as the primary format.
 
-**PRL path (primary):** prl-build compiles geometry, BSP tree, portal graph, and PVS. Engine consumes BSP tree, per-leaf PVS/portals, and geometry sections. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md` §PRL.
+**PRL path (primary):** prl-build compiles geometry, BSP tree, and portal graph. The engine consumes BSP tree, portal geometry, and geometry sections; it walks the portal graph per frame to determine visibility (no precomputed PVS required). `--pvs` mode produces a precomputed PVS bitset as a fallback. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md` §PRL.
 
 **BSP path (legacy support):** Engine can still load `.bsp` files compiled with ericw-tools. No active development on the BSP authoring pipeline. Useful for loading existing assets during the transition. See `build_pipeline.md` §BSP.
 
@@ -54,16 +54,18 @@ Single authoring pipeline: TrenchBroom `.map` → `prl-build` → `.prl`. Engine
 
 | Data | Source | How |
 |------|--------|-----|
-| Geometry | prl-build (CSG clip → BSP → pack) | Geometry section — positions, indices, per-face metadata |
+| Geometry | prl-build (CSG clip → BSP → pack) [^1] | Geometry section — positions, indices, per-face metadata |
 | BSP tree | prl-build | BspNodes + BspLeaves sections |
 | Visibility | prl-build (portal traversal or PVS) | Portals section (default) or LeafPvs section (`--pvs` mode) |
 | Surface material types | Texture naming convention | Prefix lookup table → footsteps, impacts, decals |
-| Lighting | prl-build (Phase 4) | PRL-native sections — details TBD |
+| Lighting | prl-build (Phase 4 — see `plans/roadmap.md`) | PRL-native sections, designed in Phase 4 |
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity → baked cubemap |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |
 
 Full detail: `build_pipeline.md`.
+
+[^1]: CSG face clipping is being replaced by brush-volume BSP construction, where face extraction happens at the tail of the pipeline rather than the head. See `plans/drafts/brush-volume-bsp/`.
 
 ---
 

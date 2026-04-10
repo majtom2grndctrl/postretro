@@ -1,8 +1,9 @@
 # Adaptive Voxel Density
 
-> **Status:** draft.
-> **Depends on:** Voxel-Aware Spatial Grid (complete). VoxelGrid + spatial grid pipeline working.
-> **Related:** `context/lib/build_pipeline.md`, `context/lib/development_guide.md`, `context/lib/testing_guide.md`
+> **Status:** abandoned. Targets infrastructure that no longer exists.
+> **Why abandoned:** the voxel-aware spatial grid this plan extended was replaced wholesale by portal-BSP visibility (see `plans/done/portal-bsp-vis/`). VoxelGrid and the cluster-based PVS pipeline were removed; PRL now uses BSP leaves with portal traversal. This plan's premise — "improve the voxel grid's resolution adaptively" — no longer applies because there is no voxel grid to improve.
+> **Preserved as:** historical record of a design direction that was considered and superseded. Do not implement.
+> **Related (current direction):** `plans/done/portal-bsp-vis/`, `plans/drafts/portal-polygon-clipping/`
 
 ---
 

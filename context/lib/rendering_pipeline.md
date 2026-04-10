@@ -15,7 +15,7 @@ Each frame runs five stages in fixed order. Later stages depend on results from 
 | **Input** | Poll events, update input state |
 | **Game logic** | Fixed-timestep update: entity movement, collision, game rules |
 | **Audio** | Update listener position, trigger sounds from game events |
-| **Render** | Determine visible set (BSP leaves or PRL clusters), draw visible geometry, dynamic lights, sprites, post-processing |
+| **Render** | Determine visible set (BSP leaves via portal traversal), draw visible geometry, dynamic lights, sprites, post-processing |
 | **Present** | Swap buffers |
 
 Game logic runs at a fixed timestep decoupled from render rate. Renderer interpolates between the last two game states for smooth visuals at variable framerates. Simulation is deterministic at any refresh rate. Rendering never blocks or drives the simulation clock.
@@ -26,31 +26,36 @@ Game logic runs at a fixed timestep decoupled from render rate. Renderer interpo
 
 ## 2. Visibility and Traversal
 
-Visibility is determined per-frame using precomputed Potentially Visible Set (PVS) data. Two formats provide PVS differently, but the rendering result is the same: a set of face ranges to draw.
+Visibility is **computed per frame from baked portal geometry**. This is the id Tech 4 (Doom 3, 2004) approach, not Quake 1's precomputed-PVS model — Carmack's reasoning for the break still applies: precomputed PVS lengthens compile cycles, fights with dynamic geometry, and per-frame portal traversal is trivially cheap at modern leaf counts. PRL builds always include portal geometry by default; precomputed PVS exists as a `--pvs` fallback.
 
-### PRL path (primary)
+### PRL path (primary): runtime portal traversal
 
-1. Determine which BSP leaf contains the camera position (BSP tree traversal).
-2. Either walk the portal graph per-frame (Portals section) or look up the precomputed PVS bitset (LeafPvs section).
-3. Frustum-cull visible leaves by bounding volume.
-4. Collect face ranges for surviving leaves.
-5. Submit collected faces as the frame's draw set.
+Two cooperating layers determine which leaves are drawn each frame. Both are load-bearing.
 
-See `build_pipeline.md` §PRL for compiler details.
+1. **Portal flood-fill** seeded at the camera leaf. Walks the portal graph outward; at each portal, tests the polygon against the current frustum and narrows the frustum through it. Solid leaves block traversal. Yields a per-leaf reachability bitset.
+2. **Per-leaf AABB frustum cull** drops any reached leaf whose bounding box lies entirely outside the camera's view frustum.
+
+The second layer is the corrective for the first. Frustum narrowing inside the flood-fill is approximate: portal-edge planes constrain sideways visibility through each portal but the camera's original side planes are not carried through narrowing. Reachable leaves can sit outside the camera's view cone, particularly when portals straddle the cone boundary. The AABB cull restores camera-cone enforcement coarsely at draw-range emission.
+
+The two-layer hybrid is informed-but-imperfect rather than the architectural ideal. The id Tech 4 algorithm clips the portal polygon against the current frustum before narrowing, which keeps each narrowed frustum a strict subset of the camera frustum and folds AABB enforcement into the recursion. Adopting that upgrade would let the AABB pass be removed cleanly. See `plans/drafts/portal-polygon-clipping/` for the planned migration.
+
+**Do not remove either layer in isolation.** Removing the AABB cull without first making the flood-fill produce strict-subset frustums causes runtime culling to silently degrade — every leaf reached through any portal chain gets drawn regardless of whether it lies in the camera's view cone.
+
+### PRL path (`--pvs` fallback)
+
+When a PRL file was built with `--pvs`, the Portals section is absent and a precomputed PVS bitset replaces runtime portal traversal. The renderer descends to the camera leaf via BSP traversal, looks up the leaf's PVS bitset, and draws every empty leaf in the bitset that survives per-leaf AABB frustum culling. Slower compile, faster runtime — preserved as a fallback for build configurations that prefer compile-time cost over per-frame work.
 
 ### BSP path (legacy support)
 
-1. Determine which BSP leaf contains the camera position (BSP tree traversal).
-2. Look up the PVS for that leaf — a compressed bitfield of which other leaves are potentially visible.
-3. Decompress the PVS into a visible leaf set.
-4. Collect all faces belonging to visible leaves.
-5. Submit collected faces as the frame's draw set.
+`.bsp` files compiled by ericw-tools carry precomputed PVS only — no portal data. Visibility uses the same precomputed-PVS-then-AABB-frustum approach as the PRL `--pvs` fallback. No active development on this path.
 
-PVS culling is conservative in both paths: it may include faces that are technically occluded, but never excludes a visible face. Slight overdraw is cheaper than per-face occlusion tests.
+### Frustum culling
 
-Frustum culling further reduces the draw set by discarding faces/clusters outside the camera's view volume. PVS runs first (coarse), frustum culling runs second (fine).
+Per-leaf AABB frustum culling is the final filter before draw-range emission in every path. It is not a separate optimization layered on top of visibility — it is part of the visibility decision. Load-bearing in the PRL primary path (it restores camera-cone enforcement after the flood-fill) and essential to the PVS fallback paths (PVS is conservative; frustum culling tightens it).
 
-**Missing PVS:** When vis data is absent (Fast build profile, corrupted BSP, or PRL without a visibility section), draw all faces. Slower but correct. Frustum culling still applies.
+**Missing visibility data:** when neither portals nor PVS is present (corrupted BSP, PRL without a visibility section), draw all empty leaves with frustum culling only. Slower but correct.
+
+See `build_pipeline.md` §Runtime visibility for the compile-side picture.
 
 ---
 
@@ -110,7 +115,7 @@ Forward rendering pipeline. Each stage runs as a distinct render pass or draw ca
 
 ### 7.1 BSP World Geometry
 
-Draw visible faces from the PVS-culled draw set (§2). Draw calls grouped by (leaf, texture) — one call per visible leaf × texture pair. Minimizes bind group switches without breaking leaf contiguity required by PVS.
+Draw visible faces from the visibility-culled draw set (§2). Draw calls grouped by (leaf, texture) — one call per visible leaf × texture pair. Minimizes bind group switches without breaking leaf contiguity required by visibility tracking.
 
 Each face samples its base texture at its UV coordinate. Flat ambient lighting applied uniformly: `output = base_texture × ambient_light × vertex_color`. Phase 4 replaces the flat ambient factor with probe-sampled per-surface values.
 
@@ -170,7 +175,7 @@ Per-volume fog via `env_fog_volume` brush entities. Resolved to BSP leaves at lo
 | GPU buffer handles | Vertex buffer, index buffer — opaque handles, not raw data |
 | Per-texture bind groups | One wgpu bind group per unique texture (texture view + sampler) |
 | Per-frame uniform | View-projection matrix, ambient light factor |
-| Per-leaf texture sub-ranges | Drive the draw loop: one draw_indexed() per (visible_leaf, texture) pair |
+| Per-leaf texture sub-ranges | Drive the draw loop: one indexed draw call per (visible_leaf, texture) pair |
 
 ### Boundary rule
 
@@ -199,7 +204,7 @@ Right-handed, Y-up. Matches glam's default conventions and wgpu's NDC expectatio
 
 Camera position and orientation produce a view matrix each frame. The view matrix feeds:
 
-- PVS lookup (§2) — camera position determines the current BSP leaf
+- Visibility (§2) — camera position seeds the portal-traversal flood-fill (PRL primary) or the PVS lookup (`--pvs` fallback / BSP legacy)
 - Frustum culling — view-projection matrix defines the clip volume
 - All draw calls — view-projection uniform uploaded once per frame
 

@@ -91,7 +91,7 @@ Unknown prefix falls back to a default material with a warning at load time.
 | BSP tree | prl-build | BspNodes + BspLeaves sections |
 | Visibility | prl-build | Portals section (default) or LeafPvs section (`--pvs`) |
 | Surface material types | Texture naming convention | Prefix lookup table |
-| Lighting | prl-build (Phase 4) | PRL-native sections — details TBD |
+| Lighting | prl-build (Phase 4 — see `plans/roadmap.md`) | PRL-native sections, designed in Phase 4 |
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity — offline cubemap bake |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |
@@ -102,15 +102,17 @@ Unknown prefix falls back to a default material with a warning at load time.
 
 The PRL compiler (`prl-build`) reads `.map` files directly via shambler and produces `.prl` binary level files. It replaces ericw-tools' three-step pipeline with a single tool.
 
+> **Pipeline restructure planned.** The compile pipeline below is being restructured to a brush-volume-first BSP construction with face extraction at the tail (`parse → brush-volume BSP → face extraction → portal generation → portal vis → geometry → pack`). CSG face clipping disappears as a discrete stage and leaf solidity becomes structural, established during construction rather than post-hoc. See `plans/drafts/brush-volume-bsp/`. The text below describes the current implementation; this section will be rewritten when the refactor lands.
+
 ### Compiler pipeline
 
 ```
 parse .map → CSG face clipping → BSP compilation → portal generation → portal vis → geometry → pack .prl
 ```
 
-1. **Parse.** Shambler extracts brush volumes, faces, and entities. Two transforms are applied at the parse boundary: (a) axis swizzle (Quake Z-up → engine Y-up) and (b) unit scale (idTech2: 0.0254 m/unit, exact). Vertex positions, entity origins, and plane distances are converted to engine meters; plane normals receive the swizzle only (direction vectors — scale must not be applied). The scale is sourced from `MapFormat::units_to_meters()`, not hardcoded at use sites. All downstream stages receive engine-native coordinates in meters.
+1. **Parse.** Shambler extracts brush volumes, faces, and entities. Two transforms are applied at the parse boundary: (a) axis swizzle (Quake Z-up → engine Y-up) and (b) unit scale (idTech2: 0.0254 m/unit, exact). Vertex positions, entity origins, and plane distances are converted to engine meters; plane normals receive the swizzle only (direction vectors — scale must not be applied). The scale comes from a single map-format source, never duplicated at call sites. All downstream stages receive engine-native coordinates in meters.
 2. **CSG face clipping.** Each face is clipped against all brush volumes using Sutherland-Hodgman polygon clipping. Faces that lie entirely inside a solid brush are discarded; faces that partially overlap are trimmed to the exterior portion. An AABB pre-filter skips brush pairs with non-overlapping bounds. This eliminates z-fighting at shared surfaces between adjacent brushes — the same problem BSP solves structurally via splitting, done here as an explicit compile-time step. A face on its own brush's boundary plane is not clipped (it sits on the plane, not behind all half-planes).
-3. **BSP compilation.** Builds a BSP tree from world faces. Produces interior nodes (splitting planes) and leaves (convex regions). Leaves classified solid or empty via brush half-plane test. Solid leaves represent brush interiors. Empty leaves represent navigable space.
+3. **BSP compilation.** Builds a BSP tree from world faces. Produces interior nodes (splitting planes) and leaves (convex regions). Leaf solidity is derived from brush ownership: face normals point outward from their source brush, so any leaf containing a face lies on that brush's air side and is empty; faceless leaves are solid. Solid leaves represent brush interiors. Empty leaves represent navigable space. (A brush-volume-first BSP construction that establishes solidity structurally during construction is planned — see `context/plans/drafts/brush-volume-bsp/`.)
 4. **Portal generation.** For each BSP internal node, clips the splitting-plane polygon against ancestor splitting planes to produce the portal polygon bounding that node's partition. Each portal is a convex polygon connecting two adjacent empty leaves. In default mode, portals are stored in the `.prl` file (section 15) for runtime traversal. In `--pvs` mode, portals are used as intermediate data and discarded.
 5. **Portal vis** (`--pvs` mode only). Per empty leaf, floods through the portal graph. A leaf L' is potentially visible from L if any sequence of portals connects them. Output: per-leaf PVS bitsets, RLE-compressed. Computed in parallel (one task per leaf).
 6. **Geometry.** Fan-triangulates faces into vertex/index buffers. Faces grouped by leaf index for efficient per-leaf draw calls.

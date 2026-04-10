@@ -63,18 +63,21 @@
 
 ## Phase 4: Light Probes
 
-Validate probe-only surface lighting before committing to lightmaps or a custom compiler. ericw-tools already generates the probe data (`light -lightgrid` → LIGHTGRID_OCTREE lump). This phase answers: does probe-sampled surface lighting look right for the target aesthetic?
+Validate probe-only surface lighting before committing to lightmaps. The PRL compiler bakes the probe data into a PRL-native section; the engine samples it at runtime. This phase answers: does probe-sampled surface lighting look right for the target aesthetic?
 
-- [ ] Parse LIGHTGRID_OCTREE lump from BSP
-- [ ] Sample nearest probes for surface lighting (trilinear interpolation between 4–8 probes)
+- [ ] Probe baking in prl-build: place probes on a regular grid through empty space, evaluate lighting per probe (direct + ambient bounce TBD)
+- [ ] PRL section for probe data (positions + RGB samples; format TBD)
+- [ ] Engine: parse the probe section, sample nearest probes for surface lighting (trilinear interpolation between 4–8 probes)
 - [ ] Replace flat uniform lighting from Phase 3 with probe-sampled lighting on all surfaces
 - [ ] Evaluate visual quality: large surfaces, tight corridors, transitions between bright and dark areas
 
-**Testable outcome:** textured level lit entirely by light probes. Surfaces receive spatially varying illumination from baked probe data. No lightmap atlas, no per-face lightmap UVs.
+**Testable outcome:** textured level lit entirely by light probes baked by prl-build. Surfaces receive spatially varying illumination from baked probe data. No lightmap atlas, no per-face lightmap UVs.
 
-**Decision gate:** if probe-only lighting looks right, lightmaps may never enter the engine. If it doesn't, fall back to lightmap atlas (RGBLIGHTING lump) in Phase 5. Either way, the experiment cost is one phase.
+**Decision gate:** if probe-only lighting looks right, lightmaps may never enter the engine. If it doesn't, fall back to a lightmap atlas baked into a PRL section in Phase 5. Either way, the experiment cost is one phase.
 
 **Shadow implication:** probe baking captures static light occlusion. Shadow maps are only needed for dynamic lights — muzzle flash, explosions, scripted events. This reduces runtime shadow cost to near-zero for typical static levels.
+
+**BSPX fallback note:** the original framing of this phase used ericw-tools' `LIGHTGRID_OCTREE` lump from BSP files. That's no longer the path — PRL is the primary format and `prl-build` owns lighting baking. If standing up probe baking in prl-build proves prohibitively expensive at the experiment stage, parsing `LIGHTGRID_OCTREE` from a BSP file remains a fallback for the validation step only — production builds use the PRL-native path.
 
 ---
 

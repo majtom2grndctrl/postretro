@@ -294,6 +294,7 @@ mod tests {
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: default_projection(),
+            brush_index: 0,
         }
     }
 
@@ -309,6 +310,7 @@ mod tests {
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: default_projection(),
+            brush_index: 0,
         }
     }
 
@@ -325,6 +327,7 @@ mod tests {
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: default_projection(),
+            brush_index: 0,
         }
     }
 
@@ -342,6 +345,7 @@ mod tests {
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: default_projection(),
+            brush_index: 0,
         }
     }
 
@@ -498,6 +502,7 @@ mod tests {
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: default_projection(),
+            brush_index: 0,
         }];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
@@ -721,6 +726,7 @@ mod tests {
                 scale_u: 1.0,
                 scale_v: 1.0,
             },
+            brush_index: 0,
         };
 
         let faces = vec![face];
@@ -757,6 +763,7 @@ mod tests {
                 scale_u: 1.0,
                 scale_v: 1.0,
             },
+            brush_index: 0,
         };
 
         let faces = vec![face];

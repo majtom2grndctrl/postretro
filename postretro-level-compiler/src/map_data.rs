@@ -57,6 +57,13 @@ pub struct Face {
     /// UV computation in `geometry.rs` converts engine-space vertices back to
     /// Quake space before applying these parameters.
     pub tex_projection: TextureProjection,
+    /// Index of the source brush in `MapData::brush_volumes` that this face
+    /// was generated from. Face normals point *outward* from their source
+    /// brush, so leaf solidity classification uses this ownership to place
+    /// the leaf on the air (front) side of that brush — see
+    /// `partition::bsp::classify_leaf_solidity`. Set at parse time and
+    /// preserved through every Face clone/split in CSG and BSP.
+    pub brush_index: usize,
 }
 
 /// A convex brush volume defined by its bounding half-planes.

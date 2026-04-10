@@ -154,9 +154,14 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         FaceWinding::Clockwise,
     );
 
-    // Extract brush volumes (convex hulls defined by face planes) for solid classification.
-    // Also compute the AABB of each brush from its face vertices for CSG pre-filtering.
-    let mut brush_volumes = Vec::new();
+    // Extract brush volumes and faces together so every face can carry the
+    // index of its source brush in `brush_volumes`. Face ownership is how
+    // downstream leaf solidity classification knows which side of the brush
+    // a leaf lies on (face normals point outward from the source brush).
+    let mut brush_volumes: Vec<BrushVolume> = Vec::new();
+    let mut world_faces: Vec<Face> = Vec::new();
+    let mut total_vertex_count: usize = 0;
+
     for brush_id in &world_brush_ids {
         let face_ids = match geo_map.brush_faces.get(brush_id) {
             Some(ids) => ids,
@@ -178,6 +183,13 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             })
             .collect();
 
+        if planes.is_empty() {
+            // No valid volume for this brush — skip both the volume and its
+            // faces. Faces without a brush volume have no owner, and the
+            // solidity classifier can't reason about them.
+            continue;
+        }
+
         // Compute AABB from this brush's face vertices (already in engine space).
         let mut aabb = crate::partition::Aabb::empty();
         for fid in face_ids {
@@ -188,20 +200,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             }
         }
 
-        if !planes.is_empty() {
-            brush_volumes.push(BrushVolume { planes, aabb });
-        }
-    }
-
-    // Extract faces from world brushes
-    let mut world_faces = Vec::new();
-    let mut total_vertex_count: usize = 0;
-
-    for brush_id in &world_brush_ids {
-        let face_ids = match geo_map.brush_faces.get(brush_id) {
-            Some(ids) => ids,
-            None => continue,
-        };
+        let brush_index = brush_volumes.len();
+        brush_volumes.push(BrushVolume { planes, aabb });
 
         for face_id in face_ids {
             let vertices_raw = match face_verts.get(face_id) {
@@ -287,6 +287,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 distance,
                 texture,
                 tex_projection,
+                brush_index,
             });
         }
     }

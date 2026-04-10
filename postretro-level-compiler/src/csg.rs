@@ -74,12 +74,10 @@ pub fn csg_clip_faces(faces: &[Face], brush_volumes: &[BrushVolume]) -> Vec<Face
                 if changed {
                     clipped_count += 1;
                 }
+                // Clipped fragments inherit all metadata, including `brush_index`.
                 result.push(Face {
                     vertices: fragment,
-                    normal: face.normal,
-                    distance: face.distance,
-                    texture: face.texture.clone(),
-                    tex_projection: face.tex_projection.clone(),
+                    ..face.clone()
                 });
             }
         }
@@ -258,6 +256,7 @@ mod tests {
             distance,
             texture: "test".to_string(),
             tex_projection: Default::default(),
+            brush_index: 0,
         }
     }
 

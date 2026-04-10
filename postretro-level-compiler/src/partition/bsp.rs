@@ -13,16 +13,6 @@ const SPLIT_PENALTY: i32 = 8;
 const IMBALANCE_PENALTY: i32 = 1;
 const MAX_LEAF_FACES: usize = 4;
 
-/// Tolerance for the overall-centroid inside-brush test. Generous because
-/// the average of multiple face centroids is naturally displaced from any
-/// single brush surface.
-const SOLID_EPSILON: f64 = 0.5;
-
-/// Tolerance for the per-face-centroid inside-brush test. Tight because
-/// individual face centroids sit exactly on their generating brush surface;
-/// a generous epsilon would classify every leaf touching a brush as solid.
-const FACE_SOLID_EPSILON: f64 = -0.1;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FaceSide {
     Front,
@@ -80,25 +70,22 @@ fn classify_face(face: &Face, plane: &Plane) -> FaceSide {
 /// split produces a degenerate polygon (< 3 vertices).
 ///
 /// Delegates to `split_polygon` for the vertex math, then re-attaches
-/// Face metadata (normal, distance, texture) to each fragment.
+/// Face metadata (normal, distance, texture, brush_index) to each fragment.
 fn split_face(face: &Face, plane: &Plane) -> (Option<Face>, Option<Face>) {
     let (front_verts, back_verts) =
         split_polygon(&face.vertices, plane.normal, plane.distance, PLANE_EPSILON);
 
+    // Both fragments inherit the parent face's metadata, including `brush_index`.
+    // Struct-update syntax (`..face.clone()`) keeps this in sync if Face grows
+    // more fields later.
     let front = front_verts.map(|verts| Face {
         vertices: verts,
-        normal: face.normal,
-        distance: face.distance,
-        texture: face.texture.clone(),
-        tex_projection: face.tex_projection.clone(),
+        ..face.clone()
     });
 
     let back = back_verts.map(|verts| Face {
         vertices: verts,
-        normal: face.normal,
-        distance: face.distance,
-        texture: face.texture.clone(),
-        tex_projection: face.tex_projection.clone(),
+        ..face.clone()
     });
 
     (front, back)
@@ -228,87 +215,34 @@ pub fn build_bsp_tree(faces: Vec<Face>) -> Result<(BspTree, Vec<Face>)> {
     Ok((tree, compacted_faces))
 }
 
-/// Classify each BSP leaf as solid or empty based on brush volumes.
+/// Classify each BSP leaf as solid or empty using brush ownership.
 ///
-/// A leaf is solid when any candidate point from its face geometry lies inside
-/// a brush volume. "Inside" means the point is on the back side (negative
-/// half-space) of every plane in the brush:
-/// `dot(point, plane.normal) - plane.distance <= epsilon` for all planes.
+/// **Principle.** Every face originates from exactly one brush, and a face's
+/// normal points *outward* from that brush. So if a leaf contains a face from
+/// brush B, the leaf lies on B's front side — i.e., outside B, in air.
+/// This is exact: it's derived from how the geometry was built, not from a
+/// test point and epsilon. It matches the approach used by qbsp and ericw-tools.
 ///
-/// Candidate points: the overall leaf face centroid plus each individual face's
-/// centroid. A leaf is solid if **any** candidate is inside a brush. Faceless
-/// leaves are classified as solid — empty space always has bounding faces.
-///
-/// The individual face centroid test uses a tighter epsilon than the overall
-/// centroid because face centroids sit exactly on their generating brush surface.
-/// A generous epsilon would false-positive every face as "inside", defeating the
-/// purpose of solid/empty classification.
-pub fn classify_leaf_solidity(tree: &mut BspTree, faces: &[Face], brush_volumes: &[BrushVolume]) {
+/// **Rules:**
+/// - If a leaf contains any face, it is **empty**. In normal Quake-style
+///   geometry (non-overlapping brushes), being outside the face's source brush
+///   is enough — no other brush contains the leaf. Overlapping brushes are not
+///   supported by this classifier; the map authoring convention is that world
+///   brushes don't nest. If that ever becomes a requirement, the check can be
+///   extended to test a point inside the leaf against every brush *other than*
+///   each face's source brush.
+/// - If a leaf contains no faces, fall back to classifying it as solid. BSP
+///   partitioning of well-formed maps produces faceless leaves for fully
+///   enclosed solid regions; an empty leaf of interest always has at least
+///   one bounding face.
+pub fn classify_leaf_solidity(tree: &mut BspTree, brush_volumes: &[BrushVolume]) {
     if brush_volumes.is_empty() {
         return;
     }
 
     for leaf in &mut tree.leaves {
-        // Faceless leaves are solid: empty space always has bounding faces.
-        if leaf.face_indices.is_empty() {
-            leaf.is_solid = true;
-            continue;
-        }
-
-        // Test the overall leaf centroid first (primary test). Uses a generous
-        // epsilon because this centroid averages multiple face positions and is
-        // naturally displaced from brush surfaces.
-        let overall_centroid = leaf_face_centroid(faces, &leaf.face_indices);
-        if point_inside_any_brush(overall_centroid, brush_volumes, SOLID_EPSILON) {
-            leaf.is_solid = true;
-            continue;
-        }
-
-        // Test each individual face centroid. Uses a tight epsilon to avoid
-        // false-positiving on face centroids that sit on (not inside) their
-        // generating brush surface.
-        let any_face_inside = leaf.face_indices.iter().any(|&fi| {
-            let face = &faces[fi];
-            let face_center: DVec3 =
-                face.vertices.iter().copied().sum::<DVec3>() / face.vertices.len() as f64;
-            point_inside_any_brush(face_center, brush_volumes, FACE_SOLID_EPSILON)
-        });
-
-        leaf.is_solid = any_face_inside;
+        leaf.is_solid = leaf.face_indices.is_empty();
     }
-}
-
-/// Compute the centroid of a leaf's face geometry (average of all face centroids).
-fn leaf_face_centroid(faces: &[Face], face_indices: &[usize]) -> DVec3 {
-    let mut sum = DVec3::ZERO;
-    let mut count = 0usize;
-
-    for &fi in face_indices {
-        let face = &faces[fi];
-        let face_center: DVec3 =
-            face.vertices.iter().copied().sum::<DVec3>() / face.vertices.len() as f64;
-        sum += face_center;
-        count += 1;
-    }
-
-    if count > 0 {
-        sum / count as f64
-    } else {
-        DVec3::ZERO
-    }
-}
-
-/// Test whether a point is inside any brush volume.
-///
-/// `epsilon` controls how close to the surface counts as "inside". Positive
-/// values expand the brush (generous), negative values shrink it (strict).
-fn point_inside_any_brush(point: DVec3, brush_volumes: &[BrushVolume], epsilon: f64) -> bool {
-    brush_volumes.iter().any(|brush| {
-        brush
-            .planes
-            .iter()
-            .all(|plane| point.dot(plane.normal) - plane.distance <= epsilon)
-    })
 }
 
 /// Recursive BSP construction. Returns the child reference for the subtree built.
@@ -444,6 +378,7 @@ mod tests {
             distance,
             texture: "test".to_string(),
             tex_projection: Default::default(),
+            brush_index: 0,
         }
     }
 
@@ -569,6 +504,7 @@ mod tests {
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: Default::default(),
+            brush_index: 0,
         };
 
         let (front, back) = split_face(&face, &plane);
@@ -600,6 +536,7 @@ mod tests {
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: Default::default(),
+            brush_index: 0,
         };
 
         let (tree, faces) = build_bsp_tree(vec![face]).expect("should build");
@@ -680,6 +617,7 @@ mod tests {
                 distance: -min.x,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
+                brush_index: 0,
             },
             Face {
                 vertices: vec![
@@ -692,6 +630,7 @@ mod tests {
                 distance: max.x,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
+                brush_index: 0,
             },
             Face {
                 vertices: vec![
@@ -704,6 +643,7 @@ mod tests {
                 distance: -min.y,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
+                brush_index: 0,
             },
             Face {
                 vertices: vec![
@@ -716,6 +656,7 @@ mod tests {
                 distance: max.y,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
+                brush_index: 0,
             },
             Face {
                 vertices: vec![
@@ -728,6 +669,7 @@ mod tests {
                 distance: -min.z,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
+                brush_index: 0,
             },
             Face {
                 vertices: vec![
@@ -740,6 +682,7 @@ mod tests {
                 distance: max.z,
                 texture: texture.clone(),
                 tex_projection: Default::default(),
+                brush_index: 0,
             },
         ]
     }
@@ -880,8 +823,8 @@ mod tests {
         faces.extend(make_box_faces(wall2_min, wall2_max));
         brushes.push(box_brush(wall2_min, wall2_max));
 
-        let (mut tree, split_faces) = build_bsp_tree(faces).expect("BSP build should succeed");
-        classify_leaf_solidity(&mut tree, &split_faces, &brushes);
+        let (mut tree, _split_faces) = build_bsp_tree(faces).expect("BSP build should succeed");
+        classify_leaf_solidity(&mut tree, &brushes);
 
         // The air gaps are at Z=64..66 and Z=68..70 within the wall at X=120..136.
         // Test points in these air gaps to ensure they're not classified as solid.

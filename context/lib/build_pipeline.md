@@ -130,7 +130,27 @@ parse .map → CSG face clipping → BSP compilation → portal generation → p
 
 ### Runtime visibility
 
-When a `.prl` file contains a Portals section (15), the engine walks the portal graph per frame with frustum clipping. This is the preferred path: visibility naturally handles corners and narrow apertures without precomputation. When only a LeafPvs section (14) is present, the engine falls back to precomputed PVS culling.
+Two paths, selected by which PRL section is present.
+
+| PRL section present | Runtime path | Notes |
+|---------------------|--------------|-------|
+| Portals (15) | Per-frame portal flood-fill with frustum narrowing | Default. Handles corners and narrow apertures without precomputation. |
+| LeafPvs (14) | Precomputed PVS bitset lookup | Fallback for `--pvs` builds. |
+
+**Architectural stance: id Tech 4 (Doom 3, 2004), not Quake 1.** Visibility is computed per frame from portal geometry, not baked into a precomputed bitset. The reasoning matches Carmack's break from Quake's vis pipeline: precomputed PVS lengthens compile cycles, fights with dynamic geometry, and the per-frame cost is trivial at modern leaf counts. The compiler still supports `--pvs` so a precomputed fallback exists, but the default path is runtime traversal.
+
+#### Portal traversal (default path)
+
+Two cooperating layers determine which leaves are drawn each frame. Both are load-bearing.
+
+- **Portal flood-fill.** Walks the portal graph outward from the camera leaf. At each portal: test the portal polygon against the current frustum, narrow the frustum through the portal polygon, recurse into the neighbor leaf. Solid leaves block traversal. Yields a per-leaf reachability bitset.
+- **Per-leaf AABB frustum cull.** Each leaf reached by the flood-fill is then tested against the camera's view frustum by its bounding box. Leaves outside the cone are dropped before draw-range emission.
+
+The flood-fill layer alone is not sufficient. Frustum narrowing is approximate: portal-edge planes constrain sideways visibility through each portal, but the camera's original side planes are not carried through narrowing. Reachable leaves can sit outside the camera's view cone, particularly when portals straddle the cone boundary. The AABB cull restores camera-cone enforcement coarsely at draw-range emission time.
+
+This split is informed-but-imperfect, not the architectural ideal. The id Tech 4 algorithm clips the portal polygon against the current frustum before narrowing, which keeps each narrowed frustum a strict subset of the camera frustum and folds the AABB enforcement into the recursion. Adopting that upgrade would let the AABB pass be removed cleanly. See `context/plans/drafts/portal-polygon-clipping/` for the planned migration.
+
+**Do not remove either layer in isolation.** Removing the AABB cull without first making the flood-fill produce strict-subset frustums causes runtime culling to silently degrade — every leaf reached through any portal chain gets drawn regardless of whether it lies in the camera's view cone.
 
 ### Key differences from the former voxel approach
 

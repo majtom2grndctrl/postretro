@@ -11,7 +11,7 @@ It's early days. Right now Postretro loads BSP levels, flies through them in wir
 The engine is being built in phases, each of which produces something you can actually see and test. Here's the rough shape of the road ahead:
 
 - **Phases 1** ✅ — BSP and PRL level loading, portal-based BSP visibility with frustum clipping at runtime, free-fly camera, wireframe rendering, custom PRL level compiler
-- **Phase 2** — Fixed-timestep game loop, action-mapped input (keyboard, mouse, gamepad)
+- **Phase 2** ✅ — Fixed-timestep game loop, action-mapped input (keyboard, mouse, gamepad)
 - **Phase 3** — Textured world with solid rendering, depth buffer, material system
 - **Phase 4** — Light probes: bake lighting offline, sample at runtime for spatially varying illumination — no lightmap atlas, no per-face UVs
 - **Phase 5** — Lighting refinement: dynamic point lights, shadow maps for moving lights (intentionally low-res for chunky pixel shadows), emissives, billboard sprites, fog
@@ -79,8 +79,12 @@ context/
     development_guide.md
     testing_guide.md
     context_style_guide.md
-    initial-prompt.md
-    (planned: rendering_pipeline, audio, entity_model, build_pipeline, input, resource_management)
+    rendering_pipeline.md
+    audio.md
+    build_pipeline.md
+    entity_model.md
+    input.md
+    resource_management.md
 
   plans/                # Work tracking (ephemeral by design)
     drafts/             # Specs being written, not yet reviewed
@@ -94,42 +98,41 @@ context/
 ### Decision Lifecycle
 
 ```
-                    context/lib/
-                   (durable knowledge)
-                     ^           ^
-                     |           |
-                update lib    fix drift
-                     |           |
-drafts/ --> ready/ --+--> in-progress/ --+--> done/
-  (plan)  (backlog)        |       ^   (distill)
-                           v       |
-                      code + comments
-                           |
-                           v
-                      Review & Verify
+               idea
+                │
+                ▼
+               spec
+      (implementation details)
+            (ephemeral)
+                │
+                │─────────────────┐
+                │                 │
+                ▼                 │
+           context/lib/           │
+      (conceptual summaries)      │
+            (durable)             │
+                                  ▼
+                            code + comments
+                              (durable)
 ```
 
 #### 1. Plan
 
 A new feature starts as a spec in `context/plans/drafts/`. The spec defines acceptance criteria, task sequencing, and which context library files need updates.
 
-#### 2. Review (drafts/ -> ready/)
+#### 2. Finalize (drafts/ → ready/)
 
-The plan is reviewed while still in `drafts/`. Once approved, it moves to `ready/` — a backlog of plans queued for execution.
+At the end of drafting, durable architectural decisions get written into `context/lib/` — new subsystem boundaries, contracts, pipeline topology, design principles. This happens before the plan moves to `ready/`, so accurate context is in place before any code is written. Once reviewed and approved, the plan moves to `ready/`, the backlog of work queued for execution.
 
-#### 3. Update Context Library
-
-When a plan is picked up for execution, its durable architectural decisions are first written into `context/lib/` — new subsystem boundaries, contracts, pipeline topology, design principles. This ensures accurate, up-to-date guidance is in place before code is written.
-
-#### 4. Execute (ready/ -> in-progress/)
+#### 3. Execute (ready/ → in-progress/)
 
 Implementation proceeds according to the plan's sequencing (serial or parallel phases), referencing `context/lib/` for architectural guidance. Code comments capturing implementation-level "why" decisions are written during development, not as a separate step.
 
-#### 5. Review and Verify
+#### 4. Review and Verify
 
 Implementation is checked against acceptance criteria, architectural constraints, and coding conventions. A quality gate runs fmt, clippy, and tests.
 
-#### 6. Distill (in-progress/ -> done/)
+#### 5. Distill (in-progress/ → done/)
 
 Revise `context/lib/` to address any context drift that emerged during execution — assumptions that proved wrong, boundaries that shifted, contracts that evolved. Once the context library is up to date, move the completed plan to `done/`. The `done/` folder keeps recently completed plans accessible for reference; old plans are periodically pruned to keep no more than 15.
 

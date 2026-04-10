@@ -32,7 +32,7 @@ All entities share a core set of spatial state.
 | BSP leaf | Current leaf index for visibility culling, audio reverb zone lookup, and collision context |
 | Bounding volume | AABB or sphere for entity-entity collision |
 
-Common data is embedded directly in each entity type. No shared base struct inheritance -- each type carries its own copy of these fields.
+Common data is embedded directly in each entity type. No shared base struct inheritance — each type carries its own copy of these fields.
 
 ### Type-Specific Data
 
@@ -85,7 +85,7 @@ BSP files embed an entity lump: a text block of key-value pairs grouped per enti
 
 The loader reads the entity lump and resolves each `classname` to an engine entity type. Recognized classnames produce the corresponding entity, initialized from the lump's key-value pairs (position, angle, flags, etc.).
 
-Unknown classnames are logged as warnings and skipped. The engine does not crash on unrecognized entities -- maps may contain editor-only or tool entities that have no runtime meaning.
+Unknown classnames are logged as warnings and skipped. The engine does not crash on unrecognized entities — maps may contain editor-only or tool entities that have no runtime meaning.
 
 ### Key-Value Parsing
 
@@ -142,9 +142,9 @@ Each entity tracks which BSP leaf it occupies. This leaf index serves three cons
 
 | Consumer | Use |
 |----------|-----|
-| Renderer | Visibility culling -- skip entities in leaves not visible from the camera's PVS |
-| Audio | Reverb zone lookup -- determine acoustic environment for sounds emitted at entity position |
-| Game logic | Spatial queries -- which entities are near a point, which zone an entity occupies |
+| Renderer | Visibility culling — skip entities in leaves outside the camera's current visibility set |
+| Audio | Reverb zone lookup — determine acoustic environment for sounds emitted at entity position |
+| Game logic | Spatial queries — which entities are near a point, which zone an entity occupies |
 
 Leaf index updates each tick after position changes.
 

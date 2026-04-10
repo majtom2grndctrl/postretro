@@ -19,7 +19,7 @@ winit delivers keyboard and mouse events through the event loop it already owns.
 
 ## 2. Action Mapping
 
-Physical inputs map to logical actions. Game logic never queries "is W pressed" -- it queries "is move-forward active."
+Physical inputs map to logical actions. Game logic never queries "is W pressed" — it queries "is move-forward active."
 
 ### Action types
 
@@ -28,7 +28,7 @@ Physical inputs map to logical actions. Game logic never queries "is W pressed" 
 | Button | Binary on/off, with pressed/held/released states | Shoot, jump, use, reload |
 | Axis | Scalar value in [-1, 1] | Move forward/back, strafe left/right, look yaw, look pitch |
 
-A single action can have multiple physical bindings. W key and left stick Y both map to the forward/back movement axis. Bindings are data, not code — currently hardcoded defaults, with config file loading and runtime rebinding planned as follow-up work.
+A single action can have multiple physical bindings. W key and left stick Y both map to the forward/back movement axis. Bindings are data, not code.
 
 ### Axis source tagging
 
@@ -80,7 +80,7 @@ Mouse motion events arrive between frames at OS-determined rates. The input subs
 | Sensitivity | Scalar multiplier applied to raw deltas before they become look-axis values. |
 | Invert Y | Negates the pitch axis. Applied after sensitivity. |
 
-Raw mouse motion is essential for consistent aiming. OS pointer acceleration varies across platforms and user settings -- raw input bypasses it.
+Raw mouse motion is essential for consistent aiming. OS pointer acceleration varies across platforms and user settings — raw input bypasses it.
 
 ---
 

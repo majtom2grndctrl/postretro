@@ -475,10 +475,6 @@ pub fn determine_prl_visibility(
                 .count() as u32;
             pvs_faces += leaf_face_count;
 
-            if is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, &frustum) {
-                continue;
-            }
-
             for face in world.face_meta.iter().skip(start).take(count) {
                 if face.index_count > 0 {
                     ranges.push(DrawRange {

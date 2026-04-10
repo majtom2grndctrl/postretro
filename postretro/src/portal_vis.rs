@@ -152,34 +152,73 @@ pub fn narrow_frustum(
         dist: portal_dist,
     });
 
-    // Edge planes: for each edge of the portal, construct a plane through
-    // the camera position and that edge.
+    // Edge planes: for each edge of the portal, construct a clip plane. Two
+    // candidate planes are considered per edge:
+    //
+    //   1. The "camera-edge plane" — the plane through the camera position and
+    //      the portal edge. This is the exact visibility cone from a point
+    //      camera through the portal.
+    //   2. The "boundary plane" — perpendicular to the portal face, passing
+    //      through the edge (the extruded portal-edge plane).
+    //
+    // For a thin portal viewed at an oblique angle, the camera-edge plane can
+    // be dramatically more restrictive than the boundary plane far behind the
+    // portal — enough to falsely reject geometry (e.g., a second portal) that
+    // is visible through the thin gap. The fix: when the camera lies on the
+    // "outside" of the boundary plane (i.e., the side that the portal edge
+    // bounds), the camera-edge plane will diverge from the boundary away from
+    // the portal in the restrictive direction, so fall back to the boundary
+    // plane. When the camera is on the "inside", the camera-edge plane is
+    // less restrictive and preserves the camera-specific narrowing benefit.
     let n = portal_polygon.len();
     let centroid = portal_polygon.iter().copied().sum::<Vec3>() / n as f32;
     for i in 0..n {
         let edge_a = portal_polygon[i];
         let edge_b = portal_polygon[(i + 1) % n];
         let edge_dir = edge_b - edge_a;
-        let to_camera = camera_position - edge_a;
 
-        let mut edge_normal = edge_dir.cross(to_camera);
-        if edge_normal.length_squared() < 1e-12 {
-            // Camera is on the edge line; this edge doesn't contribute a clip plane.
+        // Boundary plane: normal lies in the portal's plane, perpendicular to
+        // the edge, facing inward (toward the centroid).
+        let mut boundary_normal = edge_dir.cross(oriented_normal);
+        if boundary_normal.length_squared() < 1e-12 {
+            // Degenerate edge (zero length or collinear with portal normal).
             continue;
         }
-        edge_normal = edge_normal.normalize();
-
-        // The edge plane should face inward (toward the interior of the
-        // frustum pyramid). Verify by checking that the portal centroid is
-        // on the positive side.
-        if edge_normal.dot(centroid - edge_a) < 0.0 {
-            edge_normal = -edge_normal;
+        boundary_normal = boundary_normal.normalize();
+        if boundary_normal.dot(centroid - edge_a) < 0.0 {
+            boundary_normal = -boundary_normal;
         }
 
-        let edge_dist = -edge_normal.dot(edge_a);
+        // Decide which plane to use. If the camera is on the inside of the
+        // boundary (same side as the centroid), the camera-edge plane is less
+        // restrictive far behind the portal and is preferred. Otherwise, the
+        // boundary plane is less restrictive and avoids over-rejection.
+        let camera_side_of_boundary = boundary_normal.dot(camera_position - edge_a);
+
+        let (chosen_normal, chosen_dist) = if camera_side_of_boundary >= 0.0 {
+            // Camera-edge plane through the camera and the edge.
+            let to_camera = camera_position - edge_a;
+            let mut edge_normal = edge_dir.cross(to_camera);
+            if edge_normal.length_squared() < 1e-12 {
+                // Camera is on the edge line; fall back to the boundary plane.
+                let dist = -boundary_normal.dot(edge_a);
+                (boundary_normal, dist)
+            } else {
+                edge_normal = edge_normal.normalize();
+                if edge_normal.dot(centroid - edge_a) < 0.0 {
+                    edge_normal = -edge_normal;
+                }
+                let dist = -edge_normal.dot(edge_a);
+                (edge_normal, dist)
+            }
+        } else {
+            let dist = -boundary_normal.dot(edge_a);
+            (boundary_normal, dist)
+        };
+
         planes.push(crate::visibility::FrustumPlane {
-            normal: edge_normal,
-            dist: edge_dist,
+            normal: chosen_normal,
+            dist: chosen_dist,
         });
     }
 
@@ -543,5 +582,249 @@ mod tests {
         // Degenerate: less than 3 vertices.
         assert!(narrow_frustum(camera_pos, &[Vec3::X, Vec3::Y], &frustum).is_none());
         assert!(narrow_frustum(camera_pos, &[], &frustum).is_none());
+    }
+
+    #[test]
+    fn narrow_frustum_succeeds_for_thin_portal_polygon() {
+        // A thin but valid portal polygon — the narrow gap beside a pillar.
+        // 2 units wide, 96 units tall, at X=120.
+        //
+        // When the camera looks through this portal at an oblique angle, the
+        // narrowed frustum must still contain the area behind the portal.
+        // Specifically: a second portal at X=136 with the same Z range should
+        // NOT be outside the narrowed frustum.
+
+        // Camera at oblique angle to the portal (same angle that fails in the
+        // portal traversal test).
+        let camera_pos = Vec3::new(16.0, 64.0, 40.0);
+        let look_dir = Vec3::new(104.0, 0.0, 23.0).normalize();
+        let frustum = make_camera_frustum(camera_pos, look_dir);
+
+        // Thin portal at X=120, spanning Z=62..64, Y=16..112.
+        let thin_portal = vec![
+            Vec3::new(120.0, 16.0, 62.0),
+            Vec3::new(120.0, 112.0, 62.0),
+            Vec3::new(120.0, 112.0, 64.0),
+            Vec3::new(120.0, 16.0, 64.0),
+        ];
+
+        let narrowed = narrow_frustum(camera_pos, &thin_portal, &frustum);
+        assert!(
+            narrowed.is_some(),
+            "narrow_frustum should succeed for a 2-unit-wide portal at oblique angle."
+        );
+
+        // The narrowed frustum should contain the second portal at X=136 with
+        // the same Z range. If the narrowed frustum's edge planes are too
+        // aggressive, this second portal will be falsely rejected.
+        let narrowed = narrowed.unwrap();
+        let second_portal = vec![
+            Vec3::new(136.0, 16.0, 62.0),
+            Vec3::new(136.0, 112.0, 62.0),
+            Vec3::new(136.0, 112.0, 64.0),
+            Vec3::new(136.0, 16.0, 64.0),
+        ];
+
+        let outside = is_polygon_outside_frustum(&second_portal, &narrowed);
+        assert!(
+            !outside,
+            "the second portal at X=136 (Z=62..64) should be inside the narrowed \
+             frustum from the first portal at X=120 (Z=62..64). The camera at \
+             oblique angle causes the narrowed frustum edge planes to be over-tight, \
+             falsely rejecting geometry that IS visible through the portal."
+        );
+    }
+
+    #[test]
+    fn portal_traversal_sees_room_through_both_sides_of_pillar() {
+        // Room layout with NARROW portals (2 units wide) matching the pillar
+        // gap dimensions that cause issues in portal generation:
+        //
+        // Leaf A (camera room, X=0..120) --[portal 0 at X=120, Z=62..64]--> Leaf B (left gap)
+        //                                --[portal 1 at X=120, Z=66..68]--> Leaf C (right gap)
+        // Leaf B --[portal 2 at X=136, Z=62..64]--> Leaf D (far room, X=136..256)
+        // Leaf C --[portal 3 at X=136, Z=66..68]--> Leaf D
+        //
+        // The portals are only 2 units wide (matching a narrow doorway gap).
+        let portal_a_b = PortalData {
+            polygon: vec![
+                Vec3::new(120.0, 16.0, 62.0),
+                Vec3::new(120.0, 112.0, 62.0),
+                Vec3::new(120.0, 112.0, 64.0),
+                Vec3::new(120.0, 16.0, 64.0),
+            ],
+            front_leaf: 0,
+            back_leaf: 1,
+        };
+        let portal_a_c = PortalData {
+            polygon: vec![
+                Vec3::new(120.0, 16.0, 66.0),
+                Vec3::new(120.0, 112.0, 66.0),
+                Vec3::new(120.0, 112.0, 68.0),
+                Vec3::new(120.0, 16.0, 68.0),
+            ],
+            front_leaf: 0,
+            back_leaf: 2,
+        };
+        let portal_b_d = PortalData {
+            polygon: vec![
+                Vec3::new(136.0, 16.0, 62.0),
+                Vec3::new(136.0, 112.0, 62.0),
+                Vec3::new(136.0, 112.0, 64.0),
+                Vec3::new(136.0, 16.0, 64.0),
+            ],
+            front_leaf: 1,
+            back_leaf: 3,
+        };
+        let portal_c_d = PortalData {
+            polygon: vec![
+                Vec3::new(136.0, 16.0, 66.0),
+                Vec3::new(136.0, 112.0, 66.0),
+                Vec3::new(136.0, 112.0, 68.0),
+                Vec3::new(136.0, 16.0, 68.0),
+            ],
+            front_leaf: 2,
+            back_leaf: 3,
+        };
+
+        let world = LevelWorld {
+            vertices: vec![],
+            indices: vec![],
+            face_meta: vec![],
+            nodes: vec![
+                // Root splits at X=120
+                NodeData {
+                    plane_normal: Vec3::X,
+                    plane_distance: 120.0,
+                    front: BspChild::Node(1),
+                    back: BspChild::Leaf(0),
+                },
+                // Split at X=136
+                NodeData {
+                    plane_normal: Vec3::X,
+                    plane_distance: 136.0,
+                    front: BspChild::Leaf(3),
+                    back: BspChild::Node(2),
+                },
+                // Split at Z=65 (between the two gaps) to separate B and C
+                NodeData {
+                    plane_normal: Vec3::Z,
+                    plane_distance: 65.0,
+                    front: BspChild::Leaf(2),
+                    back: BspChild::Leaf(1),
+                },
+            ],
+            leaves: vec![
+                // Leaf 0: camera room (A), X=0..120
+                LeafData {
+                    bounds_min: Vec3::new(0.0, 0.0, 0.0),
+                    bounds_max: Vec3::new(120.0, 128.0, 128.0),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                    texture_sub_ranges: vec![],
+                },
+                // Leaf 1: left gap passage (B), Z=62..64
+                LeafData {
+                    bounds_min: Vec3::new(120.0, 16.0, 62.0),
+                    bounds_max: Vec3::new(136.0, 112.0, 64.0),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                    texture_sub_ranges: vec![],
+                },
+                // Leaf 2: right gap passage (C), Z=66..68
+                LeafData {
+                    bounds_min: Vec3::new(120.0, 16.0, 66.0),
+                    bounds_max: Vec3::new(136.0, 112.0, 68.0),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                    texture_sub_ranges: vec![],
+                },
+                // Leaf 3: far room (D), X=136..256
+                LeafData {
+                    bounds_min: Vec3::new(136.0, 0.0, 0.0),
+                    bounds_max: Vec3::new(256.0, 128.0, 128.0),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                    texture_sub_ranges: vec![],
+                },
+            ],
+            root: BspChild::Node(0),
+            has_pvs: false,
+            portals: vec![portal_a_b, portal_a_c, portal_b_d, portal_c_d],
+            leaf_portals: vec![
+                vec![0, 1],    // leaf A touches portal 0 (A-B) and portal 1 (A-C)
+                vec![0, 2],    // leaf B touches portal 0 (A-B) and portal 2 (B-D)
+                vec![1, 3],    // leaf C touches portal 1 (A-C) and portal 3 (C-D)
+                vec![2, 3],    // leaf D touches portal 2 (B-D) and portal 3 (C-D)
+            ],
+            has_portals: true,
+            texture_names: vec![],
+        };
+
+        // Camera looking through the LEFT passage (Z=63, center of Z=62..64 gap).
+        // Camera is in leaf A, looking toward +X.
+        {
+            let camera_pos = Vec3::new(16.0, 64.0, 63.0);
+            let frustum = make_camera_frustum(camera_pos, Vec3::X);
+            let visible = portal_traverse(camera_pos, 0, &frustum, &world);
+            assert!(visible[0], "camera leaf A should be visible");
+            assert!(
+                visible[1],
+                "leaf B (left gap) should be visible when looking through left doorway"
+            );
+            assert!(
+                visible[3],
+                "leaf D (far room) should be visible through left passage (A->B->D). \
+                 If not, the narrow frustum through the 2-unit-wide portal A-B may be \
+                 rejecting the 2-unit-wide portal B-D."
+            );
+        }
+
+        // Camera looking through the RIGHT passage (Z=67, center of Z=66..68 gap).
+        {
+            let camera_pos = Vec3::new(16.0, 64.0, 67.0);
+            let frustum = make_camera_frustum(camera_pos, Vec3::X);
+            let visible = portal_traverse(camera_pos, 0, &frustum, &world);
+            assert!(visible[0], "camera leaf A should be visible");
+            assert!(
+                visible[2],
+                "leaf C (right gap) should be visible when looking through right doorway"
+            );
+            assert!(
+                visible[3],
+                "leaf D (far room) should be visible through right passage (A->C->D). \
+                 If not, the narrow frustum through the 2-unit-wide portal A-C may be \
+                 rejecting the 2-unit-wide portal C-D."
+            );
+        }
+
+        // Camera looking at an oblique angle through the left passage.
+        // This is the most likely failure case: the camera is off-center
+        // from the portal, looking through at an angle.
+        {
+            let camera_pos = Vec3::new(16.0, 64.0, 40.0);
+            let look_dir = Vec3::new(104.0, 0.0, 23.0).normalize(); // toward the left gap
+            let frustum = make_camera_frustum(camera_pos, look_dir);
+            let visible = portal_traverse(camera_pos, 0, &frustum, &world);
+            assert!(visible[0], "camera leaf A should be visible");
+            assert!(
+                visible[1],
+                "leaf B (left gap) should be visible at oblique angle"
+            );
+            assert!(
+                visible[3],
+                "leaf D (far room) should be visible through left passage at oblique angle. \
+                 The narrowed frustum from the thin portal at oblique incidence may be \
+                 too aggressive, rejecting the second portal."
+            );
+        }
     }
 }

@@ -22,7 +22,7 @@ use glam::Vec3;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
@@ -169,6 +169,7 @@ fn main() -> Result<()> {
         input_system: input::InputSystem::new(input::default_bindings()),
         gamepad_system: input::gamepad::GamepadSystem::new(),
         frame_timing: FrameTiming::new(initial_state),
+        shift_held: false,
     };
 
     event_loop
@@ -256,6 +257,11 @@ struct App {
     input_system: input::InputSystem,
     gamepad_system: Option<input::gamepad::GamepadSystem>,
     frame_timing: FrameTiming,
+
+    /// Debug-only chord state: whether either Shift key is currently held.
+    /// Used to detect the Shift+\\ wireframe overlay toggle outside the
+    /// action-mapped input system (chords are a one-off debug need).
+    shift_held: bool,
 }
 
 struct WindowState {
@@ -363,8 +369,27 @@ impl ApplicationHandler for App {
                 event: key_event, ..
             } => {
                 if let PhysicalKey::Code(code) = key_event.physical_key {
-                    self.input_system
-                        .handle_keyboard_event(code, key_event.state.is_pressed());
+                    let pressed = key_event.state.is_pressed();
+
+                    // Track Shift state for debug chords (Shift+\\ etc.).
+                    if matches!(code, KeyCode::ShiftLeft | KeyCode::ShiftRight) {
+                        self.shift_held = pressed;
+                    }
+
+                    // Shift+\\ cycles the debug wireframe overlay mode
+                    // (Off → Culled → All → Off). We gate on !key_event.repeat
+                    // so holding the chord does not spam toggles.
+                    if pressed
+                        && !key_event.repeat
+                        && code == KeyCode::Backslash
+                        && self.shift_held
+                    {
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            renderer.cycle_wireframe_mode();
+                        }
+                    }
+
+                    self.input_system.handle_keyboard_event(code, pressed);
                 }
             }
             WindowEvent::MouseInput { button, state, .. } => {
@@ -376,6 +401,7 @@ impl ApplicationHandler for App {
                     input::cursor::handle_focus_change(focused, &ws.window);
                     if !focused {
                         self.input_system.clear_all();
+                        self.shift_held = false;
                     }
                 }
             }

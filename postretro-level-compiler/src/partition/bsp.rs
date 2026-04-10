@@ -2,26 +2,16 @@
 // See: context/lib/build_pipeline.md §PRL
 
 use anyhow::Result;
-use glam::Vec3;
+use glam::DVec3;
 
 use super::types::*;
 use crate::geometry_utils::split_polygon;
 use crate::map_data::{BrushVolume, Face};
 
-const PLANE_EPSILON: f32 = 0.1;
+const PLANE_EPSILON: f64 = 0.1;
 const SPLIT_PENALTY: i32 = 8;
 const IMBALANCE_PENALTY: i32 = 1;
 const MAX_LEAF_FACES: usize = 4;
-
-/// Tolerance for the overall-centroid inside-brush test. Generous because
-/// the average of multiple face centroids is naturally displaced from any
-/// single brush surface.
-const SOLID_EPSILON: f32 = 0.5;
-
-/// Tolerance for the per-face-centroid inside-brush test. Tight because
-/// individual face centroids sit exactly on their generating brush surface;
-/// a generous epsilon would classify every leaf touching a brush as solid.
-const FACE_SOLID_EPSILON: f32 = -0.1;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FaceSide {
@@ -34,12 +24,12 @@ enum FaceSide {
 /// Splitting plane candidate.
 #[derive(Debug, Clone, Copy)]
 struct Plane {
-    normal: Vec3,
-    distance: f32,
+    normal: DVec3,
+    distance: f64,
 }
 
 /// Classify a point relative to a plane.
-fn classify_point(point: Vec3, plane: &Plane) -> FaceSide {
+fn classify_point(point: DVec3, plane: &Plane) -> FaceSide {
     let d = point.dot(plane.normal) - plane.distance;
     if d > PLANE_EPSILON {
         FaceSide::Front
@@ -80,25 +70,22 @@ fn classify_face(face: &Face, plane: &Plane) -> FaceSide {
 /// split produces a degenerate polygon (< 3 vertices).
 ///
 /// Delegates to `split_polygon` for the vertex math, then re-attaches
-/// Face metadata (normal, distance, texture) to each fragment.
+/// Face metadata (normal, distance, texture, brush_index) to each fragment.
 fn split_face(face: &Face, plane: &Plane) -> (Option<Face>, Option<Face>) {
     let (front_verts, back_verts) =
         split_polygon(&face.vertices, plane.normal, plane.distance, PLANE_EPSILON);
 
+    // Both fragments inherit the parent face's metadata, including `brush_index`.
+    // Struct-update syntax (`..face.clone()`) keeps this in sync if Face grows
+    // more fields later.
     let front = front_verts.map(|verts| Face {
         vertices: verts,
-        normal: face.normal,
-        distance: face.distance,
-        texture: face.texture.clone(),
-        tex_projection: face.tex_projection.clone(),
+        ..face.clone()
     });
 
     let back = back_verts.map(|verts| Face {
         vertices: verts,
-        normal: face.normal,
-        distance: face.distance,
-        texture: face.texture.clone(),
-        tex_projection: face.tex_projection.clone(),
+        ..face.clone()
     });
 
     (front, back)
@@ -162,8 +149,12 @@ fn score_plane(plane: &Plane, faces: &[Face]) -> i32 {
             FaceSide::Front => front_count += 1,
             FaceSide::Back => back_count += 1,
             FaceSide::On => {
-                // Coplanar faces go to front
-                front_count += 1;
+                // Coplanar faces go to the child they face (same side as their "air").
+                if face.normal.dot(plane.normal) > 0.0 {
+                    front_count += 1;
+                } else {
+                    back_count += 1;
+                }
             }
             FaceSide::Spanning => {
                 split_count += 1;
@@ -224,87 +215,34 @@ pub fn build_bsp_tree(faces: Vec<Face>) -> Result<(BspTree, Vec<Face>)> {
     Ok((tree, compacted_faces))
 }
 
-/// Classify each BSP leaf as solid or empty based on brush volumes.
+/// Classify each BSP leaf as solid or empty using brush ownership.
 ///
-/// A leaf is solid when any candidate point from its face geometry lies inside
-/// a brush volume. "Inside" means the point is on the back side (negative
-/// half-space) of every plane in the brush:
-/// `dot(point, plane.normal) - plane.distance <= epsilon` for all planes.
+/// **Principle.** Every face originates from exactly one brush, and a face's
+/// normal points *outward* from that brush. So if a leaf contains a face from
+/// brush B, the leaf lies on B's front side — i.e., outside B, in air.
+/// This is exact: it's derived from how the geometry was built, not from a
+/// test point and epsilon. It matches the approach used by qbsp and ericw-tools.
 ///
-/// Candidate points: the overall leaf face centroid plus each individual face's
-/// centroid. A leaf is solid if **any** candidate is inside a brush. Faceless
-/// leaves are classified as solid — empty space always has bounding faces.
-///
-/// The individual face centroid test uses a tighter epsilon than the overall
-/// centroid because face centroids sit exactly on their generating brush surface.
-/// A generous epsilon would false-positive every face as "inside", defeating the
-/// purpose of solid/empty classification.
-pub fn classify_leaf_solidity(tree: &mut BspTree, faces: &[Face], brush_volumes: &[BrushVolume]) {
+/// **Rules:**
+/// - If a leaf contains any face, it is **empty**. In normal Quake-style
+///   geometry (non-overlapping brushes), being outside the face's source brush
+///   is enough — no other brush contains the leaf. Overlapping brushes are not
+///   supported by this classifier; the map authoring convention is that world
+///   brushes don't nest. If that ever becomes a requirement, the check can be
+///   extended to test a point inside the leaf against every brush *other than*
+///   each face's source brush.
+/// - If a leaf contains no faces, fall back to classifying it as solid. BSP
+///   partitioning of well-formed maps produces faceless leaves for fully
+///   enclosed solid regions; an empty leaf of interest always has at least
+///   one bounding face.
+pub fn classify_leaf_solidity(tree: &mut BspTree, brush_volumes: &[BrushVolume]) {
     if brush_volumes.is_empty() {
         return;
     }
 
     for leaf in &mut tree.leaves {
-        // Faceless leaves are solid: empty space always has bounding faces.
-        if leaf.face_indices.is_empty() {
-            leaf.is_solid = true;
-            continue;
-        }
-
-        // Test the overall leaf centroid first (primary test). Uses a generous
-        // epsilon because this centroid averages multiple face positions and is
-        // naturally displaced from brush surfaces.
-        let overall_centroid = leaf_face_centroid(faces, &leaf.face_indices);
-        if point_inside_any_brush(overall_centroid, brush_volumes, SOLID_EPSILON) {
-            leaf.is_solid = true;
-            continue;
-        }
-
-        // Test each individual face centroid. Uses a tight epsilon to avoid
-        // false-positiving on face centroids that sit on (not inside) their
-        // generating brush surface.
-        let any_face_inside = leaf.face_indices.iter().any(|&fi| {
-            let face = &faces[fi];
-            let face_center: Vec3 =
-                face.vertices.iter().copied().sum::<Vec3>() / face.vertices.len() as f32;
-            point_inside_any_brush(face_center, brush_volumes, FACE_SOLID_EPSILON)
-        });
-
-        leaf.is_solid = any_face_inside;
+        leaf.is_solid = leaf.face_indices.is_empty();
     }
-}
-
-/// Compute the centroid of a leaf's face geometry (average of all face centroids).
-fn leaf_face_centroid(faces: &[Face], face_indices: &[usize]) -> Vec3 {
-    let mut sum = Vec3::ZERO;
-    let mut count = 0usize;
-
-    for &fi in face_indices {
-        let face = &faces[fi];
-        let face_center: Vec3 =
-            face.vertices.iter().copied().sum::<Vec3>() / face.vertices.len() as f32;
-        sum += face_center;
-        count += 1;
-    }
-
-    if count > 0 {
-        sum / count as f32
-    } else {
-        Vec3::ZERO
-    }
-}
-
-/// Test whether a point is inside any brush volume.
-///
-/// `epsilon` controls how close to the surface counts as "inside". Positive
-/// values expand the brush (generous), negative values shrink it (strict).
-fn point_inside_any_brush(point: Vec3, brush_volumes: &[BrushVolume], epsilon: f32) -> bool {
-    brush_volumes.iter().any(|brush| {
-        brush
-            .planes
-            .iter()
-            .all(|plane| point.dot(plane.normal) - plane.distance <= epsilon)
-    })
 }
 
 /// Recursive BSP construction. Returns the child reference for the subtree built.
@@ -314,8 +252,11 @@ fn build_recursive(
     face_indices: &[usize],
     parent: Option<usize>,
 ) -> Result<BspChild> {
-    // Terminal conditions: make a leaf
-    if face_indices.len() <= MAX_LEAF_FACES || is_face_set_convex(all_faces, face_indices) {
+    // Terminal conditions: make a leaf when the face set is convex. A small
+    // non-convex set cannot be a valid leaf: it spans multiple brush volumes
+    // and further splitting is required to separate solid and air regions.
+    // The size cap acts as a safety valve to bound recursion depth.
+    if is_face_set_convex(all_faces, face_indices) && face_indices.len() <= MAX_LEAF_FACES {
         return Ok(make_leaf(tree, all_faces, face_indices));
     }
 
@@ -345,11 +286,19 @@ fn build_recursive(
     for &fi in face_indices {
         let face = &all_faces[fi];
         match classify_face(face, &best_plane) {
-            FaceSide::Front | FaceSide::On => {
+            FaceSide::Front => {
                 front_indices.push(fi);
             }
             FaceSide::Back => {
                 back_indices.push(fi);
+            }
+            FaceSide::On => {
+                // Coplanar faces go to the child they face.
+                if face.normal.dot(best_plane.normal) > 0.0 {
+                    front_indices.push(fi);
+                } else {
+                    back_indices.push(fi);
+                }
             }
             FaceSide::Spanning => {
                 let face_clone = all_faces[fi].clone();
@@ -422,33 +371,34 @@ fn make_leaf(tree: &mut BspTree, all_faces: &[Face], face_indices: &[usize]) -> 
 mod tests {
     use super::*;
 
-    fn make_quad(normal: Vec3, distance: f32, verts: [Vec3; 4]) -> Face {
+    fn make_quad(normal: DVec3, distance: f64, verts: [DVec3; 4]) -> Face {
         Face {
             vertices: verts.to_vec(),
             normal,
             distance,
             texture: "test".to_string(),
             tex_projection: Default::default(),
+            brush_index: 0,
         }
     }
 
     #[test]
     fn classify_point_front_back_on() {
         let plane = Plane {
-            normal: Vec3::X,
+            normal: DVec3::X,
             distance: 0.0,
         };
 
         assert_eq!(
-            classify_point(Vec3::new(1.0, 0.0, 0.0), &plane),
+            classify_point(DVec3::new(1.0, 0.0, 0.0), &plane),
             FaceSide::Front
         );
         assert_eq!(
-            classify_point(Vec3::new(-1.0, 0.0, 0.0), &plane),
+            classify_point(DVec3::new(-1.0, 0.0, 0.0), &plane),
             FaceSide::Back
         );
         assert_eq!(
-            classify_point(Vec3::new(0.05, 0.0, 0.0), &plane),
+            classify_point(DVec3::new(0.05, 0.0, 0.0), &plane),
             FaceSide::On
         );
     }
@@ -456,17 +406,17 @@ mod tests {
     #[test]
     fn classify_face_all_front() {
         let plane = Plane {
-            normal: Vec3::X,
+            normal: DVec3::X,
             distance: 0.0,
         };
         let face = make_quad(
-            Vec3::Z,
+            DVec3::Z,
             1.0,
             [
-                Vec3::new(1.0, 0.0, 1.0),
-                Vec3::new(2.0, 0.0, 1.0),
-                Vec3::new(2.0, 1.0, 1.0),
-                Vec3::new(1.0, 1.0, 1.0),
+                DVec3::new(1.0, 0.0, 1.0),
+                DVec3::new(2.0, 0.0, 1.0),
+                DVec3::new(2.0, 1.0, 1.0),
+                DVec3::new(1.0, 1.0, 1.0),
             ],
         );
         assert_eq!(classify_face(&face, &plane), FaceSide::Front);
@@ -475,17 +425,17 @@ mod tests {
     #[test]
     fn classify_face_spanning() {
         let plane = Plane {
-            normal: Vec3::X,
+            normal: DVec3::X,
             distance: 0.0,
         };
         let face = make_quad(
-            Vec3::Z,
+            DVec3::Z,
             1.0,
             [
-                Vec3::new(-1.0, 0.0, 1.0),
-                Vec3::new(1.0, 0.0, 1.0),
-                Vec3::new(1.0, 1.0, 1.0),
-                Vec3::new(-1.0, 1.0, 1.0),
+                DVec3::new(-1.0, 0.0, 1.0),
+                DVec3::new(1.0, 0.0, 1.0),
+                DVec3::new(1.0, 1.0, 1.0),
+                DVec3::new(-1.0, 1.0, 1.0),
             ],
         );
         assert_eq!(classify_face(&face, &plane), FaceSide::Spanning);
@@ -494,17 +444,17 @@ mod tests {
     #[test]
     fn split_face_produces_valid_polygons() {
         let plane = Plane {
-            normal: Vec3::X,
+            normal: DVec3::X,
             distance: 0.0,
         };
         let face = make_quad(
-            Vec3::Z,
+            DVec3::Z,
             1.0,
             [
-                Vec3::new(-2.0, 0.0, 1.0),
-                Vec3::new(2.0, 0.0, 1.0),
-                Vec3::new(2.0, 2.0, 1.0),
-                Vec3::new(-2.0, 2.0, 1.0),
+                DVec3::new(-2.0, 0.0, 1.0),
+                DVec3::new(2.0, 0.0, 1.0),
+                DVec3::new(2.0, 2.0, 1.0),
+                DVec3::new(-2.0, 2.0, 1.0),
             ],
         );
 
@@ -541,19 +491,20 @@ mod tests {
     fn split_degenerate_discards_fragment() {
         // A triangle that barely touches the plane on one side
         let plane = Plane {
-            normal: Vec3::X,
+            normal: DVec3::X,
             distance: 0.0,
         };
         let face = Face {
             vertices: vec![
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(2.0, 1.0, 0.0),
-                Vec3::new(1.0, 1.0, 0.0),
+                DVec3::new(1.0, 0.0, 0.0),
+                DVec3::new(2.0, 1.0, 0.0),
+                DVec3::new(1.0, 1.0, 0.0),
             ],
-            normal: Vec3::NEG_Z,
+            normal: DVec3::NEG_Z,
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: Default::default(),
+            brush_index: 0,
         };
 
         let (front, back) = split_face(&face, &plane);
@@ -577,14 +528,15 @@ mod tests {
     fn build_bsp_tree_single_face() {
         let face = Face {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(1.0, 1.0, 0.0),
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(1.0, 0.0, 0.0),
+                DVec3::new(1.0, 1.0, 0.0),
             ],
-            normal: Vec3::Z,
+            normal: DVec3::Z,
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: Default::default(),
+            brush_index: 0,
         };
 
         let (tree, faces) = build_bsp_tree(vec![face]).expect("should build");
@@ -598,23 +550,23 @@ mod tests {
     fn build_bsp_tree_opposing_faces() {
         let faces = vec![
             make_quad(
-                Vec3::X,
+                DVec3::X,
                 10.0,
                 [
-                    Vec3::new(10.0, 0.0, 0.0),
-                    Vec3::new(10.0, 0.0, 10.0),
-                    Vec3::new(10.0, 10.0, 10.0),
-                    Vec3::new(10.0, 10.0, 0.0),
+                    DVec3::new(10.0, 0.0, 0.0),
+                    DVec3::new(10.0, 0.0, 10.0),
+                    DVec3::new(10.0, 10.0, 10.0),
+                    DVec3::new(10.0, 10.0, 0.0),
                 ],
             ),
             make_quad(
-                Vec3::NEG_X,
+                DVec3::NEG_X,
                 10.0,
                 [
-                    Vec3::new(-10.0, 0.0, 0.0),
-                    Vec3::new(-10.0, 10.0, 0.0),
-                    Vec3::new(-10.0, 10.0, 10.0),
-                    Vec3::new(-10.0, 0.0, 10.0),
+                    DVec3::new(-10.0, 0.0, 0.0),
+                    DVec3::new(-10.0, 10.0, 0.0),
+                    DVec3::new(-10.0, 10.0, 10.0),
+                    DVec3::new(-10.0, 0.0, 10.0),
                 ],
             ),
         ];
@@ -628,17 +580,17 @@ mod tests {
     #[test]
     fn score_rejects_non_partitioning_planes() {
         let plane = Plane {
-            normal: Vec3::X,
+            normal: DVec3::X,
             distance: -100.0,
         };
         let faces = vec![make_quad(
-            Vec3::Z,
+            DVec3::Z,
             0.0,
             [
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(1.0, 1.0, 0.0),
-                Vec3::new(0.0, 1.0, 0.0),
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(1.0, 0.0, 0.0),
+                DVec3::new(1.0, 1.0, 0.0),
+                DVec3::new(0.0, 1.0, 0.0),
             ],
         )];
         let score = score_plane(&plane, &faces);
@@ -647,5 +599,253 @@ mod tests {
             i32::MAX,
             "plane with all faces on one side should score MAX"
         );
+    }
+
+    // -- Helpers for geometry-based tests --
+
+    fn make_box_faces(min: DVec3, max: DVec3) -> Vec<Face> {
+        let texture = "test".to_string();
+        vec![
+            Face {
+                vertices: vec![
+                    DVec3::new(min.x, min.y, min.z),
+                    DVec3::new(min.x, max.y, min.z),
+                    DVec3::new(min.x, max.y, max.z),
+                    DVec3::new(min.x, min.y, max.z),
+                ],
+                normal: DVec3::NEG_X,
+                distance: -min.x,
+                texture: texture.clone(),
+                tex_projection: Default::default(),
+                brush_index: 0,
+            },
+            Face {
+                vertices: vec![
+                    DVec3::new(max.x, min.y, min.z),
+                    DVec3::new(max.x, min.y, max.z),
+                    DVec3::new(max.x, max.y, max.z),
+                    DVec3::new(max.x, max.y, min.z),
+                ],
+                normal: DVec3::X,
+                distance: max.x,
+                texture: texture.clone(),
+                tex_projection: Default::default(),
+                brush_index: 0,
+            },
+            Face {
+                vertices: vec![
+                    DVec3::new(min.x, min.y, min.z),
+                    DVec3::new(min.x, min.y, max.z),
+                    DVec3::new(max.x, min.y, max.z),
+                    DVec3::new(max.x, min.y, min.z),
+                ],
+                normal: DVec3::NEG_Y,
+                distance: -min.y,
+                texture: texture.clone(),
+                tex_projection: Default::default(),
+                brush_index: 0,
+            },
+            Face {
+                vertices: vec![
+                    DVec3::new(min.x, max.y, min.z),
+                    DVec3::new(max.x, max.y, min.z),
+                    DVec3::new(max.x, max.y, max.z),
+                    DVec3::new(min.x, max.y, max.z),
+                ],
+                normal: DVec3::Y,
+                distance: max.y,
+                texture: texture.clone(),
+                tex_projection: Default::default(),
+                brush_index: 0,
+            },
+            Face {
+                vertices: vec![
+                    DVec3::new(min.x, min.y, min.z),
+                    DVec3::new(max.x, min.y, min.z),
+                    DVec3::new(max.x, max.y, min.z),
+                    DVec3::new(min.x, max.y, min.z),
+                ],
+                normal: DVec3::NEG_Z,
+                distance: -min.z,
+                texture: texture.clone(),
+                tex_projection: Default::default(),
+                brush_index: 0,
+            },
+            Face {
+                vertices: vec![
+                    DVec3::new(min.x, min.y, max.z),
+                    DVec3::new(max.x, min.y, max.z),
+                    DVec3::new(max.x, max.y, max.z),
+                    DVec3::new(min.x, max.y, max.z),
+                ],
+                normal: DVec3::Z,
+                distance: max.z,
+                texture: texture.clone(),
+                tex_projection: Default::default(),
+                brush_index: 0,
+            },
+        ]
+    }
+
+    fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
+        use crate::map_data::BrushPlane;
+        BrushVolume {
+            planes: vec![
+                BrushPlane {
+                    normal: DVec3::X,
+                    distance: max.x,
+                },
+                BrushPlane {
+                    normal: DVec3::NEG_X,
+                    distance: -min.x,
+                },
+                BrushPlane {
+                    normal: DVec3::Y,
+                    distance: max.y,
+                },
+                BrushPlane {
+                    normal: DVec3::NEG_Y,
+                    distance: -min.y,
+                },
+                BrushPlane {
+                    normal: DVec3::Z,
+                    distance: max.z,
+                },
+                BrushPlane {
+                    normal: DVec3::NEG_Z,
+                    distance: -min.z,
+                },
+            ],
+            aabb: Aabb { min, max },
+        }
+    }
+
+    /// Build a hollow room from 6 wall brushes (floor, ceiling, 4 walls).
+    fn hollow_room(min: DVec3, max: DVec3, wall: f64) -> (Vec<Face>, Vec<BrushVolume>) {
+        let mut faces = Vec::new();
+        let mut brushes = Vec::new();
+
+        let slabs = [
+            // Floor
+            (
+                DVec3::new(min.x, min.y, min.z),
+                DVec3::new(max.x, min.y + wall, max.z),
+            ),
+            // Ceiling
+            (
+                DVec3::new(min.x, max.y - wall, min.z),
+                DVec3::new(max.x, max.y, max.z),
+            ),
+            // Wall -X
+            (
+                DVec3::new(min.x, min.y, min.z),
+                DVec3::new(min.x + wall, max.y, max.z),
+            ),
+            // Wall +X
+            (
+                DVec3::new(max.x - wall, min.y, min.z),
+                DVec3::new(max.x, max.y, max.z),
+            ),
+            // Wall -Z
+            (
+                DVec3::new(min.x, min.y, min.z),
+                DVec3::new(max.x, max.y, min.z + wall),
+            ),
+            // Wall +Z
+            (
+                DVec3::new(min.x, min.y, max.z - wall),
+                DVec3::new(max.x, max.y, max.z),
+            ),
+        ];
+
+        for (b_min, b_max) in slabs {
+            faces.extend(make_box_faces(b_min, b_max));
+            brushes.push(box_brush(b_min, b_max));
+        }
+
+        (faces, brushes)
+    }
+
+    /// Walk the BSP tree to find which leaf contains a given point.
+    fn find_leaf_for_point(tree: &BspTree, point: DVec3) -> usize {
+        if tree.nodes.is_empty() {
+            return 0;
+        }
+        let mut child = BspChild::Node(0);
+        loop {
+            match child {
+                BspChild::Leaf(idx) => return idx,
+                BspChild::Node(idx) => {
+                    let node = &tree.nodes[idx];
+                    let dist = point.dot(node.plane_normal) - node.plane_distance;
+                    child = if dist >= 0.0 {
+                        node.front.clone()
+                    } else {
+                        node.back.clone()
+                    };
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn floating_cube_air_space_leaves_stay_empty() {
+        // A hollow room with a wall that has a narrow gap. The wall is made of
+        // two brushes separated by a small air gap. BSP partitioning can create
+        // a leaf that spans part of a brush and the adjacent air gap. The leaf
+        // solidity classifier must NOT mark such a leaf as solid when it
+        // contains air space.
+        //
+        // This reproduces the same topology as a pillar with a doorway: adjacent
+        // solid brushes with a narrow air gap between them.
+        let (mut faces, mut brushes) =
+            hollow_room(DVec3::ZERO, DVec3::new(256.0, 128.0, 128.0), 16.0);
+
+        // Interior is (16,16,16) to (240,112,112).
+        // Add two wall sections at X=120..136, separated by a small air gap.
+        //   - Solid wall: Z=16..64
+        //   - AIR GAP: Z=64..66 (only 2 units)
+        //   - Solid pillar: Z=66..68 (small, 2 units)
+        //   - AIR GAP: Z=68..70 (only 2 units)
+        //   - Solid wall: Z=70..112
+        let wall1_min = DVec3::new(120.0, 16.0, 16.0);
+        let wall1_max = DVec3::new(136.0, 112.0, 64.0);
+        faces.extend(make_box_faces(wall1_min, wall1_max));
+        brushes.push(box_brush(wall1_min, wall1_max));
+
+        let pillar_min = DVec3::new(120.0, 16.0, 66.0);
+        let pillar_max = DVec3::new(136.0, 112.0, 68.0);
+        faces.extend(make_box_faces(pillar_min, pillar_max));
+        brushes.push(box_brush(pillar_min, pillar_max));
+
+        let wall2_min = DVec3::new(120.0, 16.0, 70.0);
+        let wall2_max = DVec3::new(136.0, 112.0, 112.0);
+        faces.extend(make_box_faces(wall2_min, wall2_max));
+        brushes.push(box_brush(wall2_min, wall2_max));
+
+        let (mut tree, _split_faces) = build_bsp_tree(faces).expect("BSP build should succeed");
+        classify_leaf_solidity(&mut tree, &brushes);
+
+        // The air gaps are at Z=64..66 and Z=68..70 within the wall at X=120..136.
+        // Test points in these air gaps to ensure they're not classified as solid.
+        let air_gap_points = [
+            DVec3::new(128.0, 64.0, 65.0),   // center of left air gap
+            DVec3::new(128.0, 64.0, 69.0),   // center of right air gap
+        ];
+
+        for &point in &air_gap_points {
+            let leaf_idx = find_leaf_for_point(&tree, point);
+            let leaf = &tree.leaves[leaf_idx];
+            assert!(
+                !leaf.is_solid,
+                "air-gap point ({}, {}, {}) falls in leaf {leaf_idx} which is classified solid. \
+                 A narrow air gap between brushes was misclassified as solid. \
+                 Leaf bounds: ({:.1},{:.1},{:.1})..({:.1},{:.1},{:.1}), faces: {}",
+                point.x, point.y, point.z,
+                leaf.bounds.min.x, leaf.bounds.min.y, leaf.bounds.min.z,
+                leaf.bounds.max.x, leaf.bounds.max.y, leaf.bounds.max.z,
+                leaf.face_indices.len()
+            );
+        }
     }
 }

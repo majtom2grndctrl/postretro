@@ -24,8 +24,10 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
         let vertex_start = vertices.len() as u32;
         let vertex_count = portal.polygon.len() as u32;
 
+        // Output precision boundary: narrow portal vertices from f64 to f32
+        // at the PRL format write site.
         for v in &portal.polygon {
-            vertices.push([v.x, v.y, v.z]);
+            vertices.push([v.x as f32, v.y as f32, v.z as f32]);
         }
 
         records.push(PortalRecord {

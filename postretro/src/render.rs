@@ -55,6 +55,35 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+// Wireframe overlay shader: shares the uniforms bind group (group 0) and vertex
+// format with the textured pipeline, but ignores UV and vertex_color. Emits a flat
+// bright-green color for high visibility over textured surfaces. Intended for
+// debug use only (toggled at runtime via Shift+\).
+const WIREFRAME_SHADER_SOURCE: &str = r#"
+struct Uniforms {
+    view_proj: mat4x4<f32>,
+    ambient_light: vec3<f32>,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) base_uv: vec2<f32>,
+    @location(2) vertex_color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
+    return uniforms.view_proj * vec4<f32>(in.position, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.2, 1.0);
+}
+"#;
+
 // --- Uniform buffer layout ---
 
 /// Per-frame uniform data: view-projection matrix + ambient light.
@@ -202,7 +231,46 @@ pub struct Renderer {
     /// Per-leaf texture sub-ranges for draw call grouping.
     leaf_texture_sub_ranges: Vec<Vec<TextureSubRange>>,
 
+    /// Debug wireframe overlay pipeline (LineList topology, flat-color shader).
+    wireframe_pipeline: wgpu::RenderPipeline,
+    /// Line-list index buffer built from the triangle index buffer at load time.
+    /// Layout is 1:1 parallel with the triangle index buffer: each triangle at
+    /// triangle-buffer range `[tri_start..tri_end]` (multiple of 3) maps to
+    /// line-buffer range `[tri_start*2..tri_end*2]` (6 line indices per 3
+    /// triangle indices).
+    wireframe_index_buffer: wgpu::Buffer,
+    wireframe_index_count: u32,
+    /// Current wireframe debug overlay mode.
+    wireframe_mode: WireframeMode,
+
     has_geometry: bool,
+}
+
+/// Debug wireframe overlay state. Cycled by `Shift+\` in the engine.
+///
+/// - `Off`: no overlay.
+/// - `Culled`: draws lines only for the sub-ranges the textured renderer
+///   actually drew this frame (reuses PVS + frustum + back-face culled set).
+/// - `All`: draws lines for the entire index buffer, regardless of visibility.
+///
+/// Comparing `Culled` against `All` reveals where the renderer is wrongly
+/// culling or wrongly including surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireframeMode {
+    Off,
+    Culled,
+    All,
+}
+
+impl WireframeMode {
+    /// Next state in the `Off → Culled → All → Off` cycle.
+    fn next(self) -> Self {
+        match self {
+            WireframeMode::Off => WireframeMode::Culled,
+            WireframeMode::Culled => WireframeMode::All,
+            WireframeMode::All => WireframeMode::Off,
+        }
+    }
 }
 
 impl Renderer {
@@ -295,6 +363,26 @@ impl Renderer {
             contents: &index_data,
             usage: wgpu::BufferUsages::INDEX,
         });
+
+        // Build a line-list index buffer from the triangle index buffer for the
+        // wireframe overlay. Each triangle contributes its three edges as line
+        // pairs. Shared edges are duplicated (cheap, and avoids a hash set).
+        let (wireframe_index_data, wireframe_index_count) = if let Some(geom) =
+            geometry.filter(|g| !g.vertices.is_empty() && !g.indices.is_empty())
+        {
+            let line_indices = build_line_indices_from_triangles(geom.indices);
+            let count = line_indices.len() as u32;
+            (bytemuck_cast_slice_u32(&line_indices), count)
+        } else {
+            (vec![0u8; 4], 0u32)
+        };
+
+        let wireframe_index_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Wireframe Line Index Buffer"),
+                contents: &wireframe_index_data,
+                usage: wgpu::BufferUsages::INDEX,
+            });
 
         // Uniform buffer (view-projection + ambient light).
         let view_proj = build_default_view_projection(
@@ -490,12 +578,89 @@ impl Renderer {
             cache: None,
         });
 
+        // --- Wireframe overlay pipeline ---
+        // Uses only the uniform bind group (group 0), matches the textured vertex
+        // buffer layout, draws line lists, and disables depth write + uses
+        // `CompareFunction::Always` so edges render on top of textured surfaces.
+        let wireframe_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Wireframe Pipeline Layout"),
+                bind_group_layouts: &[Some(&uniform_bind_group_layout)],
+                immediate_size: 0,
+            });
+
+        let wireframe_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Wireframe Shader"),
+            source: wgpu::ShaderSource::Wgsl(WIREFRAME_SHADER_SOURCE.into()),
+        });
+
+        let wireframe_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Wireframe Pipeline"),
+            layout: Some(&wireframe_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &wireframe_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: crate::bsp::TexturedVertex::STRIDE as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 12,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 20,
+                            shader_location: 2,
+                            format: wgpu::VertexFormat::Float32x4,
+                        },
+                    ],
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &wireframe_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         if has_geometry {
             log::info!(
                 "[Renderer] Textured pipeline ready: {} indices, {} textures, {} leaf sub-range groups",
                 index_count,
                 gpu_textures.len(),
                 leaf_texture_sub_ranges.len(),
+            );
+            log::info!(
+                "[Renderer] Wireframe overlay pipeline ready: {} line indices",
+                wireframe_index_count,
             );
         } else {
             log::info!("[Renderer] Pipeline ready (no geometry loaded)");
@@ -516,8 +681,20 @@ impl Renderer {
             depth_view,
             gpu_textures,
             leaf_texture_sub_ranges,
+            wireframe_pipeline,
+            wireframe_index_buffer,
+            wireframe_index_count,
+            wireframe_mode: WireframeMode::Off,
             has_geometry,
         })
+    }
+
+    /// Advance the wireframe debug overlay to the next mode in the
+    /// `Off → Culled → All → Off` cycle. Returns the new mode.
+    pub fn cycle_wireframe_mode(&mut self) -> WireframeMode {
+        self.wireframe_mode = self.wireframe_mode.next();
+        log::info!("[Renderer] Wireframe overlay: {:?}", self.wireframe_mode);
+        self.wireframe_mode
     }
 
     /// Handle window resize. Reconfigures the surface and recreates the depth buffer.
@@ -625,6 +802,58 @@ impl Renderer {
             }
         }
 
+        // Debug wireframe overlay pass. Loads the existing color target and depth
+        // buffer (no clear) and draws edges on top with depth test disabled.
+        //
+        // `Culled` reuses the same visible-leaf set the textured pass drew so
+        // the wireframe matches the ground truth of what was rendered. `All`
+        // draws every line in the buffer regardless of visibility; comparing
+        // the two reveals culling bugs.
+        if self.wireframe_mode != WireframeMode::Off
+            && self.has_geometry
+            && self.wireframe_index_count > 0
+        {
+            let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Wireframe Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+
+            overlay_pass.set_pipeline(&self.wireframe_pipeline);
+            overlay_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            overlay_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            overlay_pass.set_index_buffer(
+                self.wireframe_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+
+            match self.wireframe_mode {
+                WireframeMode::Off => {}
+                WireframeMode::All => {
+                    overlay_pass.draw_indexed(0..self.wireframe_index_count, 0, 0..1);
+                }
+                WireframeMode::Culled => {
+                    self.draw_visible_wireframe(&mut overlay_pass, visible);
+                }
+            }
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
@@ -660,56 +889,9 @@ impl Renderer {
         render_pass: &mut wgpu::RenderPass<'a>,
         ranges: &[DrawRange],
     ) {
+        let visible_leaves = self.collect_visible_leaf_indices(ranges);
+
         let mut draw_calls = 0u32;
-
-        // Build a set of visible leaf indices from the draw ranges.
-        // Each DrawRange comes from a visible leaf's faces. We need to find which
-        // leaves contributed these ranges and draw their texture sub-ranges.
-        //
-        // The visibility system provides DrawRange per face. With texture sub-ranges,
-        // we need to map visible leaves to their sub-ranges. Use the leaf_texture_sub_ranges
-        // to match: for each leaf, check if any of its sub-ranges overlap with the
-        // provided draw ranges.
-
-        // Optimization: since ranges come from visibility, and leaf_texture_sub_ranges
-        // are pre-computed from the same index buffer, we can identify which leaves
-        // are visible by checking if any sub-range falls within a DrawRange.
-        // However, the simplest correct approach is to just iterate all leaves and
-        // check if any of their sub-ranges overlap. For the common case with PVS,
-        // most leaves are excluded.
-
-        // Build a lookup of which index buffer regions are visible.
-        // The ranges are face-level granularity from the visibility system.
-        // Since we sorted by (leaf, texture), a leaf's sub-ranges are a superset
-        // of its faces' ranges, grouped by texture.
-
-        // Approach: find visible leaf indices from the ranges. Each range's
-        // index_offset falls within exactly one leaf's sub-range set. We collect
-        // unique leaf indices, then draw their texture sub-ranges.
-        let mut visible_leaves = Vec::new();
-        for (leaf_idx, sub_ranges) in self.leaf_texture_sub_ranges.iter().enumerate() {
-            if sub_ranges.is_empty() {
-                continue;
-            }
-            // Check if any DrawRange falls within this leaf's index range.
-            let leaf_start = sub_ranges.first().map(|sr| sr.index_offset).unwrap_or(0);
-            let leaf_end = sub_ranges
-                .last()
-                .map(|sr| sr.index_offset + sr.index_count)
-                .unwrap_or(0);
-
-            let is_visible = ranges.iter().any(|r| {
-                let r_start = r.index_offset;
-                let r_end = r.index_offset + r.index_count;
-                // Overlap test.
-                r_start < leaf_end && r_end > leaf_start
-            });
-
-            if is_visible {
-                visible_leaves.push(leaf_idx);
-            }
-        }
-
         for leaf_idx in &visible_leaves {
             if let Some(sub_ranges) = self.leaf_texture_sub_ranges.get(*leaf_idx) {
                 for sub_range in sub_ranges {
@@ -731,6 +913,80 @@ impl Renderer {
             "[Renderer] Culled: {draw_calls} draw calls, {} visible leaves",
             visible_leaves.len(),
         );
+    }
+
+    /// Draw the debug wireframe overlay for the same visible sub-ranges the
+    /// textured pass drew this frame. Reuses the visibility determination
+    /// (`VisibleFaces`) produced upstream — no separate culling pass — so the
+    /// "Culled" wireframe is guaranteed to match the textured output exactly.
+    ///
+    /// The line index buffer is 1:1 parallel with the triangle index buffer
+    /// (6 line indices per 3 triangle indices), so each textured sub-range
+    /// `[start..end]` becomes the line sub-range `[start*2..end*2]`.
+    fn draw_visible_wireframe<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        visible: &VisibleFaces,
+    ) {
+        match visible {
+            VisibleFaces::DrawAll => {
+                // Visibility system said "draw everything", so the culled
+                // overlay matches the all overlay: draw the whole line buffer.
+                render_pass.draw_indexed(0..self.wireframe_index_count, 0, 0..1);
+            }
+            VisibleFaces::Culled(ranges) => {
+                let visible_leaves = self.collect_visible_leaf_indices(ranges);
+                let mut draw_calls = 0u32;
+                for leaf_idx in &visible_leaves {
+                    if let Some(sub_ranges) = self.leaf_texture_sub_ranges.get(*leaf_idx) {
+                        for sub_range in sub_ranges {
+                            let start = sub_range.index_offset * 2;
+                            let end = (sub_range.index_offset + sub_range.index_count) * 2;
+                            render_pass.draw_indexed(start..end, 0, 0..1);
+                            draw_calls += 1;
+                        }
+                    }
+                }
+                log::trace!(
+                    "[Renderer] Wireframe Culled: {draw_calls} line draw calls, {} visible leaves",
+                    visible_leaves.len(),
+                );
+            }
+        }
+    }
+
+    /// Identify which leaf indices are visible given a set of `DrawRange`s
+    /// produced by the visibility system. A leaf is visible iff any of its
+    /// texture sub-ranges overlap any visible draw range in index space.
+    ///
+    /// Shared by both the textured and wireframe-culled draw paths so they
+    /// can never disagree on "which leaves are visible this frame".
+    fn collect_visible_leaf_indices(&self, ranges: &[DrawRange]) -> Vec<usize> {
+        let mut visible_leaves = Vec::new();
+        for (leaf_idx, sub_ranges) in self.leaf_texture_sub_ranges.iter().enumerate() {
+            if sub_ranges.is_empty() {
+                continue;
+            }
+            // Leaves have their sub-ranges sorted by index_offset, so the
+            // first/last entries bound the leaf's span in the index buffer.
+            let leaf_start = sub_ranges.first().map(|sr| sr.index_offset).unwrap_or(0);
+            let leaf_end = sub_ranges
+                .last()
+                .map(|sr| sr.index_offset + sr.index_count)
+                .unwrap_or(0);
+
+            let is_visible = ranges.iter().any(|r| {
+                let r_start = r.index_offset;
+                let r_end = r.index_offset + r.index_count;
+                // Overlap test.
+                r_start < leaf_end && r_end > leaf_start
+            });
+
+            if is_visible {
+                visible_leaves.push(leaf_idx);
+            }
+        }
+        visible_leaves
     }
 }
 
@@ -770,6 +1026,26 @@ fn cast_textured_vertices_to_bytes(data: &[crate::bsp::TexturedVertex]) -> Vec<u
         }
     }
     bytes
+}
+
+/// Build a line-list index buffer from a triangle-list index buffer.
+/// Each triangle `[a, b, c]` contributes three line-list edges
+/// `[a, b, b, c, c, a]`. Shared edges across triangles are emitted multiple
+/// times; this is cheap and fine for a debug overlay. Incomplete trailing
+/// indices (not a full triangle) are ignored.
+fn build_line_indices_from_triangles(tri_indices: &[u32]) -> Vec<u32> {
+    let tri_count = tri_indices.len() / 3;
+    let mut lines = Vec::with_capacity(tri_count * 6);
+    for tri in tri_indices.chunks_exact(3) {
+        let (a, b, c) = (tri[0], tri[1], tri[2]);
+        lines.push(a);
+        lines.push(b);
+        lines.push(b);
+        lines.push(c);
+        lines.push(c);
+        lines.push(a);
+    }
+    lines
 }
 
 fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
@@ -846,6 +1122,35 @@ mod tests {
         let vp = Mat4::IDENTITY;
         let data = build_uniform_data(&vp, [1.0, 1.0, 1.0]);
         assert_eq!(data.len(), UNIFORM_SIZE);
+    }
+
+    #[test]
+    fn line_indices_from_single_triangle_produces_three_edges() {
+        let tri = vec![0u32, 1, 2];
+        let lines = build_line_indices_from_triangles(&tri);
+        assert_eq!(lines, vec![0, 1, 1, 2, 2, 0]);
+    }
+
+    #[test]
+    fn line_indices_from_two_triangles_produces_twelve_indices() {
+        let tris = vec![0u32, 1, 2, 3, 4, 5];
+        let lines = build_line_indices_from_triangles(&tris);
+        assert_eq!(lines.len(), 12);
+        assert_eq!(lines, vec![0, 1, 1, 2, 2, 0, 3, 4, 4, 5, 5, 3]);
+    }
+
+    #[test]
+    fn line_indices_from_empty_input_is_empty() {
+        let lines = build_line_indices_from_triangles(&[]);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn line_indices_ignores_incomplete_trailing_triangle() {
+        // 4 indices = 1 full triangle + 1 dangling index.
+        let tris = vec![0u32, 1, 2, 3];
+        let lines = build_line_indices_from_triangles(&tris);
+        assert_eq!(lines, vec![0, 1, 1, 2, 2, 0]);
     }
 
     #[test]

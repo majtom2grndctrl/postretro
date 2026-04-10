@@ -1,7 +1,7 @@
 // Geometry extraction: fan-triangulate faces, compute UVs, build vertex/index buffers.
 // See: context/lib/build_pipeline.md §PRL
 
-use glam::Vec3;
+use glam::DVec3;
 use postretro_level_format::geometry::{FaceMetaV2, GeometrySectionV2};
 use postretro_level_format::texture_names::TextureNamesSection;
 
@@ -55,7 +55,7 @@ pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometryResult {
     // Build a face ordering sorted by empty-leaf index.
     let ordered_faces = build_leaf_ordered_faces(tree);
 
-    let inverse_scale = 1.0 / MapFormat::IdTech2.units_to_meters();
+    let inverse_scale: f64 = 1.0 / MapFormat::IdTech2.units_to_meters();
 
     let mut vertices: Vec<[f32; 5]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
@@ -67,10 +67,18 @@ pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometryResult {
         let base_vertex = vertices.len() as u32;
 
         // Emit vertices with position (engine space) + UV (texel space).
+        // This is the **output precision boundary** for geometry: all math is
+        // computed in f64, and we narrow to f32 only at the PRL vertex buffer write.
         for &v in &face.vertices {
             let quake_pos = engine_to_quake(v) * inverse_scale;
             let (u, v_coord) = compute_texel_uv(quake_pos, face);
-            vertices.push([v.x, v.y, v.z, u, v_coord]);
+            vertices.push([
+                v.x as f32,
+                v.y as f32,
+                v.z as f32,
+                u as f32,
+                v_coord as f32,
+            ]);
         }
 
         // Fan-triangulate: (0, 1, 2), (0, 2, 3), ..., (0, n-2, n-1)
@@ -108,13 +116,13 @@ pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometryResult {
 /// Inverse of the `quake_to_engine` transform in parse.rs:
 ///   engine = (-qy, qz, -qx)
 ///   quake  = (-engine_z, -engine_x, engine_y)
-fn engine_to_quake(v: Vec3) -> Vec3 {
-    Vec3::new(-v.z, -v.x, v.y)
+fn engine_to_quake(v: DVec3) -> DVec3 {
+    DVec3::new(-v.z, -v.x, v.y)
 }
 
 /// Convert engine-space normal back to Quake-space normal.
 /// Same transform as positions (direction vector, no scale).
-fn engine_normal_to_quake(n: Vec3) -> Vec3 {
+fn engine_normal_to_quake(n: DVec3) -> DVec3 {
     engine_to_quake(n)
 }
 
@@ -122,7 +130,7 @@ fn engine_normal_to_quake(n: Vec3) -> Vec3 {
 ///
 /// Returns (u, v) in texel units. The engine normalizes by dividing by
 /// texture width/height at load time.
-fn compute_texel_uv(quake_pos: Vec3, face: &Face) -> (f32, f32) {
+fn compute_texel_uv(quake_pos: DVec3, face: &Face) -> (f64, f64) {
     match &face.tex_projection {
         TextureProjection::Standard {
             u_offset,
@@ -161,14 +169,14 @@ fn compute_texel_uv(quake_pos: Vec3, face: &Face) -> (f32, f32) {
 /// Mirrors shambler's `standard_uv` but omits the texture-size division,
 /// producing texel-space coordinates instead of normalized UVs.
 fn standard_texel_uv(
-    vertex: Vec3,
-    quake_normal: Vec3,
-    u_offset: f32,
-    v_offset: f32,
-    angle: f32,
-    scale_u: f32,
-    scale_v: f32,
-) -> (f32, f32) {
+    vertex: DVec3,
+    quake_normal: DVec3,
+    u_offset: f64,
+    v_offset: f64,
+    angle: f64,
+    scale_u: f64,
+    scale_v: f64,
+) -> (f64, f64) {
     // Choose projection axes from closest axis to face normal (Quake convention).
     let du = quake_normal.z.abs(); // up axis (Z in Quake)
     let dr = quake_normal.y.abs(); // right axis (Y in Quake)
@@ -203,14 +211,14 @@ fn standard_texel_uv(
 ///
 /// Mirrors shambler's `valve_uv` but omits the texture-size division.
 fn valve_texel_uv(
-    vertex: Vec3,
-    u_axis: Vec3,
-    u_offset: f32,
-    v_axis: Vec3,
-    v_offset: f32,
-    scale_u: f32,
-    scale_v: f32,
-) -> (f32, f32) {
+    vertex: DVec3,
+    u_axis: DVec3,
+    u_offset: f64,
+    v_axis: DVec3,
+    v_offset: f64,
+    scale_u: f64,
+    scale_v: f64,
+) -> (f64, f64) {
     let u = u_axis.dot(vertex) / scale_u + u_offset;
     let v = v_axis.dot(vertex) / scale_v + v_offset;
     (u, v)
@@ -278,62 +286,66 @@ mod tests {
     fn triangle_face() -> Face {
         Face {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(0.0, 1.0, 0.0),
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(1.0, 0.0, 0.0),
+                DVec3::new(0.0, 1.0, 0.0),
             ],
-            normal: Vec3::Z,
+            normal: DVec3::Z,
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: default_projection(),
+            brush_index: 0,
         }
     }
 
     fn quad_face() -> Face {
         Face {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(1.0, 1.0, 0.0),
-                Vec3::new(0.0, 1.0, 0.0),
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(1.0, 0.0, 0.0),
+                DVec3::new(1.0, 1.0, 0.0),
+                DVec3::new(0.0, 1.0, 0.0),
             ],
-            normal: Vec3::Z,
+            normal: DVec3::Z,
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: default_projection(),
+            brush_index: 0,
         }
     }
 
     fn pentagon_face() -> Face {
         Face {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(1.5, 1.0, 0.0),
-                Vec3::new(0.5, 1.5, 0.0),
-                Vec3::new(-0.5, 1.0, 0.0),
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(1.0, 0.0, 0.0),
+                DVec3::new(1.5, 1.0, 0.0),
+                DVec3::new(0.5, 1.5, 0.0),
+                DVec3::new(-0.5, 1.0, 0.0),
             ],
-            normal: Vec3::Z,
+            normal: DVec3::Z,
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: default_projection(),
+            brush_index: 0,
         }
     }
 
     fn hexagon_face() -> Face {
         Face {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(1.5, 0.5, 0.0),
-                Vec3::new(1.0, 1.0, 0.0),
-                Vec3::new(0.0, 1.0, 0.0),
-                Vec3::new(-0.5, 0.5, 0.0),
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(1.0, 0.0, 0.0),
+                DVec3::new(1.5, 0.5, 0.0),
+                DVec3::new(1.0, 1.0, 0.0),
+                DVec3::new(0.0, 1.0, 0.0),
+                DVec3::new(-0.5, 0.5, 0.0),
             ],
-            normal: Vec3::Z,
+            normal: DVec3::Z,
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: default_projection(),
+            brush_index: 0,
         }
     }
 
@@ -343,8 +355,8 @@ mod tests {
             .map(|(face_indices, is_solid)| BspLeaf {
                 face_indices,
                 bounds: Aabb {
-                    min: Vec3::ZERO,
-                    max: Vec3::ONE,
+                    min: DVec3::ZERO,
+                    max: DVec3::ONE,
                 },
                 is_solid,
             })
@@ -482,14 +494,15 @@ mod tests {
     fn vertex_positions_are_passed_through_unchanged() {
         let faces = vec![Face {
             vertices: vec![
-                Vec3::new(-2.0, 3.0, -1.0),
-                Vec3::new(-5.0, 6.0, -4.0),
-                Vec3::new(-8.0, 9.0, -7.0),
+                DVec3::new(-2.0, 3.0, -1.0),
+                DVec3::new(-5.0, 6.0, -4.0),
+                DVec3::new(-8.0, 9.0, -7.0),
             ],
-            normal: Vec3::Y,
+            normal: DVec3::Y,
             distance: 0.0,
             texture: "test".to_string(),
             tex_projection: default_projection(),
+            brush_index: 0,
         }];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
@@ -698,21 +711,22 @@ mod tests {
         // non-zero UVs for vertices away from origin.
         let face = Face {
             vertices: vec![
-                Vec3::new(0.0, 0.0, -2.54),   // 100 Quake units forward
-                Vec3::new(-2.54, 0.0, -2.54), // 100 right, 100 forward
-                Vec3::new(-2.54, 0.0, 0.0),   // 100 right
+                DVec3::new(0.0, 0.0, -2.54),   // 100 Quake units forward
+                DVec3::new(-2.54, 0.0, -2.54), // 100 right, 100 forward
+                DVec3::new(-2.54, 0.0, 0.0),   // 100 right
             ],
-            normal: Vec3::Y,
+            normal: DVec3::Y,
             distance: 0.0,
             texture: "test_valve".to_string(),
             tex_projection: TextureProjection::Valve {
-                u_axis: Vec3::new(1.0, 0.0, 0.0),
+                u_axis: DVec3::new(1.0, 0.0, 0.0),
                 u_offset: 0.0,
-                v_axis: Vec3::new(0.0, 0.0, -1.0),
+                v_axis: DVec3::new(0.0, 0.0, -1.0),
                 v_offset: 0.0,
                 scale_u: 1.0,
                 scale_v: 1.0,
             },
+            brush_index: 0,
         };
 
         let faces = vec![face];
@@ -734,12 +748,12 @@ mod tests {
         // A face with non-zero offsets and scale
         let face = Face {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(2.54, 0.0, 0.0), // 100 Quake units in engine X
-                Vec3::new(2.54, 2.54, 0.0),
-                Vec3::new(0.0, 2.54, 0.0),
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(2.54, 0.0, 0.0), // 100 Quake units in engine X
+                DVec3::new(2.54, 2.54, 0.0),
+                DVec3::new(0.0, 2.54, 0.0),
             ],
-            normal: Vec3::NEG_Z,
+            normal: DVec3::NEG_Z,
             distance: 0.0,
             texture: "test_offset".to_string(),
             tex_projection: TextureProjection::Standard {
@@ -749,6 +763,7 @@ mod tests {
                 scale_u: 1.0,
                 scale_v: 1.0,
             },
+            brush_index: 0,
         };
 
         let faces = vec![face];
@@ -777,7 +792,7 @@ mod tests {
     fn engine_to_quake_inverts_quake_to_engine() {
         use crate::parse::quake_to_engine_for_test;
 
-        let original = Vec3::new(100.0, -50.0, 75.0);
+        let original = DVec3::new(100.0, -50.0, 75.0);
         let engine = quake_to_engine_for_test(original);
         let recovered = engine_to_quake(engine);
 

@@ -5,11 +5,20 @@ pub mod portal_vis;
 
 use crate::partition::{BspChild, BspTree};
 use crate::portals::{self, Portal};
+use glam::DVec3;
 use postretro_level_format::bsp::{
     BspLeafRecord, BspLeavesSection, BspNodeRecord, BspNodesSection,
 };
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::visibility::compress_pvs;
+
+/// Narrow a compile-time `DVec3` to the `[f32; 3]` layout used in the PRL file
+/// format. Called at the compiler's output boundary only — internal geometry
+/// stays in double precision.
+#[inline]
+fn dvec3_to_f32_array(v: DVec3) -> [f32; 3] {
+    [v.x as f32, v.y as f32, v.z as f32]
+}
 
 /// Computed visibility data from the compiler's visibility pass.
 pub struct VisibilityResult {
@@ -73,8 +82,8 @@ fn encode_nodes(tree: &BspTree) -> BspNodesSection {
                 BspChild::Leaf(idx) => -1 - (*idx as i32),
             };
             BspNodeRecord {
-                plane_normal: [n.plane_normal.x, n.plane_normal.y, n.plane_normal.z],
-                plane_distance: n.plane_distance,
+                plane_normal: dvec3_to_f32_array(n.plane_normal),
+                plane_distance: n.plane_distance as f32,
                 front,
                 back,
             }
@@ -111,8 +120,8 @@ fn encode_leaves_and_pvs(
             leaf_records.push(BspLeafRecord {
                 face_start: 0,
                 face_count: 0,
-                bounds_min: [b.min.x, b.min.y, b.min.z],
-                bounds_max: [b.max.x, b.max.y, b.max.z],
+                bounds_min: dvec3_to_f32_array(b.min),
+                bounds_max: dvec3_to_f32_array(b.max),
                 pvs_offset: 0,
                 pvs_size: 0,
                 is_solid: 1,
@@ -140,8 +149,8 @@ fn encode_leaves_and_pvs(
         leaf_records.push(BspLeafRecord {
             face_start: face_cursor,
             face_count,
-            bounds_min: [b.min.x, b.min.y, b.min.z],
-            bounds_max: [b.max.x, b.max.y, b.max.z],
+            bounds_min: dvec3_to_f32_array(b.min),
+            bounds_max: dvec3_to_f32_array(b.max),
             pvs_offset,
             pvs_size,
             is_solid: 0,
@@ -213,7 +222,7 @@ pub fn log_stats(result: &VisibilityResult, portal_count: usize) {
 mod tests {
     use super::*;
     use crate::partition::{Aabb, BspLeaf, BspTree};
-    use glam::Vec3;
+    use glam::DVec3;
     use postretro_level_format::visibility::decompress_pvs;
 
     fn make_tree(leaves: Vec<(Vec<usize>, bool)>) -> BspTree {
@@ -222,8 +231,8 @@ mod tests {
             .map(|(face_indices, is_solid)| BspLeaf {
                 face_indices,
                 bounds: Aabb {
-                    min: Vec3::ZERO,
-                    max: Vec3::splat(64.0),
+                    min: DVec3::ZERO,
+                    max: DVec3::splat(64.0),
                 },
                 is_solid,
             })

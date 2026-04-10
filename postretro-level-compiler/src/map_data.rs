@@ -1,7 +1,7 @@
 // Compiler data types: Face, EntityInfo, MapData.
 // See: context/lib/index.md
 
-use glam::Vec3;
+use glam::DVec3;
 
 impl Default for TextureProjection {
     fn default() -> Self {
@@ -25,20 +25,20 @@ pub enum TextureProjection {
     /// Standard (idTech2) format: project onto closest axis-aligned plane,
     /// then apply rotation, scale, and offset.
     Standard {
-        u_offset: f32,
-        v_offset: f32,
-        angle: f32,
-        scale_u: f32,
-        scale_v: f32,
+        u_offset: f64,
+        v_offset: f64,
+        angle: f64,
+        scale_u: f64,
+        scale_v: f64,
     },
     /// Valve 220 format: explicit U/V projection axes with per-axis offset.
     Valve {
-        u_axis: Vec3,
-        u_offset: f32,
-        v_axis: Vec3,
-        v_offset: f32,
-        scale_u: f32,
-        scale_v: f32,
+        u_axis: DVec3,
+        u_offset: f64,
+        v_axis: DVec3,
+        v_offset: f64,
+        scale_u: f64,
+        scale_v: f64,
     },
 }
 
@@ -46,17 +46,24 @@ pub enum TextureProjection {
 #[derive(Debug, Clone)]
 pub struct Face {
     /// Vertex positions in winding order (engine space, Y-up, meters).
-    pub vertices: Vec<Vec3>,
+    pub vertices: Vec<DVec3>,
     /// Face plane normal (unit length, engine space).
-    pub normal: Vec3,
+    pub normal: DVec3,
     /// Face plane distance from origin (engine space).
-    pub distance: f32,
+    pub distance: f64,
     /// Texture name from the .map file.
     pub texture: String,
     /// Texture projection parameters from the .map file (Quake space).
     /// UV computation in `geometry.rs` converts engine-space vertices back to
     /// Quake space before applying these parameters.
     pub tex_projection: TextureProjection,
+    /// Index of the source brush in `MapData::brush_volumes` that this face
+    /// was generated from. Face normals point *outward* from their source
+    /// brush, so leaf solidity classification uses this ownership to place
+    /// the leaf on the air (front) side of that brush — see
+    /// `partition::bsp::classify_leaf_solidity`. Set at parse time and
+    /// preserved through every Face clone/split in CSG and BSP.
+    pub brush_index: usize,
 }
 
 /// A convex brush volume defined by its bounding half-planes.
@@ -75,16 +82,16 @@ pub struct BrushVolume {
 #[derive(Debug, Clone)]
 pub struct BrushPlane {
     /// Outward-facing normal.
-    pub normal: Vec3,
+    pub normal: DVec3,
     /// Plane distance from origin.
-    pub distance: f32,
+    pub distance: f64,
 }
 
 /// Minimal entity info extracted from the .map file.
 #[derive(Debug, Clone)]
 pub struct EntityInfo {
     pub classname: String,
-    pub origin: Option<Vec3>,
+    pub origin: Option<DVec3>,
 }
 
 /// Parsed and classified .map data for downstream compiler stages.

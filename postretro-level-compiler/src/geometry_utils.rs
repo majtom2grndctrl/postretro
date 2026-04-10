@@ -1,7 +1,7 @@
 // Shared polygon clipping utilities (Sutherland-Hodgman).
 // See: context/plans/in-progress/portal-bsp-vis/task-03-portal-generation.md
 
-use glam::Vec3;
+use glam::DVec3;
 
 /// Split a convex polygon by a plane using Sutherland-Hodgman clipping.
 ///
@@ -14,11 +14,11 @@ use glam::Vec3;
 /// portal clipping uses a tighter one (0.01) to avoid accumulating error
 /// across many sequential clips.
 pub fn split_polygon(
-    vertices: &[Vec3],
-    plane_normal: Vec3,
-    plane_distance: f32,
-    epsilon: f32,
-) -> (Option<Vec<Vec3>>, Option<Vec<Vec3>>) {
+    vertices: &[DVec3],
+    plane_normal: DVec3,
+    plane_distance: f64,
+    epsilon: f64,
+) -> (Option<Vec<DVec3>>, Option<Vec<DVec3>>) {
     let mut front_verts = Vec::new();
     let mut back_verts = Vec::new();
 
@@ -83,11 +83,11 @@ pub fn split_polygon(
 /// Returns `None` if the polygon is entirely behind the plane or the result
 /// is degenerate (< 3 vertices).
 pub fn clip_polygon_to_front(
-    vertices: &[Vec3],
-    plane_normal: Vec3,
-    plane_distance: f32,
-    epsilon: f32,
-) -> Option<Vec<Vec3>> {
+    vertices: &[DVec3],
+    plane_normal: DVec3,
+    plane_distance: f64,
+    epsilon: f64,
+) -> Option<Vec<DVec3>> {
     split_polygon(vertices, plane_normal, plane_distance, epsilon).0
 }
 
@@ -98,13 +98,13 @@ mod tests {
     #[test]
     fn split_polygon_bisects_quad() {
         let verts = vec![
-            Vec3::new(-2.0, 0.0, 0.0),
-            Vec3::new(2.0, 0.0, 0.0),
-            Vec3::new(2.0, 2.0, 0.0),
-            Vec3::new(-2.0, 2.0, 0.0),
+            DVec3::new(-2.0, 0.0, 0.0),
+            DVec3::new(2.0, 0.0, 0.0),
+            DVec3::new(2.0, 2.0, 0.0),
+            DVec3::new(-2.0, 2.0, 0.0),
         ];
 
-        let (front, back) = split_polygon(&verts, Vec3::X, 0.0, 0.1);
+        let (front, back) = split_polygon(&verts, DVec3::X, 0.0, 0.1);
         let front = front.expect("front should exist");
         let back = back.expect("back should exist");
 
@@ -124,12 +124,12 @@ mod tests {
     #[test]
     fn split_polygon_entirely_front_returns_none_back() {
         let verts = vec![
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(2.0, 0.0, 0.0),
-            Vec3::new(2.0, 1.0, 0.0),
+            DVec3::new(1.0, 0.0, 0.0),
+            DVec3::new(2.0, 0.0, 0.0),
+            DVec3::new(2.0, 1.0, 0.0),
         ];
 
-        let (front, back) = split_polygon(&verts, Vec3::X, 0.0, 0.1);
+        let (front, back) = split_polygon(&verts, DVec3::X, 0.0, 0.1);
         assert!(front.is_some());
         assert!(back.is_none());
     }
@@ -137,12 +137,12 @@ mod tests {
     #[test]
     fn split_polygon_entirely_back_returns_none_front() {
         let verts = vec![
-            Vec3::new(-2.0, 0.0, 0.0),
-            Vec3::new(-1.0, 0.0, 0.0),
-            Vec3::new(-1.0, 1.0, 0.0),
+            DVec3::new(-2.0, 0.0, 0.0),
+            DVec3::new(-1.0, 0.0, 0.0),
+            DVec3::new(-1.0, 1.0, 0.0),
         ];
 
-        let (front, back) = split_polygon(&verts, Vec3::X, 0.0, 0.1);
+        let (front, back) = split_polygon(&verts, DVec3::X, 0.0, 0.1);
         assert!(front.is_none());
         assert!(back.is_some());
     }
@@ -150,13 +150,13 @@ mod tests {
     #[test]
     fn clip_to_front_returns_front_half() {
         let verts = vec![
-            Vec3::new(-2.0, 0.0, 0.0),
-            Vec3::new(2.0, 0.0, 0.0),
-            Vec3::new(2.0, 2.0, 0.0),
-            Vec3::new(-2.0, 2.0, 0.0),
+            DVec3::new(-2.0, 0.0, 0.0),
+            DVec3::new(2.0, 0.0, 0.0),
+            DVec3::new(2.0, 2.0, 0.0),
+            DVec3::new(-2.0, 2.0, 0.0),
         ];
 
-        let front = clip_polygon_to_front(&verts, Vec3::X, 0.0, 0.1);
+        let front = clip_polygon_to_front(&verts, DVec3::X, 0.0, 0.1);
         assert!(front.is_some());
         let front = front.unwrap();
         for v in &front {

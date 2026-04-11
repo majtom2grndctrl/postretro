@@ -102,21 +102,22 @@ Unknown prefix falls back to a default material with a warning at load time.
 
 The PRL compiler (`prl-build`) reads `.map` files directly via shambler and produces `.prl` binary level files. It replaces ericw-tools' three-step pipeline with a single tool.
 
-> **Pipeline restructure planned.** The compile pipeline below is being restructured to a brush-volume-first BSP construction with face extraction at the tail (`parse → brush-volume BSP → face extraction → portal generation → portal vis → geometry → pack`). CSG face clipping disappears as a discrete stage and leaf solidity becomes structural, established during construction rather than post-hoc. See `plans/drafts/brush-volume-bsp/`. The text below describes the current implementation; this section will be rewritten when the refactor lands.
+> **Pipeline restructure planned.** The compile pipeline below is being restructured to a brush-volume-first BSP construction with face extraction at the tail (`parse → brush-volume BSP → face extraction → portal generation → exterior leaf culling → portal vis → geometry → pack`). CSG face clipping disappears as a discrete stage and leaf solidity becomes structural, established during construction rather than post-hoc. See `plans/drafts/brush-volume-bsp/`. The text below describes the current implementation; this section will be rewritten when the refactor lands.
 
 ### Compiler pipeline
 
 ```
-parse .map → CSG face clipping → BSP compilation → portal generation → portal vis → geometry → pack .prl
+parse .map → CSG face clipping → BSP compilation → portal generation → exterior leaf culling → portal vis → geometry → pack .prl
 ```
 
 1. **Parse.** Shambler extracts brush volumes, faces, and entities. Two transforms are applied at the parse boundary: (a) axis swizzle (Quake Z-up → engine Y-up) and (b) unit scale (idTech2: 0.0254 m/unit, exact). Vertex positions, entity origins, and plane distances are converted to engine meters; plane normals receive the swizzle only (direction vectors — scale must not be applied). The scale comes from a single map-format source, never duplicated at call sites. All downstream stages receive engine-native coordinates in meters.
 2. **CSG face clipping.** Each face is clipped against all brush volumes using Sutherland-Hodgman polygon clipping. Faces that lie entirely inside a solid brush are discarded; faces that partially overlap are trimmed to the exterior portion. An AABB pre-filter skips brush pairs with non-overlapping bounds. This eliminates z-fighting at shared surfaces between adjacent brushes — the same problem BSP solves structurally via splitting, done here as an explicit compile-time step. A face on its own brush's boundary plane is not clipped (it sits on the plane, not behind all half-planes).
 3. **BSP compilation.** Builds a BSP tree from world faces. Produces interior nodes (splitting planes) and leaves (convex regions). Leaf solidity is derived from brush ownership: face normals point outward from their source brush, so any leaf containing a face lies on that brush's air side and is empty; faceless leaves are solid. Solid leaves represent brush interiors. Empty leaves represent navigable space. (A brush-volume-first BSP construction that establishes solidity structurally during construction is planned — see `context/plans/drafts/brush-volume-bsp/`.)
 4. **Portal generation.** For each BSP internal node, clips the splitting-plane polygon against ancestor splitting planes to produce the portal polygon bounding that node's partition. Each portal is a convex polygon connecting two adjacent empty leaves. In default mode, portals are stored in the `.prl` file (section 15) for runtime traversal. In `--pvs` mode, portals are used as intermediate data and discarded.
-5. **Portal vis** (`--pvs` mode only). Per empty leaf, floods through the portal graph. A leaf L' is potentially visible from L if any sequence of portals connects them. Output: per-leaf PVS bitsets, RLE-compressed. Computed in parallel (one task per leaf).
-6. **Geometry.** Fan-triangulates faces into vertex/index buffers. Faces grouped by leaf index for efficient per-leaf draw calls.
-7. **Pack.** Writes BSP tree nodes, BSP leaves (face ranges, bounds), and geometry to the `.prl` binary format. Default mode also writes the Portals section (15). `--pvs` mode writes the LeafPvs section (14) instead.
+5. **Exterior leaf culling.** Flood-fills through the portal graph from a point outside the map's bounding volume. Every empty leaf reachable from outside is an exterior leaf. Exterior leaves produce no packed geometry — void-facing surfaces of the sealing brushes are absent from the output. A map with a leak has interior leaves incorrectly classified as exterior.
+6. **Portal vis** (`--pvs` mode only). Per empty leaf, floods through the portal graph. A leaf L' is potentially visible from L if any sequence of portals connects them. Output: per-leaf PVS bitsets, RLE-compressed. Computed in parallel (one task per leaf).
+7. **Geometry.** Fan-triangulates faces into vertex/index buffers. Faces grouped by leaf index for efficient per-leaf draw calls.
+8. **Pack.** Writes BSP tree nodes, BSP leaves (face ranges, bounds), and geometry to the `.prl` binary format. Default mode also writes the Portals section (15). `--pvs` mode writes the LeafPvs section (14) instead.
 
 ### PRL section IDs
 

@@ -91,16 +91,20 @@ fn fs_main() -> @location(0) vec4<f32> {
 /// mat4x4 = 64 bytes, vec3 = 12 bytes + 4 bytes padding = 80 bytes total.
 const UNIFORM_SIZE: usize = 80;
 
-fn build_uniform_data(view_proj: &Mat4, ambient_light: [f32; 3]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(UNIFORM_SIZE);
-    for &val in &view_proj.to_cols_array() {
-        bytes.extend_from_slice(&val.to_ne_bytes());
+fn build_uniform_data(view_proj: &Mat4, ambient_light: [f32; 3]) -> [u8; UNIFORM_SIZE] {
+    let mut bytes = [0u8; UNIFORM_SIZE];
+    // 16 mat4 floats, 3 ambient floats, 1 f32 of padding = 80 bytes.
+    // std140: vec3 is 16-byte aligned, so the trailing pad (bytes 76..80)
+    // stays zero.
+    let cols = view_proj.to_cols_array();
+    for (i, val) in cols.iter().enumerate() {
+        let off = i * 4;
+        bytes[off..off + 4].copy_from_slice(&val.to_ne_bytes());
     }
-    for &val in &ambient_light {
-        bytes.extend_from_slice(&val.to_ne_bytes());
+    for (i, val) in ambient_light.iter().enumerate() {
+        let off = 64 + i * 4;
+        bytes[off..off + 4].copy_from_slice(&val.to_ne_bytes());
     }
-    // Pad to 80 bytes (vec3 in std140 is 16-byte aligned).
-    bytes.extend_from_slice(&0.0f32.to_ne_bytes());
     bytes
 }
 
@@ -756,6 +760,15 @@ impl Renderer {
                 label: Some("Frame Encoder"),
             });
 
+        // Compute the visible-leaf set once per frame when culling is active.
+        // Both the textured pass and the (optional) wireframe overlay pass
+        // consume the same set; computing it here avoids a redundant scan
+        // when the wireframe overlay is enabled.
+        let visible_leaves: Vec<usize> = match visible {
+            VisibleFaces::DrawAll => Vec::new(),
+            VisibleFaces::Culled(ranges) => self.collect_visible_leaf_indices(ranges),
+        };
+
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Textured Pass"),
@@ -795,8 +808,8 @@ impl Renderer {
                     VisibleFaces::DrawAll => {
                         self.draw_all_textured(&mut render_pass);
                     }
-                    VisibleFaces::Culled(ranges) => {
-                        self.draw_visible_textured(&mut render_pass, ranges);
+                    VisibleFaces::Culled(_) => {
+                        self.draw_visible_textured(&mut render_pass, &visible_leaves);
                     }
                 }
             }
@@ -849,7 +862,7 @@ impl Renderer {
                     overlay_pass.draw_indexed(0..self.wireframe_index_count, 0, 0..1);
                 }
                 WireframeMode::Culled => {
-                    self.draw_visible_wireframe(&mut overlay_pass, visible);
+                    self.draw_visible_wireframe(&mut overlay_pass, visible, &visible_leaves);
                 }
             }
         }
@@ -883,25 +896,35 @@ impl Renderer {
     }
 
     /// Draw visible faces using texture sub-ranges per leaf.
-    /// DrawRange entries correspond to visible leaves' face ranges.
+    /// `visible_leaves` is the pre-computed set of visible leaf indices
+    /// (see `collect_visible_leaf_indices`), lifted to the caller so the
+    /// wireframe overlay pass can reuse it without rescanning.
+    ///
+    /// Deduplicates `set_bind_group` calls: per-leaf sub-ranges are already
+    /// sorted by `texture_index` (see `prl.rs` `build_leaf_texture_sub_ranges`),
+    /// so tracking the last-set texture across the outer leaf loop lets
+    /// cross-leaf transitions skip redundant binds when leaf N's final
+    /// texture matches leaf N+1's first texture.
     fn draw_visible_textured<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
-        ranges: &[DrawRange],
+        visible_leaves: &[usize],
     ) {
-        let visible_leaves = self.collect_visible_leaf_indices(ranges);
-
         let mut draw_calls = 0u32;
-        for leaf_idx in &visible_leaves {
+        let mut last_tex: Option<usize> = None;
+        for leaf_idx in visible_leaves {
             if let Some(sub_ranges) = self.leaf_texture_sub_ranges.get(*leaf_idx) {
                 for sub_range in sub_ranges {
                     let tex_idx = sub_range.texture_index as usize;
-                    let bind_group = if tex_idx < self.gpu_textures.len() {
-                        &self.gpu_textures[tex_idx].bind_group
-                    } else {
-                        &self.gpu_textures[0].bind_group
-                    };
-                    render_pass.set_bind_group(1, bind_group, &[]);
+                    if last_tex != Some(tex_idx) {
+                        let bind_group = if tex_idx < self.gpu_textures.len() {
+                            &self.gpu_textures[tex_idx].bind_group
+                        } else {
+                            &self.gpu_textures[0].bind_group
+                        };
+                        render_pass.set_bind_group(1, bind_group, &[]);
+                        last_tex = Some(tex_idx);
+                    }
                     let start = sub_range.index_offset;
                     let end = start + sub_range.index_count;
                     render_pass.draw_indexed(start..end, 0, 0..1);
@@ -927,6 +950,7 @@ impl Renderer {
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
         visible: &VisibleFaces,
+        visible_leaves: &[usize],
     ) {
         match visible {
             VisibleFaces::DrawAll => {
@@ -934,10 +958,9 @@ impl Renderer {
                 // overlay matches the all overlay: draw the whole line buffer.
                 render_pass.draw_indexed(0..self.wireframe_index_count, 0, 0..1);
             }
-            VisibleFaces::Culled(ranges) => {
-                let visible_leaves = self.collect_visible_leaf_indices(ranges);
+            VisibleFaces::Culled(_) => {
                 let mut draw_calls = 0u32;
-                for leaf_idx in &visible_leaves {
+                for leaf_idx in visible_leaves {
                     if let Some(sub_ranges) = self.leaf_texture_sub_ranges.get(*leaf_idx) {
                         for sub_range in sub_ranges {
                             let start = sub_range.index_offset * 2;

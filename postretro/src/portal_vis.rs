@@ -71,14 +71,13 @@ struct DfsState<'a> {
 /// marked visible (conservative) and a warning is emitted once per top-level
 /// walk. See [`MAX_PORTAL_CHAIN_DEPTH`].
 ///
-/// **Per-path allocation.** The chain path is a `Vec<usize>` of portal
-/// indices, cloned on each recursive descent (parent path + new portal) so
-/// sibling branches at the same depth see independent histories. For typical
-/// chain depths (under 20), this is a handful of small allocations per
-/// visited leaf. Push/pop on a shared Vec would be cheaper, but the clone is
-/// easier to reason about and matches the per-branch mental model used when
-/// reading the flood-fill. Profile before promoting to `SmallVec` or a
-/// bitmask.
+/// **Per-path allocation.** The chain path is a single `Vec<usize>` of portal
+/// indices, allocated once at the top of the walk and reused via push/pop
+/// backtracking as the DFS descends and unwinds. The cycle-detection membership
+/// test remains a linear scan — correct and fast at realistic chain depths
+/// (5–20). Two `Vec<Vec3>` clip scratch buffers are allocated alongside the
+/// path and threaded through `flood` into every `clip_polygon_to_frustum`
+/// call, so the per-frame hot path performs no allocations.
 ///
 /// When `capture` is true the walk emits one log line per portal touched
 /// (accept/reject + reason) plus a per-frame summary, all under the
@@ -131,9 +130,21 @@ pub fn portal_traverse(
         camera_leaf,
     };
 
-    // Start the DFS with an empty path — no portals crossed yet.
-    let path: Vec<usize> = Vec::new();
-    flood(&mut state, camera_leaf, frustum, &path);
+    // Allocate the path and clip scratch buffers once and reuse them for the
+    // entire traversal. `flood` pushes/pops the path across recursive calls
+    // and passes the scratch buffers into each `clip_polygon_to_frustum`
+    // call, so per-frame portal walks allocate nothing on the hot path.
+    let mut path: Vec<usize> = Vec::new();
+    let mut clip_scratch_a: Vec<Vec3> = Vec::new();
+    let mut clip_scratch_b: Vec<Vec3> = Vec::new();
+    flood(
+        &mut state,
+        camera_leaf,
+        frustum,
+        &mut path,
+        &mut clip_scratch_a,
+        &mut clip_scratch_b,
+    );
 
     if capture {
         let reach_count = state.visible.iter().filter(|&&v| v).count();
@@ -161,13 +172,22 @@ pub fn portal_traverse(
 ///
 /// Marks the current leaf visible, then tries every outbound portal. A portal
 /// already on the current chain's path is skipped (would loop). Each surviving
-/// portal produces a narrowed sub-frustum and a recursive descent with the
-/// portal appended to a clone of the path. Sibling branches at the same depth
-/// see independent path histories.
+/// portal produces a narrowed sub-frustum and a recursive descent. `path`,
+/// `clip_scratch_a`, and `clip_scratch_b` are owned by `portal_traverse` and
+/// reused across every recursive call — the path tracks the current chain via
+/// push/pop backtracking, and the scratch Vecs are cleared and refilled inside
+/// `clip_polygon_to_frustum` on each call.
 ///
 /// The algorithmic shape mirrors id Tech 4's `FloodViewThroughArea_r`
 /// (Doom 3, `neo/renderer/RenderWorld_portals.cpp`).
-fn flood(state: &mut DfsState, leaf: usize, frustum: &Frustum, path: &[usize]) {
+fn flood(
+    state: &mut DfsState,
+    leaf: usize,
+    frustum: &Frustum,
+    path: &mut Vec<usize>,
+    clip_scratch_a: &mut Vec<Vec3>,
+    clip_scratch_b: &mut Vec<Vec3>,
+) {
     // Mark the current leaf visible on entry. Every chain that reaches a leaf
     // contributes to the visible union regardless of which portals it crossed.
     state.visible[leaf] = true;
@@ -238,8 +258,25 @@ fn flood(state: &mut DfsState, leaf: usize, frustum: &Frustum, path: &[usize]) {
         // Clip the portal polygon against the current frustum. An empty
         // result unifies "portal entirely outside cone" and "portal
         // degenerate after clipping" into one rejection path.
-        let clipped = clip_polygon_to_frustum(&portal.polygon, frustum);
-        if clipped.len() < 3 {
+        //
+        // `narrowed` is computed inside an inner scope so that the borrows of
+        // `clip_scratch_a`/`clip_scratch_b` end before the recursive call
+        // below, which needs mutable access to both scratch buffers again.
+        // `clipped_len` is captured ahead of the scope so trace logging and
+        // path updates downstream can still read it.
+        let (narrowed_opt, clipped_len) = {
+            let clipped =
+                clip_polygon_to_frustum(&portal.polygon, frustum, clip_scratch_a, clip_scratch_b);
+            let len = clipped.len();
+            if len < 3 {
+                (None, len)
+            } else {
+                let narrowed = narrow_frustum(state.camera_position, clipped, frustum);
+                (narrowed, len)
+            }
+        };
+
+        if clipped_len < 3 {
             state.rejected_clipped += 1;
             if state.capture {
                 log::info!(
@@ -247,7 +284,7 @@ fn flood(state: &mut DfsState, leaf: usize, frustum: &Frustum, path: &[usize]) {
                     "[portal_trace] reject src={} dst={} reason=clipped_to_empty clipped_verts={} portal_verts={}",
                     leaf,
                     neighbor,
-                    clipped.len(),
+                    clipped_len,
                     portal.polygon.len(),
                 );
             }
@@ -257,7 +294,7 @@ fn flood(state: &mut DfsState, leaf: usize, frustum: &Frustum, path: &[usize]) {
         // Narrow the frustum through the clipped polygon. The clipped
         // polygon lies entirely inside the current frustum, so the edge
         // planes it produces form a cone strictly inside the current one.
-        let Some(narrowed) = narrow_frustum(state.camera_position, &clipped, frustum) else {
+        let Some(narrowed) = narrowed_opt else {
             state.rejected_narrow += 1;
             if state.capture {
                 log::info!(
@@ -265,7 +302,7 @@ fn flood(state: &mut DfsState, leaf: usize, frustum: &Frustum, path: &[usize]) {
                     "[portal_trace] reject src={} dst={} reason=narrow_frustum_failed clipped_verts={}",
                     leaf,
                     neighbor,
-                    clipped.len(),
+                    clipped_len,
                 );
             }
             continue;
@@ -278,28 +315,39 @@ fn flood(state: &mut DfsState, leaf: usize, frustum: &Frustum, path: &[usize]) {
                 "[portal_trace] accept src={} dst={} clipped_verts={}",
                 leaf,
                 neighbor,
-                clipped.len(),
+                clipped_len,
             );
         }
 
-        // Descend into the neighbor with a fresh path clone plus this portal.
-        // A push/pop backtracking scheme on a shared Vec would be equivalent
-        // and cheaper, but the per-branch clone matches the flood-fill mental
-        // model used when reading the algorithm and keeps the path's lifetime
-        // identical to the recursion frame. Profile-driven follow-up can
-        // switch to push/pop or `SmallVec` if allocation shows up.
-        let mut next_path = Vec::with_capacity(path.len() + 1);
-        next_path.extend_from_slice(path);
-        next_path.push(portal_idx);
-        flood(state, neighbor, &narrowed, &next_path);
+        // Descend into the neighbor, reusing the shared path via push/pop
+        // backtracking. After the recursive call returns, `path` is restored
+        // to its pre-push state so sibling branches at this depth see an
+        // unchanged chain history.
+        path.push(portal_idx);
+        flood(
+            state,
+            neighbor,
+            &narrowed,
+            path,
+            clip_scratch_a,
+            clip_scratch_b,
+        );
+        path.pop();
     }
 }
 
 /// Clip a convex polygon against every plane of a frustum (Sutherland-Hodgman).
 ///
-/// Returns the clipped polygon as a new `Vec<Vec3>`. A result with fewer than
-/// 3 vertices means the polygon is entirely outside the frustum (or clipped
-/// down to a degenerate edge/point at a boundary).
+/// Writes the clipped polygon into one of the caller-provided scratch buffers
+/// and returns a slice borrowing from it. A result with fewer than 3 vertices
+/// means the polygon is entirely outside the frustum (or clipped down to a
+/// degenerate edge/point at a boundary).
+///
+/// `scratch_a` and `scratch_b` are ping-pong buffers: each Sutherland-Hodgman
+/// step reads from one and writes to the other, swapping roles between planes.
+/// Both buffers are cleared on entry and their pre-call contents are not
+/// preserved. The returned slice is valid only until the next call that
+/// mutates either scratch buffer.
 ///
 /// Each frustum plane is in Hessian normal form pointing inward: a vertex `v`
 /// is inside when `plane.normal · v + plane.dist >= -CLIP_EPSILON`. The
@@ -311,24 +359,44 @@ fn flood(state: &mut DfsState, leaf: usize, frustum: &Frustum, path: &[usize]) {
 /// intersection of a polygon edge with a frustum plane (both on the polygon
 /// plane), the clipped polygon remains planar. This is required for
 /// `narrow_frustum` to produce meaningful edge planes.
-pub(crate) fn clip_polygon_to_frustum(polygon: &[Vec3], frustum: &Frustum) -> Vec<Vec3> {
+pub(crate) fn clip_polygon_to_frustum<'a>(
+    polygon: &[Vec3],
+    frustum: &Frustum,
+    scratch_a: &'a mut Vec<Vec3>,
+    scratch_b: &'a mut Vec<Vec3>,
+) -> &'a [Vec3] {
+    scratch_a.clear();
+    scratch_b.clear();
+
     if polygon.len() < 3 {
-        return Vec::new();
+        return &scratch_a[..];
     }
 
-    let mut input: Vec<Vec3> = polygon.to_vec();
-    let mut output: Vec<Vec3> = Vec::with_capacity(polygon.len() + frustum.planes.len());
+    scratch_a.extend_from_slice(polygon);
 
+    // Ping-pong between `scratch_a` (current input) and `scratch_b` (current
+    // output). After each plane, swap roles by flipping `input_is_a`. The
+    // final result lives in whichever buffer most-recently acted as output.
+    let mut input_is_a = true;
     for plane in &frustum.planes {
+        let (input, output) = if input_is_a {
+            (&*scratch_a, &mut *scratch_b)
+        } else {
+            (&*scratch_b, &mut *scratch_a)
+        };
         if input.is_empty() {
             break;
         }
         output.clear();
-        clip_polygon_to_plane(&input, plane, &mut output);
-        std::mem::swap(&mut input, &mut output);
+        clip_polygon_to_plane(input, plane, output);
+        input_is_a = !input_is_a;
     }
 
-    input
+    if input_is_a {
+        &scratch_a[..]
+    } else {
+        &scratch_b[..]
+    }
 }
 
 /// Clip a convex polygon against a single half-space (one Sutherland-Hodgman step).
@@ -1014,7 +1082,10 @@ mod tests {
             Vec3::new(10.0, -0.5, 0.5),
         ];
 
-        let clipped = clip_polygon_to_frustum(&polygon, &frustum);
+        let mut scratch_a: Vec<Vec3> = Vec::new();
+        let mut scratch_b: Vec<Vec3> = Vec::new();
+        let clipped =
+            clip_polygon_to_frustum(&polygon, &frustum, &mut scratch_a, &mut scratch_b);
         assert_eq!(
             clipped.len(),
             4,
@@ -1041,7 +1112,10 @@ mod tests {
             Vec3::new(-10.0, -1.0, 1.0),
         ];
 
-        let clipped = clip_polygon_to_frustum(&polygon, &frustum);
+        let mut scratch_a: Vec<Vec3> = Vec::new();
+        let mut scratch_b: Vec<Vec3> = Vec::new();
+        let clipped =
+            clip_polygon_to_frustum(&polygon, &frustum, &mut scratch_a, &mut scratch_b);
         assert!(
             clipped.len() < 3,
             "polygon fully outside frustum should clip to empty (got {} verts)",
@@ -1063,7 +1137,10 @@ mod tests {
             Vec3::new(10.0, -500.0, 1.0),
         ];
 
-        let clipped = clip_polygon_to_frustum(&polygon, &frustum);
+        let mut scratch_a: Vec<Vec3> = Vec::new();
+        let mut scratch_b: Vec<Vec3> = Vec::new();
+        let clipped =
+            clip_polygon_to_frustum(&polygon, &frustum, &mut scratch_a, &mut scratch_b);
         assert!(
             clipped.len() >= 3,
             "a polygon that straddles the frustum should clip to a non-empty polygon"
@@ -1079,8 +1156,20 @@ mod tests {
     #[test]
     fn clip_polygon_degenerate_input_yields_empty() {
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::X);
-        assert!(clip_polygon_to_frustum(&[], &frustum).is_empty());
-        assert!(clip_polygon_to_frustum(&[Vec3::X, Vec3::Y], &frustum).is_empty());
+        let mut scratch_a: Vec<Vec3> = Vec::new();
+        let mut scratch_b: Vec<Vec3> = Vec::new();
+        assert!(
+            clip_polygon_to_frustum(&[], &frustum, &mut scratch_a, &mut scratch_b).is_empty()
+        );
+        assert!(
+            clip_polygon_to_frustum(
+                &[Vec3::X, Vec3::Y],
+                &frustum,
+                &mut scratch_a,
+                &mut scratch_b
+            )
+            .is_empty()
+        );
     }
 
     /// Test that a clipped polygon feeds a narrowed frustum whose vertices all
@@ -1099,7 +1188,10 @@ mod tests {
             Vec3::new(10.0, -500.0, 1.0),
         ];
 
-        let clipped = clip_polygon_to_frustum(&portal, &parent);
+        let mut scratch_a: Vec<Vec3> = Vec::new();
+        let mut scratch_b: Vec<Vec3> = Vec::new();
+        let clipped: Vec<Vec3> =
+            clip_polygon_to_frustum(&portal, &parent, &mut scratch_a, &mut scratch_b).to_vec();
         assert!(clipped.len() >= 3, "clipped polygon should be non-empty");
 
         // All clipped vertices lie inside the parent frustum by construction.
@@ -1157,18 +1249,29 @@ mod tests {
             Vec3::new(30.0, -2.0, 2.0),
         ];
 
+        // Tests construct scratch buffers locally; they are off the per-frame
+        // hot path. Clipped slices are copied into owned Vecs so all three
+        // hops' results can be compared simultaneously below.
+        let mut scratch_a: Vec<Vec3> = Vec::new();
+        let mut scratch_b: Vec<Vec3> = Vec::new();
+
         // Hop 1.
-        let clipped_a = clip_polygon_to_frustum(&portal_a, &parent);
+        let clipped_a: Vec<Vec3> =
+            clip_polygon_to_frustum(&portal_a, &parent, &mut scratch_a, &mut scratch_b).to_vec();
         assert!(clipped_a.len() >= 3);
         let narrowed_1 = narrow_frustum(camera_pos, &clipped_a, &parent).expect("hop 1");
 
         // Hop 2: clip next portal against hop-1 frustum.
-        let clipped_b = clip_polygon_to_frustum(&portal_b, &narrowed_1);
+        let clipped_b: Vec<Vec3> =
+            clip_polygon_to_frustum(&portal_b, &narrowed_1, &mut scratch_a, &mut scratch_b)
+                .to_vec();
         assert!(clipped_b.len() >= 3);
         let narrowed_2 = narrow_frustum(camera_pos, &clipped_b, &narrowed_1).expect("hop 2");
 
         // Hop 3.
-        let clipped_c = clip_polygon_to_frustum(&portal_c, &narrowed_2);
+        let clipped_c: Vec<Vec3> =
+            clip_polygon_to_frustum(&portal_c, &narrowed_2, &mut scratch_a, &mut scratch_b)
+                .to_vec();
         assert!(clipped_c.len() >= 3);
         let narrowed_3 = narrow_frustum(camera_pos, &clipped_c, &narrowed_2).expect("hop 3");
 

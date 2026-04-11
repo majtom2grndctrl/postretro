@@ -18,7 +18,7 @@ pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
 /// Gamepad look sensitivity: radians per second at full stick deflection.
 pub const GAMEPAD_LOOK_SENSITIVITY: f32 = 2.5;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gilrs::Axis as GilrsAxis;
 use winit::event::MouseButton;
@@ -95,14 +95,13 @@ impl InputSystem {
     pub fn new(bindings: Vec<Binding>) -> Self {
         // Build the unique-action cache once at construction. Using a local
         // HashSet for dedup keeps the constructor cost a one-time hit.
-        let mut seen = std::collections::HashSet::with_capacity(bindings.len());
+        let mut seen = HashSet::with_capacity(bindings.len());
         let mut unique_actions: Vec<Action> = Vec::with_capacity(bindings.len());
         for binding in &bindings {
             if seen.insert(binding.action) {
                 unique_actions.push(binding.action);
             }
         }
-        unique_actions.shrink_to_fit();
 
         // Pre-size `prev_button_states` to the count of button-type actions so
         // the first-frame `extend` fits without reallocation.
@@ -194,8 +193,6 @@ impl InputSystem {
         let mut button_states = HashMap::new();
         let mut axis_values = HashMap::new();
 
-        // Iterate the cached unique action list — `bindings` doesn't change
-        // per frame, so there's no reason to rebuild this set each snapshot.
         for &action in &self.unique_actions {
             if action.is_axis() {
                 let values = bindings::resolve_axis_values(

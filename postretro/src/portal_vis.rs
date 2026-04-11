@@ -1,6 +1,8 @@
 // Runtime portal traversal: per-chain DFS with polygon-vs-frustum clipping + narrowing.
 // See: context/lib/build_pipeline.md §Runtime visibility
 
+use std::fmt::Write as _;
+
 use glam::Vec3;
 
 use crate::prl::LevelWorld;
@@ -30,10 +32,17 @@ const MAX_PORTAL_CHAIN_DEPTH: usize = 256;
 /// beyond the changing per-frame values (current leaf, current frustum, current
 /// path). Counters accumulate across all chains; the visible bitset is the
 /// union of every chain's reach.
+///
+/// `trace` holds the optional per-frame capture buffer. When the caller passes
+/// `capture: true` it starts as `Some(String)` and event sites append terse
+/// event lines into it; a single `log::info!` at the end of `portal_traverse`
+/// emits the buffer as one multi-line message. `None` means capture is off,
+/// and the event sites skip the writes entirely — no allocation on the hot
+/// path when diagnostics are disabled.
 struct DfsState<'a> {
     world: &'a LevelWorld,
     camera_position: Vec3,
-    capture: bool,
+    trace: Option<String>,
     visible: Vec<bool>,
     leaf_count: usize,
     considered: u32,
@@ -90,32 +99,89 @@ pub fn portal_traverse(
     world: &LevelWorld,
     capture: bool,
 ) -> Vec<bool> {
+    let (visible, trace) = portal_traverse_inner(
+        camera_position,
+        camera_leaf,
+        frustum,
+        world,
+        capture,
+    );
+    // Single log emission: every event written during the walk lives inside
+    // `trace`. One `log::info!` call means one timestamp/target prefix per
+    // traced frame instead of one per event. See the file's doc comment on
+    // `portal_traverse` for the target and the chord that arms capture.
+    if let Some(buf) = trace {
+        log::info!(target: "postretro::portal_trace", "[portal_trace]\n{}", buf);
+    }
+    visible
+}
+
+/// Core walk shared by `portal_traverse` and the `#[cfg(test)]` helper that
+/// needs to inspect the formatted trace string directly. Returns the visible
+/// bitset and, when capture is on, the fully-formatted trace buffer (header +
+/// event lines + summary). The public entry point logs the buffer; tests read
+/// it as a string so they can assert format shape without wiring a test
+/// logger.
+fn portal_traverse_inner(
+    camera_position: Vec3,
+    camera_leaf: usize,
+    frustum: &Frustum,
+    world: &LevelWorld,
+    capture: bool,
+) -> (Vec<bool>, Option<String>) {
     let leaf_count = world.leaves.len();
     let visible = vec![false; leaf_count];
 
-    if capture {
-        log::info!(
-            target: "postretro::portal_trace",
-            "[portal_trace] start camera_leaf={} leaf_count={}",
-            camera_leaf,
-            leaf_count,
-        );
-    }
+    // Allocate the trace buffer only when capture is armed — the disabled path
+    // must remain allocation-free.
+    let mut trace = if capture { Some(String::with_capacity(512)) } else { None };
 
+    // Out-of-range camera leaf: emit a single `leaf_oor` line into the buffer
+    // and bail. `world.leaves[camera_leaf]` would panic, so this path must run
+    // before any header write that reads the leaf.
     if camera_leaf >= leaf_count {
-        if capture {
-            log::info!(
-                target: "postretro::portal_trace",
-                "[portal_trace] abort camera_leaf out of range",
+        if let Some(buf) = trace.as_mut() {
+            let _ = writeln!(
+                buf,
+                "abort leaf_oor cam=({:.2},{:.2},{:.2}) leaf={} leaves={}",
+                camera_position.x,
+                camera_position.y,
+                camera_position.z,
+                camera_leaf,
+                leaf_count,
             );
         }
-        return visible;
+        return (visible, trace);
+    }
+
+    // Header line: the camera-leaf diagnostic fields we need for the current
+    // flicker bug hunt. `solid` is intentionally omitted — solid leaves
+    // short-circuit in `determine_prl_visibility` before they ever reach
+    // `portal_traverse`, so any leaf here is already known non-solid.
+    if let Some(buf) = trace.as_mut() {
+        let leaf = &world.leaves[camera_leaf];
+        let _ = writeln!(
+            buf,
+            "cam=({:.2},{:.2},{:.2}) leaf={} faces={} bnds=({:.2},{:.2},{:.2})..({:.2},{:.2},{:.2}) leaves={}",
+            camera_position.x,
+            camera_position.y,
+            camera_position.z,
+            camera_leaf,
+            leaf.face_count,
+            leaf.bounds_min.x,
+            leaf.bounds_min.y,
+            leaf.bounds_min.z,
+            leaf.bounds_max.x,
+            leaf.bounds_max.y,
+            leaf.bounds_max.z,
+            leaf_count,
+        );
     }
 
     let mut state = DfsState {
         world,
         camera_position,
-        capture,
+        trace,
         visible,
         leaf_count,
         considered: 0,
@@ -130,6 +196,19 @@ pub fn portal_traverse(
         camera_leaf,
     };
 
+    // The render pipeline uses a 0.1-unit near clip for depth-buffer
+    // precision, but visibility has no such need. Slide the near plane up
+    // to the camera apex so portals the player is pressed against aren't
+    // clipped to empty at the Near step. See
+    // `Frustum::slide_near_plane_to` for the full rationale and
+    // `portal_traverse_reaches_neighbor_when_camera_is_close_to_portal_wall`
+    // for the regression probe. Only applied to the top-level camera
+    // frustum — narrowed sub-frustums produced by `narrow_frustum` already
+    // build all edge planes through the camera apex, so the relaxation is
+    // redundant (and would be incorrect) inside the DFS.
+    let mut visibility_frustum = frustum.clone();
+    visibility_frustum.slide_near_plane_to(camera_position);
+
     // Allocate the path and clip scratch buffers once and reuse them for the
     // entire traversal. `flood` pushes/pops the path across recursive calls
     // and passes the scratch buffers into each `clip_polygon_to_frustum`
@@ -140,32 +219,45 @@ pub fn portal_traverse(
     flood(
         &mut state,
         camera_leaf,
-        frustum,
+        &visibility_frustum,
         &mut path,
         &mut clip_scratch_a,
         &mut clip_scratch_b,
     );
 
-    if capture {
+    // Summary: reach count + the considered/accepted totals, plus a compact
+    // rej[...] bracket that elides zero counters. An all-clean frame still
+    // prints `rej[]` so the shape of every summary is visually identical.
+    if let Some(buf) = state.trace.as_mut() {
         let reach_count = state.visible.iter().filter(|&&v| v).count();
-        log::info!(
-            target: "postretro::portal_trace",
-            "[portal_trace] summary reach={} considered={} accepted={} \
-             rejected_clipped={} rejected_narrow={} rejected_solid={} \
-             rejected_path_cycle={} rejected_depth_limit={} rejected_invalid={}",
-            reach_count,
-            state.considered,
-            state.accepted,
-            state.rejected_clipped,
-            state.rejected_narrow,
-            state.rejected_solid,
-            state.rejected_path_cycle,
-            state.rejected_depth_limit,
-            state.rejected_invalid,
+        let _ = write!(
+            buf,
+            "  = reach={} cons={} acc={} rej[",
+            reach_count, state.considered, state.accepted,
         );
+        let mut first = true;
+        let mut emit = |buf: &mut String, name: &str, count: u32| {
+            if count == 0 {
+                return;
+            }
+            if !first {
+                buf.push(' ');
+            }
+            let _ = write!(buf, "{}={}", name, count);
+            first = false;
+        };
+        // Same order as the event-site reason codes: clip, narrow, solid,
+        // cycle, depth, invalid.
+        emit(buf, "clip", state.rejected_clipped);
+        emit(buf, "narrow", state.rejected_narrow);
+        emit(buf, "solid", state.rejected_solid);
+        emit(buf, "cycle", state.rejected_path_cycle);
+        emit(buf, "depth", state.rejected_depth_limit);
+        emit(buf, "invalid", state.rejected_invalid);
+        let _ = writeln!(buf, "]");
     }
 
-    state.visible
+    (state.visible, state.trace)
 }
 
 /// Recursive per-chain flood-fill.
@@ -196,6 +288,9 @@ fn flood(
         state.rejected_depth_limit += 1;
         if !state.depth_limit_warned {
             state.depth_limit_warned = true;
+            // Real warning, independent of capture: visible-set conservatism
+            // past this point is a correctness signal worth seeing even when
+            // the diagnostic chord is off. Stays a separate emission.
             log::warn!(
                 target: "postretro::portal_trace",
                 "[portal_trace] chain depth limit reached (MAX_PORTAL_CHAIN_DEPTH={}) \
@@ -205,6 +300,13 @@ fn flood(
                 state.camera_leaf,
                 leaf,
             );
+        }
+        // Additionally append one compact event line to the trace buffer so
+        // the depth-limit hit appears inline with the rest of the frame's
+        // events (the `log::warn!` above fires once per walk; this fires
+        // every time the limit is hit during capture).
+        if let Some(buf) = state.trace.as_mut() {
+            let _ = writeln!(buf, "  rej leaf={} depth", leaf);
         }
         return;
     }
@@ -244,12 +346,16 @@ fn flood(
         // Skip solid leaves.
         if state.world.leaves[neighbor].is_solid {
             state.rejected_solid += 1;
-            if state.capture {
-                log::info!(
-                    target: "postretro::portal_trace",
-                    "[portal_trace] reject src={} dst={} reason=solid_neighbor",
+            // For `solid` rejects the clip hasn't run yet, so the "clipped
+            // verts" half of the v=c/p pair isn't meaningful. Print only the
+            // portal vertex count.
+            if let Some(buf) = state.trace.as_mut() {
+                let _ = writeln!(
+                    buf,
+                    "  rej {}->{} v={} solid",
                     leaf,
                     neighbor,
+                    portal.polygon.len(),
                 );
             }
             continue;
@@ -278,10 +384,10 @@ fn flood(
 
         if clipped_len < 3 {
             state.rejected_clipped += 1;
-            if state.capture {
-                log::info!(
-                    target: "postretro::portal_trace",
-                    "[portal_trace] reject src={} dst={} reason=clipped_to_empty clipped_verts={} portal_verts={}",
+            if let Some(buf) = state.trace.as_mut() {
+                let _ = writeln!(
+                    buf,
+                    "  rej {}->{} v={}/{} clip",
                     leaf,
                     neighbor,
                     clipped_len,
@@ -296,27 +402,22 @@ fn flood(
         // planes it produces form a cone strictly inside the current one.
         let Some(narrowed) = narrowed_opt else {
             state.rejected_narrow += 1;
-            if state.capture {
-                log::info!(
-                    target: "postretro::portal_trace",
-                    "[portal_trace] reject src={} dst={} reason=narrow_frustum_failed clipped_verts={}",
+            if let Some(buf) = state.trace.as_mut() {
+                let _ = writeln!(
+                    buf,
+                    "  rej {}->{} v={}/{} narrow",
                     leaf,
                     neighbor,
                     clipped_len,
+                    portal.polygon.len(),
                 );
             }
             continue;
         };
 
         state.accepted += 1;
-        if state.capture {
-            log::info!(
-                target: "postretro::portal_trace",
-                "[portal_trace] accept src={} dst={} clipped_verts={}",
-                leaf,
-                neighbor,
-                clipped_len,
-            );
+        if let Some(buf) = state.trace.as_mut() {
+            let _ = writeln!(buf, "  acc {}->{} v={}", leaf, neighbor, clipped_len);
         }
 
         // Descend into the neighbor, reusing the shared path via push/pop
@@ -1616,6 +1717,161 @@ mod tests {
              would plant a narrow frustum at X that clips X→Y to empty, \
              and the wider A→C→X chain would be dropped by the \
              visible[X] early-skip before it ever reached X→Y."
+        );
+    }
+
+    /// Regression probe: camera sits 0.03 units from a vertical portal
+    /// wall, reproducing the blank-frame scenario captured from
+    /// `test-3.prl` at 2026-04-11T22:52:11Z. Camera at `(4.91, 0.92,
+    /// -14.67)` inside leaf 99 whose -X wall is on `x = 4.88`.
+    ///
+    /// **Root cause (confirmed by diagnostic trace on 2026-04-11):** the
+    /// render-pipeline near clip (`camera::NEAR = 0.1`) is baked into the
+    /// view-projection matrix used to build the visibility frustum. When
+    /// the camera sits within 0.1 units of a portal plane, the entire
+    /// portal polygon lies between the camera apex and the near plane, so
+    /// every vertex fails the near-plane test and Sutherland-Hodgman
+    /// clips the polygon to empty. Side-plane clipping is not the
+    /// culprit: pushing only the near plane up to the camera apex (near
+    /// ≈ 0) makes the portal reach its neighbor on this exact fixture.
+    ///
+    /// The test geometry is copied from the live trace verbatim — same
+    /// camera position, same leaf bounds, same 6.5×4.88 portal rectangle.
+    /// Leaf A is the camera leaf (+X side), leaf B is the -X neighbor.
+    ///
+    /// Routes through `visibility::extract_frustum_planes` directly
+    /// rather than the module-private `extract_test_frustum` copy to
+    /// exercise the real production path end-to-end.
+    #[test]
+    fn portal_traverse_reaches_neighbor_when_camera_is_close_to_portal_wall() {
+        use crate::camera;
+        use crate::visibility::extract_frustum_planes;
+
+        let portal = PortalData {
+            polygon: vec![
+                Vec3::new(4.88, 0.00, -17.88),
+                Vec3::new(4.88, 0.00, -11.38),
+                Vec3::new(4.88, 4.88, -11.38),
+                Vec3::new(4.88, 4.88, -17.88),
+            ],
+            front_leaf: 0,
+            back_leaf: 1,
+        };
+
+        let world = LevelWorld {
+            vertices: vec![],
+            indices: vec![],
+            face_meta: vec![],
+            nodes: vec![],
+            leaves: vec![
+                LeafData {
+                    bounds_min: Vec3::new(4.88, 0.00, -17.88),
+                    bounds_max: Vec3::new(11.38, 4.88, -11.38),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                    texture_sub_ranges: vec![],
+                },
+                LeafData {
+                    bounds_min: Vec3::new(-50.00, 0.00, -17.88),
+                    bounds_max: Vec3::new(4.88, 4.88, -11.38),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                    texture_sub_ranges: vec![],
+                },
+            ],
+            root: BspChild::Leaf(0),
+            has_pvs: false,
+            portals: vec![portal],
+            leaf_portals: vec![vec![0], vec![0]],
+            has_portals: true,
+            texture_names: vec![],
+        };
+
+        // Camera pose from the captured blank-frame trace. The live trace
+        // did not record view direction; -X stares straight at the portal
+        // wall, which is the natural "camera pressed against a wall"
+        // orientation and reproduces the same clip-to-empty symptom.
+        let camera_pos = Vec3::new(4.91, 0.92, -14.67);
+        let look_dir = Vec3::NEG_X;
+
+        let aspect = 16.0 / 9.0;
+        let vfov = 2.0 * ((camera::HFOV / 2.0).tan() / aspect).atan();
+        let view = Mat4::look_at_rh(camera_pos, camera_pos + look_dir, Vec3::Y);
+        let proj = Mat4::perspective_rh(vfov, aspect, camera::NEAR, camera::FAR);
+        let frustum = extract_frustum_planes(proj * view);
+
+        // Precondition: at least one portal vertex must lie outside at
+        // least one frustum plane, i.e. the clip step has real work to do.
+        // A test that passes because every vertex is trivially inside
+        // every plane proves nothing about the clip behaviour.
+        let any_vertex_outside = world.portals[0].polygon.iter().any(|&v| {
+            frustum
+                .planes
+                .iter()
+                .any(|p| p.normal.dot(v) + p.dist < 0.0)
+        });
+        assert!(
+            any_vertex_outside,
+            "precondition failed: every portal vertex is inside every \
+             frustum plane, so the clip step is a no-op and this test \
+             does not exercise the blank-frame scenario."
+        );
+
+        let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
+
+        assert!(visible[0], "camera leaf must always be visible");
+        assert!(
+            visible[1],
+            "leaf B must be reachable through the portal even when the \
+             camera sits 0.03 units from the portal plane. Failure here \
+             means the visibility frustum's near plane (inherited from \
+             the render pipeline's 0.1-unit near clip) is clipping the \
+             entire portal polygon to empty — the blank-frame bug in \
+             tight corridors."
+        );
+    }
+
+    /// Shape-check the compact trace format: header fields, at least one
+    /// event line, and the new-format summary. Uses the module-private
+    /// `portal_traverse_inner` to read the formatted buffer directly —
+    /// asserting on `log::info!` output would need a custom test logger and
+    /// would buy nothing over reading the source-of-truth string.
+    #[test]
+    fn portal_traverse_capture_emits_compact_header_fields() {
+        let world = three_leaf_chain();
+        let camera_pos = Vec3::new(16.0, 32.0, 32.0);
+        let frustum = make_camera_frustum(camera_pos, Vec3::X);
+        let (_visible, trace) = portal_traverse_inner(camera_pos, 0, &frustum, &world, true);
+        let buf = trace.expect("capture: true should produce a trace buffer");
+
+        // Header fields — these are the new per-frame camera-leaf diagnostics
+        // added for the flicker bug hunt.
+        assert!(buf.contains("cam=("), "header missing cam=(: {buf}");
+        assert!(buf.contains("leaf="), "header missing leaf=: {buf}");
+        assert!(buf.contains("faces="), "header missing faces=: {buf}");
+        assert!(buf.contains("bnds=("), "header missing bnds=(: {buf}");
+        assert!(buf.contains("leaves="), "header missing leaves=: {buf}");
+
+        // At least one accepted/rejected event line under the header. The
+        // straight corridor walks into leaf B and leaf C, so there's at
+        // least one `  acc ` line.
+        let has_event = buf
+            .lines()
+            .any(|line| line.starts_with("  acc ") || line.starts_with("  rej "));
+        assert!(has_event, "expected at least one event line: {buf}");
+
+        // Summary: starts with `  = reach=` and contains `rej[`.
+        let summary = buf
+            .lines()
+            .find(|line| line.starts_with("  = reach="))
+            .expect("expected a summary line starting with `  = reach=`");
+        assert!(
+            summary.contains("rej["),
+            "summary missing rej[ bracket: {summary}"
         );
     }
 }

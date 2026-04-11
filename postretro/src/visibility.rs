@@ -119,12 +119,46 @@ pub(crate) struct Frustum {
     pub planes: Vec<FrustumPlane>,
 }
 
+/// Canonical plane indices for a 6-plane frustum produced by
+/// [`extract_frustum_planes`]. Kept next to the extraction so any future
+/// reordering has exactly one place to update.
+pub(crate) const NEAR_PLANE_INDEX: usize = 4;
+
+impl Frustum {
+    /// Slide the near plane so it passes exactly through `apex`, keeping
+    /// the inward normal unchanged. Intended for the initial camera frustum
+    /// before any portal narrowing.
+    ///
+    /// Fixes the tight-corridor blank-frame bug: the render pipeline's
+    /// 0.1-unit near clip is depth-precision only, and when the camera sits
+    /// closer than that to a portal plane, every portal vertex lies between
+    /// camera and near plane — Sutherland-Hodgman clips the polygon to
+    /// empty, the neighbor is rejected, and the frame flashes the clear
+    /// color. See the regression probe in `portal_vis::tests`.
+    ///
+    /// Assumes the canonical 6-plane layout from [`extract_frustum_planes`]
+    /// (Left, Right, Bottom, Top, Near, Far). **Do not call on a narrowed
+    /// sub-frustum**: those replace the near plane with the portal plane,
+    /// and sliding it to the camera apex would defeat the narrowing.
+    pub(crate) fn slide_near_plane_to(&mut self, apex: Vec3) {
+        debug_assert_eq!(
+            self.planes.len(),
+            6,
+            "slide_near_plane_to expects the canonical 6-plane extraction; \
+             narrowed sub-frustums must not call this"
+        );
+        if let Some(near) = self.planes.get_mut(NEAR_PLANE_INDEX) {
+            near.dist = -near.normal.dot(apex);
+        }
+    }
+}
+
 /// Extract the six frustum planes from a combined view-projection matrix.
 ///
 /// Uses the Griess-Hartmann method for a right-handed projection:
 /// each plane is a combination of rows from the 4x4 matrix. The resulting
 /// planes point inward (a point satisfying all six is inside the frustum).
-fn extract_frustum_planes(view_proj: Mat4) -> Frustum {
+pub(crate) fn extract_frustum_planes(view_proj: Mat4) -> Frustum {
     // glam stores matrices column-major. To get row N, we read element N from each column.
     let row = |n: usize| -> Vec4 {
         Vec4::new(

@@ -37,28 +37,27 @@ pub struct VisibilityStats {
     /// "what PVS allows" against the post-narrowing counts below to isolate
     /// which culling stage is dropping a given surface.
     pub raw_pvs_faces: u32,
-    /// Faces remaining after the visibility path's primary narrowing stage.
-    /// Semantics vary by path:
+    /// Faces remaining after the visibility path's primary narrowing stage,
+    /// before any frustum-based leaf culling. Pre-cull across all paths:
     ///
-    /// - **BSP path:** pre-cull PVS lookup count (counted before the AABB
-    ///   frustum test). Compare against `frustum_faces` to see how much the
-    ///   AABB cull discarded.
-    /// - **PRL portal path:** portal-walk reach. Equals `frustum_faces` by
+    /// - **BSP path:** PVS lookup count, counted before the AABB frustum test.
+    /// - **PRL PVS path:** PVS lookup count — equal to `raw_pvs_faces` by
+    ///   construction, since both walk PVS-visible leaves and count non-empty
+    ///   faces.
+    /// - **PRL portal path:** portal-walk reach. Differs from `raw_pvs_faces`
+    ///   because the portal walk discards leaves the PVS would have admitted
+    ///   but the portal chain cannot reach. Equals `frustum_faces` by
     ///   construction because portal traversal already clips against a
-    ///   narrowed frustum at every hop.
-    /// - **PRL PVS path:** *post-cull* count — only leaves surviving the
-    ///   AABB frustum test contribute, because the PVS branch applies the
-    ///   cull before face iteration. The pre-cull baseline on this path is
-    ///   `raw_pvs_faces` (computed separately via `raw_pvs_face_count`).
+    ///   narrowed frustum at every hop — there is no separate AABB stage.
     ///
     /// Compare against `raw_pvs_faces` to see how much the primary narrowing
-    /// stage discarded on each path.
+    /// stage discarded, and against `frustum_faces` to see how much the AABB
+    /// frustum cull discarded.
     pub pvs_faces: u32,
-    /// Faces remaining after frustum (AABB) culling on top of `pvs_faces`. On
-    /// the portal-traversal path and the PRL PVS path this equals `pvs_faces`
-    /// by construction — the former because portal traversal already clips
-    /// against a narrowed frustum at every hop, the latter because the AABB
-    /// cull runs before the face count on that branch.
+    /// Faces remaining after frustum (AABB) culling on top of `pvs_faces`.
+    /// Post-cull across all paths. On the PRL portal-traversal path this
+    /// equals `pvs_faces` by construction because portal traversal already
+    /// clips against a narrowed frustum at every hop.
     pub frustum_faces: u32,
 }
 
@@ -653,7 +652,7 @@ pub fn determine_prl_visibility(
     let pvs = &world.leaves[camera_leaf_idx].pvs;
 
     scratch.clear();
-    let mut pvs_faces = 0u32;
+    let mut frustum_faces = 0u32;
 
     for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
         if leaf.is_solid || leaf.face_count == 0 {
@@ -668,22 +667,24 @@ pub fn determine_prl_visibility(
         }
 
         // Reorder: run the AABB-frustum cull *before* touching face_meta so
-        // culled leaves pay nothing for face iteration. This differs from the
-        // BSP path (`collect_visible_faces`), which intentionally counts
-        // before culling because it reports `pvs_face_count` as the pre-cull
-        // count. On this PRL PVS path, `raw_pvs_faces` is computed separately
-        // by `raw_pvs_face_count`, so `pvs_faces` is the post-cull counter and
-        // the reorder is safe.
+        // culled leaves pay nothing for face iteration. Unlike the BSP path
+        // (`collect_visible_faces`), which uses a commit/rollback pattern to
+        // preserve the pre-cull `pvs_face_count` semantic while still counting
+        // in a single pass, this path gets the pre-cull count for free from
+        // `raw_pvs_faces` (computed above via `raw_pvs_face_count`). The two
+        // are definitionally equal on this path: both walk PVS-visible leaves
+        // counting non-empty faces. The counter accumulated inside this loop
+        // is the *post-cull* count, exposed as `frustum_faces`.
         if is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, &frustum) {
             continue;
         }
 
-        // Single pass: count non-zero faces and push their draw ranges.
+        // Single pass: count surviving faces and push their draw ranges.
         let start = leaf.face_start as usize;
         let count = leaf.face_count as usize;
         for face in world.face_meta.iter().skip(start).take(count) {
             if face.index_count > 0 {
-                pvs_faces += 1;
+                frustum_faces += 1;
                 scratch.push(DrawRange {
                     index_offset: face.index_offset,
                     index_count: face.index_count,
@@ -692,10 +693,11 @@ pub fn determine_prl_visibility(
         }
     }
 
-    // On this path `frustum_faces` equals `pvs_faces` by construction: the
-    // AABB cull runs above before any face is counted, so every face that
-    // reaches the counter has already survived the frustum test.
-    let frustum_faces = pvs_faces;
+    // `pvs_faces` on this path is the pre-cull PVS lookup count, which is
+    // definitionally `raw_pvs_faces`. Reuse it rather than recomputing in a
+    // second walk — the AABB cull reorder above means the loop only counts
+    // post-cull faces, but we still want a pre-cull figure in the stats.
+    let pvs_faces = raw_pvs_faces;
 
     log::trace!(
         "[Visibility] leaf={}, raw_pvs_faces={}, pvs_faces={}, frustum_faces={}, total_faces={}",
@@ -1678,12 +1680,11 @@ mod tests {
             }
             VisibleFaces::DrawAll => panic!("expected Culled"),
         }
-        // On the PRL PVS path, `pvs_faces` is a post-cull counter (the
-        // AABB-frustum test runs before face iteration), so frustum-culled
-        // leaves do not contribute. `raw_pvs_faces` carries the pre-cull
-        // baseline via `raw_pvs_face_count`.
+        // `pvs_faces` is the pre-cull PVS lookup count (== raw_pvs_faces on
+        // this path). `frustum_faces` is the post-cull count. The delta
+        // between them reflects what the AABB-frustum cull discarded.
         assert_eq!(stats.raw_pvs_faces, 2);
-        assert_eq!(stats.pvs_faces, 1);
+        assert_eq!(stats.pvs_faces, 2);
         assert_eq!(stats.frustum_faces, 1);
     }
 

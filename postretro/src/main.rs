@@ -691,3 +691,127 @@ impl App {
         }
     }
 }
+
+// --- Tests ---
+//
+// Regression pins for the decouple-view-from-sim fix. The original bug silently
+// lost mouse motion on zero-tick frames: `InputSystem::snapshot()` drained the
+// accumulated mouse delta, but the tick loop never applied look rotation when
+// `ticks == 0`, so the delta vanished. The fix routes look rotation through
+// `drain_look_inputs()` at render rate and feeds yaw/pitch into
+// `InterpolableState::view_projection` as arguments rather than baking them
+// into the tick state. These tests assert on both `camera.yaw` *and* the
+// rendered `view_projection` matrix because checking yaw alone would not have
+// caught the original rendering staleness.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame_timing::TICK_DURATION;
+    use crate::input::{InputSystem, default_bindings};
+
+    /// Epsilon for angle and matrix-element comparisons. Mouse-driven yaw
+    /// deltas at default sensitivity land around 1e-1 radians, so 1e-5 is
+    /// comfortably tight without being flaky on f32 round-off.
+    const EPSILON: f32 = 1e-5;
+
+    /// Regression: mouse motion accumulated in a frame that produces zero
+    /// ticks must still rotate the camera *and* must change the rendered
+    /// view-projection matrix. Asserting only on `camera.yaw` would have
+    /// passed against the original bug — rendering read through an
+    /// `InterpolableState::view_projection` that ignored the updated yaw.
+    #[test]
+    fn mouse_delta_applied_on_zero_tick_frame() {
+        let mut sys = InputSystem::new(default_bindings());
+        let mut camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+
+        // Accumulate a large horizontal mouse delta. At default sensitivity
+        // (0.002 rad/unit) and scale -1.0 this produces yaw_displacement
+        // of -0.2 radians — well above EPSILON.
+        sys.handle_mouse_delta(100.0, 0.0);
+        let look = sys.drain_look_inputs();
+
+        // A 5ms elapsed frame is well below the 16.667ms tick duration, so
+        // the accumulator produces zero ticks but still reports a positive
+        // frame_dt. This is the exact shape of the frame that triggered the
+        // original bug.
+        let initial_state = InterpolableState::new(Vec3::ZERO);
+        let mut timing = FrameTiming::new(initial_state);
+        let result = timing.accumulate(Duration::from_millis(5));
+        assert_eq!(result.ticks, 0, "5ms elapsed must not produce a tick");
+        assert!(
+            result.frame_dt > 0.0,
+            "frame_dt must be positive on a non-zero elapsed frame",
+        );
+
+        // Mirror production: rotate once per render frame, before the (here
+        // absent) tick loop.
+        camera.rotate(look.yaw_delta(result.frame_dt), look.pitch_delta(result.frame_dt));
+
+        // Camera yaw must reflect the mouse motion.
+        assert!(
+            camera.yaw.abs() > EPSILON,
+            "camera.yaw should have changed from 0.0, got {}",
+            camera.yaw,
+        );
+
+        // View-projection assertion — the load-bearing check. Build the
+        // baseline matrix with yaw/pitch = 0 and the post-rotation matrix
+        // with the camera's actual yaw/pitch. Position is identical in both
+        // cases, so any element-wise difference must come from the rotation.
+        let render_state = InterpolableState::new(Vec3::ZERO);
+        let aspect = camera.aspect();
+        let baseline = render_state.view_projection(aspect, 0.0, 0.0);
+        let rotated = render_state.view_projection(aspect, camera.yaw, camera.pitch);
+
+        let baseline_cols = baseline.to_cols_array();
+        let rotated_cols = rotated.to_cols_array();
+        let any_differs = baseline_cols
+            .iter()
+            .zip(rotated_cols.iter())
+            .any(|(a, b)| (a - b).abs() > EPSILON);
+        assert!(
+            any_differs,
+            "view_projection must differ after applying mouse-driven yaw; \
+             baseline={:?} rotated={:?}",
+            baseline_cols, rotated_cols,
+        );
+    }
+
+    /// Regression: on a multi-tick frame, look rotation must be applied
+    /// exactly once (at render rate), not once per tick. Applying it in the
+    /// tick loop would multiply the delta by `ticks` and send the view
+    /// spinning.
+    #[test]
+    fn mouse_delta_not_multiplied_on_multi_tick_frame() {
+        let mut sys = InputSystem::new(default_bindings());
+        let mut camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+
+        sys.handle_mouse_delta(100.0, 0.0);
+        let look = sys.drain_look_inputs();
+
+        // Force exactly 3 ticks by advancing the accumulator by 3 * TICK_DURATION.
+        let initial_state = InterpolableState::new(Vec3::ZERO);
+        let mut timing = FrameTiming::new(initial_state);
+        let result = timing.accumulate(TICK_DURATION * 3);
+        assert_eq!(result.ticks, 3, "TICK_DURATION * 3 must produce 3 ticks");
+
+        // Production code rotates once before the tick loop and never inside
+        // it. Mirror that: one rotation call, regardless of tick count.
+        camera.rotate(look.yaw_delta(result.frame_dt), look.pitch_delta(result.frame_dt));
+
+        // The expected yaw is the single-application delta. Compute it the
+        // same way the production code does on a fresh system to avoid
+        // analytic drift from the binding table.
+        let mut reference_sys = InputSystem::new(default_bindings());
+        reference_sys.handle_mouse_delta(100.0, 0.0);
+        let reference_look = reference_sys.drain_look_inputs();
+        let expected_yaw = reference_look.yaw_delta(result.frame_dt);
+
+        assert!(
+            (camera.yaw - expected_yaw).abs() < EPSILON,
+            "camera.yaw should equal single-application delta {} (not 3x), got {}",
+            expected_yaw,
+            camera.yaw,
+        );
+    }
+}

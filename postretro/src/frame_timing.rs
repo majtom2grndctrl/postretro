@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::camera;
 
 /// Fixed tick duration: 60 Hz (16.667ms per tick).
-const TICK_DURATION: Duration = Duration::from_micros(16_667);
+pub(crate) const TICK_DURATION: Duration = Duration::from_micros(16_667);
 
 /// Maximum accumulator value to prevent spiral-of-death catch-up after stalls.
 const MAX_ACCUMULATOR: Duration = Duration::from_millis(250);

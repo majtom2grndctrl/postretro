@@ -1,6 +1,6 @@
 # Exterior Camera Visibility
 
-> **Status:** draft
+> **Status:** ready
 > **Depends on:** brush-volume BSP refactor (`context/plans/done/brush-volume-bsp/`) — exterior leaves must already be the structural signature this plan keys on.
 > **Related:** `postretro/src/visibility.rs` · `postretro/src/render.rs` · `context/lib/build_pipeline.md` §Runtime visibility
 
@@ -38,13 +38,15 @@ Two complementary changes. Both small, both file-isolated.
 
 Detection signature: `!camera_leaf.is_solid && camera_leaf.face_count == 0`. This is the structural fingerprint left by the compiler's exterior strip — an empty leaf with no faces. No new metadata needs to ride alongside the BspLeaves section; the existing `face_count == 0` is the marker.
 
-The branch body is a near-clone of `SolidLeafFallback`: clear scratch, iterate `world.leaves`, skip solid and zero-face entries, AABB-frustum-cull each surviving leaf, push its faces. Tag the result with a new `VisibilityPath::ExteriorCameraFallback` so the title bar and `[Visibility]` log line distinguish it from solid-leaf and from normal portal traversal.
+The branch body is a near-clone of `SolidLeafFallback`: clear scratch, iterate `world.leaves`, skip solid and zero-face entries, AABB-frustum-cull each surviving leaf, push its faces. Tag the result with a new `VisibilityPath::ExteriorCameraFallback` so the title bar and the `[Diagnostics]` per-frame log line distinguish it from solid-leaf and from normal portal traversal.
 
 The two fallback branches are similar enough that a shared helper is tempting; resist that until both branches exist. Premature merging hides the difference in *why* each is taken — solid is "shouldn't be here, draw something so the level isn't a black void," exterior is "you've left the playable space deliberately, render the interior X-ray."
 
 ### B. Disable back-face culling on the static-world pipeline
 
-Change `cull_mode` at `postretro/src/render.rs:567` from `Some(Face::Back)` to `None`. This is the `Textured Pipeline` at `render.rs:532`, the single pipeline used for both PRL and the legacy BSP draw path (`render.rs:831`). The change therefore affects both map formats — see *Scope note on the BSP path* below.
+Change `cull_mode` at `postretro/src/render.rs:567` from `Some(Face::Back)` to `None`. This is the `Textured Pipeline` at `render.rs:532`, used for all static-world draws at `render.rs:831`.
+
+**BSP note.** The `Textured Pipeline` is also the pipeline the legacy `.bsp` loader draws through. The invariance argument below generalizes to any sealed level — BSP or PRL — so `cull_mode: None` is pixel-neutral from inside a BSP level too. The repo currently contains no `.bsp` assets (all maps are `.prl` compiled from `.map` sources), so empirical BSP verification is not part of Task 3; if a `.bsp` asset is ever loaded later, the invariance argument is what keeps the inside-the-level render correct.
 
 **Inside-the-level invariance argument.** Every face emitted into an interior empty leaf has its outward normal pointing into that leaf's empty space — that is the structural contract of brush-side projection (`postretro-level-compiler/src/partition/face_extract.rs`). Pass 1 (`ClipSideByTree_r`) only accumulates a side's fragments into leaves on the side's front-facing half-space, so the polygon's outward normal always points toward the leaf interior it ends up in. The camera, when interior, sits in an empty leaf, and every face it sees from there is front-facing by construction. Removing back-face culling changes zero pixels rendered from any interior position in any sealed level.
 
@@ -52,18 +54,14 @@ The GPU cost of `cull_mode: None` is the per-vertex work the rasterizer would ot
 
 If a future change introduces inward-visible back faces (one-sided decals authored facing the wrong way, additive overlays, brush sides escaping containment dedup), the new visible artifacts would surface immediately from inside the level. That is an authoring bug worth catching, not a cost worth paying.
 
-### Scope note on the BSP path
-
-The `Textured Pipeline` is shared, so disabling its back-face cull changes what the legacy `.bsp` loader renders too. The invariance argument generalizes: in any sealed level — BSP or PRL — an interior camera sits in an empty region and sees only front faces. Removing the cull changes zero pixels rendered from inside a BSP level. From outside a BSP level the symptom is unfixed because the BSP visibility flow lacks the exterior-leaf signature this plan adds; the BSP path simply renders back-facing inward surfaces *if* its own flow ever routes them to the draw call, and is otherwise unchanged. Manual verification in Task 3 must cover a BSP map as well as a PRL map to confirm inside-the-level parity on both.
-
 ### Diagnostic loss
 
 Today, "the entire level disappeared" is an unambiguous signal that the camera escaped the playable region. After this plan, the level keeps rendering and the user has to read the title bar / log to know they're outside. Two replacements absorb the lost signal:
 
 - **Title bar tag.** The `path:` segment in the window title is driven by an exhaustive match on `VisibilityPath` at `postretro/src/main.rs:553-560`. The new variant must be added to that match in the same change — Task 1 covers it. The new label string is `exterior`.
-- **Log line.** The per-frame diagnostic emit at `main.rs:565` is `log::debug!` under the `[Diagnostics]` tag and already names the path label. It needs no changes once the match above is updated. Additionally, Task 1 adds a single `log::info!("[Visibility] path=ExteriorCameraFallback ...")` emit inside the new branch (matching the shape of the existing `log::warn!` in the `SolidLeafFallback` branch at `visibility.rs:545`) so the transition is visible at the default log level, not only at debug.
+- **Log line.** The per-frame diagnostic emit at `main.rs:565` is `log::debug!` under the `[Diagnostics]` tag and already names the path label. Once the match arm is added it will show `path:exterior` per frame at debug level. No new emit, no info-level log on entry. A camera leaving the playable region is a valid runtime case — spectators and debug fly-throughs do it routinely — not a warning or an error, and the existing debug line is the right visibility level for it.
 
-These cost nothing and replace the implicit "screen is black" diagnostic with an explicit one.
+These cost nothing and replace the implicit "screen is black" diagnostic with an explicit one at debug level.
 
 ---
 
@@ -74,7 +72,6 @@ These cost nothing and replace the implicit "screen is black" diagnostic with an
 - Re-introducing exterior face data into the PRL output. The strip stays.
 - A separate "draw distance" cull. The frustum AABB cull on the fallback path already limits work to the on-screen subset; distance is implicit in frustum extent.
 - Two-pipeline render with cull-mode toggle per frame. One pipeline change is the simpler answer and the inside-the-level invariance argument removes the reason to keep two.
-- Exterior-camera fallback for the BSP (`.bsp` legacy loader) visibility flow. The BSP path has a different leaf-flag layout and would need its own detection branch; this plan does not touch it. Note that Task 2's `cull_mode: None` change does still affect BSP rendering because the `Textured Pipeline` is shared — addressed in *Scope note on the BSP path* above, not here.
 - Indicator UI in the viewport (border tint, watermark) when the fallback path is active. Title bar is sufficient for the developers using this; viewport indicators are a UX concern that belongs in a player-facing diagnostics plan, not here.
 
 ---
@@ -85,7 +82,7 @@ These cost nothing and replace the implicit "screen is black" diagnostic with an
 
 **Crates:** `postretro` · **Files:** `src/visibility.rs`, `src/main.rs`
 
-Add `ExteriorCameraFallback` to the `VisibilityPath` enum. In `determine_prl_visibility`, after the existing `in_solid` branch and before the `has_portals` branch, add a new branch keyed on `!camera_leaf.is_solid && camera_leaf.face_count == 0`. Body: emit a single `log::info!("[Visibility] path=ExteriorCameraFallback camera in exterior leaf {idx}")` on entry (mirroring the `log::warn!` shape at `visibility.rs:545`), clear scratch, frustum-cull every non-solid non-zero-face leaf, push faces, return `VisibleFaces::Culled` with a `VisibilityStats` carrying the new path tag.
+Add `ExteriorCameraFallback` to the `VisibilityPath` enum. In `determine_prl_visibility`, after the existing `in_solid` branch and before the `has_portals` branch, add a new branch keyed on `!camera_leaf.is_solid && camera_leaf.face_count == 0`. Body: clear scratch, frustum-cull every non-solid non-zero-face leaf, push faces, return `VisibleFaces::Culled` with a `VisibilityStats` carrying the new path tag. Do *not* emit a new log line on entry — a camera leaving the playable region is a valid runtime case (spectators, debug fly), not a warning. The existing `[Diagnostics]` debug emit at `main.rs:565` already names the path label per frame and is sufficient.
 
 Then extend the exhaustive match on `VisibilityPath` at `postretro/src/main.rs:553-560`: add the arm `VisibilityPath::ExteriorCameraFallback => "exterior",`. Without this edit the crate will not compile — the match has no `_` arm.
 
@@ -101,7 +98,7 @@ Then extend the exhaustive match on `VisibilityPath` at `postretro/src/main.rs:5
 
 **Crate:** `postretro` · **File:** `src/render.rs`
 
-Change `cull_mode: Some(wgpu::Face::Back)` at line 567 to `cull_mode: None`. Add a one-line comment naming the exterior-camera reason and pointing at this plan's rationale.
+Change `cull_mode: Some(wgpu::Face::Back)` at line 567 to `cull_mode: None`. Add an inline comment that captures the invariance argument so a future reader editing this line sees what it costs. The comment must not link this plan file — it will rot once the plan moves to `done/`. Suggested wording: `// cull_mode: None — exterior cameras render interior walls from their back side; interior cameras see only front faces by brush-side construction, so this change is pixel-neutral from inside.`
 
 **Acceptance criteria:**
 - `cargo build -p postretro` succeeds.
@@ -110,15 +107,13 @@ Change `cull_mode: Some(wgpu::Face::Back)` at line 567 to `cull_mode: None`. Add
 
 ### Task 3: Manual verification
 
-**PRL walk-through.** Compile and load `test-3.prl`. Walk inside the level — verify visual parity with current behavior (no missing or duplicated surfaces, no z-fighting introduced by the cull change). Use the engine's noclip / fly path to step outside the level boundary — verify the interior remains visible from outside, with inward-facing surfaces visible as their back sides. Confirm the title bar shows `path:exterior` while outside and reverts to `path:prl-portal` on re-entry.
-
-**BSP walk-through.** Because Task 2's pipeline change is shared, also load a representative BSP map (`assets/maps/test.bsp`). Walk inside — verify visual parity with the pre-change baseline. The BSP visibility flow is not being modified, so no change in outside-the-level behavior is expected or required here; the goal is to catch any interior regression introduced by `cull_mode: None`.
+Compile and load `test-3.prl`. Walk inside the level — verify visual parity with current behavior (no missing or duplicated surfaces, no z-fighting introduced by the cull change). Use the engine's noclip / fly path to step outside the level boundary — verify the interior remains visible from outside, with inward-facing surfaces visible as their back sides. Also view the level from several outside angles to check for z-fighting on thin walls or shared-plane brush sides, which is where the disabled back-face cull is most likely to surface a new artifact. Confirm the title bar shows `path:exterior` while outside and reverts to `path:prl-portal` on re-entry.
 
 **Acceptance criteria:**
-- Inside-the-level rendering matches the pre-change baseline on both `test-3.prl` and `test.bsp`.
-- Outside-the-level PRL rendering shows interior geometry instead of an empty void.
-- Title bar reflects the path transition on entry/exit of `test-3.prl`.
-- No new z-fighting or duplicated-surface artifacts on either map.
+- Inside-the-level rendering matches the pre-change baseline.
+- Outside-the-level rendering shows interior geometry instead of an empty void.
+- Title bar reflects the path transition on entry/exit.
+- No new z-fighting or duplicated-surface artifacts from inside or outside angles.
 
 ### Task 4: Documentation update
 
@@ -160,7 +155,7 @@ The plan is done when all of the following hold:
 
 1. `determine_prl_visibility` has an `ExteriorCameraFallback` branch and a corresponding `VisibilityPath` variant, and the exhaustive `main.rs` path-label match has a new arm for it.
 2. The `Textured Pipeline` at `render.rs:532` uses `cull_mode: None`.
-3. From inside `test-3.prl` and `test.bsp`, the rendered image is visually identical to the pre-change baseline.
+3. From inside `test-3.prl`, the rendered image is visually identical to the pre-change baseline.
 4. From outside `test-3.prl` (noclip / fly), the level interior is visible.
 5. The title bar `path:` segment shows `exterior` while outside the level and `prl-portal` on re-entry.
 6. `cargo test --workspace` passes. The three new unit tests from Task 1 (entry detection, frustum cull on fallback, interior camera invariance) are included.
@@ -171,4 +166,3 @@ The plan is done when all of the following hold:
 ## Open Questions
 
 - **Should the in-solid and exterior branches share a helper after both exist?** Defer to post-implementation. The two branches arose for different reasons and merging them now would erase the distinction in commit history. If a third frustum-only fallback shows up, that's the right time to refactor.
-- **Does the BSP legacy loader need the same treatment?** Probably yes for consistency, but the BSP path's leaf-flag layout is different and any change there should be its own plan once the symptom is observed on a BSP map.

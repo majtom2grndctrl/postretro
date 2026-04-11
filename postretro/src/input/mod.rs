@@ -61,10 +61,18 @@ impl ActionSnapshot {
 pub struct InputSystem {
     bindings: Vec<Binding>,
 
+    /// Unique actions referenced by `bindings`, cached at construction time so
+    /// `snapshot()` does not rebuild the list every frame. `bindings` currently
+    /// has no rebind write site outside `new()`; if one is added, refresh this
+    /// cache alongside it.
+    unique_actions: Vec<Action>,
+
     /// Current pressed/released state of each physical input (true = active).
     physical_state: HashMap<PhysicalInput, bool>,
 
     /// Button states from the previous snapshot, used for state machine transitions.
+    /// Pre-sized in `new()` to the button-action count so the per-frame
+    /// `clear() + extend()` path stays allocation-free after the first frame.
     prev_button_states: HashMap<Action, ButtonState>,
 
     /// Accumulated mouse delta since last snapshot. Reset after each snapshot.
@@ -85,10 +93,26 @@ pub struct InputSystem {
 
 impl InputSystem {
     pub fn new(bindings: Vec<Binding>) -> Self {
+        // Build the unique-action cache once at construction. Using a local
+        // HashSet for dedup keeps the constructor cost a one-time hit.
+        let mut seen = std::collections::HashSet::with_capacity(bindings.len());
+        let mut unique_actions: Vec<Action> = Vec::with_capacity(bindings.len());
+        for binding in &bindings {
+            if seen.insert(binding.action) {
+                unique_actions.push(binding.action);
+            }
+        }
+        unique_actions.shrink_to_fit();
+
+        // Pre-size `prev_button_states` to the count of button-type actions so
+        // the first-frame `extend` fits without reallocation.
+        let button_action_count = unique_actions.iter().filter(|a| !a.is_axis()).count();
+
         Self {
             bindings,
+            unique_actions,
             physical_state: HashMap::new(),
-            prev_button_states: HashMap::new(),
+            prev_button_states: HashMap::with_capacity(button_action_count),
             mouse_delta: (0.0, 0.0),
             mouse_axes: HashMap::new(),
             gamepad_axes: HashMap::new(),
@@ -167,43 +191,41 @@ impl InputSystem {
         // Convert accumulated mouse delta into axis values for bound actions.
         self.resolve_mouse_axes();
 
-        // Collect all actions referenced by bindings.
-        let actions: Vec<Action> = self
-            .bindings
-            .iter()
-            .map(|b| b.action)
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-
         let mut button_states = HashMap::new();
         let mut axis_values = HashMap::new();
 
-        for action in &actions {
+        // Iterate the cached unique action list — `bindings` doesn't change
+        // per frame, so there's no reason to rebuild this set each snapshot.
+        for &action in &self.unique_actions {
             if action.is_axis() {
                 let values = bindings::resolve_axis_values(
-                    *action,
+                    action,
                     &self.bindings,
                     &self.physical_state,
                     &self.mouse_axes,
                     &self.gamepad_axes,
                 );
                 if !values.is_empty() {
-                    axis_values.insert(*action, values);
+                    axis_values.insert(action, values);
                 }
             } else {
                 let state = bindings::resolve_button_state(
-                    *action,
+                    action,
                     &self.bindings,
                     &self.physical_state,
                     &self.prev_button_states,
                 );
-                button_states.insert(*action, state);
+                button_states.insert(action, state);
             }
         }
 
-        // Store button states for next frame's transitions.
-        self.prev_button_states = button_states.clone();
+        // Store button states for next frame's transitions. Reuse the existing
+        // backing allocation — `clear()` retains capacity and `extend` with
+        // `Copy` key/value is a cheap in-place fill. `std::mem::swap` would
+        // leave stale prev-state data in the local we need to return fresh.
+        self.prev_button_states.clear();
+        self.prev_button_states
+            .extend(button_states.iter().map(|(&k, &v)| (k, v)));
 
         // Reset per-frame accumulators.
         self.mouse_delta = (0.0, 0.0);

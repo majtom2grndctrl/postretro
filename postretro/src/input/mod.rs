@@ -6,17 +6,16 @@ pub mod cursor;
 mod defaults;
 pub mod diagnostics;
 pub mod gamepad;
+mod look;
 mod types;
 
 pub use defaults::default_bindings;
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
+pub use look::{GAMEPAD_LOOK_SENSITIVITY, LookInputs};
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
 pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
-
-/// Gamepad look sensitivity: radians per second at full stick deflection.
-pub const GAMEPAD_LOOK_SENSITIVITY: f32 = 2.5;
 
 use std::collections::{HashMap, HashSet};
 
@@ -232,6 +231,65 @@ impl InputSystem {
             button_states,
             axis_values,
         }
+    }
+
+    /// Drain the evanescent look-axis contributions accumulated since the last
+    /// drain into a `LookInputs` value. Consumers apply this at render rate,
+    /// before the fixed-tick loop, so mouse motion is never lost on zero-tick
+    /// frames.
+    ///
+    /// Mouse displacement is refreshed from `mouse_delta`, copied out, and
+    /// cleared so a later `snapshot()` in the same frame will not re-emit
+    /// `Displacement`-sourced `LookYaw` / `LookPitch` entries. Gamepad stick
+    /// state in `gamepad_axes` is deliberately left intact — stick deflection
+    /// is persistent, not evanescent, and a subsequent `snapshot()` will still
+    /// see it. `main.rs` no longer reads look axes from `snapshot()` once
+    /// `drain_look_inputs()` is in play, so this is harmless.
+    #[allow(dead_code)] // Consumed by main.rs in Task 3 of decouple-view-from-sim.
+    pub fn drain_look_inputs(&mut self) -> LookInputs {
+        // Refresh mouse_axes from the accumulated delta so the displacement
+        // branch below sees the latest motion.
+        self.resolve_mouse_axes();
+
+        let mut look = LookInputs::default();
+
+        // Walk LookYaw / LookPitch through the same resolver snapshot() uses.
+        // This shares the binding-table lookup path — no parallel code.
+        for action in [Action::LookYaw, Action::LookPitch] {
+            let values = bindings::resolve_axis_values(
+                action,
+                &self.bindings,
+                &self.physical_state,
+                &self.mouse_axes,
+                &self.gamepad_axes,
+            );
+            for av in values {
+                match (action, av.source) {
+                    (Action::LookYaw, AxisSource::Displacement) => {
+                        look.yaw_displacement += av.value;
+                    }
+                    (Action::LookYaw, AxisSource::Velocity) => {
+                        look.yaw_velocity += av.value;
+                    }
+                    (Action::LookPitch, AxisSource::Displacement) => {
+                        look.pitch_displacement += av.value;
+                    }
+                    (Action::LookPitch, AxisSource::Velocity) => {
+                        look.pitch_velocity += av.value;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Zero out the evanescent mouse state so a same-frame snapshot() does
+        // not re-emit it. Non-look mouse-axis entries (none today, but the
+        // resolver permits them) are left alone.
+        self.mouse_delta = (0.0, 0.0);
+        self.mouse_axes.remove(&Action::LookYaw);
+        self.mouse_axes.remove(&Action::LookPitch);
+
+        look
     }
 
     /// Convert accumulated mouse delta into action axis values.
@@ -560,6 +618,131 @@ mod tests {
 
         // Original snapshot is unchanged.
         assert_eq!(snap.button(Action::Jump), ButtonState::Pressed);
+    }
+
+    // --- drain_look_inputs ---
+
+    #[test]
+    fn drain_look_inputs_returns_mouse_displacement() {
+        let mut sys = InputSystem::new(test_bindings());
+        sys.handle_mouse_delta(10.0, -5.0);
+
+        let look = sys.drain_look_inputs();
+
+        // Yaw:  10.0 * 0.002 * -1.0 = -0.02
+        // Pitch: -5.0 * 0.002 * -1.0 =  0.01
+        assert!(
+            (look.yaw_displacement - (-0.02)).abs() < 1e-6,
+            "expected -0.02, got {}",
+            look.yaw_displacement
+        );
+        assert!(
+            (look.pitch_displacement - 0.01).abs() < 1e-6,
+            "expected 0.01, got {}",
+            look.pitch_displacement
+        );
+        assert!(look.yaw_velocity.abs() < f32::EPSILON);
+        assert!(look.pitch_velocity.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn drain_look_inputs_returns_gamepad_velocity() {
+        let mut bindings = test_bindings();
+        // Bind right stick to look axes so gamepad state resolves through bindings.
+        bindings.push(Binding::with_scale(
+            PhysicalInput::GamepadAxis(gilrs::Axis::RightStickX),
+            Action::LookYaw,
+            1.0,
+        ));
+        bindings.push(Binding::with_scale(
+            PhysicalInput::GamepadAxis(gilrs::Axis::RightStickY),
+            Action::LookPitch,
+            -1.0,
+        ));
+        let mut sys = InputSystem::new(bindings);
+
+        sys.set_gamepad_axis(gilrs::Axis::RightStickX, 0.5);
+        sys.set_gamepad_axis(gilrs::Axis::RightStickY, 0.25);
+
+        let look = sys.drain_look_inputs();
+
+        // Resolution walks the binding table: raw * scale.
+        assert!(
+            (look.yaw_velocity - 0.5).abs() < 1e-6,
+            "expected 0.5, got {}",
+            look.yaw_velocity
+        );
+        assert!(
+            (look.pitch_velocity - (-0.25)).abs() < 1e-6,
+            "expected -0.25, got {}",
+            look.pitch_velocity
+        );
+        assert!(look.yaw_displacement.abs() < f32::EPSILON);
+        assert!(look.pitch_displacement.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn drain_look_inputs_clears_mouse_displacement_for_subsequent_snapshot() {
+        let mut sys = InputSystem::new(test_bindings());
+        sys.handle_mouse_delta(10.0, -5.0);
+
+        let _ = sys.drain_look_inputs();
+
+        // A same-frame snapshot must not re-emit the mouse displacement.
+        let snap = sys.snapshot();
+        assert!(
+            snap.axis(Action::LookYaw).is_empty(),
+            "expected no LookYaw entries after drain, got {:?}",
+            snap.axis(Action::LookYaw)
+        );
+        assert!(
+            snap.axis(Action::LookPitch).is_empty(),
+            "expected no LookPitch entries after drain, got {:?}",
+            snap.axis(Action::LookPitch)
+        );
+    }
+
+    #[test]
+    fn drain_look_inputs_leaves_gamepad_velocity_in_subsequent_snapshot() {
+        // Pin the intentional non-clearing of gamepad_axes: stick deflection
+        // is persistent, so a snapshot() after drain still sees it. Task 3
+        // removes the snapshot().axis(Look*) consumers, which renders this
+        // re-emission harmless.
+        let mut bindings = test_bindings();
+        bindings.push(Binding::with_scale(
+            PhysicalInput::GamepadAxis(gilrs::Axis::RightStickX),
+            Action::LookYaw,
+            1.0,
+        ));
+        let mut sys = InputSystem::new(bindings);
+
+        sys.set_gamepad_axis(gilrs::Axis::RightStickX, 0.75);
+
+        let look = sys.drain_look_inputs();
+        assert!((look.yaw_velocity - 0.75).abs() < 1e-6);
+
+        let snap = sys.snapshot();
+        let yaw = snap.axis(Action::LookYaw);
+        assert_eq!(yaw.len(), 1, "expected one Velocity entry, got {:?}", yaw);
+        assert_eq!(yaw[0].source, AxisSource::Velocity);
+        assert!((yaw[0].value - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn drain_look_inputs_does_not_clear_movement_axes() {
+        let mut sys = InputSystem::new(test_bindings());
+        sys.handle_keyboard_event(KeyCode::KeyW, true);
+        sys.handle_mouse_delta(10.0, 0.0);
+
+        let look = sys.drain_look_inputs();
+        assert!((look.yaw_displacement - (-0.02)).abs() < 1e-6);
+
+        // W is still held — movement must resolve normally in the snapshot.
+        let snap = sys.snapshot();
+        assert!(
+            (snap.axis_value(Action::MoveForward) - 1.0).abs() < f32::EPSILON,
+            "MoveForward should still be active after drain"
+        );
     }
 
     // --- clear_all ---

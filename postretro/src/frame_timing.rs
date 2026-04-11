@@ -101,11 +101,14 @@ impl FrameTiming {
     /// Accumulate a duration and return tick count + alpha. Separated from
     /// `begin_frame` for testability with deterministic durations.
     pub fn accumulate(&mut self, elapsed: Duration) -> FrameTickResult {
+        let frame_dt = elapsed.as_secs_f32();
+
         // Zero-time frame: skip ticking, render with previous alpha.
         if elapsed.is_zero() {
             return FrameTickResult {
                 ticks: 0,
                 alpha: self.current_alpha(),
+                frame_dt,
             };
         }
 
@@ -125,6 +128,7 @@ impl FrameTiming {
         FrameTickResult {
             ticks,
             alpha: self.current_alpha(),
+            frame_dt,
         }
     }
 
@@ -172,6 +176,12 @@ pub struct FrameTickResult {
     /// uses this internally.
     #[allow(dead_code)]
     pub alpha: f32,
+    /// Wall-clock seconds elapsed since the previous frame — the same value
+    /// fed to `accumulate()`, exposed here so view-rate updates (e.g. mouse
+    /// look) can scale by real frame time rather than the fixed tick duration.
+    /// `0.0` on zero-time frames.
+    #[allow(dead_code)]
+    pub frame_dt: f32,
 }
 
 /// Shortest-path angular interpolation for angles in radians.
@@ -448,6 +458,25 @@ mod tests {
         let result = timing.accumulate(Duration::ZERO);
         assert_eq!(result.ticks, 0);
         assert!(result.alpha.is_finite());
+        // Zero-elapsed frames report zero frame_dt — downstream view-rate
+        // updates must not advance when wall-clock time hasn't moved.
+        assert_approx(result.frame_dt, 0.0, "frame_dt on zero elapsed");
+    }
+
+    #[test]
+    fn accumulate_returns_correct_frame_dt() {
+        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
+        let mut timing = FrameTiming::new(state);
+        // A known duration that is not a whole number of milliseconds, so
+        // we exercise the f32 conversion rather than trivially matching
+        // integer maths.
+        let elapsed = Duration::from_micros(12_345);
+        let result = timing.accumulate(elapsed);
+        assert_approx(
+            result.frame_dt,
+            elapsed.as_secs_f32(),
+            "frame_dt mirrors Duration::as_secs_f32()",
+        );
     }
 
     // -- FrameTiming: interpolation alpha --

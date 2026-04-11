@@ -745,7 +745,10 @@ mod tests {
 
         // Mirror production: rotate once per render frame, before the (here
         // absent) tick loop.
-        camera.rotate(look.yaw_delta(result.frame_dt), look.pitch_delta(result.frame_dt));
+        camera.rotate(
+            look.yaw_delta(result.frame_dt),
+            look.pitch_delta(result.frame_dt),
+        );
 
         // Camera yaw must reflect the mouse motion.
         assert!(
@@ -797,7 +800,10 @@ mod tests {
 
         // Production code rotates once before the tick loop and never inside
         // it. Mirror that: one rotation call, regardless of tick count.
-        camera.rotate(look.yaw_delta(result.frame_dt), look.pitch_delta(result.frame_dt));
+        camera.rotate(
+            look.yaw_delta(result.frame_dt),
+            look.pitch_delta(result.frame_dt),
+        );
 
         // The expected yaw is the single-application delta. Compute it the
         // same way the production code does on a fresh system to avoid

@@ -30,11 +30,23 @@ pub enum VisibleFaces {
 pub struct VisibilityStats {
     /// BSP leaf the camera currently occupies.
     pub camera_leaf: u32,
-    /// Total faces in the BSP.
+    /// Total faces in the level.
     pub total_faces: u32,
-    /// Faces visible after PVS culling, before frustum culling.
+    /// Faces in the camera leaf's raw PVS, ignoring frustum and portal
+    /// narrowing. Constant with respect to view direction. Lets you compare
+    /// "what PVS allows" against the post-narrowing counts below to isolate
+    /// which culling stage is dropping a given surface.
+    pub raw_pvs_faces: u32,
+    /// Faces remaining after the visibility path's primary narrowing stage:
+    /// raw PVS lookup on the BSP and PRL PVS paths, portal-traversal walk on
+    /// the PRL portal-traversal path. On the portal path this is the
+    /// portal-walk reach, *not* the raw PVS — compare against `raw_pvs_faces`
+    /// to see how much the portal walk discarded.
     pub pvs_faces: u32,
-    /// Faces visible after both PVS and frustum culling.
+    /// Faces remaining after frustum (AABB) culling on top of `pvs_faces`. On
+    /// the portal-traversal path this equals `pvs_faces` by construction
+    /// because portal traversal already clips against a narrowed frustum at
+    /// every hop.
     pub frustum_faces: u32,
 }
 
@@ -325,6 +337,7 @@ pub fn determine_visibility(
         let stats = VisibilityStats {
             camera_leaf: 0,
             total_faces,
+            raw_pvs_faces: total_faces,
             pvs_faces: total_faces,
             frustum_faces: total_faces,
         };
@@ -352,6 +365,7 @@ pub fn determine_visibility(
             let stats = VisibilityStats {
                 camera_leaf,
                 total_faces,
+                raw_pvs_faces: pvs_faces,
                 pvs_faces,
                 frustum_faces,
             };
@@ -365,12 +379,47 @@ pub fn determine_visibility(
             let stats = VisibilityStats {
                 camera_leaf,
                 total_faces,
+                raw_pvs_faces: total_faces,
                 pvs_faces: total_faces,
                 frustum_faces: total_faces,
             };
             (VisibleFaces::DrawAll, stats)
         }
     }
+}
+
+/// Count drawable faces in the camera leaf's raw PVS, ignoring frustum and
+/// portal narrowing. The camera leaf itself is always included even if its
+/// own bit is unset, matching the iteration pattern of the PVS path. Used as
+/// the angle-independent baseline in `VisibilityStats::raw_pvs_faces` so the
+/// portal-traversal path can be compared against "what PVS allows."
+fn raw_pvs_face_count(world: &LevelWorld, camera_leaf_idx: usize) -> u32 {
+    let pvs = match world.leaves.get(camera_leaf_idx) {
+        Some(leaf) => &leaf.pvs,
+        None => return world.face_meta.len() as u32,
+    };
+
+    let mut count = 0u32;
+    for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
+        if leaf.is_solid || leaf.face_count == 0 {
+            continue;
+        }
+        let is_camera_leaf = leaf_idx == camera_leaf_idx;
+        let is_pvs_visible = pvs.get(leaf_idx).copied().unwrap_or(false);
+        if !is_pvs_visible && !is_camera_leaf {
+            continue;
+        }
+        let start = leaf.face_start as usize;
+        let n = leaf.face_count as usize;
+        count += world
+            .face_meta
+            .iter()
+            .skip(start)
+            .take(n)
+            .filter(|f| f.index_count > 0)
+            .count() as u32;
+    }
+    count
 }
 
 /// Perform full visibility determination for a PRL level.
@@ -386,6 +435,7 @@ pub fn determine_prl_visibility(
     camera_position: Vec3,
     view_proj: Mat4,
     world: &LevelWorld,
+    capture_portal_walk: bool,
 ) -> (VisibleFaces, VisibilityStats) {
     let total_faces = world.face_meta.len() as u32;
 
@@ -393,6 +443,7 @@ pub fn determine_prl_visibility(
         let stats = VisibilityStats {
             camera_leaf: 0,
             total_faces,
+            raw_pvs_faces: total_faces,
             pvs_faces: total_faces,
             frustum_faces: total_faces,
         };
@@ -436,23 +487,37 @@ pub fn determine_prl_visibility(
             }
         }
 
+        // Solid leaf has no meaningful PVS (camera is clipped into geometry),
+        // so report total_faces as the raw PVS baseline to match the
+        // "draw everything" fallback semantics of this branch.
         let stats = VisibilityStats {
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
+            raw_pvs_faces: total_faces,
             pvs_faces: total_faces,
             frustum_faces,
         };
         return (VisibleFaces::Culled(ranges), stats);
     }
 
+    let raw_pvs_faces = raw_pvs_face_count(world, camera_leaf_idx);
+
     if world.has_portals {
-        // Runtime portal traversal (preferred when portal data is present).
-        let portal_visible =
-            portal_vis::portal_traverse(camera_position, camera_leaf_idx, &frustum, world);
+        // Runtime portal traversal. Polygon-vs-frustum clipping at each hop
+        // keeps every narrowed frustum a strict subset of the camera frustum,
+        // so the reachability bitset is also the final visibility set — no
+        // per-leaf AABB cull needed on this path. See
+        // `context/lib/build_pipeline.md` §Runtime visibility.
+        let portal_visible = portal_vis::portal_traverse(
+            camera_position,
+            camera_leaf_idx,
+            &frustum,
+            world,
+            capture_portal_walk,
+        );
 
         let mut ranges = Vec::new();
         let mut pvs_faces = 0u32;
-        let mut frustum_faces = 0u32;
 
         for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
             if leaf.is_solid || leaf.face_count == 0 {
@@ -475,24 +540,26 @@ pub fn determine_prl_visibility(
                 .count() as u32;
             pvs_faces += leaf_face_count;
 
-            if is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, &frustum) {
-                continue;
-            }
-
             for face in world.face_meta.iter().skip(start).take(count) {
                 if face.index_count > 0 {
                     ranges.push(DrawRange {
                         index_offset: face.index_offset,
                         index_count: face.index_count,
                     });
-                    frustum_faces += 1;
                 }
             }
         }
 
+        // Portal traversal already clips against a narrowed frustum at each hop,
+        // so every face reached by the portal walk is also frustum-visible — no
+        // separate AABB cull runs on this path, making frustum_faces equal to
+        // pvs_faces by construction.
+        let frustum_faces = pvs_faces;
+
         log::trace!(
-            "[Visibility] leaf={}, portal_vis_faces={}, frustum_faces={}, total_faces={}",
+            "[Visibility] leaf={}, raw_pvs_faces={}, portal_vis_faces={}, frustum_faces={}, total_faces={}",
             camera_leaf_idx,
+            raw_pvs_faces,
             pvs_faces,
             frustum_faces,
             total_faces,
@@ -501,6 +568,7 @@ pub fn determine_prl_visibility(
         let stats = VisibilityStats {
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
+            raw_pvs_faces,
             pvs_faces,
             frustum_faces,
         };
@@ -536,6 +604,7 @@ pub fn determine_prl_visibility(
         let stats = VisibilityStats {
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
+            raw_pvs_faces,
             pvs_faces: total_faces,
             frustum_faces,
         };
@@ -589,8 +658,9 @@ pub fn determine_prl_visibility(
     }
 
     log::trace!(
-        "[Visibility] leaf={}, pvs_faces={}, frustum_faces={}, total_faces={}",
+        "[Visibility] leaf={}, raw_pvs_faces={}, pvs_faces={}, frustum_faces={}, total_faces={}",
         camera_leaf_idx,
+        raw_pvs_faces,
         pvs_faces,
         frustum_faces,
         total_faces,
@@ -599,6 +669,7 @@ pub fn determine_prl_visibility(
     let stats = VisibilityStats {
         camera_leaf: camera_leaf_idx as u32,
         total_faces,
+        raw_pvs_faces,
         pvs_faces,
         frustum_faces,
     };
@@ -1438,7 +1509,8 @@ mod tests {
     fn prl_visibility_with_pvs() {
         let world = two_leaf_prl_world();
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
-        let (result, stats) = determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world);
+        let (result, stats) =
+            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false);
         match result {
             VisibleFaces::Culled(ranges) => {
                 assert!(!ranges.is_empty(), "should have draw ranges");
@@ -1453,7 +1525,8 @@ mod tests {
         let mut world = two_leaf_prl_world();
         world.has_pvs = false;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
-        let (result, stats) = determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world);
+        let (result, stats) =
+            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false);
         match result {
             VisibleFaces::Culled(_) => {
                 // Frustum culling still applies, but PVS is skipped.
@@ -1479,7 +1552,7 @@ mod tests {
             texture_names: vec![],
         };
         let vp = wide_view_proj(Vec3::ZERO);
-        let (result, stats) = determine_prl_visibility(Vec3::ZERO, vp, &world);
+        let (result, stats) = determine_prl_visibility(Vec3::ZERO, vp, &world, false);
         assert!(matches!(result, VisibleFaces::DrawAll));
         assert_eq!(stats.total_faces, 0);
     }
@@ -1493,7 +1566,7 @@ mod tests {
         let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 4096.0);
         let vp = proj * view;
 
-        let (result, stats) = determine_prl_visibility(position, vp, &world);
+        let (result, stats) = determine_prl_visibility(position, vp, &world, false);
         match result {
             VisibleFaces::Culled(ranges) => {
                 // Leaf 1 (negative X) should be frustum-culled.
@@ -1516,7 +1589,8 @@ mod tests {
         // Set leaf 0's PVS to see nothing.
         world.leaves[0].pvs = vec![false, false];
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
-        let (result, _stats) = determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world);
+        let (result, _stats) =
+            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false);
         match result {
             VisibleFaces::Culled(ranges) => {
                 assert_eq!(ranges.len(), 1, "camera leaf should always be drawn");
@@ -1568,7 +1642,8 @@ mod tests {
 
         // Camera at X=50 lands in solid leaf 0.
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
-        let (result, stats) = determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world);
+        let (result, stats) =
+            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false);
         match result {
             VisibleFaces::Culled(ranges) => {
                 // Should draw all non-solid leaf faces (leaf 1's face).

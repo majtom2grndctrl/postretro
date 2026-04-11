@@ -4,10 +4,12 @@
 mod bindings;
 pub mod cursor;
 mod defaults;
+pub mod diagnostics;
 pub mod gamepad;
 mod types;
 
 pub use defaults::default_bindings;
+pub use diagnostics::{default_diagnostic_chords, DiagnosticAction, DiagnosticInputs};
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.

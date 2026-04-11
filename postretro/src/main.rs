@@ -22,12 +22,12 @@ use glam::Vec3;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameTiming, InterpolableState};
-use crate::input::{Action, AxisSource};
+use crate::input::{Action, AxisSource, DiagnosticAction};
 use crate::render::Renderer;
 use crate::texture::TextureSet;
 use crate::visibility::{VisibilityStats, VisibleFaces};
@@ -169,7 +169,8 @@ fn main() -> Result<()> {
         input_system: input::InputSystem::new(input::default_bindings()),
         gamepad_system: input::gamepad::GamepadSystem::new(),
         frame_timing: FrameTiming::new(initial_state),
-        shift_held: false,
+        diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
+        capture_portal_walk_next_frame: false,
     };
 
     event_loop
@@ -258,10 +259,16 @@ struct App {
     gamepad_system: Option<input::gamepad::GamepadSystem>,
     frame_timing: FrameTiming,
 
-    /// Debug-only chord state: whether either Shift key is currently held.
-    /// Used to detect the Shift+\\ wireframe overlay toggle outside the
-    /// action-mapped input system (chords are a one-off debug need).
-    shift_held: bool,
+    /// Diagnostic chord resolver. Parallel to `input_system`; consumes the
+    /// same key events but produces engine debug actions, not gameplay
+    /// actions. See: context/lib/input.md §7
+    diagnostic_inputs: input::DiagnosticInputs,
+
+    /// One-shot flag set by the `DumpPortalWalk` diagnostic chord. The next
+    /// redraw consumes it, passes it into `determine_prl_visibility`, and
+    /// clears it. The visibility module emits per-portal trace lines under
+    /// the `postretro::portal_trace` log target for that one frame only.
+    capture_portal_walk_next_frame: bool,
 }
 
 struct WindowState {
@@ -371,22 +378,14 @@ impl ApplicationHandler for App {
                 if let PhysicalKey::Code(code) = key_event.physical_key {
                     let pressed = key_event.state.is_pressed();
 
-                    // Track Shift state for debug chords (Shift+\\ etc.).
-                    if matches!(code, KeyCode::ShiftLeft | KeyCode::ShiftRight) {
-                        self.shift_held = pressed;
-                    }
-
-                    // Shift+\\ cycles the debug wireframe overlay mode
-                    // (Off → Culled → All → Off). We gate on !key_event.repeat
-                    // so holding the chord does not spam toggles.
-                    if pressed
-                        && !key_event.repeat
-                        && code == KeyCode::Backslash
-                        && self.shift_held
+                    // Diagnostic chord resolver runs first. It owns modifier
+                    // tracking for the Alt+Shift+ namespace and emits a
+                    // diagnostic action only on a clean rising edge.
+                    if let Some(action) =
+                        self.diagnostic_inputs
+                            .handle_key(code, pressed, key_event.repeat)
                     {
-                        if let Some(renderer) = self.renderer.as_mut() {
-                            renderer.cycle_wireframe_mode();
-                        }
+                        self.handle_diagnostic_action(action);
                     }
 
                     self.input_system.handle_keyboard_event(code, pressed);
@@ -401,7 +400,7 @@ impl ApplicationHandler for App {
                     input::cursor::handle_focus_change(focused, &ws.window);
                     if !focused {
                         self.input_system.clear_all();
-                        self.shift_held = false;
+                        self.diagnostic_inputs.clear_modifiers();
                     }
                 }
             }
@@ -493,18 +492,24 @@ impl ApplicationHandler for App {
                 let interp = self.frame_timing.interpolated_state();
                 let view_proj = interp.view_projection(self.camera.aspect());
 
+                let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
+
                 let (visible, stats) = match self.level.as_ref() {
                     Some(Level::Bsp(world)) => {
                         visibility::determine_visibility(interp.position, view_proj, world)
                     }
-                    Some(Level::Prl(world)) => {
-                        visibility::determine_prl_visibility(interp.position, view_proj, world)
-                    }
+                    Some(Level::Prl(world)) => visibility::determine_prl_visibility(
+                        interp.position,
+                        view_proj,
+                        world,
+                        capture_portal_walk,
+                    ),
                     None => (
                         VisibleFaces::DrawAll,
                         VisibilityStats {
                             camera_leaf: 0,
                             total_faces: 0,
+                            raw_pvs_faces: 0,
                             pvs_faces: 0,
                             frustum_faces: 0,
                         },
@@ -514,9 +519,10 @@ impl ApplicationHandler for App {
                 let pos = interp.position;
                 let region_label = "leaf";
                 log::debug!(
-                    "[Diagnostics] {region_label}:{} | faces: {}/{}/{} (total/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
+                    "[Diagnostics] {region_label}:{} | faces: {}/{}/{}/{} (total/raw_pvs/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
                     stats.camera_leaf,
                     stats.total_faces,
+                    stats.raw_pvs_faces,
                     stats.pvs_faces,
                     stats.frustum_faces,
                     pos.x,
@@ -526,9 +532,10 @@ impl ApplicationHandler for App {
 
                 if let Some(ws) = self.window_state.as_ref() {
                     ws.window.set_title(&format!(
-                        "Postretro | {region_label}:{} | faces: {}/{}/{} (total/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
+                        "Postretro | {region_label}:{} | faces: {}/{}/{}/{} (total/raw_pvs/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
                         stats.camera_leaf,
                         stats.total_faces,
+                        stats.raw_pvs_faces,
                         stats.pvs_faces,
                         stats.frustum_faces,
                         pos.x,
@@ -573,5 +580,26 @@ impl ApplicationHandler for App {
         self.renderer = None;
         self.window_state = None;
         log::info!("[Engine] Exited");
+    }
+}
+
+impl App {
+    /// Dispatch a diagnostic action emitted by the chord resolver.
+    /// See: context/lib/input.md §7
+    fn handle_diagnostic_action(&mut self, action: DiagnosticAction) {
+        match action {
+            DiagnosticAction::ToggleWireframe => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.cycle_wireframe_mode();
+                }
+            }
+            DiagnosticAction::DumpPortalWalk => {
+                self.capture_portal_walk_next_frame = true;
+                log::info!(
+                    target: "postretro::portal_trace",
+                    "[portal_trace] capture armed for next frame",
+                );
+            }
+        }
     }
 }

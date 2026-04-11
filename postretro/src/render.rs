@@ -246,7 +246,7 @@ pub struct Renderer {
     has_geometry: bool,
 }
 
-/// Debug wireframe overlay state. Cycled by `Shift+\` in the engine.
+/// Debug wireframe overlay state. Cycled by `Alt+Shift+\` in the engine.
 ///
 /// - `Off`: no overlay.
 /// - `Culled`: draws lines only for the sub-ranges the textured renderer

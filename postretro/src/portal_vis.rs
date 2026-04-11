@@ -1,29 +1,66 @@
-// Runtime portal traversal with frustum-clipped portal walk.
-// See: context/plans/in-progress/portal-bsp-vis/task-08-runtime-portal-vis.md
+// Runtime portal traversal: single-pass polygon-vs-frustum clipping + narrowing.
+// See: context/lib/build_pipeline.md §Runtime visibility
 
 use std::collections::VecDeque;
 
 use glam::Vec3;
 
 use crate::prl::LevelWorld;
-use crate::visibility::{Frustum, is_aabb_outside_frustum};
+use crate::visibility::{Frustum, FrustumPlane};
 
-/// Perform frustum-clipped portal traversal to determine which leaves are
-/// visible from the camera's current leaf.
+/// Half-space boundary epsilon for Sutherland-Hodgman.
 ///
-/// At each portal, the frustum is narrowed to only include sight lines that
-/// pass through the portal polygon. This provides around-the-corner culling
-/// that precomputed PVS cannot.
+/// Points within `CLIP_EPSILON` of a plane are treated as on the plane (kept as
+/// inside). Over-inclusion at the boundary cannot violate the strict-subset
+/// invariant — the next narrowing iteration will exclude any genuinely-outside
+/// slop introduced here.
+const CLIP_EPSILON: f32 = 1e-4;
+
+/// Perform single-pass polygon-clipped portal traversal to determine which
+/// leaves are visible from the camera's current leaf.
+///
+/// For each portal reached during the BFS, the portal polygon is clipped
+/// against every plane of the current frustum (Sutherland-Hodgman). An empty
+/// clip output is the unified rejection signal — the portal is not visible
+/// through the current sight cone. The clipped polygon then feeds frustum
+/// narrowing, which builds a new cone strictly inside the current one.
+///
+/// By induction from the camera's initial frustum, every narrowed frustum
+/// reachable through any portal chain is a strict subset of the camera
+/// frustum. A per-leaf AABB cull is therefore unnecessary on this path.
+///
+/// When `capture` is true the walk emits one log line per portal touched
+/// (accept/reject + reason) plus a per-frame summary, all under the
+/// `postretro::portal_trace` target. Already-visited rejections are counted
+/// in the summary but not line-logged — they are the bulk of intra-frame
+/// noise. Triggered by the `Alt+Shift+1` diagnostic chord; see
+/// `context/lib/input.md` §7.
 pub fn portal_traverse(
     camera_position: Vec3,
     camera_leaf: usize,
     frustum: &Frustum,
     world: &LevelWorld,
+    capture: bool,
 ) -> Vec<bool> {
     let leaf_count = world.leaves.len();
     let mut visible = vec![false; leaf_count];
 
+    if capture {
+        log::info!(
+            target: "postretro::portal_trace",
+            "[portal_trace] start camera_leaf={} leaf_count={}",
+            camera_leaf,
+            leaf_count,
+        );
+    }
+
     if camera_leaf >= leaf_count {
+        if capture {
+            log::info!(
+                target: "postretro::portal_trace",
+                "[portal_trace] abort camera_leaf out of range",
+            );
+        }
         return visible;
     }
 
@@ -31,6 +68,14 @@ pub fn portal_traverse(
 
     let mut queue: VecDeque<(usize, Frustum)> = VecDeque::new();
     queue.push_back((camera_leaf, frustum.clone()));
+
+    let mut considered: u32 = 0;
+    let mut accepted: u32 = 0;
+    let mut rejected_already_visited: u32 = 0;
+    let mut rejected_solid: u32 = 0;
+    let mut rejected_clipped: u32 = 0;
+    let mut rejected_narrow: u32 = 0;
+    let mut rejected_invalid: u32 = 0;
 
     while let Some((current_leaf, current_frustum)) = queue.pop_front() {
         for &portal_idx in &world.leaf_portals[current_leaf] {
@@ -43,68 +88,192 @@ pub fn portal_traverse(
                 portal.front_leaf
             };
 
+            considered += 1;
+
             if neighbor >= leaf_count {
+                rejected_invalid += 1;
                 continue;
             }
 
             // Skip already-visible leaves (avoids cycles).
             if visible[neighbor] {
+                rejected_already_visited += 1;
                 continue;
             }
 
             // Skip solid leaves.
             if world.leaves[neighbor].is_solid {
+                rejected_solid += 1;
+                if capture {
+                    log::info!(
+                        target: "postretro::portal_trace",
+                        "[portal_trace] reject src={} dst={} reason=solid_neighbor",
+                        current_leaf,
+                        neighbor,
+                    );
+                }
                 continue;
             }
 
-            // AABB early-out: test portal polygon's AABB against current frustum.
-            let (portal_mins, portal_maxs) = portal_aabb(&portal.polygon);
-            if is_aabb_outside_frustum(portal_mins, portal_maxs, &current_frustum) {
+            // Clip the portal polygon against the current frustum. An empty
+            // result unifies "portal entirely outside cone" and "portal
+            // degenerate after clipping" into one rejection path.
+            let clipped = clip_polygon_to_frustum(&portal.polygon, &current_frustum);
+            if clipped.len() < 3 {
+                rejected_clipped += 1;
+                if capture {
+                    log::info!(
+                        target: "postretro::portal_trace",
+                        "[portal_trace] reject src={} dst={} reason=clipped_to_empty clipped_verts={} portal_verts={}",
+                        current_leaf,
+                        neighbor,
+                        clipped.len(),
+                        portal.polygon.len(),
+                    );
+                }
                 continue;
             }
 
-            // Test if any portal vertex is inside the current frustum.
-            // If all vertices are behind any single frustum plane, the portal
-            // is fully outside and we skip it.
-            if is_polygon_outside_frustum(&portal.polygon, &current_frustum) {
-                continue;
-            }
-
-            // Narrow the frustum through this portal.
+            // Narrow the frustum through the clipped polygon. The clipped
+            // polygon lies entirely inside the current frustum, so the edge
+            // planes it produces form a cone strictly inside the current one.
             if let Some(narrowed) =
-                narrow_frustum(camera_position, &portal.polygon, &current_frustum)
+                narrow_frustum(camera_position, &clipped, &current_frustum)
             {
                 visible[neighbor] = true;
+                accepted += 1;
+                if capture {
+                    log::info!(
+                        target: "postretro::portal_trace",
+                        "[portal_trace] accept src={} dst={} clipped_verts={}",
+                        current_leaf,
+                        neighbor,
+                        clipped.len(),
+                    );
+                }
                 queue.push_back((neighbor, narrowed));
+            } else {
+                rejected_narrow += 1;
+                if capture {
+                    log::info!(
+                        target: "postretro::portal_trace",
+                        "[portal_trace] reject src={} dst={} reason=narrow_frustum_failed clipped_verts={}",
+                        current_leaf,
+                        neighbor,
+                        clipped.len(),
+                    );
+                }
             }
         }
+    }
+
+    if capture {
+        let reach_count = visible.iter().filter(|&&v| v).count();
+        log::info!(
+            target: "postretro::portal_trace",
+            "[portal_trace] summary reach={} considered={} accepted={} \
+             rejected_clipped={} rejected_narrow={} rejected_solid={} \
+             rejected_already_visited={} rejected_invalid={}",
+            reach_count,
+            considered,
+            accepted,
+            rejected_clipped,
+            rejected_narrow,
+            rejected_solid,
+            rejected_already_visited,
+            rejected_invalid,
+        );
     }
 
     visible
 }
 
-/// Compute the AABB of a portal polygon.
-fn portal_aabb(polygon: &[Vec3]) -> (Vec3, Vec3) {
-    let mut mins = Vec3::splat(f32::MAX);
-    let mut maxs = Vec3::splat(f32::MIN);
-    for &v in polygon {
-        mins = mins.min(v);
-        maxs = maxs.max(v);
+/// Clip a convex polygon against every plane of a frustum (Sutherland-Hodgman).
+///
+/// Returns the clipped polygon as a new `Vec<Vec3>`. A result with fewer than
+/// 3 vertices means the polygon is entirely outside the frustum (or clipped
+/// down to a degenerate edge/point at a boundary).
+///
+/// Each frustum plane is in Hessian normal form pointing inward: a vertex `v`
+/// is inside when `plane.normal · v + plane.dist >= -CLIP_EPSILON`. The
+/// epsilon tilts boundary cases toward "inside". This cannot violate the
+/// strict-subset invariant — any slop kept at one hop becomes outside the
+/// next narrowing's edge planes and is discarded there.
+///
+/// Because every clipped vertex is either an original polygon vertex or an
+/// intersection of a polygon edge with a frustum plane (both on the polygon
+/// plane), the clipped polygon remains planar. This is required for
+/// `narrow_frustum` to produce meaningful edge planes.
+pub(crate) fn clip_polygon_to_frustum(polygon: &[Vec3], frustum: &Frustum) -> Vec<Vec3> {
+    if polygon.len() < 3 {
+        return Vec::new();
     }
-    (mins, maxs)
+
+    let mut input: Vec<Vec3> = polygon.to_vec();
+    let mut output: Vec<Vec3> = Vec::with_capacity(polygon.len() + frustum.planes.len());
+
+    for plane in &frustum.planes {
+        if input.is_empty() {
+            break;
+        }
+        output.clear();
+        clip_polygon_to_plane(&input, plane, &mut output);
+        std::mem::swap(&mut input, &mut output);
+    }
+
+    input
 }
 
-/// Test whether all vertices of a polygon are outside any single frustum plane.
-fn is_polygon_outside_frustum(polygon: &[Vec3], frustum: &Frustum) -> bool {
-    for plane in &frustum.planes {
-        let all_outside = polygon
-            .iter()
-            .all(|&v| plane.normal.dot(v) + plane.dist < 0.0);
-        if all_outside {
-            return true;
+/// Clip a convex polygon against a single half-space (one Sutherland-Hodgman step).
+///
+/// Writes the clipped vertices into `output` (which is cleared on entry by the
+/// caller). The input polygon must be closed in winding order; vertex order is
+/// preserved in the output.
+fn clip_polygon_to_plane(input: &[Vec3], plane: &FrustumPlane, output: &mut Vec<Vec3>) {
+    let signed_distance = |v: Vec3| plane.normal.dot(v) + plane.dist;
+
+    let n = input.len();
+    for i in 0..n {
+        let current = input[i];
+        let previous = input[(i + n - 1) % n];
+
+        let d_current = signed_distance(current);
+        let d_previous = signed_distance(previous);
+
+        let current_inside = d_current >= -CLIP_EPSILON;
+        let previous_inside = d_previous >= -CLIP_EPSILON;
+
+        if current_inside {
+            if !previous_inside {
+                // Entering: emit the intersection, then the current vertex.
+                if let Some(intersection) = intersect_edge_plane(previous, current, d_previous, d_current) {
+                    output.push(intersection);
+                }
+            }
+            output.push(current);
+        } else if previous_inside {
+            // Leaving: emit the intersection only.
+            if let Some(intersection) = intersect_edge_plane(previous, current, d_previous, d_current) {
+                output.push(intersection);
+            }
         }
+        // Both outside: emit nothing.
     }
-    false
+}
+
+/// Intersect the line segment `[a, b]` with a plane, given their signed
+/// distances to the plane.
+///
+/// Returns `None` if the segment is parallel to the plane (distances equal to
+/// within numerical precision) — in that case the caller's inside/outside
+/// classification handles the vertices directly.
+fn intersect_edge_plane(a: Vec3, b: Vec3, d_a: f32, d_b: f32) -> Option<Vec3> {
+    let denom = d_a - d_b;
+    if denom.abs() < f32::EPSILON {
+        return None;
+    }
+    let t = d_a / denom;
+    Some(a + (b - a) * t)
 }
 
 /// Narrow a frustum by constructing clip planes through the camera and the
@@ -191,7 +360,7 @@ pub fn narrow_frustum(
 mod tests {
     use super::*;
     use crate::prl::{BspChild, LeafData, LevelWorld, NodeData, PortalData};
-    use crate::visibility::FrustumPlane;
+    use crate::visibility::{FrustumPlane, is_aabb_outside_frustum};
     use glam::Mat4;
 
     /// Extract frustum from a view-projection matrix (reuse from visibility module).
@@ -342,7 +511,7 @@ mod tests {
         let world = three_leaf_chain();
         // Camera in leaf 0, looking away from all portals.
         let frustum = make_camera_frustum(Vec3::new(16.0, 32.0, 32.0), Vec3::NEG_X);
-        let visible = portal_traverse(Vec3::new(16.0, 32.0, 32.0), 0, &frustum, &world);
+        let visible = portal_traverse(Vec3::new(16.0, 32.0, 32.0), 0, &frustum, &world, false);
         assert!(visible[0], "camera leaf should always be visible");
     }
 
@@ -352,7 +521,7 @@ mod tests {
         // Camera in leaf 0, looking through portals toward +X.
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
-        let visible = portal_traverse(camera_pos, 0, &frustum, &world);
+        let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
         assert!(visible[0], "camera leaf A should be visible");
         assert!(visible[1], "leaf B should be visible through portal 0");
         assert!(visible[2], "leaf C should be visible through portals 0+1");
@@ -364,7 +533,7 @@ mod tests {
         // Camera in leaf 0, looking away from the portals (toward -X).
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::NEG_X);
-        let visible = portal_traverse(camera_pos, 0, &frustum, &world);
+        let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
         assert!(visible[0], "camera leaf should be visible");
         // Portals are at X=32 and X=64, camera looks toward -X, so they're behind.
         assert!(
@@ -384,7 +553,7 @@ mod tests {
 
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
-        let visible = portal_traverse(camera_pos, 0, &frustum, &world);
+        let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
         assert!(visible[0], "camera leaf should be visible");
         assert!(!visible[1], "solid leaf should not be visible");
         // Leaf 2 is behind solid leaf 1, so it can't be reached.
@@ -408,7 +577,7 @@ mod tests {
         };
 
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::NEG_Z);
-        let visible = portal_traverse(Vec3::ZERO, 0, &frustum, &world);
+        let visible = portal_traverse(Vec3::ZERO, 0, &frustum, &world, false);
         assert!(visible.is_empty());
     }
 
@@ -486,7 +655,7 @@ mod tests {
         // Camera in leaf A, looking straight along +X toward portal 0.
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
-        let visible = portal_traverse(camera_pos, 0, &frustum, &world);
+        let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
         assert!(visible[0], "camera leaf A should be visible");
         assert!(visible[1], "leaf B should be visible through portal 0");
         assert!(
@@ -680,7 +849,7 @@ mod tests {
         {
             let camera_pos = Vec3::new(16.0, 64.0, 63.0);
             let frustum = make_camera_frustum(camera_pos, Vec3::X);
-            let visible = portal_traverse(camera_pos, 0, &frustum, &world);
+            let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
             assert!(visible[0], "camera leaf A should be visible");
             assert!(
                 visible[1],
@@ -698,7 +867,7 @@ mod tests {
         {
             let camera_pos = Vec3::new(16.0, 64.0, 67.0);
             let frustum = make_camera_frustum(camera_pos, Vec3::X);
-            let visible = portal_traverse(camera_pos, 0, &frustum, &world);
+            let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
             assert!(visible[0], "camera leaf A should be visible");
             assert!(
                 visible[2],
@@ -712,5 +881,308 @@ mod tests {
             );
         }
 
+    }
+
+    // --- Polygon-vs-frustum clipping tests ---
+
+    /// Classify a polygon vertex as strictly inside every plane of a frustum
+    /// (within the clip epsilon).
+    fn point_inside_frustum(point: Vec3, frustum: &Frustum) -> bool {
+        frustum
+            .planes
+            .iter()
+            .all(|p| p.normal.dot(point) + p.dist >= -CLIP_EPSILON)
+    }
+
+    #[test]
+    fn clip_polygon_fully_inside_is_unchanged() {
+        let camera_pos = Vec3::ZERO;
+        let frustum = make_camera_frustum(camera_pos, Vec3::X);
+
+        // Small polygon centered on the line of sight, well inside the cone.
+        let polygon = vec![
+            Vec3::new(10.0, -0.5, -0.5),
+            Vec3::new(10.0, 0.5, -0.5),
+            Vec3::new(10.0, 0.5, 0.5),
+            Vec3::new(10.0, -0.5, 0.5),
+        ];
+
+        let clipped = clip_polygon_to_frustum(&polygon, &frustum);
+        assert_eq!(
+            clipped.len(),
+            4,
+            "polygon fully inside frustum should retain all 4 vertices"
+        );
+        for (i, v) in clipped.iter().enumerate() {
+            assert!(
+                point_inside_frustum(*v, &frustum),
+                "clipped vertex {i} should be inside the frustum"
+            );
+        }
+    }
+
+    #[test]
+    fn clip_polygon_fully_outside_yields_empty() {
+        let camera_pos = Vec3::ZERO;
+        let frustum = make_camera_frustum(camera_pos, Vec3::X);
+
+        // Polygon entirely behind the camera (on -X side, past the near plane).
+        let polygon = vec![
+            Vec3::new(-10.0, -1.0, -1.0),
+            Vec3::new(-10.0, 1.0, -1.0),
+            Vec3::new(-10.0, 1.0, 1.0),
+            Vec3::new(-10.0, -1.0, 1.0),
+        ];
+
+        let clipped = clip_polygon_to_frustum(&polygon, &frustum);
+        assert!(
+            clipped.len() < 3,
+            "polygon fully outside frustum should clip to empty (got {} verts)",
+            clipped.len()
+        );
+    }
+
+    #[test]
+    fn clip_polygon_partial_stays_inside_frustum() {
+        let camera_pos = Vec3::ZERO;
+        let frustum = make_camera_frustum(camera_pos, Vec3::X);
+
+        // Large polygon straddling the camera cone — extends from deep inside
+        // the cone well past the left/right frustum planes.
+        let polygon = vec![
+            Vec3::new(10.0, -500.0, -1.0),
+            Vec3::new(10.0, 500.0, -1.0),
+            Vec3::new(10.0, 500.0, 1.0),
+            Vec3::new(10.0, -500.0, 1.0),
+        ];
+
+        let clipped = clip_polygon_to_frustum(&polygon, &frustum);
+        assert!(
+            clipped.len() >= 3,
+            "a polygon that straddles the frustum should clip to a non-empty polygon"
+        );
+        for (i, v) in clipped.iter().enumerate() {
+            assert!(
+                point_inside_frustum(*v, &frustum),
+                "clipped vertex {i} at {v:?} should be inside the frustum"
+            );
+        }
+    }
+
+    #[test]
+    fn clip_polygon_degenerate_input_yields_empty() {
+        let frustum = make_camera_frustum(Vec3::ZERO, Vec3::X);
+        assert!(clip_polygon_to_frustum(&[], &frustum).is_empty());
+        assert!(clip_polygon_to_frustum(&[Vec3::X, Vec3::Y], &frustum).is_empty());
+    }
+
+    /// Test that a clipped polygon feeds a narrowed frustum whose vertices all
+    /// lie inside the parent frustum. This is the strict-subset invariant at
+    /// one hop.
+    #[test]
+    fn narrowed_frustum_from_clipped_polygon_is_subset_of_parent() {
+        let camera_pos = Vec3::ZERO;
+        let parent = make_camera_frustum(camera_pos, Vec3::X);
+
+        // Portal that straddles the frustum boundary (large in Y).
+        let portal = vec![
+            Vec3::new(10.0, -500.0, -1.0),
+            Vec3::new(10.0, 500.0, -1.0),
+            Vec3::new(10.0, 500.0, 1.0),
+            Vec3::new(10.0, -500.0, 1.0),
+        ];
+
+        let clipped = clip_polygon_to_frustum(&portal, &parent);
+        assert!(clipped.len() >= 3, "clipped polygon should be non-empty");
+
+        // All clipped vertices lie inside the parent frustum by construction.
+        for v in &clipped {
+            assert!(
+                point_inside_frustum(*v, &parent),
+                "clipped polygon vertex {v:?} must lie inside parent frustum"
+            );
+        }
+
+        // The narrowed frustum produced from the clipped polygon should accept
+        // points that are clearly inside the narrowed cone and also inside the
+        // parent — and should not accept points outside the parent frustum.
+        let narrowed = narrow_frustum(camera_pos, &clipped, &parent)
+            .expect("narrow_frustum should succeed for a clipped, visible polygon");
+
+        // A sample point far outside the parent's side plane must also be
+        // rejected by the narrowed frustum (strict subset means: outside
+        // parent implies outside narrowed).
+        let outside_parent = Vec3::new(20.0, 500.0, 0.0);
+        assert!(
+            !point_inside_frustum(outside_parent, &parent),
+            "sanity: test point should be outside parent"
+        );
+        assert!(
+            !point_inside_frustum(outside_parent, &narrowed),
+            "point outside parent must be outside the narrowed (subset) frustum"
+        );
+    }
+
+    #[test]
+    fn multi_hop_narrowed_frustums_preserve_strict_subset_invariant() {
+        // Three collinear portals along +X. After clipping+narrowing at each
+        // hop, every leaf visible in the narrowed frustum must also be inside
+        // the original camera frustum.
+        let camera_pos = Vec3::new(0.0, 0.0, 0.0);
+        let parent = make_camera_frustum(camera_pos, Vec3::X);
+
+        let portal_a = vec![
+            Vec3::new(10.0, -2.0, -2.0),
+            Vec3::new(10.0, 2.0, -2.0),
+            Vec3::new(10.0, 2.0, 2.0),
+            Vec3::new(10.0, -2.0, 2.0),
+        ];
+        let portal_b = vec![
+            Vec3::new(20.0, -2.0, -2.0),
+            Vec3::new(20.0, 2.0, -2.0),
+            Vec3::new(20.0, 2.0, 2.0),
+            Vec3::new(20.0, -2.0, 2.0),
+        ];
+        let portal_c = vec![
+            Vec3::new(30.0, -2.0, -2.0),
+            Vec3::new(30.0, 2.0, -2.0),
+            Vec3::new(30.0, 2.0, 2.0),
+            Vec3::new(30.0, -2.0, 2.0),
+        ];
+
+        // Hop 1.
+        let clipped_a = clip_polygon_to_frustum(&portal_a, &parent);
+        assert!(clipped_a.len() >= 3);
+        let narrowed_1 = narrow_frustum(camera_pos, &clipped_a, &parent).expect("hop 1");
+
+        // Hop 2: clip next portal against hop-1 frustum.
+        let clipped_b = clip_polygon_to_frustum(&portal_b, &narrowed_1);
+        assert!(clipped_b.len() >= 3);
+        let narrowed_2 = narrow_frustum(camera_pos, &clipped_b, &narrowed_1).expect("hop 2");
+
+        // Hop 3.
+        let clipped_c = clip_polygon_to_frustum(&portal_c, &narrowed_2);
+        assert!(clipped_c.len() >= 3);
+        let narrowed_3 = narrow_frustum(camera_pos, &clipped_c, &narrowed_2).expect("hop 3");
+
+        // Strict-subset check: every vertex of every clipped polygon lies
+        // inside the original parent frustum.
+        for v in clipped_a.iter().chain(clipped_b.iter()).chain(clipped_c.iter()) {
+            assert!(
+                point_inside_frustum(*v, &parent),
+                "clipped vertex {v:?} must lie inside the original camera frustum"
+            );
+        }
+
+        // And points clearly outside the parent must be outside every
+        // narrowed frustum, at every hop.
+        let way_off = Vec3::new(15.0, 500.0, 0.0);
+        assert!(!point_inside_frustum(way_off, &parent));
+        assert!(
+            !point_inside_frustum(way_off, &narrowed_1),
+            "hop 1 must reject points outside the parent"
+        );
+        assert!(
+            !point_inside_frustum(way_off, &narrowed_2),
+            "hop 2 must reject points outside the parent"
+        );
+        assert!(
+            !point_inside_frustum(way_off, &narrowed_3),
+            "hop 3 must reject points outside the parent"
+        );
+    }
+
+    #[test]
+    fn portal_traverse_straddling_portal_hides_unreachable_side_branch() {
+        // Straight-through layout: camera in leaf 0 looking +X.
+        // Portal 0 (A -> B) straddles the camera's side plane — it extends
+        // far beyond the frustum to the +Y direction. Without polygon
+        // clipping, frustum narrowing through the un-clipped portal could
+        // produce a cone that extends into -Y regions the camera cannot see
+        // and incorrectly admit off-axis neighbors.
+        //
+        // This test asserts that with clipping in place, leaf B is still
+        // visible (the portal is in view) and a far off-axis leaf C reached
+        // through an orthogonal portal at leaf B is correctly hidden.
+        let portal_a_b = PortalData {
+            polygon: vec![
+                // 1000-unit-tall portal at X=10, centered on Z=0.
+                Vec3::new(10.0, -500.0, -1.0),
+                Vec3::new(10.0, 500.0, -1.0),
+                Vec3::new(10.0, 500.0, 1.0),
+                Vec3::new(10.0, -500.0, 1.0),
+            ],
+            front_leaf: 0,
+            back_leaf: 1,
+        };
+        // Portal 1 (B -> C) is far out in +Y, well outside the camera's
+        // actual view cone even though leaf B is reachable.
+        let portal_b_c = PortalData {
+            polygon: vec![
+                Vec3::new(15.0, 400.0, -1.0),
+                Vec3::new(20.0, 400.0, -1.0),
+                Vec3::new(20.0, 400.0, 1.0),
+                Vec3::new(15.0, 400.0, 1.0),
+            ],
+            front_leaf: 1,
+            back_leaf: 2,
+        };
+
+        let world = LevelWorld {
+            vertices: vec![],
+            indices: vec![],
+            face_meta: vec![],
+            nodes: vec![],
+            leaves: vec![
+                LeafData {
+                    bounds_min: Vec3::new(0.0, -500.0, -500.0),
+                    bounds_max: Vec3::new(10.0, 500.0, 500.0),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                    texture_sub_ranges: vec![],
+                },
+                LeafData {
+                    bounds_min: Vec3::new(10.0, -500.0, -500.0),
+                    bounds_max: Vec3::new(25.0, 500.0, 500.0),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                    texture_sub_ranges: vec![],
+                },
+                LeafData {
+                    bounds_min: Vec3::new(15.0, 400.0, -500.0),
+                    bounds_max: Vec3::new(25.0, 600.0, 500.0),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                    texture_sub_ranges: vec![],
+                },
+            ],
+            root: BspChild::Leaf(0),
+            has_pvs: false,
+            portals: vec![portal_a_b, portal_b_c],
+            leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
+            has_portals: true,
+            texture_names: vec![],
+        };
+
+        let camera_pos = Vec3::new(1.0, 0.0, 0.0);
+        let frustum = make_camera_frustum(camera_pos, Vec3::X);
+        let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
+
+        assert!(visible[0], "camera leaf should always be visible");
+        assert!(
+            visible[1],
+            "leaf B should be visible through the straddling portal"
+        );
+        assert!(
+            !visible[2],
+            "leaf C should be hidden: portal 1 is far off-axis and \
+             unreachable through the clipped sight cone"
+        );
     }
 }

@@ -111,7 +111,39 @@ The input subsystem produces one thing: an action-state snapshot per frame. Game
 
 ---
 
-## 7. Non-Goals
+## 7. Diagnostic Inputs
+
+Diagnostics use a parallel input channel, separate from action mapping. The consumer is the engine itself — overlay toggles, per-frame trace dumps — never game logic. Gameplay actions and diagnostic chords share no namespace and never collide.
+
+### Why a separate channel
+
+Gameplay bindings are 1:1 inputs without modifiers. Diagnostics need modifier chords (so they can't fire by accident during play) and one-shot rising-edge semantics (one capture per press, not a state machine). Folding both into the action system would force every gameplay binding to grow modifier-aware match logic for no benefit, and dilute the gameplay action enum's role.
+
+### Reserved namespace
+
+`Alt+Shift+<key>` is reserved for diagnostic chords. Nothing else binds in this namespace. Two modifiers is awkward enough to prevent accidental firing during play and consistent enough to recognize at a glance.
+
+| Key class | Use |
+|---|---|
+| Number row | One-shot captures (dump-this-frame). Lower digits for more frequently used captures. |
+| Letters | Persistent mode toggles. |
+| Symbols | Mode toggles where a symbol is a stronger mnemonic than a letter (e.g. `\|` for the wireframe overlay). |
+
+### Chord matching
+
+| Rule | Reason |
+|---|---|
+| Exact modifier match | Extra modifiers (e.g. Cmd) suppress the chord. OS shortcuts and editor binds cannot accidentally trigger diagnostics. |
+| Rising edge only | Key repeats are suppressed; one press fires the action exactly once. Toggle vs. dump-on-press is the consumer's job, not the input layer's. |
+| Left and right modifiers equivalent | Chords care about the modifier, not which physical key produces it. |
+
+### Subsystem boundary
+
+The input layer emits "user invoked this diagnostic action" and stops there. Toggle state, capture flags, and trace buffers live with the consumer (renderer, visibility stats). Diagnostic actions never map to gameplay actions and the two channels never share state.
+
+---
+
+## 8. Non-Goals
 
 - Motion controls (accelerometer, gyroscope)
 - Touch input

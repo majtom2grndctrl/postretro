@@ -28,7 +28,7 @@ use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
-use crate::input::{Action, AxisSource, DiagnosticAction};
+use crate::input::{Action, DiagnosticAction};
 use crate::render::Renderer;
 use crate::texture::TextureSet;
 use crate::visibility::{DrawRange, VisibilityPath, VisibilityStats, VisibleFaces};
@@ -158,7 +158,7 @@ fn main() -> Result<()> {
 
     let event_loop = EventLoop::new().context("failed to create event loop")?;
 
-    let initial_state = InterpolableState::new(initial_camera_pos, 0.0, 0.0);
+    let initial_state = InterpolableState::new(initial_camera_pos);
 
     let mut app = App {
         renderer: None,
@@ -439,6 +439,7 @@ impl ApplicationHandler for App {
                 let now = Instant::now();
                 let frame_result = self.frame_timing.begin_frame(now);
                 let tick_dt = self.frame_timing.tick_dt();
+                let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
                 // Poll gamepad before taking the snapshot.
@@ -446,43 +447,20 @@ impl ApplicationHandler for App {
                     gp.update(&mut self.input_system);
                 }
 
-                // Take a single snapshot for this frame. All ticks read from it.
+                // drain_look_inputs() must precede snapshot(); both touch
+                // mouse_axes and look state belongs to the render-rate path.
+                let look = self.input_system.drain_look_inputs();
                 let snapshot = self.input_system.snapshot();
 
-                // Pre-compute look deltas from axis values, split by source.
-                let look_yaw_values = snapshot.axis(Action::LookYaw);
-                let look_pitch_values = snapshot.axis(Action::LookPitch);
+                // Apply look rotation once per render frame, before the tick
+                // loop. Doing this at render rate (not tick rate) means mouse
+                // motion on zero-tick frames is preserved — the bug that
+                // motivated decouple-view-from-sim.
+                self.camera
+                    .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
 
                 // Run fixed-rate game logic ticks.
                 for _ in 0..ticks {
-                    // Look: displacement sources (mouse) divided evenly across
-                    // ticks; velocity sources (gamepad) multiplied by tick_dt.
-                    let mut yaw_delta = 0.0f32;
-                    let mut pitch_delta = 0.0f32;
-
-                    for av in look_yaw_values {
-                        match av.source {
-                            AxisSource::Displacement => {
-                                yaw_delta += av.value / ticks as f32;
-                            }
-                            AxisSource::Velocity => {
-                                yaw_delta += av.value * input::GAMEPAD_LOOK_SENSITIVITY * tick_dt;
-                            }
-                        }
-                    }
-                    for av in look_pitch_values {
-                        match av.source {
-                            AxisSource::Displacement => {
-                                pitch_delta += av.value / ticks as f32;
-                            }
-                            AxisSource::Velocity => {
-                                pitch_delta += av.value * input::GAMEPAD_LOOK_SENSITIVITY * tick_dt;
-                            }
-                        }
-                    }
-
-                    self.camera.rotate(yaw_delta, pitch_delta);
-
                     // Movement from action snapshot.
                     let forward_axis = snapshot.axis_value(Action::MoveForward);
                     let right_axis = snapshot.axis_value(Action::MoveRight);
@@ -509,16 +487,20 @@ impl ApplicationHandler for App {
                     self.camera.position += move_dir * speed * tick_dt;
 
                     // Push updated camera state for interpolation.
-                    self.frame_timing.push_state(InterpolableState::new(
-                        self.camera.position,
-                        self.camera.yaw,
-                        self.camera.pitch,
-                    ));
+                    self.frame_timing
+                        .push_state(InterpolableState::new(self.camera.position));
                 }
 
                 // Interpolate between previous and current state for rendering.
+                // Position comes from the tick-state slots; yaw/pitch come from
+                // `self.camera` directly so zero-tick frames still reflect this
+                // frame's look input.
                 let interp = self.frame_timing.interpolated_state();
-                let view_proj = interp.view_projection(self.camera.aspect());
+                let view_proj = interp.view_projection(
+                    self.camera.aspect(),
+                    self.camera.yaw,
+                    self.camera.pitch,
+                );
 
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 

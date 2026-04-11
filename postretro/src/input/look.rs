@@ -13,7 +13,6 @@ pub const GAMEPAD_LOOK_SENSITIVITY: f32 = 2.5;
 /// gamepad stick deflections in `[-1, 1]`, resolved through the binding
 /// table. Combine them with `yaw_delta` / `pitch_delta` to produce a
 /// frame-rate-correct rotation step.
-#[allow(dead_code)] // Wired into main.rs in Task 3 of decouple-view-from-sim.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LookInputs {
     pub yaw_displacement: f32,
@@ -22,7 +21,6 @@ pub struct LookInputs {
     pub pitch_velocity: f32,
 }
 
-#[allow(dead_code)] // Wired into main.rs in Task 3 of decouple-view-from-sim.
 impl LookInputs {
     /// Combined yaw rotation for a render frame of length `frame_dt` seconds.
     /// Mouse displacement is applied as-is; gamepad velocity integrates over

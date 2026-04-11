@@ -11,7 +11,7 @@ mod types;
 
 pub use defaults::default_bindings;
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
-pub use look::{GAMEPAD_LOOK_SENSITIVITY, LookInputs};
+pub use look::LookInputs;
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
@@ -245,7 +245,6 @@ impl InputSystem {
     /// is persistent, not evanescent, and a subsequent `snapshot()` will still
     /// see it. `main.rs` no longer reads look axes from `snapshot()` once
     /// `drain_look_inputs()` is in play, so this is harmless.
-    #[allow(dead_code)] // Consumed by main.rs in Task 3 of decouple-view-from-sim.
     pub fn drain_look_inputs(&mut self) -> LookInputs {
         // Refresh mouse_axes from the accumulated delta so the displacement
         // branch below sees the latest motion.

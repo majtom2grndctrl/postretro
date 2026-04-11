@@ -16,36 +16,30 @@ const MAX_ACCUMULATOR: Duration = Duration::from_millis(250);
 /// Plain struct — no traits, generics, or macros.
 pub struct InterpolableState {
     pub position: Vec3,
-    pub yaw: f32,
-    pub pitch: f32,
 }
 
 impl InterpolableState {
-    pub fn new(position: Vec3, yaw: f32, pitch: f32) -> Self {
-        Self {
-            position,
-            yaw,
-            pitch,
-        }
+    pub fn new(position: Vec3) -> Self {
+        Self { position }
     }
 
-    /// Linearly interpolate position and pitch; shortest-path angular lerp for yaw.
+    /// Linearly interpolate position between two tick-state snapshots.
     pub fn lerp(&self, other: &InterpolableState, alpha: f32) -> InterpolableState {
         InterpolableState {
             position: self.position.lerp(other.position, alpha),
-            yaw: lerp_angle(self.yaw, other.yaw, alpha),
-            pitch: self.pitch + (other.pitch - self.pitch) * alpha,
         }
     }
 
-    /// Build a view-projection matrix from this interpolated state and a Camera's
-    /// aspect ratio / projection settings. We recompute the matrix from scratch
-    /// rather than interpolating matrices (which doesn't produce correct results).
-    pub fn view_projection(&self, aspect: f32) -> Mat4 {
+    /// Build a view-projection matrix from this interpolated position and the
+    /// caller-supplied view angles. Yaw/pitch come from the render-rate camera
+    /// (not the tick-state) so mouse motion is never lost on zero-tick frames.
+    /// We recompute the matrix from scratch rather than interpolating matrices
+    /// (which doesn't produce correct results).
+    pub fn view_projection(&self, aspect: f32, yaw: f32, pitch: f32) -> Mat4 {
         let look_dir = Vec3::new(
-            -self.yaw.sin() * self.pitch.cos(),
-            self.pitch.sin(),
-            -self.yaw.cos() * self.pitch.cos(),
+            -yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            -yaw.cos() * pitch.cos(),
         );
         let target = self.position + look_dir;
         let view = Mat4::look_at_rh(self.position, target, Vec3::Y);
@@ -75,11 +69,7 @@ impl FrameTiming {
     pub fn new(initial_state: InterpolableState) -> Self {
         // Duplicate initial state so interpolation on the first frame
         // produces the initial state with no blending artifact.
-        let previous = InterpolableState::new(
-            initial_state.position,
-            initial_state.yaw,
-            initial_state.pitch,
-        );
+        let previous = InterpolableState::new(initial_state.position);
         Self {
             accumulator: Duration::ZERO,
             tick_duration: TICK_DURATION,
@@ -135,11 +125,7 @@ impl FrameTiming {
     /// Swap current state into previous, write new current state.
     /// Called once per tick from the game logic.
     pub fn push_state(&mut self, new_state: InterpolableState) {
-        self.previous_state = InterpolableState::new(
-            self.current_state.position,
-            self.current_state.yaw,
-            self.current_state.pitch,
-        );
+        self.previous_state = InterpolableState::new(self.current_state.position);
         self.current_state = new_state;
         self.first_tick_done = true;
     }
@@ -180,12 +166,16 @@ pub struct FrameTickResult {
     /// fed to `accumulate()`, exposed here so view-rate updates (e.g. mouse
     /// look) can scale by real frame time rather than the fixed tick duration.
     /// `0.0` on zero-time frames.
-    #[allow(dead_code)]
     pub frame_dt: f32,
 }
 
 /// Shortest-path angular interpolation for angles in radians.
 /// Wraps the difference to [-PI, PI] before lerping.
+///
+/// Retained after `InterpolableState` dropped its yaw field: the function is
+/// still useful for any future angle interpolation (weapon sway, AI aim, etc.)
+/// and its tests exercise the wrap-around math independent of the call site.
+#[allow(dead_code)]
 pub fn lerp_angle(from: f32, to: f32, alpha: f32) -> f32 {
     let mut diff = to - from;
     // Wrap to [-PI, PI]
@@ -371,28 +361,28 @@ mod tests {
 
     #[test]
     fn interpolable_state_lerp_returns_start_at_alpha_zero() {
-        let a = InterpolableState::new(Vec3::new(0.0, 0.0, 0.0), 0.0, 0.0);
-        let b = InterpolableState::new(Vec3::new(10.0, 20.0, 30.0), 1.0, 0.5);
+        let a = InterpolableState::new(Vec3::new(0.0, 0.0, 0.0));
+        let b = InterpolableState::new(Vec3::new(10.0, 20.0, 30.0));
         let result = a.lerp(&b, 0.0);
         assert_approx(result.position.x, 0.0, "position.x at alpha=0");
-        assert_approx(result.yaw, 0.0, "yaw at alpha=0");
-        assert_approx(result.pitch, 0.0, "pitch at alpha=0");
+        assert_approx(result.position.y, 0.0, "position.y at alpha=0");
+        assert_approx(result.position.z, 0.0, "position.z at alpha=0");
     }
 
     #[test]
     fn interpolable_state_lerp_returns_end_at_alpha_one() {
-        let a = InterpolableState::new(Vec3::new(0.0, 0.0, 0.0), 0.0, 0.0);
-        let b = InterpolableState::new(Vec3::new(10.0, 20.0, 30.0), 1.0, 0.5);
+        let a = InterpolableState::new(Vec3::new(0.0, 0.0, 0.0));
+        let b = InterpolableState::new(Vec3::new(10.0, 20.0, 30.0));
         let result = a.lerp(&b, 1.0);
         assert_approx(result.position.x, 10.0, "position.x at alpha=1");
-        assert_approx(result.yaw, 1.0, "yaw at alpha=1");
-        assert_approx(result.pitch, 0.5, "pitch at alpha=1");
+        assert_approx(result.position.y, 20.0, "position.y at alpha=1");
+        assert_approx(result.position.z, 30.0, "position.z at alpha=1");
     }
 
     #[test]
     fn interpolable_state_lerp_interpolates_position_linearly() {
-        let a = InterpolableState::new(Vec3::new(0.0, 0.0, 0.0), 0.0, 0.0);
-        let b = InterpolableState::new(Vec3::new(100.0, 200.0, 300.0), 0.0, 0.0);
+        let a = InterpolableState::new(Vec3::new(0.0, 0.0, 0.0));
+        let b = InterpolableState::new(Vec3::new(100.0, 200.0, 300.0));
         let result = a.lerp(&b, 0.25);
         assert_approx(result.position.x, 25.0, "position.x at alpha=0.25");
         assert_approx(result.position.y, 50.0, "position.y at alpha=0.25");
@@ -403,7 +393,7 @@ mod tests {
 
     #[test]
     fn accumulator_produces_one_tick_for_one_tick_duration() {
-        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
+        let state = InterpolableState::new(Vec3::ZERO);
         let mut timing = FrameTiming::new(state);
         let result = timing.accumulate(TICK_DURATION);
         assert_eq!(result.ticks, 1);
@@ -411,7 +401,7 @@ mod tests {
 
     #[test]
     fn accumulator_produces_multiple_ticks_for_long_elapsed() {
-        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
+        let state = InterpolableState::new(Vec3::ZERO);
         let mut timing = FrameTiming::new(state);
         let result = timing.accumulate(TICK_DURATION * 3);
         assert_eq!(result.ticks, 3);
@@ -419,7 +409,7 @@ mod tests {
 
     #[test]
     fn accumulator_produces_zero_ticks_for_short_elapsed() {
-        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
+        let state = InterpolableState::new(Vec3::ZERO);
         let mut timing = FrameTiming::new(state);
         let result = timing.accumulate(Duration::from_millis(5));
         assert_eq!(result.ticks, 0);
@@ -427,7 +417,7 @@ mod tests {
 
     #[test]
     fn accumulator_carries_remainder_across_frames() {
-        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
+        let state = InterpolableState::new(Vec3::ZERO);
         let mut timing = FrameTiming::new(state);
         // Add 10ms — not enough for a tick (16.667ms).
         let r1 = timing.accumulate(Duration::from_millis(10));
@@ -439,7 +429,7 @@ mod tests {
 
     #[test]
     fn accumulator_clamps_after_long_stall() {
-        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
+        let state = InterpolableState::new(Vec3::ZERO);
         let mut timing = FrameTiming::new(state);
         // 2 seconds of stall — should be clamped to 250ms.
         let result = timing.accumulate(Duration::from_secs(2));
@@ -453,7 +443,7 @@ mod tests {
 
     #[test]
     fn accumulator_handles_zero_elapsed_without_crash() {
-        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
+        let state = InterpolableState::new(Vec3::ZERO);
         let mut timing = FrameTiming::new(state);
         let result = timing.accumulate(Duration::ZERO);
         assert_eq!(result.ticks, 0);
@@ -465,7 +455,7 @@ mod tests {
 
     #[test]
     fn accumulate_returns_correct_frame_dt() {
-        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
+        let state = InterpolableState::new(Vec3::ZERO);
         let mut timing = FrameTiming::new(state);
         // A known duration that is not a whole number of milliseconds, so
         // we exercise the f32 conversion rather than trivially matching
@@ -483,7 +473,7 @@ mod tests {
 
     #[test]
     fn alpha_is_one_before_first_tick() {
-        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
+        let state = InterpolableState::new(Vec3::ZERO);
         let timing = FrameTiming::new(state);
         let interp = timing.interpolated_state();
         // Both states are identical, so any alpha produces the initial state.
@@ -492,10 +482,10 @@ mod tests {
 
     #[test]
     fn alpha_is_zero_immediately_after_exact_tick() {
-        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
+        let state = InterpolableState::new(Vec3::ZERO);
         let mut timing = FrameTiming::new(state);
         // Push a new state (simulating a tick).
-        timing.push_state(InterpolableState::new(Vec3::new(100.0, 0.0, 0.0), 0.0, 0.0));
+        timing.push_state(InterpolableState::new(Vec3::new(100.0, 0.0, 0.0)));
         // Accumulate exactly one tick — accumulator should be zero after.
         timing.accumulator = Duration::ZERO;
         let result = timing.accumulate(TICK_DURATION);
@@ -512,14 +502,10 @@ mod tests {
 
     #[test]
     fn push_state_moves_current_to_previous() {
-        let state = InterpolableState::new(Vec3::new(1.0, 2.0, 3.0), 0.5, 0.1);
+        let state = InterpolableState::new(Vec3::new(1.0, 2.0, 3.0));
         let mut timing = FrameTiming::new(state);
 
-        timing.push_state(InterpolableState::new(
-            Vec3::new(10.0, 20.0, 30.0),
-            1.0,
-            0.2,
-        ));
+        timing.push_state(InterpolableState::new(Vec3::new(10.0, 20.0, 30.0)));
 
         assert_approx(timing.previous_state.position.x, 1.0, "prev.x after push");
         assert_approx(timing.current_state.position.x, 10.0, "curr.x after push");
@@ -527,11 +513,11 @@ mod tests {
 
     #[test]
     fn interpolated_state_blends_between_previous_and_current() {
-        let state = InterpolableState::new(Vec3::new(0.0, 0.0, 0.0), 0.0, 0.0);
+        let state = InterpolableState::new(Vec3::new(0.0, 0.0, 0.0));
         let mut timing = FrameTiming::new(state);
 
         // Push a new state so previous and current differ.
-        timing.push_state(InterpolableState::new(Vec3::new(100.0, 0.0, 0.0), 0.0, 0.0));
+        timing.push_state(InterpolableState::new(Vec3::new(100.0, 0.0, 0.0)));
 
         // Set accumulator to half a tick for alpha ≈ 0.5.
         timing.accumulator = Duration::from_micros(TICK_DURATION.as_micros() as u64 / 2);
@@ -548,8 +534,8 @@ mod tests {
 
     #[test]
     fn view_projection_produces_finite_matrix() {
-        let state = InterpolableState::new(Vec3::new(0.0, 200.0, 500.0), 0.0, 0.0);
-        let vp = state.view_projection(16.0 / 9.0);
+        let state = InterpolableState::new(Vec3::new(0.0, 200.0, 500.0));
+        let vp = state.view_projection(16.0 / 9.0, 0.0, 0.0);
         for (i, val) in vp.to_cols_array().iter().enumerate() {
             assert!(val.is_finite(), "view_proj[{i}] is not finite: {val}");
         }
@@ -557,8 +543,8 @@ mod tests {
 
     #[test]
     fn view_projection_handles_zero_aspect_without_nan() {
-        let state = InterpolableState::new(Vec3::ZERO, 0.0, 0.0);
-        let vp = state.view_projection(0.0);
+        let state = InterpolableState::new(Vec3::ZERO);
+        let vp = state.view_projection(0.0, 0.0, 0.0);
         for (i, val) in vp.to_cols_array().iter().enumerate() {
             assert!(!val.is_nan(), "view_proj[{i}] with zero aspect is NaN");
         }

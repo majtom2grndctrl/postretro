@@ -22,7 +22,8 @@ This has produced a recurring bug family:
 - Leaves span solid and air regions because the splitter cannot see brush boundaries that no face lies on.
 - Small air gaps between adjacent brushes get classified solid because no face marks the gap.
 - Outside-the-map void leaves classified empty when they happen to inherit any face from an outward-facing brush side — flying outside a level reveals exterior brush surfaces because the classifier has no structural way to distinguish exterior void from interior air. Observed on test-3 after the brush-ownership classifier landed.
-- Recent fixes (convexity termination, tight face-centroid epsilon, `SOLID_EPSILON`/`FACE_SOLID_EPSILON` split, brush-ownership rewrite) are symptomatic patches for a post-hoc classification step that lacks the structural information it needs.
+- Phantom portals through solid material. `filter_portals_through_brushes` (commit `6e72040`) drops portal polygons whose centroids lie inside a brush, keeping the exterior flood-fill honest when leaves straddle brush interiors. Redundant once leaves no longer straddle.
+- Recent fixes (convexity termination, tight face-centroid epsilon, `SOLID_EPSILON`/`FACE_SOLID_EPSILON` split, brush-ownership rewrite, portal brush filter) are symptomatic patches for a post-hoc classification step that lacks the structural information it needs.
 
 qbsp and ericw-tools avoid this by construction: they partition **space** using brush planes, track the set of brushes that contain each region as the tree descends, and terminate when a region is uniformly inside one brush set. Faces are produced last, by clipping each brush's sides against every solid region. A leaf's solid/empty state is known exactly because it was computed during construction.
 
@@ -341,6 +342,7 @@ Not a weekend task. Not a months-long epic. Roughly the same shape as `portal-bs
 | Removed artifact | Replacement |
 |---|---|
 | `classify_leaf_solidity` heuristic with centroid tests | Structural solidity assigned during construction. |
+| `filter_portals_through_brushes` centroid filter | Phantom portals cannot form — every leaf boundary lies on a single brush's half-space. |
 | `csg.rs` Sutherland-Hodgman face-into-brush clipping | Face extraction via brush-side projection through the tree. |
 | `SOLID_EPSILON` and `FACE_SOLID_EPSILON` tuning in `bsp.rs` | Structural tests — no centroid epsilons needed. `PLANE_EPSILON` for splitter arithmetic remains. |
 | Face-driven splitter candidate selection | Brush-plane splitter candidates (superset — every face-plane was a brush-plane, plus internal brush boundaries no face sits on). |

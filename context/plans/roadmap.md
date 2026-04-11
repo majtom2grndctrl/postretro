@@ -55,7 +55,7 @@
 - [ ] Depth buffer and back-face culling for solid rendering
 - [ ] Create render pipeline: base texture with flat uniform lighting (no lightmaps yet)
 - [ ] Material derivation from texture name prefixes (table lookup, logged warnings for unknown prefixes)
-- [ ] CSG face clipping to eliminate z-fighting from overlapping brushes (PRL path). See `context/reference/csg-face-clipping.md`.
+- [ ] CSG face clipping to eliminate z-fighting from overlapping brushes (PRL path).
 
 **Testable outcome:** textured level with uniform lighting. Navigate with action-mapped input. No z-fighting.
 

@@ -1065,14 +1065,62 @@ mod tests {
         assert!(clipped_c.len() >= 3);
         let narrowed_3 = narrow_frustum(camera_pos, &clipped_c, &narrowed_2).expect("hop 3");
 
-        // Strict-subset check: every vertex of every clipped polygon lies
-        // inside the original parent frustum.
+        // Hop-wise strict-subset check: each clipped polygon must lie fully
+        // inside the frustum it was clipped against. This is the inductive
+        // step that guarantees every narrowed frustum is a subset of its
+        // immediate predecessor — from which "subset of the original camera
+        // frustum" follows by induction.
+        for v in &clipped_a {
+            assert!(
+                point_inside_frustum(*v, &parent),
+                "hop 1 clipped vertex {v:?} must lie inside the parent frustum"
+            );
+        }
+        for v in &clipped_b {
+            assert!(
+                point_inside_frustum(*v, &narrowed_1),
+                "hop 2 clipped vertex {v:?} must lie inside the hop-1 narrowed frustum"
+            );
+        }
+        for v in &clipped_c {
+            assert!(
+                point_inside_frustum(*v, &narrowed_2),
+                "hop 3 clipped vertex {v:?} must lie inside the hop-2 narrowed frustum"
+            );
+        }
+
+        // Transitively, every clipped vertex at any hop lies inside the
+        // original parent frustum — the induction target.
         for v in clipped_a.iter().chain(clipped_b.iter()).chain(clipped_c.iter()) {
             assert!(
                 point_inside_frustum(*v, &parent),
                 "clipped vertex {v:?} must lie inside the original camera frustum"
             );
         }
+
+        // Subset-at-each-hop sampled check: a sample of points that lie inside
+        // the narrowed frustum at hop N must also lie inside the frustum at
+        // hop N-1. Sample the clipped polygon vertices themselves plus the
+        // polygon centroid at each hop — both are guaranteed inside the
+        // narrowed frustum (they lie on the near plane and are bounded by the
+        // edge planes).
+        let centroid = |poly: &[Vec3]| poly.iter().copied().sum::<Vec3>() / poly.len() as f32;
+
+        // Hop 1 → parent.
+        for v in &clipped_a {
+            assert!(point_inside_frustum(*v, &parent));
+        }
+        assert!(point_inside_frustum(centroid(&clipped_a), &parent));
+        // Hop 2 → hop 1.
+        for v in &clipped_b {
+            assert!(point_inside_frustum(*v, &narrowed_1));
+        }
+        assert!(point_inside_frustum(centroid(&clipped_b), &narrowed_1));
+        // Hop 3 → hop 2.
+        for v in &clipped_c {
+            assert!(point_inside_frustum(*v, &narrowed_2));
+        }
+        assert!(point_inside_frustum(centroid(&clipped_c), &narrowed_2));
 
         // And points clearly outside the parent must be outside every
         // narrowed frustum, at every hop.

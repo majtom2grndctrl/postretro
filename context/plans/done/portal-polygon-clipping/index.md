@@ -1,6 +1,6 @@
 # Portal Polygon Clipping in Runtime Visibility
 
-> **Status:** draft
+> **Status:** done
 > **Depends on:** none. Engine-only change to runtime portal traversal.
 > **Related:** `context/lib/build_pipeline.md` §Runtime visibility · `context/plans/done/portal-bsp-vis/`
 

@@ -54,7 +54,6 @@ The fix is to stop keying termination on the leaf set and instead key it on the 
 - Changes to `clip_polygon_to_frustum`, `narrow_frustum`, or any other helper. They are correct as written.
 - Splitting `portal_vis.rs` into a submodule directory. The file is large enough that this will eventually be worth doing, but per the development guide we do not mix structural refactoring with bug fixes. Tracked as a follow-up.
 - Retiring the BSP legacy visibility path in `visibility.rs`. Independent.
-- Updating `context/lib/build_pipeline.md` §Runtime visibility. The text describes single-pass polygon clipping, which remains correct. Only the traversal topology is changing, and topology is not described in that document.
 - Changing the PRL file format, the level compiler, or the portal generation step.
 
 ### Non-goals
@@ -151,6 +150,7 @@ The on-screen reading of the trace becomes depth-first instead of breadth-first.
 8. `cargo check -p postretro` clean. `cargo test -p postretro` passes the full suite (current count is 268 tests).
 9. **Test suite runtime does not regress.** The `portal_vis::tests` module currently runs in well under a second; under DFS it should still run in well under a second on the same hardware. Any meaningful slowdown indicates an algorithm bug, not an optimization opportunity.
 10. **Frame rate on `map-2.prl` does not regress meaningfully.** Manual verification: launch the engine on `map-2.prl`, fly through the level for at least one minute (including the previously-broken position at `(-7, 2, -12)`), and confirm the framerate is comparable to the pre-fix run. The fix increases the visible leaf count in some poses, so a small performance cost is expected; a large drop indicates a separate optimization concern but is not a reason to roll the fix back. Document the observed framerate range (pre-fix and post-fix) in the PR description so the change is recorded.
+11. **The implementation conforms to `context/lib/build_pipeline.md` §Portal traversal.** The canonical text describes per-chain depth-first traversal with cycle prevention keyed on portals crossed in the current chain. The code matches: recursive DFS (not BFS over leaves), per-path portal set (not global visited-leaves bitset). The doc is the target; the code is in violation today and conforms once this plan ships.
 
 ---
 

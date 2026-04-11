@@ -145,11 +145,13 @@ Two paths, selected by which PRL section is present.
 
 Single-pass portal flood-fill with polygon-vs-frustum clipping at each hop. This is the id Tech 4 (Doom 3, Quake 4, Prey) form of runtime portal vis.
 
-For each portal visited by the BFS:
+Per-chain depth-first. For each portal visited:
 
 1. **Clip the portal polygon against the current frustum** using Sutherland-Hodgman. An empty clip output (fewer than 3 vertices after clipping) is the unified rejection signal — the portal is entirely outside the current sight cone.
 2. **Narrow the frustum through the clipped polygon.** The new frustum is built from the portal plane (near), one edge plane per clipped edge through the camera position, and the far plane carried from the current frustum.
-3. **Enqueue the neighbor leaf** with the narrowed frustum. Solid leaves block traversal.
+3. **Recurse into the neighbor leaf** with the narrowed frustum. Solid leaves block traversal.
+
+**Per-chain tracking.** Cycle prevention keys on portals crossed in the current chain, not on leaves reached globally. Keying on leaves would drop any chain after the first to arrive at a leaf, losing whichever carried the widest sub-frustum. The visible bitset is the union across chains.
 
 **Strict-subset invariant.** Because the clipped polygon lies entirely inside the current frustum by construction, the edge planes derived from it form a cone strictly inside the current cone. By induction from the camera's initial frustum, every narrowed frustum reachable through any portal chain is a strict subset of the camera frustum, and every leaf marked visible by the flood-fill lies inside the camera's view cone.
 

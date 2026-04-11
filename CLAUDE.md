@@ -2,9 +2,9 @@
 
 Retro-style FPS engine (Doom/Quake boomer shooter, cyberpunk aesthetic, modder-friendly). Rust + wgpu core.
 
-## Start here
+## Start here — required
 
-Load `context/lib/index.md` — it routes to the right docs for your task.
+Read `context/lib/index.md` before doing anything else. It routes to the right context docs for your task. Do not skip this for planning, Q&A, or implementation — the index is short and the routing matters.
 
 ## Key constraints
 

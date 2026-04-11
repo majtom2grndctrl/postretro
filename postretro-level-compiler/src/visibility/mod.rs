@@ -720,39 +720,38 @@ mod tests {
 
     #[test]
     fn sealed_box_center_point_is_not_classified_exterior() {
-        // Diagnostic test for the "leak or false positive?" question.
-        //
         // A hand-crafted sealed box (six wall brushes around an interior air
-        // pocket) is, by construction, sealed. There is no hole to the void.
-        // The leaf containing the center point (0, 0, 0) must therefore be
-        // interior, not exterior, after running the real compiler pipeline
-        // (CSG clip, BSP partition + classify_leaf_solidity, portal
-        // generation, exterior flood-fill).
+        // pocket) is, by construction, sealed. The leaf containing the center
+        // point (0, 0, 0) must therefore be interior, not exterior, after
+        // running the compiler pipeline: CSG clip, BSP partition, portal
+        // generation, portal-through-brush filter, exterior flood-fill.
         //
-        // If this assertion fails, the flood-fill is walking through leaves
-        // that should be solid barriers — i.e., `classify_leaf_solidity` is
-        // failing to mark any leaf as solid on a definitionally-sealed map.
-        // That's a false-positive leak detection, not a real leak.
+        // This test was born as a red diagnostic for the "is the map leaking
+        // or are we falsely detecting a leak?" question. It revealed that the
+        // BSP builder produces leaves whose spatial regions straddle brush
+        // boundaries, and portal generation then emits phantom portals
+        // crossing those brush interiors. Without filtering, the exterior
+        // flood walks from the void through wall material into the interior.
+        // `filter_portals_through_brushes` is the guard that makes this test
+        // green.
         let (faces, brushes) = sealed_box();
 
         let clipped = crate::csg::csg_clip_faces(&faces, &brushes);
         let result = crate::partition::partition(clipped, &brushes)
             .expect("partition should succeed on sealed box");
         let generated_portals = crate::portals::generate_portals(&result.tree);
+        let generated_portals =
+            crate::portals::filter_portals_through_brushes(generated_portals, &brushes);
         let exterior = find_exterior_leaves(&result.tree, &generated_portals);
 
         let center_leaf = crate::partition::find_leaf_for_point(&result.tree, DVec3::ZERO);
 
-        let solid_count = result.tree.leaves.iter().filter(|l| l.is_solid).count();
-        let empty_count = result.tree.leaves.len() - solid_count;
-
         assert!(
             !exterior.contains(&center_leaf),
             "center point (0,0,0) of a sealed box was classified as exterior. \
-             Leaf index: {center_leaf}, total leaves: {}, solid: {solid_count}, \
-             empty: {empty_count}, exterior: {}, portals: {}. \
-             The box is definitionally sealed, so this is a false-positive leak \
-             detection — the solidity classifier is not marking wall leaves solid.",
+             Leaf index: {center_leaf}, total leaves: {}, exterior: {}, portals: {}. \
+             The box is definitionally sealed, so either the portal brush filter \
+             is letting phantom portals through or the BSP has degenerated further.",
             result.tree.leaves.len(),
             exterior.len(),
             generated_portals.len(),

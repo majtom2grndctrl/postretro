@@ -50,6 +50,8 @@ fn main() -> anyhow::Result<()> {
     // exterior set so it can emit `face_count = 0` for exterior leaves in
     // lockstep with the geometry section.
     let generated_portals = portals::generate_portals(&result.tree);
+    let generated_portals =
+        portals::filter_portals_through_brushes(generated_portals, &map_data.brush_volumes);
     let portal_count = generated_portals.len();
     if portal_count == 0 {
         log::warn!(

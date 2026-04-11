@@ -7,7 +7,14 @@
 use glam::DVec3;
 
 use crate::geometry_utils::{clip_polygon_to_front, split_polygon};
+use crate::map_data::BrushVolume;
 use crate::partition::{BspChild, BspTree};
+
+/// Epsilon for the portal-inside-brush test. A point within this distance of
+/// a brush plane counts as "on or inside" the plane, matching the CSG
+/// convention in `csg::ON_PLANE_EPSILON` so a portal lying on a brush face is
+/// treated as blocked (you cannot cross a wall at its surface, either).
+const PORTAL_BRUSH_EPSILON: f64 = 0.01;
 
 /// Tighter epsilon for portal clipping. Portals are clipped against many
 /// ancestor planes in sequence; the generous PLANE_EPSILON (0.1) used for
@@ -51,6 +58,68 @@ pub fn generate_portals(tree: &BspTree) -> Vec<Portal> {
     generate_recursive(tree, 0, &ancestor_planes, &mut portals);
 
     portals
+}
+
+/// Remove portals whose polygon centroid lies inside any brush volume.
+///
+/// Background: `build_recursive` in the BSP builder terminates when the face
+/// set is convex, which can leave BSP leaves whose spatial regions straddle
+/// brush boundaries. Between such leaves the portal distributor emits portal
+/// polygons that pass through solid brush interiors — phantom portals that
+/// don't correspond to real open-space connectivity. Feeding those to the
+/// exterior flood-fill causes it to walk from the void through walls into
+/// interior air, producing a false-positive leak detection.
+///
+/// Filtering by centroid is a narrow fix: if the midpoint of a portal
+/// polygon is inside a brush, that portal crosses solid material and can be
+/// dropped from the portal graph. Portals that straddle a brush face plane
+/// (centroid on the boundary) are also dropped, since the portal at the
+/// surface of a wall is not a crossing the player can take either.
+///
+/// This is not a general BSP correctness fix — it addresses the specific
+/// symptom of phantom portals on brush-aligned BSP trees. A full fix would
+/// subdivide BSP leaves down to brush boundaries so solidity classification
+/// and portal generation would agree on spatial topology.
+pub fn filter_portals_through_brushes(
+    portals: Vec<Portal>,
+    brush_volumes: &[BrushVolume],
+) -> Vec<Portal> {
+    if brush_volumes.is_empty() {
+        return portals;
+    }
+
+    let total = portals.len();
+    let retained: Vec<Portal> = portals
+        .into_iter()
+        .filter(|p| !portal_centroid_inside_any_brush(p, brush_volumes))
+        .collect();
+    let dropped = total - retained.len();
+    if dropped > 0 {
+        log::info!(
+            "[Compiler] Portal brush filter: {} portals dropped (phantom portals inside solid), {} retained",
+            dropped,
+            retained.len(),
+        );
+    }
+    retained
+}
+
+fn portal_centroid_inside_any_brush(portal: &Portal, brush_volumes: &[BrushVolume]) -> bool {
+    if portal.polygon.is_empty() {
+        return false;
+    }
+    let sum: DVec3 = portal.polygon.iter().copied().sum();
+    let centroid = sum / (portal.polygon.len() as f64);
+    brush_volumes
+        .iter()
+        .any(|brush| point_inside_brush(centroid, brush))
+}
+
+fn point_inside_brush(p: DVec3, brush: &BrushVolume) -> bool {
+    brush
+        .planes
+        .iter()
+        .all(|plane| plane.normal.dot(p) - plane.distance <= PORTAL_BRUSH_EPSILON)
 }
 
 /// Plane representation for ancestor stack entries: (normal, distance).
@@ -1340,4 +1409,85 @@ mod tests {
         );
     }
 
+    // -- filter_portals_through_brushes --
+
+    #[test]
+    fn filter_portals_through_brushes_empty_brush_list_is_identity() {
+        let portals = vec![
+            Portal {
+                polygon: vec![
+                    DVec3::new(0.0, 0.0, 0.0),
+                    DVec3::new(1.0, 0.0, 0.0),
+                    DVec3::new(1.0, 1.0, 0.0),
+                    DVec3::new(0.0, 1.0, 0.0),
+                ],
+                front_leaf: 0,
+                back_leaf: 1,
+            },
+        ];
+        let filtered = filter_portals_through_brushes(portals, &[]);
+        assert_eq!(filtered.len(), 1, "empty brush list should pass everything through");
+    }
+
+    #[test]
+    fn filter_portals_through_brushes_drops_portal_with_centroid_inside_brush() {
+        // Box brush at (-10..10, -10..10, -10..10). Portal polygon centered
+        // at (0, 0, 0) — clearly inside the brush interior.
+        let brush = box_brush(DVec3::splat(-10.0), DVec3::splat(10.0));
+        let portal = Portal {
+            polygon: vec![
+                DVec3::new(-1.0, -1.0, 0.0),
+                DVec3::new(1.0, -1.0, 0.0),
+                DVec3::new(1.0, 1.0, 0.0),
+                DVec3::new(-1.0, 1.0, 0.0),
+            ],
+            front_leaf: 0,
+            back_leaf: 1,
+        };
+        let filtered = filter_portals_through_brushes(vec![portal], &[brush]);
+        assert!(filtered.is_empty(), "portal fully inside a brush should be dropped");
+    }
+
+    #[test]
+    fn filter_portals_through_brushes_keeps_portal_outside_all_brushes() {
+        let brush = box_brush(DVec3::splat(-10.0), DVec3::splat(10.0));
+        // Portal centroid at (100, 100, 100) — well outside the brush.
+        let portal = Portal {
+            polygon: vec![
+                DVec3::new(99.0, 99.0, 100.0),
+                DVec3::new(101.0, 99.0, 100.0),
+                DVec3::new(101.0, 101.0, 100.0),
+                DVec3::new(99.0, 101.0, 100.0),
+            ],
+            front_leaf: 0,
+            back_leaf: 1,
+        };
+        let filtered = filter_portals_through_brushes(vec![portal], &[brush]);
+        assert_eq!(filtered.len(), 1, "portal outside all brushes should be retained");
+    }
+
+    #[test]
+    fn filter_portals_through_brushes_drops_portal_on_brush_outer_face() {
+        // A portal whose centroid lies exactly on a brush's outer face plane
+        // should also be dropped — it represents the surface of a wall, not
+        // a traversable gap. This is the case that gives us the sealed-box
+        // fix: portals at x=-60 on the -X wall's outer skin.
+        let brush = box_brush(DVec3::splat(-10.0), DVec3::splat(10.0));
+        let portal = Portal {
+            // Quad centered at (10, 0, 0) — on the +X face plane of the brush.
+            polygon: vec![
+                DVec3::new(10.0, -1.0, -1.0),
+                DVec3::new(10.0, 1.0, -1.0),
+                DVec3::new(10.0, 1.0, 1.0),
+                DVec3::new(10.0, -1.0, 1.0),
+            ],
+            front_leaf: 0,
+            back_leaf: 1,
+        };
+        let filtered = filter_portals_through_brushes(vec![portal], &[brush]);
+        assert!(
+            filtered.is_empty(),
+            "portal whose centroid lies on a brush face plane should be dropped"
+        );
+    }
 }

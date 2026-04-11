@@ -87,7 +87,7 @@ Unknown prefix falls back to a default material with a warning at load time.
 
 | Data | Source | How |
 |------|--------|-----|
-| Geometry | prl-build (CSG clip → BSP → pack) | Geometry section |
+| Geometry | prl-build (brush-volume BSP → brush-side projection → pack) | Geometry section |
 | BSP tree | prl-build | BspNodes + BspLeaves sections |
 | Visibility | prl-build | Portals section (default) or LeafPvs section (`--pvs`) |
 | Surface material types | Texture naming convention | Prefix lookup table |
@@ -102,22 +102,39 @@ Unknown prefix falls back to a default material with a warning at load time.
 
 The PRL compiler (`prl-build`) reads `.map` files directly via shambler and produces `.prl` binary level files. It replaces ericw-tools' three-step pipeline with a single tool.
 
-> **Pipeline restructure planned.** The compile pipeline below is being restructured to a brush-volume-first BSP construction with face extraction at the tail (`parse → brush-volume BSP → face extraction → portal generation → exterior leaf culling → portal vis → geometry → pack`). CSG face clipping disappears as a discrete stage and leaf solidity becomes structural, established during construction rather than post-hoc. See `plans/drafts/brush-volume-bsp/`. The text below describes the current implementation; this section will be rewritten when the refactor lands.
-
 ### Compiler pipeline
 
 ```
-parse .map → CSG face clipping → BSP compilation → portal generation → exterior leaf culling → portal vis → geometry → pack .prl
+parse .map → brush-volume BSP construction → brush-side projection → portal generation → exterior leaf culling → portal vis → geometry → pack .prl
 ```
 
-1. **Parse.** Shambler extracts brush volumes, faces, and entities. Two transforms are applied at the parse boundary: (a) axis swizzle (Quake Z-up → engine Y-up) and (b) unit scale (idTech2: 0.0254 m/unit, exact). Vertex positions, entity origins, and plane distances are converted to engine meters; plane normals receive the swizzle only (direction vectors — scale must not be applied). The scale comes from a single map-format source, never duplicated at call sites. All downstream stages receive engine-native coordinates in meters.
-2. **CSG face clipping.** Each face is clipped against all brush volumes using Sutherland-Hodgman polygon clipping. Faces that lie entirely inside a solid brush are discarded; faces that partially overlap are trimmed to the exterior portion. An AABB pre-filter skips brush pairs with non-overlapping bounds. This eliminates z-fighting at shared surfaces between adjacent brushes — the same problem BSP solves structurally via splitting, done here as an explicit compile-time step. A face on its own brush's boundary plane is not clipped (it sits on the plane, not behind all half-planes).
-3. **BSP compilation.** Builds a BSP tree from world faces. Produces interior nodes (splitting planes) and leaves (convex regions). Leaf solidity is derived from brush ownership: face normals point outward from their source brush, so any leaf containing a face lies on that brush's air side and is empty; faceless leaves are solid. Solid leaves represent brush interiors. Empty leaves represent navigable space. (A brush-volume-first BSP construction that establishes solidity structurally during construction is planned — see `context/plans/drafts/brush-volume-bsp/`.)
+1. **Parse.** Shambler extracts brush volumes, brush sides, and entities. Two transforms are applied at the parse boundary: (a) axis swizzle (Quake Z-up → engine Y-up) and (b) unit scale (idTech2: 0.0254 m/unit, exact). Vertex positions, entity origins, and plane distances are converted to engine meters; plane normals receive the swizzle only (direction vectors — scale must not be applied). The scale comes from a single map-format source, never duplicated at call sites. All downstream stages receive engine-native coordinates in meters. Brush sides — the textured half-plane polygons bounding each brush — are grouped per brush at parse time; they are the input to BSP construction, not world faces.
+2. **Brush-volume BSP construction.** Partitions space by recursively splitting the world AABB with brush-derived planes. Recursion tracks the inside set — the brush indices whose half-spaces fully contain the current region — and terminates at a leaf when the region is uniformly inside one brush set (solid) or uniformly outside every brush (empty). Leaf solidity is structural: it is established during construction, not inferred from face positions afterward. Splitter candidates are drawn from the full set of bounding planes of candidate brushes, including planes no face sits on, so narrow air gaps and adjacent brush boundaries are always detected. The world AABB is the union of brush AABBs with a one-meter slack margin on each axis. Recursion depth is hard-capped; pathological input yields a compiler error rather than a stack overflow.
+3. **Brush-side projection.** Derives world faces from brush sides in two passes. Pass 1 walks each brush side down the tree using plane-index equality as the routing primitive (a polygon on a splitting plane goes to one side only, never both), splits on all other planes, and accumulates the fragments that survive into empty leaves as a per-side visible hull. Pass 2 distributes each visible hull back through the tree, emitting a triangulated face in every empty leaf it reaches. Fragments that land in solid leaves are dropped — face-in-solid culling falls out of the walk for free, without a separate clipping stage. When two brush sides on the same oriented plane reach the same leaf, the resolution is containment-aware: a polygon fully contained in another is dropped as redundant, but partially-overlapping coplanar polygons are emitted both and any visible z-fighting is left as an authoring diagnostic. Mismatched textures across a containment-resolved drop are surfaced as a warning. The compiler does not attempt 2D polygon union on coplanar overlaps — by design, partially-overlapping coplanar brushes are an authoring error this stage will not paper over.
 4. **Portal generation.** For each BSP internal node, clips the splitting-plane polygon against ancestor splitting planes to produce the portal polygon bounding that node's partition. Each portal is a convex polygon connecting two adjacent empty leaves. In default mode, portals are stored in the `.prl` file (section 15) for runtime traversal. In `--pvs` mode, portals are used as intermediate data and discarded.
 5. **Exterior leaf culling.** Flood-fills through the portal graph from a point outside the map's bounding volume. Every empty leaf reachable from outside is an exterior leaf. Exterior leaves produce no packed geometry — void-facing surfaces of the sealing brushes are absent from the output. A map with a leak has interior leaves incorrectly classified as exterior.
 6. **Portal vis** (`--pvs` mode only). Per empty leaf, floods through the portal graph. A leaf L' is potentially visible from L if any sequence of portals connects them. Output: per-leaf PVS bitsets, RLE-compressed. Computed in parallel (one task per leaf).
 7. **Geometry.** Fan-triangulates faces into vertex/index buffers. Faces grouped by leaf index for efficient per-leaf draw calls.
 8. **Pack.** Writes BSP tree nodes, BSP leaves (face ranges, bounds), and geometry to the `.prl` binary format. Default mode also writes the Portals section (15). `--pvs` mode writes the LeafPvs section (14) instead.
+
+### Leaf solidity
+
+Every leaf's solid/empty state is assigned by BSP construction, not by a post-pass over emitted faces. The inside-set invariant means a leaf is known to be inside the intersection of its bounding brushes' half-spaces (solid) or outside all of them (empty) at the moment it is produced. This removes the class of bugs where centroid-based classification on a post-hoc face list misclassifies narrow gaps, shared surfaces, or regions whose interior contains no face. Downstream stages — portal generation, exterior leaf culling, portal vis — consume solidity as authoritative.
+
+### Brush role spectrum
+
+A worldspawn brush in this engine family can carry one of several roles, each with different tradeoffs between BSP participation and runtime mutability. The compiler currently implements only the first row; the others are forward affordances and are listed here so the BSP's constraints are not mistaken for whole-engine constraints.
+
+| Role | BSP splitter? | Solidity contributor? | Runtime mutability | Storage |
+|------|---------------|-----------------------|--------------------|---------|
+| Splitter brush | yes | yes (structural) | none — moving one invalidates the splitter set | BSP nodes + leaf face-index lists |
+| Detail / leaf brush | no | yes (per-leaf reference) | possible — planes never enter the tree | Per-leaf brush list (not yet implemented) |
+| Brush model | no | self-contained mini-hierarchy | full — entity-attached, transformable | Mini-BSP or BVH per entity (entity brushes only today) |
+| Runtime instance | no | runtime collision query | full — spawned or streamed at gameplay time | Runtime spatial structure (future) |
+
+The compile-time BSP constrains the *splitter set*, not every brush in the world. A future detail-brush or leaf-brush class would let level authors mark geometry as "renderable and collidable but not load-bearing for vis," skipping BSP construction entirely while keeping the compile-time portal graph intact. Dynamic gameplay objects (doors, lifts, breakable walls) would attach to entities and live outside worldspawn, in line with the Quake/idTech mover convention.
+
+The dedup rule in §brush-side projection only ever fires on splitter brushes — by definition the most-constrained category. Coplanar overlap inside the splitter set is treated as an authoring error worth surfacing, because the right home for "small detail flush against a larger surface" is the future detail-brush class, not a splitter-set tiebreaker.
 
 ### PRL section IDs
 

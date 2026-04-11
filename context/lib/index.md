@@ -12,6 +12,7 @@
 - **Testing** → `testing_guide.md`
 - **Rendering pipeline / BSP / lighting / BSPX** → `rendering_pipeline.md`
 - **PRL format / level compiler / BSP / runtime portal vis** → `build_pipeline.md` §PRL
+- **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Brush role spectrum
 - **Audio / spatial sound / reverb zones** → `audio.md`
 - **Entity model / game objects / sprites** → `entity_model.md`
 - **Build pipeline / ericw-tools / FGD / TrenchBroom** → `build_pipeline.md`
@@ -54,7 +55,7 @@ Single authoring pipeline: TrenchBroom `.map` → `prl-build` → `.prl`. Engine
 
 | Data | Source | How |
 |------|--------|-----|
-| Geometry | prl-build (CSG clip → BSP → pack) [^1] | Geometry section — positions, indices, per-face metadata |
+| Geometry | prl-build (brush-volume BSP → brush-side projection → pack) | Geometry section — positions, indices, per-face metadata |
 | BSP tree | prl-build | BspNodes + BspLeaves sections |
 | Visibility | prl-build (portal traversal or PVS) | Portals section (default) or LeafPvs section (`--pvs` mode) |
 | Surface material types | Texture naming convention | Prefix lookup table → footsteps, impacts, decals |
@@ -64,8 +65,6 @@ Single authoring pipeline: TrenchBroom `.map` → `prl-build` → `.prl`. Engine
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |
 
 Full detail: `build_pipeline.md`.
-
-[^1]: CSG face clipping is being replaced by brush-volume BSP construction, where face extraction happens at the tail of the pipeline rather than the head. See `plans/drafts/brush-volume-bsp/`.
 
 ---
 

@@ -12,7 +12,9 @@ use shambler::entity::EntityId;
 use shambler::face::face_planes;
 use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
-use crate::map_data::{BrushPlane, BrushVolume, EntityInfo, Face, MapData, TextureProjection};
+use crate::map_data::{
+    BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, TextureProjection,
+};
 use crate::map_format::MapFormat;
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
@@ -154,13 +156,13 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         FaceWinding::Clockwise,
     );
 
-    // Extract brush volumes and faces together so every face can carry the
-    // index of its source brush in `brush_volumes`. Face ownership is how
-    // downstream leaf solidity classification knows which side of the brush
-    // a leaf lies on (face normals point outward from the source brush).
+    // Extract brush volumes with their textured sides. The BSP builder
+    // consumes the bounding planes; brush-side projection consumes the
+    // textured polygons. Both come out of the same per-brush walk so the
+    // plane and side lists cannot drift apart.
     let mut brush_volumes: Vec<BrushVolume> = Vec::new();
-    let mut world_faces: Vec<Face> = Vec::new();
     let mut total_vertex_count: usize = 0;
+    let mut total_side_count: usize = 0;
 
     for brush_id in &world_brush_ids {
         let face_ids = match geo_map.brush_faces.get(brush_id) {
@@ -184,9 +186,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .collect();
 
         if planes.is_empty() {
-            // No valid volume for this brush — skip both the volume and its
-            // faces. Faces without a brush volume have no owner, and the
-            // solidity classifier can't reason about them.
+            // No bounding planes survived — skip the brush entirely.
+            // Brush-volume BSP construction requires a non-empty plane set
+            // to define the half-space intersection that bounds the volume.
             continue;
         }
 
@@ -200,8 +202,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             }
         }
 
-        let brush_index = brush_volumes.len();
-        brush_volumes.push(BrushVolume { planes, aabb });
+        let mut sides: Vec<BrushSide> = Vec::with_capacity(face_ids.len());
 
         for face_id in face_ids {
             let vertices_raw = match face_verts.get(face_id) {
@@ -280,16 +281,22 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             };
 
             total_vertex_count += vertices.len();
+            total_side_count += 1;
 
-            world_faces.push(Face {
+            sides.push(BrushSide {
                 vertices,
                 normal,
                 distance,
                 texture,
                 tex_projection,
-                brush_index,
             });
         }
+
+        brush_volumes.push(BrushVolume {
+            planes,
+            sides,
+            aabb,
+        });
     }
 
     // Stat logging
@@ -300,7 +307,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("[Compiler] Total brushes: {total_brushes}");
     log::info!("[Compiler] World brushes: {world_brush_count}");
     log::info!("[Compiler] Entity brushes: {entity_brush_count}");
-    log::info!("[Compiler] World faces: {}", world_faces.len());
+    log::info!("[Compiler] Brush sides: {total_side_count}");
     log::info!("[Compiler] Total vertices: {total_vertex_count}");
     log::info!(
         "[Compiler] Entity classnames: {}",
@@ -308,7 +315,6 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     );
 
     Ok(MapData {
-        world_faces,
         brush_volumes,
         entity_brushes: entity_brushes_summary,
         entities,
@@ -395,8 +401,16 @@ mod tests {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
             .expect("test.map should parse without error");
 
-        // The test map has 10 world brushes
-        assert!(!map_data.world_faces.is_empty(), "should have world faces");
+        assert!(
+            !map_data.brush_volumes.is_empty(),
+            "should have brush volumes"
+        );
+        let total_sides: usize = map_data
+            .brush_volumes
+            .iter()
+            .map(|b| b.sides.len())
+            .sum();
+        assert!(total_sides > 0, "should have at least one brush side");
     }
 
     #[test]
@@ -421,30 +435,34 @@ mod tests {
     }
 
     #[test]
-    fn faces_have_valid_vertices() {
+    fn brush_sides_have_valid_vertices() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
             .expect("test.map should parse without error");
 
-        for face in &map_data.world_faces {
-            assert!(
-                face.vertices.len() >= 3,
-                "face should have at least 3 vertices, got {}",
-                face.vertices.len()
-            );
+        for (bi, brush) in map_data.brush_volumes.iter().enumerate() {
+            for (si, side) in brush.sides.iter().enumerate() {
+                assert!(
+                    side.vertices.len() >= 3,
+                    "brush {bi} side {si} should have at least 3 vertices, got {}",
+                    side.vertices.len()
+                );
+            }
         }
     }
 
     #[test]
-    fn faces_have_unit_normals() {
+    fn brush_sides_have_unit_normals() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
             .expect("test.map should parse without error");
 
-        for face in &map_data.world_faces {
-            let len = face.normal.length();
-            assert!(
-                (len - 1.0).abs() < 0.01,
-                "normal should be unit length, got {len}"
-            );
+        for (bi, brush) in map_data.brush_volumes.iter().enumerate() {
+            for (si, side) in brush.sides.iter().enumerate() {
+                let len = side.normal.length();
+                assert!(
+                    (len - 1.0).abs() < 0.01,
+                    "brush {bi} side {si} normal should be unit length, got {len}"
+                );
+            }
         }
     }
 
@@ -478,44 +496,59 @@ mod tests {
         );
     }
 
-    /// Vertex winding: for every parsed face, the first triangle's geometric normal
-    /// (cross product of the first two edges) must align with the stored face normal.
-    ///
-    /// This locks in the FaceWinding convention: vertices should appear CCW when
-    /// viewed from the front (from the direction of the face's outward normal), which
-    /// is what wgpu FrontFace::Ccw requires.
+    /// Vertex winding contract: the first triangle's geometric normal (cross
+    /// of the first two edges) must align with the stored side normal.
+    /// Vertices appear CCW when viewed from the front, which is what
+    /// `wgpu::FrontFace::Ccw` requires after upload.
     #[test]
-    fn face_vertex_winding_aligns_with_face_normal() {
+    fn brush_side_winding_aligns_with_side_normal() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
             .expect("test.map should parse without error");
 
         let mut checked = 0usize;
-        for (i, face) in map_data.world_faces.iter().enumerate() {
-            if face.vertices.len() < 3 {
-                continue;
-            }
-            let v0 = face.vertices[0];
-            let v1 = face.vertices[1];
-            let v2 = face.vertices[2];
-            let edge1 = v1 - v0;
-            let edge2 = v2 - v0;
-            let geometric_normal = edge1.cross(edge2);
+        for (bi, brush) in map_data.brush_volumes.iter().enumerate() {
+            for (si, side) in brush.sides.iter().enumerate() {
+                if side.vertices.len() < 3 {
+                    continue;
+                }
+                let v0 = side.vertices[0];
+                let v1 = side.vertices[1];
+                let v2 = side.vertices[2];
+                let geometric_normal = (v1 - v0).cross(v2 - v0);
 
-            // Skip degenerate triangles (collinear vertices).
-            if geometric_normal.length_squared() < 1e-10 {
-                continue;
-            }
+                if geometric_normal.length_squared() < 1e-10 {
+                    continue;
+                }
 
-            let dot = geometric_normal.dot(face.normal);
-            assert!(
-                dot > 0.0,
-                "face {i}: geometric normal {geometric_normal:?} is opposite to face normal {:?} \
-                 (dot={dot:.4}); vertex winding is backwards",
-                face.normal
-            );
-            checked += 1;
+                let dot = geometric_normal.dot(side.normal);
+                assert!(
+                    dot > 0.0,
+                    "brush {bi} side {si}: geometric normal {geometric_normal:?} \
+                     is opposite to stored normal {:?} (dot={dot:.4}); winding is backwards",
+                    side.normal
+                );
+                checked += 1;
+            }
         }
 
-        assert!(checked > 0, "no faces were checked — test is vacuous");
+        assert!(checked > 0, "no sides were checked — test is vacuous");
+    }
+
+    #[test]
+    fn every_brush_volume_has_brush_sides() {
+        let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
+            .expect("test.map should parse without error");
+
+        assert!(
+            !map_data.brush_volumes.is_empty(),
+            "test.map should produce brush volumes"
+        );
+
+        for (i, brush) in map_data.brush_volumes.iter().enumerate() {
+            assert!(
+                !brush.sides.is_empty(),
+                "brush {i} has no sides; parser should emit a textured polygon per bounding plane"
+            );
+        }
     }
 }

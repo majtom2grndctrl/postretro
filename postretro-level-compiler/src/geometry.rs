@@ -849,9 +849,8 @@ mod tests {
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
                 .expect("test.map should parse");
 
-        let partition_result =
-            crate::partition::partition(map_data.world_faces, &map_data.brush_volumes)
-                .expect("partition should succeed on test map");
+        let partition_result = crate::partition::partition(&map_data.brush_volumes)
+            .expect("partition should succeed on test map");
 
         let result = extract_geometry(
             &partition_result.faces,

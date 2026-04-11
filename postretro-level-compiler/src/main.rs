@@ -1,7 +1,6 @@
 // postretro-level-compiler: level compiler entry point.
 // See: context/lib/build_pipeline.md §PRL
 
-pub mod csg;
 pub mod geometry;
 pub mod geometry_utils;
 pub mod map_data;
@@ -35,23 +34,18 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("[Compiler] Parsing complete.");
 
-    // CSG face clipping: remove faces inside solid brush volumes to
-    // eliminate z-fighting at overlapping brush boundaries.
-    let clipped_faces = csg::csg_clip_faces(&map_data.world_faces, &map_data.brush_volumes);
-
-    log::info!("[Compiler] CSG face clipping complete.");
-
-    let result = partition::partition(clipped_faces, &map_data.brush_volumes)?;
+    // Partition space with brush-derived planes, then project each brush
+    // side through the resulting tree to recover the world face list.
+    // Solidity is assigned during construction, so face extraction never
+    // emits a polygon into a solid leaf.
+    let result = partition::partition(&map_data.brush_volumes)?;
 
     log::info!("[Compiler] BSP partitioning complete.");
 
-    // Generate portals before encoding anything: the exterior flood-fill
-    // needs the portal adjacency graph, and the BSP/leaf encoder needs the
-    // exterior set so it can emit `face_count = 0` for exterior leaves in
-    // lockstep with the geometry section.
+    // Portals feed both the exterior flood-fill and the BSP/leaf encoder:
+    // the encoder uses the exterior set to emit `face_count = 0` for
+    // outside-the-map leaves in lockstep with the geometry section.
     let generated_portals = portals::generate_portals(&result.tree);
-    let generated_portals =
-        portals::filter_portals_through_brushes(generated_portals, &map_data.brush_volumes);
     let portal_count = generated_portals.len();
     if portal_count == 0 {
         log::warn!(

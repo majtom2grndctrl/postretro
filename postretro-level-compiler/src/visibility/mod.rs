@@ -580,85 +580,86 @@ mod tests {
 
     // -- Full-pipeline sealed box diagnostic --
 
-    /// Construct six faces of an axis-aligned box with outward-facing normals.
-    fn box_faces(min: DVec3, max: DVec3) -> Vec<crate::map_data::Face> {
-        use crate::map_data::Face;
-        let tex = "test".to_string();
-        let mk = |verts: Vec<DVec3>, normal: DVec3, distance: f64| Face {
-            vertices: verts,
-            normal,
-            distance,
-            texture: tex.clone(),
-            tex_projection: Default::default(),
-            brush_index: 0,
-        };
-        vec![
-            mk(
-                vec![
-                    DVec3::new(min.x, min.y, min.z),
-                    DVec3::new(min.x, max.y, min.z),
-                    DVec3::new(min.x, max.y, max.z),
-                    DVec3::new(min.x, min.y, max.z),
-                ],
-                DVec3::NEG_X,
-                -min.x,
-            ),
-            mk(
-                vec![
-                    DVec3::new(max.x, min.y, min.z),
-                    DVec3::new(max.x, min.y, max.z),
-                    DVec3::new(max.x, max.y, max.z),
-                    DVec3::new(max.x, max.y, min.z),
-                ],
-                DVec3::X,
-                max.x,
-            ),
-            mk(
-                vec![
-                    DVec3::new(min.x, min.y, min.z),
-                    DVec3::new(min.x, min.y, max.z),
-                    DVec3::new(max.x, min.y, max.z),
-                    DVec3::new(max.x, min.y, min.z),
-                ],
-                DVec3::NEG_Y,
-                -min.y,
-            ),
-            mk(
-                vec![
-                    DVec3::new(min.x, max.y, min.z),
-                    DVec3::new(max.x, max.y, min.z),
-                    DVec3::new(max.x, max.y, max.z),
-                    DVec3::new(min.x, max.y, max.z),
-                ],
-                DVec3::Y,
-                max.y,
-            ),
-            mk(
-                vec![
-                    DVec3::new(min.x, min.y, min.z),
-                    DVec3::new(max.x, min.y, min.z),
-                    DVec3::new(max.x, max.y, min.z),
-                    DVec3::new(min.x, max.y, min.z),
-                ],
-                DVec3::NEG_Z,
-                -min.z,
-            ),
-            mk(
-                vec![
-                    DVec3::new(min.x, min.y, max.z),
-                    DVec3::new(max.x, min.y, max.z),
-                    DVec3::new(max.x, max.y, max.z),
-                    DVec3::new(min.x, max.y, max.z),
-                ],
-                DVec3::Z,
-                max.z,
-            ),
-        ]
-    }
-
-    /// Construct a BrushVolume for an axis-aligned box.
+    /// Construct a BrushVolume for an axis-aligned box with textured sides
+    /// populated — required inputs for the brush-volume partition pipeline.
     fn box_volume(min: DVec3, max: DVec3) -> crate::map_data::BrushVolume {
-        use crate::map_data::{BrushPlane, BrushVolume};
+        use crate::map_data::{BrushPlane, BrushSide, BrushVolume, TextureProjection};
+        let tex = "test".to_string();
+        let projection = TextureProjection::default();
+        let sides = vec![
+            BrushSide {
+                vertices: vec![
+                    DVec3::new(max.x, min.y, min.z),
+                    DVec3::new(max.x, min.y, max.z),
+                    DVec3::new(max.x, max.y, max.z),
+                    DVec3::new(max.x, max.y, min.z),
+                ],
+                normal: DVec3::X,
+                distance: max.x,
+                texture: tex.clone(),
+                tex_projection: projection.clone(),
+            },
+            BrushSide {
+                vertices: vec![
+                    DVec3::new(min.x, min.y, min.z),
+                    DVec3::new(min.x, max.y, min.z),
+                    DVec3::new(min.x, max.y, max.z),
+                    DVec3::new(min.x, min.y, max.z),
+                ],
+                normal: DVec3::NEG_X,
+                distance: -min.x,
+                texture: tex.clone(),
+                tex_projection: projection.clone(),
+            },
+            BrushSide {
+                vertices: vec![
+                    DVec3::new(min.x, max.y, min.z),
+                    DVec3::new(max.x, max.y, min.z),
+                    DVec3::new(max.x, max.y, max.z),
+                    DVec3::new(min.x, max.y, max.z),
+                ],
+                normal: DVec3::Y,
+                distance: max.y,
+                texture: tex.clone(),
+                tex_projection: projection.clone(),
+            },
+            BrushSide {
+                vertices: vec![
+                    DVec3::new(min.x, min.y, min.z),
+                    DVec3::new(min.x, min.y, max.z),
+                    DVec3::new(max.x, min.y, max.z),
+                    DVec3::new(max.x, min.y, min.z),
+                ],
+                normal: DVec3::NEG_Y,
+                distance: -min.y,
+                texture: tex.clone(),
+                tex_projection: projection.clone(),
+            },
+            BrushSide {
+                vertices: vec![
+                    DVec3::new(min.x, min.y, max.z),
+                    DVec3::new(max.x, min.y, max.z),
+                    DVec3::new(max.x, max.y, max.z),
+                    DVec3::new(min.x, max.y, max.z),
+                ],
+                normal: DVec3::Z,
+                distance: max.z,
+                texture: tex.clone(),
+                tex_projection: projection.clone(),
+            },
+            BrushSide {
+                vertices: vec![
+                    DVec3::new(min.x, min.y, min.z),
+                    DVec3::new(max.x, min.y, min.z),
+                    DVec3::new(max.x, max.y, min.z),
+                    DVec3::new(min.x, max.y, min.z),
+                ],
+                normal: DVec3::NEG_Z,
+                distance: -min.z,
+                texture: tex,
+                tex_projection: projection,
+            },
+        ];
         BrushVolume {
             planes: vec![
                 BrushPlane {
@@ -686,6 +687,7 @@ mod tests {
                     distance: -min.z,
                 },
             ],
+            sides,
             aabb: Aabb { min, max },
         }
     }
@@ -693,7 +695,7 @@ mod tests {
     /// Build a sealed room as six wall slabs around an interior air pocket.
     /// Outer extent: -60..60 on each axis. Interior air: -50..50 on each axis.
     /// Wall thickness: 10.
-    fn sealed_box() -> (Vec<crate::map_data::Face>, Vec<crate::map_data::BrushVolume>) {
+    fn sealed_box() -> Vec<crate::map_data::BrushVolume> {
         let wall_slabs = [
             // -X wall
             (DVec3::new(-60.0, -60.0, -60.0), DVec3::new(-50.0, 60.0, 60.0)),
@@ -709,39 +711,25 @@ mod tests {
             (DVec3::new(-60.0, -60.0, 50.0), DVec3::new(60.0, 60.0, 60.0)),
         ];
 
-        let mut faces = Vec::new();
         let mut brushes = Vec::new();
         for (min, max) in wall_slabs {
-            faces.extend(box_faces(min, max));
             brushes.push(box_volume(min, max));
         }
-        (faces, brushes)
+        brushes
     }
 
     #[test]
     fn sealed_box_center_point_is_not_classified_exterior() {
-        // A hand-crafted sealed box (six wall brushes around an interior air
-        // pocket) is, by construction, sealed. The leaf containing the center
-        // point (0, 0, 0) must therefore be interior, not exterior, after
-        // running the compiler pipeline: CSG clip, BSP partition, portal
-        // generation, portal-through-brush filter, exterior flood-fill.
-        //
-        // This test was born as a red diagnostic for the "is the map leaking
-        // or are we falsely detecting a leak?" question. It revealed that the
-        // BSP builder produces leaves whose spatial regions straddle brush
-        // boundaries, and portal generation then emits phantom portals
-        // crossing those brush interiors. Without filtering, the exterior
-        // flood walks from the void through wall material into the interior.
-        // `filter_portals_through_brushes` is the guard that makes this test
-        // green.
-        let (faces, brushes) = sealed_box();
+        // Sealed-box invariant under brush-volume construction: a hand-crafted
+        // box of six wall brushes around an interior air pocket must classify
+        // its centre point as interior, not exterior. Solidity is structural,
+        // so this exercises the full path — partition, portal generation,
+        // exterior flood-fill — without any post-hoc filtering.
+        let brushes = sealed_box();
 
-        let clipped = crate::csg::csg_clip_faces(&faces, &brushes);
-        let result = crate::partition::partition(clipped, &brushes)
+        let result = crate::partition::partition(&brushes)
             .expect("partition should succeed on sealed box");
         let generated_portals = crate::portals::generate_portals(&result.tree);
-        let generated_portals =
-            crate::portals::filter_portals_through_brushes(generated_portals, &brushes);
         let exterior = find_exterior_leaves(&result.tree, &generated_portals);
 
         let center_leaf = crate::partition::find_leaf_for_point(&result.tree, DVec3::ZERO);
@@ -750,8 +738,7 @@ mod tests {
             !exterior.contains(&center_leaf),
             "center point (0,0,0) of a sealed box was classified as exterior. \
              Leaf index: {center_leaf}, total leaves: {}, exterior: {}, portals: {}. \
-             The box is definitionally sealed, so either the portal brush filter \
-             is letting phantom portals through or the BSP has degenerated further.",
+             A sealed shell should never leak from outside-the-map into the air pocket.",
             result.tree.leaves.len(),
             exterior.len(),
             generated_portals.len(),

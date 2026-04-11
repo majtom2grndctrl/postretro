@@ -1,5 +1,6 @@
-// Compiler data types: Face, EntityInfo, MapData.
-// See: context/lib/index.md
+// Compiler data types shared across parse, partition, and pack stages:
+// BrushVolume, BrushSide, BrushPlane, Face, TextureProjection, EntityInfo, MapData.
+// See: context/lib/build_pipeline.md §PRL Compilation
 
 use glam::DVec3;
 
@@ -42,39 +43,49 @@ pub enum TextureProjection {
     },
 }
 
-/// A convex face polygon extracted from a world brush.
+/// A convex world face polygon emitted by brush-side projection.
+///
+/// Faces are produced at the tail of the partition stage by clipping each
+/// brush side against the BSP tree, then routing the surviving fragments
+/// into empty leaves. The face stores its plane, vertices, and source-brush
+/// attribution for the coplanar tiebreaker that runs at leaf emission.
 #[derive(Debug, Clone)]
 pub struct Face {
     /// Vertex positions in winding order (engine space, Y-up, meters).
     pub vertices: Vec<DVec3>,
-    /// Face plane normal (unit length, engine space).
+    /// Face plane normal (unit length, engine space). Points outward from
+    /// the source brush — same orientation as the brush side it came from.
     pub normal: DVec3,
     /// Face plane distance from origin (engine space).
     pub distance: f64,
     /// Texture name from the .map file.
     pub texture: String,
     /// Texture projection parameters from the .map file (Quake space).
-    /// UV computation in `geometry.rs` converts engine-space vertices back to
-    /// Quake space before applying these parameters.
+    /// `geometry.rs` converts engine-space vertices back to Quake space
+    /// before applying these parameters during UV bake.
     pub tex_projection: TextureProjection,
-    /// Index of the source brush in `MapData::brush_volumes` that this face
-    /// was generated from. Face normals point *outward* from their source
-    /// brush, so leaf solidity classification uses this ownership to place
-    /// the leaf on the air (front) side of that brush — see
-    /// `partition::bsp::classify_leaf_solidity`. Set at parse time and
-    /// preserved through every Face clone/split in CSG and BSP.
+    /// Index of the source brush in `MapData::brush_volumes`. Used by the
+    /// coplanar dedup rule in brush-side projection: when two brushes share
+    /// the same oriented plane in the same leaf, the lower index wins.
     pub brush_index: usize,
 }
 
 /// A convex brush volume defined by its bounding half-planes.
 ///
-/// A point is inside the brush when it is on the back side (negative half-space)
-/// of every plane: `dot(point, normal) - distance <= 0` for all planes.
+/// A point is inside the brush when it lies on the back side of every plane
+/// (`dot(point, normal) - distance <= 0` for all planes). Brush-volume BSP
+/// construction partitions space using these planes; brush-side projection
+/// reads the textured `sides` to emit world faces.
 #[derive(Debug, Clone)]
 pub struct BrushVolume {
     pub planes: Vec<BrushPlane>,
-    /// Axis-aligned bounding box of the brush volume, computed from face vertices
-    /// at parse time. Used for AABB pre-filtering in CSG face clipping.
+    /// Textured polygons bounding this brush, one per non-degenerate face
+    /// the parser emitted. The `sides` and `planes` lists are not index-
+    /// aligned: degenerate sides are skipped while their planes survive.
+    pub sides: Vec<BrushSide>,
+    /// Axis-aligned bounding box of the volume in engine space. Used for
+    /// candidate-brush pruning during BSP descent and as one input to the
+    /// world AABB derivation in `partition::brush_bsp`.
     pub aabb: crate::partition::Aabb,
 }
 
@@ -87,6 +98,25 @@ pub struct BrushPlane {
     pub distance: f64,
 }
 
+/// A textured polygon on one of a brush's bounding planes.
+///
+/// Brush sides are the input to brush-side projection: each side's polygon
+/// is walked through the BSP tree, accumulated into a visible hull, then
+/// distributed back into empty leaves as one or more world `Face`s.
+#[derive(Debug, Clone)]
+pub struct BrushSide {
+    /// Vertex positions in winding order (engine space, Y-up, meters).
+    pub vertices: Vec<DVec3>,
+    /// Outward-facing plane normal (unit length, engine space).
+    pub normal: DVec3,
+    /// Plane distance from origin (engine space).
+    pub distance: f64,
+    /// Texture name from the .map file.
+    pub texture: String,
+    /// Texture projection parameters from the .map file (Quake space).
+    pub tex_projection: TextureProjection,
+}
+
 /// Minimal entity info extracted from the .map file.
 #[derive(Debug, Clone)]
 pub struct EntityInfo {
@@ -97,11 +127,12 @@ pub struct EntityInfo {
 /// Parsed and classified .map data for downstream compiler stages.
 #[derive(Debug)]
 pub struct MapData {
-    /// Faces from worldspawn brushes, ready for spatial partitioning.
-    pub world_faces: Vec<Face>,
-    /// Convex brush volumes from worldspawn brushes, for solid/empty classification.
+    /// Convex brush volumes from worldspawn brushes. Each volume carries its
+    /// bounding planes, AABB, and textured sides — the BSP partition, face
+    /// extraction, and portal stages all consume this representation.
     pub brush_volumes: Vec<BrushVolume>,
-    /// Brush count per non-worldspawn entity (stored, not processed in Phase 1).
+    /// Brush count per non-worldspawn entity. Stored for diagnostics; entity
+    /// brushes do not flow into worldspawn BSP construction.
     pub entity_brushes: Vec<(String, usize)>,
     /// Info for all entities (classnames, origins).
     pub entities: Vec<EntityInfo>,

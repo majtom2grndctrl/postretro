@@ -20,7 +20,9 @@ Each frame runs five stages in fixed order. Later stages depend on results from 
 
 Game logic runs at a fixed timestep decoupled from render rate. Renderer interpolates between the last two game states for smooth visuals at variable framerates. Simulation is deterministic at any refresh rate. Rendering never blocks or drives the simulation clock.
 
-**Edge cases:** On the first frame, only one game state exists — duplicate it so interpolation produces the initial state with no blending. After a long stall (alt-tab, disk I/O), clamp the accumulator (e.g., 250ms max) to prevent dozens of catch-up ticks.
+**View vs. sim split.** View rotation (yaw, pitch) updates at render rate — once per frame, from mouse displacement and gamepad look velocity, before the fixed-tick loop. Player position updates inside the tick loop. This mirrors id Tech 3's architecture: client viewangles update per frame; simulation ticks at a fixed rate. Evanescent inputs (mouse delta) are consumed at render rate so they are never lost on zero-tick frames. See `input.md §3`.
+
+**Edge cases:** On the first frame, only one game state exists — duplicate it so interpolation produces the initial state with no blending. After a long stall (alt-tab, disk I/O), clamp the accumulator (e.g., 250ms max) to prevent dozens of catch-up ticks. On a stall catch-up (e.g., 5 ticks in one frame), view angles are updated once at render rate before the tick loop; all 5 ticks use the same freshest view direction. This is correct.
 
 ---
 

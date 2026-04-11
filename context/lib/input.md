@@ -36,11 +36,12 @@ Axis values carry a source tag that determines how game logic integrates them:
 
 | Source | Tag | Meaning | Integration |
 |--------|-----|---------|-------------|
-| Mouse delta | Displacement | Value is rotation in radians | Apply directly (divide evenly across ticks in a frame) |
-| Keyboard | Velocity | Value is -1, 0, or +1 | Multiply by speed and tick delta |
-| Gamepad stick | Velocity | Value is stick deflection in [-1, 1] | Multiply by sensitivity and tick delta |
+| Mouse delta | Displacement | Value is rotation in radians | Applied at render rate, once per frame, before the tick loop |
+| Keyboard | Velocity | Value is -1, 0, or +1 | Multiply by speed and tick delta (inside the tick loop) |
+| Gamepad stick (movement) | Velocity | Value is stick deflection in [-1, 1] | Multiply by speed and tick delta (inside the tick loop) |
+| Gamepad stick (look) | Velocity | Value is stick deflection in [-1, 1] | Multiply by sensitivity and frame elapsed time (render rate, before tick loop) |
 
-The distinction matters for look axes: mouse displacement is framerate-independent (accumulated raw deltas converted to radians by sensitivity), while gamepad velocity produces rotation proportional to how long the stick is held.
+**Evanescent vs. persistent inputs.** Mouse displacement is evanescent — if not consumed this frame, the motion is permanently lost. It must be read at render rate, every frame, regardless of how many ticks fired. Gamepad look velocity is continuous but integrates with frame elapsed time at render rate for the same reason: tick-rate integration produces visible jitter when render rate and tick rate are not integer multiples. Held keys and movement sticks are persistent — their state is equally valid next frame — and are safely consumed inside the fixed-tick loop. This split mirrors id Tech 3's architecture: client viewangles update per rendered frame; usercmd movement integrates at tick rate.
 
 ### Binding resolution
 
@@ -56,18 +57,24 @@ When multiple inputs map to the same action in the same frame, the subsystem res
 
 Input runs first in the frame sequence: **Input -> Game logic -> Audio -> Render -> Present.**
 
-Each frame, the input subsystem:
+Each frame, the input subsystem produces two reads:
 
 1. Drains pending winit events (keyboard, mouse) accumulated since last frame.
 2. Polls gilrs for current gamepad state.
-3. Resolves all bindings into an action-state snapshot.
-4. Hands the snapshot to game logic.
+3. **`drain_look_inputs()`** — consumes the accumulated mouse delta and current gamepad look axis values. Returns a `LookInputs` value. Clears `mouse_delta` so look input is not double-applied. Called once per frame before the tick loop.
+4. **`snapshot()`** — resolves remaining bindings (movement, buttons) into an action-state snapshot. Called once per frame before the tick loop.
+
+Look rotation is applied from `LookInputs` at render rate, once per frame, before the fixed-tick loop runs. The tick loop consumes the `snapshot` for movement and gameplay actions.
 
 The snapshot is a read-only value. Game logic consumes it; nothing writes back to input state mid-frame.
 
 ### Mouse delta accumulation
 
-Mouse motion events arrive between frames at OS-determined rates. The input subsystem accumulates raw deltas across all events since the last frame, then applies sensitivity and invert-Y to produce the final look axis values. This prevents lost motion at low framerates and jitter at high framerates.
+Mouse motion events arrive between frames at OS-determined rates. The input subsystem accumulates raw deltas across all events since the last frame, then applies sensitivity and invert-Y to produce look axis values. `drain_look_inputs()` drains these values once per render frame. This guarantees no motion is lost regardless of how many fixed ticks fired in the frame — including zero.
+
+### Render-rate look vs. tick-rate movement
+
+View rotation (yaw, pitch) updates every render frame. Player position updates inside the fixed-tick loop at tick rate. Movement direction reads from the camera's freshest yaw — already updated before the tick loop — so movement uses the current view direction, not a lagged one.
 
 ---
 

@@ -37,16 +37,28 @@ pub struct VisibilityStats {
     /// "what PVS allows" against the post-narrowing counts below to isolate
     /// which culling stage is dropping a given surface.
     pub raw_pvs_faces: u32,
-    /// Faces remaining after the visibility path's primary narrowing stage:
-    /// raw PVS lookup on the BSP and PRL PVS paths, portal-traversal walk on
-    /// the PRL portal-traversal path. On the portal path this is the
-    /// portal-walk reach, *not* the raw PVS — compare against `raw_pvs_faces`
-    /// to see how much the portal walk discarded.
+    /// Faces remaining after the visibility path's primary narrowing stage.
+    /// Semantics vary by path:
+    ///
+    /// - **BSP path:** pre-cull PVS lookup count (counted before the AABB
+    ///   frustum test). Compare against `frustum_faces` to see how much the
+    ///   AABB cull discarded.
+    /// - **PRL portal path:** portal-walk reach. Equals `frustum_faces` by
+    ///   construction because portal traversal already clips against a
+    ///   narrowed frustum at every hop.
+    /// - **PRL PVS path:** *post-cull* count — only leaves surviving the
+    ///   AABB frustum test contribute, because the PVS branch applies the
+    ///   cull before face iteration. The pre-cull baseline on this path is
+    ///   `raw_pvs_faces` (computed separately via `raw_pvs_face_count`).
+    ///
+    /// Compare against `raw_pvs_faces` to see how much the primary narrowing
+    /// stage discarded on each path.
     pub pvs_faces: u32,
     /// Faces remaining after frustum (AABB) culling on top of `pvs_faces`. On
-    /// the portal-traversal path this equals `pvs_faces` by construction
-    /// because portal traversal already clips against a narrowed frustum at
-    /// every hop.
+    /// the portal-traversal path and the PRL PVS path this equals `pvs_faces`
+    /// by construction — the former because portal traversal already clips
+    /// against a narrowed frustum at every hop, the latter because the AABB
+    /// cull runs before the face count on that branch.
     pub frustum_faces: u32,
 }
 
@@ -279,6 +291,13 @@ pub(crate) struct CollectedFaces {
 /// rolled back with `scratch.truncate`. The count is still accumulated for
 /// culled leaves because `pvs_face_count` reflects PVS reach, not frustum
 /// reach.
+///
+/// The steady-state zero-allocation contract is completed by the caller:
+/// `App::scratch_ranges` holds the persistent backing storage, and main.rs
+/// reclaims the allocation from `VisibleFaces::Culled` after `render_frame`
+/// consumes it. A future change to the shape of `VisibleFaces::Culled` (e.g.,
+/// reshaping to a borrowed slice) must preserve that round-trip, or introduce
+/// a different mechanism that keeps the scratch capacity alive across frames.
 pub fn collect_visible_faces(
     visible_leaves: &[bool],
     camera_leaf: u32,
@@ -445,6 +464,15 @@ fn raw_pvs_face_count(world: &LevelWorld, camera_leaf_idx: usize) -> u32 {
 /// Solid leaf fallback: if the camera lands in a solid leaf (clipped into
 /// geometry), all leaves are drawn. This avoids complexity of finding the
 /// "nearest empty leaf" for a rare edge case.
+///
+/// `scratch` is cleared on entry by every branch that returns
+/// `VisibleFaces::Culled`, and populated in place. The `DrawAll` early-return
+/// branch (empty world) intentionally does not touch `scratch` — reclaim is a
+/// no-op in that case and `App::scratch_ranges` retains its capacity for the
+/// next `Culled` frame. The steady-state zero-allocation contract depends on
+/// main.rs reclaiming the allocation from `VisibleFaces::Culled` after
+/// `render_frame` consumes it; see the `App::scratch_ranges` field for the
+/// reclaim side of the handshake.
 pub fn determine_prl_visibility(
     camera_position: Vec3,
     view_proj: Mat4,
@@ -626,7 +654,6 @@ pub fn determine_prl_visibility(
 
     scratch.clear();
     let mut pvs_faces = 0u32;
-    let mut frustum_faces = 0u32;
 
     for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
         if leaf.is_solid || leaf.face_count == 0 {
@@ -657,7 +684,6 @@ pub fn determine_prl_visibility(
         for face in world.face_meta.iter().skip(start).take(count) {
             if face.index_count > 0 {
                 pvs_faces += 1;
-                frustum_faces += 1;
                 scratch.push(DrawRange {
                     index_offset: face.index_offset,
                     index_count: face.index_count,
@@ -665,6 +691,11 @@ pub fn determine_prl_visibility(
             }
         }
     }
+
+    // On this path `frustum_faces` equals `pvs_faces` by construction: the
+    // AABB cull runs above before any face is counted, so every face that
+    // reaches the counter has already survived the frustum test.
+    let frustum_faces = pvs_faces;
 
     log::trace!(
         "[Visibility] leaf={}, raw_pvs_faces={}, pvs_faces={}, frustum_faces={}, total_faces={}",

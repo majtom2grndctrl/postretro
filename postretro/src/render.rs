@@ -900,10 +900,11 @@ impl Renderer {
     /// wireframe overlay pass can reuse it without rescanning.
     ///
     /// Deduplicates `set_bind_group` calls: per-leaf sub-ranges are already
-    /// sorted by `texture_index` (see `prl.rs` `build_leaf_texture_sub_ranges`),
-    /// so tracking the last-set texture across the outer leaf loop lets
-    /// cross-leaf transitions skip redundant binds when leaf N's final
-    /// texture matches leaf N+1's first texture.
+    /// sorted by `texture_index` by both world builders
+    /// (`build_leaf_texture_sub_ranges` in `prl.rs` for PRL maps and `bsp.rs`
+    /// for BSP maps), so tracking the last-set texture across the outer leaf
+    /// loop lets cross-leaf transitions skip redundant binds when leaf N's
+    /// final texture matches leaf N+1's first texture.
     fn draw_visible_textured<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,

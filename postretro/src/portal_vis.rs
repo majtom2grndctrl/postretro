@@ -346,8 +346,13 @@ fn flood(
 /// `scratch_a` and `scratch_b` are ping-pong buffers: each Sutherland-Hodgman
 /// step reads from one and writes to the other, swapping roles between planes.
 /// Both buffers are cleared on entry and their pre-call contents are not
-/// preserved. The returned slice is valid only until the next call that
-/// mutates either scratch buffer.
+/// preserved. The returned slice borrows from whichever buffer most-recently
+/// acted as the output pass; both buffers share the same `'a` lifetime in the
+/// signature, so the borrow checker will prevent the caller from reusing
+/// *either* scratch buffer until the returned slice is dropped. Callers that
+/// need to recurse with the same scratches (e.g., `flood`) must confine the
+/// returned slice to an inner scope so the borrows end before the recursive
+/// call re-takes `&mut` of the scratches.
 ///
 /// Each frustum plane is in Hessian normal form pointing inward: a vertex `v`
 /// is inside when `plane.normal · v + plane.dist >= -CLIP_EPSILON`. The

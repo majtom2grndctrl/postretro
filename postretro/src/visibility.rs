@@ -250,13 +250,19 @@ pub fn decompress_pvs(leaf_index: u32, world: &BspWorld) -> Option<Vec<bool>> {
 }
 
 /// Result of collecting visible faces, including separate PVS and frustum counts.
+///
+/// `ranges` are pushed into the caller-provided scratch buffer (see
+/// `collect_visible_faces`); this struct only reports counts. The caller reads
+/// the populated ranges from the scratch buffer it supplied.
 pub(crate) struct CollectedFaces {
-    pub ranges: Vec<DrawRange>,
+    /// Number of `DrawRange`s pushed into the scratch buffer this call. Equal
+    /// to `frustum_faces` — ranges that survived AABB culling.
+    pub frustum_face_count: u32,
     /// Number of faces visible after PVS alone (before frustum culling).
     pub pvs_face_count: u32,
 }
 
-/// Collect draw ranges for all faces belonging to visible leaves.
+/// Collect draw ranges for all faces belonging to visible leaves into `scratch`.
 ///
 /// Given a visibility bitfield (from `decompress_pvs`), iterates visible leaves and
 /// gathers their face draw ranges. The camera's own leaf is always included.
@@ -264,13 +270,23 @@ pub(crate) struct CollectedFaces {
 /// When a frustum is provided, each PVS-visible leaf is further tested against the
 /// frustum planes. Leaves whose AABB falls entirely outside the frustum are skipped.
 /// The returned `pvs_face_count` reflects the count before frustum culling is applied.
+///
+/// `scratch` is cleared on entry and populated in place — the caller owns the
+/// backing storage so no per-frame allocation occurs in steady state. A single
+/// pass over each visible leaf's `face_indices` accumulates the pre-cull
+/// `pvs_face_count` and speculatively appends `DrawRange`s to `scratch`; if the
+/// leaf subsequently fails the frustum test, those speculative ranges are
+/// rolled back with `scratch.truncate`. The count is still accumulated for
+/// culled leaves because `pvs_face_count` reflects PVS reach, not frustum
+/// reach.
 pub fn collect_visible_faces(
     visible_leaves: &[bool],
     camera_leaf: u32,
     world: &BspWorld,
     frustum: Option<&Frustum>,
+    scratch: &mut Vec<DrawRange>,
 ) -> CollectedFaces {
-    let mut ranges = Vec::new();
+    scratch.clear();
     let mut pvs_face_count: u32 = 0;
 
     for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
@@ -281,39 +297,36 @@ pub fn collect_visible_faces(
             continue;
         }
 
-        // Count faces for PVS stats before frustum culling.
-        let leaf_face_count = leaf
-            .face_indices
-            .iter()
-            .filter(|&&fi| {
-                world
-                    .face_meta
-                    .get(fi as usize)
-                    .is_some_and(|f| f.index_count > 0)
-            })
-            .count() as u32;
-        pvs_face_count += leaf_face_count;
-
-        if let Some(frustum) = frustum {
-            if is_aabb_outside_frustum(leaf.mins, leaf.maxs, frustum) {
-                continue;
-            }
-        }
-
+        // Single pass: count non-zero faces for the pre-cull PVS stat and
+        // speculatively push their draw ranges into `scratch`. If the leaf
+        // fails the frustum cull below, rollback the speculative pushes with
+        // `truncate(commit_len)` — the count still stands because the BSP path
+        // reports `pvs_face_count` as the pre-cull count by design.
+        let commit_len = scratch.len();
+        let mut leaf_face_count = 0u32;
         for &face_idx in &leaf.face_indices {
             if let Some(face) = world.face_meta.get(face_idx as usize) {
                 if face.index_count > 0 {
-                    ranges.push(DrawRange {
+                    leaf_face_count += 1;
+                    scratch.push(DrawRange {
                         index_offset: face.index_offset,
                         index_count: face.index_count,
                     });
                 }
             }
         }
+        pvs_face_count += leaf_face_count;
+
+        if let Some(frustum) = frustum {
+            if is_aabb_outside_frustum(leaf.mins, leaf.maxs, frustum) {
+                scratch.truncate(commit_len);
+                continue;
+            }
+        }
     }
 
     CollectedFaces {
-        ranges,
+        frustum_face_count: scratch.len() as u32,
         pvs_face_count,
     }
 }
@@ -330,6 +343,7 @@ pub fn determine_visibility(
     camera_position: Vec3,
     view_proj: Mat4,
     world: &BspWorld,
+    scratch: &mut Vec<DrawRange>,
 ) -> (VisibleFaces, VisibilityStats) {
     let total_faces = world.face_meta.len() as u32;
 
@@ -350,8 +364,8 @@ pub fn determine_visibility(
     match decompress_pvs(camera_leaf, world) {
         Some(visible_leaves) => {
             let collected =
-                collect_visible_faces(&visible_leaves, camera_leaf, world, Some(&frustum));
-            let frustum_faces = collected.ranges.len() as u32;
+                collect_visible_faces(&visible_leaves, camera_leaf, world, Some(&frustum), scratch);
+            let frustum_faces = collected.frustum_face_count;
             let pvs_faces = collected.pvs_face_count;
 
             log::trace!(
@@ -369,7 +383,7 @@ pub fn determine_visibility(
                 pvs_faces,
                 frustum_faces,
             };
-            (VisibleFaces::Culled(collected.ranges), stats)
+            (VisibleFaces::Culled(std::mem::take(scratch)), stats)
         }
         None => {
             log::trace!(
@@ -436,6 +450,7 @@ pub fn determine_prl_visibility(
     view_proj: Mat4,
     world: &LevelWorld,
     capture_portal_walk: bool,
+    scratch: &mut Vec<DrawRange>,
 ) -> (VisibleFaces, VisibilityStats) {
     let total_faces = world.face_meta.len() as u32;
 
@@ -464,7 +479,7 @@ pub fn determine_prl_visibility(
             "[Visibility] Camera in solid leaf {} — drawing all leaves",
             camera_leaf_idx,
         );
-        let mut ranges = Vec::new();
+        scratch.clear();
         let mut frustum_faces = 0u32;
 
         for leaf in &world.leaves {
@@ -478,7 +493,7 @@ pub fn determine_prl_visibility(
             let count = leaf.face_count as usize;
             for face in world.face_meta.iter().skip(start).take(count) {
                 if face.index_count > 0 {
-                    ranges.push(DrawRange {
+                    scratch.push(DrawRange {
                         index_offset: face.index_offset,
                         index_count: face.index_count,
                     });
@@ -497,7 +512,7 @@ pub fn determine_prl_visibility(
             pvs_faces: total_faces,
             frustum_faces,
         };
-        return (VisibleFaces::Culled(ranges), stats);
+        return (VisibleFaces::Culled(std::mem::take(scratch)), stats);
     }
 
     let raw_pvs_faces = raw_pvs_face_count(world, camera_leaf_idx);
@@ -516,7 +531,7 @@ pub fn determine_prl_visibility(
             capture_portal_walk,
         );
 
-        let mut ranges = Vec::new();
+        scratch.clear();
         let mut pvs_faces = 0u32;
 
         for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
@@ -529,20 +544,15 @@ pub fn determine_prl_visibility(
                 continue;
             }
 
+            // Single pass: count non-zero faces and push their draw ranges.
+            // Portal traversal has no separate AABB cull (narrowed frustums
+            // already clip at each hop), so there is no rollback path.
             let start = leaf.face_start as usize;
             let count = leaf.face_count as usize;
-            let leaf_face_count = world
-                .face_meta
-                .iter()
-                .skip(start)
-                .take(count)
-                .filter(|f| f.index_count > 0)
-                .count() as u32;
-            pvs_faces += leaf_face_count;
-
             for face in world.face_meta.iter().skip(start).take(count) {
                 if face.index_count > 0 {
-                    ranges.push(DrawRange {
+                    pvs_faces += 1;
+                    scratch.push(DrawRange {
                         index_offset: face.index_offset,
                         index_count: face.index_count,
                     });
@@ -572,12 +582,12 @@ pub fn determine_prl_visibility(
             pvs_faces,
             frustum_faces,
         };
-        return (VisibleFaces::Culled(ranges), stats);
+        return (VisibleFaces::Culled(std::mem::take(scratch)), stats);
     }
 
     if !world.has_pvs {
         // No PVS data: draw all non-solid leaves, applying frustum culling only.
-        let mut ranges = Vec::new();
+        scratch.clear();
         let mut frustum_faces = 0u32;
 
         for leaf in &world.leaves {
@@ -592,7 +602,7 @@ pub fn determine_prl_visibility(
             let count = leaf.face_count as usize;
             for face in world.face_meta.iter().skip(start).take(count) {
                 if face.index_count > 0 {
-                    ranges.push(DrawRange {
+                    scratch.push(DrawRange {
                         index_offset: face.index_offset,
                         index_count: face.index_count,
                     });
@@ -608,13 +618,13 @@ pub fn determine_prl_visibility(
             pvs_faces: total_faces,
             frustum_faces,
         };
-        return (VisibleFaces::Culled(ranges), stats);
+        return (VisibleFaces::Culled(std::mem::take(scratch)), stats);
     }
 
     // PVS available: determine visible leaves.
     let pvs = &world.leaves[camera_leaf_idx].pvs;
 
-    let mut ranges = Vec::new();
+    scratch.clear();
     let mut pvs_faces = 0u32;
     let mut frustum_faces = 0u32;
 
@@ -630,29 +640,28 @@ pub fn determine_prl_visibility(
             continue;
         }
 
-        // Count faces for PVS stats before frustum culling.
-        let start = leaf.face_start as usize;
-        let count = leaf.face_count as usize;
-        let leaf_face_count = world
-            .face_meta
-            .iter()
-            .skip(start)
-            .take(count)
-            .filter(|f| f.index_count > 0)
-            .count() as u32;
-        pvs_faces += leaf_face_count;
-
+        // Reorder: run the AABB-frustum cull *before* touching face_meta so
+        // culled leaves pay nothing for face iteration. This differs from the
+        // BSP path (`collect_visible_faces`), which intentionally counts
+        // before culling because it reports `pvs_face_count` as the pre-cull
+        // count. On this PRL PVS path, `raw_pvs_faces` is computed separately
+        // by `raw_pvs_face_count`, so `pvs_faces` is the post-cull counter and
+        // the reorder is safe.
         if is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, &frustum) {
             continue;
         }
 
+        // Single pass: count non-zero faces and push their draw ranges.
+        let start = leaf.face_start as usize;
+        let count = leaf.face_count as usize;
         for face in world.face_meta.iter().skip(start).take(count) {
             if face.index_count > 0 {
-                ranges.push(DrawRange {
+                pvs_faces += 1;
+                frustum_faces += 1;
+                scratch.push(DrawRange {
                     index_offset: face.index_offset,
                     index_count: face.index_count,
                 });
-                frustum_faces += 1;
             }
         }
     }
@@ -673,7 +682,7 @@ pub fn determine_prl_visibility(
         pvs_faces,
         frustum_faces,
     };
-    (VisibleFaces::Culled(ranges), stats)
+    (VisibleFaces::Culled(std::mem::take(scratch)), stats)
 }
 
 // --- Tests ---
@@ -1007,24 +1016,26 @@ mod tests {
         let world = two_leaf_world();
         // Both leaves visible.
         let visible = vec![false, true, true];
-        let collected = collect_visible_faces(&visible, 1, &world, None);
+        let mut scratch = Vec::new();
+        let collected = collect_visible_faces(&visible, 1, &world, None, &mut scratch);
 
-        assert_eq!(collected.ranges.len(), 2);
+        assert_eq!(scratch.len(), 2);
         assert_eq!(
-            collected.ranges[0],
+            scratch[0],
             DrawRange {
                 index_offset: 0,
                 index_count: 3
             }
         );
         assert_eq!(
-            collected.ranges[1],
+            scratch[1],
             DrawRange {
                 index_offset: 3,
                 index_count: 6
             }
         );
         assert_eq!(collected.pvs_face_count, 2);
+        assert_eq!(collected.frustum_face_count, 2);
     }
 
     #[test]
@@ -1032,11 +1043,12 @@ mod tests {
         let world = two_leaf_world();
         // Only leaf 1 is visible (PVS says nothing else visible).
         let visible = vec![false, true, false];
-        let collected = collect_visible_faces(&visible, 1, &world, None);
+        let mut scratch = Vec::new();
+        let collected = collect_visible_faces(&visible, 1, &world, None, &mut scratch);
 
-        assert_eq!(collected.ranges.len(), 1);
+        assert_eq!(scratch.len(), 1);
         assert_eq!(
-            collected.ranges[0],
+            scratch[0],
             DrawRange {
                 index_offset: 0,
                 index_count: 3
@@ -1050,15 +1062,12 @@ mod tests {
         let world = two_leaf_world();
         // PVS says nothing visible at all — but camera leaf is always included.
         let visible = vec![false, false, false];
-        let collected = collect_visible_faces(&visible, 1, &world, None);
+        let mut scratch = Vec::new();
+        let collected = collect_visible_faces(&visible, 1, &world, None, &mut scratch);
 
+        assert_eq!(scratch.len(), 1, "camera leaf should always be included");
         assert_eq!(
-            collected.ranges.len(),
-            1,
-            "camera leaf should always be included"
-        );
-        assert_eq!(
-            collected.ranges[0],
+            scratch[0],
             DrawRange {
                 index_offset: 0,
                 index_count: 3
@@ -1071,9 +1080,57 @@ mod tests {
     fn collect_faces_empty_world() {
         let world = empty_world();
         let visible: Vec<bool> = Vec::new();
-        let collected = collect_visible_faces(&visible, 0, &world, None);
-        assert!(collected.ranges.is_empty());
+        let mut scratch = Vec::new();
+        let collected = collect_visible_faces(&visible, 0, &world, None, &mut scratch);
+        assert!(scratch.is_empty());
         assert_eq!(collected.pvs_face_count, 0);
+    }
+
+    #[test]
+    fn collect_faces_clears_scratch_on_entry() {
+        // Pre-populate scratch with stale data to verify it is cleared.
+        let world = two_leaf_world();
+        let visible = vec![false, true, false];
+        let mut scratch = vec![
+            DrawRange {
+                index_offset: 999,
+                index_count: 999,
+            };
+            8
+        ];
+        let collected = collect_visible_faces(&visible, 1, &world, None, &mut scratch);
+        assert_eq!(scratch.len(), 1);
+        assert_eq!(
+            scratch[0],
+            DrawRange {
+                index_offset: 0,
+                index_count: 3
+            }
+        );
+        assert_eq!(collected.pvs_face_count, 1);
+    }
+
+    #[test]
+    fn collect_faces_rollback_preserves_pvs_count_for_culled_leaves() {
+        // A leaf that PVS says is visible but is outside the frustum: the
+        // BSP path must still report its face count in `pvs_face_count`
+        // (pre-cull semantics) while its ranges are rolled back from scratch.
+        let world = two_leaf_world();
+        let visible = vec![false, true, true];
+        // Camera in leaf 1, looking +X (away from leaf 2 which is at -X).
+        let position = Vec3::new(50.0, 0.0, 0.0);
+        let view = Mat4::look_at_rh(position, position + Vec3::X, Vec3::Y);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 4096.0);
+        let frustum = extract_frustum_planes(proj * view);
+
+        let mut scratch = Vec::new();
+        let collected = collect_visible_faces(&visible, 1, &world, Some(&frustum), &mut scratch);
+
+        // Leaf 2 is frustum-culled: its range is rolled back, but its face
+        // still counts toward pvs_face_count (pre-cull semantics).
+        assert_eq!(scratch.len(), 1, "only leaf 1's range survives");
+        assert_eq!(collected.pvs_face_count, 2);
+        assert_eq!(collected.frustum_face_count, 1);
     }
 
     // -- determine_visibility integration tests --
@@ -1095,7 +1152,9 @@ mod tests {
     fn determine_visibility_with_pvs() {
         let world = two_leaf_world();
         let vp = wide_view_proj(Vec3::new(10.0, 0.0, 0.0));
-        let (result, stats) = determine_visibility(Vec3::new(10.0, 0.0, 0.0), vp, &world);
+        let mut scratch = Vec::new();
+        let (result, stats) =
+            determine_visibility(Vec3::new(10.0, 0.0, 0.0), vp, &world, &mut scratch);
         match result {
             VisibleFaces::Culled(ranges) => {
                 assert!(!ranges.is_empty(), "should have draw ranges");
@@ -1113,7 +1172,9 @@ mod tests {
         let mut world = two_leaf_world();
         world.visdata.clear();
         let vp = wide_view_proj(Vec3::new(10.0, 0.0, 0.0));
-        let (result, stats) = determine_visibility(Vec3::new(10.0, 0.0, 0.0), vp, &world);
+        let mut scratch = Vec::new();
+        let (result, stats) =
+            determine_visibility(Vec3::new(10.0, 0.0, 0.0), vp, &world, &mut scratch);
         assert!(
             matches!(result, VisibleFaces::DrawAll),
             "should draw all when visdata is empty"
@@ -1128,7 +1189,8 @@ mod tests {
     fn determine_visibility_empty_world_draws_all() {
         let world = empty_world();
         let vp = wide_view_proj(Vec3::ZERO);
-        let (result, stats) = determine_visibility(Vec3::ZERO, vp, &world);
+        let mut scratch = Vec::new();
+        let (result, stats) = determine_visibility(Vec3::ZERO, vp, &world, &mut scratch);
         assert!(matches!(result, VisibleFaces::DrawAll));
         assert_eq!(stats.total_faces, 0);
         assert_eq!(stats.camera_leaf, 0);
@@ -1346,7 +1408,8 @@ mod tests {
         );
         let vp = proj * view;
 
-        let (result, stats) = determine_visibility(position, vp, &world);
+        let mut scratch = Vec::new();
+        let (result, stats) = determine_visibility(position, vp, &world, &mut scratch);
         match result {
             VisibleFaces::Culled(ranges) => {
                 // Leaf 2 should be culled (it's behind/to the side of the camera).
@@ -1380,7 +1443,8 @@ mod tests {
         let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 16.0 / 9.0, 0.1, 4096.0);
         let vp = proj * view;
 
-        let (result, stats) = determine_visibility(position, vp, &world);
+        let mut scratch = Vec::new();
+        let (result, stats) = determine_visibility(position, vp, &world, &mut scratch);
         match result {
             VisibleFaces::Culled(ranges) => {
                 // Both leaves should be visible — leaf 2 is in front of the camera.
@@ -1409,7 +1473,8 @@ mod tests {
         let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 4096.0);
         let vp = proj * view;
 
-        let (_, stats) = determine_visibility(position, vp, &world);
+        let mut scratch = Vec::new();
+        let (_, stats) = determine_visibility(position, vp, &world, &mut scratch);
         assert_eq!(stats.total_faces, 2);
         assert_eq!(stats.camera_leaf, 1);
         assert!(
@@ -1509,8 +1574,9 @@ mod tests {
     fn prl_visibility_with_pvs() {
         let world = two_leaf_prl_world();
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
+        let mut scratch = Vec::new();
         let (result, stats) =
-            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false);
+            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         match result {
             VisibleFaces::Culled(ranges) => {
                 assert!(!ranges.is_empty(), "should have draw ranges");
@@ -1525,8 +1591,9 @@ mod tests {
         let mut world = two_leaf_prl_world();
         world.has_pvs = false;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
+        let mut scratch = Vec::new();
         let (result, stats) =
-            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false);
+            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         match result {
             VisibleFaces::Culled(_) => {
                 // Frustum culling still applies, but PVS is skipped.
@@ -1552,7 +1619,8 @@ mod tests {
             texture_names: vec![],
         };
         let vp = wide_view_proj(Vec3::ZERO);
-        let (result, stats) = determine_prl_visibility(Vec3::ZERO, vp, &world, false);
+        let mut scratch = Vec::new();
+        let (result, stats) = determine_prl_visibility(Vec3::ZERO, vp, &world, false, &mut scratch);
         assert!(matches!(result, VisibleFaces::DrawAll));
         assert_eq!(stats.total_faces, 0);
     }
@@ -1566,7 +1634,8 @@ mod tests {
         let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 4096.0);
         let vp = proj * view;
 
-        let (result, stats) = determine_prl_visibility(position, vp, &world, false);
+        let mut scratch = Vec::new();
+        let (result, stats) = determine_prl_visibility(position, vp, &world, false, &mut scratch);
         match result {
             VisibleFaces::Culled(ranges) => {
                 // Leaf 1 (negative X) should be frustum-culled.
@@ -1578,7 +1647,12 @@ mod tests {
             }
             VisibleFaces::DrawAll => panic!("expected Culled"),
         }
-        assert_eq!(stats.pvs_faces, 2);
+        // On the PRL PVS path, `pvs_faces` is a post-cull counter (the
+        // AABB-frustum test runs before face iteration), so frustum-culled
+        // leaves do not contribute. `raw_pvs_faces` carries the pre-cull
+        // baseline via `raw_pvs_face_count`.
+        assert_eq!(stats.raw_pvs_faces, 2);
+        assert_eq!(stats.pvs_faces, 1);
         assert_eq!(stats.frustum_faces, 1);
     }
 
@@ -1589,8 +1663,9 @@ mod tests {
         // Set leaf 0's PVS to see nothing.
         world.leaves[0].pvs = vec![false, false];
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
+        let mut scratch = Vec::new();
         let (result, _stats) =
-            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false);
+            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         match result {
             VisibleFaces::Culled(ranges) => {
                 assert_eq!(ranges.len(), 1, "camera leaf should always be drawn");
@@ -1642,8 +1717,9 @@ mod tests {
 
         // Camera at X=50 lands in solid leaf 0.
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
+        let mut scratch = Vec::new();
         let (result, stats) =
-            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false);
+            determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         match result {
             VisibleFaces::Culled(ranges) => {
                 // Should draw all non-solid leaf faces (leaf 1's face).

@@ -30,7 +30,7 @@ use crate::frame_timing::{FrameTiming, InterpolableState};
 use crate::input::{Action, AxisSource, DiagnosticAction};
 use crate::render::Renderer;
 use crate::texture::TextureSet;
-use crate::visibility::{VisibilityStats, VisibleFaces};
+use crate::visibility::{DrawRange, VisibilityStats, VisibleFaces};
 
 const DEFAULT_MAP_PATH: &str = "assets/maps/test.bsp";
 
@@ -171,6 +171,7 @@ fn main() -> Result<()> {
         frame_timing: FrameTiming::new(initial_state),
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
         capture_portal_walk_next_frame: false,
+        scratch_ranges: Vec::new(),
     };
 
     event_loop
@@ -269,6 +270,14 @@ struct App {
     /// clears it. The visibility module emits per-portal trace lines under
     /// the `postretro::portal_trace` log target for that one frame only.
     capture_portal_walk_next_frame: bool,
+
+    /// Persistent scratch buffer for per-frame `DrawRange` collection. The
+    /// BSP and PRL visibility entry points `std::mem::take` this into
+    /// `VisibleFaces::Culled` so no allocation happens in steady state. After
+    /// `render_frame` consumes the `VisibleFaces`, the buffer is moved back
+    /// into this field with its capacity intact. BSP and PRL cannot be active
+    /// on the same frame, so a single scratch suffices.
+    scratch_ranges: Vec<DrawRange>,
 }
 
 struct WindowState {
@@ -495,14 +504,18 @@ impl ApplicationHandler for App {
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 
                 let (visible, stats) = match self.level.as_ref() {
-                    Some(Level::Bsp(world)) => {
-                        visibility::determine_visibility(interp.position, view_proj, world)
-                    }
+                    Some(Level::Bsp(world)) => visibility::determine_visibility(
+                        interp.position,
+                        view_proj,
+                        world,
+                        &mut self.scratch_ranges,
+                    ),
                     Some(Level::Prl(world)) => visibility::determine_prl_visibility(
                         interp.position,
                         view_proj,
                         world,
                         capture_portal_walk,
+                        &mut self.scratch_ranges,
                     ),
                     None => (
                         VisibleFaces::DrawAll,
@@ -553,6 +566,17 @@ impl ApplicationHandler for App {
                             event_loop.exit();
                         }
                     }
+                }
+
+                // Reclaim the draw-range buffer from `visible` so its
+                // capacity persists across frames. Visibility entry points
+                // `std::mem::take` the scratch into `VisibleFaces::Culled`;
+                // reclaiming here is the other half of that contract, making
+                // the "no per-frame allocation" invariant hold in steady
+                // state without depending on render.rs internals.
+                if let VisibleFaces::Culled(mut ranges) = visible {
+                    ranges.clear();
+                    self.scratch_ranges = ranges;
                 }
             }
             _ => {}

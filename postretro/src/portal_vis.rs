@@ -421,14 +421,18 @@ fn clip_polygon_to_plane(input: &[Vec3], plane: &FrustumPlane, output: &mut Vec<
         if current_inside {
             if !previous_inside {
                 // Entering: emit the intersection, then the current vertex.
-                if let Some(intersection) = intersect_edge_plane(previous, current, d_previous, d_current) {
+                if let Some(intersection) =
+                    intersect_edge_plane(previous, current, d_previous, d_current)
+                {
                     output.push(intersection);
                 }
             }
             output.push(current);
         } else if previous_inside {
             // Leaving: emit the intersection only.
-            if let Some(intersection) = intersect_edge_plane(previous, current, d_previous, d_current) {
+            if let Some(intersection) =
+                intersect_edge_plane(previous, current, d_previous, d_current)
+            {
                 output.push(intersection);
             }
         }
@@ -1010,10 +1014,10 @@ mod tests {
             has_pvs: false,
             portals: vec![portal_a_b, portal_a_c, portal_b_d, portal_c_d],
             leaf_portals: vec![
-                vec![0, 1],    // leaf A touches portal 0 (A-B) and portal 1 (A-C)
-                vec![0, 2],    // leaf B touches portal 0 (A-B) and portal 2 (B-D)
-                vec![1, 3],    // leaf C touches portal 1 (A-C) and portal 3 (C-D)
-                vec![2, 3],    // leaf D touches portal 2 (B-D) and portal 3 (C-D)
+                vec![0, 1], // leaf A touches portal 0 (A-B) and portal 1 (A-C)
+                vec![0, 2], // leaf B touches portal 0 (A-B) and portal 2 (B-D)
+                vec![1, 3], // leaf C touches portal 1 (A-C) and portal 3 (C-D)
+                vec![2, 3], // leaf D touches portal 2 (B-D) and portal 3 (C-D)
             ],
             has_portals: true,
             texture_names: vec![],
@@ -1055,7 +1059,6 @@ mod tests {
                  rejecting the 2-unit-wide portal C-D."
             );
         }
-
     }
 
     // --- Polygon-vs-frustum clipping tests ---
@@ -1084,8 +1087,7 @@ mod tests {
 
         let mut scratch_a: Vec<Vec3> = Vec::new();
         let mut scratch_b: Vec<Vec3> = Vec::new();
-        let clipped =
-            clip_polygon_to_frustum(&polygon, &frustum, &mut scratch_a, &mut scratch_b);
+        let clipped = clip_polygon_to_frustum(&polygon, &frustum, &mut scratch_a, &mut scratch_b);
         assert_eq!(
             clipped.len(),
             4,
@@ -1114,8 +1116,7 @@ mod tests {
 
         let mut scratch_a: Vec<Vec3> = Vec::new();
         let mut scratch_b: Vec<Vec3> = Vec::new();
-        let clipped =
-            clip_polygon_to_frustum(&polygon, &frustum, &mut scratch_a, &mut scratch_b);
+        let clipped = clip_polygon_to_frustum(&polygon, &frustum, &mut scratch_a, &mut scratch_b);
         assert!(
             clipped.len() < 3,
             "polygon fully outside frustum should clip to empty (got {} verts)",
@@ -1139,8 +1140,7 @@ mod tests {
 
         let mut scratch_a: Vec<Vec3> = Vec::new();
         let mut scratch_b: Vec<Vec3> = Vec::new();
-        let clipped =
-            clip_polygon_to_frustum(&polygon, &frustum, &mut scratch_a, &mut scratch_b);
+        let clipped = clip_polygon_to_frustum(&polygon, &frustum, &mut scratch_a, &mut scratch_b);
         assert!(
             clipped.len() >= 3,
             "a polygon that straddles the frustum should clip to a non-empty polygon"
@@ -1158,9 +1158,7 @@ mod tests {
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::X);
         let mut scratch_a: Vec<Vec3> = Vec::new();
         let mut scratch_b: Vec<Vec3> = Vec::new();
-        assert!(
-            clip_polygon_to_frustum(&[], &frustum, &mut scratch_a, &mut scratch_b).is_empty()
-        );
+        assert!(clip_polygon_to_frustum(&[], &frustum, &mut scratch_a, &mut scratch_b).is_empty());
         assert!(
             clip_polygon_to_frustum(
                 &[Vec3::X, Vec3::Y],
@@ -1301,7 +1299,11 @@ mod tests {
 
         // Transitively, every clipped vertex at any hop lies inside the
         // original parent frustum — the induction target.
-        for v in clipped_a.iter().chain(clipped_b.iter()).chain(clipped_c.iter()) {
+        for v in clipped_a
+            .iter()
+            .chain(clipped_b.iter())
+            .chain(clipped_c.iter())
+        {
             assert!(
                 point_inside_frustum(*v, &parent),
                 "clipped vertex {v:?} must lie inside the original camera frustum"
@@ -1491,9 +1493,9 @@ mod tests {
         let portal_a_b = PortalData {
             polygon: vec![
                 Vec3::new(10.0, -0.05, -0.05),
-                Vec3::new(10.0,  0.05, -0.05),
-                Vec3::new(10.0,  0.05,  0.05),
-                Vec3::new(10.0, -0.05,  0.05),
+                Vec3::new(10.0, 0.05, -0.05),
+                Vec3::new(10.0, 0.05, 0.05),
+                Vec3::new(10.0, -0.05, 0.05),
             ],
             front_leaf: 0, // A
             back_leaf: 1,  // B
@@ -1505,9 +1507,9 @@ mod tests {
         let portal_a_c = PortalData {
             polygon: vec![
                 Vec3::new(10.0, -2.0, -2.0),
-                Vec3::new(10.0,  2.0, -2.0),
-                Vec3::new(10.0,  2.0,  2.0),
-                Vec3::new(10.0, -2.0,  2.0),
+                Vec3::new(10.0, 2.0, -2.0),
+                Vec3::new(10.0, 2.0, 2.0),
+                Vec3::new(10.0, -2.0, 2.0),
             ],
             front_leaf: 0, // A
             back_leaf: 2,  // C
@@ -1517,9 +1519,9 @@ mod tests {
         let portal_b_x = PortalData {
             polygon: vec![
                 Vec3::new(20.0, -1.0, -1.0),
-                Vec3::new(20.0,  1.0, -1.0),
-                Vec3::new(20.0,  1.0,  1.0),
-                Vec3::new(20.0, -1.0,  1.0),
+                Vec3::new(20.0, 1.0, -1.0),
+                Vec3::new(20.0, 1.0, 1.0),
+                Vec3::new(20.0, -1.0, 1.0),
             ],
             front_leaf: 1, // B
             back_leaf: 3,  // X
@@ -1529,9 +1531,9 @@ mod tests {
         let portal_c_x = PortalData {
             polygon: vec![
                 Vec3::new(20.0, -1.0, -1.0),
-                Vec3::new(20.0,  1.0, -1.0),
-                Vec3::new(20.0,  1.0,  1.0),
-                Vec3::new(20.0, -1.0,  1.0),
+                Vec3::new(20.0, 1.0, -1.0),
+                Vec3::new(20.0, 1.0, 1.0),
+                Vec3::new(20.0, -1.0, 1.0),
             ],
             front_leaf: 2, // C
             back_leaf: 3,  // X
@@ -1541,10 +1543,10 @@ mod tests {
         // narrow B-path cone and inside the wide C-path cone.
         let portal_x_y = PortalData {
             polygon: vec![
-                Vec3::new(30.0,  1.0, -0.5),
-                Vec3::new(30.0,  2.0, -0.5),
-                Vec3::new(30.0,  2.0,  0.5),
-                Vec3::new(30.0,  1.0,  0.5),
+                Vec3::new(30.0, 1.0, -0.5),
+                Vec3::new(30.0, 2.0, -0.5),
+                Vec3::new(30.0, 2.0, 0.5),
+                Vec3::new(30.0, 1.0, 0.5),
             ],
             front_leaf: 3, // X
             back_leaf: 4,  // Y
@@ -1579,11 +1581,11 @@ mod tests {
             // portal 1 (wide) so BFS would deterministically plant the
             // narrow frustum at X first.
             leaf_portals: vec![
-                vec![0, 1],       // A touches portals 0, 1
-                vec![0, 2],       // B touches portals 0, 2
-                vec![1, 3],       // C touches portals 1, 3
-                vec![2, 3, 4],    // X touches portals 2, 3, 4
-                vec![4],          // Y touches portal 4
+                vec![0, 1],    // A touches portals 0, 1
+                vec![0, 2],    // B touches portals 0, 2
+                vec![1, 3],    // C touches portals 1, 3
+                vec![2, 3, 4], // X touches portals 2, 3, 4
+                vec![4],       // Y touches portal 4
             ],
             has_portals: true,
             texture_names: vec![],
@@ -1598,7 +1600,10 @@ mod tests {
         assert!(visible[0], "leaf A (camera) must be visible");
         assert!(visible[1], "leaf B must be visible (A→B direct)");
         assert!(visible[2], "leaf C must be visible (A→C direct)");
-        assert!(visible[3], "leaf X must be visible (reachable via either path)");
+        assert!(
+            visible[3],
+            "leaf X must be visible (reachable via either path)"
+        );
         assert!(
             visible[4],
             "leaf Y must be visible via the A→C→X→Y chain. Under the \

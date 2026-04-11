@@ -381,12 +381,11 @@ impl Renderer {
             (vec![0u8; 4], 0u32)
         };
 
-        let wireframe_index_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Wireframe Line Index Buffer"),
-                contents: &wireframe_index_data,
-                usage: wgpu::BufferUsages::INDEX,
-            });
+        let wireframe_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Wireframe Line Index Buffer"),
+            contents: &wireframe_index_data,
+            usage: wgpu::BufferUsages::INDEX,
+        });
 
         // Uniform buffer (view-projection + ambient light).
         let view_proj = build_default_view_projection(

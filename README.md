@@ -1,4 +1,13 @@
-# Postretro
+```text
+ ██████╗  ██████╗  ███████╗ ████████╗ ██████╗  ███████╗ ████████╗ ██████╗   ██████╗ 
+ ██╔══██╗██╔═══██╗ ██╔════╝ ╚══██╔══╝ ██╔══██╗ ██╔════╝ ╚══██╔══╝ ██╔══██╗ ██╔═══██╗
+ ██████╔╝██║   ██║ ╚█████╗     ██║    ██████╔╝ █████╗      ██║    ██████╔╝ ██║   ██║
+ ██╔═══╝ ██║   ██║  ╚═══██╗    ██║    ██╔══██╗ ██╔══╝      ██║    ██╔══██╗ ██║   ██║
+ ██║     ╚██████╔╝ ███████║    ██║    ██║  ██║ ███████╗    ██║    ██║  ██║ ╚██████╔╝
+ ╚═╝      ╚═════╝  ╚══════╝    ╚═╝    ╚═╝  ╚═╝ ╚══════╝    ╚═╝    ╚═╝  ╚═╝  ╚═════╝ 
+
+                           -=[ BOOMER SHOOTER ENGINE ]=-
+```
 
 Postretro is an experiment: can you build a Doom/Quake-style FPS engine in Rust that genuinely looks and feels retro, loads quick and snappy like old games used to, runs smooth as butter, but embellishes the past with some rendering techniques that were impossible back then but are trivial now?
 

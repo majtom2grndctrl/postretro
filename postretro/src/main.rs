@@ -13,9 +13,10 @@ mod render;
 mod texture;
 mod visibility;
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use glam::Vec3;
@@ -26,7 +27,7 @@ use winit::keyboard::{Key, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
-use crate::frame_timing::{FrameTiming, InterpolableState};
+use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, AxisSource, DiagnosticAction};
 use crate::render::Renderer;
 use crate::texture::TextureSet;
@@ -172,6 +173,9 @@ fn main() -> Result<()> {
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
         capture_portal_walk_next_frame: false,
         scratch_ranges: Vec::new(),
+        frame_rate_meter: FrameRateMeter::new(),
+        title_buffer: String::with_capacity(256),
+        last_title_update: Instant::now(),
     };
 
     event_loop
@@ -278,6 +282,21 @@ struct App {
     /// into this field with its capacity intact. BSP and PRL cannot be active
     /// on the same frame, so a single scratch suffices.
     scratch_ranges: Vec<DrawRange>,
+
+    /// Rolling ring buffer of per-frame CPU work durations. Sampled every
+    /// frame, read at title-update cadence. Reports min/avg/max so hitches
+    /// don't vanish into the average. See `frame_timing::FrameRateMeter`.
+    frame_rate_meter: FrameRateMeter,
+
+    /// Persistent string used to build the window title each update. Cleared
+    /// and rewritten with `write!` to avoid the per-frame allocation a
+    /// `format!` would do. Owns its capacity across frames.
+    title_buffer: String,
+
+    /// Last time the window title was written. Title updates are rate-limited
+    /// to ~4Hz — at 60fps the title would otherwise flicker unreadably and
+    /// the OS may throttle rapid `set_title` calls.
+    last_title_update: Instant,
 }
 
 struct WindowState {
@@ -554,17 +573,50 @@ impl ApplicationHandler for App {
                     pos.z,
                 );
 
+                // Window title update is rate-limited to ~4Hz; the sample
+                // recording below happens every frame. A 60Hz title is
+                // unreadable and the OS may throttle rapid `set_title`.
+                //
+                // The vsync state must always be visible in the title so
+                // the diagnostic toggle's effect is self-evident. The
+                // `vsync:on|off` segment sits adjacent to `frame:` because
+                // they're read together, and in a fixed position so it's
+                // grep-able (the label is always present, not only in
+                // one state).
+                let vsync_label = self
+                    .renderer
+                    .as_ref()
+                    .map(|r| if r.vsync_enabled() { "on" } else { "off" });
                 if let Some(ws) = self.window_state.as_ref() {
-                    ws.window.set_title(&format!(
-                        "Postretro | {region_label}:{} path:{path_label} | draw:{} pvs:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
-                        stats.camera_leaf,
-                        stats.drawn_faces,
-                        stats.pvs_reach,
-                        stats.total_faces,
-                        pos.x,
-                        pos.y,
-                        pos.z,
-                    ));
+                    if self.last_title_update.elapsed() >= Duration::from_millis(250) {
+                        self.last_title_update = Instant::now();
+                        self.title_buffer.clear();
+                        // Full rewrite into the persistent buffer — no
+                        // intermediate `format!` allocation, even on the
+                        // update frames.
+                        let _ = write!(
+                            &mut self.title_buffer,
+                            "Postretro | {region_label}:{} path:{path_label} | draw:{} pvs:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
+                            stats.camera_leaf,
+                            stats.drawn_faces,
+                            stats.pvs_reach,
+                            stats.total_faces,
+                            pos.x,
+                            pos.y,
+                            pos.z,
+                        );
+                        if let Some(label) = vsync_label {
+                            let _ = write!(&mut self.title_buffer, " | vsync:{label}");
+                        }
+                        if let Some(ft) = self.frame_rate_meter.stats() {
+                            let _ = write!(
+                                &mut self.title_buffer,
+                                " frame: {:.1}/{:.1}/{:.1} ms",
+                                ft.min_ms, ft.avg_ms, ft.max_ms,
+                            );
+                        }
+                        ws.window.set_title(&self.title_buffer);
+                    }
                 }
 
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -588,6 +640,16 @@ impl ApplicationHandler for App {
                     ranges.clear();
                     self.scratch_ranges = ranges;
                 }
+
+                // Record the CPU-side frame span. Measured from the `now`
+                // captured at the top of the handler to this point — covers
+                // input polling, fixed-timestep game logic, visibility
+                // determination, title update, render, and scratch reclaim.
+                // Wall-clock tick-to-tick is useless under vsync (pinned to
+                // ~16.6ms regardless of work); this span shows actual load.
+                // See: context/lib/rendering_pipeline.md §1 (frame ordering)
+                let frame_cpu = Instant::now().duration_since(now);
+                self.frame_rate_meter.record(frame_cpu);
             }
             _ => {}
         }
@@ -633,6 +695,16 @@ impl App {
                     target: "postretro::portal_trace",
                     "[portal_trace] capture armed for next frame",
                 );
+            }
+            DiagnosticAction::ToggleVsync => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    let enabled = renderer.toggle_vsync();
+                    // Stale frametime samples would keep the title pinned
+                    // to pre-toggle numbers for up to two seconds — exactly
+                    // when the user is staring at it to see what changed.
+                    self.frame_rate_meter.clear();
+                    log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
+                }
             }
         }
     }

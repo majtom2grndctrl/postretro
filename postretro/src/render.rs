@@ -247,6 +247,13 @@ pub struct Renderer {
     /// Current wireframe debug overlay mode.
     wireframe_mode: WireframeMode,
 
+    /// Whether the surface is currently configured with vsync on
+    /// (`AutoVsync`) or off (`AutoNoVsync`). Toggled by the
+    /// `Alt+Shift+V` diagnostic chord so the frametime meter can be
+    /// compared against real CPU cost; initialized to match the
+    /// `AutoVsync` default chosen in `Renderer::new`.
+    vsync_enabled: bool,
+
     has_geometry: bool,
 }
 
@@ -334,6 +341,7 @@ impl Renderer {
             view_formats: vec![],
         };
         surface.configure(&device, &surface_config);
+        log::info!("[Renderer] vsync on");
 
         let has_geometry =
             geometry.is_some_and(|g| !g.vertices.is_empty() && !g.indices.is_empty());
@@ -688,6 +696,7 @@ impl Renderer {
             wireframe_index_buffer,
             wireframe_index_count,
             wireframe_mode: WireframeMode::Off,
+            vsync_enabled: true,
             has_geometry,
         })
     }
@@ -698,6 +707,28 @@ impl Renderer {
         self.wireframe_mode = self.wireframe_mode.next();
         log::info!("[Renderer] Wireframe overlay: {:?}", self.wireframe_mode);
         self.wireframe_mode
+    }
+
+    /// Flip between `AutoVsync` and `AutoNoVsync`. Rebuilds the swapchain
+    /// via `surface.configure`. Returns the new state (`true` = vsync on).
+    ///
+    /// Diagnostic-only — triggered by the `Alt+Shift+V` chord so the user
+    /// can compare vsync-pinned frametimes against real CPU cost.
+    pub fn toggle_vsync(&mut self) -> bool {
+        self.vsync_enabled = !self.vsync_enabled;
+        self.surface_config.present_mode = if self.vsync_enabled {
+            wgpu::PresentMode::AutoVsync
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+        self.surface.configure(&self.device, &self.surface_config);
+        self.vsync_enabled
+    }
+
+    /// Whether the surface is currently configured with vsync on.
+    /// Read by the title rewrite so the current state is always visible.
+    pub fn vsync_enabled(&self) -> bool {
+        self.vsync_enabled
     }
 
     /// Handle window resize. Reconfigures the surface and recreates the depth buffer.

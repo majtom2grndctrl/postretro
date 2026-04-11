@@ -183,6 +183,100 @@ pub fn lerp_angle(from: f32, to: f32, alpha: f32) -> f32 {
     from + diff * alpha
 }
 
+// --- CPU frametime measurement ---
+
+/// Number of frame samples retained in the ring buffer. 120 samples at 60fps
+/// is two seconds of history — enough to smooth out jitter for averaging and
+/// wide enough to catch recent hitches in the max.
+const FRAMETIME_RING_SIZE: usize = 120;
+
+/// Fixed-size ring buffer of recent per-frame CPU times. The buffer is a
+/// stack-allocated array; `record()` and `stats()` never allocate, which is
+/// the same invariant `App::scratch_ranges` enforces for visibility work.
+pub struct FrameRateMeter {
+    samples: [Duration; FRAMETIME_RING_SIZE],
+    /// Index where the next sample will be written.
+    head: usize,
+    /// Number of valid samples, saturating at `FRAMETIME_RING_SIZE`.
+    filled: usize,
+}
+
+/// Aggregated frame-time statistics over the ring buffer window, in
+/// milliseconds. Reported as min/avg/max because averages hide hitches:
+/// a 50ms spike in a 2-second window disappears into a 17ms average.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrametimeStats {
+    pub min_ms: f32,
+    pub avg_ms: f32,
+    pub max_ms: f32,
+}
+
+impl FrameRateMeter {
+    pub fn new() -> Self {
+        Self {
+            samples: [Duration::ZERO; FRAMETIME_RING_SIZE],
+            head: 0,
+            filled: 0,
+        }
+    }
+
+    /// Record a single frame's measured CPU span. Called every frame.
+    pub fn record(&mut self, frame_cpu_time: Duration) {
+        self.samples[self.head] = frame_cpu_time;
+        self.head = (self.head + 1) % self.samples.len();
+        if self.filled < self.samples.len() {
+            self.filled += 1;
+        }
+    }
+
+    /// Drop all recorded samples. Used when a runtime diagnostic (e.g. the
+    /// vsync toggle) invalidates the window's contents — holding onto the
+    /// old samples would mean stats() keeps reporting the pre-toggle
+    /// frametimes for two full seconds after the change.
+    ///
+    /// The sample array itself isn't zeroed: `filled == 0` is the sole
+    /// signal `stats()` reads, and `record()` overwrites entries in place.
+    pub fn clear(&mut self) {
+        self.head = 0;
+        self.filled = 0;
+    }
+
+    /// Compute min/avg/max over the filled portion of the ring buffer.
+    /// Returns `None` if no samples have been recorded yet. O(N) over the
+    /// window; intended to be called at title-update cadence (~4Hz), not
+    /// per-frame.
+    pub fn stats(&self) -> Option<FrametimeStats> {
+        if self.filled == 0 {
+            return None;
+        }
+        let slice = &self.samples[..self.filled];
+        let mut min = slice[0];
+        let mut max = slice[0];
+        let mut total_secs = 0.0f64;
+        for &s in slice {
+            if s < min {
+                min = s;
+            }
+            if s > max {
+                max = s;
+            }
+            total_secs += s.as_secs_f64();
+        }
+        let avg_secs = total_secs / slice.len() as f64;
+        Some(FrametimeStats {
+            min_ms: (min.as_secs_f64() * 1000.0) as f32,
+            avg_ms: (avg_secs * 1000.0) as f32,
+            max_ms: (max.as_secs_f64() * 1000.0) as f32,
+        })
+    }
+}
+
+impl Default for FrameRateMeter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // --- Tests ---
 
 #[cfg(test)]
@@ -439,5 +533,101 @@ mod tests {
         for (i, val) in vp.to_cols_array().iter().enumerate() {
             assert!(!val.is_nan(), "view_proj[{i}] with zero aspect is NaN");
         }
+    }
+
+    // -- FrameRateMeter --
+
+    #[test]
+    fn frame_rate_meter_stats_returns_none_when_empty() {
+        let meter = FrameRateMeter::new();
+        assert!(meter.stats().is_none());
+    }
+
+    #[test]
+    fn frame_rate_meter_records_single_sample() {
+        let mut meter = FrameRateMeter::new();
+        meter.record(Duration::from_millis(16));
+        let stats = meter.stats().expect("should have stats after one record");
+        assert_approx(stats.min_ms, 16.0, "min after one sample");
+        assert_approx(stats.avg_ms, 16.0, "avg after one sample");
+        assert_approx(stats.max_ms, 16.0, "max after one sample");
+    }
+
+    #[test]
+    fn frame_rate_meter_computes_min_avg_max() {
+        let mut meter = FrameRateMeter::new();
+        meter.record(Duration::from_millis(10));
+        meter.record(Duration::from_millis(20));
+        meter.record(Duration::from_millis(30));
+        let stats = meter.stats().expect("three samples recorded");
+        assert_approx(stats.min_ms, 10.0, "min of [10,20,30]");
+        assert_approx(stats.avg_ms, 20.0, "avg of [10,20,30]");
+        assert_approx(stats.max_ms, 30.0, "max of [10,20,30]");
+    }
+
+    #[test]
+    fn frame_rate_meter_wraps_ring_buffer() {
+        // Record 130 samples into a 120-slot ring. The first 10 should be
+        // overwritten and invisible to stats. Strategy: record 10 low-cost
+        // frames (1ms) that will be evicted, then 120 high-cost frames
+        // (50..=169 ms, each unique). After wrap, stats should reflect only
+        // the 50..=169 ms window.
+        let mut meter = FrameRateMeter::new();
+        for _ in 0..10 {
+            meter.record(Duration::from_millis(1));
+        }
+        for i in 0..FRAMETIME_RING_SIZE {
+            meter.record(Duration::from_millis(50 + i as u64));
+        }
+        let stats = meter.stats().expect("ring is filled");
+        // If the early 1ms samples leaked through, min would be 1.0.
+        assert_approx(stats.min_ms, 50.0, "min should reflect post-wrap window");
+        assert_approx(
+            stats.max_ms,
+            (50 + FRAMETIME_RING_SIZE as u64 - 1) as f32,
+            "max should be the last value in the window",
+        );
+        // Avg of 50..169 = (50 + 169) / 2 = 109.5
+        assert_approx(stats.avg_ms, 109.5, "avg of the post-wrap window");
+    }
+
+    #[test]
+    fn frame_rate_meter_clear_drops_samples_and_allows_reuse() {
+        let mut meter = FrameRateMeter::new();
+        for ms in [12, 14, 16, 18, 20] {
+            meter.record(Duration::from_millis(ms));
+        }
+        assert!(meter.stats().is_some(), "stats should exist before clear");
+
+        meter.clear();
+        assert!(
+            meter.stats().is_none(),
+            "stats should be None immediately after clear",
+        );
+
+        // After clear, the meter must still accept new samples and report
+        // them as if the buffer had never been used — pre-clear data must
+        // not bleed into post-clear aggregates.
+        meter.record(Duration::from_millis(5));
+        let stats = meter
+            .stats()
+            .expect("stats should exist after a post-clear record");
+        assert_approx(stats.min_ms, 5.0, "min reflects only post-clear sample");
+        assert_approx(stats.avg_ms, 5.0, "avg reflects only post-clear sample");
+        assert_approx(stats.max_ms, 5.0, "max reflects only post-clear sample");
+    }
+
+    #[test]
+    fn frame_rate_meter_has_fixed_storage() {
+        // Zero-allocation invariant pin. If a future refactor swaps the
+        // fixed array for a growable container, this assertion breaks and
+        // the reviewer has to re-read the "no per-frame alloc" contract
+        // before approving the change.
+        let meter = FrameRateMeter::new();
+        assert_eq!(
+            std::mem::size_of_val(&meter.samples),
+            FRAMETIME_RING_SIZE * std::mem::size_of::<Duration>(),
+            "samples buffer must be a fixed-size array",
+        );
     }
 }

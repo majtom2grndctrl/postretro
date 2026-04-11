@@ -37,6 +37,11 @@ pub enum DiagnosticAction {
     /// Dump the next frame's portal walk (visited leaves, rejected portals,
     /// reject reasons) to the log. One-shot per press.
     DumpPortalWalk,
+    /// Flip the surface present mode between vsync on (`AutoVsync`) and
+    /// vsync off (`AutoNoVsync`). Used to compare vsync-pinned frametimes
+    /// against real CPU cost when the meter is saturated against the frame
+    /// budget.
+    ToggleVsync,
 }
 
 /// A modifier+key combination bound to a diagnostic action.
@@ -129,6 +134,11 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
             key: KeyCode::Digit1,
             action: DiagnosticAction::DumpPortalWalk,
         },
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::KeyV,
+            action: DiagnosticAction::ToggleVsync,
+        },
     ]
 }
 
@@ -191,6 +201,15 @@ mod tests {
         d.handle_key(KeyCode::AltLeft, true, false);
         let action = d.handle_key(KeyCode::Digit1, true, false);
         assert_eq!(action, Some(DiagnosticAction::DumpPortalWalk));
+    }
+
+    #[test]
+    fn alt_shift_v_fires_toggle_vsync() {
+        let mut d = fresh();
+        d.handle_key(KeyCode::ShiftLeft, true, false);
+        d.handle_key(KeyCode::AltLeft, true, false);
+        let action = d.handle_key(KeyCode::KeyV, true, false);
+        assert_eq!(action, Some(DiagnosticAction::ToggleVsync));
     }
 
     #[test]

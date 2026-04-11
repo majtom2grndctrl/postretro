@@ -22,6 +22,7 @@
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **Roadmap / implementation phases** → `plans/roadmap.md`
 - **Draft plans / future features** → `plans/drafts/`
+- **Shipped plans** → `plans/done/` — historical record, frozen at ship time. May describe stale state. Read only when explicitly referenced.
 
 ---
 

@@ -143,16 +143,19 @@ Two paths, selected by which PRL section is present.
 
 #### Portal traversal (default path)
 
-Two cooperating layers determine which leaves are drawn each frame. Both are load-bearing.
+Single-pass portal flood-fill with polygon-vs-frustum clipping at each hop. This is the id Tech 4 (Doom 3, Quake 4, Prey) form of runtime portal vis.
 
-- **Portal flood-fill.** Walks the portal graph outward from the camera leaf. At each portal: test the portal polygon against the current frustum, narrow the frustum through the portal polygon, recurse into the neighbor leaf. Solid leaves block traversal. Yields a per-leaf reachability bitset.
-- **Per-leaf AABB frustum cull.** Each leaf reached by the flood-fill is then tested against the camera's view frustum by its bounding box. Leaves outside the cone are dropped before draw-range emission.
+For each portal visited by the BFS:
 
-The flood-fill layer alone is not sufficient. Frustum narrowing is approximate: portal-edge planes constrain sideways visibility through each portal, but the camera's original side planes are not carried through narrowing. Reachable leaves can sit outside the camera's view cone, particularly when portals straddle the cone boundary. The AABB cull restores camera-cone enforcement coarsely at draw-range emission time.
+1. **Clip the portal polygon against the current frustum** using Sutherland-Hodgman. An empty clip output (fewer than 3 vertices after clipping) is the unified rejection signal — the portal is entirely outside the current sight cone.
+2. **Narrow the frustum through the clipped polygon.** The new frustum is built from the portal plane (near), one edge plane per clipped edge through the camera position, and the far plane carried from the current frustum.
+3. **Enqueue the neighbor leaf** with the narrowed frustum. Solid leaves block traversal.
 
-This split is informed-but-imperfect, not the architectural ideal. The id Tech 4 algorithm clips the portal polygon against the current frustum before narrowing, which keeps each narrowed frustum a strict subset of the camera frustum and folds the AABB enforcement into the recursion. Adopting that upgrade would let the AABB pass be removed cleanly. See `context/plans/drafts/portal-polygon-clipping/` for the planned migration.
+**Strict-subset invariant.** Because the clipped polygon lies entirely inside the current frustum by construction, the edge planes derived from it form a cone strictly inside the current cone. By induction from the camera's initial frustum, every narrowed frustum reachable through any portal chain is a strict subset of the camera frustum, and every leaf marked visible by the flood-fill lies inside the camera's view cone.
 
-**Do not remove either layer in isolation.** Removing the AABB cull without first making the flood-fill produce strict-subset frustums causes runtime culling to silently degrade — every leaf reached through any portal chain gets drawn regardless of whether it lies in the camera's view cone.
+There is no separate per-leaf AABB frustum cull on this path. The clip-and-narrow step both tests visibility and builds the next frustum in one operation, and the strict-subset invariant makes a second enforcement pass redundant.
+
+Floating-point clipping uses a small inclusive epsilon at half-space boundaries (over-inclusion at the boundary cannot violate the invariant — any genuinely-outside slop is discarded by the next hop's edge planes). Degenerate clipped polygons — those that touch the frustum only at a single point or edge — take the same "not visible" rejection path as the empty case.
 
 ### Key differences from the former voxel approach
 

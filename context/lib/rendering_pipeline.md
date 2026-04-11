@@ -26,32 +26,35 @@ Game logic runs at a fixed timestep decoupled from render rate. Renderer interpo
 
 ## 2. Visibility and Traversal
 
-Visibility is **computed per frame from baked portal geometry**. This is the id Tech 4 (Doom 3, 2004) approach, not Quake 1's precomputed-PVS model — Carmack's reasoning for the break still applies: precomputed PVS lengthens compile cycles, fights with dynamic geometry, and per-frame portal traversal is trivially cheap at modern leaf counts. PRL builds always include portal geometry by default; precomputed PVS exists as a `--pvs` fallback.
+Visibility is **computed per frame from baked portal geometry**. This is the id Tech 4 (Doom 3, 2004) approach, not Quake 1's precomputed-PVS model — Carmack's reasoning for the break still applies: precomputed PVS lengthens compile cycles, fights with dynamic geometry, and per-frame portal traversal is trivially cheap at modern leaf counts.
+
+Portals are the primary and forward path. PVS-based runtime visibility — both the PRL `--pvs` fallback and the BSP legacy path — is **deprecated** and will be removed once portals are reliable on every supported map type. New feature work targets the portal-traversal path. Do not extend the deprecated paths.
 
 ### PRL path (primary): runtime portal traversal
 
-Two cooperating layers determine which leaves are drawn each frame. Both are load-bearing.
+Single-pass portal flood-fill with clip-and-narrow at each hop. This is the id Tech 4 (Doom 3, 2004) form of runtime portal vis.
 
-1. **Portal flood-fill** seeded at the camera leaf. Walks the portal graph outward; at each portal, tests the polygon against the current frustum and narrows the frustum through it. Solid leaves block traversal. Yields a per-leaf reachability bitset.
-2. **Per-leaf AABB frustum cull** drops any reached leaf whose bounding box lies entirely outside the camera's view frustum.
+At each portal the flood-fill visits, the portal polygon is clipped against the current frustum. An empty clip result rejects the portal entirely. A non-empty clip result both confirms visibility and drives frustum narrowing: the new frustum is built from the portal plane and one edge plane per clipped edge through the camera position.
 
-The second layer is the corrective for the first. Frustum narrowing inside the flood-fill is approximate: portal-edge planes constrain sideways visibility through each portal but the camera's original side planes are not carried through narrowing. Reachable leaves can sit outside the camera's view cone, particularly when portals straddle the cone boundary. The AABB cull restores camera-cone enforcement coarsely at draw-range emission.
+**Strict-subset invariant.** The clipped polygon lies entirely inside the current frustum by construction, so the edge planes derived from it form a cone strictly inside the current cone. By induction from the camera's initial frustum, every narrowed frustum reachable through any portal chain is a strict subset of the camera frustum. Every leaf marked visible by the flood-fill lies inside the camera's view cone.
 
-The two-layer hybrid is informed-but-imperfect rather than the architectural ideal. The id Tech 4 algorithm clips the portal polygon against the current frustum before narrowing, which keeps each narrowed frustum a strict subset of the camera frustum and folds AABB enforcement into the recursion. Adopting that upgrade would let the AABB pass be removed cleanly. See `plans/drafts/portal-polygon-clipping/` for the planned migration.
-
-**Do not remove either layer in isolation.** Removing the AABB cull without first making the flood-fill produce strict-subset frustums causes runtime culling to silently degrade — every leaf reached through any portal chain gets drawn regardless of whether it lies in the camera's view cone.
+There is no separate per-leaf AABB frustum cull on this path. The clip-and-narrow step both tests visibility and builds the next frustum in one operation, and the strict-subset invariant makes a second enforcement pass redundant. Solid leaves block traversal.
 
 ### PRL path (`--pvs` fallback)
 
-When a PRL file was built with `--pvs`, the Portals section is absent and a precomputed PVS bitset replaces runtime portal traversal. The renderer descends to the camera leaf via BSP traversal, looks up the leaf's PVS bitset, and draws every empty leaf in the bitset that survives per-leaf AABB frustum culling. Slower compile, faster runtime — preserved as a fallback for build configurations that prefer compile-time cost over per-frame work.
+**Status: deprecated.** Use only when portal generation cannot produce valid output for a map. Will be removed once portal generation is reliable on every supported map type. Do not extend.
+
+When a PRL file was built with `--pvs`, the Portals section is absent and a precomputed PVS bitset replaces runtime portal traversal. The renderer descends to the camera leaf, looks up its PVS bitset, and draws every empty leaf in the bitset that survives per-leaf AABB frustum culling.
 
 ### BSP path (legacy support)
 
-`.bsp` files compiled by ericw-tools carry precomputed PVS only — no portal data. Visibility uses the same precomputed-PVS-then-AABB-frustum approach as the PRL `--pvs` fallback. No active development on this path.
+**Status: deprecated.** `.bsp` runtime support exists for development against legacy ericw-tools-compiled maps. Will be removed when PRL is the only supported runtime format. Do not extend.
+
+`.bsp` files compiled by ericw-tools carry precomputed PVS only — no portal data. Visibility uses the same precomputed-PVS-then-AABB-frustum approach as the PRL `--pvs` fallback.
 
 ### Frustum culling
 
-Per-leaf AABB frustum culling is the final filter before draw-range emission in every path. It is not a separate optimization layered on top of visibility — it is part of the visibility decision. Load-bearing in the PRL primary path (it restores camera-cone enforcement after the flood-fill) and essential to the PVS fallback paths (PVS is conservative; frustum culling tightens it).
+Per-leaf AABB frustum culling applies in the PVS fallback paths only: the PRL `--pvs` path and the BSP legacy path. PVS is conservative — it over-reports visible leaves. The AABB cull tightens the draw set before draw-range emission. It does not apply on the PRL portal-traversal path, where the strict-subset invariant guarantees every reached leaf already lies inside the camera's view cone.
 
 **Missing visibility data:** when neither portals nor PVS is present (corrupted BSP, PRL without a visibility section), draw all empty leaves with frustum culling only. Slower but correct.
 
@@ -63,13 +66,15 @@ See `build_pipeline.md` §Runtime visibility for the compile-side picture.
 
 Loader parses level data into engine-side structs, produces GPU-ready data. Renderer consumes handles, never raw level types. This boundary is strict: raw format types do not appear in renderer code.
 
-The load sequence below applies to both PRL (primary) and BSP (legacy). BSP loading uses the qbsp crate; PRL loading uses the postretro-level-format crate. Both produce the same engine-side types consumed by the renderer.
+**Primary path: PRL.** Loaded via the `postretro-level-format` crate. Pre-processed at compile time by `prl-build`, so the runtime load is mostly buffer hand-off and texture matching.
 
-**Load sequence:**
+**Deprecated path: BSP.** Loaded via the `qbsp` crate. Performs at runtime the same vertex/UV/material work that `prl-build` does at compile time for PRL. Will be removed with the PVS fallback. Do not extend.
 
-1. Parse BSP file via qbsp. Typed access to vertices, edges, faces, textures, and visibility data.
-2. Build engine-side vertex data: positions (coordinate-transformed to engine Y-up), texture UVs (computed from BSP face projection data), vertex color (white default). See §6.
-3. Load PNG textures matched by BSP texture name strings. Generate checkerboard placeholders for missing textures.
+**Load sequence (both paths):**
+
+1. Parse the level file into typed structures (vertices, faces, textures, visibility data).
+2. Build engine-side vertex data: positions (coordinate-transformed to engine Y-up), texture UVs, vertex color (white default). On the PRL path this is loaded directly; on the BSP path it is computed from face projection data. See §6.
+3. Load PNG textures matched by texture name strings. Generate checkerboard placeholders for missing textures.
 4. Build per-face metadata: material type (from texture name prefix), texture index, draw command parameters.
 5. Sort faces by (leaf, texture) for draw batching. Pre-compute per-leaf texture sub-ranges.
 6. Hand prepared data to the renderer. Renderer performs all GPU uploads — loader never calls wgpu.

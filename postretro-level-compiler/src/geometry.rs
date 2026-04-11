@@ -85,13 +85,7 @@ pub fn extract_geometry(
         for &v in &face.vertices {
             let quake_pos = engine_to_quake(v) * inverse_scale;
             let (u, v_coord) = compute_texel_uv(quake_pos, face);
-            vertices.push([
-                v.x as f32,
-                v.y as f32,
-                v.z as f32,
-                u as f32,
-                v_coord as f32,
-            ]);
+            vertices.push([v.x as f32, v.y as f32, v.z as f32, u as f32, v_coord as f32]);
         }
 
         // Fan-triangulate: (0, 1, 2), (0, 2, 3), ..., (0, n-2, n-1)

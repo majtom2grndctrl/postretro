@@ -424,15 +424,13 @@ mod tests {
         let map_data =
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
                 .expect("test.map should parse");
-        let result = crate::partition::partition(&map_data.brush_volumes)
-            .expect("partition should succeed");
+        let result =
+            crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
 
         let exterior = std::collections::HashSet::new();
-        let geo_result =
-            crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
         let generated_portals = crate::portals::generate_portals(&result.tree);
-        let vis_result =
-            crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
+        let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
 
         let dir = std::env::temp_dir().join("postretro_test_pipeline");
         let _ = std::fs::create_dir_all(&dir);
@@ -470,15 +468,13 @@ mod tests {
         let map_data =
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
                 .expect("test.map should parse");
-        let result = crate::partition::partition(&map_data.brush_volumes)
-            .expect("partition should succeed");
+        let result =
+            crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
 
         let exterior = std::collections::HashSet::new();
-        let geo_result =
-            crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
         let generated_portals = crate::portals::generate_portals(&result.tree);
-        let vis_result =
-            crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
+        let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
 
         let portals_section = encode_portals(&generated_portals);
 

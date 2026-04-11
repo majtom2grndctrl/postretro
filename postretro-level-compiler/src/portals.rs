@@ -828,8 +828,7 @@ mod tests {
         //   - Central pillar: Z=64..66 (2 units wide)
         //   - RIGHT DOORWAY: Z=66..68 (2 units wide)
         //   - Wall right section: Z=68..112 (blocks right part)
-        let (_faces, mut brushes) =
-            hollow_room(DVec3::ZERO, DVec3::new(256.0, 128.0, 128.0), 16.0);
+        let (_faces, mut brushes) = hollow_room(DVec3::ZERO, DVec3::new(256.0, 128.0, 128.0), 16.0);
 
         // Wall left section: blocks Z=16..62
         let wall_left_min = DVec3::new(120.0, 16.0, 16.0);
@@ -869,7 +868,10 @@ mod tests {
 
         for portal in &portals {
             // Check if portal polygon is in the wall's X range.
-            let all_in_wall_x = portal.polygon.iter().all(|v| v.x > wall_x_min && v.x < wall_x_max);
+            let all_in_wall_x = portal
+                .polygon
+                .iter()
+                .all(|v| v.x > wall_x_min && v.x < wall_x_max);
             if !all_in_wall_x {
                 continue;
             }
@@ -1003,8 +1005,8 @@ mod tests {
                 .find(|(a, _)| (*a - n).length() < 1e-6)
                 .map(|(_, i)| *i)?;
 
-            let centroid: DVec3 = face.vertices.iter().copied().sum::<DVec3>()
-                / face.vertices.len() as f64;
+            let centroid: DVec3 =
+                face.vertices.iter().copied().sum::<DVec3>() / face.vertices.len() as f64;
 
             for (ci, bounds) in cube_bounds.iter().enumerate() {
                 let expected_d = cube_axis_distance(*bounds, axis_idx);
@@ -1034,9 +1036,8 @@ mod tests {
         };
 
         // Back-compat alias retained for the first cube's reporting path below.
-        let is_cube_face = |face: &Face| -> bool {
-            matches!(classify_cube_face(face), Some((0, _)))
-        };
+        let is_cube_face =
+            |face: &Face| -> bool { matches!(classify_cube_face(face), Some((0, _))) };
         let cube_centroid = (cube_min + cube_max) * 0.5;
 
         // Track which cube normals we've seen at each stage (as a set).
@@ -1068,8 +1069,7 @@ mod tests {
         let mut cube_faces_in_solid_leaves = 0usize;
         let mut cube_faces_in_empty_leaves = 0usize;
         // (leaf_idx, face_idx, normal_key, is_solid, centroid)
-        let mut cube_face_locations: Vec<(usize, usize, &'static str, bool, DVec3)> =
-            Vec::new();
+        let mut cube_face_locations: Vec<(usize, usize, &'static str, bool, DVec3)> = Vec::new();
 
         for (leaf_idx, leaf) in result.tree.leaves.iter().enumerate() {
             for &fi in &leaf.face_indices {
@@ -1083,8 +1083,8 @@ mod tests {
                     } else {
                         cube_faces_in_empty_leaves += 1;
                     }
-                    let centroid: DVec3 = f.vertices.iter().copied().sum::<DVec3>()
-                        / f.vertices.len() as f64;
+                    let centroid: DVec3 =
+                        f.vertices.iter().copied().sum::<DVec3>() / f.vertices.len() as f64;
                     cube_face_locations.push((leaf_idx, fi, key, leaf.is_solid, centroid));
                 }
             }
@@ -1105,11 +1105,10 @@ mod tests {
         }
 
         // Report which cube-1 normals are MISSING after partition.
-        let all_keys: std::collections::BTreeSet<&'static str> = [
-            "+X", "-X", "+Y (top)", "-Y (bottom)", "+Z", "-Z",
-        ]
-        .into_iter()
-        .collect();
+        let all_keys: std::collections::BTreeSet<&'static str> =
+            ["+X", "-X", "+Y (top)", "-Y (bottom)", "+Z", "-Z"]
+                .into_iter()
+                .collect();
         let missing_after_partition: Vec<&&'static str> =
             all_keys.difference(&stage2_normals).collect();
         eprintln!(
@@ -1213,9 +1212,7 @@ mod tests {
         }
 
         let axis_labels = ["+X", "-X", "+Y(top)", "-Y(bot)", "+Z", "-Z"];
-        eprintln!(
-            "[PER-CUBE] stage2 (post-partition) / stage3 (geometry):"
-        );
+        eprintln!("[PER-CUBE] stage2 (post-partition) / stage3 (geometry):");
         let mut any_cube_missing_bsp = false;
         let mut any_cube_missing_geometry = false;
         for ci in 0..num_cubes {
@@ -1361,7 +1358,11 @@ mod tests {
             let leaf = &result.tree.leaves[leaf_idx];
             eprintln!(
                 "  probe {label} at ({:.1},{:.1},{:.1}) -> leaf {leaf_idx} (solid={}, faces={})",
-                probe.x, probe.y, probe.z, leaf.is_solid, leaf.face_indices.len()
+                probe.x,
+                probe.y,
+                probe.z,
+                leaf.is_solid,
+                leaf.face_indices.len()
             );
         }
 
@@ -1381,5 +1382,4 @@ mod tests {
             "no cube-0 face should live in a solid leaf; found {cube_faces_in_solid_leaves}"
         );
     }
-
 }

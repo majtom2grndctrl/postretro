@@ -55,14 +55,12 @@ fn main() -> anyhow::Result<()> {
 
     let exterior_leaves = visibility::find_exterior_leaves(&result.tree, &generated_portals);
 
-    let vis_result =
-        visibility::encode_vis(&result.tree, &generated_portals, &exterior_leaves);
+    let vis_result = visibility::encode_vis(&result.tree, &generated_portals, &exterior_leaves);
     visibility::log_stats(&vis_result, portal_count);
 
     log::info!("[Compiler] Visibility computation complete.");
 
-    let geo_result =
-        geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
+    let geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
     let empty_leaf_count = result
         .tree
         .leaves

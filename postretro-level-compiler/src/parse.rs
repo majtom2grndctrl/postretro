@@ -12,9 +12,7 @@ use shambler::entity::EntityId;
 use shambler::face::face_planes;
 use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
-use crate::map_data::{
-    BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, TextureProjection,
-};
+use crate::map_data::{BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, TextureProjection};
 use crate::map_format::MapFormat;
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
@@ -405,11 +403,7 @@ mod tests {
             !map_data.brush_volumes.is_empty(),
             "should have brush volumes"
         );
-        let total_sides: usize = map_data
-            .brush_volumes
-            .iter()
-            .map(|b| b.sides.len())
-            .sum();
+        let total_sides: usize = map_data.brush_volumes.iter().map(|b| b.sides.len()).sum();
         assert!(total_sides > 0, "should have at least one brush side");
     }
 

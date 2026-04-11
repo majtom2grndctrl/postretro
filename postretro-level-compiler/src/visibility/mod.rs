@@ -698,15 +698,24 @@ mod tests {
     fn sealed_box() -> Vec<crate::map_data::BrushVolume> {
         let wall_slabs = [
             // -X wall
-            (DVec3::new(-60.0, -60.0, -60.0), DVec3::new(-50.0, 60.0, 60.0)),
+            (
+                DVec3::new(-60.0, -60.0, -60.0),
+                DVec3::new(-50.0, 60.0, 60.0),
+            ),
             // +X wall
             (DVec3::new(50.0, -60.0, -60.0), DVec3::new(60.0, 60.0, 60.0)),
             // -Y wall (floor)
-            (DVec3::new(-60.0, -60.0, -60.0), DVec3::new(60.0, -50.0, 60.0)),
+            (
+                DVec3::new(-60.0, -60.0, -60.0),
+                DVec3::new(60.0, -50.0, 60.0),
+            ),
             // +Y wall (ceiling)
             (DVec3::new(-60.0, 50.0, -60.0), DVec3::new(60.0, 60.0, 60.0)),
             // -Z wall
-            (DVec3::new(-60.0, -60.0, -60.0), DVec3::new(60.0, 60.0, -50.0)),
+            (
+                DVec3::new(-60.0, -60.0, -60.0),
+                DVec3::new(60.0, 60.0, -50.0),
+            ),
             // +Z wall
             (DVec3::new(-60.0, -60.0, 50.0), DVec3::new(60.0, 60.0, 60.0)),
         ];
@@ -727,8 +736,8 @@ mod tests {
         // exterior flood-fill — without any post-hoc filtering.
         let brushes = sealed_box();
 
-        let result = crate::partition::partition(&brushes)
-            .expect("partition should succeed on sealed box");
+        let result =
+            crate::partition::partition(&brushes).expect("partition should succeed on sealed box");
         let generated_portals = crate::portals::generate_portals(&result.tree);
         let exterior = find_exterior_leaves(&result.tree, &generated_portals);
 

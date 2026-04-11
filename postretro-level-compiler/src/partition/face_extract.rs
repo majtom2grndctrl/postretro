@@ -382,11 +382,7 @@ fn put_hull_into_areas(
                 .collect();
 
             for &existing_idx in &coplanar_existing {
-                if convex_contains(
-                    &faces[existing_idx].vertices,
-                    polygon,
-                    record.plane_normal,
-                ) {
+                if convex_contains(&faces[existing_idx].vertices, polygon, record.plane_normal) {
                     if faces[existing_idx].texture != record.texture {
                         conflicts.push(CoplanarConflict {
                             winner_brush: faces[existing_idx].brush_index,
@@ -401,11 +397,7 @@ fn put_hull_into_areas(
 
             let mut newly_orphaned: Vec<usize> = Vec::new();
             for &existing_idx in &coplanar_existing {
-                if convex_contains(
-                    polygon,
-                    &faces[existing_idx].vertices,
-                    record.plane_normal,
-                ) {
+                if convex_contains(polygon, &faces[existing_idx].vertices, record.plane_normal) {
                     if faces[existing_idx].texture != record.texture {
                         conflicts.push(CoplanarConflict {
                             winner_brush: record.brush_index,
@@ -466,13 +458,16 @@ fn put_hull_into_areas(
                         split_polygon(polygon, node_normal, node_distance, SPLIT_EPSILON);
                     if let Some(front_poly) = front {
                         put_hull_into_areas(
-                            tree, node_front, &front_poly, record, faces, conflicts,
+                            tree,
+                            node_front,
+                            &front_poly,
+                            record,
+                            faces,
+                            conflicts,
                         );
                     }
                     if let Some(back_poly) = back {
-                        put_hull_into_areas(
-                            tree, node_back, &back_poly, record, faces, conflicts,
-                        );
+                        put_hull_into_areas(tree, node_back, &back_poly, record, faces, conflicts);
                     }
                 }
             }
@@ -509,18 +504,18 @@ fn hull_union_into(hull: &mut Vec<DVec3>, fragment: &[DVec3], side_normal: DVec3
         // Degenerate normal — skip this fragment rather than crash.
         return;
     }
-    let helper = if n.x.abs() < 0.9 {
-        DVec3::X
-    } else {
-        DVec3::Y
-    };
+    let helper = if n.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
     let u = n.cross(helper).normalize();
     let v = n.cross(u).normalize();
 
     // Use the first hull point (or fragment[0] if hull is empty) as the
     // origin so 2D coordinates stay near zero and the hull arithmetic is
     // well-conditioned.
-    let origin = if hull.is_empty() { fragment[0] } else { hull[0] };
+    let origin = if hull.is_empty() {
+        fragment[0]
+    } else {
+        hull[0]
+    };
 
     let mut points_2d: Vec<(f64, f64)> = Vec::with_capacity(hull.len() + fragment.len());
     for &p in hull.iter() {
@@ -929,7 +924,8 @@ mod tests {
         // No face should lie on the shared X=10 plane with an outward normal
         // of +X (that would be brush A's buried side) or -X (brush B's).
         for face in &result.faces {
-            let on_shared_plane = face.normal.x.abs() > 0.99 && (face.distance.abs() - 10.0).abs() < 1e-6;
+            let on_shared_plane =
+                face.normal.x.abs() > 0.99 && (face.distance.abs() - 10.0).abs() < 1e-6;
             assert!(
                 !on_shared_plane,
                 "no face should lie on the shared X=10 plane (normal={:?}, distance={})",

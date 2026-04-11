@@ -4,7 +4,7 @@
 // the region) instead of relying on a post-pass classifier.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use glam::DVec3;
 
 use super::types::*;
@@ -102,14 +102,38 @@ fn classify_aabb(bounds: &Aabb, normal: DVec3, distance: f64) -> AabbSide {
     // Support points: max_support is the corner farthest in +normal direction,
     // min_support is the corner farthest in -normal direction.
     let max_support = DVec3::new(
-        if normal.x >= 0.0 { bounds.max.x } else { bounds.min.x },
-        if normal.y >= 0.0 { bounds.max.y } else { bounds.min.y },
-        if normal.z >= 0.0 { bounds.max.z } else { bounds.min.z },
+        if normal.x >= 0.0 {
+            bounds.max.x
+        } else {
+            bounds.min.x
+        },
+        if normal.y >= 0.0 {
+            bounds.max.y
+        } else {
+            bounds.min.y
+        },
+        if normal.z >= 0.0 {
+            bounds.max.z
+        } else {
+            bounds.min.z
+        },
     );
     let min_support = DVec3::new(
-        if normal.x >= 0.0 { bounds.min.x } else { bounds.max.x },
-        if normal.y >= 0.0 { bounds.min.y } else { bounds.max.y },
-        if normal.z >= 0.0 { bounds.min.z } else { bounds.max.z },
+        if normal.x >= 0.0 {
+            bounds.min.x
+        } else {
+            bounds.max.x
+        },
+        if normal.y >= 0.0 {
+            bounds.min.y
+        } else {
+            bounds.max.y
+        },
+        if normal.z >= 0.0 {
+            bounds.min.z
+        } else {
+            bounds.max.z
+        },
     );
 
     let max_dist = max_support.dot(normal) - distance;
@@ -138,11 +162,7 @@ fn brush_contains_region(brush: &BrushVolume, region: &Aabb) -> bool {
 
 /// Compute the inside set for a region: every candidate whose half-space
 /// intersection contains the region.
-fn compute_inside_set(
-    brushes: &[BrushVolume],
-    candidates: &[usize],
-    region: &Aabb,
-) -> Vec<usize> {
+fn compute_inside_set(brushes: &[BrushVolume], candidates: &[usize], region: &Aabb) -> Vec<usize> {
     candidates
         .iter()
         .copied()
@@ -377,8 +397,7 @@ fn build_recursive(
     // were already short-circuited above, so this fall-through always lands
     // on an empty leaf (mixed candidates with no progress => structural
     // air rather than solid).
-    let Some((normal, distance)) =
-        select_splitter(brushes, candidates, region, ancestor_planes)
+    let Some((normal, distance)) = select_splitter(brushes, candidates, region, ancestor_planes)
     else {
         return Ok(make_leaf(tree, region, false));
     };
@@ -639,11 +658,7 @@ mod tests {
         // We build a single hollow shell around X=0..500 then drop two
         // vertical slabs at X=200..220 and X=280..300 to carve the dividing
         // wall, leaving a doorway gap at X=220..280, Y=8..80, Z=80..120.
-        let mut brushes = hollow_room(
-            DVec3::ZERO,
-            DVec3::new(500.0, 200.0, 200.0),
-            8.0,
-        );
+        let mut brushes = hollow_room(DVec3::ZERO, DVec3::new(500.0, 200.0, 200.0), 8.0);
 
         // Left dividing-wall chunk (entire room-height, leaves doorway in Y and Z).
         // The wall is split into an upper lintel + two side jambs around the door.
@@ -707,15 +722,9 @@ mod tests {
         // see — no face sits on the mid-gap planes, but both brush planes
         // are splitter candidates.
         let brushes = vec![
-            box_brush(
-                DVec3::new(0.0, 0.0, 0.0),
-                DVec3::new(20.0, 20.0, 10.0),
-            ),
+            box_brush(DVec3::new(0.0, 0.0, 0.0), DVec3::new(20.0, 20.0, 10.0)),
             // Gap: Z=10..12
-            box_brush(
-                DVec3::new(0.0, 0.0, 12.0),
-                DVec3::new(20.0, 20.0, 22.0),
-            ),
+            box_brush(DVec3::new(0.0, 0.0, 12.0), DVec3::new(20.0, 20.0, 22.0)),
         ];
 
         let tree = build_bsp_from_brushes(&brushes).expect("narrow gap should build");

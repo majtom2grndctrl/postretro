@@ -10,7 +10,7 @@ mod types;
 
 pub use brush_bsp::build_bsp_from_brushes;
 pub use bsp::find_leaf_for_point;
-pub use face_extract::{extract_faces, CoplanarConflict, FaceExtractionResult};
+pub use face_extract::{CoplanarConflict, FaceExtractionResult, extract_faces};
 pub use types::*;
 
 use crate::map_data::{BrushVolume, Face};
@@ -72,7 +72,10 @@ fn log_stats(tree: &BspTree, faces: &[Face]) {
     log::info!("[Compiler] BSP nodes: {}", tree.nodes.len());
     log::info!("[Compiler] BSP leaves: {}", tree.leaves.len());
     log::info!("[Compiler] BSP max depth: {max_depth}");
-    log::info!("[Compiler] Total faces (after brush-side extraction): {}", faces.len());
+    log::info!(
+        "[Compiler] Total faces (after brush-side extraction): {}",
+        faces.len()
+    );
     log::info!("[Compiler] Average faces per leaf: {avg_faces:.1}");
 }
 
@@ -289,14 +292,8 @@ mod tests {
     fn every_face_maps_to_exactly_one_leaf() {
         let brushes = vec![
             box_brush(DVec3::ZERO, DVec3::new(64.0, 64.0, 64.0)),
-            box_brush(
-                DVec3::new(200.0, 0.0, 0.0),
-                DVec3::new(264.0, 64.0, 64.0),
-            ),
-            box_brush(
-                DVec3::new(0.0, 200.0, 0.0),
-                DVec3::new(64.0, 264.0, 64.0),
-            ),
+            box_brush(DVec3::new(200.0, 0.0, 0.0), DVec3::new(264.0, 64.0, 64.0)),
+            box_brush(DVec3::new(0.0, 200.0, 0.0), DVec3::new(64.0, 264.0, 64.0)),
         ];
 
         let result = partition(&brushes).expect("partition should succeed");
@@ -338,8 +335,8 @@ mod tests {
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
                 .expect("test.map should parse");
 
-        let result = partition(&map_data.brush_volumes)
-            .expect("partition should succeed on test map");
+        let result =
+            partition(&map_data.brush_volumes).expect("partition should succeed on test map");
 
         assert!(!result.tree.leaves.is_empty(), "should produce leaves");
         assert!(!result.faces.is_empty(), "should have faces");
@@ -354,12 +351,7 @@ mod tests {
         // With structural solidity, every face-bearing leaf is empty by
         // construction. We still expect multiple empty leaves for a map with
         // any interior air space.
-        let empty_count = result
-            .tree
-            .leaves
-            .iter()
-            .filter(|l| !l.is_solid)
-            .count();
+        let empty_count = result.tree.leaves.iter().filter(|l| !l.is_solid).count();
         assert!(empty_count >= 1, "should have at least 1 empty leaf");
     }
 
@@ -386,12 +378,7 @@ mod tests {
 
         let result = partition(&brushes).expect("two-room partition should succeed");
 
-        let empty_count = result
-            .tree
-            .leaves
-            .iter()
-            .filter(|l| !l.is_solid)
-            .count();
+        let empty_count = result.tree.leaves.iter().filter(|l| !l.is_solid).count();
         let solid_count = result.tree.leaves.len() - empty_count;
 
         assert!(

@@ -172,9 +172,8 @@ pub struct FrameTickResult {
 /// Shortest-path angular interpolation for angles in radians.
 /// Wraps the difference to [-PI, PI] before lerping.
 ///
-/// Retained after `InterpolableState` dropped its yaw field: the function is
-/// still useful for any future angle interpolation (weapon sway, AI aim, etc.)
-/// and its tests exercise the wrap-around math independent of the call site.
+/// No current caller; kept for angle-interpolation consumers (weapon sway,
+/// AI aim). The wrap-around math is non-trivial and tested independently.
 #[allow(dead_code)]
 pub fn lerp_angle(from: f32, to: f32, alpha: f32) -> f32 {
     let mut diff = to - from;

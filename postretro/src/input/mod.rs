@@ -243,8 +243,8 @@ impl InputSystem {
     /// `Displacement`-sourced `LookYaw` / `LookPitch` entries. Gamepad stick
     /// state in `gamepad_axes` is deliberately left intact — stick deflection
     /// is persistent, not evanescent, and a subsequent `snapshot()` will still
-    /// see it. `main.rs` no longer reads look axes from `snapshot()` once
-    /// `drain_look_inputs()` is in play, so this is harmless.
+    /// see it. The render loop does not read look axes from `snapshot()`, so
+    /// that re-emission has no reader.
     pub fn drain_look_inputs(&mut self) -> LookInputs {
         // Refresh mouse_axes from the accumulated delta so the displacement
         // branch below sees the latest motion.
@@ -704,9 +704,9 @@ mod tests {
     #[test]
     fn drain_look_inputs_leaves_gamepad_velocity_in_subsequent_snapshot() {
         // Pin the intentional non-clearing of gamepad_axes: stick deflection
-        // is persistent, so a snapshot() after drain still sees it. Task 3
-        // removes the snapshot().axis(Look*) consumers, which renders this
-        // re-emission harmless.
+        // is persistent, so a snapshot() after drain still sees it. The
+        // render loop does not consume look axes from snapshot(), so the
+        // re-emission has no reader and is harmless.
         let mut bindings = test_bindings();
         bindings.push(Binding::with_scale(
             PhysicalInput::GamepadAxis(gilrs::Axis::RightStickX),

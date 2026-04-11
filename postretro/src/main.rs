@@ -453,9 +453,8 @@ impl ApplicationHandler for App {
                 let snapshot = self.input_system.snapshot();
 
                 // Apply look rotation once per render frame, before the tick
-                // loop. Doing this at render rate (not tick rate) means mouse
-                // motion on zero-tick frames is preserved — the bug that
-                // motivated decouple-view-from-sim.
+                // loop. At render rate (not tick rate) mouse motion accumulated
+                // on a zero-tick frame is still consumed this frame.
                 self.camera
                     .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
 
@@ -694,15 +693,15 @@ impl App {
 
 // --- Tests ---
 //
-// Regression pins for the decouple-view-from-sim fix. The original bug silently
-// lost mouse motion on zero-tick frames: `InputSystem::snapshot()` drained the
-// accumulated mouse delta, but the tick loop never applied look rotation when
-// `ticks == 0`, so the delta vanished. The fix routes look rotation through
-// `drain_look_inputs()` at render rate and feeds yaw/pitch into
-// `InterpolableState::view_projection` as arguments rather than baking them
-// into the tick state. These tests assert on both `camera.yaw` *and* the
-// rendered `view_projection` matrix because checking yaw alone would not have
-// caught the original rendering staleness.
+// Pins for the render-rate look / tick-rate sim split:
+//
+// - On a frame with `ticks == 0`, mouse delta accumulated this frame must
+//   still rotate the camera *and* change the rendered view-projection
+//   matrix. Yaw/pitch reach the matrix as arguments to `view_projection`,
+//   not as fields of `InterpolableState`, so a yaw assertion alone does
+//   not cover the rendering path — a matrix assertion is required.
+// - On a multi-tick frame, look rotation applies once at render rate,
+//   not once per tick.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,11 +713,10 @@ mod tests {
     /// comfortably tight without being flaky on f32 round-off.
     const EPSILON: f32 = 1e-5;
 
-    /// Regression: mouse motion accumulated in a frame that produces zero
-    /// ticks must still rotate the camera *and* must change the rendered
-    /// view-projection matrix. Asserting only on `camera.yaw` would have
-    /// passed against the original bug — rendering read through an
-    /// `InterpolableState::view_projection` that ignored the updated yaw.
+    /// On a frame with zero ticks, accumulated mouse delta must rotate the
+    /// camera *and* change the rendered view-projection matrix. Both checks
+    /// are required: `view_projection` takes yaw/pitch as arguments, so an
+    /// updated `camera.yaw` alone does not prove rendering sees it.
     #[test]
     fn mouse_delta_applied_on_zero_tick_frame() {
         let mut sys = InputSystem::new(default_bindings());
@@ -732,8 +730,7 @@ mod tests {
 
         // A 5ms elapsed frame is well below the 16.667ms tick duration, so
         // the accumulator produces zero ticks but still reports a positive
-        // frame_dt. This is the exact shape of the frame that triggered the
-        // original bug.
+        // frame_dt — the frame shape the look path must handle.
         let initial_state = InterpolableState::new(Vec3::ZERO);
         let mut timing = FrameTiming::new(initial_state);
         let result = timing.accumulate(Duration::from_millis(5));

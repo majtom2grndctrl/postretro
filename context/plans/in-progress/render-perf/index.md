@@ -1,6 +1,6 @@
 # Renderer Frame-Loop Performance
 
-> **Status:** draft
+> **Status:** ready
 > **Depends on:** none. All changes are in the `postretro` crate. No level compiler, PRL format, or engine interface changes required.
 > **Related:** `postretro/src/portal_vis.rs` · `postretro/src/render.rs` · `postretro/src/visibility.rs` · `postretro/src/main.rs` · `context/plans/drafts/input-perf/`
 

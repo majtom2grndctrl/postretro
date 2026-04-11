@@ -1,7 +1,5 @@
-// Runtime portal traversal: single-pass polygon-vs-frustum clipping + narrowing.
+// Runtime portal traversal: per-chain DFS with polygon-vs-frustum clipping + narrowing.
 // See: context/lib/build_pipeline.md §Runtime visibility
-
-use std::collections::VecDeque;
 
 use glam::Vec3;
 
@@ -16,25 +14,76 @@ use crate::visibility::{Frustum, FrustumPlane};
 /// slop introduced here.
 const CLIP_EPSILON: f32 = 1e-4;
 
-/// Perform single-pass polygon-clipped portal traversal to determine which
-/// leaves are visible from the camera's current leaf.
+/// Maximum portal-chain depth allowed during per-chain DFS traversal.
 ///
-/// For each portal reached during the BFS, the portal polygon is clipped
+/// Real-map chains typically run 5–10 deep, occasionally ~20. 256 is well
+/// above any realistic chain depth and well below stack-overflow territory.
+/// When a chain hits this limit the helper logs a warning (under the
+/// `postretro::portal_trace` target) and returns without recursing further —
+/// the visible set becomes conservative at that branch but no crash occurs.
+/// Tune upward only if a real map trips the guard.
+const MAX_PORTAL_CHAIN_DEPTH: usize = 256;
+
+/// Per-recursion state shared by every branch of the DFS.
+///
+/// Kept in a single struct so the recursive helper has one `&mut` argument
+/// beyond the changing per-frame values (current leaf, current frustum, current
+/// path). Counters accumulate across all chains; the visible bitset is the
+/// union of every chain's reach.
+struct DfsState<'a> {
+    world: &'a LevelWorld,
+    camera_position: Vec3,
+    capture: bool,
+    visible: Vec<bool>,
+    leaf_count: usize,
+    considered: u32,
+    accepted: u32,
+    rejected_solid: u32,
+    rejected_clipped: u32,
+    rejected_narrow: u32,
+    rejected_invalid: u32,
+    rejected_path_cycle: u32,
+    rejected_depth_limit: u32,
+    depth_limit_warned: bool,
+    camera_leaf: usize,
+}
+
+/// Perform per-chain depth-first portal traversal to determine which leaves
+/// are visible from the camera's current leaf.
+///
+/// For each portal reached along a chain, the portal polygon is clipped
 /// against every plane of the current frustum (Sutherland-Hodgman). An empty
 /// clip output is the unified rejection signal — the portal is not visible
 /// through the current sight cone. The clipped polygon then feeds frustum
 /// narrowing, which builds a new cone strictly inside the current one.
 ///
+/// Cycle prevention keys on portals crossed in the current chain, not on
+/// leaves reached globally. Keying on leaves would drop any chain after the
+/// first to arrive at a leaf — silently losing whichever carried the widest
+/// sub-frustum. The visible bitset is the union across all chains.
+///
 /// By induction from the camera's initial frustum, every narrowed frustum
 /// reachable through any portal chain is a strict subset of the camera
 /// frustum. A per-leaf AABB cull is therefore unnecessary on this path.
 ///
+/// **Recursion depth.** Bounded by `MAX_PORTAL_CHAIN_DEPTH` (currently 256).
+/// Real maps run 5–10 deep. Beyond the bound, the current leaf is still
+/// marked visible (conservative) and a warning is emitted once per top-level
+/// walk. See [`MAX_PORTAL_CHAIN_DEPTH`].
+///
+/// **Per-path allocation.** The chain path is a `Vec<usize>` of portal
+/// indices, cloned on each recursive descent (parent path + new portal) so
+/// sibling branches at the same depth see independent histories. For typical
+/// chain depths (under 20), this is a handful of small allocations per
+/// visited leaf. Push/pop on a shared Vec would be cheaper, but the clone is
+/// easier to reason about and matches the per-branch mental model used when
+/// reading the flood-fill. Profile before promoting to `SmallVec` or a
+/// bitmask.
+///
 /// When `capture` is true the walk emits one log line per portal touched
 /// (accept/reject + reason) plus a per-frame summary, all under the
-/// `postretro::portal_trace` target. Already-visited rejections are counted
-/// in the summary but not line-logged — they are the bulk of intra-frame
-/// noise. Triggered by the `Alt+Shift+1` diagnostic chord; see
-/// `context/lib/input.md` §7.
+/// `postretro::portal_trace` target. Triggered by the `Alt+Shift+1`
+/// diagnostic chord; see `context/lib/input.md` §7.
 pub fn portal_traverse(
     camera_position: Vec3,
     camera_leaf: usize,
@@ -43,7 +92,7 @@ pub fn portal_traverse(
     capture: bool,
 ) -> Vec<bool> {
     let leaf_count = world.leaves.len();
-    let mut visible = vec![false; leaf_count];
+    let visible = vec![false; leaf_count];
 
     if capture {
         log::info!(
@@ -64,128 +113,186 @@ pub fn portal_traverse(
         return visible;
     }
 
-    visible[camera_leaf] = true;
+    let mut state = DfsState {
+        world,
+        camera_position,
+        capture,
+        visible,
+        leaf_count,
+        considered: 0,
+        accepted: 0,
+        rejected_solid: 0,
+        rejected_clipped: 0,
+        rejected_narrow: 0,
+        rejected_invalid: 0,
+        rejected_path_cycle: 0,
+        rejected_depth_limit: 0,
+        depth_limit_warned: false,
+        camera_leaf,
+    };
 
-    let mut queue: VecDeque<(usize, Frustum)> = VecDeque::new();
-    queue.push_back((camera_leaf, frustum.clone()));
-
-    let mut considered: u32 = 0;
-    let mut accepted: u32 = 0;
-    let mut rejected_already_visited: u32 = 0;
-    let mut rejected_solid: u32 = 0;
-    let mut rejected_clipped: u32 = 0;
-    let mut rejected_narrow: u32 = 0;
-    let mut rejected_invalid: u32 = 0;
-
-    while let Some((current_leaf, current_frustum)) = queue.pop_front() {
-        for &portal_idx in &world.leaf_portals[current_leaf] {
-            let portal = &world.portals[portal_idx];
-
-            // Determine the neighbor leaf (the portal's other side).
-            let neighbor = if portal.front_leaf == current_leaf {
-                portal.back_leaf
-            } else {
-                portal.front_leaf
-            };
-
-            considered += 1;
-
-            if neighbor >= leaf_count {
-                rejected_invalid += 1;
-                continue;
-            }
-
-            // Skip already-visible leaves (avoids cycles).
-            if visible[neighbor] {
-                rejected_already_visited += 1;
-                continue;
-            }
-
-            // Skip solid leaves.
-            if world.leaves[neighbor].is_solid {
-                rejected_solid += 1;
-                if capture {
-                    log::info!(
-                        target: "postretro::portal_trace",
-                        "[portal_trace] reject src={} dst={} reason=solid_neighbor",
-                        current_leaf,
-                        neighbor,
-                    );
-                }
-                continue;
-            }
-
-            // Clip the portal polygon against the current frustum. An empty
-            // result unifies "portal entirely outside cone" and "portal
-            // degenerate after clipping" into one rejection path.
-            let clipped = clip_polygon_to_frustum(&portal.polygon, &current_frustum);
-            if clipped.len() < 3 {
-                rejected_clipped += 1;
-                if capture {
-                    log::info!(
-                        target: "postretro::portal_trace",
-                        "[portal_trace] reject src={} dst={} reason=clipped_to_empty clipped_verts={} portal_verts={}",
-                        current_leaf,
-                        neighbor,
-                        clipped.len(),
-                        portal.polygon.len(),
-                    );
-                }
-                continue;
-            }
-
-            // Narrow the frustum through the clipped polygon. The clipped
-            // polygon lies entirely inside the current frustum, so the edge
-            // planes it produces form a cone strictly inside the current one.
-            if let Some(narrowed) =
-                narrow_frustum(camera_position, &clipped, &current_frustum)
-            {
-                visible[neighbor] = true;
-                accepted += 1;
-                if capture {
-                    log::info!(
-                        target: "postretro::portal_trace",
-                        "[portal_trace] accept src={} dst={} clipped_verts={}",
-                        current_leaf,
-                        neighbor,
-                        clipped.len(),
-                    );
-                }
-                queue.push_back((neighbor, narrowed));
-            } else {
-                rejected_narrow += 1;
-                if capture {
-                    log::info!(
-                        target: "postretro::portal_trace",
-                        "[portal_trace] reject src={} dst={} reason=narrow_frustum_failed clipped_verts={}",
-                        current_leaf,
-                        neighbor,
-                        clipped.len(),
-                    );
-                }
-            }
-        }
-    }
+    // Start the DFS with an empty path — no portals crossed yet.
+    let path: Vec<usize> = Vec::new();
+    flood(&mut state, camera_leaf, frustum, &path);
 
     if capture {
-        let reach_count = visible.iter().filter(|&&v| v).count();
+        let reach_count = state.visible.iter().filter(|&&v| v).count();
         log::info!(
             target: "postretro::portal_trace",
             "[portal_trace] summary reach={} considered={} accepted={} \
              rejected_clipped={} rejected_narrow={} rejected_solid={} \
-             rejected_already_visited={} rejected_invalid={}",
+             rejected_path_cycle={} rejected_depth_limit={} rejected_invalid={}",
             reach_count,
-            considered,
-            accepted,
-            rejected_clipped,
-            rejected_narrow,
-            rejected_solid,
-            rejected_already_visited,
-            rejected_invalid,
+            state.considered,
+            state.accepted,
+            state.rejected_clipped,
+            state.rejected_narrow,
+            state.rejected_solid,
+            state.rejected_path_cycle,
+            state.rejected_depth_limit,
+            state.rejected_invalid,
         );
     }
 
-    visible
+    state.visible
+}
+
+/// Recursive per-chain flood-fill.
+///
+/// Marks the current leaf visible, then tries every outbound portal. A portal
+/// already on the current chain's path is skipped (would loop). Each surviving
+/// portal produces a narrowed sub-frustum and a recursive descent with the
+/// portal appended to a clone of the path. Sibling branches at the same depth
+/// see independent path histories.
+///
+/// The algorithmic shape mirrors id Tech 4's `FloodViewThroughArea_r`
+/// (Doom 3, `neo/renderer/RenderWorld_portals.cpp`).
+fn flood(state: &mut DfsState, leaf: usize, frustum: &Frustum, path: &[usize]) {
+    // Mark the current leaf visible on entry. Every chain that reaches a leaf
+    // contributes to the visible union regardless of which portals it crossed.
+    state.visible[leaf] = true;
+
+    if path.len() >= MAX_PORTAL_CHAIN_DEPTH {
+        state.rejected_depth_limit += 1;
+        if !state.depth_limit_warned {
+            state.depth_limit_warned = true;
+            log::warn!(
+                target: "postretro::portal_trace",
+                "[portal_trace] chain depth limit reached (MAX_PORTAL_CHAIN_DEPTH={}) \
+                 camera_leaf={} truncated_at_leaf={} — visible set conservative \
+                 past this point",
+                MAX_PORTAL_CHAIN_DEPTH,
+                state.camera_leaf,
+                leaf,
+            );
+        }
+        return;
+    }
+
+    let outbound_len = state.world.leaf_portals[leaf].len();
+
+    // Iterate by index into `world.leaf_portals[leaf]`. `leaf` is the caller's
+    // already-validated leaf index, so direct indexing is safe. Re-borrowing
+    // `state.world` per step avoids holding a long-lived borrow across the
+    // recursive call, which would conflict with `state` being `&mut`.
+    for i in 0..outbound_len {
+        let portal_idx = state.world.leaf_portals[leaf][i];
+        let portal = &state.world.portals[portal_idx];
+
+        // Determine the neighbor leaf (the portal's other side).
+        let neighbor = if portal.front_leaf == leaf {
+            portal.back_leaf
+        } else {
+            portal.front_leaf
+        };
+
+        state.considered += 1;
+
+        if neighbor >= state.leaf_count {
+            state.rejected_invalid += 1;
+            continue;
+        }
+
+        // Per-chain cycle check: if this portal is already on the current
+        // chain's path, taking it would form a loop. Linear scan over a small
+        // Vec beats HashSet hashing for typical chain depths (5–10).
+        if path.contains(&portal_idx) {
+            state.rejected_path_cycle += 1;
+            continue;
+        }
+
+        // Skip solid leaves.
+        if state.world.leaves[neighbor].is_solid {
+            state.rejected_solid += 1;
+            if state.capture {
+                log::info!(
+                    target: "postretro::portal_trace",
+                    "[portal_trace] reject src={} dst={} reason=solid_neighbor",
+                    leaf,
+                    neighbor,
+                );
+            }
+            continue;
+        }
+
+        // Clip the portal polygon against the current frustum. An empty
+        // result unifies "portal entirely outside cone" and "portal
+        // degenerate after clipping" into one rejection path.
+        let clipped = clip_polygon_to_frustum(&portal.polygon, frustum);
+        if clipped.len() < 3 {
+            state.rejected_clipped += 1;
+            if state.capture {
+                log::info!(
+                    target: "postretro::portal_trace",
+                    "[portal_trace] reject src={} dst={} reason=clipped_to_empty clipped_verts={} portal_verts={}",
+                    leaf,
+                    neighbor,
+                    clipped.len(),
+                    portal.polygon.len(),
+                );
+            }
+            continue;
+        }
+
+        // Narrow the frustum through the clipped polygon. The clipped
+        // polygon lies entirely inside the current frustum, so the edge
+        // planes it produces form a cone strictly inside the current one.
+        let Some(narrowed) = narrow_frustum(state.camera_position, &clipped, frustum) else {
+            state.rejected_narrow += 1;
+            if state.capture {
+                log::info!(
+                    target: "postretro::portal_trace",
+                    "[portal_trace] reject src={} dst={} reason=narrow_frustum_failed clipped_verts={}",
+                    leaf,
+                    neighbor,
+                    clipped.len(),
+                );
+            }
+            continue;
+        };
+
+        state.accepted += 1;
+        if state.capture {
+            log::info!(
+                target: "postretro::portal_trace",
+                "[portal_trace] accept src={} dst={} clipped_verts={}",
+                leaf,
+                neighbor,
+                clipped.len(),
+            );
+        }
+
+        // Descend into the neighbor with a fresh path clone plus this portal.
+        // A push/pop backtracking scheme on a shared Vec would be equivalent
+        // and cheaper, but the per-branch clone matches the flood-fill mental
+        // model used when reading the algorithm and keeps the path's lifetime
+        // identical to the recursion frame. Profile-driven follow-up can
+        // switch to push/pop or `SmallVec` if allocation shows up.
+        let mut next_path = Vec::with_capacity(path.len() + 1);
+        next_path.extend_from_slice(path);
+        next_path.push(portal_idx);
+        flood(state, neighbor, &narrowed, &next_path);
+    }
 }
 
 /// Clip a convex polygon against every plane of a frustum (Sutherland-Hodgman).
@@ -1231,6 +1338,171 @@ mod tests {
             !visible[2],
             "leaf C should be hidden: portal 1 is far off-axis and \
              unreachable through the clipped sight cone"
+        );
+    }
+
+    /// Regression test for the "two paths to the same leaf, narrower path
+    /// wins, downstream reach is lost" topology fixed by per-chain DFS.
+    ///
+    /// Topology (abstract; bounding boxes are not used by portal_traverse):
+    ///
+    ///   A (camera) -- portal 0 (NARROW 0.1x0.1 at X=10) --> B
+    ///   A          -- portal 1 (WIDE   4.0x4.0 at X=10) --> C
+    ///   B          -- portal 2 (2.0x2.0 at X=20) --------> X
+    ///   C          -- portal 3 (2.0x2.0 at X=20) --------> X
+    ///   X          -- portal 4 (1.0x1.0 at X=30, offset  -> Y
+    ///                           to Y=1..2, Z=-0.5..0.5)
+    ///
+    /// All portals lie in YZ planes perpendicular to +X. Portal 0 and portal 1
+    /// share the same spatial position (both at X=10 centered on the origin)
+    /// — portal_traverse cares about topology and polygon shape, not physical
+    /// room layout, so this is a legal test fixture. Likewise portals 2 and 3
+    /// overlap at X=20.
+    ///
+    /// The load-bearing geometry:
+    ///
+    /// - Camera frustum (100° hfov) easily contains both A-outbound portals.
+    /// - The B-path's frustum narrows severely through portal 0's 0.1x0.1 slit.
+    ///   By X=30 that cone has a radius of roughly 0.15 units from the X axis.
+    /// - The C-path's frustum narrows gently through portal 1's 4.0x4.0 aperture.
+    ///   By X=30 that cone has a radius of several units.
+    /// - Portal 4 is offset to Y=1..2 so it lies **outside** the narrow B-path
+    ///   cone at X=30 (clips to empty) and **inside** the wide C-path cone
+    ///   (passes through cleanly).
+    ///
+    /// Under BFS-keyed-on-leaves (the former implementation):
+    ///   A's outbound iteration order is [0, 1] → A→B runs first → X marked
+    ///   visible with the narrow frustum planted by the B-path → A→C→X is
+    ///   then rejected by the already-visited early-skip → X's outbound
+    ///   portal 4 is evaluated against the narrow B-frustum → Y missed.
+    ///
+    /// Under DFS-with-per-path-tracking (the current implementation):
+    ///   Both A→B→X and A→C→X chains run independently. The C-path produces
+    ///   a wide frustum at X that does not clip X→Y to empty → Y visible.
+    ///
+    /// The test asserts visibility of all five leaves. The BFS topology fails
+    /// on `visible[4]` (Y) and DFS passes.
+    #[test]
+    fn portal_traverse_two_paths_to_same_leaf_uses_widest_frustum() {
+        // Portal 0: A→B, NARROW slit at X=10.
+        let portal_a_b = PortalData {
+            polygon: vec![
+                Vec3::new(10.0, -0.05, -0.05),
+                Vec3::new(10.0,  0.05, -0.05),
+                Vec3::new(10.0,  0.05,  0.05),
+                Vec3::new(10.0, -0.05,  0.05),
+            ],
+            front_leaf: 0, // A
+            back_leaf: 1,  // B
+        };
+
+        // Portal 1: A→C, WIDE aperture at X=10 (same spatial position as
+        // portal 0; they serve different topology roles in this abstract
+        // fixture).
+        let portal_a_c = PortalData {
+            polygon: vec![
+                Vec3::new(10.0, -2.0, -2.0),
+                Vec3::new(10.0,  2.0, -2.0),
+                Vec3::new(10.0,  2.0,  2.0),
+                Vec3::new(10.0, -2.0,  2.0),
+            ],
+            front_leaf: 0, // A
+            back_leaf: 2,  // C
+        };
+
+        // Portal 2: B→X at X=20.
+        let portal_b_x = PortalData {
+            polygon: vec![
+                Vec3::new(20.0, -1.0, -1.0),
+                Vec3::new(20.0,  1.0, -1.0),
+                Vec3::new(20.0,  1.0,  1.0),
+                Vec3::new(20.0, -1.0,  1.0),
+            ],
+            front_leaf: 1, // B
+            back_leaf: 3,  // X
+        };
+
+        // Portal 3: C→X at X=20 (same spatial position as portal 2).
+        let portal_c_x = PortalData {
+            polygon: vec![
+                Vec3::new(20.0, -1.0, -1.0),
+                Vec3::new(20.0,  1.0, -1.0),
+                Vec3::new(20.0,  1.0,  1.0),
+                Vec3::new(20.0, -1.0,  1.0),
+            ],
+            front_leaf: 2, // C
+            back_leaf: 3,  // X
+        };
+
+        // Portal 4: X→Y at X=30, offset to Y=1..2 so it sits outside the
+        // narrow B-path cone and inside the wide C-path cone.
+        let portal_x_y = PortalData {
+            polygon: vec![
+                Vec3::new(30.0,  1.0, -0.5),
+                Vec3::new(30.0,  2.0, -0.5),
+                Vec3::new(30.0,  2.0,  0.5),
+                Vec3::new(30.0,  1.0,  0.5),
+            ],
+            front_leaf: 3, // X
+            back_leaf: 4,  // Y
+        };
+
+        let leaf_template = || LeafData {
+            bounds_min: Vec3::new(-1000.0, -1000.0, -1000.0),
+            bounds_max: Vec3::new(1000.0, 1000.0, 1000.0),
+            face_start: 0,
+            face_count: 0,
+            pvs: vec![],
+            is_solid: false,
+            texture_sub_ranges: vec![],
+        };
+
+        let world = LevelWorld {
+            vertices: vec![],
+            indices: vec![],
+            face_meta: vec![],
+            nodes: vec![],
+            leaves: vec![
+                leaf_template(), // 0: A
+                leaf_template(), // 1: B
+                leaf_template(), // 2: C
+                leaf_template(), // 3: X
+                leaf_template(), // 4: Y
+            ],
+            root: BspChild::Leaf(0),
+            has_pvs: false,
+            portals: vec![portal_a_b, portal_a_c, portal_b_x, portal_c_x, portal_x_y],
+            // Iteration order matters: A lists portal 0 (narrow) BEFORE
+            // portal 1 (wide) so BFS would deterministically plant the
+            // narrow frustum at X first.
+            leaf_portals: vec![
+                vec![0, 1],       // A touches portals 0, 1
+                vec![0, 2],       // B touches portals 0, 2
+                vec![1, 3],       // C touches portals 1, 3
+                vec![2, 3, 4],    // X touches portals 2, 3, 4
+                vec![4],          // Y touches portal 4
+            ],
+            has_portals: true,
+            texture_names: vec![],
+        };
+
+        // Camera at origin looking +X. The camera frustum is wide enough that
+        // both A-outbound portals are accepted on the first hop.
+        let camera_pos = Vec3::new(0.0, 0.0, 0.0);
+        let frustum = make_camera_frustum(camera_pos, Vec3::X);
+        let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
+
+        assert!(visible[0], "leaf A (camera) must be visible");
+        assert!(visible[1], "leaf B must be visible (A→B direct)");
+        assert!(visible[2], "leaf C must be visible (A→C direct)");
+        assert!(visible[3], "leaf X must be visible (reachable via either path)");
+        assert!(
+            visible[4],
+            "leaf Y must be visible via the A→C→X→Y chain. Under the \
+             previous BFS-keyed-on-leaves implementation, the A→B→X chain \
+             would plant a narrow frustum at X that clips X→Y to empty, \
+             and the wider A→C→X chain would be dropped by the \
+             visible[X] early-skip before it ever reached X→Y."
         );
     }
 }

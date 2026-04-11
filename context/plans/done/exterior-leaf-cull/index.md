@@ -1,6 +1,6 @@
 # Exterior Leaf Culling
 
-> **Status:** ready
+> **Status:** done
 > **Depends on:** none. Operates entirely within the level compiler pipeline; no engine changes required.
 > **Related:** `context/lib/build_pipeline.md` §Compiler pipeline · `postretro-level-compiler/src/main.rs` · `postretro-level-compiler/src/geometry.rs` · `postretro-level-compiler/src/visibility/mod.rs`
 

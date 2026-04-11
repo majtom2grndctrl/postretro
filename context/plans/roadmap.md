@@ -65,11 +65,14 @@
 
 Validate probe-only surface lighting before committing to lightmaps. The PRL compiler bakes the probe data into a PRL-native section; the engine samples it at runtime. This phase answers: does probe-sampled surface lighting look right for the target aesthetic?
 
-- [ ] Probe baking in prl-build: place probes on a regular grid through empty space, evaluate lighting per probe (direct + ambient bounce TBD)
-- [ ] PRL section for probe data (positions + RGB samples; format TBD)
-- [ ] Engine: parse the probe section, sample nearest probes for surface lighting (trilinear interpolation between 4–8 probes)
-- [ ] Replace flat uniform lighting from Phase 3 with probe-sampled lighting on all surfaces
-- [ ] Evaluate visual quality: large surfaces, tight corridors, transitions between bright and dark areas
+**Sub-plans:**
+
+- [ ] **FGD light entities** — define `light`, `light_spot`, `light_sun` (exact set TBD) so mappers can place light sources. Prerequisite for the baker and the lighting test maps. Drafted in `plans/drafts/phase-4-fgd-light-entities/`.
+- [ ] **Probe format research** — survey ericw-tools `LIGHTGRID_OCTREE`, dmap, Doom 3 / Quake 4 irradiance volumes, Source ambient cubes, and Rust crates in the neighborhood. Produces a recommendation on spatial layout and per-probe storage. Seeds the follow-up implementation plan. Drafted in `plans/drafts/phase-4-probe-format-research/`.
+- [ ] **Probe section format and baker in prl-build** — compiler stage that reads light entities, places probes in empty space, evaluates lighting, and writes a new PRL section. Prefer existing crates over writing from scratch. Emerges from probe format research.
+- [ ] **Engine probe sampling** — runtime path: parse the probe section, sample nearest probes, interpolate, replace the flat ambient factor from Phase 3 in the world shader. Emerges from probe format research.
+- [ ] **Lighting test maps** — author maps that stress the decision-gate cases: large surfaces, tight corridors, bright-to-dark transitions. Blocked only on FGD light entities; draftable early if parallelization is desired.
+- [ ] **Phase 4 decision gate** — run the baker and runtime against the test maps, judge probe-only lighting quality, capture the continue / fall-back decision for Phase 5.
 
 **Testable outcome:** textured level lit entirely by light probes baked by prl-build. Surfaces receive spatially varying illumination from baked probe data. No lightmap atlas, no per-face lightmap UVs.
 
@@ -77,7 +80,7 @@ Validate probe-only surface lighting before committing to lightmaps. The PRL com
 
 **Shadow implication:** probe baking captures static light occlusion. Shadow maps are only needed for dynamic lights — muzzle flash, explosions, scripted events. This reduces runtime shadow cost to near-zero for typical static levels.
 
-**BSPX fallback note:** the original framing of this phase used ericw-tools' `LIGHTGRID_OCTREE` lump from BSP files. That's no longer the path — PRL is the primary format and `prl-build` owns lighting baking. If standing up probe baking in prl-build proves prohibitively expensive at the experiment stage, parsing `LIGHTGRID_OCTREE` from a BSP file remains a fallback for the validation step only — production builds use the PRL-native path.
+**Reference implementations:** ericw-tools `LIGHTGRID_OCTREE` and dmap are reference sources for how the Quake lineage solves probe baking. Postretro targets the PRL-native path; the references inform design decisions but are not fallbacks.
 
 ---
 

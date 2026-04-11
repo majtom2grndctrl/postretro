@@ -26,39 +26,78 @@ pub enum VisibleFaces {
 }
 
 /// Per-frame visibility pipeline statistics for diagnostics.
+///
+/// `pvs_reach` and `drawn_faces` have uniform meaning across every path,
+/// so a reader that just wants a "how much is culling doing?" ratio can
+/// use those two fields without inspecting `path`. Path-specific
+/// diagnostics live on the `VisibilityPath` variants.
 #[derive(Debug, Clone)]
 pub struct VisibilityStats {
     /// BSP leaf the camera currently occupies.
     pub camera_leaf: u32,
     /// Total faces in the level.
     pub total_faces: u32,
-    /// Faces in the camera leaf's raw PVS, ignoring frustum and portal
-    /// narrowing. Constant with respect to view direction. Lets you compare
-    /// "what PVS allows" against the post-narrowing counts below to isolate
-    /// which culling stage is dropping a given surface.
-    pub raw_pvs_faces: u32,
-    /// Faces remaining after the visibility path's primary narrowing stage,
-    /// before any frustum-based leaf culling. Pre-cull across all paths:
+    /// Angle-independent PVS baseline: the face count the camera leaf's
+    /// raw PVS admits, ignoring every view-direction-dependent narrowing
+    /// stage. Same meaning on all paths. On fallback paths that bypass PVS
+    /// entirely this is `total_faces` (nothing is excluded by the PVS
+    /// because the PVS was not consulted).
+    pub pvs_reach: u32,
+    /// Faces submitted to the renderer this frame, after every narrowing
+    /// and culling stage the path applied. Same meaning on all paths.
+    pub drawn_faces: u32,
+    /// Which visibility determination path produced these stats. Path-
+    /// specific diagnostics (e.g., portal walk reach) live on the variant.
+    pub path: VisibilityPath,
+}
+
+/// Identifies the code path that produced a given `VisibilityStats`, and
+/// carries any metrics that are only meaningful on that path.
+///
+/// Readers that only care about the cross-path totals can ignore this
+/// field; readers that want to distinguish between primary and fallback
+/// paths, or inspect portal-specific diagnostics, can `match` on it.
+#[derive(Debug, Clone, Copy)]
+pub enum VisibilityPath {
+    /// Primary BSP rendering path: precomputed PVS lookup plus AABB
+    /// frustum cull.
+    BspPvs,
+    /// Primary PRL rendering path using precomputed PVS bitsets plus
+    /// AABB frustum cull.
+    PrlPvs,
+    /// Primary PRL rendering path using per-frame portal traversal.
+    /// Portal traversal narrows the frustum at every hop, so the reach
+    /// of the portal walk is also the final visibility set — no separate
+    /// AABB cull runs on this path and `drawn_faces == walk_reach`.
     ///
-    /// - **BSP path:** PVS lookup count, counted before the AABB frustum test.
-    /// - **PRL PVS path:** PVS lookup count — equal to `raw_pvs_faces` by
-    ///   construction, since both walk PVS-visible leaves and count non-empty
-    ///   faces.
-    /// - **PRL portal path:** portal-walk reach. Differs from `raw_pvs_faces`
-    ///   because the portal walk discards leaves the PVS would have admitted
-    ///   but the portal chain cannot reach. Equals `frustum_faces` by
-    ///   construction because portal traversal already clips against a
-    ///   narrowed frustum at every hop — there is no separate AABB stage.
-    ///
-    /// Compare against `raw_pvs_faces` to see how much the primary narrowing
-    /// stage discarded, and against `frustum_faces` to see how much the AABB
-    /// frustum cull discarded.
-    pub pvs_faces: u32,
-    /// Faces remaining after frustum (AABB) culling on top of `pvs_faces`.
-    /// Post-cull across all paths. On the PRL portal-traversal path this
-    /// equals `pvs_faces` by construction because portal traversal already
-    /// clips against a narrowed frustum at every hop.
-    pub frustum_faces: u32,
+    /// `walk_reach` is exposed on the variant so a reader comparing
+    /// `pvs_reach` against `walk_reach` can see how much the portal walk
+    /// discarded beyond what PVS alone would have admitted.
+    PrlPortal { walk_reach: u32 },
+    /// Fallback: no PVS data in the level file. All non-solid leaves are
+    /// submitted, subject only to the AABB frustum cull (BSP path) or
+    /// unconditionally (PRL path).
+    NoPvsFallback,
+    /// Fallback: world has no leaves to cull against. DrawAll with every
+    /// face in the level submitted.
+    EmptyWorldFallback,
+    /// Fallback: camera position lies inside solid geometry (clipped
+    /// into a wall). All non-solid leaves are drawn, subject to AABB
+    /// frustum culling.
+    SolidLeafFallback,
+}
+
+impl VisibilityStats {
+    /// On the PRL portal-traversal path, the count of faces the portal
+    /// walk can reach from the camera leaf — a subset of `pvs_reach` that
+    /// reflects both PVS and portal-chain reachability. `None` on every
+    /// other path.
+    pub fn walk_reach(&self) -> Option<u32> {
+        match self.path {
+            VisibilityPath::PrlPortal { walk_reach } => Some(walk_reach),
+            _ => None,
+        }
+    }
 }
 
 // --- Frustum culling ---
@@ -369,9 +408,9 @@ pub fn determine_visibility(
         let stats = VisibilityStats {
             camera_leaf: 0,
             total_faces,
-            raw_pvs_faces: total_faces,
-            pvs_faces: total_faces,
-            frustum_faces: total_faces,
+            pvs_reach: total_faces,
+            drawn_faces: total_faces,
+            path: VisibilityPath::EmptyWorldFallback,
         };
         return (VisibleFaces::DrawAll, stats);
     }
@@ -383,37 +422,37 @@ pub fn determine_visibility(
         Some(visible_leaves) => {
             let collected =
                 collect_visible_faces(&visible_leaves, camera_leaf, world, Some(&frustum), scratch);
-            let frustum_faces = collected.frustum_face_count;
-            let pvs_faces = collected.pvs_face_count;
+            let pvs_reach = collected.pvs_face_count;
+            let drawn_faces = collected.frustum_face_count;
 
             log::trace!(
-                "[Visibility] leaf={}, pvs_faces={}, frustum_faces={}, total_faces={}",
+                "[Visibility] path=BspPvs leaf={}, pvs_reach={}, drawn_faces={}, total_faces={}",
                 camera_leaf,
-                pvs_faces,
-                frustum_faces,
+                pvs_reach,
+                drawn_faces,
                 total_faces,
             );
 
             let stats = VisibilityStats {
                 camera_leaf,
                 total_faces,
-                raw_pvs_faces: pvs_faces,
-                pvs_faces,
-                frustum_faces,
+                pvs_reach,
+                drawn_faces,
+                path: VisibilityPath::BspPvs,
             };
             (VisibleFaces::Culled(std::mem::take(scratch)), stats)
         }
         None => {
             log::trace!(
-                "[Visibility] leaf={}, no PVS data — drawing all faces",
+                "[Visibility] path=NoPvsFallback leaf={}, drawing all faces",
                 camera_leaf,
             );
             let stats = VisibilityStats {
                 camera_leaf,
                 total_faces,
-                raw_pvs_faces: total_faces,
-                pvs_faces: total_faces,
-                frustum_faces: total_faces,
+                pvs_reach: total_faces,
+                drawn_faces: total_faces,
+                path: VisibilityPath::NoPvsFallback,
             };
             (VisibleFaces::DrawAll, stats)
         }
@@ -423,8 +462,9 @@ pub fn determine_visibility(
 /// Count drawable faces in the camera leaf's raw PVS, ignoring frustum and
 /// portal narrowing. The camera leaf itself is always included even if its
 /// own bit is unset, matching the iteration pattern of the PVS path. Used as
-/// the angle-independent baseline in `VisibilityStats::raw_pvs_faces` so the
-/// portal-traversal path can be compared against "what PVS allows."
+/// the angle-independent baseline in `VisibilityStats::pvs_reach` so the
+/// portal-traversal path's `walk_reach` can be compared against "what PVS
+/// allows."
 fn raw_pvs_face_count(world: &LevelWorld, camera_leaf_idx: usize) -> u32 {
     let pvs = match world.leaves.get(camera_leaf_idx) {
         Some(leaf) => &leaf.pvs,
@@ -485,9 +525,9 @@ pub fn determine_prl_visibility(
         let stats = VisibilityStats {
             camera_leaf: 0,
             total_faces,
-            raw_pvs_faces: total_faces,
-            pvs_faces: total_faces,
-            frustum_faces: total_faces,
+            pvs_reach: total_faces,
+            drawn_faces: total_faces,
+            path: VisibilityPath::EmptyWorldFallback,
         };
         return (VisibleFaces::DrawAll, stats);
     }
@@ -503,11 +543,11 @@ pub fn determine_prl_visibility(
 
     if in_solid {
         log::warn!(
-            "[Visibility] Camera in solid leaf {} — drawing all leaves",
+            "[Visibility] path=SolidLeafFallback camera in solid leaf {} — drawing all leaves",
             camera_leaf_idx,
         );
         scratch.clear();
-        let mut frustum_faces = 0u32;
+        let mut drawn_faces = 0u32;
 
         for leaf in &world.leaves {
             if leaf.is_solid || leaf.face_count == 0 {
@@ -524,25 +564,25 @@ pub fn determine_prl_visibility(
                         index_offset: face.index_offset,
                         index_count: face.index_count,
                     });
-                    frustum_faces += 1;
+                    drawn_faces += 1;
                 }
             }
         }
 
         // Solid leaf has no meaningful PVS (camera is clipped into geometry),
-        // so report total_faces as the raw PVS baseline to match the
+        // so report total_faces as the PVS baseline to match the
         // "draw everything" fallback semantics of this branch.
         let stats = VisibilityStats {
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
-            raw_pvs_faces: total_faces,
-            pvs_faces: total_faces,
-            frustum_faces,
+            pvs_reach: total_faces,
+            drawn_faces,
+            path: VisibilityPath::SolidLeafFallback,
         };
         return (VisibleFaces::Culled(std::mem::take(scratch)), stats);
     }
 
-    let raw_pvs_faces = raw_pvs_face_count(world, camera_leaf_idx);
+    let pvs_reach = raw_pvs_face_count(world, camera_leaf_idx);
 
     if world.has_portals {
         // Runtime portal traversal. Polygon-vs-frustum clipping at each hop
@@ -559,7 +599,7 @@ pub fn determine_prl_visibility(
         );
 
         scratch.clear();
-        let mut pvs_faces = 0u32;
+        let mut walk_reach = 0u32;
 
         for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
             if leaf.is_solid || leaf.face_count == 0 {
@@ -578,7 +618,7 @@ pub fn determine_prl_visibility(
             let count = leaf.face_count as usize;
             for face in world.face_meta.iter().skip(start).take(count) {
                 if face.index_count > 0 {
-                    pvs_faces += 1;
+                    walk_reach += 1;
                     scratch.push(DrawRange {
                         index_offset: face.index_offset,
                         index_count: face.index_count,
@@ -587,27 +627,27 @@ pub fn determine_prl_visibility(
             }
         }
 
-        // Portal traversal already clips against a narrowed frustum at each hop,
-        // so every face reached by the portal walk is also frustum-visible — no
-        // separate AABB cull runs on this path, making frustum_faces equal to
-        // pvs_faces by construction.
-        let frustum_faces = pvs_faces;
+        // Portal traversal already clips against a narrowed frustum at each
+        // hop, so every face reached by the portal walk is also frustum-
+        // visible — no separate AABB cull runs on this path. `drawn_faces`
+        // equals `walk_reach` by construction.
+        let drawn_faces = walk_reach;
 
         log::trace!(
-            "[Visibility] leaf={}, raw_pvs_faces={}, portal_vis_faces={}, frustum_faces={}, total_faces={}",
+            "[Visibility] path=PrlPortal leaf={}, pvs_reach={}, walk_reach={}, drawn_faces={}, total_faces={}",
             camera_leaf_idx,
-            raw_pvs_faces,
-            pvs_faces,
-            frustum_faces,
+            pvs_reach,
+            walk_reach,
+            drawn_faces,
             total_faces,
         );
 
         let stats = VisibilityStats {
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
-            raw_pvs_faces,
-            pvs_faces,
-            frustum_faces,
+            pvs_reach,
+            drawn_faces,
+            path: VisibilityPath::PrlPortal { walk_reach },
         };
         return (VisibleFaces::Culled(std::mem::take(scratch)), stats);
     }
@@ -615,7 +655,7 @@ pub fn determine_prl_visibility(
     if !world.has_pvs {
         // No PVS data: draw all non-solid leaves, applying frustum culling only.
         scratch.clear();
-        let mut frustum_faces = 0u32;
+        let mut drawn_faces = 0u32;
 
         for leaf in &world.leaves {
             if leaf.is_solid || leaf.face_count == 0 {
@@ -633,17 +673,20 @@ pub fn determine_prl_visibility(
                         index_offset: face.index_offset,
                         index_count: face.index_count,
                     });
-                    frustum_faces += 1;
+                    drawn_faces += 1;
                 }
             }
         }
 
+        // PVS wasn't consulted on this branch, so report total_faces as the
+        // baseline — pvs_reach's contract is "what the PVS admits," and
+        // "no PVS" admits everything.
         let stats = VisibilityStats {
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
-            raw_pvs_faces,
-            pvs_faces: total_faces,
-            frustum_faces,
+            pvs_reach: total_faces,
+            drawn_faces,
+            path: VisibilityPath::NoPvsFallback,
         };
         return (VisibleFaces::Culled(std::mem::take(scratch)), stats);
     }
@@ -652,7 +695,7 @@ pub fn determine_prl_visibility(
     let pvs = &world.leaves[camera_leaf_idx].pvs;
 
     scratch.clear();
-    let mut frustum_faces = 0u32;
+    let mut drawn_faces = 0u32;
 
     for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
         if leaf.is_solid || leaf.face_count == 0 {
@@ -671,10 +714,10 @@ pub fn determine_prl_visibility(
         // (`collect_visible_faces`), which uses a commit/rollback pattern to
         // preserve the pre-cull `pvs_face_count` semantic while still counting
         // in a single pass, this path gets the pre-cull count for free from
-        // `raw_pvs_faces` (computed above via `raw_pvs_face_count`). The two
-        // are definitionally equal on this path: both walk PVS-visible leaves
+        // `pvs_reach` (computed above via `raw_pvs_face_count`). The two are
+        // definitionally equal on this path: both walk PVS-visible leaves
         // counting non-empty faces. The counter accumulated inside this loop
-        // is the *post-cull* count, exposed as `frustum_faces`.
+        // is the *post-cull* count, exposed as `drawn_faces`.
         if is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, &frustum) {
             continue;
         }
@@ -684,7 +727,7 @@ pub fn determine_prl_visibility(
         let count = leaf.face_count as usize;
         for face in world.face_meta.iter().skip(start).take(count) {
             if face.index_count > 0 {
-                frustum_faces += 1;
+                drawn_faces += 1;
                 scratch.push(DrawRange {
                     index_offset: face.index_offset,
                     index_count: face.index_count,
@@ -693,27 +736,20 @@ pub fn determine_prl_visibility(
         }
     }
 
-    // `pvs_faces` on this path is the pre-cull PVS lookup count, which is
-    // definitionally `raw_pvs_faces`. Reuse it rather than recomputing in a
-    // second walk — the AABB cull reorder above means the loop only counts
-    // post-cull faces, but we still want a pre-cull figure in the stats.
-    let pvs_faces = raw_pvs_faces;
-
     log::trace!(
-        "[Visibility] leaf={}, raw_pvs_faces={}, pvs_faces={}, frustum_faces={}, total_faces={}",
+        "[Visibility] path=PrlPvs leaf={}, pvs_reach={}, drawn_faces={}, total_faces={}",
         camera_leaf_idx,
-        raw_pvs_faces,
-        pvs_faces,
-        frustum_faces,
+        pvs_reach,
+        drawn_faces,
         total_faces,
     );
 
     let stats = VisibilityStats {
         camera_leaf: camera_leaf_idx as u32,
         total_faces,
-        raw_pvs_faces,
-        pvs_faces,
-        frustum_faces,
+        pvs_reach,
+        drawn_faces,
+        path: VisibilityPath::PrlPvs,
     };
     (VisibleFaces::Culled(std::mem::take(scratch)), stats)
 }
@@ -1196,8 +1232,8 @@ mod tests {
         }
         assert_eq!(stats.total_faces, 2);
         assert_eq!(stats.camera_leaf, 1);
-        assert!(stats.pvs_faces > 0);
-        assert!(stats.frustum_faces <= stats.pvs_faces);
+        assert!(stats.pvs_reach > 0);
+        assert!(stats.drawn_faces <= stats.pvs_reach);
     }
 
     #[test]
@@ -1214,8 +1250,8 @@ mod tests {
         );
         // Without PVS, stats report total for both pvs and frustum.
         assert_eq!(stats.total_faces, 2);
-        assert_eq!(stats.pvs_faces, 2);
-        assert_eq!(stats.frustum_faces, 2);
+        assert_eq!(stats.pvs_reach, 2);
+        assert_eq!(stats.drawn_faces, 2);
     }
 
     #[test]
@@ -1463,8 +1499,8 @@ mod tests {
             VisibleFaces::DrawAll => panic!("expected Culled, got DrawAll"),
         }
         // PVS sees both leaves (2 faces), frustum culls leaf 2 (1 face remains).
-        assert_eq!(stats.pvs_faces, 2);
-        assert_eq!(stats.frustum_faces, 1);
+        assert_eq!(stats.pvs_reach, 2);
+        assert_eq!(stats.drawn_faces, 1);
     }
 
     #[test]
@@ -1490,8 +1526,8 @@ mod tests {
             VisibleFaces::DrawAll => panic!("expected Culled, got DrawAll"),
         }
         // Both PVS and frustum should see all 2 faces.
-        assert_eq!(stats.pvs_faces, 2);
-        assert_eq!(stats.frustum_faces, 2);
+        assert_eq!(stats.pvs_reach, 2);
+        assert_eq!(stats.drawn_faces, 2);
     }
 
     // -- VisibilityStats tests --
@@ -1511,10 +1547,10 @@ mod tests {
         assert_eq!(stats.total_faces, 2);
         assert_eq!(stats.camera_leaf, 1);
         assert!(
-            stats.pvs_faces > stats.frustum_faces,
-            "frustum should cull some PVS-visible faces: pvs={} frustum={}",
-            stats.pvs_faces,
-            stats.frustum_faces,
+            stats.pvs_reach > stats.drawn_faces,
+            "frustum should cull some PVS-visible faces: pvs_reach={} drawn={}",
+            stats.pvs_reach,
+            stats.drawn_faces,
         );
     }
 
@@ -1629,8 +1665,11 @@ mod tests {
             determine_prl_visibility(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         match result {
             VisibleFaces::Culled(_) => {
-                // Frustum culling still applies, but PVS is skipped.
-                assert_eq!(stats.pvs_faces, stats.total_faces);
+                // Frustum culling still applies, but PVS is skipped. The
+                // no-PVS fallback reports total_faces as the PVS reach,
+                // matching its "PVS admits everything" contract.
+                assert!(matches!(stats.path, VisibilityPath::NoPvsFallback));
+                assert_eq!(stats.pvs_reach, stats.total_faces);
             }
             VisibleFaces::DrawAll => panic!("expected Culled with frustum culling"),
         }
@@ -1680,12 +1719,12 @@ mod tests {
             }
             VisibleFaces::DrawAll => panic!("expected Culled"),
         }
-        // `pvs_faces` is the pre-cull PVS lookup count (== raw_pvs_faces on
-        // this path). `frustum_faces` is the post-cull count. The delta
+        // `pvs_reach` is the pre-cull PVS lookup count (2 faces, both leaves
+        // admitted by PVS). `drawn_faces` is the post-cull count. The delta
         // between them reflects what the AABB-frustum cull discarded.
-        assert_eq!(stats.raw_pvs_faces, 2);
-        assert_eq!(stats.pvs_faces, 2);
-        assert_eq!(stats.frustum_faces, 1);
+        assert!(matches!(stats.path, VisibilityPath::PrlPvs));
+        assert_eq!(stats.pvs_reach, 2);
+        assert_eq!(stats.drawn_faces, 1);
     }
 
     #[test]
@@ -1759,7 +1798,9 @@ mod tests {
             }
             VisibleFaces::DrawAll => panic!("expected Culled with solid-leaf fallback"),
         }
-        // PVS stats should show all faces as pvs_faces (solid fallback = draw all).
-        assert_eq!(stats.pvs_faces, stats.total_faces);
+        // Solid-leaf fallback has no meaningful PVS, so pvs_reach is
+        // reported as total_faces (draw-all semantics).
+        assert!(matches!(stats.path, VisibilityPath::SolidLeafFallback));
+        assert_eq!(stats.pvs_reach, stats.total_faces);
     }
 }

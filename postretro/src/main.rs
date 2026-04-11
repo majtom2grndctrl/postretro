@@ -30,7 +30,7 @@ use crate::frame_timing::{FrameTiming, InterpolableState};
 use crate::input::{Action, AxisSource, DiagnosticAction};
 use crate::render::Renderer;
 use crate::texture::TextureSet;
-use crate::visibility::{DrawRange, VisibilityStats, VisibleFaces};
+use crate::visibility::{DrawRange, VisibilityPath, VisibilityStats, VisibleFaces};
 
 const DEFAULT_MAP_PATH: &str = "assets/maps/test.bsp";
 
@@ -522,22 +522,33 @@ impl ApplicationHandler for App {
                         VisibilityStats {
                             camera_leaf: 0,
                             total_faces: 0,
-                            raw_pvs_faces: 0,
-                            pvs_faces: 0,
-                            frustum_faces: 0,
+                            pvs_reach: 0,
+                            drawn_faces: 0,
+                            path: VisibilityPath::EmptyWorldFallback,
                         },
                     ),
                 };
 
                 let pos = interp.position;
                 let region_label = "leaf";
+                let path_label = match stats.path {
+                    VisibilityPath::BspPvs => "bsp-pvs",
+                    VisibilityPath::PrlPvs => "prl-pvs",
+                    VisibilityPath::PrlPortal { .. } => "prl-portal",
+                    VisibilityPath::NoPvsFallback => "no-pvs",
+                    VisibilityPath::EmptyWorldFallback => "empty",
+                    VisibilityPath::SolidLeafFallback => "solid-leaf",
+                };
+                let walk_reach_col = match stats.walk_reach() {
+                    Some(walk) => format!(" walk:{walk}"),
+                    None => String::new(),
+                };
                 log::debug!(
-                    "[Diagnostics] {region_label}:{} | faces: {}/{}/{}/{} (total/raw_pvs/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
+                    "[Diagnostics] {region_label}:{} path:{path_label} | draw:{} pvs:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
                     stats.camera_leaf,
+                    stats.drawn_faces,
+                    stats.pvs_reach,
                     stats.total_faces,
-                    stats.raw_pvs_faces,
-                    stats.pvs_faces,
-                    stats.frustum_faces,
                     pos.x,
                     pos.y,
                     pos.z,
@@ -545,12 +556,11 @@ impl ApplicationHandler for App {
 
                 if let Some(ws) = self.window_state.as_ref() {
                     ws.window.set_title(&format!(
-                        "Postretro | {region_label}:{} | faces: {}/{}/{}/{} (total/raw_pvs/pvs/frustum) | pos: ({:.0}, {:.0}, {:.0})",
+                        "Postretro | {region_label}:{} path:{path_label} | draw:{} pvs:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
                         stats.camera_leaf,
+                        stats.drawn_faces,
+                        stats.pvs_reach,
                         stats.total_faces,
-                        stats.raw_pvs_faces,
-                        stats.pvs_faces,
-                        stats.frustum_faces,
                         pos.x,
                         pos.y,
                         pos.z,

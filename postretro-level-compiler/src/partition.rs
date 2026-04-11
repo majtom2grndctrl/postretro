@@ -4,6 +4,7 @@
 mod bsp;
 mod types;
 
+pub use bsp::find_leaf_for_point;
 pub use types::*;
 
 use crate::map_data::{BrushVolume, Face};

@@ -45,22 +45,38 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("[Compiler] BSP partitioning complete.");
 
-    let geo_result = geometry::extract_geometry(&result.faces, &result.tree);
-    let empty_leaf_count = result.tree.leaves.iter().filter(|l| !l.is_solid).count();
-    geometry::log_stats(&geo_result, empty_leaf_count);
-
-    log::info!("[Compiler] Geometry extraction complete.");
-
-    let (vis_result, generated_portals) = visibility::build_portal_pvs(&result.tree);
+    // Generate portals before encoding anything: the exterior flood-fill
+    // needs the portal adjacency graph, and the BSP/leaf encoder needs the
+    // exterior set so it can emit `face_count = 0` for exterior leaves in
+    // lockstep with the geometry section.
+    let generated_portals = portals::generate_portals(&result.tree);
     let portal_count = generated_portals.len();
     if portal_count == 0 {
         log::warn!(
             "[Compiler] Portal generation produced 0 portals. Vis will treat all leaves as mutually visible."
         );
     }
+
+    let exterior_leaves = visibility::find_exterior_leaves(&result.tree, &generated_portals);
+
+    let vis_result =
+        visibility::encode_vis(&result.tree, &generated_portals, &exterior_leaves);
     visibility::log_stats(&vis_result, portal_count);
 
     log::info!("[Compiler] Visibility computation complete.");
+
+    let geo_result =
+        geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
+    let empty_leaf_count = result
+        .tree
+        .leaves
+        .iter()
+        .enumerate()
+        .filter(|(idx, l)| !l.is_solid && !exterior_leaves.contains(idx))
+        .count();
+    geometry::log_stats(&geo_result, empty_leaf_count);
+
+    log::info!("[Compiler] Geometry extraction complete.");
 
     if args.pvs {
         log::info!("[Compiler] Writing precomputed PVS mode (--pvs).");

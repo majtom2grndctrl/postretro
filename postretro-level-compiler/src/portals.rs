@@ -1094,7 +1094,11 @@ mod tests {
         // Stage 3: geometry extraction. extract_geometry iterates only empty
         // leaves; any face that lives solely in solid leaves is silently
         // dropped. This is the stage where the visible bug surfaces.
-        let geo = crate::geometry::extract_geometry(&result.faces, &result.tree);
+        let geo = crate::geometry::extract_geometry(
+            &result.faces,
+            &result.tree,
+            &std::collections::HashSet::new(),
+        );
         let mut stage3_per_cube: Vec<[usize; 6]> = vec![[0; 6]; num_cubes];
         // Classify a geometry face by axis: all vertices must lie on one of
         // the cube's axis-aligned bounding planes within epsilon.

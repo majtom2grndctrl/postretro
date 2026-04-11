@@ -518,7 +518,11 @@ mod tests {
         let result = crate::partition::partition(clipped, &map_data.brush_volumes)
             .expect("partition should succeed on clipped faces");
 
-        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree);
+        let geo_result = crate::geometry::extract_geometry(
+            &result.faces,
+            &result.tree,
+            &std::collections::HashSet::new(),
+        );
         assert!(
             !geo_result.geometry.faces.is_empty(),
             "should produce geometry"

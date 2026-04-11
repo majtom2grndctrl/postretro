@@ -1,6 +1,8 @@
 // Geometry extraction: fan-triangulate faces, compute UVs, build vertex/index buffers.
 // See: context/lib/build_pipeline.md §PRL
 
+use std::collections::HashSet;
+
 use glam::DVec3;
 use postretro_level_format::geometry::{FaceMetaV2, GeometrySectionV2};
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -26,7 +28,16 @@ pub struct GeometryResult {
 /// Only empty leaves contribute geometry. Solid leaves are skipped. The
 /// `leaf_index` field in `FaceMetaV2` stores the sequential index among empty
 /// leaves (not the raw leaf index in the BSP tree).
-pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometryResult {
+///
+/// Leaves listed in `exterior_leaves` contribute no faces but still advance
+/// the sequential empty-leaf counter, so `leaf_index` values remain aligned
+/// with the encoded `BspLeavesSection` produced by the visibility pass. Pass
+/// `&HashSet::new()` to disable exterior culling.
+pub fn extract_geometry(
+    faces: &[Face],
+    tree: &BspTree,
+    exterior_leaves: &HashSet<usize>,
+) -> GeometryResult {
     if faces.is_empty() {
         return GeometryResult {
             geometry: GeometrySectionV2 {
@@ -52,8 +63,10 @@ pub fn extract_geometry(faces: &[Face], tree: &BspTree) -> GeometryResult {
         texture_indices.push(idx as u32);
     }
 
-    // Build a face ordering sorted by empty-leaf index.
-    let ordered_faces = build_leaf_ordered_faces(tree);
+    // Build a face ordering sorted by empty-leaf index. Exterior leaves
+    // contribute no faces but still consume a sequential index slot so the
+    // `leaf_index` in FaceMetaV2 stays aligned with the BspLeavesSection.
+    let ordered_faces = build_leaf_ordered_faces(tree, exterior_leaves);
 
     let inverse_scale: f64 = 1.0 / MapFormat::IdTech2.units_to_meters();
 
@@ -229,22 +242,36 @@ fn valve_texel_uv(
 ///
 /// Iterates BSP leaves in order, skipping solid leaves. Each empty leaf gets a
 /// sequential index (0, 1, 2, ...) used as the `leaf_index` in face metadata.
-fn build_leaf_ordered_faces(tree: &BspTree) -> Vec<(usize, usize)> {
+///
+/// Leaves in `exterior_leaves` contribute no faces, but the sequential counter
+/// still advances through them. This keeps the sequential index a stable
+/// function of the BSP leaf array — interior leaves downstream of an exterior
+/// leaf land in the same sequential slot they would occupy without exterior
+/// culling — so emitting `face_count = 0` in `BspLeavesSection` for the same
+/// exterior set (see `visibility::encode_leaves_and_pvs`) keeps face ranges
+/// and geometry storage in lockstep.
+fn build_leaf_ordered_faces(
+    tree: &BspTree,
+    exterior_leaves: &HashSet<usize>,
+) -> Vec<(usize, usize)> {
     let capacity: usize = tree
         .leaves
         .iter()
-        .filter(|l| !l.is_solid)
-        .map(|l| l.face_indices.len())
+        .enumerate()
+        .filter(|(idx, l)| !l.is_solid && !exterior_leaves.contains(idx))
+        .map(|(_, l)| l.face_indices.len())
         .sum();
     let mut ordered = Vec::with_capacity(capacity);
 
     let mut empty_leaf_idx = 0usize;
-    for leaf in &tree.leaves {
+    for (bsp_leaf_idx, leaf) in tree.leaves.iter().enumerate() {
         if leaf.is_solid {
             continue;
         }
-        for &face_idx in &leaf.face_indices {
-            ordered.push((face_idx, empty_leaf_idx));
+        if !exterior_leaves.contains(&bsp_leaf_idx) {
+            for &face_idx in &leaf.face_indices {
+                ordered.push((face_idx, empty_leaf_idx));
+            }
         }
         empty_leaf_idx += 1;
     }
@@ -272,6 +299,13 @@ mod tests {
     use super::*;
     use crate::partition::{Aabb, BspLeaf};
     use postretro_level_format::geometry::NO_TEXTURE;
+
+    /// Shared empty exterior set for tests that don't exercise exterior
+    /// culling — matches the no-op pass-through shape used by upstream
+    /// call sites before the exterior-cull flood-fill was introduced.
+    fn no_exterior() -> HashSet<usize> {
+        HashSet::new()
+    }
 
     fn default_projection() -> TextureProjection {
         TextureProjection::Standard {
@@ -375,7 +409,7 @@ mod tests {
         let faces = vec![triangle_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         assert_eq!(section.faces.len(), 1);
@@ -392,7 +426,7 @@ mod tests {
         let faces = vec![quad_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         assert_eq!(section.indices.len(), 6, "quad should produce 6 indices");
@@ -412,7 +446,7 @@ mod tests {
         let faces = vec![pentagon_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         assert_eq!(
@@ -428,7 +462,7 @@ mod tests {
         let faces = vec![hexagon_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         assert_eq!(
@@ -457,7 +491,7 @@ mod tests {
         let faces = vec![quad_face(), pentagon_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0, 1], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         let vertex_count = section.vertices.len() as u32;
@@ -481,7 +515,7 @@ mod tests {
         ];
         let tree = make_tree_with_empty_leaves(vec![(vec![0, 1, 2, 3], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         let sum: u32 = section.faces.iter().map(|f| f.index_count).sum();
@@ -506,7 +540,7 @@ mod tests {
         }];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         assert_eq!(section.vertices[0][0], -2.0);
@@ -530,7 +564,7 @@ mod tests {
             (vec![1, 2], false), // empty leaf 1
         ]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         assert_eq!(section.faces.len(), 3);
@@ -549,7 +583,7 @@ mod tests {
             (vec![1, 2], false), // empty leaf 0
         ]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         // Only faces from the empty leaf should appear
@@ -571,7 +605,7 @@ mod tests {
             (vec![2, 3], false), // empty leaf 1
         ]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         // Empty leaf 0 faces should come before empty leaf 1 faces
@@ -597,7 +631,7 @@ mod tests {
             nodes: Vec::new(),
             leaves: Vec::new(),
         };
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         assert!(section.vertices.is_empty());
@@ -618,7 +652,7 @@ mod tests {
         ];
         let tree = make_tree_with_empty_leaves(vec![(vec![0, 1, 2, 3], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         for (i, face) in section.faces.iter().enumerate() {
@@ -637,7 +671,7 @@ mod tests {
         let faces = vec![triangle_face(), quad_face(), pentagon_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false), (vec![1, 2], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
         let bytes = section.to_bytes();
         let restored = GeometrySectionV2::from_bytes(&bytes).unwrap();
@@ -659,7 +693,7 @@ mod tests {
         let faces = vec![face_a, face_b, face_c];
         let tree = make_tree_with_empty_leaves(vec![(vec![0, 1, 2], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
 
         assert_eq!(result.texture_names.names.len(), 2);
         assert_eq!(result.texture_names.names[0], "metal/floor");
@@ -678,7 +712,7 @@ mod tests {
         let faces = vec![face_a, face_b, face_c];
         let tree = make_tree_with_empty_leaves(vec![(vec![0, 1, 2], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         // Face 0 and 2 share texture "metal/floor" -> index 0
@@ -695,7 +729,7 @@ mod tests {
         let faces = vec![triangle_face()];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         // Every vertex should have 5 floats (x, y, z, u, v)
@@ -732,7 +766,7 @@ mod tests {
         let faces = vec![face];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         // At least one vertex should have non-zero UVs
@@ -769,7 +803,7 @@ mod tests {
         let faces = vec![face];
         let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
 
-        let result = extract_geometry(&faces, &tree);
+        let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
         // The vertex at origin should have UVs equal to the offsets (32, 16)
@@ -819,7 +853,11 @@ mod tests {
             crate::partition::partition(map_data.world_faces, &map_data.brush_volumes)
                 .expect("partition should succeed on test map");
 
-        let result = extract_geometry(&partition_result.faces, &partition_result.tree);
+        let result = extract_geometry(
+            &partition_result.faces,
+            &partition_result.tree,
+            &no_exterior(),
+        );
         let section = &result.geometry;
 
         // Every face should produce triangles

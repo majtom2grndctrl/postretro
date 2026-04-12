@@ -10,11 +10,11 @@
                           -=[ BOOMER SHOOTER ENGINE ]=-
 ```
 
-Postretro is an experiment: can you build a Doom/Quake-style FPS engine in Rust that genuinely looks and feels retro, loads quick and snappy like old games used to, runs smooth as butter, but embellishes the past with some rendering techniques that were impossible back then but are trivial now?
+Postretro is a Quake-style FPS engine in Rust that genuinely looks and feels retro, loads quick and snappy like old games used to, runs smooth as butter, but embellishes the past with some rendering techniques that were impossible back then but are trivial now.
 
-The visual target is something like Prodeus — chunky pixels, billboard sprites, baked lighting, cyberpunk atmosphere. But the goal is to earn that look through genuinely old-school rendering techniques. No modern deferred pipeline underneath with a retro filter slapped on top.
+The visual target is something like Prodeus — chunky pixels, billboard sprites, baked lighting, cyberpunk atmosphere. But the goal is to earn that look through low-cost rendering techniques, resulting in a game that looks like you remember but feels better.
 
-It's early days. Right now Postretro loads BSP levels, flies through them in wireframe, and culls non-visible areas using portal-based PVS. Everything else is ahead of us — and that's kind of the fun part.
+It's early days. Right now Postretro loads BSP levels, flies through them with textures, and culls non-visible areas using portal-based PVS. Everything else is ahead of us — and that's kind of the fun part.
 
 ## Planned Milestones
 

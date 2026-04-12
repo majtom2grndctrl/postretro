@@ -49,7 +49,7 @@
 
 ---
 
-## Phase 3: Textured World
+## Phase 3: Textured World ✓
 
 - [x] Load PNG textures at runtime, matched by texture name strings
 - [x] Depth buffer and back-face culling for solid rendering
@@ -57,55 +57,52 @@
 - [x] Material derivation from texture name prefixes (table lookup, logged warnings for unknown prefixes)
 - [x] CSG face clipping to eliminate z-fighting from overlapping brushes (PRL path).
 
-**Testable outcome:** textured level with uniform lighting. Navigate with action-mapped input. No z-fighting.
+**Testable outcome:** textured level with uniform lighting. Navigate with action-mapped input. No z-fighting. ✓
 
 ---
 
-## Phase 4: Light Probes
+## Phase 3.5: Rendering Foundation Extension
 
-Validate probe-only surface lighting before committing to lightmaps. The PRL compiler bakes the probe data into a PRL-native section; the engine samples it at runtime. This phase answers: does probe-sampled surface lighting look right for the target aesthetic?
+Bring the rendering architecture up to the target pipeline (clustered forward+, GPU-driven indirect draws, SH-probe indirect + normal maps) without adding lighting. This phase lays the geometry, culling, and draw-dispatch plumbing so Phase 4 can layer lighting on a stable foundation.
+
+- [ ] **Vertex format upgrade** — extend `postretro-level-format` Geometry section to carry packed normals and tangents per vertex (octahedral `u16 × 2` each, plus bitangent sign). prl-build generates them during brush-side projection. Engine vertex layout and world shader updated to consume them. Flat ambient stays in place.
+- [ ] **Per-cell draw chunks** — restructure prl-build output and engine loader so world geometry is grouped into per-portal-cell chunks with explicit AABB and index range. Replaces per-leaf draw batching. Required for compute culling in the next step.
+- [ ] **GPU-driven indirect draw path** — compute pass consumes the visible cell list (from portal traversal), runs frustum culling per cell, emits `draw_indexed_indirect` commands into a buffer. Main render pass issues a single `multi_draw_indexed_indirect` call. CPU no longer issues per-cell draws.
+- [ ] **HiZ depth pyramid** — compute pass builds a hierarchical-Z pyramid from the previous frame's depth buffer each frame. Cell culling pass tests against it before emitting draws. First frame skips HiZ.
+
+**Testable outcome:** textured level with flat ambient, navigable, rendering via GPU-driven indirect draws with portal + HiZ culling. Same visual result as Phase 3, different rendering architecture underneath. Frame time at least as good as Phase 3, preferably better on cell-heavy maps.
+
+**Phase boundary:** no lighting changes in this phase. The world shader still applies flat ambient — the upgrade to SH sampling, normal maps, and dynamic lights is Phase 4. Keeping lighting out isolates the architectural risk of the indirect draw and cell-chunking changes.
+
+---
+
+## Phase 4: Lighting Foundation
+
+Replace flat ambient with the full target lighting pipeline: SH irradiance volume for indirect, clustered forward+ dynamic lights for direct, normal maps for surface detail, shadow maps for dynamic lights. Phase 4 delivers a fully lit level, not a decision gate — the architectural direction is locked in `context/lib/rendering_pipeline.md` §4.
 
 **Sub-plans:**
 
-- [ ] **FGD light entities** — define `light`, `light_spot`, `light_sun` (exact set TBD) so mappers can place light sources. Prerequisite for the baker and the lighting test maps. Drafted in `plans/drafts/phase-4-fgd-light-entities/`.
-- [ ] **Probe format research** — survey ericw-tools `LIGHTGRID_OCTREE`, dmap, Doom 3 / Quake 4 irradiance volumes, Source ambient cubes, and Rust crates in the neighborhood. Produces a recommendation on spatial layout and per-probe storage. Seeds the follow-up implementation plan. Drafted in `plans/drafts/phase-4-probe-format-research/`.
-- [ ] **Probe section format and baker in prl-build** — compiler stage that reads light entities, places probes in empty space, evaluates lighting, and writes a new PRL section. Prefer existing crates over writing from scratch. Emerges from probe format research.
-- [ ] **Engine probe sampling** — runtime path: parse the probe section, sample nearest probes, interpolate, replace the flat ambient factor from Phase 3 in the world shader. Emerges from probe format research.
-- [ ] **Lighting test maps** — author maps that stress the decision-gate cases: large surfaces, tight corridors, bright-to-dark transitions. Blocked only on FGD light entities; draftable early if parallelization is desired.
-- [ ] **Phase 4 decision gate** — run the baker and runtime against the test maps, judge probe-only lighting quality, capture the continue / fall-back decision for Phase 5.
+- [ ] **FGD light entities** — define `light`, `light_spot`, `light_sun` in `assets/postretro.fgd`. Parser extracts property bags; translator converts to canonical format; validation blocks compilation on errors. Drafted in `plans/drafts/phase-4-baked-lighting/` stages 1–3.
+- [ ] **SH irradiance volume baker** — prl-build stage that places probes on a regular 3D grid over empty space, evaluates SH L2 coefficients by raycasting against static geometry with canonical lights as sources, and writes a new PRL section. Probe validity mask flags probes inside solid brushes. Drafted in `plans/drafts/phase-4-baked-lighting/` stages 4–5.
+- [ ] **Runtime SH probe sampling** — parse the probe section into a 3D texture, sample trilinearly in the world shader, replace flat ambient with the SH-reconstructed irradiance.
+- [ ] **Normal map rendering** — author normal maps alongside albedo in `textures/`, load them as BC5 (or RGBA placeholder), reconstruct TBN in vertex shader, perturb per-fragment normal before shading.
+- [ ] **Clustered forward+ direct lighting** — compute prepass builds per-cluster light index lists from canonical lights plus transient gameplay lights. World shader walks its cluster and accumulates direct contributions.
+- [ ] **Shadow maps for dynamic lights** — cascaded shadow maps for directional lights, cube shadow maps for point and spot lights. Low-resolution, nearest-neighbor sampling — chunky pixel shadow edges match the target aesthetic.
+- [ ] **Lighting test maps** — author maps that exercise indirect bleed, direct falloff, bright-to-dark transitions, normal-mapped surfaces at varied angles. Validates the full stack.
 
-**Testable outcome:** textured level lit entirely by light probes baked by prl-build. Surfaces receive spatially varying illumination from baked probe data. No lightmap atlas, no per-face lightmap UVs.
+**Testable outcome:** textured, normal-mapped level with spatially varying indirect illumination from baked SH probes, dynamic point/spot/directional lights casting shadow-mapped shadows. FGD light entities author both the bake inputs and the runtime direct lights from one source.
 
-**Decision gate:** if probe-only lighting looks right, lightmaps may never enter the engine. If it doesn't, fall back to a lightmap atlas baked into a PRL section in Phase 5. Either way, the experiment cost is one phase.
-
-**Shadow implication:** probe baking captures static light occlusion. Shadow maps are only needed for dynamic lights — muzzle flash, explosions, scripted events. This reduces runtime shadow cost to near-zero for typical static levels.
-
-**Reference implementations:** ericw-tools `LIGHTGRID_OCTREE` and dmap are reference sources for how the Quake lineage solves probe baking. Postretro targets the PRL-native path; the references inform design decisions but are not fallbacks.
+**Shadow coverage:** the SH irradiance volume captures indirect light bounces at bake time; dynamic shadow maps cover direct-light occlusion at runtime. Together these replace what lightmaps would contribute in a traditional Quake-lineage pipeline.
 
 ---
 
-## Phase 5: Lighting Refinement
+## Phase 5: Visual Polish
 
-Direction depends on Phase 4 outcome.
-
-**If probe-only lighting works:**
-- [ ] Dynamic point lights (forward pass): muzzle flash, explosions — supplementing probe lighting. Shadow-casting dynamic lights need shadow maps; static lights rely on probe occlusion and need none.
-- [ ] Shadow maps for dynamic lights: low-resolution depth maps, nearest-neighbor sampling. Low res is intentional — produces chunky pixel shadow edges matching the target aesthetic.
-- [ ] Emissive / fullbright surfaces (neon, screens)
-- [ ] Evaluate whether custom probe placement/density justifies a custom compiler stage
-
-**If probe-only lighting falls short:**
-- [ ] Build lightmap atlas from RGBLIGHTING lump
-- [ ] Two-texture render pipeline: base texture + lightmap
-- [ ] Colored lightmaps (RGBLIGHTING)
-- [ ] Light probes for sprite/entity lighting only (original LIGHTGRID_OCTREE use case)
-- [ ] Dynamic point lights supplementing baked lightmaps
-
-Either path:
-- [ ] Billboard sprite rendering: camera-facing textured quads, lit by nearest light probe
+- [ ] Billboard sprite rendering: camera-facing textured quads, lit by the SH volume plus reaching dynamic lights
+- [ ] Emissive / fullbright surfaces (neon, screens): bypass lighting modulation, render at full brightness
 - [ ] Fog volumes: resolve `env_fog_volume` to spatial regions, per-fragment fog by distance
 
-**Testable outcome:** fully lit level with dynamic lights, billboard sprites, fog zones.
+**Testable outcome:** lit level with billboard sprites, neon surfaces, fog zones. Covers the visual vocabulary gap between "geometry is lit" and "the level feels inhabited."
 
 ---
 

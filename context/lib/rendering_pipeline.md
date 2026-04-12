@@ -68,87 +68,125 @@ Loader parses level data into engine-side structs, produces GPU-ready data. Rend
 
 **Load sequence:**
 
-1. Parse the level file into typed structures (vertices, faces, textures, visibility data).
-2. Build engine-side vertex data: positions (coordinate-transformed to engine Y-up), texture UVs, vertex color (white default). PRL data is loaded directly. See §6.
-3. Load PNG textures matched by texture name strings. Generate checkerboard placeholders for missing textures.
-4. Build per-face metadata: material type (from texture name prefix), texture index, draw command parameters.
-5. Sort faces by (leaf, texture) for draw batching. Pre-compute per-leaf texture sub-ranges.
+1. Parse the level file into typed structures (vertices, faces, textures, visibility data, SH irradiance volume).
+2. Build engine-side vertex data: positions (coordinate-transformed to engine Y-up), texture UVs, packed normals, packed tangents. PRL data is loaded directly. See §6.
+3. Load PNG textures (albedo + normal map) matched by texture name strings. Generate checkerboard placeholders for missing albedo, neutral normals (0,0,1) for missing normal maps.
+4. Build per-face metadata: material type (from texture name prefix), texture indices, draw command parameters.
+5. Group faces into per-cell draw chunks keyed by portal cell; each chunk owns a contiguous index range and records its AABB for GPU culling.
 6. Hand prepared data to the renderer. Renderer performs all GPU uploads — loader never calls wgpu.
 7. Renderer returns opaque handles. All subsequent draw operations reference these handles.
 
 ---
 
-## 4. Phase 4 Lighting
+## 4. Lighting
 
-> **Baked light entities.** Mappers author light entities in TrenchBroom (`light`, `light_spot`, `light_sun`). Compiler translates them to canonical format, validates them, and hands canonical lights to Phase 4.5 baker.
+Lighting has two components: **dynamic direct illumination** (clustered forward+ with shadow maps) and **baked indirect illumination** (SH irradiance volume sampled per fragment). Both are evaluated in the world shader during the opaque geometry pass — no deferred stages, no lightmap atlas.
 
-Light entities are defined in the FGD alongside fog and reverb entities (see `build_pipeline.md` §Custom FGD). The compiler's translation layer converts mapper-facing properties (light intensity, color, falloff distance, animation) to engine-internal canonical format, applying validation rules: falloff distance required, spotlight direction verified, intensity bounds checked. Invalid lights fail compilation with clear error messages.
+**Direct illumination.** Dynamic lights (point, spot, directional) are built into a clustered light list each frame by a compute prepass. The fragment shader reads the cluster for its screen-space tile and accumulates contributions from lights whose volume reaches that fragment. Shadow-casting lights write to shadow maps (cascaded shadow maps for directional, cube shadow maps for point and spot) before the main pass; the fragment shader samples them during accumulation. Light sources originate from FGD entities (`light`, `light_spot`, `light_sun`) and from gameplay effects (muzzle flashes, explosions).
 
-**Phase boundary:** Phase 4 owns entity spec, translation layer, and validation. Phase 4.5 owns probe sampling strategy, baker algorithm, and renderer integration. Missing lighting section is not an error; flat white ambient remains the fallback until Phase 4.5 ships.
+**Indirect illumination.** prl-build bakes a regular 3D grid of SH L2 probes over the level's empty space, evaluating incoming radiance at each probe by raycasting against static geometry with canonical lights as sources. The runtime samples the probe grid via trilinear interpolation in the fragment shader. Missing probe section falls back to flat white ambient.
 
-Full spec: `plans/drafts/phase-4-fgd-light-entities/`
+**Normal maps.** Tangent-space normal maps perturb the per-fragment normal before both direct and indirect evaluation. Tangents are packed into the vertex format (§6) at compile time.
+
+**Light entity authoring.** Mappers place light entities in TrenchBroom. The compiler's translation layer converts mapper-facing FGD properties to an internal canonical format, applying validation rules (falloff distance required, spotlight direction verified, intensity bounds checked). Canonical lights feed both the SH baker and the runtime direct-lighting path. See `build_pipeline.md` §Custom FGD.
+
+Full spec: `plans/drafts/phase-4-baked-lighting/`
+
+---
+
+## 5. Cells and Draw Chunks
+
+**Cell** = empty BSP leaf in its draw-chunk and visibility role. 1:1 with leaves today; the separate term leaves room for future subdivision or merging without a spec rewrite. **Cluster** = screen-space light-culling grid (§7.1 step 4), never spatial. Rule: cell = world space, cluster = screen space.
+
+World geometry is grouped by cell at compile time. Each chunk:
+
+| Field | Content |
+|-------|---------|
+| `cell_id` | Portal-graph node |
+| `aabb` | World-space bounds for GPU frustum + HiZ culling |
+| `index_offset` | Start of the chunk's indices in the shared index buffer |
+| `index_count` | Length of the index range |
+| `material_bucket` | (albedo, normal map) pair the indices reference |
+
+Indices within a cell are ordered by material bucket, so each cell emits one indirect draw per material it touches (typical: 2–10). The chunk table lives in its own PRL section; the loader hands it to the renderer.
+
+Flow: portal traversal (§2) produces the visible cell list → compute cell-culling prepass (§7.1 step 3) frustum- and HiZ-culls → emits `draw_indexed_indirect` commands → opaque pass (§7.2) consumes via `multi_draw_indexed_indirect`, one call per material bucket.
 
 ---
 
 ## 6. Vertex Format
 
-Custom vertex format used for all world geometry.
+Custom vertex format used for all world geometry. Packed for cache efficiency — non-position attributes are quantized where the precision loss is imperceptible at the target aesthetic.
 
 | Attribute | Content | Purpose |
 |-----------|---------|---------|
-| Position | 3D world-space coordinate (Y-up, engine meters) | Geometry placement |
-| Base UV | Texture-space coordinate, normalized by texture dimensions | Diffuse texture sampling |
-| Vertex color | RGBA per-vertex tint (white default) | Dynamic lighting accumulation (Phase 5+) |
+| Position | `f32 × 3` world-space coordinate (Y-up, engine meters) | Geometry placement |
+| Base UV | `f32 × 2` texture-space coordinate, normalized by texture dimensions | Diffuse and normal-map texture sampling |
+| Normal | Octahedral-encoded `u16 × 2` | Per-fragment shading normal (pre-normal-map) |
+| Tangent | Octahedral-encoded `u16 × 2` plus sign bit | Tangent-space basis for normal-map sampling |
 
 UVs are computed from face projection data (s-axis, t-axis, offsets) during compilation. The GPU sampler uses repeat addressing — UVs outside [0, 1] tile correctly.
 
-Vertex color carries per-vertex lighting contributions in later phases. Currently unused beyond providing a tint channel (white = no effect). Phase 5 adds dynamic light accumulation.
+Normals and tangents are packed via octahedral encoding (two `u16` per vector), which preserves direction to visually-indistinguishable precision at half the storage of `f32 × 3`. The tangent's bitangent sign rides in a spare bit so the vertex shader can reconstruct the full TBN matrix. Both are generated at compile time in prl-build during the brush-side projection stage — normals from face plane, tangents from the UV projection axes.
+
+The earlier per-vertex color channel is removed: dynamic light accumulation happens per fragment in the clustered shading pass (§4), not via per-vertex interpolation.
 
 ---
 
 ## 7. Rendering Stages
 
-Forward rendering pipeline. Each stage runs as a distinct render pass or draw call group within a frame.
+Clustered forward+ pipeline. Each frame runs a small set of compute prepasses that build culling and lighting state, then a single opaque geometry pass that consumes it, then post-processing.
 
-### 7.1 World Geometry
+### 7.1 Visibility and Culling Prepasses
 
-Draw visible faces from the visibility-culled draw set (§2). Draw calls grouped by (leaf, texture) — one call per visible leaf × texture pair. Minimizes bind group switches without breaking leaf contiguity required by visibility tracking.
+1. **Portal traversal** (CPU) — §2 flood-fill produces the visible cell set.
+2. **HiZ depth pyramid** (compute, *Phase 3.5*) — downsample the previous frame's depth buffer into a hierarchical-Z pyramid used for occlusion testing. First frame uses a permissive pass-all bound.
+3. **GPU cell culling** (compute, *Phase 3.5*) — each surviving cell's AABB is tested against the current frustum and HiZ pyramid. Surviving cells emit `draw_indexed_indirect` commands into an indirect buffer, grouped by material bucket.
+4. **Clustered light list** (compute, *Phase 4*) — builds per-cluster light index lists from the dynamic light set. Cluster grid is screen-space tiles × depth slices.
 
-Each face samples its base texture at its UV coordinate. Flat ambient lighting applied uniformly: `output = base_texture × ambient_light × vertex_color`. Phase 4.5 replaces flat ambient with per-probe illumination baked from Phase 4 light entities.
+### 7.2 World Geometry
+
+Single opaque pass. CPU issues one `multi_draw_indexed_indirect` call per material bucket against its slice of the indirect buffer built in §7.1 — typically 10–50 calls per frame. Collapsing to one call would need bindless descriptor arrays, not baseline in wgpu. Per-fragment shading:
+
+- Sample base texture and normal map at the UV coordinate. Reconstruct world-space normal from the TBN and normal-map sample.
+- Sample the SH L2 irradiance volume at fragment position (trilinear) for indirect lighting.
+- Walk the fragment's cluster light list; for each light, evaluate direct contribution and sample the associated shadow map.
+- Output = `albedo × (indirect_sh + Σ direct_lights)`.
 
 Depth testing (Less, write enabled) and back-face culling (counter-clockwise front face) are permanent from this phase forward.
 
-### 7.2 Dynamic Lights
+### 7.3 Shadow Maps
+
+> **Phase 4.**
+
+Shadow-casting dynamic lights render into dedicated depth targets before the opaque pass. Directional lights use cascaded shadow maps (CSM); point and spot lights use cube or single shadow maps respectively. Resolution is intentionally modest — chunky pixel shadow edges match the target aesthetic.
+
+### 7.4 Billboard Sprites
 
 > **Phase 5+. Not yet implemented.**
 
-Forward point lights supplementing baked lighting: muzzle flashes, neon glow, explosions, projectile trails. Transient, gameplay-driven illumination — not a replacement for baked lighting. Accumulate into vertex color or evaluate per-fragment.
+Camera-facing textured quads for characters, pickups, and decorative elements. Classic Doom-style billboarding. Lit by the same SH irradiance volume as world geometry, plus any reaching dynamic lights.
 
-### 7.3 Billboard Sprites
-
-> **Phase 5+. Not yet implemented.**
-
-Camera-facing textured quads for characters, pickups, and decorative elements. Classic Doom-style billboarding. Lit by nearest light probe from Phase 4 lighting data; fallback to flat ambient when absent.
-
-### 7.4 Emissive / Fullbright Surfaces
+### 7.5 Emissive / Fullbright Surfaces
 
 > **Rendering behavior Phase 5+.** Material flag is derived and stored during level load. The rendering bypass is not yet implemented.
 
 Neon signs, screens, glowing panels: bypass lighting modulation, render at full brightness. Identified by the emissive flag on the material enum variant. See `resource_management.md` §3.
 
-### 7.5 Fog Volumes
+### 7.6 Fog Volumes
 
 > **Phase 5+. Not yet implemented.**
 
 Per-volume fog via `env_fog_volume` brush entities. Resolved to BSP leaves at load time. Per-fragment effect — not a screen-space post-process. Camera's current leaf determines the active fog volume. Smallest volume wins when a leaf belongs to multiple. See `audio.md` §6 for the same rule applied to reverb zones.
 
-### 7.6 Post-Processing
+### 7.7 Post-Processing
 
-> **Phase 5+. Not yet implemented.**
+> **Phase 6. Not yet implemented.**
 
 | Effect | Description |
 |--------|-------------|
 | **Bloom** | Bright pixels bleed into surrounding area. Reinforces neon cyberpunk aesthetic. |
+| **Tonemapping** | HDR lighting accumulation collapsed to display range. |
 | **CRT / Scanline** | Optional retro display effects: scanlines, curvature, color fringing. Off by default. |
 
 ---
@@ -159,20 +197,23 @@ Per-volume fog via `env_fog_volume` brush entities. Resolved to BSP leaves at lo
 
 | Output | Description |
 |--------|-------------|
-| Vertex buffer | Face vertices in custom vertex format (§6); sorted by (leaf, texture) |
-| Index buffer | Triangle indices; sorted by (leaf, texture) for draw batching |
-| Loaded textures | CPU-side RGBA8 data per texture, indexed by texture index. Checkerboard for missing. |
-| Per-face metadata | Material type, texture index, draw command parameters (index offset, index count) |
-| Per-leaf texture sub-ranges | Pre-computed (texture_index, index_offset, index_count) tuples per leaf for the draw loop |
+| Vertex buffer | Face vertices in custom vertex format (§6); grouped by portal cell |
+| Index buffer | Triangle indices; contiguous per cell for indirect draws |
+| Loaded textures | CPU-side data per texture (albedo + normal map), indexed by texture index. Checkerboard for missing albedo; neutral normal for missing normal map. |
+| Per-face metadata | Material type, texture indices, index range within its cell's chunk |
+| Per-cell draw chunks | `(cell_id, aabb, index_offset, index_count, material_bucket)` tuples consumed by GPU culling and indirect draw emission |
+| SH irradiance volume | 3D grid of SH L2 coefficients (27 f32 per probe) plus validity mask |
+| Canonical lights | Validated `light` / `light_spot` / `light_sun` entities for the runtime direct lighting path |
 
 ### Renderer consumes
 
 | Input | Description |
 |-------|-------------|
-| GPU buffer handles | Vertex buffer, index buffer — opaque handles, not raw data |
-| Per-texture bind groups | One wgpu bind group per unique texture (texture view + sampler) |
-| Per-frame uniform | View-projection matrix, ambient light factor |
-| Per-leaf texture sub-ranges | Drive the draw loop: one indexed draw call per (visible_leaf, texture) pair |
+| GPU buffer handles | Vertex buffer, index buffer, per-cell chunk buffer, indirect draw buffer — opaque handles, not raw data |
+| Material bind groups | One wgpu bind group per unique (albedo, normal map) pair |
+| Per-frame uniforms | View-projection matrix, camera position, time, cluster grid parameters |
+| SH volume texture | 3D texture storing interpolated SH coefficients; sampled per fragment |
+| Shadow map atlas / cube array | Dynamic-light shadow targets written each frame before the opaque pass |
 
 ### Boundary rule
 
@@ -209,8 +250,10 @@ Camera position and orientation produce a view matrix each frame. The view matri
 
 ## 10. Non-Goals
 
-- **Deferred rendering** — forward pipeline is sufficient for the target light count and aesthetic. Deferred adds complexity without benefit here.
+- **Deferred rendering** — clustered forward+ is sufficient for the target light count and aesthetic. Deferred adds complexity without benefit here.
+- **Baked lightmaps** — indirect lighting lives in the SH irradiance volume. No lightmap atlas, no per-face lightmap UVs, no lightmap bake stage.
+- **PBR materials** — albedo + normal map is the full material vocabulary. Metallic/roughness workflows are out of scope.
+- **Hardware ray tracing** — not available in baseline wgpu. Shadow maps cover dynamic shadowing; the SH volume covers indirect illumination.
+- **Mesh shaders** — not baseline in wgpu. GPU-driven culling uses compute + `draw_indexed_indirect` instead.
 - **Runtime level compilation** — maps are compiled offline by prl-build. The engine is a consumer, not a compiler.
-- **PBR materials** — baked lightmaps and simple Blinn-Phong specular achieve the retro aesthetic. Metallic/roughness workflows are out of scope.
-- **Ray tracing** — baked lighting plus a small number of dynamic lights covers the visual needs.
 - **Multiplayer / networking** — single-player engine. Network synchronization is not a rendering concern and is excluded from the project scope entirely.

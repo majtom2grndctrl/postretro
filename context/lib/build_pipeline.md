@@ -74,7 +74,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 
 ### Entity resolution
 
-- **`light`, `light_spot`, `light_sun`** — parsed, translated to canonical format, and validated at compile time. Validation rules: falloff distance required, spotlight direction verified, intensity bounds checked. Canonical lights feed Phase 4.5 baker; compilation fails on validation errors.
+- **`light`, `light_spot`, `light_sun`** — parsed, translated to canonical format, and validated at compile time. Validation rules: falloff distance required, spotlight direction verified, intensity bounds checked. Canonical lights feed the SH irradiance volume baker and the runtime direct lighting path. Compilation fails on validation errors.
 - **`env_fog_volume`** — resolved to BSP leaves at load time. Each leaf in the volume gets per-leaf atmospheric haze parameters.
 - **`env_cubemap`** — marks a position for offline cubemap baking. Bake tool is out of initial scope.
 - **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf in the volume gets spatial reverb parameters for the audio subsystem.
@@ -95,12 +95,13 @@ Unknown prefix falls back to a default material with a warning at load time.
 
 | Data | Source | How |
 |------|--------|-----|
-| Geometry | prl-build (brush-volume BSP → brush-side projection → pack) | Geometry section |
+| Geometry | prl-build (brush-volume BSP → brush-side projection → pack) | Geometry section — positions, UVs, packed normals, packed tangents |
 | BSP tree | prl-build | BspNodes + BspLeaves sections |
 | Visibility | prl-build | Portals section (default) or LeafPvs section (`--pvs`) |
+| Per-cell draw chunks | prl-build | Face groups keyed by portal cell for runtime indirect draws |
 | Surface material types | Texture naming convention | Prefix lookup table |
-| Light entities | FGD entities (`light`, `light_spot`, `light_sun`) | Parsed, translated to canonical format. Phase 4.5 baker consumes canonical lights. |
-| Lighting | prl-build (Phase 4.5) | Baked illumination at probe sample points; stored in PRL sections |
+| Light entities | FGD entities (`light`, `light_spot`, `light_sun`) | Parsed, translated to canonical format. Feeds both the SH baker and the runtime direct-lighting path. |
+| Indirect lighting | prl-build (Phase 4) | SH L2 irradiance volume (regular 3D grid) baked from canonical lights; stored in PRL section |
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity — offline cubemap bake |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |

@@ -1,6 +1,6 @@
 # Entity Model
 
-> **Read this when:** working on game logic, implementing entity types, loading entities from BSP, or integrating entity state with renderer/audio.
+> **Read this when:** working on game logic, implementing entity types, loading entities from level data, or integrating entity state with renderer/audio.
 > **Key invariant:** game logic owns all entities. Other subsystems borrow entity state read-only. Entities are concrete typed objects, not component bags.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Audio](./audio.md)
 
@@ -56,10 +56,10 @@ Entities enter the world through two paths:
 
 | Source | When | Examples |
 |--------|------|----------|
-| BSP entity lump | Level load | Player spawn, enemies, doors, pickups, triggers, lights |
+| Level entity data | Level load | Player spawn, enemies, doors, pickups, triggers, lights |
 | Runtime spawning | During gameplay | Projectiles, particles, explosion effects |
 
-Level-load entities are created once when the BSP is parsed. Runtime entities are created by game logic in response to player actions or game events.
+Level-load entities are created once when the level is parsed. Runtime entities are created by game logic in response to player actions or game events.
 
 ### Update
 
@@ -77,13 +77,13 @@ Destruction is deferred to the end of the tick. Entities marked for destruction 
 
 ---
 
-## 4. BSP Entity Lump
+## 4. Level Entity Data
 
-BSP files embed an entity lump: a text block of key-value pairs grouped per entity. Each group defines one entity with a `classname` key that identifies its type.
+Level files embed entity definitions: key-value pairs grouped per entity. Each group defines one entity with a `classname` key that identifies its type.
 
 ### Loading
 
-The loader reads the entity lump and resolves each `classname` to an engine entity type. Recognized classnames produce the corresponding entity, initialized from the lump's key-value pairs (position, angle, flags, etc.).
+The loader reads entity definitions and resolves each `classname` to an engine entity type. Recognized classnames produce the corresponding entity, initialized from the key-value pairs (position, angle, flags, etc.).
 
 Unknown classnames are logged as warnings and skipped. The engine does not crash on unrecognized entities — maps may contain editor-only or tool entities that have no runtime meaning.
 
@@ -154,13 +154,7 @@ Leaf index updates each tick after position changes.
 
 ### World Collision
 
-Entities collide against BSP world geometry. Two collision data sources exist, in order of preference:
-
-**BRUSHLIST (preferred):** The `BRUSHLIST` BSPX lump provides convex brush hulls — the original brush geometry used by the mapper. Collision tests against these hulls support arbitrary bounding volume sizes. The qbsp crate natively parses this lump. Produced by `qbsp -wrbrushes`.
-
-**Clipnodes (fallback):** Standard BSP collision data, always present. Clipnodes are a simplified BSP tree precomputed for fixed hull sizes. Quake 1 defines three hulls: point-sized (traces), player-sized (32×32×56), and large (64×64×88). BSP2 extends clipnode limits but not hull count. Clipnode collision works but restricts all entities to one of these fixed sizes — no custom bounding volumes.
-
-The engine uses BRUSHLIST when present and falls back to clipnodes when absent. Log a warning at load time if BRUSHLIST is missing, since clipnode-only collision limits gameplay design (all entities must fit predefined hull sizes).
+Entities collide against BSP world geometry. The BSP tree and brush data baked into PRL provide convex brush hulls — the original brush geometry used by the mapper. Collision tests against these hulls support arbitrary bounding volume sizes.
 
 ### Entity-Entity Collision
 
@@ -175,7 +169,7 @@ Entity type determines which volume shape to use. Volume size is fixed per entit
 
 ### Collision Timing
 
-World collision resolves inline during each entity's movement — the entity slides along or stops at BSP geometry within its update step. Entity-entity overlap tests run as a separate pass after all entity updates complete. This prevents update-order-dependent collision results: all entities move first, then overlaps are detected and resolved.
+World collision resolves inline during each entity's movement — the entity slides along or stops at world geometry within its update step. Entity-entity overlap tests run as a separate pass after all entity updates complete. This prevents update-order-dependent collision results: all entities move first, then overlaps are detected and resolved.
 
 ---
 

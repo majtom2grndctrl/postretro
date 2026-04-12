@@ -10,12 +10,12 @@
 - **Engineering conventions / code style** → `development_guide.md`
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
-- **Rendering pipeline / BSP / lighting / BSPX** → `rendering_pipeline.md`
-- **PRL format / level compiler / BSP / runtime portal vis** → `build_pipeline.md` §PRL
+- **Rendering pipeline / lighting** → `rendering_pipeline.md`
+- **PRL format / level compiler / runtime portal vis** → `build_pipeline.md`
 - **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Brush role spectrum
 - **Audio / spatial sound / reverb zones** → `audio.md`
 - **Entity model / game objects / sprites** → `entity_model.md`
-- **Build pipeline / ericw-tools / FGD / TrenchBroom** → `build_pipeline.md`
+- **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
 - **Input handling / gamepad** → `input.md`
 - **Resource management / textures / materials** → `resource_management.md`
 - **Collision / player movement** → `entity_model.md` §7 · `reference/collision-without-bsp.md` · `plans/drafts/grounded-movement/index.md`
@@ -46,11 +46,9 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 
 ## 3. Baked Data Strategy
 
-Single authoring pipeline: TrenchBroom `.map` → `prl-build` → `.prl`. Engine loads `.prl` as the primary format.
+Single authoring pipeline: TrenchBroom `.map` → `prl-build` → `.prl`. Engine loads `.prl` as the sole runtime map format.
 
-**PRL path (primary):** prl-build compiles geometry, BSP tree, and portal graph. The engine consumes BSP tree, portal geometry, and geometry sections; it walks the portal graph per frame to determine visibility (no precomputed PVS required). `--pvs` mode produces a precomputed PVS bitset as a fallback. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md` §PRL.
-
-**BSP path (legacy support):** Engine can still load `.bsp` files compiled with ericw-tools. No active development on the BSP authoring pipeline. Useful for loading existing assets during the transition. See `build_pipeline.md` §BSP.
+prl-build compiles geometry, BSP tree, and portal graph. The engine consumes BSP tree, portal geometry, and geometry sections; it walks the portal graph per frame to determine visibility (no precomputed PVS required). `--pvs` mode produces a precomputed PVS bitset as a fallback. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md`.
 
 ### PRL baked data
 
@@ -74,6 +72,5 @@ Full detail: `build_pipeline.md`.
 - General-purpose game engine
 - ECS architecture
 - Deferred rendering
-- Extending or forking ericw-tools
 - Runtime level compilation
 - Multiplayer / networking

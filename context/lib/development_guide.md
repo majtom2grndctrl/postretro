@@ -24,8 +24,7 @@ Three crates in a Cargo workspace:
 |---------|-------|
 | Windowing | winit 0.30 |
 | GPU | wgpu 29 (Vulkan, Metal, DX12) |
-| Math | glam 0.30 (pinned — qbsp compatibility; kira pulls glam 0.32 transitively, which is fine since kira's math types don't cross into engine code) |
-| BSP loading | qbsp 0.14 |
+| Math | glam |
 | PRL loading | postretro-level-format |
 | Audio | kira 0.12 |
 | Gamepad | gilrs 0.11 |
@@ -95,7 +94,7 @@ Over-engineering is as costly as under-delivering. Both create surface area that
 |---|---|---|
 | **What** | Shipping scope with missing validation, error handling, or tests | Adding scope, abstractions, or infrastructure the task didn't request |
 | **Cost** | Broken states, follow-up work, lost context | Unnecessary complexity, harder reviews, maintenance burden |
-| **Example** | "BSP loading works but panics on missing lightmap lump" | "Added a generic asset loading framework with plugin hooks" |
+| **Example** | "Map loading works but panics on missing lightmap section" | "Added a generic asset loading framework with plugin hooks" |
 
 ### 1.4 Follow-up criteria
 
@@ -167,7 +166,7 @@ Split along natural boundaries:
 
 In Rust, ownership semantics *are* the data contract. When defining how subsystems exchange data, be explicit about:
 
-- **Owned vs. borrowed** — does the receiver take ownership or borrow? A BSP loader handing vertex data to the renderer is an ownership transfer. A renderer reading from a shared resource table is a borrow.
+- **Owned vs. borrowed** — does the receiver take ownership or borrow? A map loader handing vertex data to the renderer is an ownership transfer. A renderer reading from a shared resource table is a borrow.
 - **Lifetime constraints** — if a borrowed reference crosses a subsystem boundary, the lifetime relationship must be clear and intentional, not accidental.
 - **Clone decisions** — cloning to avoid a borrow fight is sometimes the right call. Document why when the clone isn't obvious.
 
@@ -176,7 +175,7 @@ In Rust, ownership semantics *are* the data contract. When defining how subsyste
 | Mechanism | Use for | Notes |
 |-----------|---------|-------|
 | `Result<T, E>` | Operations that can fail | Default error path |
-| `Option<T>` | Absence is normal, not an error | e.g., optional BSPX lump |
+| `Option<T>` | Absence is normal, not an error | e.g., optional lightmap section |
 | `thiserror` | Error types at subsystem boundaries | Typed, matchable errors |
 | Ad-hoc errors | Internal helpers | Convert at the boundary |
 | `anyhow` | Top-level application code only | Main loop, initialization — not subsystem code |
@@ -190,7 +189,7 @@ Traits earn their existence when there are (or will concretely be) multiple impl
 
 ### 3.5 No `unsafe`
 
-Do not write `unsafe` blocks. The crate stack (wgpu, winit, kira, gilrs, glam, qbsp) provides safe APIs — there is no routine need for `unsafe` in engine code.
+Do not write `unsafe` blocks. The crate stack (wgpu, winit, kira, gilrs, glam) provides safe APIs — there is no routine need for `unsafe` in engine code.
 
 If a situation appears to require `unsafe`, stop and consult the project owner. Do not proceed until the need is confirmed and a risk mitigation approach is agreed on. If `unsafe` is approved, document the rationale and invariants with a `// SAFETY:` comment.
 
@@ -202,13 +201,13 @@ If a situation appears to require `unsafe`, stop and consult the project owner. 
 
 All `wgpu` calls live in the renderer module. Other subsystems do not depend on `wgpu` types or interact with GPU resources directly. This keeps the rendering logic cohesive and prevents GPU concerns from leaking across the codebase.
 
-Within the renderer, separate data logic (BSP traversal, visibility determination, atlas packing, vertex generation) from GPU interaction (buffer uploads, render passes, pipeline creation). Data logic operates on engine types and is testable without a GPU context. GPU interaction is a thin layer that consumes the output.
+Within the renderer, separate data logic (visibility determination, atlas packing, vertex generation) from GPU interaction (buffer uploads, render passes, pipeline creation). Data logic operates on engine types and is testable without a GPU context. GPU interaction is a thin layer that consumes the output.
 
 ### 4.2 Event loop ownership
 
 winit owns the event loop. Once `event_loop.run()` is called, winit controls the top-level control flow. Engine subsystems respond to events dispatched by the loop — they never block it.
 
-Blocking the event loop freezes the window, breaks input handling, and on some platforms triggers an OS "not responding" state. Long-running work (asset parsing, BSP decompression) must be done before entering the loop or on a background thread for CPU-side processing.
+Blocking the event loop freezes the window, breaks input handling, and on some platforms triggers an OS "not responding" state. Long-running work (asset parsing, level decompression) must be done before entering the loop or on a background thread for CPU-side processing.
 
 ### 4.3 Frame ordering
 
@@ -217,7 +216,7 @@ Each frame follows a fixed sequence. Subsystems run in this order because later 
 1. **Input** — poll events, update input state
 2. **Game logic** — fixed timestep update (entity movement, collision, game rules)
 3. **Audio** — update listener position, trigger sounds based on game events
-4. **Render** — traverse BSP, draw visible geometry, dynamic lights, sprites, post-processing
+4. **Render** — determine visible set, draw visible geometry, dynamic lights, sprites, post-processing
 5. **Present** — swap buffers
 
 Game logic runs at a fixed timestep decoupled from the render rate. Render interpolates between the last two game states for smooth visuals at variable framerates.
@@ -277,7 +276,7 @@ When you find a misleading, stale, or code-restating comment in a file you're al
 
 ### 6.1 Logging rules
 
-- Prefix logs with a subsystem tag: `[Renderer]`, `[BSP]`, `[Audio]`, `[Input]`, etc.
+- Prefix logs with a subsystem tag: `[Renderer]`, `[Loader]`, `[Audio]`, `[Input]`, etc.
 - Log actionable failures once at the boundary; avoid spamming logs in hot paths (per-frame rendering, per-face traversal).
 - Prefer structured errors for failures that could surface to the user or to diagnostic tooling.
 - Make the happy path easy to follow in code; keep failure branches explicit.

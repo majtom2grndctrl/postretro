@@ -38,7 +38,7 @@ Three crates in a Cargo workspace:
 |---------|-------|
 | .map parsing | shambler (re-exports shalrath). Uses nalgebra internally — convert to glam at boundary. |
 | PRL format | postretro-level-format |
-| Math | glam 0.30 |
+| Math | glam |
 
 ---
 

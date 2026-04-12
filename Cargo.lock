@@ -798,12 +798,6 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.30.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
-
-[[package]]
-name = "glam"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
@@ -1110,7 +1104,7 @@ checksum = "22dc6835b2ca4b48601f11df172781f5e7677d40a6a466b1b873adcb34ec5d55"
 dependencies = [
  "atomic-arena",
  "cpal",
- "glam 0.32.1",
+ "glam",
  "mint",
  "pastey",
  "rtrb",
@@ -1940,7 +1934,7 @@ dependencies = [
  "anyhow",
  "env_logger",
  "gilrs",
- "glam 0.30.10",
+ "glam",
  "image",
  "kira",
  "log",
@@ -1957,7 +1951,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "env_logger",
- "glam 0.30.10",
+ "glam",
  "log",
  "postretro-level-format",
  "rayon",
@@ -1969,7 +1963,7 @@ dependencies = [
 name = "postretro-level-format"
 version = "0.1.0"
 dependencies = [
- "glam 0.30.10",
+ "glam",
  "thiserror 2.0.18",
 ]
 

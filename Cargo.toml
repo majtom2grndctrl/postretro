@@ -19,7 +19,7 @@ wgpu = "29"
 pollster = "0.4"
 
 # Math
-glam = "0.30"  # pinned for qbsp compatibility
+glam = "0.32"
 
 # Map parsing (level compiler)
 shambler = "0.2"

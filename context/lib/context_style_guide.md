@@ -7,7 +7,9 @@ Short sentences. Clear words. No waste.
 
 ---
 
-## Principles
+## Writing Principles
+
+**Follow these principles for all prose in context library.**
 
 - **Direct and brief.** Active voice, short sentences, no filler. One idea per sentence. Fragments in lists. Drop articles where natural. See *Prose* below for examples.
 - **Durable.** Context files describe what survives refactoring. If a sentence breaks when a file is renamed or a struct is extracted, it belongs in a task description or code comment — not a context file. See *Persistent vs. Ephemeral Content* below.

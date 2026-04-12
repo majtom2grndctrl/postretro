@@ -15,7 +15,7 @@ Each frame runs five stages in fixed order. Later stages depend on results from 
 | **Input** | Poll events, update input state |
 | **Game logic** | Fixed-timestep update: entity movement, collision, game rules |
 | **Audio** | Update listener position, trigger sounds from game events |
-| **Render** | Determine visible set (BSP leaves via portal traversal), draw visible geometry, dynamic lights, sprites, post-processing |
+| **Render** | Determine visible set (leaves via portal traversal), draw visible geometry, dynamic lights, sprites, post-processing |
 | **Present** | Swap buffers |
 
 Game logic runs at a fixed timestep decoupled from render rate. Renderer interpolates between the last two game states for smooth visuals at variable framerates. Simulation is deterministic at any refresh rate. Rendering never blocks or drives the simulation clock.
@@ -30,7 +30,7 @@ Game logic runs at a fixed timestep decoupled from render rate. Renderer interpo
 
 Visibility is **computed per frame from baked portal geometry**. This is the id Tech 4 (Doom 3, 2004) approach, not Quake 1's precomputed-PVS model — Carmack's reasoning for the break still applies: precomputed PVS lengthens compile cycles, fights with dynamic geometry, and per-frame portal traversal is trivially cheap at modern leaf counts.
 
-Portals are the primary and forward path. PVS-based runtime visibility — both the PRL `--pvs` fallback and the BSP legacy path — is **deprecated** and will be removed once portals are reliable on every supported map type. New feature work targets the portal-traversal path. Do not extend the deprecated paths.
+Portals are the primary and forward path. The PRL `--pvs` fallback is **deprecated** and will be removed once portals are reliable on every supported map type. New feature work targets the portal-traversal path. Do not extend the deprecated path.
 
 ### PRL path (primary): runtime portal traversal
 
@@ -48,17 +48,11 @@ There is no separate per-leaf AABB frustum cull on this path. The clip-and-narro
 
 When a PRL file was built with `--pvs`, the Portals section is absent and a precomputed PVS bitset replaces runtime portal traversal. The renderer descends to the camera leaf, looks up its PVS bitset, and draws every empty leaf in the bitset that survives per-leaf AABB frustum culling.
 
-### BSP path (legacy support)
-
-**Status: deprecated.** `.bsp` runtime support exists for development against legacy ericw-tools-compiled maps. Will be removed when PRL is the only supported runtime format. Do not extend.
-
-`.bsp` files compiled by ericw-tools carry precomputed PVS only — no portal data. Visibility uses the same precomputed-PVS-then-AABB-frustum approach as the PRL `--pvs` fallback.
-
 ### Frustum culling
 
-Per-leaf AABB frustum culling applies in the PVS fallback paths only: the PRL `--pvs` path and the BSP legacy path. PVS is conservative — it over-reports visible leaves. The AABB cull tightens the draw set before draw-range emission. It does not apply on the PRL portal-traversal path, where the strict-subset invariant guarantees every reached leaf already lies inside the camera's view cone.
+Per-leaf AABB frustum culling applies in the PVS fallback path only: the PRL `--pvs` path. PVS is conservative — it over-reports visible leaves. The AABB cull tightens the draw set before draw-range emission. It does not apply on the PRL portal-traversal path, where the strict-subset invariant guarantees every reached leaf already lies inside the camera's view cone.
 
-**Missing visibility data:** when neither portals nor PVS is present (corrupted BSP, PRL without a visibility section), draw all empty leaves with frustum culling only. Slower but correct.
+**Missing visibility data:** when neither portals nor PVS is present (PRL without a visibility section), draw all empty leaves with frustum culling only. Slower but correct.
 
 See `build_pipeline.md` §Runtime visibility for the compile-side picture.
 
@@ -68,14 +62,12 @@ See `build_pipeline.md` §Runtime visibility for the compile-side picture.
 
 Loader parses level data into engine-side structs, produces GPU-ready data. Renderer consumes handles, never raw level types. This boundary is strict: raw format types do not appear in renderer code.
 
-**Primary path: PRL.** Loaded via the `postretro-level-format` crate. Pre-processed at compile time by `prl-build`, so the runtime load is mostly buffer hand-off and texture matching.
+**PRL path.** Loaded via the `postretro-level-format` crate. Pre-processed at compile time by `prl-build`, so the runtime load is mostly buffer hand-off and texture matching.
 
-**Deprecated path: BSP.** Loaded via the `qbsp` crate. Performs at runtime the same vertex/UV/material work that `prl-build` does at compile time for PRL. Will be removed with the PVS fallback. Do not extend.
-
-**Load sequence (both paths):**
+**Load sequence:**
 
 1. Parse the level file into typed structures (vertices, faces, textures, visibility data).
-2. Build engine-side vertex data: positions (coordinate-transformed to engine Y-up), texture UVs, vertex color (white default). On the PRL path this is loaded directly; on the BSP path it is computed from face projection data. See §6.
+2. Build engine-side vertex data: positions (coordinate-transformed to engine Y-up), texture UVs, vertex color (white default). PRL data is loaded directly. See §6.
 3. Load PNG textures matched by texture name strings. Generate checkerboard placeholders for missing textures.
 4. Build per-face metadata: material type (from texture name prefix), texture index, draw command parameters.
 5. Sort faces by (leaf, texture) for draw batching. Pre-compute per-leaf texture sub-ranges.
@@ -86,7 +78,7 @@ Loader parses level data into engine-side structs, produces GPU-ready data. Rend
 
 ## 4. Phase 4 Lighting (Planned)
 
-> **Phase 4. Not yet designed.** Flat white ambient lighting is the current state. Phase 4 will add baked lighting baked into PRL by prl-build — not via BSPX lumps.
+> **Phase 4. Not yet designed.** Flat white ambient lighting is the current state. Phase 4 will add baked lighting baked into PRL by prl-build.
 
 Lighting data will live in PRL sections produced by the compiler. The exact mechanism (lightmaps, light probes, irradiance volumes) is a Phase 4 design decision. Desired properties to preserve from the aspirational design:
 
@@ -102,7 +94,7 @@ Missing lighting data is not an error. Current fallback — flat white ambient �
 
 ## 6. Vertex Format
 
-Custom vertex format used for all BSP world geometry.
+Custom vertex format used for all world geometry.
 
 | Attribute | Content | Purpose |
 |-----------|---------|---------|
@@ -110,7 +102,7 @@ Custom vertex format used for all BSP world geometry.
 | Base UV | Texture-space coordinate, normalized by texture dimensions | Diffuse texture sampling |
 | Vertex color | RGBA per-vertex tint (white default) | Dynamic lighting accumulation (Phase 5+) |
 
-UVs are computed from BSP face projection data (s-axis, t-axis, offsets) during load. The GPU sampler uses repeat addressing — UVs outside [0, 1] tile correctly.
+UVs are computed from face projection data (s-axis, t-axis, offsets) during compilation. The GPU sampler uses repeat addressing — UVs outside [0, 1] tile correctly.
 
 Vertex color carries per-vertex lighting contributions in later phases. Currently unused beyond providing a tint channel (white = no effect). Phase 5 adds dynamic light accumulation.
 
@@ -120,7 +112,7 @@ Vertex color carries per-vertex lighting contributions in later phases. Currentl
 
 Forward rendering pipeline. Each stage runs as a distinct render pass or draw call group within a frame.
 
-### 7.1 BSP World Geometry
+### 7.1 World Geometry
 
 Draw visible faces from the visibility-culled draw set (§2). Draw calls grouped by (leaf, texture) — one call per visible leaf × texture pair. Minimizes bind group switches without breaking leaf contiguity required by visibility tracking.
 
@@ -165,13 +157,13 @@ Per-volume fog via `env_fog_volume` brush entities. Resolved to BSP leaves at lo
 
 ## 8. Data Contracts
 
-### BSP loader produces
+### Map loader produces
 
 | Output | Description |
 |--------|-------------|
-| Vertex buffer | BSP face vertices in custom vertex format (§6); sorted by (leaf, texture) |
+| Vertex buffer | Face vertices in custom vertex format (§6); sorted by (leaf, texture) |
 | Index buffer | Triangle indices; sorted by (leaf, texture) for draw batching |
-| Loaded textures | CPU-side RGBA8 data per texture, indexed by BSP texture index. Checkerboard for missing. |
+| Loaded textures | CPU-side RGBA8 data per texture, indexed by texture index. Checkerboard for missing. |
 | Per-face metadata | Material type, texture index, draw command parameters (index offset, index count) |
 | Per-leaf texture sub-ranges | Pre-computed (texture_index, index_offset, index_count) tuples per leaf for the draw loop |
 
@@ -186,7 +178,7 @@ Per-volume fog via `env_fog_volume` brush entities. Resolved to BSP leaves at lo
 
 ### Boundary rule
 
-All wgpu calls live in the renderer module. BSP loader, game logic, audio, and input never import wgpu types. Data crosses the boundary as engine-defined types; the renderer translates to GPU operations.
+All wgpu calls live in the renderer module. Map loader, game logic, audio, and input never import wgpu types. Data crosses the boundary as engine-defined types; the renderer translates to GPU operations.
 
 ---
 
@@ -204,14 +196,14 @@ Right-handed, Y-up. Matches glam's default conventions and wgpu's NDC expectatio
 |-----------|---------|-----------|
 | Horizontal FOV | 100° | Modern boomer shooter default. Configurable 60°–130°. Vertical FOV derived from aspect ratio. |
 | Near clip | 0.1 units | Close enough for weapon models without z-fighting artifacts |
-| Far clip | 4096.0 units | Covers the full BSP2 coordinate range for large maps |
+| Far clip | 4096.0 units | Covers the full coordinate range for large maps |
 | Aspect ratio | Derived from window dimensions | Updated on window resize |
 
 ### View Matrix
 
 Camera position and orientation produce a view matrix each frame. The view matrix feeds:
 
-- Visibility (§2) — camera position seeds the portal-traversal flood-fill (PRL primary) or the PVS lookup (`--pvs` fallback / BSP legacy)
+- Visibility (§2) — camera position seeds the portal-traversal flood-fill (default) or the PVS lookup (`--pvs` fallback)
 - Frustum culling — view-projection matrix defines the clip volume
 - All draw calls — view-projection uniform uploaded once per frame
 
@@ -220,7 +212,7 @@ Camera position and orientation produce a view matrix each frame. The view matri
 ## 10. Non-Goals
 
 - **Deferred rendering** — forward pipeline is sufficient for the target light count and aesthetic. Deferred adds complexity without benefit here.
-- **Runtime level compilation** — maps are compiled offline (ericw-tools for BSP, prl-build for PRL). The engine is a consumer, not a compiler.
+- **Runtime level compilation** — maps are compiled offline by prl-build. The engine is a consumer, not a compiler.
 - **PBR materials** — baked lightmaps and simple Blinn-Phong specular achieve the retro aesthetic. Metallic/roughness workflows are out of scope.
 - **Ray tracing** — baked lighting plus a small number of dynamic lights covers the visual needs.
 - **Multiplayer / networking** — single-player engine. Network synchronization is not a rendering concern and is excluded from the project scope entirely.

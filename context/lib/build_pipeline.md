@@ -1,7 +1,7 @@
 # Build Pipeline
 
 > **Read this when:** setting up the map authoring toolchain, modifying the asset pipeline, adding custom entities, or debugging map compilation issues.
-> **Key invariant:** maps are authored in TrenchBroom. Engine canonical unit: 1 unit = 1 meter. PRL is the primary compilation target; BSP loading remains for legacy asset support.
+> **Key invariant:** maps are authored in TrenchBroom. Engine canonical unit: 1 unit = 1 meter. PRL is the sole runtime map format.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md)
 
 ---
@@ -16,19 +16,9 @@ TrenchBroom (.map) ──► prl-build (postretro-level-compiler) ──► PRL 
 Engine loads PRL + PNGs at runtime
 ```
 
-**PRL path (primary):** prl-build builds a BSP tree, generates portal geometry, and packs geometry into a custom binary format. Default mode stores portal geometry for runtime traversal; `--pvs` mode computes a precomputed PVS instead. Engine loads via the postretro-level-format crate.
+**PRL path:** prl-build builds a BSP tree, generates portal geometry, and packs geometry into a custom binary format. Default mode stores portal geometry for runtime traversal; `--pvs` mode computes a precomputed PVS instead. Engine loads via the postretro-level-format crate.
 
-**BSP path (legacy support):** Engine can load `.bsp` files compiled by ericw-tools. No active development on this path. See §BSP below.
-
-Both paths share the TrenchBroom authoring workflow, FGD entity definitions, and PNG texture pipeline.
-
----
-
-## BSP (Legacy Support)
-
-Engine loads `.bsp` files via the qbsp crate. BSP2 format (removes BSP29 geometry limits). No active development on this path — it exists to load existing assets while content migrates to PRL.
-
-Existing BSP files compiled with ericw-tools continue to render via the BSP loader. New levels should target PRL.
+The PRL path uses the TrenchBroom authoring workflow, FGD entity definitions, and PNG texture pipeline.
 
 ---
 
@@ -40,9 +30,9 @@ No WAD files. Textures are authored as PNGs.
 |-------|-------------|
 | Author | Create PNGs in `textures/<collection>/<name>.png`. TrenchBroom requires one subdirectory level. |
 | TrenchBroom | Displays textures via the Postretro game configuration, which points at the textures directory. |
-| qbsp | Reads PNGs for dimensions only (`-notex` omits pixel data). |
-| BSP output | Stores texture headers: name and dimensions. No pixel data. |
-| Engine | Loads PNGs at runtime, matched to BSP texture entries by name string. |
+| prl-build | Reads PNGs for dimensions during compilation. |
+| PRL output | TextureNames section stores a deduplicated texture name list. No pixel data. |
+| Engine | Loads PNGs at runtime, matched to PRL texture entries by name string. |
 
 ---
 
@@ -100,7 +90,7 @@ Unknown prefix falls back to a default material with a warning at load time.
 
 ## PRL Compilation
 
-The PRL compiler (`prl-build`) reads `.map` files directly via shambler and produces `.prl` binary level files. It replaces ericw-tools' three-step pipeline with a single tool.
+The PRL compiler (`prl-build`) reads `.map` files directly via shambler and produces `.prl` binary level files.
 
 ### Compiler pipeline
 
@@ -188,7 +178,6 @@ Floating-point clipping uses a small inclusive epsilon at half-space boundaries 
 
 ## Non-Goals
 
-- Extending or forking ericw-tools
 - Runtime level compilation
 - WAD file support
 - Runtime lightmap baking

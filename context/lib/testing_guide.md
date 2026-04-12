@@ -12,11 +12,11 @@
 
 | Category | Examples |
 |----------|----------|
-| Cross-subsystem interactions | BSP loader producing data the renderer consumes, game events triggering audio, input state driving game logic |
-| Data-driven behavior | Texture name prefix → material enum derivation, BSPX lump presence/absence shaping renderer paths |
-| Boundary parsing | BSP loading, BSPX lump extraction, FGD entity parsing, config file parsing — anywhere external data enters the engine |
+| Cross-subsystem interactions | Map loader producing data the renderer consumes, game events triggering audio, input state driving game logic |
+| Data-driven behavior | Texture name prefix → material enum derivation, PRL section presence/absence shaping renderer paths |
+| Boundary parsing | PRL loading, FGD entity parsing, config file parsing — anywhere external data enters the engine |
 | Domain logic | BSP traversal ordering, lightmap atlas packing, collision detection, entity resolution from BSP leaves |
-| Degradation paths | Missing optional lumps (LIGHTINGDIR, LIGHTGRID_OCTREE), malformed textures, absent assets |
+| Degradation paths | Missing optional PRL sections (lightmaps, PVS), malformed textures, absent assets |
 
 ### Decision criteria
 
@@ -46,13 +46,13 @@ Assert observable outcomes: output data structures, subsystem responses, state t
 
 ### Real interaction flows
 
-Model the actual data path: BSP load → parsed data → engine structs → renderer-ready buffers. Over-mocking hides the interactions tests exist to document.
+Model the actual data path: level load → parsed data → engine structs → renderer-ready buffers. Over-mocking hides the interactions tests exist to document.
 
 ### Seam-crossing tests
 
 When testing code that bridges two subsystems, derive mock inputs from the source subsystem's actual output format and assertions from the destination subsystem's contract. If both come from the same mental model, the test proves the adapter is a passthrough — not that the passthrough is correct.
 
-**Example:** testing that BSP face data becomes renderable geometry. The input should match what `qbsp` actually produces (vertex layout, face indices, lightmap offsets). The assertion should match what the renderer expects (correct vertex format, valid atlas UVs, proper winding order).
+**Example:** testing that PRL face data becomes renderable geometry. The input should match what prl-build actually produces (vertex layout, face indices, texture metadata). The assertion should match what the renderer expects (correct vertex format, valid atlas UVs, proper winding order).
 
 ### Test naming
 
@@ -89,7 +89,7 @@ Rust convention: unit tests co-locate with source in `#[cfg(test)] mod tests` bl
 | `mod tests` (in source file) | `#[test]` functions for the module's internal logic |
 | `*_test_fixtures.rs` (sibling module) | Test infrastructure: geometry builders, struct constructors, shared helpers |
 | `tests/` | Integration tests that exercise subsystem interactions across module boundaries |
-| `tests/fixtures/` | Test data: minimal BSP files, texture samples, config files |
+| `tests/fixtures/` | Test data: minimal PRL files, texture samples, config files |
 
 ### Co-location rule of thumb
 
@@ -113,7 +113,7 @@ Test files (both `mod tests` blocks and fixture modules) are exempt from the sou
 
 ### Test fixtures
 
-Prefer minimal, purpose-built test data over production assets. A test BSP should contain only the geometry and lumps needed for the behavior under test — not a full level. Small fixtures keep tests fast and make the input-output relationship legible.
+Prefer minimal, purpose-built test data over production assets. A test PRL should contain only the sections needed for the behavior under test — not a full level. Small fixtures keep tests fast and make the input-output relationship legible.
 
 ---
 

@@ -1,14 +1,14 @@
 # Resource Management
 
 > **Read this when:** loading textures, working with materials, adding billboard sprites, or changing how the engine consumes visual assets.
-> **Key invariant:** all visual assets are PNGs loaded at runtime. BSP stores texture headers only, never pixel data. The resource subsystem owns all textures and GPU resources; the renderer borrows handles.
+> **Key invariant:** all visual assets are PNGs loaded at runtime. PRL stores texture names only, never pixel data. The resource subsystem owns all textures and GPU resources; the renderer borrows handles.
 > **Related:** [Architecture Index](./index.md) · [Build Pipeline](./build_pipeline.md) · [Rendering Pipeline](./rendering_pipeline.md) · [Entity Model](./entity_model.md)
 
 ---
 
 ## 1. Texture Pipeline
 
-All visual assets — world textures, billboard sprites, UI elements — are authored as PNG files and loaded at runtime. No WAD files. No embedded texture data in BSP.
+All visual assets — world textures, billboard sprites, UI elements — are authored as PNG files and loaded at runtime. No WAD files. No embedded texture data in PRL.
 
 ### 1.1 Authoring Layout
 
@@ -20,9 +20,9 @@ textures/<collection>/<name>.png
 
 TrenchBroom requires this subdirectory structure for texture browsing. Collections group related textures (e.g., `textures/concrete/`, `textures/metal/`, `textures/trim/`).
 
-### 1.2 BSP Texture References
+### 1.2 PRL Texture References
 
-BSP files store texture headers only: name and dimensions. Compiled with `-notex` to strip pixel data. At load time, the engine matches texture name strings from BSP face data against PNG filenames in the `textures/` tree. Missing texture at runtime falls back to a checkerboard placeholder and logs a warning.
+PRL files store a deduplicated texture name list (TextureNames section). No pixel data. At load time, the engine matches texture name strings from PRL face data against PNG filenames in the `textures/` tree. Missing texture at runtime falls back to a checkerboard placeholder and logs a warning.
 
 ### 1.3 Sprite Animations
 
@@ -144,7 +144,7 @@ The resource subsystem owns logical assets: loaded PNGs, atlas layouts, metadata
 
 | Phase | Action |
 |-------|--------|
-| Level load | Parse BSP texture headers. Load all referenced PNGs. Upload to GPU. Distribute handles. |
+| Level load | Parse PRL texture names. Load all referenced PNGs. Upload to GPU. Distribute handles. |
 | Gameplay | Handles are stable. No allocation or deallocation during gameplay. |
 | Level unload | Release all GPU resources. Drop all texture data. Handles become invalid. |
 

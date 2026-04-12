@@ -57,18 +57,6 @@ cargo run --release -p postretro                               # optimized build
 RUST_LOG=info cargo run -p postretro                           # with logging
 ```
 
-## Architecture
-
-Five architectural invariants govern the engine:
-
-| Principle | Rule |
-|-----------|------|
-| Renderer owns GPU | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
-| Baked over computed | Lighting and light probes baked offline by the level compiler. Dynamic lights supplement, not replace. |
-| Subsystem boundaries | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
-| Frame ordering | Input → Game logic → Audio → Render → Present. |
-| No `unsafe` | If `unsafe` appears necessary, stop and consult the project owner. |
-
 ## Project Documentation
 
 Most projects end up with documentation that quietly lies — a design doc describing a function renamed two months ago, an architecture guide pointing at a module that got split in half. The more specific a document is about code, the faster it rots. That's not a discipline problem you can fix by trying harder; it's structural. The code is where truth lives, and copies of the truth go stale.
@@ -86,25 +74,15 @@ This matters more for an AI-assisted project than a traditional one. Every agent
 
 ```
 context/
-  lib/                  # Durable architectural knowledge (the "library")
-    index.md            # Entry point for AI agents
-    development_guide.md
-    testing_guide.md
-    context_style_guide.md
-    rendering_pipeline.md
-    audio.md
-    build_pipeline.md
-    entity_model.md
-    input.md
-    resource_management.md
+  lib/                  # Durable architectural knowledge (the "context library")
+    index.md            # "Agent router" — directs agents to files relevant to their current task
+    [topic].md          # Durable architectural knowledge about a specific topic
 
   plans/                # Work tracking (ephemeral by design)
     drafts/             # Specs being written, not yet reviewed
     ready/              # Reviewed specs, queued for implementation
     in-progress/        # Actively being worked on
     done/               # Recently completed (max 15, older plans pruned)
-
-  reference/            # External reference material (often historical)
 ```
 
 ### Decision Lifecycle
@@ -161,6 +139,18 @@ The lifecycle is supported by Claude Code skills:
 | `code-review` | Reviews implementations against specs, architecture, and conventions |
 | `preflight` | Pre-commit quality gate: fmt, clippy, test |
 | `create-skill` | Builds new skills for the project |
+
+## Architecture
+
+Five architectural invariants govern the engine:
+
+| Principle | Rule |
+|-----------|------|
+| Renderer owns GPU | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
+| Baked over computed | Lighting and light probes baked offline by the level compiler. Dynamic lights supplement, not replace. |
+| Subsystem boundaries | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
+| Frame ordering | Input → Game logic → Audio → Render → Present. |
+| No `unsafe` | If `unsafe` appears necessary, stop and consult the project owner. |
 
 ## Non-Goals
 

@@ -191,23 +191,6 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
     TextureSet { textures }
 }
 
-// --- Texture name extraction from BSP ---
-
-/// Extract texture names from parsed BSP data. Returns one `Option<String>` per
-/// entry in the BSP miptexture array. `None` entries correspond to BSP texture
-/// slots that are empty.
-#[allow(dead_code)]
-pub fn extract_texture_names(bsp: &qbsp::BspData) -> Vec<Option<String>> {
-    bsp.textures
-        .iter()
-        .map(|tex_opt| {
-            tex_opt
-                .as_ref()
-                .map(|tex| tex.header.name.as_str().to_string())
-        })
-        .collect()
-}
-
 // --- Tests ---
 
 #[cfg(test)]

@@ -15,9 +15,6 @@ pollster.workspace = true
 # Math
 glam.workspace = true
 
-# BSP loading
-qbsp.workspace = true
-
 # Audio
 kira.workspace = true
 

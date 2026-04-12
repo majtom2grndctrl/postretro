@@ -21,9 +21,6 @@ pollster = "0.4"
 # Math
 glam = "0.30"  # pinned for qbsp compatibility
 
-# BSP loading
-qbsp = "0.14"
-
 # Map parsing (level compiler)
 shambler = "0.2"
 

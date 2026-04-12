@@ -22,6 +22,20 @@ The PRL path uses the TrenchBroom authoring workflow, FGD entity definitions, an
 
 ---
 
+## Supported Map Formats
+
+prl-build accepts `.map` files. The `--format` flag selects the dialect; default is `idtech2`.
+
+| Dialect | Status | Unit scale | Notes |
+|---------|--------|-----------|-------|
+| idTech2 (Quake 1/2) | Supported | 1 unit = 0.0254 m (inch) | Default. Parsed via shambler/shalrath. |
+| idTech3 (Quake 3) | Not yet supported | — | Bezier patches. |
+| idTech4 (Doom 3) | Not yet supported | — | meshDef / brushDef3. |
+
+**Texture projection:** both Standard (axis-aligned) and Valve 220 (explicit UV axes) projection formats are supported end-to-end. Shalrath auto-detects the format per face — they can coexist in one `.map` file, which is what TrenchBroom produces. UV computation handles both variants during geometry extraction.
+
+---
+
 ## PNG Texture Pipeline
 
 No WAD files. Textures are authored as PNGs.

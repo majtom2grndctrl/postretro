@@ -463,6 +463,7 @@ impl ApplicationHandler for App {
                     VisibilityPath::NoPvsFallback => "no-pvs",
                     VisibilityPath::EmptyWorldFallback => "empty",
                     VisibilityPath::SolidLeafFallback => "solid-leaf",
+                    VisibilityPath::ExteriorCameraFallback => "exterior",
                 };
                 let walk_reach_col = match stats.walk_reach() {
                     Some(walk) => format!(" walk:{walk}"),

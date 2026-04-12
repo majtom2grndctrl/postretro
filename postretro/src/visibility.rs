@@ -1,5 +1,4 @@
-// PVS-based visibility culling with frustum culling: frustum plane extraction,
-// AABB-frustum test, PRL leaf-based visibility determination.
+// Per-frame visibility determination: portal traversal, PVS, and frustum-culled fallbacks.
 // See: context/lib/rendering_pipeline.md
 
 use glam::{Mat4, Vec3, Vec4};
@@ -69,16 +68,21 @@ pub enum VisibilityPath {
     /// `pvs_reach` against `walk_reach` can see how much the portal walk
     /// discarded beyond what PVS alone would have admitted.
     PrlPortal { walk_reach: u32 },
-    /// Fallback: no PVS data in the level file. All non-solid leaves are
-    /// submitted, subject to AABB frustum culling.
+    /// Fallback: no PVS data in the level file. All non-solid non-zero-face
+    /// leaves are submitted, subject to AABB frustum culling.
     NoPvsFallback,
     /// Fallback: world has no leaves to cull against. DrawAll with every
     /// face in the level submitted.
     EmptyWorldFallback,
     /// Fallback: camera position lies inside solid geometry (clipped
-    /// into a wall). All non-solid leaves are drawn, subject to AABB
-    /// frustum culling.
+    /// into a wall). All non-solid non-zero-face leaves are drawn,
+    /// subject to AABB frustum culling.
     SolidLeafFallback,
+    /// Fallback: camera is in an exterior leaf (empty, no faces). The
+    /// camera has left the playable interior — spectator, noclip, debug
+    /// fly. All non-solid non-zero-face leaves are drawn, subject to
+    /// AABB frustum culling.
+    ExteriorCameraFallback,
 }
 
 impl VisibilityStats {
@@ -353,6 +357,48 @@ pub fn determine_prl_visibility(
             pvs_reach: total_faces,
             drawn_faces,
             path: VisibilityPath::SolidLeafFallback,
+        };
+        return (VisibleFaces::Culled(std::mem::take(scratch)), stats);
+    }
+
+    // Exterior camera fallback: camera is in an empty leaf with no faces
+    // (the structural signature of exterior leaves after the compiler strips
+    // their face data). Frustum-cull every non-solid non-zero-face leaf.
+    let in_exterior = world
+        .leaves
+        .get(camera_leaf_idx)
+        .is_some_and(|l| !l.is_solid && l.face_count == 0);
+
+    if in_exterior {
+        scratch.clear();
+        let mut drawn_faces = 0u32;
+
+        for leaf in &world.leaves {
+            if leaf.is_solid || leaf.face_count == 0 {
+                continue;
+            }
+            if is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, &frustum) {
+                continue;
+            }
+            let start = leaf.face_start as usize;
+            let count = leaf.face_count as usize;
+            for face in world.face_meta.iter().skip(start).take(count) {
+                if face.index_count > 0 {
+                    scratch.push(DrawRange {
+                        index_offset: face.index_offset,
+                        index_count: face.index_count,
+                    });
+                    drawn_faces += 1;
+                }
+            }
+        }
+
+        let stats = VisibilityStats {
+            camera_leaf: camera_leaf_idx as u32,
+            total_faces,
+            pvs_reach: total_faces,
+            drawn_faces,
+            path: VisibilityPath::ExteriorCameraFallback,
         };
         return (VisibleFaces::Culled(std::mem::take(scratch)), stats);
     }
@@ -985,5 +1031,173 @@ mod tests {
         // reported as total_faces (draw-all semantics).
         assert!(matches!(stats.path, VisibilityPath::SolidLeafFallback));
         assert_eq!(stats.pvs_reach, stats.total_faces);
+    }
+
+    // -- Exterior camera fallback tests --
+
+    /// Build a world with one exterior leaf (no faces, not solid) and one
+    /// interior leaf (has faces, not solid). BSP node splits at X=0:
+    /// front (X >= 0) -> leaf 0 (exterior), back (X < 0) -> leaf 1 (interior).
+    fn exterior_interior_world() -> LevelWorld {
+        LevelWorld {
+            vertices: vec![zero_vertex(); 3],
+            indices: vec![0, 1, 2],
+            face_meta: vec![prl_face_meta(0, 3)],
+            nodes: vec![NodeData {
+                plane_normal: Vec3::X,
+                plane_distance: 0.0,
+                front: BspChild::Leaf(0), // exterior (no faces)
+                back: BspChild::Leaf(1),  // interior (has faces)
+            }],
+            leaves: vec![
+                // Leaf 0: exterior — empty, no faces, not solid
+                prl_leaf(
+                    Vec3::new(0.0, -100.0, -100.0),
+                    Vec3::new(100.0, 100.0, 100.0),
+                    0,
+                    0, // face_count == 0: the exterior signature
+                    vec![false, false],
+                    false,
+                ),
+                // Leaf 1: interior — has faces
+                prl_leaf(
+                    Vec3::new(-100.0, -100.0, -100.0),
+                    Vec3::new(0.0, 100.0, 100.0),
+                    0,
+                    1,
+                    vec![false, true],
+                    false,
+                ),
+            ],
+            root: BspChild::Node(0),
+            has_pvs: false,
+            portals: vec![],
+            leaf_portals: vec![vec![], vec![]],
+            has_portals: true,
+            texture_names: vec![],
+        }
+    }
+
+    #[test]
+    fn exterior_camera_fallback_detects_exterior_leaf() {
+        let world = exterior_interior_world();
+        // Camera at X=50 lands in exterior leaf 0.
+        let position = Vec3::new(50.0, 0.0, 0.0);
+        let vp = wide_view_proj(position);
+        let mut scratch = Vec::new();
+        let (result, stats) = determine_prl_visibility(position, vp, &world, false, &mut scratch);
+        match result {
+            VisibleFaces::Culled(ranges) => {
+                assert!(!ranges.is_empty(), "should draw interior leaf faces");
+            }
+            VisibleFaces::DrawAll => panic!("expected Culled with exterior fallback"),
+        }
+        assert!(
+            matches!(stats.path, VisibilityPath::ExteriorCameraFallback),
+            "expected ExteriorCameraFallback, got {:?}",
+            stats.path,
+        );
+        assert!(stats.drawn_faces > 0, "should draw at least one face");
+        // Exterior fallback bypasses PVS, so pvs_reach == total_faces.
+        assert_eq!(stats.pvs_reach, stats.total_faces);
+    }
+
+    #[test]
+    fn exterior_camera_fallback_frustum_culls() {
+        // Add a second interior leaf placed outside the view frustum.
+        // BSP: node 0 splits at X=0 (front -> leaf 0 exterior, back -> node 1).
+        //      node 1 splits at Z=0 (front -> leaf 1 in-frustum, back -> leaf 2 out-of-frustum).
+        let world = LevelWorld {
+            vertices: vec![zero_vertex(); 6],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            face_meta: vec![prl_face_meta(0, 3), prl_face_meta(3, 3)],
+            nodes: vec![
+                NodeData {
+                    plane_normal: Vec3::X,
+                    plane_distance: 0.0,
+                    front: BspChild::Leaf(0), // exterior
+                    back: BspChild::Node(1),
+                },
+                NodeData {
+                    plane_normal: Vec3::Z,
+                    plane_distance: 0.0,
+                    front: BspChild::Leaf(2), // interior, behind camera (+Z)
+                    back: BspChild::Leaf(1),  // interior, in front of camera (-Z)
+                },
+            ],
+            leaves: vec![
+                // Leaf 0: exterior (no faces)
+                prl_leaf(
+                    Vec3::new(0.0, -100.0, -100.0),
+                    Vec3::new(100.0, 100.0, 100.0),
+                    0,
+                    0,
+                    vec![],
+                    false,
+                ),
+                // Leaf 1: interior, in front of camera (negative Z, inside frustum)
+                prl_leaf(
+                    Vec3::new(-100.0, -100.0, -100.0),
+                    Vec3::new(0.0, 100.0, 0.0),
+                    0,
+                    1,
+                    vec![],
+                    false,
+                ),
+                // Leaf 2: interior, behind camera (positive Z, outside frustum)
+                prl_leaf(
+                    Vec3::new(-100.0, -100.0, 0.0),
+                    Vec3::new(0.0, 100.0, 100.0),
+                    1,
+                    1,
+                    vec![],
+                    false,
+                ),
+            ],
+            root: BspChild::Node(0),
+            has_pvs: false,
+            portals: vec![],
+            leaf_portals: vec![vec![], vec![], vec![]],
+            has_portals: true,
+            texture_names: vec![],
+        };
+
+        // Camera at X=50, looking down -Z. Leaf 1 (-Z) is in frustum,
+        // leaf 2 (+Z) is behind the camera and should be culled.
+        let position = Vec3::new(50.0, 0.0, 0.0);
+        let vp = wide_view_proj(position);
+        let mut scratch = Vec::new();
+        let (result, stats) = determine_prl_visibility(position, vp, &world, false, &mut scratch);
+        match result {
+            VisibleFaces::Culled(ranges) => {
+                // Only leaf 1's face (index_offset=0, index_count=3) should survive.
+                assert_eq!(
+                    ranges.len(),
+                    1,
+                    "only the in-frustum leaf's face should be drawn, got {}",
+                    ranges.len(),
+                );
+                assert_eq!(ranges[0].index_offset, 0);
+                assert_eq!(ranges[0].index_count, 3);
+            }
+            VisibleFaces::DrawAll => panic!("expected Culled"),
+        }
+        assert!(matches!(stats.path, VisibilityPath::ExteriorCameraFallback));
+        assert_eq!(stats.drawn_faces, 1);
+    }
+
+    #[test]
+    fn interior_camera_uses_portal_path_not_exterior_fallback() {
+        let world = exterior_interior_world();
+        // Camera at X=-50 lands in interior leaf 1 (the leaf with faces).
+        let position = Vec3::new(-50.0, 0.0, 0.0);
+        let vp = wide_view_proj(position);
+        let mut scratch = Vec::new();
+        let (_result, stats) = determine_prl_visibility(position, vp, &world, false, &mut scratch);
+        assert!(
+            matches!(stats.path, VisibilityPath::PrlPortal { .. }),
+            "interior camera should use PrlPortal path, got {:?}",
+            stats.path,
+        );
     }
 }

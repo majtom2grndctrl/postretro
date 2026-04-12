@@ -50,9 +50,11 @@ When a PRL file was built with `--pvs`, the Portals section is absent and a prec
 
 ### Frustum culling
 
-Per-leaf AABB frustum culling applies in the PVS fallback path only: the PRL `--pvs` path. PVS is conservative — it over-reports visible leaves. The AABB cull tightens the draw set before draw-range emission. It does not apply on the PRL portal-traversal path, where the strict-subset invariant guarantees every reached leaf already lies inside the camera's view cone.
+Per-leaf AABB frustum culling does not apply on the portal-traversal path: the strict-subset invariant guarantees every reached leaf already lies inside the camera's view cone. All other paths (PVS, no-PVS fallback, solid-leaf fallback, exterior-camera fallback) use per-leaf AABB culling to narrow the draw set before draw-range emission.
 
 **Missing visibility data:** when neither portals nor PVS is present (PRL without a visibility section), draw all empty leaves with frustum culling only. Slower but correct.
+
+**Camera outside playable space:** camera in exterior or solid leaf. Frustum-cull all interior leaves. Back-face culling hides the level shell — face winding is front-facing from inside, back-facing from outside. Same cull mode serves both cases.
 
 See `build_pipeline.md` §Runtime visibility for the compile-side picture.
 

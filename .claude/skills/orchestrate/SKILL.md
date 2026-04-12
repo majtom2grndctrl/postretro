@@ -82,6 +82,7 @@ When all phases are done:
 
 When the user says "land the plane":
 - Move the plan to done: `git mv context/plans/in-progress/<plan-name> context/plans/done/<plan-name>`
+- Clean up worktrees from the session
 - Commit & push
 
 ### Error handling

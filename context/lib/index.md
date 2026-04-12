@@ -23,12 +23,13 @@
 - **Roadmap / implementation phases** → `plans/roadmap.md`
 - **Draft plans / future features** → `plans/drafts/`
 - **Shipped plans** → `plans/done/` — historical record, frozen at ship time. May describe stale state. Read only when explicitly referenced.
+- **Research archive** → `research/` — past research, not current design. Do not read unless explicitly instructed.
 
 ---
 
 ## 1. Product Definition
 
-Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Low-poly 3D environments with baked lightmaps, billboard sprite characters, and modern embellishments (dynamic colored lights, bloom, particles). Visual fidelity through genuinely retro technology — not a modern engine with retro filters. Near-instant boot, tiny binary.
+Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Low-poly 3D environments with fully dynamic direct lighting, baked volumetric indirect lighting (SH irradiance volumes), normal-mapped surfaces, billboard sprite characters, and modern embellishments (bloom, particles). Visual fidelity through a lean, wgpu-driven pipeline — not a modern engine with retro filters. Near-instant boot, tiny binary.
 
 ---
 
@@ -37,7 +38,7 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 | Principle | Invariant |
 |-----------|-----------|
 | **Renderer owns GPU** | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
-| **Baked over computed** | Spatial data and lighting baked offline. Visibility is the deliberate exception: PRL primary path computes visibility per frame from baked portal geometry (id Tech 4 lineage); precomputed PVS exists as a `--pvs` fallback. Dynamic lights supplement baked lighting. |
+| **Baked over computed** | Spatial data and indirect lighting baked offline. Two deliberate exceptions: visibility computes per frame from baked portal geometry (id Tech 4 lineage; `--pvs` precomputed fallback exists), and direct illumination is fully dynamic (clustered forward+ with shadow maps). Baked SH irradiance volume carries indirect light; dynamic lights drive direct shading. |
 | **Subsystem boundaries** | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |
 | **No `unsafe`** | The crate stack provides safe APIs. If `unsafe` appears necessary, stop and consult the project owner. |
@@ -54,12 +55,12 @@ prl-build compiles geometry, BSP tree, and portal graph. The engine consumes BSP
 
 | Data | Source | How |
 |------|--------|-----|
-| Geometry | prl-build (brush-volume BSP → brush-side projection → pack) | Geometry section — positions, indices, per-face metadata |
-| BSP tree | prl-build | BspNodes + BspLeaves sections |
+| Geometry | prl-build (brush-volume BSP → brush-side projection → pack) | Geometry section — positions, UVs, packed normals, packed tangents, per-face metadata |
+| BSP tree | prl-build | BspNodes + BspLeaves sections (compile-time scaffolding; see `build_pipeline.md`) |
 | Visibility | prl-build (portal traversal or PVS) | Portals section (default) or LeafPvs section (`--pvs` mode) |
 | Surface material types | Texture naming convention | Prefix lookup table → footsteps, impacts, decals |
 | Light entities | FGD entities (`light`, `light_spot`, `light_sun`) | Parsed and translated to canonical format at compile time |
-| Lighting | prl-build (Phase 4.5) | Baked illumination at probe sample points; stored in PRL sections |
+| Indirect lighting | prl-build (Phase 4) | SH L2 irradiance volume baked from canonical lights; stored in PRL section |
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity → baked cubemap |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |

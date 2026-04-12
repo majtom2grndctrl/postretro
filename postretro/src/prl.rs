@@ -14,7 +14,7 @@ use postretro_level_format::visibility::decompress_pvs;
 use postretro_level_format::{self as prl_format, SectionId};
 use thiserror::Error;
 
-use crate::bsp::{TextureSubRange, TexturedVertex};
+use crate::geometry::{TextureSubRange, TexturedVertex};
 use crate::material::{self, Material};
 
 #[derive(Debug, Error)]

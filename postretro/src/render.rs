@@ -8,7 +8,7 @@ use glam::Mat4;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::bsp::TextureSubRange;
+use crate::geometry::TextureSubRange;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::{DrawRange, VisibleFaces};
 
@@ -202,10 +202,10 @@ fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu:
 
 // --- Geometry data ---
 
-/// Geometry data the renderer needs from a BSP level, including texture sub-ranges
+/// Geometry data the renderer needs from a level, including texture sub-ranges
 /// for draw call batching.
 pub struct LevelGeometry<'a> {
-    pub vertices: &'a [crate::bsp::TexturedVertex],
+    pub vertices: &'a [crate::geometry::TexturedVertex],
     pub indices: &'a [u32],
     /// Per-leaf texture sub-ranges for draw call grouping.
     /// Indexed by leaf index; each leaf contains a list of texture sub-ranges.
@@ -230,7 +230,7 @@ pub struct Renderer {
 
     depth_view: wgpu::TextureView,
 
-    /// GPU textures indexed by BSP miptexture index.
+    /// GPU textures indexed by texture index.
     gpu_textures: Vec<GpuTexture>,
     /// Per-leaf texture sub-ranges for draw call grouping.
     leaf_texture_sub_ranges: Vec<Vec<TextureSubRange>>,
@@ -536,7 +536,7 @@ impl Renderer {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: crate::bsp::TexturedVertex::STRIDE as wgpu::BufferAddress,
+                    array_stride: crate::geometry::TexturedVertex::STRIDE as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         // position: vec3<f32> at offset 0
@@ -612,7 +612,7 @@ impl Renderer {
                 module: &wireframe_shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: crate::bsp::TexturedVertex::STRIDE as wgpu::BufferAddress,
+                    array_stride: crate::geometry::TexturedVertex::STRIDE as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         wgpu::VertexAttribute {
@@ -1065,8 +1065,8 @@ fn build_default_view_projection(aspect: f32) -> Mat4 {
 
 // --- Byte casting helpers ---
 
-fn cast_textured_vertices_to_bytes(data: &[crate::bsp::TexturedVertex]) -> Vec<u8> {
-    let byte_len = data.len() * crate::bsp::TexturedVertex::STRIDE;
+fn cast_textured_vertices_to_bytes(data: &[crate::geometry::TexturedVertex]) -> Vec<u8> {
+    let byte_len = data.len() * crate::geometry::TexturedVertex::STRIDE;
     let mut bytes = Vec::with_capacity(byte_len);
     for vertex in data {
         for &c in &vertex.position {
@@ -1129,12 +1129,12 @@ mod tests {
     #[test]
     fn cast_textured_vertices_roundtrips() {
         let input = vec![
-            crate::bsp::TexturedVertex {
+            crate::geometry::TexturedVertex {
                 position: [1.0, 2.0, 3.0],
                 base_uv: [0.5, 0.75],
                 vertex_color: [1.0, 1.0, 1.0, 1.0],
             },
-            crate::bsp::TexturedVertex {
+            crate::geometry::TexturedVertex {
                 position: [4.0, 5.0, 6.0],
                 base_uv: [0.25, 0.125],
                 vertex_color: [0.5, 0.5, 0.5, 1.0],

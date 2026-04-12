@@ -1,8 +1,8 @@
 // Postretro engine entry point.
 // See: context/lib/rendering_pipeline.md
 
-mod bsp;
 mod camera;
+mod geometry;
 mod frame_timing;
 mod input;
 mod material;
@@ -33,13 +33,7 @@ use crate::render::Renderer;
 use crate::texture::TextureSet;
 use crate::visibility::{DrawRange, VisibilityPath, VisibilityStats, VisibleFaces};
 
-const DEFAULT_MAP_PATH: &str = "assets/maps/test.bsp";
-
-/// Loaded level data: either BSP or PRL format.
-enum Level {
-    Bsp(bsp::BspWorld),
-    Prl(prl::LevelWorld),
-}
+const DEFAULT_MAP_PATH: &str = "assets/maps/test-3.prl";
 
 fn resolve_map_path(args: &[String]) -> String {
     args.iter()
@@ -50,7 +44,7 @@ fn resolve_map_path(args: &[String]) -> String {
 }
 
 /// Resolve the texture root directory from a map file path.
-/// For `assets/maps/test.bsp`, the texture root is `assets/textures/`.
+/// For `assets/maps/test-3.prl`, the texture root is `assets/textures/`.
 /// Navigates up from the map file to the asset root (parent of `maps/`),
 /// then appends `textures/`.
 fn resolve_texture_root(map_path: &str) -> std::path::PathBuf {
@@ -62,7 +56,7 @@ fn resolve_texture_root(map_path: &str) -> std::path::PathBuf {
     asset_root.join("textures")
 }
 
-fn load_level(path: &str) -> Result<Option<Level>> {
+fn load_level(path: &str) -> Result<Option<prl::LevelWorld>> {
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -70,27 +64,10 @@ fn load_level(path: &str) -> Result<Option<Level>> {
         .to_lowercase();
 
     match ext.as_str() {
-        "bsp" => match bsp::load_bsp(path) {
-            Ok(world) => {
-                log::info!("[Engine] BSP loaded successfully from {path}");
-                if world.visdata.is_empty() {
-                    log::warn!(
-                        "[Visibility] BSP has no visdata — PVS culling disabled, drawing all faces. \
-                         Compile the map with vis to enable culling."
-                    );
-                }
-                Ok(Some(Level::Bsp(world)))
-            }
-            Err(bsp::BspLoadError::FileNotFound(p)) => {
-                log::warn!("[Engine] BSP file not found: {p} — starting without map");
-                Ok(None)
-            }
-            Err(err) => anyhow::bail!("failed to load BSP: {err}"),
-        },
         "prl" => match prl::load_prl(path) {
             Ok(world) => {
                 log::info!("[Engine] PRL loaded successfully from {path}");
-                Ok(Some(Level::Prl(world)))
+                Ok(Some(world))
             }
             Err(prl::PrlLoadError::FileNotFound(p)) => {
                 log::warn!("[Engine] PRL file not found: {p} — starting without map");
@@ -99,15 +76,8 @@ fn load_level(path: &str) -> Result<Option<Level>> {
             Err(err) => anyhow::bail!("failed to load PRL: {err}"),
         },
         _ => {
-            log::warn!("[Engine] Unknown file extension '.{ext}' for {path} — trying BSP loader");
-            match bsp::load_bsp(path) {
-                Ok(world) => Ok(Some(Level::Bsp(world))),
-                Err(bsp::BspLoadError::FileNotFound(p)) => {
-                    log::warn!("[Engine] File not found: {p} — starting without map");
-                    Ok(None)
-                }
-                Err(err) => anyhow::bail!("failed to load map: {err}"),
-            }
+            log::error!("[Engine] Unknown file extension '.{ext}' for {path} — only .prl is supported");
+            Ok(None)
         }
     }
 }
@@ -121,15 +91,9 @@ fn main() -> Result<()> {
     let map_path = resolve_map_path(&args);
     let mut level = load_level(&map_path)?;
 
-    // Load textures for BSP and PRL levels.
+    // Load textures for PRL levels.
     let texture_set = match &level {
-        Some(Level::Bsp(world)) => {
-            let texture_root = resolve_texture_root(&map_path);
-            log::info!("[Engine] Loading textures from {}", texture_root.display());
-            let texture_names = build_texture_names_from_face_meta(&world.face_meta);
-            Some(texture::load_textures(&texture_names, &texture_root))
-        }
-        Some(Level::Prl(world)) if !world.texture_names.is_empty() => {
+        Some(world) if !world.texture_names.is_empty() => {
             let texture_root = resolve_texture_root(&map_path);
             log::info!(
                 "[Engine] Loading PRL textures from {}",
@@ -146,14 +110,14 @@ fn main() -> Result<()> {
     };
 
     // Normalize PRL UVs after texture dimensions are known.
-    if let (Some(Level::Prl(world)), Some(tex_set)) = (&mut level, &texture_set) {
+    if let (Some(world), Some(tex_set)) = (&mut level, &texture_set) {
         normalize_prl_uvs(world, tex_set);
     }
 
     // Position camera inside the level geometry.
     let initial_camera_pos = match &level {
-        Some(Level::Prl(world)) => world.spawn_position(),
-        _ => Vec3::new(0.0, 200.0, 500.0),
+        Some(world) => world.spawn_position(),
+        None => Vec3::new(0.0, 200.0, 500.0),
     };
 
     let event_loop = EventLoop::new().context("failed to create event loop")?;
@@ -183,27 +147,6 @@ fn main() -> Result<()> {
         .context("event loop terminated with error")?;
 
     app.exit_result
-}
-
-/// Build a texture names list indexed by BSP miptexture index from face_meta.
-/// Each unique texture_index maps to its texture_name. Missing indices get `None`.
-fn build_texture_names_from_face_meta(face_meta: &[bsp::FaceMeta]) -> Vec<Option<String>> {
-    let max_tex_idx = face_meta
-        .iter()
-        .filter_map(|f| f.texture_index)
-        .max()
-        .unwrap_or(0) as usize;
-
-    let mut names = vec![None; max_tex_idx + 1];
-    for face in face_meta {
-        if let Some(idx) = face.texture_index {
-            let idx = idx as usize;
-            if idx < names.len() && names[idx].is_none() && !face.texture_name.is_empty() {
-                names[idx] = Some(face.texture_name.clone());
-            }
-        }
-    }
-    names
 }
 
 /// Normalize PRL texel-space UVs by dividing by texture dimensions.
@@ -253,8 +196,8 @@ fn window_attributes() -> WindowAttributes {
 struct App {
     renderer: Option<Renderer>,
     window_state: Option<WindowState>,
-    /// Loaded level data (BSP or PRL), held for the lifetime of the app.
-    level: Option<Level>,
+    /// Loaded level data (PRL), held for the lifetime of the app.
+    level: Option<prl::LevelWorld>,
     /// CPU-side textures loaded from disk, consumed by renderer during init.
     texture_set: Option<TextureSet>,
     exit_result: Result<()>,
@@ -276,11 +219,10 @@ struct App {
     capture_portal_walk_next_frame: bool,
 
     /// Persistent scratch buffer for per-frame `DrawRange` collection. The
-    /// BSP and PRL visibility entry points `std::mem::take` this into
+    /// PRL visibility entry point `std::mem::take`s this into
     /// `VisibleFaces::Culled` so no allocation happens in steady state. After
     /// `render_frame` consumes the `VisibleFaces`, the buffer is moved back
-    /// into this field with its capacity intact. BSP and PRL cannot be active
-    /// on the same frame, so a single scratch suffices.
+    /// into this field with its capacity intact.
     scratch_ranges: Vec<DrawRange>,
 
     /// Rolling ring buffer of per-frame CPU work durations. Sampled every
@@ -317,27 +259,15 @@ impl ApplicationHandler for App {
         };
 
         // Build geometry for the renderer.
-        let geometry = match &self.level {
-            Some(Level::Bsp(world)) => Some(render::LevelGeometry {
-                vertices: &world.vertices,
-                indices: &world.indices,
-                leaf_texture_sub_ranges: world
-                    .leaves
-                    .iter()
-                    .map(|l| l.texture_sub_ranges.clone())
-                    .collect(),
-            }),
-            Some(Level::Prl(world)) => Some(render::LevelGeometry {
-                vertices: &world.vertices,
-                indices: &world.indices,
-                leaf_texture_sub_ranges: world
-                    .leaves
-                    .iter()
-                    .map(|l| l.texture_sub_ranges.clone())
-                    .collect(),
-            }),
-            None => None,
-        };
+        let geometry = self.level.as_ref().map(|world| render::LevelGeometry {
+            vertices: &world.vertices,
+            indices: &world.indices,
+            leaf_texture_sub_ranges: world
+                .leaves
+                .iter()
+                .map(|l| l.texture_sub_ranges.clone())
+                .collect(),
+        });
 
         let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
             Ok(r) => r,
@@ -504,13 +434,7 @@ impl ApplicationHandler for App {
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 
                 let (visible, stats) = match self.level.as_ref() {
-                    Some(Level::Bsp(world)) => visibility::determine_visibility(
-                        interp.position,
-                        view_proj,
-                        world,
-                        &mut self.scratch_ranges,
-                    ),
-                    Some(Level::Prl(world)) => visibility::determine_prl_visibility(
+                    Some(world) => visibility::determine_prl_visibility(
                         interp.position,
                         view_proj,
                         world,
@@ -532,7 +456,6 @@ impl ApplicationHandler for App {
                 let pos = interp.position;
                 let region_label = "leaf";
                 let path_label = match stats.path {
-                    VisibilityPath::BspPvs => "bsp-pvs",
                     VisibilityPath::PrlPvs => "prl-pvs",
                     VisibilityPath::PrlPortal { .. } => "prl-portal",
                     VisibilityPath::NoPvsFallback => "no-pvs",

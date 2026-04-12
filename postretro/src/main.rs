@@ -2,8 +2,8 @@
 // See: context/lib/rendering_pipeline.md
 
 mod camera;
-mod geometry;
 mod frame_timing;
+mod geometry;
 mod input;
 mod material;
 
@@ -76,7 +76,9 @@ fn load_level(path: &str) -> Result<Option<prl::LevelWorld>> {
             Err(err) => anyhow::bail!("failed to load PRL: {err}"),
         },
         _ => {
-            log::error!("[Engine] Unknown file extension '.{ext}' for {path} — only .prl is supported");
+            log::error!(
+                "[Engine] Unknown file extension '.{ext}' for {path} — only .prl is supported"
+            );
             Ok(None)
         }
     }

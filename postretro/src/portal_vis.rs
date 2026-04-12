@@ -99,13 +99,8 @@ pub fn portal_traverse(
     world: &LevelWorld,
     capture: bool,
 ) -> Vec<bool> {
-    let (visible, trace) = portal_traverse_inner(
-        camera_position,
-        camera_leaf,
-        frustum,
-        world,
-        capture,
-    );
+    let (visible, trace) =
+        portal_traverse_inner(camera_position, camera_leaf, frustum, world, capture);
     // Single log emission: every event written during the walk lives inside
     // `trace`. One `log::info!` call means one timestamp/target prefix per
     // traced frame instead of one per event. See the file's doc comment on
@@ -134,7 +129,11 @@ fn portal_traverse_inner(
 
     // Allocate the trace buffer only when capture is armed — the disabled path
     // must remain allocation-free.
-    let mut trace = if capture { Some(String::with_capacity(512)) } else { None };
+    let mut trace = if capture {
+        Some(String::with_capacity(512))
+    } else {
+        None
+    };
 
     // Out-of-range camera leaf: emit a single `leaf_oor` line into the buffer
     // and bail. `world.leaves[camera_leaf]` would panic, so this path must run
@@ -144,11 +143,7 @@ fn portal_traverse_inner(
             let _ = writeln!(
                 buf,
                 "abort leaf_oor cam=({:.2},{:.2},{:.2}) leaf={} leaves={}",
-                camera_position.x,
-                camera_position.y,
-                camera_position.z,
-                camera_leaf,
-                leaf_count,
+                camera_position.x, camera_position.y, camera_position.z, camera_leaf, leaf_count,
             );
         }
         return (visible, trace);
@@ -1126,13 +1121,9 @@ mod tests {
 
         let mut scratch_a: Vec<Vec3> = Vec::new();
         let mut scratch_b: Vec<Vec3> = Vec::new();
-        let clipped = clip_polygon_to_frustum(
-            &polygon,
-            &front_frustum,
-            &mut scratch_a,
-            &mut scratch_b,
-        )
-        .to_vec();
+        let clipped =
+            clip_polygon_to_frustum(&polygon, &front_frustum, &mut scratch_a, &mut scratch_b)
+                .to_vec();
 
         // Sanity: the clipper survived as a polygon the DFS will hand to
         // narrow_frustum (>= 3 verts, so `clipped_len < 3` doesn't early-
@@ -1144,7 +1135,6 @@ mod tests {
              so the DFS hands the polygon to narrow_frustum; got {}",
             clipped.len()
         );
-
 
         let camera_pos = Vec3::ZERO;
         let camera_frustum = make_camera_frustum(camera_pos, Vec3::X);

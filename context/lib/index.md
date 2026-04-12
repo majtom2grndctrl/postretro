@@ -58,7 +58,8 @@ prl-build compiles geometry, BSP tree, and portal graph. The engine consumes BSP
 | BSP tree | prl-build | BspNodes + BspLeaves sections |
 | Visibility | prl-build (portal traversal or PVS) | Portals section (default) or LeafPvs section (`--pvs` mode) |
 | Surface material types | Texture naming convention | Prefix lookup table → footsteps, impacts, decals |
-| Lighting | prl-build (Phase 4 — see `plans/roadmap.md`) | PRL-native sections, designed in Phase 4 |
+| Light entities | FGD entities (`light`, `light_spot`, `light_sun`) | Parsed and translated to canonical format at compile time |
+| Lighting | prl-build (Phase 4.5) | Baked illumination at probe sample points; stored in PRL sections |
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity → baked cubemap |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |

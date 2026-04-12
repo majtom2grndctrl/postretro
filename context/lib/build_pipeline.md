@@ -49,14 +49,18 @@ Custom `Postretro` game config in standard TrenchBroom format. Two responsibilit
 
 Project deliverable alongside the engine. Defines Postretro-specific entities for TrenchBroom.
 
-| Entity | Type | Purpose | Properties |
+| Entity | Type | Purpose | Key Properties |
 |--------|------|---------|------------|
+| `light` | point | Omnidirectional light | `light` (intensity), `_color` (RGB), `_fade` (falloff distance), `delay` (falloff model), `style` (animation) |
+| `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles), `mangle`/`target` (direction) |
+| `light_sun` | point | Directional sun light | + `mangle` (direction vector) |
 | `env_fog_volume` | brush | Per-region fog | `color`, `density`, `falloff` |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
 
 ### Entity resolution
 
+- **`light`, `light_spot`, `light_sun`** — parsed, translated to canonical format, and validated at compile time. Validation rules: falloff distance required, spotlight direction verified, intensity bounds checked. Canonical lights feed Phase 4.5 baker; compilation fails on validation errors.
 - **`env_fog_volume`** — resolved to BSP leaves at load time. Each leaf in the volume gets per-leaf atmospheric haze parameters.
 - **`env_cubemap`** — marks a position for offline cubemap baking. Bake tool is out of initial scope.
 - **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf in the volume gets spatial reverb parameters for the audio subsystem.
@@ -81,7 +85,8 @@ Unknown prefix falls back to a default material with a warning at load time.
 | BSP tree | prl-build | BspNodes + BspLeaves sections |
 | Visibility | prl-build | Portals section (default) or LeafPvs section (`--pvs`) |
 | Surface material types | Texture naming convention | Prefix lookup table |
-| Lighting | prl-build (Phase 4 — see `plans/roadmap.md`) | PRL-native sections, designed in Phase 4 |
+| Light entities | FGD entities (`light`, `light_spot`, `light_sun`) | Parsed, translated to canonical format. Phase 4.5 baker consumes canonical lights. |
+| Lighting | prl-build (Phase 4.5) | Baked illumination at probe sample points; stored in PRL sections |
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity — offline cubemap bake |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |
@@ -98,7 +103,9 @@ The PRL compiler (`prl-build`) reads `.map` files directly via shambler and prod
 parse .map → brush-volume BSP construction → brush-side projection → portal generation → exterior leaf culling → portal vis → geometry → pack .prl
 ```
 
-1. **Parse.** Shambler extracts brush volumes, brush sides, and entities. Two transforms are applied at the parse boundary: (a) axis swizzle (Quake Z-up → engine Y-up) and (b) unit scale (idTech2: 0.0254 m/unit, exact). Vertex positions, entity origins, and plane distances are converted to engine meters; plane normals receive the swizzle only (direction vectors — scale must not be applied). The scale comes from a single map-format source, never duplicated at call sites. All downstream stages receive engine-native coordinates in meters. Brush sides — the textured half-plane polygons bounding each brush — are grouped per brush at parse time; they are the input to BSP construction, not world faces.
+Light entity parsing and translation happen during the parse stage. Shambler extracts light entities from the `.map` file. The translation layer converts mapper-facing FGD properties to canonical format and validates them (falloff distance required, spotlight direction verified, etc.). Invalid lights fail compilation with a clear error message. Canonical lights are collected and consumed by Phase 4.5 baker; they do not participate in BSP construction.
+
+1. **Parse.** Shambler extracts brush volumes, brush sides, and entities. Two transforms are applied at the parse boundary: (a) axis swizzle (Quake Z-up → engine Y-up) and (b) unit scale (idTech2: 0.0254 m/unit, exact). Vertex positions, entity origins, and plane distances are converted to engine meters; plane normals receive the swizzle only (direction vectors — scale must not be applied). The scale comes from a single map-format source, never duplicated at call sites. All downstream stages receive engine-native coordinates in meters. Brush sides — the textured half-plane polygons bounding each brush — are grouped per brush at parse time; they are the input to BSP construction, not world faces. Light entities are extracted alongside other point entities and passed to the translation layer for validation and canonical format conversion.
 2. **Brush-volume BSP construction.** Partitions space by recursively splitting the world AABB with brush-derived planes. Recursion tracks the inside set — the brush indices whose half-spaces fully contain the current region — and terminates at a leaf when the region is uniformly inside one brush set (solid) or uniformly outside every brush (empty). Leaf solidity is structural: it is established during construction, not inferred from face positions afterward. Splitter candidates are drawn from the full set of bounding planes of candidate brushes, including planes no face sits on, so narrow air gaps and adjacent brush boundaries are always detected. The world AABB is the union of brush AABBs with a one-meter slack margin on each axis. Recursion depth is hard-capped; pathological input yields a compiler error rather than a stack overflow.
 3. **Brush-side projection.** Derives world faces from brush sides in two passes. Pass 1 walks each brush side down the tree using plane-index equality as the routing primitive (a polygon on a splitting plane goes to one side only, never both), splits on all other planes, and accumulates the fragments that survive into empty leaves as a per-side visible hull. Pass 2 distributes each visible hull back through the tree, emitting a triangulated face in every empty leaf it reaches. Fragments that land in solid leaves are dropped — face-in-solid culling falls out of the walk for free, without a separate clipping stage. When two brush sides on the same oriented plane reach the same leaf, the resolution is containment-aware: a polygon fully contained in another is dropped as redundant, but partially-overlapping coplanar polygons are emitted both and any visible z-fighting is left as an authoring diagnostic. Mismatched textures across a containment-resolved drop are surfaced as a warning. The compiler does not attempt 2D polygon union on coplanar overlaps — by design, partially-overlapping coplanar brushes are an authoring error this stage will not paper over.
 4. **Portal generation.** For each BSP internal node, clips the splitting-plane polygon against ancestor splitting planes to produce the portal polygon bounding that node's partition. Each portal is a convex polygon connecting two adjacent empty leaves. In default mode, portals are stored in the `.prl` file (section 15) for runtime traversal. In `--pvs` mode, portals are used as intermediate data and discarded.

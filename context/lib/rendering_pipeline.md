@@ -78,19 +78,15 @@ Loader parses level data into engine-side structs, produces GPU-ready data. Rend
 
 ---
 
-## 4. Phase 4 Lighting (Planned)
+## 4. Phase 4 Lighting
 
-> **Phase 4. Not yet designed.** Flat white ambient lighting is the current state. Phase 4 will add baked lighting baked into PRL by prl-build.
+> **Baked light entities.** Mappers author light entities in TrenchBroom (`light`, `light_spot`, `light_sun`). Compiler translates them to canonical format, validates them, and hands canonical lights to Phase 4.5 baker.
 
-Lighting data will live in PRL sections produced by the compiler. The exact mechanism (lightmaps, light probes, irradiance volumes) is a Phase 4 design decision. Desired properties to preserve from the aspirational design:
+Light entities are defined in the FGD alongside fog and reverb entities (see `build_pipeline.md` §Custom FGD). The compiler's translation layer converts mapper-facing properties (light intensity, color, falloff distance, animation) to engine-internal canonical format, applying validation rules: falloff distance required, spotlight direction verified, intensity bounds checked. Invalid lights fail compilation with clear error messages.
 
-- Per-face colored lighting with directional component for approximate specular
-- Ambient occlusion baked into lightmap samples
-- Volumetric light probes for dynamic object lighting (sprites, particles)
+**Phase boundary:** Phase 4 owns entity spec, translation layer, and validation. Phase 4.5 owns probe sampling strategy, baker algorithm, and renderer integration. Missing lighting section is not an error; flat white ambient remains the fallback until Phase 4.5 ships.
 
-Missing lighting data is not an error. Current fallback — flat white ambient — remains the default until Phase 4 ships.
-
----
+Full spec: `plans/drafts/phase-4-fgd-light-entities/`
 
 ---
 
@@ -118,7 +114,7 @@ Forward rendering pipeline. Each stage runs as a distinct render pass or draw ca
 
 Draw visible faces from the visibility-culled draw set (§2). Draw calls grouped by (leaf, texture) — one call per visible leaf × texture pair. Minimizes bind group switches without breaking leaf contiguity required by visibility tracking.
 
-Each face samples its base texture at its UV coordinate. Flat ambient lighting applied uniformly: `output = base_texture × ambient_light × vertex_color`. Phase 4 replaces the flat ambient factor with probe-sampled per-surface values.
+Each face samples its base texture at its UV coordinate. Flat ambient lighting applied uniformly: `output = base_texture × ambient_light × vertex_color`. Phase 4.5 replaces flat ambient with per-probe illumination baked from Phase 4 light entities.
 
 Depth testing (Less, write enabled) and back-face culling (counter-clockwise front face) are permanent from this phase forward.
 

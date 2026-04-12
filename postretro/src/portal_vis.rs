@@ -652,11 +652,18 @@ pub fn narrow_frustum(
         return None;
     }
 
-    // Compute the portal plane from the polygon.
-    let v0 = portal_polygon[0];
-    let v1 = portal_polygon[1];
-    let v2 = portal_polygon[2];
-    let portal_normal = (v1 - v0).cross(v2 - v0);
+    let n = portal_polygon.len();
+    let centroid = portal_polygon.iter().copied().sum::<Vec3>() / n as f32;
+
+    // Newell's method: robust against colinear/near-duplicate vertices that would collapse a single (v1-v0)×(v2-v0) cross product.
+    let mut portal_normal = Vec3::ZERO;
+    for i in 0..n {
+        let cur = portal_polygon[i];
+        let nxt = portal_polygon[(i + 1) % n];
+        portal_normal.x += (cur.y - nxt.y) * (cur.z + nxt.z);
+        portal_normal.y += (cur.z - nxt.z) * (cur.x + nxt.x);
+        portal_normal.z += (cur.x - nxt.x) * (cur.y + nxt.y);
+    }
     if portal_normal.length_squared() < 1e-12 {
         return None;
     }
@@ -664,15 +671,15 @@ pub fn narrow_frustum(
 
     // Orient the portal normal to face away from the camera.
     // The near plane should clip away the side of the portal the camera is on.
-    let camera_side = portal_normal.dot(camera_position - v0);
+    let camera_side = portal_normal.dot(camera_position - centroid);
     let oriented_normal = if camera_side > 0.0 {
         -portal_normal
     } else {
         portal_normal
     };
-    let portal_dist = -oriented_normal.dot(v0);
+    let portal_dist = -oriented_normal.dot(centroid);
 
-    let mut planes = Vec::with_capacity(portal_polygon.len() + 2);
+    let mut planes = Vec::with_capacity(n + 2);
 
     // Portal plane as near clip.
     planes.push(crate::visibility::FrustumPlane {
@@ -683,8 +690,6 @@ pub fn narrow_frustum(
     // Edge planes: for each portal edge, the clip plane passes through the
     // camera and the edge, oriented to face the portal centroid. This is the
     // exact visibility cone from a point camera through the portal.
-    let n = portal_polygon.len();
-    let centroid = portal_polygon.iter().copied().sum::<Vec3>() / n as f32;
     for i in 0..n {
         let edge_a = portal_polygon[i];
         let edge_b = portal_polygon[(i + 1) % n];
@@ -1152,6 +1157,52 @@ mod tests {
              leading vertices from reaching narrow_frustum in the first \
              place. If this fails, the SIDE_ON dedupe predicate in \
              clip_polygon_to_plane has regressed."
+        );
+    }
+
+    /// Defense-in-depth gate for the `narrow_frustum` leading-triple
+    /// fragility flagged by edge-case review on commit 1535c92.
+    ///
+    /// The S-maze fix hardened the clipper so it no longer emits the
+    /// specific "near-duplicate leading pair from inside-by-epsilon
+    /// vertex" shape, but the old `narrow_frustum` still trusted
+    /// `(v1-v0) × (v2-v0)` and would collapse on any polygon whose
+    /// first three vertices happened to be colinear — a shape that can
+    /// still arise from BSP fragmentation or from polygons that were
+    /// colinear at the source before any clipping occurred.
+    ///
+    /// Newell's method (Graphics Gems III, 1992) sums edge cross
+    /// products across the entire polygon, so a single degenerate
+    /// triple contributes zero while the rest of the polygon still
+    /// supplies a correct normal. This probe feeds a pentagon whose
+    /// leading three vertices are exactly colinear and asserts
+    /// `narrow_frustum` still returns a valid frustum.
+    #[test]
+    fn narrow_frustum_accepts_colinear_leading_triple() {
+        let camera_pos = Vec3::ZERO;
+        let frustum = make_camera_frustum(camera_pos, Vec3::X);
+
+        // Pentagon on the plane X=10: the 2×2 quad used in
+        // `narrow_frustum_produces_tighter_frustum`, plus a midpoint
+        // inserted on the bottom edge so v0, v1, v2 are colinear along
+        // Z=4. (v1-v0)×(v2-v0) is exactly zero; Newell's sum of all
+        // five edges still resolves to (±8, 0, 0).
+        let portal = vec![
+            Vec3::new(10.0, 4.0, 4.0),
+            Vec3::new(10.0, 5.0, 4.0),
+            Vec3::new(10.0, 6.0, 4.0),
+            Vec3::new(10.0, 6.0, 6.0),
+            Vec3::new(10.0, 4.0, 6.0),
+        ];
+
+        let narrowed = narrow_frustum(camera_pos, &portal, &frustum);
+        assert!(
+            narrowed.is_some(),
+            "narrow_frustum rejected a pentagon with colinear leading \
+             vertices — Newell's method should have derived a valid \
+             normal from the remaining non-degenerate edges. If this \
+             fails, the leading-triple cross product has regressed \
+             into the polygon-normal computation."
         );
     }
 

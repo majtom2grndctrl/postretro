@@ -1,8 +1,5 @@
 // Format-agnostic vertex and texture types shared by the PRL loader and renderer.
-// Relocated from bsp.rs during BSP support removal.
-
-/// Textured vertex format for world geometry.
-/// See: context/plans/in-progress/phase-3-textured-world/index.md §Vertex format
+// See: context/lib/rendering_pipeline.md §6
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TexturedVertex {
@@ -20,7 +17,7 @@ impl TexturedVertex {
 /// Pre-computed at load time to avoid per-frame sorting.
 #[derive(Debug, Clone)]
 pub struct TextureSubRange {
-    /// Miptexture index (or `u32::MAX` for faces with no texture).
+    /// Texture index (or `u32::MAX` for faces with no texture).
     pub texture_index: u32,
     /// Offset into the index buffer.
     pub index_offset: u32,

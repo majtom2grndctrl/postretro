@@ -75,9 +75,14 @@ Between phases, check that prerequisites for the next phase are satisfied.
 
 When all phases are done:
 - Run preflight checks: `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
+- Run a `/review-panel` on code edited in this session
+- Report review panel findings to user to discuss which feedback to act on
+
+### 6. Landing the plane
+
+When the user says "land the plane":
 - Move the plan to done: `git mv context/plans/in-progress/<plan-name> context/plans/done/<plan-name>`
-- Commit
-- Report to the user: what was completed, any partial results, any follow-ups filed
+- Commit & push
 
 ### Error handling
 

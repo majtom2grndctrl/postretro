@@ -505,60 +505,134 @@ pub(crate) fn clip_polygon_to_frustum<'a>(
     }
 }
 
-/// Clip a convex polygon against a single half-space (one Sutherland-Hodgman step).
+/// Clip a convex polygon against a single half-space (one Sutherland-Hodgman
+/// step), using the three-state classifier from Doom 3's `idWinding::Split`
+/// (RBDOOM-3-BFG `neo/idlib/geometry/Winding.cpp` L115-200). The same
+/// algorithm ships in id's 1999 Quake `qbsp/winding.c` and in ericw-tools'
+/// `polylib::winding_base_t::clip` today — a ~30-year-battle-tested lineage.
 ///
-/// Writes the clipped vertices into `output` (which is cleared on entry by the
-/// caller). The input polygon must be closed in winding order; vertex order is
-/// preserved in the output.
+/// Each vertex is classified `FRONT`, `BACK`, or `ON` relative to the plane,
+/// using `CLIP_EPSILON` as the on-plane tolerance. Both `FRONT` and `ON`
+/// vertices are emitted to the output. The crucial predicate is the split-
+/// point skip: when the *next* vertex is `ON` or on the same side as the
+/// current one, no intersection vertex is generated — otherwise a vertex
+/// within `CLIP_EPSILON` of the plane would get both emitted directly (as an
+/// `ON` vertex) *and* have an intersection vertex generated adjacent to it
+/// from the bracketing edge, producing the near-duplicate leading pair that
+/// makes `narrow_frustum`'s cross-product normal collapse. That is the
+/// mechanism behind the `test-2.prl` S-maze missing-panels bug; see the
+/// regression probe below.
+///
+/// Writes the clipped vertices into `output` (which is cleared on entry by
+/// the caller). The input polygon must be closed in winding order; vertex
+/// order is preserved in the output.
 fn clip_polygon_to_plane(input: &[Vec3], plane: &FrustumPlane, output: &mut Vec<Vec3>) {
-    let signed_distance = |v: Vec3| plane.normal.dot(v) + plane.dist;
-
     let n = input.len();
-    for i in 0..n {
-        let current = input[i];
-        let previous = input[(i + n - 1) % n];
+    if n < 3 {
+        return;
+    }
 
-        let d_current = signed_distance(current);
-        let d_previous = signed_distance(previous);
-
-        let current_inside = d_current >= -CLIP_EPSILON;
-        let previous_inside = d_previous >= -CLIP_EPSILON;
-
-        if current_inside {
-            if !previous_inside {
-                // Entering: emit the intersection, then the current vertex.
-                if let Some(intersection) =
-                    intersect_edge_plane(previous, current, d_previous, d_current)
-                {
-                    output.push(intersection);
-                }
-            }
-            output.push(current);
-        } else if previous_inside {
-            // Leaving: emit the intersection only.
-            if let Some(intersection) =
-                intersect_edge_plane(previous, current, d_previous, d_current)
-            {
-                output.push(intersection);
-            }
+    let classify = |d: f32| -> i8 {
+        if d > CLIP_EPSILON {
+            1 // FRONT — strictly inside the half-space
+        } else if d < -CLIP_EPSILON {
+            -1 // BACK — strictly outside
+        } else {
+            0 // ON — within epsilon of the plane
         }
-        // Both outside: emit nothing.
+    };
+
+    for i in 0..n {
+        let p1 = input[i];
+        let d1 = plane.normal.dot(p1) + plane.dist;
+        let s1 = classify(d1);
+
+        // Emit `p1` if it is FRONT or ON. ON vertices are emitted to both
+        // sides in a full front-and-back split; since we only keep the
+        // front side here, ON still belongs in the output.
+        if s1 >= 0 {
+            output.push(p1);
+        }
+
+        // If `p1` is ON, do not generate a split point for the outgoing
+        // edge: the ON vertex itself is already the geometric split point,
+        // so emitting another one adjacent to it would produce a near-
+        // duplicate. The next vertex is handled by its own iteration.
+        if s1 == 0 {
+            continue;
+        }
+
+        let next_idx = (i + 1) % n;
+        let p2 = input[next_idx];
+        let d2 = plane.normal.dot(p2) + plane.dist;
+        let s2 = classify(d2);
+
+        // Skip the split point when:
+        //   - `p2` is ON: it will be emitted verbatim in the next
+        //     iteration as the geometric split point (Doom 3/Quake rule).
+        //   - `p2` is on the same side as `p1`: the edge does not cross
+        //     the plane, so there is no split point to generate.
+        if s2 == 0 || s2 == s1 {
+            continue;
+        }
+
+        output.push(compute_split_point_on_plane(p1, p2, d1, d2, plane));
     }
 }
 
-/// Intersect the line segment `[a, b]` with a plane, given their signed
-/// distances to the plane.
+/// Compute the split point where a line segment crosses a plane, with two
+/// numerical-robustness tweaks borrowed from Doom 3's `idWinding::Split`
+/// (RBDOOM-3-BFG `neo/idlib/geometry/Winding.cpp` L205-224):
 ///
-/// Returns `None` if the segment is parallel to the plane (distances equal to
-/// within numerical precision) — in that case the caller's inside/outside
-/// classification handles the vertices directly.
-fn intersect_edge_plane(a: Vec3, b: Vec3, d_a: f32, d_b: f32) -> Option<Vec3> {
-    let denom = d_a - d_b;
-    if denom.abs() < f32::EPSILON {
-        return None;
+/// 1. **Direction-symmetric lerp.** Always interpolate from the FRONT
+///    vertex toward the BACK vertex. This guarantees that processing edge
+///    `A→B` and edge `B→A` yields bitwise-identical split points, which
+///    matters when the same edge is walked from opposite directions by
+///    adjacent clip steps.
+/// 2. **Axis-aligned plane snap.** If the clip plane's normal is exactly a
+///    unit axis (e.g. `(±1, 0, 0)`), force the split point's coordinate on
+///    that axis to lie exactly on the plane instead of accepting lerp
+///    drift. Frees a split-point vertex from later misclassification by
+///    adjacent planes.
+///
+/// Caller guarantees `d1` and `d2` have opposite signs and neither is ON,
+/// so the denominator is non-zero.
+fn compute_split_point_on_plane(
+    p1: Vec3,
+    p2: Vec3,
+    d1: f32,
+    d2: f32,
+    plane: &FrustumPlane,
+) -> Vec3 {
+    debug_assert!(
+        d1.abs() > CLIP_EPSILON && d2.abs() > CLIP_EPSILON && d1.signum() != d2.signum(),
+        "compute_split_point_on_plane requires d1/d2 to be strictly \
+         opposite-sign and neither within CLIP_EPSILON — the SIDE_ON \
+         filter in clip_polygon_to_plane must guarantee this"
+    );
+
+    // Direction-symmetric: always lerp FRONT → BACK.
+    let (front, back, d_front, d_back) = if d1 >= 0.0 {
+        (p1, p2, d1, d2)
+    } else {
+        (p2, p1, d2, d1)
+    };
+    let t = d_front / (d_front - d_back);
+    let mut mid = front + (back - front) * t;
+
+    // Axis-aligned snap. Our Hessian convention is `n·v + d = 0`, so for
+    // `n = +unit_j` the plane is `v[j] = -plane.dist`, and for
+    // `n = -unit_j` it is `v[j] = plane.dist`.
+    for j in 0..3 {
+        let n_j = plane.normal[j];
+        if n_j == 1.0 {
+            mid[j] = -plane.dist;
+        } else if n_j == -1.0 {
+            mid[j] = plane.dist;
+        }
     }
-    let t = d_a / denom;
-    Some(a + (b - a) * t)
+
+    mid
 }
 
 /// Narrow a frustum by constructing clip planes through the camera and the
@@ -993,6 +1067,92 @@ mod tests {
         // Degenerate: less than 3 vertices.
         assert!(narrow_frustum(camera_pos, &[Vec3::X, Vec3::Y], &frustum).is_none());
         assert!(narrow_frustum(camera_pos, &[], &frustum).is_none());
+    }
+
+    /// Regression gate for the `test-2.prl` S-maze missing-panels bug.
+    ///
+    /// The old two-state Sutherland-Hodgman clipper produced clipped
+    /// polygons whose first two vertices were near-duplicates whenever a
+    /// polygon vertex lay within `CLIP_EPSILON` of a clip plane: for a
+    /// quad `[A, B, C, D]` with `A` inside-by-epsilon and `D` outside, the
+    /// clipper emitted `intersect(D,A), A, B, C, intersect(C,D)` — and
+    /// `intersect(D,A)` sat within epsilon of `A` itself. The first two
+    /// output vertices were then effectively coincident, and
+    /// `narrow_frustum`'s leading-triple cross-product normal collapsed
+    /// below its `1e-12` early-out, silently dropping the portal as
+    /// `rej A->B v=5/4 narrow`.
+    ///
+    /// In the broken `test-2.prl` trace, this was the failure along chain
+    /// `41 → 43 → 38 → 37 → 31 → 30`: `rej 43->38 v=5/4 narrow` broke the
+    /// only chain that reached leaf 30, the leaf holding the missing wall
+    /// and ceiling panels.
+    ///
+    /// The fix is the three-state `FRONT`/`BACK`/`ON` classifier from
+    /// Doom 3's `idWinding::Split` (same lineage as Quake's 1999
+    /// `qbsp/winding.c` and ericw-tools' `polylib::winding_base_t::clip`):
+    /// `ON` vertices are emitted verbatim, and the "skip split point if
+    /// next is ON or same-side" predicate prevents emitting a lerped
+    /// intersection adjacent to an already-emitted on-plane vertex.
+    ///
+    /// This probe runs the production clipper on exactly the quad shape
+    /// that used to trigger the bug (one vertex 5e-8 units inside a clip
+    /// plane — cumulative Sutherland-Hodgman imprecision after a handful
+    /// of portal-chain hops routinely lands vertices this close to clip
+    /// boundaries). The clipped polygon now has no degenerate leading
+    /// vertices and `narrow_frustum` accepts it.
+    #[test]
+    fn narrow_frustum_accepts_sutherland_hodgman_near_duplicate_leading_vertices() {
+        // Quad that yields the pathological clip: A inside-by-epsilon, D
+        // outside. Epsilon of 5e-8 puts cross^2 firmly below the 1e-12
+        // narrow-rejection threshold after clipping (verified by sweep).
+        let polygon = vec![
+            Vec3::new(10.0, 5e-8, 0.0),
+            Vec3::new(10.0, 5.0, 0.0),
+            Vec3::new(10.0, 5.0, 5.0),
+            Vec3::new(10.0, -5.0, 5.0),
+        ];
+        let clip_plane = crate::visibility::FrustumPlane {
+            normal: Vec3::new(0.0, 1.0, 0.0),
+            dist: 0.0,
+        };
+        let front_frustum = Frustum {
+            planes: vec![clip_plane],
+        };
+
+        let mut scratch_a: Vec<Vec3> = Vec::new();
+        let mut scratch_b: Vec<Vec3> = Vec::new();
+        let clipped = clip_polygon_to_frustum(
+            &polygon,
+            &front_frustum,
+            &mut scratch_a,
+            &mut scratch_b,
+        )
+        .to_vec();
+
+        // Sanity: the clipper survived as a polygon the DFS will hand to
+        // narrow_frustum (>= 3 verts, so `clipped_len < 3` doesn't early-
+        // reject the portal). Localizes the failure site if the clipper
+        // itself has regressed (as opposed to narrow_frustum).
+        assert!(
+            clipped.len() >= 3,
+            "Sutherland-Hodgman must emit >= 3 vertices for this input \
+             so the DFS hands the polygon to narrow_frustum; got {}",
+            clipped.len()
+        );
+
+
+        let camera_pos = Vec3::ZERO;
+        let camera_frustum = make_camera_frustum(camera_pos, Vec3::X);
+        let narrowed = narrow_frustum(camera_pos, &clipped, &camera_frustum);
+
+        assert!(
+            narrowed.is_some(),
+            "narrow_frustum rejected a geometrically valid portal polygon — \
+             the three-state clipper should have prevented near-duplicate \
+             leading vertices from reaching narrow_frustum in the first \
+             place. If this fails, the SIDE_ON dedupe predicate in \
+             clip_polygon_to_plane has regressed."
+        );
     }
 
     #[test]

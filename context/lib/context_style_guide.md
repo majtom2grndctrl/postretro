@@ -12,7 +12,7 @@ Short sentences. Clear words. No waste.
 **Follow these principles for all prose in context library.**
 
 - **Direct and brief.** Active voice, short sentences, no filler. One idea per sentence. Fragments in lists. Drop articles where natural. See *Prose* below for examples.
-- **Durable.** Context files describe what survives refactoring. If a sentence breaks when a file is renamed or a struct is extracted, it belongs in a task description or code comment — not a context file. See *Persistent vs. Ephemeral Content* below.
+- **Durable.** Context files describe what survives refactoring. If a sentence breaks when a file is renamed or a struct is extracted, it belongs in a task description or code comment — not a context file. See *Durable vs. Ephemeral Content* below.
 - **Seamless.** Every edit reads as if the file was always written this way. Restructure surrounding text when new edits reduce overall cohesion.
 
 ## Prose
@@ -84,13 +84,13 @@ After implementation, point to real code. A stale struct definition in a context
 
 Internal types (`pub(crate)`, module-private) belong in code comments, not context files.
 
-## Persistent vs. Ephemeral Content
+## Durable vs. Ephemeral Content
 
 Context files describe what survives refactoring. Task descriptions describe what to change right now.
 
 **Litmus test:** "If we rewrote this module with a different approach, would this sentence still be true?" Yes → context file. No → task description or code comment.
 
-**Belongs in context files (persistent):**
+**Belongs in context files (durable):**
 - Design principles and intent
 - Subsystem boundaries and ownership (renderer, audio, input, game logic)
 - Pipeline topology as semantic stages (not function names)
@@ -149,7 +149,7 @@ Define what you're defining, completely. A spec with scattered "TBD" markers pus
 
 **Terminology tables** when renaming or introducing terms. `Old | New` with concrete identifiers.
 
-**Diagrams.** ASCII diagrams follow the same persistent/ephemeral rules as prose. Pipeline topology and subsystem relationships are durable; function call sequences and struct layouts are not. Keep diagrams minimal — every box or arrow is a maintenance commitment when a subsystem is added or renamed.
+**Diagrams.** ASCII diagrams follow the same durable/ephemeral rules as prose. Pipeline topology and subsystem relationships are durable; function call sequences and struct layouts are not. Keep diagrams minimal — every box or arrow is a maintenance commitment when a subsystem is added or renamed.
 
 ## Density vs. Clarity
 
@@ -188,4 +188,4 @@ Context files are the durable layer. Plans are the ephemeral layer.
 **What doesn't belong in `context/lib/`:**
 - Specs for specific features (use `context/plans/`)
 - Implementation plans or task breakdowns
-- Content that names specific functions, types, or file paths as load-bearing detail (see *Persistent vs. Ephemeral Content* above)
+- Content that names specific functions, types, or file paths as load-bearing detail (see *Durable vs. Ephemeral Content* above)

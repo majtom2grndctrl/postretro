@@ -71,14 +71,16 @@ Five architectural invariants govern the engine:
 
 ## Project Documentation
 
-Postretro separates **durable knowledge** from **ephemeral work artifacts**. The code is the source of truth for implementation details. Documentation outside the codebase that describes specific code decisions — function signatures, struct layouts, algorithm choices — becomes stale the moment the code changes. The more detail a document carries about code, the faster it drifts.
+Most projects end up with documentation that quietly lies — a design doc describing a function renamed two months ago, an architecture guide pointing at a module that got split in half. The more specific a document is about code, the faster it rots. That's not a discipline problem you can fix by trying harder; it's structural. The code is where truth lives, and copies of the truth go stale.
 
-This drives a deliberate split:
+So Postretro splits its docs into two layers with very different expectations:
 
-- **Durable knowledge** (`context/lib/`) captures what survives refactoring: design principles, subsystem boundaries, contracts, pipeline topology. These change rarely and are worth maintaining, because they provide context to agents at the start of every agent lifecycle.
-- **Ephemeral artifacts** (`context/plans/`) carry the implementation detail — task breakdowns, acceptance criteria, specific code decisions. They're consumed during development and cleaned up after, avoiding long-lived documents that drift from the source of truth in the codebase.
+- **Durable knowledge** (`context/lib/`) — the things that stay true even when code shifts underneath them: design principles, subsystem boundaries, data contracts, frame ordering, the reasoning behind the architecture. A renderer rewrite shouldn't invalidate "all wgpu calls live in the renderer module." These docs rarely need maintenance, which is exactly why they're worth maintaining.
+- **Ephemeral artifacts** (`context/plans/`) — the working notes of active development: specs, task breakdowns, function names, algorithm choices. Essential while a feature is being built, disposable once it ships. Plans move `drafts/` → `ready/` → `in-progress/` → `done/`, and old ones get pruned.
 
-AI agents start from `context/lib/index.md`, which routes them to the minimum docs needed for a given task.
+The litmus test: *if we rewrote this module differently, would the sentence still be true?* Yes → durable. No → it's a plan, or better, a code comment next to the thing it describes.
+
+This matters more for an AI-assisted project than a traditional one. Every agent session starts cold and loads context from scratch. Feed it stale detail and it gives confident answers about a codebase that no longer exists. Feed it a compact, durable picture of how the system is *meant* to fit together, and it can read the live code for the specifics. Agents start from `context/lib/index.md`, which routes them to the minimum docs they need.
 
 ### Context Folder Structure
 

@@ -51,10 +51,10 @@
 
 ## Phase 3: Textured World
 
-- [ ] Load PNG textures at runtime, matched by texture name strings
-- [ ] Depth buffer and back-face culling for solid rendering
-- [ ] Create render pipeline: base texture with flat uniform lighting (no lightmaps yet)
-- [ ] Material derivation from texture name prefixes (table lookup, logged warnings for unknown prefixes)
+- [x] Load PNG textures at runtime, matched by texture name strings
+- [x] Depth buffer and back-face culling for solid rendering
+- [x] Create render pipeline: base texture with flat uniform lighting (no lightmaps yet)
+- [x] Material derivation from texture name prefixes (table lookup, logged warnings for unknown prefixes)
 - [ ] CSG face clipping to eliminate z-fighting from overlapping brushes (PRL path).
 
 **Testable outcome:** textured level with uniform lighting. Navigate with action-mapped input. No z-fighting.

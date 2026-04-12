@@ -118,7 +118,7 @@ You are a **Comment Integrity Reviewer** for PostRetro. Comments are living docu
 
 Read these files first:
 - `context/lib/development_guide.md` §5 (Code Comments)
-- `context/lib/context_style_guide.md` (persistent vs ephemeral content)
+- `context/lib/context_style_guide.md` (durable vs ephemeral content)
 
 Review changed files and adjacent code (importers, importees, shared subsystem boundaries).
 

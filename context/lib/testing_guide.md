@@ -66,6 +66,16 @@ fn loader_falls_back_to_white_lightmap_when_rgb_lump_missing() { ... }
 fn material_derivation_maps_metal_prefix_to_metal_enum() { ... }
 ```
 
+### Regression tests
+
+When a test is written in response to a bug, include a comment naming the bug it covers. One line: what broke, not how it was fixed.
+
+```rust
+// Regression: sector with zero-height floor caused divide-by-zero in span generation.
+#[test]
+fn span_generator_handles_zero_height_floor() { ... }
+```
+
 ### Floating-point comparison
 
 Game engine code is full of floating-point math (positions, UVs, colors, interpolation). Never assert exact equality on floats. Use approximate comparison with an explicit epsilon.

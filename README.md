@@ -14,50 +14,11 @@ Postretro is a Quake-style FPS engine in Rust that genuinely looks and feels ret
 
 The visual target is something like Prodeus — chunky pixels, billboard sprites, baked lighting, cyberpunk atmosphere. But the goal is to earn that look through low-cost rendering techniques, resulting in a game that looks like you remember but feels better.
 
-It's early days. Right now Postretro loads BSP levels, flies through them with textures, and culls non-visible areas using portal-based PVS. Everything else is ahead of us — and that's kind of the fun part.
-
-## Planned Milestones
-
-The engine is being built in phases, each of which produces something you can actually see and test. Here's the rough shape of the road ahead:
-
-- **Phases 1** ✅ — BSP and PRL level loading, portal-based BSP visibility with frustum clipping at runtime, free-fly camera, wireframe rendering, custom PRL level compiler
-- **Phase 2** ✅ — Fixed-timestep game loop, action-mapped input (keyboard, mouse, gamepad)
-- **Phase 3** — Textured world with solid rendering, depth buffer, material system
-- **Phase 4** — Light probes: bake lighting offline, sample at runtime for spatially varying illumination — no lightmap atlas, no per-face UVs
-- **Phase 5** — Lighting refinement: dynamic point lights, shadow maps for moving lights (intentionally low-res for chunky pixel shadows), emissives, billboard sprites, fog
-- **Phase 6** — Post-processing: bloom on emissive surfaces, optional CRT filter, cubemap reflections
-- **Phase 7** — Grounded player movement: gravity, collision, slide, step-up, jump
-- **Phase 8** — Entity framework: doors, pickups, triggers, game event system
-- **Future** — Audio, enemies, weapons, HUD, and whatever else a boomer shooter needs
-
-The full phased plan with acceptance criteria lives in `context/plans/roadmap.md`.
-
-## Tech Stack
-
-- **Language:** Rust (edition 2024, MSRV 1.85)
-- **Renderer:** wgpu
-- **Windowing:** winit
-- **Math:** glam 0.30 (pinned for qbsp compatibility)
-- **BSP loading:** qbsp
-- **Audio:** kira
-- **Gamepad input:** gilrs
-- **Level editor:** TrenchBroom
-- **Level compiler:** custom (postretro-level-compiler)
-
-## Building
-
-This is a Cargo workspace with multiple crates.
-
-```bash
-cargo run -p postretro                                          # engine (debug)
-cargo run -p postretro -- assets/maps/test.bsp                 # load a BSP map
-cargo run -p postretro -- assets/maps/test.prl                 # load a PRL map
-cargo run -p postretro-level-compiler -- input.map -o out.prl  # compile a level
-cargo run --release -p postretro                               # optimized build
-RUST_LOG=info cargo run -p postretro                           # with logging
-```
+It's early days. Right now Postretro compiles TrenchBroom maps into its own binary format, renders textured levels, and culls non-visible areas using per-frame portal traversal. Everything else is ahead of us — and that's kind of the fun part.
 
 ## Project Documentation
+
+**The real reason I’ve open sourced this project**
 
 Most projects end up with documentation that quietly lies — a design doc describing a function renamed two months ago, an architecture guide pointing at a module that got split in half. The more specific a document is about code, the faster it rots. That's not a discipline problem you can fix by trying harder; it's structural. The code is where truth lives, and copies of the truth go stale.
 
@@ -126,7 +87,7 @@ Implementation is checked against acceptance criteria, architectural constraints
 
 Revise `context/lib/` to address any context drift that emerged during execution — assumptions that proved wrong, boundaries that shifted, contracts that evolved. Once the context library is up to date, move the completed plan to `done/`. The `done/` folder keeps recently completed plans accessible for reference; old plans are periodically pruned to keep no more than 15.
 
-The guiding principle: context files describe what survives refactoring. If a sentence would break when a module is reorganized or a function is renamed, it belongs in a task spec or code comment — not in `context/lib/`.
+**The guiding principle:** context files describe what survives refactoring. If a sentence would break when a module is reorganized or a function is renamed, it belongs in a task spec or code comment — not in `context/lib/`.
 
 ### Skills (.claude/skills/)
 
@@ -137,8 +98,49 @@ The lifecycle is supported by Claude Code skills:
 | `plan` | Creates feature specs with task breakdown, sequencing, and acceptance criteria |
 | `orchestrate` | Coordinates plan execution — spawns agents, tracks progress, moves plans through stages |
 | `code-review` | Reviews implementations against specs, architecture, and conventions |
+| `review-panel` | Spawns 3 reviewer agents that approach review from different angles |
 | `preflight` | Pre-commit quality gate: fmt, clippy, test |
 | `create-skill` | Builds new skills for the project |
+
+## Planned Milestones
+
+The engine is being built in phases, each of which produces something you can actually see and test. Here's the rough shape of the road ahead:
+
+- **Phase 1** ✅ — PRL level loading, portal-based visibility with frustum clipping at runtime, free-fly camera, wireframe rendering, custom PRL level compiler
+- **Phase 2** ✅ — Fixed-timestep game loop, action-mapped input (keyboard, mouse, gamepad)
+- **Phase 3** ✅ — Textured world with solid rendering, depth buffer, material system
+- **Phase 3.5** — Rendering foundation: GPU-driven indirect draws, per-cell chunking, HiZ occlusion culling, vertex format upgrade (packed normals and tangents). Same visuals as Phase 3, different architecture underneath.
+- **Phase 4** — Lighting foundation: SH irradiance volume (baked indirect), clustered forward+ dynamic lights, normal maps, shadow maps
+- **Phase 5** — Visual polish: billboard sprites, emissive surfaces, fog volumes
+- **Phase 6** — Post-processing: bloom, optional CRT filter, cubemap reflections
+- **Phase 7** — Grounded player movement: gravity, collision, slide, step-up, jump
+- **Phase 8** — Entity framework: doors, pickups, triggers, game event system
+- **Future** — Audio, enemies, weapons, HUD, and whatever else a boomer shooter needs
+
+The full phased plan with acceptance criteria lives in `context/plans/roadmap.md`.
+
+## Tech Stack
+
+- **Language:** Rust (edition 2024, MSRV 1.85)
+- **Renderer:** wgpu
+- **Windowing:** winit
+- **Math:** glam
+- **Audio:** kira
+- **Gamepad input:** gilrs
+- **Level editor:** TrenchBroom
+- **Level compiler:** custom (postretro-level-compiler)
+
+## Building
+
+This is a Cargo workspace with multiple crates.
+
+```bash
+cargo run -p postretro                                          # engine (debug)
+cargo run -p postretro -- assets/maps/test.prl                 # load a PRL map
+cargo run -p postretro-level-compiler -- input.map -o out.prl  # compile a level
+cargo run --release -p postretro                               # optimized build
+RUST_LOG=info cargo run -p postretro                           # with logging
+```
 
 ## Architecture
 
@@ -147,7 +149,7 @@ Five architectural invariants govern the engine:
 | Principle | Rule |
 |-----------|------|
 | Renderer owns GPU | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
-| Baked over computed | Lighting and light probes baked offline by the level compiler. Dynamic lights supplement, not replace. |
+| Baked over computed | Indirect lighting baked offline (SH irradiance volume). Direct illumination is fully dynamic (clustered forward+ with shadow maps). |
 | Subsystem boundaries | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | Frame ordering | Input → Game logic → Audio → Render → Present. |
 | No `unsafe` | If `unsafe` appears necessary, stop and consult the project owner. |
@@ -157,8 +159,7 @@ Five architectural invariants govern the engine:
 - General-purpose game engine
 - ECS architecture
 - Deferred rendering
-- Extending or forking ericw-tools
-- Runtime BSP compilation
+- Runtime level compilation
 - Multiplayer / networking
 
 ## License

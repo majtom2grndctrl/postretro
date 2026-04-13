@@ -1,5 +1,5 @@
 ---
-name: plan
+name: new-plan
 description: >
   Plans a feature or epic by researching the problem space, writing a spec with
   task breakdown and sequencing, and updating context files with durable decisions.

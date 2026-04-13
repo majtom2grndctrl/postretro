@@ -110,6 +110,17 @@ Never leave a bare `// TODO: fix later`. Either file a follow-up with context or
 
 See [Context Style Guide](./context_style_guide.md) §Documentation Lifecycle. Specs are consumed during implementation, then deleted. Durable knowledge lives in context files; implementation-level "why" lives in code comments.
 
+### 1.6 Breaking API changes
+
+This project does not maintain backward compatibility. There are no external consumers, and compatibility shims add maintenance weight with no current benefit.
+
+If a task requires a breaking change to a public API (function signatures, format types, wire format):
+
+1. **Confirm with the project owner before proceeding.** Breaking changes ripple across crates; get explicit sign-off.
+2. **Scope the full break as a plan.** Identify all call sites and include the fixes. Don't land the API change and leave callers broken.
+
+When users are brought in and a stable platform is required, this policy will be revisited.
+
 ---
 
 ## 2) Module Organization
@@ -143,6 +154,7 @@ Split along natural boundaries:
 ### 2.4 Directory structure
 
 - **Subsystem directories** (`src/render/`, `src/audio/`, `src/input/`): use `mod.rs` or a barrel file for the public API. Internal modules are `pub(crate)` or private.
+- **Shaders directory** `src/shaders`: Keep all shaders in `.wsgl` files under `src/shaders`. Load them with `include_str!()`. Never embed shader source inline in Rust files.
 - **Flat is fine for uniform directories** (all the same kind of thing — e.g., all entity types, all texture loaders). 20+ files OK.
 - **Mixed-concern directories**: introduce subdirectories when you can't tell at a glance which files relate to each other.
 

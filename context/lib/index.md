@@ -49,7 +49,7 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 
 Single authoring pipeline: TrenchBroom `.map` → `prl-build` → `.prl`. Engine loads `.prl` as the sole runtime map format.
 
-prl-build compiles geometry, BSP tree, and portal graph. The engine consumes BSP tree, portal geometry, and geometry sections; it walks the portal graph per frame to determine visibility (no precomputed PVS required). `--pvs` mode produces a precomputed PVS bitset as a fallback. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md`.
+prl-build uses a BSP tree as a compiler intermediate to produce cells, portal geometry, and per-cell draw chunks. The runtime consumes cells and portals; it does not walk BSP nodes for rendering or visibility. (`BspNodes`/`BspLeaves` sections are still emitted for camera-leaf lookup — replacing that with a cell-location section is a future step.) `--pvs` mode produces a precomputed PVS bitset as a fallback. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md`.
 
 ### PRL baked data
 

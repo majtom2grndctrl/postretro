@@ -84,19 +84,19 @@ Full spec: `plans/drafts/phase-4-baked-lighting/`
 
 ## 5. Cells and Draw Chunks
 
-**Cell** = empty BSP leaf in its draw-chunk and visibility role. 1:1 with leaves today; the separate term leaves room for future subdivision or merging without a spec rewrite. **Cluster** = screen-space light-culling grid (§7.1 step 4), never spatial. Rule: cell = world space, cluster = screen space.
+**Cell** = opaque draw-dispatch unit. The current compiler assigns one cell per empty BSP leaf; a future compiler could assign them differently. The runtime never interprets `cell_id` as a BSP leaf index — cells are the renderer's spatial primitive, decoupled from how they were produced. 1:1 with BSP leaves today; the separate term and opaque id leave room for non-BSP spatial structures without a runtime rewrite. **Cluster** = screen-space light-culling grid (§7.1 step 4), never spatial. Rule: cell = world space, cluster = screen space.
 
-World geometry is grouped by cell at compile time. Each chunk:
+World geometry is grouped by cell at compile time. One chunk per (cell, material bucket) pair:
 
 | Field | Content |
 |-------|---------|
-| `cell_id` | Portal-graph node |
+| `cell_id` | Opaque cell identifier |
 | `aabb` | World-space bounds for GPU frustum + HiZ culling |
 | `index_offset` | Start of the chunk's indices in the shared index buffer |
 | `index_count` | Length of the index range |
 | `material_bucket` | (albedo, normal map) pair the indices reference |
 
-Indices within a cell are ordered by material bucket, so each cell emits one indirect draw per material it touches (typical: 2–10). The chunk table lives in its own PRL section; the loader hands it to the renderer.
+Indices within a cell are ordered by material bucket, so each cell emits one indirect draw per material it touches (typical: 2–10). The chunk table includes a cell→chunk-range index so the GPU culling pass can look up all chunks for a given cell in O(1). The chunk table lives in its own PRL section; the loader hands it to the renderer.
 
 Flow: portal traversal (§2) produces the visible cell list → compute cell-culling prepass (§7.1 step 3) frustum- and HiZ-culls → emits `draw_indexed_indirect` commands → opaque pass (§7.2) consumes via `multi_draw_indexed_indirect`, one call per material bucket.
 

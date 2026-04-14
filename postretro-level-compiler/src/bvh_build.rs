@@ -12,7 +12,7 @@ use bvh::aabb::{Aabb, Bounded};
 use bvh::bounding_hierarchy::BHShape;
 use bvh::bvh::{Bvh, BvhNode};
 use nalgebra::Point3;
-use postretro_level_format::bvh::{BvhLeaf, BvhNode as FlatNode, BvhSection, BVH_NODE_FLAG_LEAF};
+use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode as FlatNode, BvhSection};
 use postretro_level_format::geometry::GeometrySection;
 
 use crate::geometry::GeometryResult;
@@ -109,7 +109,11 @@ fn primitive_sort_key(material_bucket_id: u32, cell_id: u32, index_offset: u32) 
         | (index_offset as u64 & 0xF_FFFF)
 }
 
-fn face_aabb(section: &GeometrySection, index_offset: u32, index_count: u32) -> ([f32; 3], [f32; 3]) {
+fn face_aabb(
+    section: &GeometrySection,
+    index_offset: u32,
+    index_count: u32,
+) -> ([f32; 3], [f32; 3]) {
     let start = index_offset as usize;
     let end = start + index_count as usize;
     let mut min = [f32::INFINITY; 3];
@@ -408,7 +412,10 @@ mod tests {
         let (_bvh, _prims, section) = build_bvh(&geo);
         assert_eq!(section.leaves.len(), 1);
         assert_eq!(section.nodes.len(), 1);
-        assert_eq!(section.nodes[0].flags & BVH_NODE_FLAG_LEAF, BVH_NODE_FLAG_LEAF);
+        assert_eq!(
+            section.nodes[0].flags & BVH_NODE_FLAG_LEAF,
+            BVH_NODE_FLAG_LEAF
+        );
         assert_eq!(section.leaves[0].cell_id, 0);
         assert_eq!(section.leaves[0].material_bucket_id, 0);
         assert_eq!(section.leaves[0].index_offset, 0);
@@ -543,10 +550,7 @@ mod tests {
                 "node {idx} has skip_index {} <= current",
                 node.skip_index
             );
-            assert!(
-                node.skip_index <= total,
-                "node {idx} skip_index past end"
-            );
+            assert!(node.skip_index <= total, "node {idx} skip_index past end");
         }
     }
 
@@ -568,10 +572,10 @@ mod tests {
             [0.0, 21.0, -5.0],
         ];
         let faces = vec![
-            (0u32, 3u32, 0u32, 2u32),  // cell 0, bucket 2
-            (3u32, 3u32, 0u32, 0u32),  // cell 0, bucket 0
-            (6u32, 3u32, 1u32, 1u32),  // cell 1, bucket 1
-            (9u32, 3u32, 1u32, 0u32),  // cell 1, bucket 0
+            (0u32, 3u32, 0u32, 2u32), // cell 0, bucket 2
+            (3u32, 3u32, 0u32, 0u32), // cell 0, bucket 0
+            (6u32, 3u32, 1u32, 1u32), // cell 1, bucket 1
+            (9u32, 3u32, 1u32, 0u32), // cell 1, bucket 0
         ];
         let indices: Vec<u32> = (0u32..12u32).collect();
         make_geometry(&positions, &faces, &indices)

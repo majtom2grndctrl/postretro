@@ -215,8 +215,7 @@ impl GeometrySection {
             let normal_u = u16::from_le_bytes([data[offset + 20], data[offset + 21]]);
             let normal_v = u16::from_le_bytes([data[offset + 22], data[offset + 23]]);
             let tangent_u = u16::from_le_bytes([data[offset + 24], data[offset + 25]]);
-            let tangent_v_with_sign =
-                u16::from_le_bytes([data[offset + 26], data[offset + 27]]);
+            let tangent_v_with_sign = u16::from_le_bytes([data[offset + 26], data[offset + 27]]);
 
             vertices.push(Vertex {
                 position: [x, y, z],
@@ -353,11 +352,19 @@ mod tests {
 
         // +Y normal
         let n = restored.vertices[0].decode_normal();
-        assert!((n[1] - 1.0).abs() < 0.001, "expected ~+Y normal, got {:?}", n);
+        assert!(
+            (n[1] - 1.0).abs() < 0.001,
+            "expected ~+Y normal, got {:?}",
+            n
+        );
 
         // +X tangent
         let t = restored.vertices[0].decode_tangent();
-        assert!((t[0] - 1.0).abs() < 0.001, "expected ~+X tangent, got {:?}", t);
+        assert!(
+            (t[0] - 1.0).abs() < 0.001,
+            "expected ~+X tangent, got {:?}",
+            t
+        );
     }
 
     #[test]

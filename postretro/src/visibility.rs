@@ -284,10 +284,7 @@ struct LeafVisResult {
 }
 
 /// Collect all non-solid non-empty leaves that pass AABB frustum culling.
-fn visible_leaves_frustum_all(
-    leaves: &[crate::prl::LeafData],
-    frustum: &Frustum,
-) -> Vec<usize> {
+fn visible_leaves_frustum_all(leaves: &[crate::prl::LeafData], frustum: &Frustum) -> Vec<usize> {
     leaves
         .iter()
         .enumerate()

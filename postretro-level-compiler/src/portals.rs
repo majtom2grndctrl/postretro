@@ -1153,7 +1153,11 @@ mod tests {
             for idx in start..end {
                 let vi = geo.geometry.indices[idx] as usize;
                 let p = &geo.geometry.vertices[vi];
-                let v = DVec3::new(p.position[0] as f64, p.position[1] as f64, p.position[2] as f64);
+                let v = DVec3::new(
+                    p.position[0] as f64,
+                    p.position[1] as f64,
+                    p.position[2] as f64,
+                );
                 if !unique_verts
                     .iter()
                     .any(|u| (*u - v).length_squared() < 1e-6)

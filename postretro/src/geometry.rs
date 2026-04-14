@@ -138,13 +138,7 @@ mod tests {
     fn derive_bucket_ranges_multiple_contiguous_buckets() {
         let tree = BvhTree {
             nodes: vec![],
-            leaves: vec![
-                leaf(0, 0),
-                leaf(0, 1),
-                leaf(1, 2),
-                leaf(2, 3),
-                leaf(2, 4),
-            ],
+            leaves: vec![leaf(0, 0), leaf(0, 1), leaf(1, 2), leaf(2, 3), leaf(2, 4)],
             root_node_index: 0,
         };
         let ranges = tree.derive_bucket_ranges();

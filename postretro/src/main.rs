@@ -458,8 +458,7 @@ impl ApplicationHandler for App {
                     renderer.update_view_projection(view_proj);
 
                     if renderer.is_ready() {
-                        if let Err(err) =
-                            renderer.render_frame_indirect(&visible_cells, view_proj)
+                        if let Err(err) = renderer.render_frame_indirect(&visible_cells, view_proj)
                         {
                             self.exit_result = Err(err);
                             event_loop.exit();

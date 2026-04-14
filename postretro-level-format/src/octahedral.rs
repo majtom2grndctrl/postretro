@@ -50,11 +50,7 @@ pub fn decode(encoded: [u16; 2]) -> [f32; 3] {
 
 /// Returns 1.0 for non-negative values, -1.0 for negative. Never returns zero.
 fn sign_not_zero(v: f32) -> f32 {
-    if v >= 0.0 {
-        1.0
-    } else {
-        -1.0
-    }
+    if v >= 0.0 { 1.0 } else { -1.0 }
 }
 
 #[cfg(test)]

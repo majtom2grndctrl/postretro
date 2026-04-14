@@ -98,7 +98,11 @@ pub fn extract_geometry(
         let base_vertex = vertices.len() as u32;
 
         // Normal from face plane (engine space, already unit-length).
-        let normal_f32 = [face.normal.x as f32, face.normal.y as f32, face.normal.z as f32];
+        let normal_f32 = [
+            face.normal.x as f32,
+            face.normal.y as f32,
+            face.normal.z as f32,
+        ];
 
         // Compute tangent and bitangent sign from texture projection axes.
         let (tangent_f32, bitangent_sign) = compute_tangent_basis(face);
@@ -217,18 +221,11 @@ fn compute_tangent_basis(face: &Face) -> ([f32; 3], bool) {
 /// in engine space for a given face's texture projection.
 fn uv_axes_engine_space(face: &Face) -> (DVec3, DVec3) {
     match &face.tex_projection {
-        TextureProjection::Valve {
-            u_axis,
-            v_axis,
-            ..
-        } => {
+        TextureProjection::Valve { u_axis, v_axis, .. } => {
             // Valve 220: explicit axes in Quake space, convert to engine space.
             (quake_to_engine_dir(*u_axis), quake_to_engine_dir(*v_axis))
         }
-        TextureProjection::Standard {
-            angle,
-            ..
-        } => {
+        TextureProjection::Standard { angle, .. } => {
             // Standard: axes derived from face normal (Quake space), then rotated.
             let quake_normal = engine_normal_to_quake(face.normal);
             let (s_quake, t_quake) = standard_uv_axes(quake_normal, *angle);
@@ -406,7 +403,10 @@ fn build_leaf_ordered_faces(
 pub fn log_stats(result: &GeometryResult, empty_leaf_count: usize) {
     let section = &result.geometry;
     let triangle_count = section.indices.len() / 3;
-    log::info!("[Compiler] Vertices: {} (28 bytes each)", section.vertices.len());
+    log::info!(
+        "[Compiler] Vertices: {} (28 bytes each)",
+        section.vertices.len()
+    );
     log::info!("[Compiler] Indices: {}", section.indices.len());
     log::info!("[Compiler] Triangles: {triangle_count}");
     log::info!("[Compiler] Faces: {}", section.faces.len());
@@ -641,11 +641,7 @@ mod tests {
         let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
-        let sum: u32 = result
-            .face_index_ranges
-            .iter()
-            .map(|r| r.index_count)
-            .sum();
+        let sum: u32 = result.face_index_ranges.iter().map(|r| r.index_count).sum();
         assert_eq!(sum, section.indices.len() as u32);
     }
 
@@ -729,9 +725,9 @@ mod tests {
         // leaf_index in FaceMetaV3 must match these so chunks_for_cell()
         // can find the right chunks at runtime.
         let faces = vec![
-            triangle_face(),  // face 0 -> BSP leaf 1
-            quad_face(),      // face 1 -> BSP leaf 3
-            pentagon_face(),  // face 2 -> BSP leaf 4
+            triangle_face(), // face 0 -> BSP leaf 1
+            quad_face(),     // face 1 -> BSP leaf 3
+            pentagon_face(), // face 2 -> BSP leaf 4
         ];
         let tree = make_tree_with_empty_leaves(vec![
             (vec![], true),   // BSP leaf 0: solid
@@ -746,9 +742,18 @@ mod tests {
 
         assert_eq!(section.faces.len(), 3);
         // Must be raw BSP leaf indices, not sequential (0, 1, 2)
-        assert_eq!(section.faces[0].leaf_index, 1, "should be raw BSP index 1, not sequential 0");
-        assert_eq!(section.faces[1].leaf_index, 3, "should be raw BSP index 3, not sequential 1");
-        assert_eq!(section.faces[2].leaf_index, 4, "should be raw BSP index 4, not sequential 2");
+        assert_eq!(
+            section.faces[0].leaf_index, 1,
+            "should be raw BSP index 1, not sequential 0"
+        );
+        assert_eq!(
+            section.faces[1].leaf_index, 3,
+            "should be raw BSP index 3, not sequential 1"
+        );
+        assert_eq!(
+            section.faces[2].leaf_index, 4,
+            "should be raw BSP index 4, not sequential 2"
+        );
     }
 
     #[test]
@@ -1111,11 +1116,7 @@ mod tests {
                 );
 
                 let dot = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
-                assert!(
-                    dot.abs() < 0.05,
-                    "n.t={dot} for face normal {:?}",
-                    normal
-                );
+                assert!(dot.abs() < 0.05, "n.t={dot} for face normal {:?}", normal);
             }
         }
     }
@@ -1194,11 +1195,7 @@ mod tests {
         }
 
         // Face index counts sum to total
-        let sum: u32 = result
-            .face_index_ranges
-            .iter()
-            .map(|r| r.index_count)
-            .sum();
+        let sum: u32 = result.face_index_ranges.iter().map(|r| r.index_count).sum();
         assert_eq!(sum, section.indices.len() as u32);
 
         // Faces are ordered by leaf index
@@ -1249,10 +1246,7 @@ mod tests {
             );
 
             let dot = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
-            assert!(
-                dot.abs() < 0.05,
-                "vertex {i}: n.t not perpendicular: {dot}"
-            );
+            assert!(dot.abs() < 0.05, "vertex {i}: n.t not perpendicular: {dot}");
         }
 
         // Round-trip serialization

@@ -327,7 +327,6 @@ pub struct Renderer {
     has_geometry: bool,
 }
 
-
 impl Renderer {
     /// Create the renderer, taking ownership of all GPU state.
     ///
@@ -417,7 +416,7 @@ impl Renderer {
         } else {
             (
                 vec![0u8; crate::geometry::WorldVertex::STRIDE], // one dummy vertex
-                vec![0u8; 4],  // one dummy index
+                vec![0u8; 4],                                    // one dummy index
                 0u32,
             )
         };
@@ -567,9 +566,8 @@ impl Renderer {
         // Store the BVH leaves (for the wireframe overlay) and create the
         // compute cull pipeline off the loaded BVH. Empty-BVH levels skip
         // the pipeline entirely.
-        let bvh_leaves: Vec<crate::geometry::BvhLeaf> = geometry
-            .map(|g| g.bvh.leaves.clone())
-            .unwrap_or_default();
+        let bvh_leaves: Vec<crate::geometry::BvhLeaf> =
+            geometry.map(|g| g.bvh.leaves.clone()).unwrap_or_default();
         let compute_cull = geometry
             .filter(|g| !g.bvh.leaves.is_empty())
             .map(|g| ComputeCullPipeline::new(&device, g.bvh, has_multi_draw_indirect));
@@ -577,7 +575,6 @@ impl Renderer {
         // Depth buffer.
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
-
 
         // Pipeline layout.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -867,11 +864,7 @@ impl Renderer {
     /// checks its cell id against the visible-cell bitmask, and writes one
     /// `DrawIndexedIndirect` per surviving leaf. The render pass consumes
     /// them via `multi_draw_indexed_indirect` (or the singular fallback).
-    pub fn render_frame_indirect(
-        &mut self,
-        visible: &VisibleCells,
-        view_proj: Mat4,
-    ) -> Result<()> {
+    pub fn render_frame_indirect(&mut self, visible: &VisibleCells, view_proj: Mat4) -> Result<()> {
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
             wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
@@ -908,15 +901,8 @@ impl Renderer {
         // per-leaf `DrawIndexedIndirect` commands into the indirect buffer
         // in the same command submission — no readback or GPU sync needed.
         if let Some(cull) = &mut self.compute_cull {
-            cull.dispatch(
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                visible,
-                &view_proj,
-            );
+            cull.dispatch(&self.device, &self.queue, &mut encoder, visible, &view_proj);
         }
-
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -956,17 +942,14 @@ impl Renderer {
                 if let Some(cull) = &self.compute_cull {
                     // GPU-driven indirect draw path — the only path.
                     let gpu_textures = &self.gpu_textures;
-                    cull.draw_indirect(
-                        &mut render_pass,
-                        &|pass, bucket| {
-                            let bind_group = if (bucket as usize) < gpu_textures.len() {
-                                &gpu_textures[bucket as usize].bind_group
-                            } else {
-                                &gpu_textures[0].bind_group
-                            };
-                            pass.set_bind_group(1, bind_group, &[]);
-                        },
-                    );
+                    cull.draw_indirect(&mut render_pass, &|pass, bucket| {
+                        let bind_group = if (bucket as usize) < gpu_textures.len() {
+                            &gpu_textures[bucket as usize].bind_group
+                        } else {
+                            &gpu_textures[0].bind_group
+                        };
+                        pass.set_bind_group(1, bind_group, &[]);
+                    });
                 }
             }
         }
@@ -979,40 +962,36 @@ impl Renderer {
         {
             if let Some(cull) = &self.compute_cull {
                 let cull_status_bind_group =
-                    self.device
-                        .create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("Wireframe Cull Status BG"),
-                            layout: &self.wireframe_cull_status_bgl,
-                            entries: &[wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: cull.cull_status_buffer().as_entire_binding(),
-                            }],
-                        });
-
-                let mut overlay_pass =
-                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("Wireframe Overlay Pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: Some(
-                            wgpu::RenderPassDepthStencilAttachment {
-                                view: &self.depth_view,
-                                depth_ops: Some(wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                }),
-                                stencil_ops: None,
-                            },
-                        ),
-                        ..Default::default()
+                    self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Wireframe Cull Status BG"),
+                        layout: &self.wireframe_cull_status_bgl,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: cull.cull_status_buffer().as_entire_binding(),
+                        }],
                     });
+
+                let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Wireframe Overlay Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
 
                 overlay_pass.set_pipeline(&self.wireframe_pipeline);
                 overlay_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
@@ -1029,11 +1008,7 @@ impl Renderer {
                     let wire_offset = leaf.index_offset * 2;
                     let wire_count = leaf.index_count * 2;
                     let li = leaf_idx as u32;
-                    overlay_pass.draw_indexed(
-                        wire_offset..wire_offset + wire_count,
-                        0,
-                        li..li + 1,
-                    );
+                    overlay_pass.draw_indexed(wire_offset..wire_offset + wire_count, 0, li..li + 1);
                 }
             }
         }
@@ -1043,7 +1018,6 @@ impl Renderer {
 
         Ok(())
     }
-
 }
 
 // --- Hardcoded view-projection ---

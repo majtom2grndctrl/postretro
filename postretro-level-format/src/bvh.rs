@@ -129,8 +129,7 @@ impl BvhSection {
         let root_node_index = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
         // bytes 12..16 are header padding (ignored)
 
-        let expected_size =
-            HEADER_SIZE + (node_count * NODE_STRIDE) + (leaf_count * LEAF_STRIDE);
+        let expected_size = HEADER_SIZE + (node_count * NODE_STRIDE) + (leaf_count * LEAF_STRIDE);
         if data.len() < expected_size {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -204,18 +203,8 @@ fn read_u32(data: &[u8], at: usize) -> u32 {
 
 fn read_vec3(data: &[u8], at: usize) -> [f32; 3] {
     let x = f32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
-    let y = f32::from_le_bytes([
-        data[at + 4],
-        data[at + 5],
-        data[at + 6],
-        data[at + 7],
-    ]);
-    let z = f32::from_le_bytes([
-        data[at + 8],
-        data[at + 9],
-        data[at + 10],
-        data[at + 11],
-    ]);
+    let y = f32::from_le_bytes([data[at + 4], data[at + 5], data[at + 6], data[at + 7]]);
+    let z = f32::from_le_bytes([data[at + 8], data[at + 9], data[at + 10], data[at + 11]]);
     [x, y, z]
 }
 
@@ -292,8 +281,9 @@ mod tests {
     fn byte_layout_strides_match_spec() {
         let section = sample_section();
         let bytes = section.to_bytes();
-        let expected_len =
-            HEADER_SIZE + (section.nodes.len() * NODE_STRIDE) + (section.leaves.len() * LEAF_STRIDE);
+        let expected_len = HEADER_SIZE
+            + (section.nodes.len() * NODE_STRIDE)
+            + (section.leaves.len() * LEAF_STRIDE);
         assert_eq!(bytes.len(), expected_len);
         assert_eq!(NODE_STRIDE, 40);
         assert_eq!(LEAF_STRIDE, 40);

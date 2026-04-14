@@ -7,7 +7,7 @@ use std::path::Path;
 
 use glam::Vec3;
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
-use postretro_level_format::bvh::{BvhSection, BVH_NODE_FLAG_LEAF};
+use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::portals::PortalsSection;
@@ -244,9 +244,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         Some(data) => Some(TextureNamesSection::from_bytes(&data)?),
         None => None,
     };
-    let texture_names: Vec<String> = texture_names_section
-        .map(|s| s.names)
-        .unwrap_or_default();
+    let texture_names: Vec<String> = texture_names_section.map(|s| s.names).unwrap_or_default();
 
     // Build vertices and face_meta.
     let mut warned_prefixes = HashSet::new();
@@ -539,7 +537,9 @@ mod tests {
     use postretro_level_format::bsp::{
         BspLeafRecord, BspLeavesSection, BspNodeRecord, BspNodesSection,
     };
-    use postretro_level_format::bvh::{BvhLeaf as FormatBvhLeaf, BvhNode as FormatBvhNode, BvhSection};
+    use postretro_level_format::bvh::{
+        BvhLeaf as FormatBvhLeaf, BvhNode as FormatBvhNode, BvhSection,
+    };
     use postretro_level_format::geometry::{FaceMeta as FormatFaceMeta, GeometrySection, Vertex};
     use postretro_level_format::leaf_pvs::LeafPvsSection;
     use postretro_level_format::visibility::compress_pvs;
@@ -727,16 +727,19 @@ mod tests {
     #[test]
     fn load_prl_missing_file_returns_file_not_found() {
         let result = load_prl("nonexistent/path/to/map.prl");
-        assert!(matches!(
-            result.unwrap_err(),
-            PrlLoadError::FileNotFound(_)
-        ));
+        assert!(matches!(result.unwrap_err(), PrlLoadError::FileNotFound(_)));
     }
 
     // --- Round-trip helpers ---
 
     fn sample_vertex(x: f32) -> Vertex {
-        Vertex::new([x, 0.0, 0.0], [0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true)
+        Vertex::new(
+            [x, 0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+        )
     }
 
     fn sample_geometry() -> GeometrySection {

@@ -25,7 +25,7 @@
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 
-use crate::geometry::{BucketRange, BvhTree, BVH_NODE_FLAG_LEAF};
+use crate::geometry::{BVH_NODE_FLAG_LEAF, BucketRange, BvhTree};
 
 /// Size of a single DrawIndexedIndirect command in bytes.
 /// Layout: index_count(4) + instance_count(4) + first_index(4) +
@@ -702,7 +702,9 @@ mod tests {
 
     #[test]
     fn cull_uniforms_size() {
-        let uniforms = CullUniforms { planes: [[0.0; 4]; 6] };
+        let uniforms = CullUniforms {
+            planes: [[0.0; 4]; 6],
+        };
         assert_eq!(serialize_cull_uniforms(&uniforms).len(), CULL_UNIFORMS_SIZE);
     }
 

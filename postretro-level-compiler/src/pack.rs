@@ -265,7 +265,7 @@ fn validate_readback(file_buf: &[u8], expected_sections: &[SectionBlob]) -> anyh
 mod tests {
     use super::*;
     use postretro_level_format::bsp::{BspLeafRecord, BspNodeRecord};
-    use postretro_level_format::bvh::{BvhLeaf, BvhNode as FlatBvhNode, BVH_NODE_FLAG_LEAF};
+    use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode as FlatBvhNode};
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
 
@@ -273,9 +273,27 @@ mod tests {
         GeometryResult {
             geometry: GeometrySection {
                 vertices: vec![
-                    Vertex::new([1.0, 2.0, 3.0], [0.25, 0.75], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true),
-                    Vertex::new([4.0, 5.0, 6.0], [0.5, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true),
-                    Vertex::new([7.0, 8.0, 9.0], [1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true),
+                    Vertex::new(
+                        [1.0, 2.0, 3.0],
+                        [0.25, 0.75],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                    ),
+                    Vertex::new(
+                        [4.0, 5.0, 6.0],
+                        [0.5, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                    ),
+                    Vertex::new(
+                        [7.0, 8.0, 9.0],
+                        [1.0, 1.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                    ),
                 ],
                 indices: vec![0, 1, 2],
                 faces: vec![FaceMeta {
@@ -440,8 +458,7 @@ mod tests {
         let leaf_pvs = sample_leaf_pvs();
         let bvh = sample_bvh();
 
-        let result =
-            pack_and_write_pvs(output, &geo_result, &nodes, &leaves, &leaf_pvs, &bvh);
+        let result = pack_and_write_pvs(output, &geo_result, &nodes, &leaves, &leaf_pvs, &bvh);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -464,8 +481,7 @@ mod tests {
             crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
 
         let exterior = std::collections::HashSet::new();
-        let geo_result =
-            crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
         let generated_portals = crate::portals::generate_portals(&result.tree);
         let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
 
@@ -513,8 +529,7 @@ mod tests {
             crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
 
         let exterior = std::collections::HashSet::new();
-        let geo_result =
-            crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
         let generated_portals = crate::portals::generate_portals(&result.tree);
         let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
 

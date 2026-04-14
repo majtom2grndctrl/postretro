@@ -14,9 +14,9 @@ Postretro is a Quake-style FPS engine in Rust that genuinely looks and feels ret
 
 The visual target is something like Prodeus — chunky pixels, billboard sprites, baked lighting, cyberpunk atmosphere. But the goal is to earn that look through low-cost rendering techniques, resulting in a game that looks like you remember but feels better.
 
-It's early days. Right now Postretro compiles TrenchBroom maps into its own binary format, renders textured levels, and culls non-visible areas using per-frame portal traversal. Everything else is ahead of us — and that's kind of the fun part.
+It's early days, but the foundation is coming together fast. Right now Postretro compiles TrenchBroom maps into a custom binary format, renders fully textured levels, and drives the whole thing through a GPU-culled rendering pipeline: per-frame portal traversal narrows the visible set, a global BVH handles frustum culling on the GPU, and geometry is dispatched via indirect draw calls with zero per-object CPU overhead. Everything after that — lighting, movement, enemies, the whole game — is still ahead of us. That's kind of the fun part.
 
-## Project Documentation
+## Context Architecture (Like Project Docs for Agents)
 
 **The real reason I’ve open sourced this project**
 
@@ -106,16 +106,19 @@ The lifecycle is supported by Claude Code skills:
 
 The engine is being built in phases, each of which produces something you can actually see and test. Here's the rough shape of the road ahead:
 
-- **Phase 1** ✅ — PRL level loading, portal-based visibility with frustum clipping at runtime, free-fly camera, wireframe rendering, custom PRL level compiler
-- **Phase 2** ✅ — Fixed-timestep game loop, action-mapped input (keyboard, mouse, gamepad)
-- **Phase 3** ✅ — Textured world with solid rendering, depth buffer, material system
-- **Phase 3.5** — Rendering foundation: GPU-driven indirect draws, per-cell chunking, vertex format upgrade (packed normals and tangents). Same visuals as Phase 3, different architecture underneath.
-- **Phase 4** — Lighting foundation: SH irradiance volume (baked indirect), clustered forward+ dynamic lights, normal maps, shadow maps
-- **Phase 5** — Visual polish: billboard sprites, emissive surfaces, fog volumes
-- **Phase 6** — Post-processing: bloom, optional CRT filter, cubemap reflections
-- **Phase 7** — Grounded player movement: gravity, collision, slide, step-up, jump
-- **Phase 8** — Entity framework: doors, pickups, triggers, game event system
-- **Future** — Audio, enemies, weapons, HUD, and whatever else a boomer shooter needs
+- **Milestone 1** ✅ — BSP loading and wireframe rendering, PVS culling, free-fly camera
+- **Milestone 1.5** ✅ — Custom PRL level compiler: .map → .prl with voxel-based visibility, portal geometry, and exterior void sealing
+- **Milestone 2** ✅ — Fixed-timestep game loop, action-mapped input (keyboard, mouse, gamepad)
+- **Milestone 3** ✅ — Textured world with solid rendering, depth buffer, material system
+- **Milestone 3.5** ✅ — Rendering foundation: vertex format upgrade (packed normals and tangents), GPU-driven indirect draw dispatch. Same visuals as Milestone 3, new architecture underneath.
+- **Milestone 4** ✅ — BVH foundation: global SAH BVH over all static geometry, GPU compute frustum culling via skip-index DFS traversal, fixed-slot indirect buffer. Per-cell chunking from Milestone 3.5 retired in favor of the global BVH.
+- **Milestone 5** — Lighting foundation: SH irradiance volume (baked indirect), clustered forward+ dynamic lights, normal maps, shadow maps
+- **Milestone 6** — Embedded scripting and entity foundation: scripted entity model, FGD entity parsing, hot reload, modder-facing API
+- **Milestone 7** — Player movement: collision, gravity, step-up, jump — engine floor exposed as a script API so modders can craft their own feel
+- **Milestone 8** — Weapons as scripted entities: hitscan, projectiles, pickups, viewmodel hooks
+- **Milestone 9** — NPC entities: scripted AI with engine-provided navigation and line-of-sight primitives
+- **Milestone 10** — World entities: doors, triggers, brush movers, scripted set pieces
+- **Future** — Visual polish (sprites, emissives, fog), post-processing (bloom, CRT filter, cubemap reflections), audio, HUD, and whatever else a boomer shooter needs
 
 The full phased plan with acceptance criteria lives in `context/plans/roadmap.md`.
 

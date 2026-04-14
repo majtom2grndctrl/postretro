@@ -60,7 +60,7 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 | Visibility | prl-build (portal traversal or PVS) | Portals section (default) or LeafPvs section (`--pvs` mode) |
 | Surface material types | Texture naming convention | Prefix lookup table → footsteps, impacts, decals |
 | Light entities | FGD entities (`light`, `light_spot`, `light_sun`) | Parsed and translated to canonical format at compile time |
-| Indirect lighting | prl-build (Phase 4) | SH L2 irradiance volume baked from canonical lights; stored in PRL section |
+| Indirect lighting | prl-build (Milestone 5) | SH L2 irradiance volume baked from canonical lights; stored in PRL section |
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity → baked cubemap |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |

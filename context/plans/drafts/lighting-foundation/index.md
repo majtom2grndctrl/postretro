@@ -3,7 +3,7 @@
 > **Status:** draft — architectural direction locked. Sub-plans fill out as we drill into each one.
 > **Milestone:** 5 (Lighting Foundation) — see `context/plans/roadmap.md`.
 > **Related:** `context/lib/rendering_pipeline.md` §4 · `context/lib/build_pipeline.md` §Custom FGD · `context/lib/entity_model.md` · `context/reference/light-entities-across-engines.md`
-> **Prerequisite:** Milestone 4 (BVH Foundation) — must ship and pass its check-in gate before any work in this plan begins. The SH baker traverses the BVH built in Milestone 4. See `context/plans/ready/bvh-foundation/`.
+> **Prerequisite:** Milestone 4 (BVH Foundation) — must ship and pass its check-in gate before any work in this plan begins. The SH baker traverses the BVH built in Milestone 4. See `context/plans/done/bvh-foundation/`.
 > **Lifecycle:** Per `context/lib/development_guide.md` §1.5, this plan *is* the lighting spec while it's a draft. Decisions land in the spec as they're made; durable knowledge migrates to `context/lib/` when the plan ships.
 
 ---
@@ -30,7 +30,7 @@ The SH baker ray-casts probe samples through the **same BVH** that Milestone 4 b
 - Milestone 4 runtime: WGSL compute shader walks the BVH for frustum cull each frame.
 - Milestone 5 baker: CPU `bvh` crate walks the same flattened tree to ray-cast probe radiance samples and shadow rays.
 
-This means **no second design pass for spatial structures.** The baker calls into the `bvh` crate directly using the same primitive set the compiler built in `context/plans/ready/bvh-foundation/1-compile-bvh.md`. No separate baker BVH, no embree, no hardware RT.
+This means **no second design pass for spatial structures.** The baker calls into the `bvh` crate directly using the same primitive set the compiler built in `context/plans/done/bvh-foundation/1-compile-bvh.md`. No separate baker BVH, no embree, no hardware RT.
 
 ---
 
@@ -99,21 +99,6 @@ This plan has three sub-files, executed roughly in order. Sub-plan 1 has no engi
 - Hardware ray tracing. Pre-RTX target locked in Milestone 4.
 - Exhaustive academic literature review.
 - Benchmarking probe baking performance. Decisions are made on design grounds; benchmarking belongs in execution if sizing questions surface.
-
----
-
-## Resolved questions
-
-| Question | Decision | Rationale |
-|----------|----------|-----------|
-| Baker approach | Probes only for indirect; dynamic direct at runtime | Lightmaps add a bake stage, an atlas, a UV channel, and a two-texture sampling path in the shader. SH volume + dynamic direct is lighter. |
-| Spatial layout | Regular 3D grid | Trivial indexing, hardware trilinear, low complexity. Octree adaptivity wins little on small indoor maps. |
-| Per-probe storage | SH L2 (27 f32/probe) | Smooth reconstruction, small shader cost, industry-standard. Ambient cube rejected as needing nearly as much storage for less smoothness. |
-| Probe evaluation | Trilinear interpolation on a 3D texture | Hardware-accelerated; zero shader complexity. |
-| Shadow strategy (bake) | Raycast at bake time, per light per probe — traverses Milestone 4 BVH | Bake is expensive but runs once. Runtime shadow estimation on the volume is not worth the complexity. |
-| Shadow strategy (runtime) | Shadow maps per dynamic shadow-caster | CSM for directional, cube for point/spot. Matches aesthetic (chunky edges at modest resolution). Not hardware ray tracing. |
-| Animation baking | Bake per-probe sample vectors; defer to execution plan | Animation support may be cut from the initial revision if it complicates the first pass. |
-| Acceleration structure for the baker | The Milestone 4 BVH | One structure, two consumers. No separate baker BVH. |
 
 ---
 

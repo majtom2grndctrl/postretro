@@ -35,6 +35,7 @@ Three entities: `light`, `light_spot`, `light_sun`. Mappers author with familiar
 | `_cone` | integer (degrees) | `cone_angle_inner` (converted to radians) | 30 (Spot only) |
 | `_cone2` | integer (degrees) | `cone_angle_outer` (converted to radians) | 45 (Spot only) |
 | `style` | integer (0–11) | `animation` (preset → sample curves) | 0 (no animation) |
+| `_phase` | string (0.0–1.0) | `animation.phase` | 0.0 (sync with cycle start) |
 | `mangle` | vector (pitch yaw roll degrees) | `cone_direction` | **Required for Spot; error if missing** |
 | `target` | target name | — | **Deferred to Milestone 6** (entity system needed to resolve names to origins); error if set: "use `mangle` for spotlight direction" |
 
@@ -53,6 +54,7 @@ Three entities: `light`, `light_spot`, `light_sun`. Mappers author with familiar
         2 : "Inverse Squared (1/x²)"
     ]
     style(integer) : "Animation Style" : 0
+    _phase(string) : "Animation Phase Offset (0.0-1.0)" : "0.0"
 ]
 
 @PointClass base(Light)
@@ -127,14 +129,18 @@ Errors block compilation. Warnings log and proceed with defaults.
 | Spot missing `_cone` / `_cone2` | **Warning** | Defaults to 30° / 45°. |
 | Missing `style` | **Warning** | Defaults to no animation. |
 | Spot with `_cone` > `_cone2` | **Warning** | Outer smaller than inner; proceed as specified. |
+| Directional missing `mangle` | **Warning** | Defaults to straight down: `"-90 0 0"` (pitch −90°, aim vector `(0, −1, 0)`). |
+| `_phase` outside 0.0–1.0 | **Warning** | Clamp to 0.0–1.0; proceed. |
+| `_phase` set but `style` = 0 | **Warning** | Phase has no effect without animation; ignored. |
 
 ### Translator notes
 
 - `light` is unitless. Typical Quake-family range is 0–300; the baker (sub-plan 2) may normalize against chosen bake output, but the range is translator convention for Quake source maps, not a canonical format constraint.
-- `_fade` required for deterministic baking. Guideline: `_fade ≈ light × 200` (e.g., `light 300` → `_fade 60000`); adjust per map scale.
+- `_fade` is authored in map units (Quake units), consistent with all spatial coordinates in `.map` files. The translator converts to engine meters by multiplying by 0.0254 (1 map unit = 1 inch). `falloff_range` in `CanonicalLight` is always engine meters. Guideline: `_fade ≈ light × 200` in map units (e.g., `light 300` → `_fade 60000` ≈ 1,524 m); scale down for tight indoor maps, leave large for outdoor or vista-scale geometry.
 - Spotlight direction via `mangle` (pitch yaw roll in degrees, engine space) only. `target` entity resolution is deferred to Milestone 6 — the entity system is needed to look up entity origins by name. If `target` is present, emit an error directing the mapper to use `mangle`.
 - Cone degrees → radians conversion happens at the translation boundary. Canonical format is radians-only.
-- `style` 0–11 map to `LightAnimation` sample curves. The translator owns the Quake style table (classic preset strings like `aaaaaaaaaa` for constant, `mmnmmommommnonmmonqnmmo` for flicker) and converts them to normalized brightness sample vectors. Styles 12+ reserved for future use.
+- `style` 0–11 map to `LightAnimation` brightness curves. The Quake translator owns the preset table — classic brightness strings where each character `a`–`z` maps to 0.0–1.0 (26 levels), sampled at 10 Hz in the original games. The translator converts each string to a `Vec<f32>` brightness curve; period = `string_length × 0.1s`. Style 0 = constant (no animation, `animation: None`). Styles 12+ reserved for future use. Future format translators (UDMF, etc.) expand their own presets into the same `LightAnimation` curves — the canonical format never sees a preset name.
+- `_phase` is a 0.0–1.0 offset within the animation cycle, allowing mappers to desync lights that share the same `style`. Two torches with `style 3` and different `_phase` values flicker independently. Default 0.0 (all lights of the same style sync). Ignored when `style` is 0.
 - Property name variation: accept both `light` and `_light` (Quake community naming variations across tools).
 
 ---
@@ -158,15 +164,19 @@ pub enum FalloffModel {
     InverseSquared,  // brightness = 1 / (distance²), clamped at falloff_range
 }
 
-/// Primitive animation: time-sampled curves over a cycle.
-/// Format-agnostic — Quake light styles, Doom sector effects, or hand-authored
-/// curves all translate into this shape. `None` fields mean "constant across cycle."
+/// Curve-based animation over a repeating cycle.
+/// Each channel is a Vec of samples distributed uniformly over the period.
+/// Runtime linearly interpolates between adjacent samples at the current
+/// cycle time. `None` channels hold constant for the cycle.
+///
+/// Format-agnostic — Quake light styles, Doom sector effects, UDMF curves,
+/// or hand-authored data all translate into this shape. Translators own
+/// their format's preset vocabulary and expand presets into sample curves.
 pub struct LightAnimation {
     pub period: f32,                  // cycle duration in seconds
-    pub phase: f32,                   // 0-1 offset within cycle
-    pub brightness: Option<Vec<f32>>, // multipliers sampled uniformly over cycle
-    pub hue_shift: Option<Vec<f32>>,  // HSL hue offset 0-1, sampled uniformly over cycle
-    pub saturation: Option<Vec<f32>>, // saturation multipliers sampled uniformly over cycle
+    pub phase: f32,                   // 0-1 offset within cycle (desync identical presets)
+    pub brightness: Option<Vec<f32>>, // intensity multipliers, uniformly spaced over period
+    pub color: Option<Vec<[f32; 3]>>, // linear RGB overrides, uniformly spaced over period
 }
 
 pub struct CanonicalLight {
@@ -196,7 +206,10 @@ pub struct CanonicalLight {
 
 ### Design notes
 
-- **`LightAnimation` as a format primitive.** Quake light styles (`Flicker`, `Candle`, `FastStrobe`) are translator output, not canonical format vocabulary. Each style preset becomes a brightness/hue/saturation sample vector. Future formats translate into the same primitive. The canonical format has no awareness of any specific source format's vocabulary.
+- **`LightAnimation` as a curve primitive.** Follows the modern engine pattern (UE5 timelines, Unity AnimationCurves, Godot AnimationPlayer): sample arrays over a repeating period, linearly interpolated at runtime. Quake light styles are translator output, not canonical vocabulary — each preset string expands to a brightness sample curve. Future format translators expand their own presets into the same shape. The canonical format never sees a preset name, only curves.
+- **`color` channel on `LightAnimation`.** Replaces the earlier `hue_shift` / `saturation` split. Direct RGB curves are simpler to interpolate, simpler to author, and avoid HSL ↔ RGB round-trips. Quake styles produce brightness-only animation (`color: None`); future formats or scripted lights can animate color directly.
+- **Linear interpolation between samples.** Matches the simplest modern engine behavior and avoids curve-fitting complexity. If a chunkier retro feel is desired, the runtime can optionally snap to nearest sample — but the data model supports smooth interpolation by default.
+- **Phase offset.** Quake's original system lacked phase offsets, causing all lights of the same style to flicker in sync. The `phase` field (0.0–1.0 cycle offset) is standard in modern engines and trivial to evaluate at runtime (`t = fract(time / period + phase)`).
 - **Cone angles in radians.** Canonical format is engine-internal; FGDs expose degrees to mappers and the translator converts.
 - **`falloff_range`.** PBR-conventional naming.
 - **`FalloffModel` enum retained despite PBR alignment.** PBR uses physical inverse-square only; the retro aesthetic needs linear and inverse-distance as well for authored looks. Structural alignment with PBR is about *axes*, not *physics*.
@@ -208,41 +221,30 @@ pub struct CanonicalLight {
 
 ## Test map content
 
-`assets/maps/test.map` gains:
+Light entities go into the generator scripts for `test-3.map` and `occlusion-test.map`, and `test-2.map` gets lights hand-authored directly (out of scope here — done separately).
 
-```
-// spotlight — inverse-squared falloff, warm color
-{
-"classname" "light_spot"
-"origin" "800 200 96"
-"light" "200"
-"_color" "255 200 100"
-"_fade" "40000"
-"_cone" "25"
-"_cone2" "50"
-"mangle" "-45 0 0"
-"delay" "2"
-}
+### `assets/maps/gen_test_map_3.py` → `test-3.map`
 
-// directional — cool light
-{
-"classname" "light_sun"
-"origin" "960 128 500"
-"light" "150"
-"_color" "200 200 255"
-"mangle" "-60 45 0"
-}
+Read the script to understand room layout and pick sensible origins. Add at least three light entities covering all three types (point, spot, directional):
 
-// red point light — inverse-distance falloff
-{
-"classname" "light"
-"origin" "1100 128 96"
-"light" "250"
-"_color" "255 50 50"
-"_fade" "50000"
-"delay" "1"
-}
-```
+- **Point light** — warm color, inverse-squared falloff, placed in a central room
+- **Spotlight** — aimed down a corridor or into a doorway, exercises cone culling
+- **Directional light** — cool color, represents ambient sky contribution
+
+Each entity appended using the same inline string pattern the script already uses for `info_player_start`. Run `python3 assets/maps/gen_test_map_3.py` after editing to regenerate the `.map` file.
+
+### `assets/maps/gen_occlusion_test_map.py` → `occlusion-test.map`
+
+Read the script to understand the portal zone + arena layout and pick sensible origins. Add at least:
+
+- **Directional light** — suitable for the open arena, steep downward `mangle`
+- **Point light** — placed among the arena detail objects or in the portal corridor, exercises falloff in a tight space
+
+Run `python3 assets/maps/gen_occlusion_test_map.py` after editing to regenerate the `.map` file.
+
+### Shared requirements across both scripts
+
+All light entities must include non-white `_color`, non-zero `delay` on at least one point or spot light, and all required properties per the validation table (no missing `_fade` on point/spot). The compiled `.prl` for each map must produce no errors and a non-empty `MapData::lights`.
 
 ---
 
@@ -253,15 +255,21 @@ pub struct CanonicalLight {
 - [ ] `parse.rs` recognizes `light`, `light_spot`, `light_sun`, extracts properties into `HashMap<String, String>`, calls the translator, populates `MapData::lights`. Errors block compilation; warnings log.
 - [ ] Canonical types (`LightType`, `FalloffModel`, `LightAnimation`, `CanonicalLight`) defined in `map_data.rs`. `MapData` gains `lights: Vec<CanonicalLight>`.
 - [ ] Every row of the validation table is covered. Errors block; warnings log.
-- [ ] `assets/maps/test.map` includes point + spot + directional lights, non-white color, and non-zero `delay`. Map compiles without errors.
+- [ ] `gen_test_map_3.py` emits point + spot + directional lights with non-white color and non-zero `delay` on at least one; `test-3.map` compiles without errors and produces a non-empty `MapData::lights`.
+- [ ] `gen_occlusion_test_map.py` emits at least directional + point lights; `occlusion-test.map` compiles without errors and produces a non-empty `MapData::lights`.
+- [ ] Both generator scripts are run after editing and the regenerated `.map` files are committed alongside the script changes.
 - [ ] `context/lib/build_pipeline.md` §Custom FGD table includes rows for `light`, `light_spot`, `light_sun`.
 - [ ] Unit tests for translator:
-  - Valid point / spot (via target) / spot (via mangle) / directional → canonical conversion.
+  - Valid point / spot (via mangle) / directional → canonical conversion.
   - Point/spot missing `_fade` → error.
-  - Spot missing both `mangle` and `target` → error.
+  - Spot missing `mangle` → error.
+  - Spot with `target` set → error (deferred to Milestone 6).
   - `mangle` with non-numeric values → error.
   - Multi-naming: both `light` and `_light` property names accepted.
-  - `style` = 1 → `LightAnimation` with non-None brightness curve; `style` = 0 → `animation: None`.
+  - `style` = 1 → `LightAnimation` with non-None brightness curve and correct period; `style` = 0 → `animation: None`.
+  - `_phase` = 0.5 with `style` = 1 → `LightAnimation.phase` = 0.5.
+  - `_phase` outside 0.0–1.0 → warning, clamped.
+  - `_phase` set with `style` = 0 → warning, ignored.
 - [ ] No runtime engine changes in this sub-plan. Canonical lights available via `MapData::lights` for sub-plan 2's baker.
 - [ ] `cargo test -p postretro-level-compiler` passes
 - [ ] `cargo clippy -p postretro-level-compiler -- -D warnings` clean
@@ -278,7 +286,7 @@ pub struct CanonicalLight {
 
 4. Extend `postretro-level-compiler/src/parse.rs`: recognize light classnames, extract property bag, dispatch to translator, propagate errors and warnings.
 
-5. Extend `assets/maps/test.map` with the three example entities above.
+5. Add light entities to `assets/maps/gen_test_map_3.py` (point + spot + directional) and `assets/maps/gen_occlusion_test_map.py` (directional + point). Read each script to choose sensible origins. Run both scripts to regenerate the `.map` files.
 
 6. Write translator unit tests covering every validation rule and the style preset conversion.
 

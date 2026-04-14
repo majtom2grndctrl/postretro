@@ -63,9 +63,22 @@ Ray count and parallelism strategy are execution details — the spec fixes the 
 
 ### Animation baking
 
-Lights with animation curves bake into a sample vector per probe: `period` seconds discretized into `sample_count` entries (default 11 samples/cycle). At runtime, the shader reads the current sample and blends with the next. Memory overhead: `probes × animated_lights × samples × 4 bytes`. A 60 × 60 × 20 grid (72k probes) with 5 animated lights and 11 samples is ~16 MB — acceptable upper bound for a large level. Small levels pay proportionally less.
+Lights with `LightAnimation` bake into separate monochrome SH layers — one layer per animated light — so the runtime can modulate each light's indirect contribution independently without re-baking.
 
-The initial cut may defer animation baking — a static-only first revision that ignores `LightAnimation` is acceptable if it simplifies the first end-to-end path. Execution decides.
+**Decomposition.** The baker splits canonical lights into two sets:
+
+- **Static lights** (no animation): their combined contribution bakes into the base SH coefficients (27 f32 per probe, 3-channel). This is the same data the static-only path produces.
+- **Animated lights** (have `LightAnimation`): each animated light bakes its own contribution at unit intensity into a **monochrome SH layer** (9 f32 per probe — luminance only, no color). The light's base color and animation curve are stored once per light in the animation descriptor table, not per probe.
+
+**Why monochrome.** Animation modulates intensity and/or color but never changes the light's position or direction. The directional distribution of a light's contribution to a probe is constant across the cycle — only the magnitude and color change. Storing 9 monochrome SH coefficients per probe instead of 27 RGB ones cuts per-light storage by 3×.
+
+**Runtime reconstruction.** For each animated light, the fragment shader evaluates the animation curve at the current time (`t = fract(time / period + phase)`, linearly interpolate between adjacent brightness samples), multiplies monochrome SH by `base_color × brightness(t)` (or `color(t) × brightness(t)` if the light has color animation), and adds to the base SH before irradiance reconstruction. See sub-plan 3 §3a.
+
+**Memory.** Per-light layers: `probes × 9 × 4 bytes` each. A 60 × 60 × 20 grid (72k probes) with 5 animated lights: base = 7.7 MB + 5 layers × 2.6 MB = 20.7 MB total. Proportionally less for smaller maps. Animation descriptors (curves, periods, colors) are negligible — stored once per light, not per probe.
+
+**Bake procedure for animated lights.** Identical to the static path except: (a) each animated light bakes in isolation at unit intensity with white color, (b) SH projection collapses to monochrome (average the 3-channel result, or project luminance directly), (c) output writes to the per-light layer in the PRL section instead of the base probe record.
+
+**All animated lights bake.** There is no "defer animation" path. If a canonical light has `animation: Some(...)`, it bakes into a separate layer. If no lights have animation, no layers are emitted and the section layout matches the static-only format.
 
 ### Shadow strategy
 
@@ -79,26 +92,42 @@ Runtime dynamic lights rely on shadow maps (sub-plan 3), not probe data.
 
 New `ShVolume` PRL section (section ID 20) in `postretro-level-format/src/lib.rs`, allocated after Milestone 4's `Bvh` (ID 19).
 
-All little-endian. Header, then packed probe records.
+All little-endian. Header, then base probe records, then animation descriptor table, then per-light SH layers.
 
 ```
-Header (40 bytes):
-  f32 × 3    grid_origin      (world-space min corner, meters)
-  f32 × 3    cell_size        (meters per cell along x/y/z)
-  u32 × 3    grid_dimensions  (probe count along x/y/z)
-  u32        probe_stride     (bytes per probe record; 112 for static-only, more with animation)
+Header (44 bytes):
+  f32 × 3    grid_origin          (world-space min corner, meters)
+  f32 × 3    cell_size            (meters per cell along x/y/z)
+  u32 × 3    grid_dimensions      (probe count along x/y/z)
+  u32        probe_stride         (bytes per base probe record; always 112)
+  u32        animated_light_count (0 = no animated lights; determines layer count)
 
-Probe records (probe_stride bytes each, iterated z-major then y, then x):
-  f32 × 27   sh_coefficients  (9 bands × 3 channels)
-  u8         validity         (0 = invalid, 1 = valid)
-  u8 × 3     padding          (align to 4 bytes)
+Base probe records (probe_stride bytes each, iterated z-major then y, then x):
+  f32 × 27   sh_coefficients      (9 bands × 3 channels, RGB)
+  u8         validity             (0 = invalid, 1 = valid)
+  u8 × 3     padding              (align to 4 bytes)
+
+--- only present when animated_light_count > 0 ---
+
+Animation descriptor table (one entry per animated light):
+  f32        period               (cycle duration in seconds)
+  f32        phase                (0-1 offset within cycle)
+  f32 × 3    base_color           (linear RGB, 0-1)
+  u32        brightness_count     (number of brightness samples; 0 = no brightness animation)
+  u32        color_count          (number of color samples; 0 = no color animation)
+  f32 × brightness_count          brightness samples (uniformly spaced over period)
+  [f32; 3] × color_count          color samples (linear RGB, uniformly spaced over period)
+
+Per-light SH layers (one layer per animated light, same probe iteration order):
+  f32 × 9    sh_coefficients_mono (9 SH bands, monochrome / luminance)
+  per probe, total_probes entries per layer
 ```
 
-Total static-only probe record: `27 × 4 + 4 = 112 bytes`.
+Base probe record: `27 × 4 + 4 = 112 bytes`. Per-light layer record: `9 × 4 = 36 bytes` per probe. Animation descriptors are variable-length due to sample arrays.
 
 ### Compatibility
 
-Missing section is not an error. The world shader degrades to flat white ambient when the section is absent, matching pre-Milestone-5 behavior.
+Missing section is not an error. The world shader degrades to flat white ambient when the section is absent, matching pre-Milestone-5 behavior. A section with `animated_light_count = 0` is valid — the runtime loads base probes only and skips animated layer processing.
 
 ---
 
@@ -111,6 +140,10 @@ Missing section is not an error. The world shader degrades to flat white ambient
 - [ ] Probe placement: regular grid over map AABB at configurable spacing; solidity query against BSP populates the validity mask
 - [ ] Stratified sphere sampling produces SH L2 coefficients per probe
 - [ ] Shadow raycasts traverse the same BVH; canonical lights modulated by visibility
+- [ ] Animated lights bake into separate monochrome SH layers (9 f32 per probe per animated light)
+- [ ] Static and animated light contributions are correctly decomposed: base SH excludes animated lights; per-light layers capture each animated light at unit intensity
+- [ ] Animation descriptor table written to PRL with correct period, phase, base_color, and sample arrays from `LightAnimation`
+- [ ] `animated_light_count` header field is 0 when no lights have animation; section degrades to static-only layout
 - [ ] Determinism: identical input `.map` produces identical SH coefficients (stratified sampling uses a fixed seed)
 - [ ] `--probe-spacing <meters>` CLI flag implemented with default of 1.0
 - [ ] Bake parallelism via `rayon` — one task per probe or per probe slab
@@ -137,6 +170,8 @@ Missing section is not an error. The world shader degrades to flat white ambient
 
 7. Wire the SH volume section into the `prl-build` pack stage.
 
+8. Implement animated light decomposition: separate canonical lights into static and animated sets, bake animated lights into monochrome SH layers at unit intensity, write animation descriptor table and per-light layers to the PRL section.
+
 ---
 
 ## Notes for implementation
@@ -145,4 +180,4 @@ Missing section is not an error. The world shader degrades to flat white ambient
 - **Stratified sphere sampling.** Use the standard cosine-weighted hemisphere sampling for hit-point evaluations (Lambert is the surface BRDF), and uniform sphere sampling for the probe ray distribution itself. Fixed RNG seed for determinism.
 - **Albedo approximation for one bounce.** Without a full material system, treat each surface as Lambertian with a constant albedo (e.g., 0.5 grey) for the bounce. This is intentional — Postretro's aesthetic is not photorealistic GI; the SH volume just needs to carry directional indirect color and intensity. A future revision may sample albedo from the texture, but it's not in the initial cut.
 - **Sky / miss handling.** Rays that miss all geometry contribute a constant ambient color (configurable, default near-black). No HDR sky cubemap in the initial cut — that's a follow-up if outdoor maps need it.
-- **Probe stride forward-compat.** The header's `probe_stride` field allows future revisions to add per-probe data (DDGI distance fields, animation samples, etc.) without breaking the loader. Initial cut ships at 112 bytes.
+- **Probe stride forward-compat.** The header's `probe_stride` field allows future revisions to add per-probe base data (DDGI distance fields, etc.) without breaking the loader. Animated light data lives in separate per-light layers after the base probe array, not in the base probe record — `probe_stride` stays 112 regardless of animation.

@@ -28,6 +28,17 @@ The structural choices are locked in `context/lib/rendering_pipeline.md` §4 and
 
 **Texture layout note.** 27 scalars per probe don't fit in one `Rgba16Float` texel (4 scalars). Need `ceil(27 / 4) = 7` texels minimum. Preferred layout (Unity/Frostbite/DDGI lineage): three slab textures per color channel (9 total), each slab holding three SH bands. Alternative: 7 textures interleaving all 27 scalars. Either is a renderer implementation detail.
 
+**Animated SH layers.** When the SH PRL section contains animated light layers (`animated_light_count > 0`), the loader uploads each per-light monochrome SH layer as an additional 3D texture (9 f32 per probe → `ceil(9 / 4) = 3` texels). The fragment shader evaluates each animated light's contribution at the current time:
+
+1. Read the animation descriptor (period, phase, brightness samples, optional color samples).
+2. Compute cycle position: `t = fract(time / period + phase)`.
+3. Linearly interpolate the brightness (and color, if present) curves at `t`.
+4. Sample the per-light monochrome SH texture trilinearly at the fragment position.
+5. Multiply monochrome SH by `base_color × brightness(t)` (or `color(t) × brightness(t)` when color animation is present) to produce an RGB SH contribution.
+6. Add to the base SH before irradiance reconstruction.
+
+When `animated_light_count = 0`, no per-light textures are created and the shader path is identical to the static-only case. Animation descriptors are uploaded as a small uniform or storage buffer — one entry per animated light, not per probe.
+
 ### 3b. Normal map rendering
 
 - Loader: pair albedo with normal map per material. Load as BC5 (RG, with Z reconstructed) when available, fallback to RG8. Missing normal map → neutral `(0, 0, 1)` in tangent space.
@@ -45,9 +56,18 @@ The structural choices are locked in `context/lib/rendering_pipeline.md` §4 and
   - Determine fragment's cluster from screen position + depth.
   - Walk the cluster's light index list.
   - For each light, evaluate Lambert/Phong direct contribution per the canonical falloff model.
-  - Output = `albedo × (sh_indirect + Σ direct_lights)`.
+  - Output = `albedo × (ambient_floor + sh_indirect + Σ direct_lights)`.
 
-### 3d. Shadow maps
+### 3d. Ambient floor
+
+A uniform minimum light level added to the lighting sum before the indirect and direct terms. Prevents pitch-black areas where SH probes and direct lights contribute nothing — an accessibility baseline, not an artistic tool.
+
+- Exposed as a player-facing setting (settings menu slider, 0.0–1.0).
+- Default: **0.05**. This value is provisional — tune during manual testing once the full lighting pipeline is running. The right default is the lowest value where a player can still navigate dark areas without the gamma/brightness slider.
+- Applied in the fragment shader as a constant added to the lighting sum before multiplication by albedo.
+- Not affected by shadow maps or falloff — it's a floor, not a light source.
+
+### 3e. Shadow maps
 
 - **Directional lights:** cascaded shadow maps (CSM). 3 or 4 cascades; resolution intentionally modest (e.g., 1024² per cascade) to match the aesthetic.
 - **Point lights:** cube shadow maps rendered in a single pass via layered rendering where supported, or six passes otherwise.
@@ -66,6 +86,9 @@ The structural choices are locked in `context/lib/rendering_pipeline.md` §4 and
 - [ ] World shader samples SH trilinearly and reconstructs irradiance via SH L2 dot product per channel
 - [ ] Indirect term replaces flat ambient
 - [ ] Missing SH section degrades cleanly to flat white ambient (matches pre-Milestone-5 behavior)
+- [ ] Animated SH layers loaded as per-light 3D textures when `animated_light_count > 0`
+- [ ] Fragment shader evaluates animation curves per animated light, modulates monochrome SH by color × brightness, and adds to base SH
+- [ ] Zero animated lights degrades to static-only SH path (no per-light textures, no animation evaluation)
 
 ### Normal maps
 
@@ -79,6 +102,12 @@ The structural choices are locked in `context/lib/rendering_pipeline.md` §4 and
 - [ ] Compute prepass builds per-cluster light index lists from active lights each frame
 - [ ] Fragment shader walks fragment's cluster, accumulates direct contributions per canonical falloff model
 - [ ] Lambert (and optionally Phong) direct evaluation per light type (Point / Spot / Directional)
+
+### Ambient floor
+
+- [ ] `ambient_floor` uniform added to fragment shader lighting sum before albedo multiply
+- [ ] Default value 0.05; provisional — tune during manual testing with the full pipeline running
+- [ ] Exposed as a player-facing setting (slider, 0.0–1.0)
 
 ### Shadow maps
 
@@ -118,21 +147,25 @@ The structural choices are locked in `context/lib/rendering_pipeline.md` §4 and
 
 7. World shader direct term: cluster walk, Lambert/Phong direct evaluation per canonical falloff model.
 
+### Ambient floor
+
+8. Add `ambient_floor` uniform to the world shader. Wire up as a player-facing setting with default 0.05. Tune default during manual visual testing — the right value is the lowest where dark areas remain navigable.
+
 ### Shadow maps
 
-8. CSM pass for directional lights.
+9. CSM pass for directional lights.
 
-9. Cube shadow map pass for point lights.
+10. Cube shadow map pass for point lights.
 
-10. Single shadow map pass for spot lights.
+11. Single shadow map pass for spot lights.
 
-11. Fragment shader integration: sample shadow maps per shadow-casting light during cluster walk.
+12. Fragment shader integration: sample shadow maps per shadow-casting light during cluster walk.
 
 ### Validation
 
-12. Author lighting test maps that exercise indirect bleed, direct falloff, shadow crispness, and normal-map angle variation.
+13. Author lighting test maps that exercise indirect bleed, direct falloff, shadow crispness, and normal-map angle variation.
 
-13. Manual visual review walkthrough of all test maps.
+14. Manual visual review walkthrough of all test maps. Includes tuning `ambient_floor` default.
 
 ---
 

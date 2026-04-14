@@ -42,11 +42,11 @@ Frame ordering derives from the numeric suffix. Playback rate is defined by the 
 
 World textures are currently bound individually — one bind group per unique texture. Draw calls are grouped by (leaf, texture) to minimize bind group changes without allocating an atlas.
 
-### 2.1 Lightmap Atlas
+### 2.1 SH Irradiance Volume (Milestone 5)
 
-> **Phase 4/5+. Not yet implemented.**
+> **Milestone 5. Not yet implemented.**
 
-Per-face lightmap data packed into a shared atlas. Renderer references atlas regions via UV coordinates baked into the vertex buffer. One atlas per level; dimensions determined at load time from total lightmap area.
+Indirect lighting is carried by an SH L2 irradiance volume (3D probe grid), not by per-face lightmaps. The probe section is loaded from PRL and uploaded as a 3D texture; the world shader samples it trilinearly per fragment. See `rendering_pipeline.md` §4 and `context/plans/drafts/lighting-foundation/`.
 
 ### 2.2 World Texture Atlas
 

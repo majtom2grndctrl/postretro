@@ -133,7 +133,7 @@ Clustered forward+ pipeline. Each frame runs a small set of compute prepasses th
 
 1. **Portal traversal** (CPU) — §2 flood-fill produces the visible cell set.
 2. **BVH traversal** (compute, *Milestone 4*) — reads the visible-cell bitmask (128 `u32` words) produced by portal DFS; walks the global BVH via flat skip-index DFS (no stack, no depth cap, single invocation); tests each leaf AABB against the frustum and the leaf's `cell_id` against the bitmask; writes or zeros the leaf's permanent indirect buffer slot.
-3. **Clustered light list** (compute, *Phase 4*) — builds per-cluster light index lists from the dynamic light set. Cluster grid is screen-space tiles × depth slices.
+3. **Clustered light list** (compute, *Milestone 5*) — builds per-cluster light index lists from the dynamic light set. Cluster grid is screen-space tiles × depth slices.
 
 ### 7.2 World Geometry
 

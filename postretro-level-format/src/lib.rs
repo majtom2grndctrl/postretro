@@ -2,7 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL
 
 pub mod bsp;
-pub mod cell_chunks;
+pub mod bvh;
 pub mod geometry;
 pub mod leaf_pvs;
 pub mod octahedral;
@@ -48,24 +48,14 @@ pub enum FormatError {
 pub type Result<T> = std::result::Result<T, FormatError>;
 
 /// Known section type IDs.
+///
+/// Retired IDs are intentionally omitted so they cannot be re-used by accident.
+/// The loader skips unknown IDs gracefully; older `.prl` files produced before
+/// the BVH refactor will fail to decode because the geometry format changed
+/// and a `Bvh` section is now required.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum SectionId {
-    /// Legacy geometry section: [f32; 3] vertices, 12-byte FaceMeta (no texture_index).
-    Geometry = 1,
-
-    /// Retired. Old .prl files may contain this section; the loader skips
-    /// unknown IDs gracefully. Replaced by BspLeaves + LeafPvs.
-    ClusterVisibility = 2,
-
-    /// Extended geometry section: [f32; 5] vertices (position + UV), 16-byte FaceMeta
-    /// (with texture_index). Supersedes Geometry (ID 1).
-    GeometryV2 = 3,
-
-    // Reserved: 4–10
-    /// Retired. Was never shipped in a stable format version.
-    VisibilityConfidence = 11,
-
     /// Flat array of BSP interior nodes (splitting planes + child references).
     BspNodes = 12,
 
@@ -78,31 +68,27 @@ pub enum SectionId {
     /// Portal graph for runtime portal traversal.
     Portals = 15,
 
-    /// Flat list of texture name strings, indexed by FaceMeta.texture_index.
+    /// Flat list of texture name strings, indexed by `FaceMeta.texture_index`.
     TextureNames = 16,
 
-    /// Extended geometry section: 28-byte vertices (position + UV + octahedral
-    /// normal + octahedral tangent with bitangent sign). Supersedes GeometryV2.
-    GeometryV3 = 17,
+    /// Geometry section: 28-byte vertices (position + UV + octahedral normal
+    /// + octahedral tangent with bitangent sign) and 8-byte `FaceMeta`.
+    Geometry = 17,
 
-    /// Per-cell draw chunk table with cell→chunk-range index.
-    CellChunks = 18,
+    /// Global BVH: flat node + leaf arrays. See `bvh::BvhSection`.
+    Bvh = 19,
 }
 
 impl SectionId {
     pub fn from_u32(value: u32) -> Option<Self> {
         match value {
-            1 => Some(Self::Geometry),
-            2 => Some(Self::ClusterVisibility),
-            3 => Some(Self::GeometryV2),
-            11 => Some(Self::VisibilityConfidence),
             12 => Some(Self::BspNodes),
             13 => Some(Self::BspLeaves),
             14 => Some(Self::LeafPvs),
             15 => Some(Self::Portals),
             16 => Some(Self::TextureNames),
-            17 => Some(Self::GeometryV3),
-            18 => Some(Self::CellChunks),
+            17 => Some(Self::Geometry),
+            19 => Some(Self::Bvh),
             _ => None,
         }
     }
@@ -459,8 +445,8 @@ mod tests {
         assert_eq!(buf[7], 0x00);
 
         // First section entry starts at offset 8 (HEADER_SIZE)
-        // section_id (u32 LE): Geometry=1 => [0x01, 0x00, 0x00, 0x00]
-        assert_eq!(&buf[8..12], &[0x01, 0x00, 0x00, 0x00]);
+        // section_id (u32 LE): Geometry=17 => [0x11, 0x00, 0x00, 0x00]
+        assert_eq!(&buf[8..12], &[0x11, 0x00, 0x00, 0x00]);
 
         // offset (u64 LE): data starts at 8 + 22 = 30 => 0x1E
         assert_eq!(buf[12], 0x1E);

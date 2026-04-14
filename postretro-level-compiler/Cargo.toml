@@ -19,3 +19,5 @@ log.workspace = true
 env_logger.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
+bvh = { version = "0.11", default-features = false }
+nalgebra = { version = "0.33", default-features = false, features = ["std"] }

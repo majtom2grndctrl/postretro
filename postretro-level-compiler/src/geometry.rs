@@ -5,17 +5,30 @@
 use std::collections::HashSet;
 
 use glam::DVec3;
-use postretro_level_format::geometry::{FaceMetaV3, GeometrySectionV3, VertexV3};
+use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use crate::map_data::{Face, TextureProjection};
 use crate::map_format::MapFormat;
 use crate::partition::BspTree;
 
-/// Result of geometry extraction: V3 geometry section plus texture name table.
+/// Compile-time-only range of the shared index buffer owned by a single face.
+/// These are consumed by BVH primitive collection and then discarded — the
+/// serialized `FaceMeta` in `GeometrySection` does not carry them because all
+/// runtime index ranges belong to BVH leaves.
+#[derive(Debug, Clone, Copy)]
+pub struct FaceIndexRange {
+    pub index_offset: u32,
+    pub index_count: u32,
+}
+
+/// Result of geometry extraction: geometry section, texture name table, and
+/// the per-face index ranges used downstream by the BVH builder.
 pub struct GeometryResult {
-    pub geometry: GeometrySectionV3,
+    pub geometry: GeometrySection,
     pub texture_names: TextureNamesSection,
+    /// One entry per face in `geometry.faces`, in the same order.
+    pub face_index_ranges: Vec<FaceIndexRange>,
 }
 
 /// Fan-triangulate faces, compute texel-space UVs and tangent-space basis,
@@ -44,12 +57,13 @@ pub fn extract_geometry(
 ) -> GeometryResult {
     if faces.is_empty() {
         return GeometryResult {
-            geometry: GeometrySectionV3 {
+            geometry: GeometrySection {
                 vertices: Vec::new(),
                 indices: Vec::new(),
                 faces: Vec::new(),
             },
             texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges: Vec::new(),
         };
     }
 
@@ -73,9 +87,10 @@ pub fn extract_geometry(
 
     let inverse_scale: f64 = 1.0 / MapFormat::IdTech2.units_to_meters();
 
-    let mut vertices: Vec<VertexV3> = Vec::new();
+    let mut vertices: Vec<Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
-    let mut face_metas: Vec<FaceMetaV3> = Vec::new();
+    let mut face_metas: Vec<FaceMeta> = Vec::new();
+    let mut face_index_ranges: Vec<FaceIndexRange> = Vec::new();
 
     for &(face_idx, bsp_leaf_idx) in &ordered_faces {
         let face = &faces[face_idx];
@@ -95,7 +110,7 @@ pub fn extract_geometry(
         for &v in &face.vertices {
             let quake_pos = engine_to_quake(v) * inverse_scale;
             let (u, v_coord) = compute_texel_uv(quake_pos, face);
-            vertices.push(VertexV3::new(
+            vertices.push(Vertex::new(
                 [v.x as f32, v.y as f32, v.z as f32],
                 [u as f32, v_coord as f32],
                 normal_f32,
@@ -114,16 +129,18 @@ pub fn extract_geometry(
         }
         let index_count = (indices.len() as u32) - index_offset;
 
-        face_metas.push(FaceMetaV3 {
-            index_offset,
-            index_count,
+        face_metas.push(FaceMeta {
             leaf_index: bsp_leaf_idx as u32,
             texture_index: texture_indices[face_idx],
+        });
+        face_index_ranges.push(FaceIndexRange {
+            index_offset,
+            index_count,
         });
     }
 
     GeometryResult {
-        geometry: GeometrySectionV3 {
+        geometry: GeometrySection {
             vertices,
             indices,
             faces: face_metas,
@@ -131,6 +148,7 @@ pub fn extract_geometry(
         texture_names: TextureNamesSection {
             names: texture_names,
         },
+        face_index_ranges,
     }
 }
 
@@ -388,7 +406,7 @@ fn build_leaf_ordered_faces(
 pub fn log_stats(result: &GeometryResult, empty_leaf_count: usize) {
     let section = &result.geometry;
     let triangle_count = section.indices.len() / 3;
-    log::info!("[Compiler] Vertices: {} (V3, 28 bytes each)", section.vertices.len());
+    log::info!("[Compiler] Vertices: {} (28 bytes each)", section.vertices.len());
     log::info!("[Compiler] Indices: {}", section.indices.len());
     log::info!("[Compiler] Triangles: {triangle_count}");
     log::info!("[Compiler] Faces: {}", section.faces.len());
@@ -403,7 +421,7 @@ pub fn log_stats(result: &GeometryResult, empty_leaf_count: usize) {
 mod tests {
     use super::*;
     use crate::partition::{Aabb, BspLeaf};
-    use postretro_level_format::geometry::{GeometrySectionV3, NO_TEXTURE};
+    use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 
     /// Shared empty exterior set for tests that don't exercise exterior
     /// culling — matches the no-op pass-through shape used by upstream
@@ -523,7 +541,7 @@ mod tests {
             3,
             "triangle should produce 3 indices"
         );
-        assert_eq!(section.faces[0].index_count, 3);
+        assert_eq!(result.face_index_ranges[0].index_count, 3);
     }
 
     #[test]
@@ -535,7 +553,7 @@ mod tests {
         let section = &result.geometry;
 
         assert_eq!(section.indices.len(), 6, "quad should produce 6 indices");
-        assert_eq!(section.faces[0].index_count, 6);
+        assert_eq!(result.face_index_ranges[0].index_count, 6);
 
         // Verify fan pattern: (0,1,2), (0,2,3)
         assert_eq!(section.indices[0], 0);
@@ -559,7 +577,7 @@ mod tests {
             9,
             "pentagon should produce 9 indices"
         );
-        assert_eq!(section.faces[0].index_count, 9);
+        assert_eq!(result.face_index_ranges[0].index_count, 9);
     }
 
     #[test]
@@ -575,7 +593,7 @@ mod tests {
             12,
             "hexagon should produce 12 indices"
         );
-        assert_eq!(section.faces[0].index_count, 12);
+        assert_eq!(result.face_index_ranges[0].index_count, 12);
 
         // Fan pattern: (0,1,2), (0,2,3), (0,3,4), (0,4,5)
         for tri in 0..4 {
@@ -623,7 +641,11 @@ mod tests {
         let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
-        let sum: u32 = section.faces.iter().map(|f| f.index_count).sum();
+        let sum: u32 = result
+            .face_index_ranges
+            .iter()
+            .map(|r| r.index_count)
+            .sum();
         assert_eq!(sum, section.indices.len() as u32);
     }
 
@@ -790,13 +812,12 @@ mod tests {
         let tree = make_tree_with_empty_leaves(vec![(vec![0, 1, 2, 3], false)]);
 
         let result = extract_geometry(&faces, &tree, &no_exterior());
-        let section = &result.geometry;
 
-        for (i, face) in section.faces.iter().enumerate() {
+        for (i, range) in result.face_index_ranges.iter().enumerate() {
             assert!(
-                face.index_count >= 3,
+                range.index_count >= 3,
                 "face {i} has only {} indices (need at least 3)",
-                face.index_count
+                range.index_count
             );
         }
     }
@@ -811,7 +832,7 @@ mod tests {
         let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
         let bytes = section.to_bytes();
-        let restored = GeometrySectionV3::from_bytes(&bytes).unwrap();
+        let restored = GeometrySection::from_bytes(&bytes).unwrap();
 
         assert_eq!(*section, restored);
     }
@@ -1162,8 +1183,8 @@ mod tests {
         let section = &result.geometry;
 
         // Every face should produce triangles
-        for face in &section.faces {
-            assert!(face.index_count >= 3);
+        for range in &result.face_index_ranges {
+            assert!(range.index_count >= 3);
         }
 
         // All indices in bounds
@@ -1173,7 +1194,11 @@ mod tests {
         }
 
         // Face index counts sum to total
-        let sum: u32 = section.faces.iter().map(|f| f.index_count).sum();
+        let sum: u32 = result
+            .face_index_ranges
+            .iter()
+            .map(|r| r.index_count)
+            .sum();
         assert_eq!(sum, section.indices.len() as u32);
 
         // Faces are ordered by leaf index
@@ -1232,7 +1257,7 @@ mod tests {
 
         // Round-trip serialization
         let bytes = section.to_bytes();
-        let restored = GeometrySectionV3::from_bytes(&bytes).unwrap();
+        let restored = GeometrySection::from_bytes(&bytes).unwrap();
         assert_eq!(*section, restored);
 
         // TextureNames round-trip

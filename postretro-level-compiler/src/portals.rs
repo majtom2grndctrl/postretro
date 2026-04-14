@@ -1145,9 +1145,10 @@ mod tests {
         let mut stage3_per_cube: Vec<[usize; 6]> = vec![[0; 6]; num_cubes];
         // Classify a geometry face by axis: all vertices must lie on one of
         // the cube's axis-aligned bounding planes within epsilon.
-        for meta in &geo.geometry.faces {
-            let start = meta.index_offset as usize;
-            let end = start + meta.index_count as usize;
+        for (face_idx, _meta) in geo.geometry.faces.iter().enumerate() {
+            let range = geo.face_index_ranges[face_idx];
+            let start = range.index_offset as usize;
+            let end = start + range.index_count as usize;
             let mut unique_verts: Vec<DVec3> = Vec::new();
             for idx in start..end {
                 let vi = geo.geometry.indices[idx] as usize;

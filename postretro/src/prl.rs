@@ -79,7 +79,7 @@ pub struct LeafData {
     pub bounds_max: Vec3,
     pub face_start: u32,
     pub face_count: u32,
-    /// Decompressed PVS: pvs[i] = leaf i is visible from this leaf.
+    /// Decompressed PVS: `pvs[i]` = leaf `i` is visible from this leaf.
     pub pvs: Vec<bool>,
     pub is_solid: bool,
 }

@@ -22,7 +22,7 @@ pub struct Vertex {
     pub uv: [f32; 2],
     /// Octahedral-encoded unit normal, quantized to u16x2.
     pub normal_oct: [u16; 2],
-    /// Packed tangent: [0] is full u16 octahedral u-component, [1] has
+    /// Packed tangent: `[0]` is full u16 octahedral u-component, `[1]` has
     /// bitangent sign in bit 15 and 15-bit octahedral v-component in bits 0..14.
     pub tangent_packed: [u16; 2],
 }

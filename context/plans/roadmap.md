@@ -125,6 +125,7 @@ Make modding a first-class concern by building the entity model and the scriptin
 - [ ] Choose embedded scripting language (Rhai, Lua via mlua, or similar — research and decision in a draft plan)
 - [ ] Entity model: typed collections, lifecycle (spawn / update / destroy), parent/child relationships, world-space transforms
 - [ ] Entity parsing from `.map` entity lump → typed entities at compile time, classname-keyed
+- [ ] Spotlight `target` entity resolution — resolve spotlight `target` property to a world-space aim direction using the entity system to look up entity origins by name (deferred from Milestone 5 where the entity system didn't exist yet)
 - [ ] Fixed-timestep integration: entity updates run at the fixed tick rate established in Milestone 2; renderer interpolates entity positions
 - [ ] Game event system: entities emit events, scripts subscribe, audio and renderer consume
 - [ ] Script bindings for the entity API: spawn / query / move / event subscribe / event emit

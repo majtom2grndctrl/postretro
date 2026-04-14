@@ -3,7 +3,7 @@
 > **Status:** draft — architectural direction locked. Sub-plans fill out as we drill into each one.
 > **Milestone:** 5 (Lighting Foundation) — see `context/plans/roadmap.md`.
 > **Related:** `context/lib/rendering_pipeline.md` §4 · `context/lib/build_pipeline.md` §Custom FGD · `context/lib/entity_model.md` · `context/reference/light-entities-across-engines.md`
-> **Prerequisite:** Milestone 4 (BVH Foundation) — must ship and pass its check-in gate before any work in this plan begins. The SH baker traverses the BVH built in Milestone 4. See `context/plans/drafts/bvh-foundation/`.
+> **Prerequisite:** Milestone 4 (BVH Foundation) — must ship and pass its check-in gate before any work in this plan begins. The SH baker traverses the BVH built in Milestone 4. See `context/plans/ready/bvh-foundation/`.
 > **Lifecycle:** Per `context/lib/development_guide.md` §1.5, this plan *is* the lighting spec while it's a draft. Decisions land in the spec as they're made; durable knowledge migrates to `context/lib/` when the plan ships.
 
 ---
@@ -30,7 +30,7 @@ The SH baker ray-casts probe samples through the **same BVH** that Milestone 4 b
 - Milestone 4 runtime: WGSL compute shader walks the BVH for frustum cull each frame.
 - Milestone 5 baker: CPU `bvh` crate walks the same flattened tree to ray-cast probe radiance samples and shadow rays.
 
-This means **no second design pass for spatial structures.** The baker calls into the `bvh` crate directly using the same primitive set the compiler built in `bvh-foundation/1-compile-bvh.md`. No separate baker BVH, no embree, no hardware RT.
+This means **no second design pass for spatial structures.** The baker calls into the `bvh` crate directly using the same primitive set the compiler built in `context/plans/ready/bvh-foundation/1-compile-bvh.md`. No separate baker BVH, no embree, no hardware RT.
 
 ---
 

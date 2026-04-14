@@ -31,14 +31,14 @@ The structural choices are locked in `context/lib/rendering_pipeline.md` §4 and
 ### 3b. Normal map rendering
 
 - Loader: pair albedo with normal map per material. Load as BC5 (RG, with Z reconstructed) when available, fallback to RG8. Missing normal map → neutral `(0, 0, 1)` in tangent space.
-- Vertex shader: reconstruct TBN from packed normal + packed tangent + bitangent sign (already in the `GeometryV3` vertex format from Milestone 3.5).
+- Vertex shader: reconstruct TBN from packed normal + packed tangent + bitangent sign (already in the `Geometry` vertex format from Milestone 3.5).
 - Fragment shader: sample normal map, decode tangent-space normal, transform via TBN to world space, use as the per-fragment shading normal for both indirect (SH sample) and direct (cluster walk) terms.
 
 ### 3c. Clustered forward+ direct lighting
 
 - Define cluster grid: screen-space tiles × depth slices. Sizing refined during implementation (typical: 16×16 tiles, 24 depth slices).
 - Compute prepass each frame:
-  - Iterate active lights (canonical lights from `MapData::lights` + transient gameplay lights from the entity system, when one exists).
+  - Iterate active lights (canonical lights from `MapData::lights` + transient gameplay lights from the entity system, when one exists — before Milestone 6, the active set is `MapData::lights` only; the cluster architecture accommodates transient lights as a future extension).
   - For each cluster, test light volumes against cluster AABB.
   - Write a packed per-cluster light index list to a storage buffer.
 - Fragment shader:
@@ -52,7 +52,7 @@ The structural choices are locked in `context/lib/rendering_pipeline.md` §4 and
 - **Directional lights:** cascaded shadow maps (CSM). 3 or 4 cascades; resolution intentionally modest (e.g., 1024² per cascade) to match the aesthetic.
 - **Point lights:** cube shadow maps rendered in a single pass via layered rendering where supported, or six passes otherwise.
 - **Spot lights:** single shadow map per light.
-- Not every dynamic light casts shadows. A `cast_shadows: bool` flag on the runtime light struct (not the canonical light) gates rendering a shadow map; static canonical lights derived from FGD may default to true, transient gameplay lights to false.
+- Not every dynamic light casts shadows. A `cast_shadows: bool` flag on the runtime light struct (not the canonical light) gates rendering a shadow map; static canonical lights derived from FGD may default to true, transient gameplay lights to false. The runtime light struct is separate from `CanonicalLight`; sub-plan 1 deferred per-light flags on the canonical format deliberately.
 - Shadow passes run before the opaque pass each frame. The fragment shader samples the appropriate shadow map per light during the cluster walk.
 
 ---

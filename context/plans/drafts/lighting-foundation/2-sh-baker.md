@@ -77,12 +77,12 @@ Runtime dynamic lights rely on shadow maps (sub-plan 3), not probe data.
 
 ## PRL section layout
 
-New PRL section for the SH irradiance volume. Section ID to be allocated in `postretro-level-format/src/lib.rs` alongside existing section IDs (separate from Milestone 4's `Bvh` section id).
+New `ShVolume` PRL section (section ID 20) in `postretro-level-format/src/lib.rs`, allocated after Milestone 4's `Bvh` (ID 19).
 
 All little-endian. Header, then packed probe records.
 
 ```
-Header (32 bytes):
+Header (40 bytes):
   f32 × 3    grid_origin      (world-space min corner, meters)
   f32 × 3    cell_size        (meters per cell along x/y/z)
   u32 × 3    grid_dimensions  (probe count along x/y/z)
@@ -104,7 +104,7 @@ Missing section is not an error. The world shader degrades to flat white ambient
 
 ## Acceptance criteria
 
-- [ ] New PRL section ID allocated in `postretro-level-format/src/lib.rs` for the SH irradiance volume (separate from Milestone 4's `Bvh` section id)
+- [ ] `SectionId::ShVolume = 20` allocated in `postretro-level-format/src/lib.rs`
 - [ ] Probe record and section types added to `postretro-level-format` with read/write + round-trip tests matching the existing section pattern
 - [ ] Baker stage in `prl-build` runs after Milestone 4's BVH construction and before pack
 - [ ] Ray traversal goes through the Milestone 4 BVH via the `bvh` crate — no separate baker BVH
@@ -123,7 +123,7 @@ Missing section is not an error. The world shader degrades to flat white ambient
 
 ## Implementation tasks
 
-1. Allocate a new PRL section ID for the SH irradiance volume in `postretro-level-format/src/lib.rs` (separate from the Milestone 4 `Bvh` section id).
+1. Allocate `SectionId::ShVolume = 20` in `postretro-level-format/src/lib.rs` (next after Milestone 4's `SectionId::Bvh = 19`).
 
 2. Add probe record and section types to `postretro-level-format` with read/write + round-trip tests.
 

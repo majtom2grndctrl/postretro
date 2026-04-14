@@ -35,7 +35,8 @@ Three entities: `light`, `light_spot`, `light_sun`. Mappers author with familiar
 | `_cone` | integer (degrees) | `cone_angle_inner` (converted to radians) | 30 (Spot only) |
 | `_cone2` | integer (degrees) | `cone_angle_outer` (converted to radians) | 45 (Spot only) |
 | `style` | integer (0–11) | `animation` (preset → sample curves) | 0 (no animation) |
-| `mangle` or `target` | vector or target name | `cone_direction` | **Required for Spot; error if missing** |
+| `mangle` | vector (pitch yaw roll degrees) | `cone_direction` | **Required for Spot; error if missing** |
+| `target` | target name | — | **Deferred to Milestone 6** (entity system needed to resolve names to origins); error if set: "use `mangle` for spotlight direction" |
 
 ### FGD template
 
@@ -44,7 +45,7 @@ Three entities: `light`, `light_spot`, `light_sun`. Mappers author with familiar
 [
     light(integer) : "Intensity" : 300
     _color(color255) : "Color" : "255 255 255"
-    _fade(integer) : "Falloff Distance" : 60000
+    _fade(integer) : "Falloff Distance"
     delay(choices) : "Falloff Model" : 0 =
     [
         0 : "Linear"
@@ -71,7 +72,7 @@ Three entities: `light`, `light_spot`, `light_sun`. Mappers author with familiar
     _cone(integer) : "Inner Cone Angle" : 30
     _cone2(integer) : "Outer Cone Angle" : 45
     mangle(string) : "Direction (pitch yaw roll)" : ""
-    target(target_destination) : "Target Entity" : ""
+    // target entity direction is deferred to Milestone 6 (requires entity system)
 ]
 
 @PointClass base(Light)
@@ -118,8 +119,8 @@ Errors block compilation. Warnings log and proceed with defaults.
 | Case | Error / Warning | Handling |
 |------|-----------------|----------|
 | Point/Spot light missing `_fade` | **Error** | Compilation fails. Mapper must specify falloff distance. |
-| Spot missing both `mangle` and `target` | **Error** | Compilation fails. Mapper must aim spotlight. |
-| Spot with `target="nonexistent"` | **Error** | Compilation fails: "target entity 'X' not found." |
+| Spot missing `mangle` | **Error** | Compilation fails. Mapper must aim spotlight via `mangle`. |
+| Spot with `target` set | **Error** | Compilation fails: "`target` not supported until Milestone 6; use `mangle` for spotlight direction." |
 | Invalid property format (non-numeric `_fade`, malformed `mangle`) | **Error** | Compilation fails with property name. |
 | `light` = 0 | **Warning** | Intensity is zero; light contributes nothing. |
 | Missing `_color` | **Warning** | Defaults to white. |
@@ -131,7 +132,7 @@ Errors block compilation. Warnings log and proceed with defaults.
 
 - `light` is unitless. Typical Quake-family range is 0–300; the baker (sub-plan 2) may normalize against chosen bake output, but the range is translator convention for Quake source maps, not a canonical format constraint.
 - `_fade` required for deterministic baking. Guideline: `_fade ≈ light × 200` (e.g., `light 300` → `_fade 60000`); adjust per map scale.
-- Spotlight direction via `mangle` (pitch yaw roll in degrees, engine space) or `target` (entity name). If both provided, `target` takes precedence.
+- Spotlight direction via `mangle` (pitch yaw roll in degrees, engine space) only. `target` entity resolution is deferred to Milestone 6 — the entity system is needed to look up entity origins by name. If `target` is present, emit an error directing the mapper to use `mangle`.
 - Cone degrees → radians conversion happens at the translation boundary. Canonical format is radians-only.
 - `style` 0–11 map to `LightAnimation` sample curves. The translator owns the Quake style table (classic preset strings like `aaaaaaaaaa` for constant, `mmnmmommommnonmmonqnmmo` for flicker) and converts them to normalized brightness sample vectors. Styles 12+ reserved for future use.
 - Property name variation: accept both `light` and `_light` (Quake community naming variations across tools).

@@ -78,7 +78,7 @@ Lighting has two components: **dynamic direct illumination** (clustered forward+
 
 **Light entity authoring.** Mappers place light entities in TrenchBroom. The compiler's translation layer converts mapper-facing FGD properties to an internal canonical format, applying validation rules (falloff distance required, spotlight direction verified, intensity bounds checked). Canonical lights feed both the SH baker and the runtime direct-lighting path. See `build_pipeline.md` §Custom FGD.
 
-Full spec: `plans/drafts/phase-4-baked-lighting/`
+Full spec: `context/plans/drafts/lighting-foundation/`
 
 ---
 

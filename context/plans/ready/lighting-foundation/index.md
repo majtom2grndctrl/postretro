@@ -1,6 +1,6 @@
 # Lighting Foundation
 
-> **Status:** draft — architectural direction locked. Sub-plans fill out as we drill into each one.
+> **Status:** ready — all sub-plans complete, durable decisions captured in `context/lib/`.
 > **Milestone:** 5 (Lighting Foundation) — see `context/plans/roadmap.md`.
 > **Related:** `context/lib/rendering_pipeline.md` §4 · `context/lib/build_pipeline.md` §Custom FGD · `context/lib/entity_model.md` · `context/reference/light-entities-across-engines.md`
 > **Prerequisite:** Milestone 4 (BVH Foundation) — must ship and pass its check-in gate before any work in this plan begins. The SH baker traverses the BVH built in Milestone 4. See `context/plans/done/bvh-foundation/`.
@@ -13,9 +13,9 @@
 Replace flat ambient with the full target lighting pipeline:
 
 - **Indirect:** SH L2 irradiance volume baked at compile time, sampled per fragment via 3D texture trilinear interpolation.
-- **Direct:** clustered forward+ dynamic lights (point, spot, directional) authored as FGD entities and consumed both by the bake and by the runtime direct path.
+- **Direct:** dynamic lights (point, spot, directional) authored as FGD entities and consumed both by the bake and by the runtime direct path. Initial runtime uses a flat per-fragment loop; clustered forward+ binning is a future optimization when light counts demand it.
 - **Surface detail:** tangent-space normal maps perturbing the per-fragment normal before shading.
-- **Dynamic shadows:** cascaded shadow maps for directional lights, cube shadow maps for point and spot lights. Low-resolution, nearest-neighbor sampling — chunky pixel shadow edges match the target aesthetic.
+- **Dynamic shadows:** cascaded shadow maps for directional lights, cube shadow maps for point lights, single 2D shadow maps for spot lights. Low-resolution, nearest-neighbor sampling — chunky pixel shadow edges match the target aesthetic.
 
 The translator is decoupled from the parser: future map-format support (e.g., UDMF) adds a sibling module against the same canonical types, so the baker and everything downstream never learn the source format.
 
@@ -41,7 +41,7 @@ TrenchBroom authoring (FGD)
   → .map file
     → prl-build parser (extract property bag)
       → format::quake_map::translate_light (validate, convert)
-        → CanonicalLight in MapData.lights
+        → MapLight in MapData.lights
           ├─→ SH irradiance volume baker
           │     (ray-casts through the Milestone 4 BVH via bvh crate,
           │      SH L2 projection, validity mask)
@@ -49,23 +49,41 @@ TrenchBroom authoring (FGD)
           │       → runtime trilinear sample (fragment shader,
           │          indirect term)
           └─→ runtime direct light buffer
-              (canonical lights + transient gameplay lights)
-                → clustered light list compute prepass
-                  → cluster walk in fragment shader (direct term)
-                    → shadow map sampling per shadow-casting light
+              (map lights; transient gameplay lights in Milestone 6+)
+                → flat per-fragment light loop (direct term)
+                  → shadow map sampling per shadow-casting light
 ```
 
 ---
 
 ## Sub-plans
 
-This plan has three sub-files, executed roughly in order. Sub-plan 1 has no engine impact and could overlap with the tail end of Milestone 4 in principle, but the rule is: nothing from this plan starts until Milestone 4's check-in gate signs off.
+This plan has seven sub-files. Sub-plans 1–2 are compiler/data work; sub-plans 3–7 are engine-side, ordered so each step has a clear visual validation surface before the next layer is added. Sub-plan 1 has no engine impact and could overlap with the tail end of Milestone 4 in principle, but the rule is: nothing from this plan starts until Milestone 4's check-in gate signs off.
 
-1. **[1-fgd-canonical.md](./1-fgd-canonical.md)** — FGD light entities, parser wiring, translator, canonical light format. Pure compiler/data work, no engine changes. Output: `MapData.lights: Vec<CanonicalLight>` populated for every test map.
+**Dependency graph summary:**
+- Sub-plan 1 must complete before anything else.
+- Sub-plans 2 (compiler-side SH baker) and 3 (engine-side direct lighting) can proceed **in parallel** once sub-plan 1 is done — they are independent work streams.
+- Sub-plans 4 (shadows) and 5 (normal maps) both depend on sub-plan 3, but are **independent of each other** and can proceed in parallel.
+- Sub-plan 6 (SH volume runtime) depends on sub-plans 2 and 3, but is independent of sub-plans 4 and 5.
+- Sub-plan 7 (animated SH) depends on sub-plan 6.
 
-2. **[2-sh-baker.md](./2-sh-baker.md)** — SH irradiance volume baker stage in `prl-build`, plus the SH PRL section. Ray-casts through the Milestone 4 BVH. Output: every test map emits an SH section.
+### Compiler / data pipeline
 
-3. **[3-runtime-lighting.md](./3-runtime-lighting.md)** — All engine-side lighting work: SH volume loader and 3D texture upload, world shader extension for indirect sampling, normal map loading and TBN reconstruction, clustered forward+ light list compute prepass, fragment shader direct term, shadow map passes.
+1. **[1-fgd-canonical.md](./1-fgd-canonical.md)** — FGD light entities, parser wiring, translator, map light format. Pure compiler/data work, no engine changes. Output: `MapData.lights: Vec<MapLight>` populated for every test map. **Gate:** sub-plans 2 and 3 may not start until this is done.
+
+2. **[2-sh-baker.md](./2-sh-baker.md)** — SH irradiance volume baker stage in `prl-build`, plus the SH PRL section. Ray-casts through the Milestone 4 BVH. Output: every test map emits an SH section. **Depends on:** sub-plan 1. **Parallel with:** sub-plan 3.
+
+### Engine runtime (ordered by visual validation dependencies)
+
+3. **[3-direct-lighting.md](./3-direct-lighting.md)** — Direct lighting via a flat per-fragment light loop + ambient floor. Uploads map lights to a GPU storage buffer, evaluates Lambert diffuse with per-type falloff and spot cone attenuation. This is the foundation — sub-plans 4 and 5 are both validated relative to what this shows. Uses a flat loop, not clustered forward+; clustering is a future optimization when light counts demand it. **Depends on:** sub-plan 1. **Parallel with:** sub-plan 2.
+
+4. **[4-shadow-maps.md](./4-shadow-maps.md)** — Shadow map passes modulating the direct term. CSM for directional, cube shadow maps for point, single 2D for spot. Nearest-neighbor sampling for chunky retro shadow edges. **Depends on:** sub-plan 3. **Independent of:** sub-plan 5.
+
+5. **[5-normal-maps.md](./5-normal-maps.md)** — Tangent-space normal maps. Activates the TBN data already in the vertex format (Milestone 3.5). Perturbs the per-fragment shading normal before both direct and indirect evaluation. **Depends on:** sub-plan 3. **Independent of:** sub-plan 4.
+
+6. **[6-sh-volume.md](./6-sh-volume.md)** — SH irradiance volume sampling (indirect lighting). Loads the SH PRL section from sub-plan 2, uploads to 3D textures, trilinear samples in the fragment shader, reconstructs SH L2 irradiance. Replaces flat ambient as the indirect term. **Depends on:** sub-plans 2 and 3. **Independent of:** sub-plans 4 and 5.
+
+7. **[7-animated-sh.md](./7-animated-sh.md)** — Animated SH layers. Loads per-light monochrome SH layers and animation descriptors, evaluates brightness/color curves per frame, modulates and adds to base SH. Final sub-plan. **Depends on:** sub-plan 6.
 
 ---
 
@@ -76,13 +94,13 @@ This plan has three sub-files, executed roughly in order. Sub-plan 1 has no engi
 - FGD entities `light`, `light_spot`, `light_sun` in `assets/postretro.fgd`
 - `postretro-level-compiler/src/format/quake_map.rs` translator module. Pattern is `format/<name>.rs` per source format; each format's internal structure is its own decision.
 - Parser wiring: `prl-build` extracts light entity properties into a property bag and dispatches to the translator.
-- Canonical light format: `LightType`, `FalloffModel`, `LightAnimation`, `CanonicalLight`. Format-agnostic.
+- Map light format: `LightType`, `FalloffModel`, `LightAnimation`, `MapLight`. Format-agnostic.
 - Validation rules (errors block compilation; warnings log and proceed).
 - Quake `style` integer → `LightAnimation` preset conversion. Canonical format is preset-free; the translator owns the Quake style table.
 - SH irradiance volume baker: probe placement, radiance evaluation with shadow raycasting through the Milestone 4 BVH, SH L2 projection, validity masking, PRL section writer.
 - Runtime SH volume sampling: parse PRL section to 3D texture, trilinear sampling in world shader.
 - Normal map loading and tangent-space shading in the world shader.
-- Clustered light list compute prepass: cluster grid definition, per-cluster light index lists, fragment-shader walk.
+- Flat per-fragment direct light loop: per-light-type evaluation (point/spot/directional), falloff models, spot cone attenuation. Clustered forward+ binning deferred until light counts demand it.
 - Shadow map pipeline: CSM for directional, cube shadow maps for point/spot, sampling in the world shader.
 - Test map coverage extending `assets/maps/test.map`.
 - Documentation update to `context/lib/build_pipeline.md` §Custom FGD table.
@@ -106,11 +124,12 @@ This plan has three sub-files, executed roughly in order. Sub-plan 1 has no engi
 
 Durable architectural decisions migrate to `context/lib/rendering_pipeline.md` (`context/lib/lighting.md` if the section outgrows §4):
 
-- Canonical format struct shape and design rationale.
+- `MapLight` struct shape and design rationale.
 - `format/<name>.rs` architecture for multi-format source support.
 - SH volume spatial layout, per-probe storage, validity masking.
 - SH volume PRL section shape.
-- Clustered forward+ cluster grid parameters and shadow map defaults.
+- Flat light loop design and migration path to clustered forward+ when needed.
+- Shadow map defaults (resolution, cascade count, depth bias).
 - Baker ↔ BVH sharing pattern: one acceleration structure, two consumers (bake-time CPU, runtime GPU).
 
 The plan document itself is ephemeral per `development_guide.md` §1.5.

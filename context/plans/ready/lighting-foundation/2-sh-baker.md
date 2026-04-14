@@ -1,10 +1,10 @@
 # Sub-plan 2 — SH Irradiance Volume Baker
 
 > **Parent plan:** [Lighting Foundation](./index.md) — read first for goals and the BVH dependency.
-> **Scope:** SH irradiance volume baker stage in `prl-build`, plus the SH PRL section. Ray-casts through the Milestone 4 BVH via the `bvh` crate. No engine-side rendering work in this sub-plan — that's sub-plan 3.
+> **Scope:** SH irradiance volume baker stage in `prl-build`, plus the SH PRL section. Ray-casts through the Milestone 4 BVH via the `bvh` crate. No engine-side rendering work in this sub-plan — that's sub-plan 6.
 > **Crates touched:** `postretro-level-compiler`, `postretro-level-format`.
 > **Depends on:** sub-plan 1 (`MapData.lights` populated) **and** Milestone 4's BVH (the `bvh` crate primitive set built in `bvh-foundation/1-compile-bvh.md`).
-> **Blocks:** sub-plan 3 (runtime needs the SH PRL section to load).
+> **Blocks:** sub-plan 6 and sub-plan 7 (runtime needs the SH PRL section to load).
 
 ---
 
@@ -12,7 +12,7 @@
 
 Add a baker stage to `prl-build` that places SH L2 probes on a regular 3D grid over the level's empty space, evaluates incoming radiance at each probe by ray-casting through the **Milestone 4 BVH**, projects the radiance into SH coefficients, flags probes inside solid geometry, and writes the result to a new SH PRL section.
 
-Postretro bakes indirect illumination only. Direct illumination is *not* baked — it is evaluated at runtime by the clustered forward+ path (sub-plan 3). This split lets dynamic lights co-exist with baked indirect without lightmap complexity, and keeps probe data read-only at runtime.
+Postretro bakes indirect illumination only. Direct illumination is *not* baked — it is evaluated at runtime by the flat per-fragment light loop (sub-plan 3). This split lets dynamic lights co-exist with baked indirect without lightmap complexity, and keeps probe data read-only at runtime.
 
 **Acceleration structure: the Milestone 4 BVH.** No separate baker BVH. The baker imports `postretro-level-compiler`'s BVH primitive set (the same one that gets flattened to the `Bvh` PRL section in `bvh-foundation/1-compile-bvh.md`) and calls `bvh::Bvh::traverse` directly on the CPU. Same tree, different traversal implementation.
 
@@ -55,7 +55,7 @@ Each probe has a `u8` validity flag: `0` = invalid (inside solid), `1` = valid (
 For each valid probe:
 
 1. Fire **N stratified sample rays** from the probe (default `N = 256`) distributed over the sphere.
-2. For each ray, traverse the **Milestone 4 BVH** (via the `bvh` crate on the CPU) to find the closest triangle hit. Miss → sky/ambient. Hit → evaluate direct light at the hit point (shadow raycasts from each canonical light traversing the same BVH, sum Lambert contributions), then attenuate by surface albedo approximation to approximate one bounce.
+2. For each ray, traverse the **Milestone 4 BVH** (via the `bvh` crate on the CPU) to find the closest triangle hit. Miss → sky/ambient. Hit → evaluate direct light at the hit point (shadow raycasts from each map light traversing the same BVH, sum Lambert contributions), then attenuate by surface albedo approximation to approximate one bounce.
 3. Project the incoming radiance samples into SH L2 coefficients.
 4. Store coefficients in the probe grid; write validity flag.
 
@@ -65,24 +65,24 @@ Ray count and parallelism strategy are execution details — the spec fixes the 
 
 Lights with `LightAnimation` bake into separate monochrome SH layers — one layer per animated light — so the runtime can modulate each light's indirect contribution independently without re-baking.
 
-**Decomposition.** The baker splits canonical lights into two sets:
+**Decomposition.** The baker splits map lights into two sets:
 
 - **Static lights** (no animation): their combined contribution bakes into the base SH coefficients (27 f32 per probe, 3-channel). This is the same data the static-only path produces.
 - **Animated lights** (have `LightAnimation`): each animated light bakes its own contribution at unit intensity into a **monochrome SH layer** (9 f32 per probe — luminance only, no color). The light's base color and animation curve are stored once per light in the animation descriptor table, not per probe.
 
 **Why monochrome.** Animation modulates intensity and/or color but never changes the light's position or direction. The directional distribution of a light's contribution to a probe is constant across the cycle — only the magnitude and color change. Storing 9 monochrome SH coefficients per probe instead of 27 RGB ones cuts per-light storage by 3×.
 
-**Runtime reconstruction.** For each animated light, the fragment shader evaluates the animation curve at the current time (`t = fract(time / period + phase)`, linearly interpolate between adjacent brightness samples), multiplies monochrome SH by `base_color × brightness(t)` (or `color(t) × brightness(t)` if the light has color animation), and adds to the base SH before irradiance reconstruction. See sub-plan 3 §3a.
+**Runtime reconstruction.** For each animated light, the fragment shader evaluates the animation curve at the current time (`t = fract(time / period + phase)`, linearly interpolate between adjacent brightness samples), multiplies monochrome SH by `base_color × brightness(t)` (or `color(t) × brightness(t)` if the light has color animation), and adds to the base SH before irradiance reconstruction. See sub-plan 6.
 
 **Memory.** Per-light layers: `probes × 9 × 4 bytes` each. A 60 × 60 × 20 grid (72k probes) with 5 animated lights: base = 7.7 MB + 5 layers × 2.6 MB = 20.7 MB total. Proportionally less for smaller maps. Animation descriptors (curves, periods, colors) are negligible — stored once per light, not per probe.
 
 **Bake procedure for animated lights.** Identical to the static path except: (a) each animated light bakes in isolation at unit intensity with white color, (b) SH projection collapses to monochrome (average the 3-channel result, or project luminance directly), (c) output writes to the per-light layer in the PRL section instead of the base probe record.
 
-**All animated lights bake.** There is no "defer animation" path. If a canonical light has `animation: Some(...)`, it bakes into a separate layer. If no lights have animation, no layers are emitted and the section layout matches the static-only format.
+**All animated lights bake.** There is no "defer animation" path. If a map light has `animation: Some(...)`, it bakes into a separate layer. If no lights have animation, no layers are emitted and the section layout matches the static-only format.
 
 ### Shadow strategy
 
-Bake-time raycast occlusion. Each canonical light contribution at a probe is modulated by a shadow ray from the light position (or direction, for `Directional`) to the probe. Visible → full contribution; occluded → zero. This is the full cost during the bake, but the bake happens once per compile.
+Bake-time raycast occlusion. Each map light contribution at a probe is modulated by a shadow ray from the light position (or direction, for `Directional`) to the probe. Visible → full contribution; occluded → zero. This is the full cost during the bake, but the bake happens once per compile.
 
 Runtime dynamic lights rely on shadow maps (sub-plan 3), not probe data.
 
@@ -139,7 +139,7 @@ Missing section is not an error. The world shader degrades to flat white ambient
 - [ ] Ray traversal goes through the Milestone 4 BVH via the `bvh` crate — no separate baker BVH
 - [ ] Probe placement: regular grid over map AABB at configurable spacing; solidity query against BSP populates the validity mask
 - [ ] Stratified sphere sampling produces SH L2 coefficients per probe
-- [ ] Shadow raycasts traverse the same BVH; canonical lights modulated by visibility
+- [ ] Shadow raycasts traverse the same BVH; map lights modulated by visibility
 - [ ] Animated lights bake into separate monochrome SH layers (9 f32 per probe per animated light)
 - [ ] Static and animated light contributions are correctly decomposed: base SH excludes animated lights; per-light layers capture each animated light at unit intensity
 - [ ] Animation descriptor table written to PRL with correct period, phase, base_color, and sample arrays from `LightAnimation`
@@ -170,7 +170,7 @@ Missing section is not an error. The world shader degrades to flat white ambient
 
 7. Wire the SH volume section into the `prl-build` pack stage.
 
-8. Implement animated light decomposition: separate canonical lights into static and animated sets, bake animated lights into monochrome SH layers at unit intensity, write animation descriptor table and per-light layers to the PRL section.
+8. Implement animated light decomposition: separate map lights into static and animated sets, bake animated lights into monochrome SH layers at unit intensity, write animation descriptor table and per-light layers to the PRL section.
 
 ---
 

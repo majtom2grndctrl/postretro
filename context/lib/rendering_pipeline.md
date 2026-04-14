@@ -68,23 +68,21 @@ Loader parses PRL via the `postretro-level-format` crate. The heavy work happene
 
 ## 4. Lighting
 
-Lighting has two components: **dynamic direct illumination** (clustered forward+ with shadow maps) and **baked indirect illumination** (SH irradiance volume sampled per fragment). Both are evaluated in the world shader during the opaque geometry pass — no deferred stages, no lightmap atlas.
+Lighting has two components: **dynamic direct illumination** (flat per-fragment light loop with shadow maps) and **baked indirect illumination** (SH irradiance volume sampled per fragment). Both are evaluated in the world shader during the opaque geometry pass — no deferred stages, no lightmap atlas.
 
-**Direct illumination.** Dynamic lights (point, spot, directional) are built into a clustered light list each frame by a compute prepass. The fragment shader reads the cluster for its screen-space tile and accumulates contributions from lights whose volume reaches that fragment. Shadow-casting lights write to shadow maps (cascaded shadow maps for directional, cube shadow maps for point and spot) before the main pass; the fragment shader samples them during accumulation. Light sources originate from FGD entities (`light`, `light_spot`, `light_sun`) and from gameplay effects (muzzle flashes, explosions).
+**Direct illumination.** Dynamic lights (point, spot, directional) are iterated per fragment each frame — the fragment shader loops over all active lights, accumulates contributions from lights whose volume reaches that fragment, and samples shadow maps during accumulation. Shadow-casting lights write to shadow maps (cascaded shadow maps for directional, cube shadow maps for point and spot) before the main pass. Light sources originate from FGD entities (`light`, `light_spot`, `light_sun`) and from gameplay effects (muzzle flashes, explosions). Clustered forward+ binning (screen-space tile × depth-slice grid) is a future optimization deferred until light counts demand it.
 
-**Indirect illumination.** prl-build bakes a regular 3D grid of SH L2 probes over the level's empty space, evaluating incoming radiance at each probe by raycasting against static geometry with canonical lights as sources. The runtime samples the probe grid via trilinear interpolation in the fragment shader. Missing probe section falls back to flat white ambient.
+**Indirect illumination.** prl-build bakes a regular 3D grid of SH L2 probes over the level's empty space, evaluating incoming radiance at each probe by raycasting against static geometry with canonical lights as sources. The runtime samples the probe grid via trilinear interpolation in the fragment shader. Missing probe section falls back to the ambient floor.
 
 **Normal maps.** Tangent-space normal maps perturb the per-fragment normal before both direct and indirect evaluation. Tangents are packed into the vertex format (§6) at compile time.
 
 **Light entity authoring.** Mappers place light entities in TrenchBroom. The compiler's translation layer converts mapper-facing FGD properties to an internal canonical format, applying validation rules (falloff distance required, spotlight direction verified, intensity bounds checked). Canonical lights feed both the SH baker and the runtime direct-lighting path. See `build_pipeline.md` §Custom FGD.
 
-Full spec: `context/plans/drafts/lighting-foundation/`
-
 ---
 
 ## 5. Cells, BVH, and Draw Leaves
 
-**Cell** = opaque visibility unit. The compiler assigns one cell per empty BSP leaf; `cell_id` is the BSP leaf index, used as an opaque identifier at runtime. **Cluster** = screen-space light-culling grid (§7.1 step 4), never spatial. Rule: cell = world space, cluster = screen space.
+**Cell** = opaque visibility unit. The compiler assigns one cell per empty BSP leaf; `cell_id` is the BSP leaf index, used as an opaque identifier at runtime.
 
 World geometry is organized into a global BVH at compile time. Each **BVH leaf** covers one `(face, material_bucket)` pair:
 
@@ -127,13 +125,13 @@ No per-vertex lighting channel: direct light and SH indirect both accumulate per
 
 ## 7. Rendering Stages
 
-Clustered forward+ pipeline. Each frame runs a small set of compute prepasses that build culling and lighting state, then a single opaque geometry pass that consumes it, then post-processing.
+Flat per-fragment lighting pipeline. Each frame runs a small set of compute prepasses that build culling state, then a single opaque geometry pass that consumes it, then post-processing.
 
 ### 7.1 Visibility and Culling Prepasses
 
 1. **Portal traversal** (CPU) — §2 flood-fill produces the visible cell set.
 2. **BVH traversal** (compute, *Milestone 4*) — reads the visible-cell bitmask (128 `u32` words) produced by portal DFS; walks the global BVH via flat skip-index DFS (no stack, no depth cap, single invocation); tests each leaf AABB against the frustum and the leaf's `cell_id` against the bitmask; writes or zeros the leaf's permanent indirect buffer slot.
-3. **Clustered light list** (compute, *Milestone 5*) — builds per-cluster light index lists from the dynamic light set. Cluster grid is screen-space tiles × depth slices.
+3. **Light list upload** (*Milestone 5*) — uploads the active dynamic light array to a GPU storage buffer. The fragment shader iterates all lights per fragment (flat loop). Clustered forward+ binning is a future optimization deferred until light counts demand it.
 
 ### 7.2 World Geometry
 
@@ -141,7 +139,7 @@ Single opaque pass. CPU issues one `multi_draw_indexed_indirect` call per materi
 
 - Sample base texture and normal map at the UV coordinate. Reconstruct world-space normal from the TBN and normal-map sample.
 - Sample the SH L2 irradiance volume at fragment position (trilinear) for indirect lighting.
-- Walk the fragment's cluster light list; for each light, evaluate direct contribution and sample the associated shadow map.
+- Loop over all active lights; for each light, evaluate direct contribution and sample the associated shadow map.
 - Output = `albedo × (indirect_sh + Σ direct_lights)`.
 
 Depth testing (Less, write enabled) and back-face culling (counter-clockwise front face) are permanent from this phase forward.
@@ -185,7 +183,7 @@ Camera position and orientation produce a view matrix each frame. The view matri
 
 ## 10. Non-Goals
 
-- **Deferred rendering** — clustered forward+ is sufficient for the target light count and aesthetic. Deferred adds complexity without benefit here.
+- **Deferred rendering** — flat per-fragment forward lighting is sufficient for the target light count and aesthetic. Deferred adds complexity without benefit here.
 - **Baked lightmaps** — indirect lighting lives in the SH irradiance volume. No lightmap atlas, no per-face lightmap UVs, no lightmap bake stage.
 - **PBR materials** — albedo + normal map is the full material vocabulary. Metallic/roughness workflows are out of scope.
 - **Hardware ray tracing** — not available in baseline wgpu. Shadow maps cover dynamic shadowing; the SH volume covers indirect illumination.

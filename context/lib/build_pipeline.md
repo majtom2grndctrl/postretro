@@ -57,7 +57,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 
 ### Entity resolution
 
-- **`light`, `light_spot`, `light_sun`** — parsed, translated to canonical format, and validated at compile time. Validation rules: falloff distance required, spotlight direction verified, intensity bounds checked. Canonical lights feed the SH irradiance volume baker and the runtime direct lighting path. Compilation fails on validation errors.
+- **`light`, `light_spot`, `light_sun`** — parsed, translated to the internal map light format, and validated at compile time. Validation rules: falloff distance required, spotlight direction verified, intensity bounds checked. Map lights feed the SH irradiance volume baker and the runtime direct lighting path. Compilation fails on validation errors.
 - **`env_fog_volume`** — resolved to BSP leaves at load time. Each leaf in the volume gets per-leaf atmospheric haze parameters.
 - **`env_cubemap`** — marks a position for offline cubemap baking. Bake tool is out of initial scope.
 - **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf in the volume gets spatial reverb parameters for the audio subsystem.

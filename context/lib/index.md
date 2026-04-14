@@ -38,7 +38,7 @@ Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Lo
 | Principle | Invariant |
 |-----------|-----------|
 | **Renderer owns GPU** | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
-| **Baked over computed** | Spatial data and indirect lighting baked offline. Two deliberate exceptions: visibility computes per frame from baked portal geometry (id Tech 4 lineage; `--pvs` precomputed fallback exists), and direct illumination is fully dynamic (clustered forward+ with shadow maps). Baked SH irradiance volume carries indirect light; dynamic lights drive direct shading. |
+| **Baked over computed** | Spatial data and indirect lighting baked offline. Two deliberate exceptions: visibility computes per frame from baked portal geometry (id Tech 4 lineage; `--pvs` precomputed fallback exists), and direct illumination is fully dynamic (flat per-fragment light loop with shadow maps). Baked SH irradiance volume carries indirect light; dynamic lights drive direct shading. |
 | **Subsystem boundaries** | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |
 | **No `unsafe`** | The crate stack provides safe APIs. If `unsafe` appears necessary, stop and consult the project owner. |

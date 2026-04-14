@@ -176,7 +176,7 @@ A uniform minimum light level added to the lighting sum before albedo multiplica
 - [ ] Directional light evaluates without distance attenuation
 - [ ] Ambient floor applied as a minimum light level before albedo multiply
 - [ ] Ambient floor exposed as a player-facing setting with default 0.05
-- [ ] Test maps with placed light entities render with visible, correct illumination and falloff
+- [ ] Test maps from sub-plan 1 (which place light entities as part of FGD validation) render with visible, correct illumination and falloff
 - [ ] Unlit areas are not pitch-black (ambient floor working)
 - [ ] `cargo test -p postretro` passes
 - [ ] `cargo clippy -p postretro -- -D warnings` clean
@@ -197,7 +197,7 @@ A uniform minimum light level added to the lighting sum before albedo multiplica
 
 6. Wire ambient floor to a player-facing setting (settings menu slider).
 
-7. Author test map with at least one of each light type (point, spot, directional) and validate visually.
+7. Validate visually using the test maps from sub-plan 1 — those maps already contain point, spot, and directional light entities placed as part of FGD validation. No new maps needed.
 
 ---
 

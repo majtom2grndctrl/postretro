@@ -48,9 +48,9 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 
 | Entity | Type | Purpose | Key Properties |
 |--------|------|---------|------------|
-| `light` | point | Omnidirectional light | `light` (intensity), `_color` (RGB), `_fade` (falloff distance), `delay` (falloff model), `style` (animation) |
-| `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles), `mangle`/`target` (direction) |
-| `light_sun` | point | Directional sun light | + `mangle` (direction vector) |
+| `light` | point | Omnidirectional light | `light` (intensity), `_color` (RGB), `_fade` (falloff distance, required), `delay` (falloff model), `style` (animation), `_phase` (style cycle offset) |
+| `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles, degrees), `mangle` (direction; `target` is deferred to Milestone 6) |
+| `light_sun` | point | Directional sun light | + `mangle` (direction vector, degrees) |
 | `env_fog_volume` | brush | Per-region fog | `color`, `density`, `falloff` |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
@@ -106,6 +106,7 @@ Step 2's inside-set tracking means leaf solidity is known the moment the leaf is
 | Portals | 15 | Default mode |
 | TextureNames | 16 | Always (deduplicated texture name list) |
 | Geometry | 17 | Always (position + UV + octahedral normal/tangent, 28 bytes/vertex) |
+| AlphaLights | 18 | Always (interim flat per-light record array; 67 bytes/record; replaced by the entity system in Milestone 6+) |
 | Bvh | 19 | Always (global BVH: flat node + leaf arrays, 40 bytes/entry; see BVH Foundation plan) |
 | ShVolume | 20 | Milestone 5+ (SH L2 irradiance volume: probe grid header + packed probe records; see Lighting Foundation plan) |
 

@@ -6,6 +6,9 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use glam::Vec3;
+use postretro_level_format::alpha_lights::{
+    AlphaFalloffModel, AlphaLightType, AlphaLightsSection,
+};
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
@@ -93,6 +96,46 @@ pub struct PortalData {
     pub back_leaf: usize,
 }
 
+/// Runtime shape discriminant for engine-side lights. Mirrors
+/// `postretro-level-compiler::map_data::LightType` at the wire boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightType {
+    Point,
+    Spot,
+    Directional,
+}
+
+/// Runtime falloff discriminant. Mirrors
+/// `postretro-level-compiler::map_data::FalloffModel`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FalloffModel {
+    Linear,
+    InverseDistance,
+    InverseSquared,
+}
+
+/// Engine-side light loaded from the interim AlphaLights PRL section (ID 18).
+///
+/// **INTERIM** — this type and the AlphaLights section it comes from will be
+/// replaced by an entity-system serialisation in Milestone 6+. Sub-plan 3 of
+/// the Lighting Foundation plan uploads these to the direct-lighting GPU
+/// buffer; sub-plan 1 only guarantees parsing round-trips cleanly.
+/// See `context/plans/in-progress/lighting-foundation/1-fgd-canonical.md`.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapLight {
+    pub origin: [f64; 3],
+    pub light_type: LightType,
+    pub intensity: f32,
+    pub color: [f32; 3],
+    pub falloff_model: FalloffModel,
+    pub falloff_range: f32,
+    pub cone_angle_inner: f32,
+    pub cone_angle_outer: f32,
+    pub cone_direction: [f32; 3],
+    pub cast_shadows: bool,
+}
+
 /// BSP tree + BVH level data loaded from a .prl file.
 #[derive(Debug)]
 pub struct LevelWorld {
@@ -117,6 +160,11 @@ pub struct LevelWorld {
     /// Global BVH loaded from the `Bvh` section. Always present — the loader
     /// rejects files that lack a BVH section.
     pub bvh: BvhTree,
+    /// Lights loaded from the interim AlphaLights section (ID 18). Empty
+    /// `Vec` if the section is absent (e.g. maps compiled before this
+    /// milestone) — sub-plan 3 is responsible for actually consuming these.
+    #[allow(dead_code)]
+    pub lights: Vec<MapLight>,
 }
 
 impl LevelWorld {
@@ -185,6 +233,37 @@ fn decode_child(value: i32) -> BspChild {
     } else {
         BspChild::Leaf((-1 - value) as usize)
     }
+}
+
+fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
+    section
+        .lights
+        .into_iter()
+        .map(|r| {
+            let light_type = match r.light_type {
+                AlphaLightType::Point => LightType::Point,
+                AlphaLightType::Spot => LightType::Spot,
+                AlphaLightType::Directional => LightType::Directional,
+            };
+            let falloff_model = match r.falloff_model {
+                AlphaFalloffModel::Linear => FalloffModel::Linear,
+                AlphaFalloffModel::InverseDistance => FalloffModel::InverseDistance,
+                AlphaFalloffModel::InverseSquared => FalloffModel::InverseSquared,
+            };
+            MapLight {
+                origin: r.origin,
+                light_type,
+                intensity: r.intensity,
+                color: r.color,
+                falloff_model,
+                falloff_range: r.falloff_range,
+                cone_angle_inner: r.cone_angle_inner,
+                cone_angle_outer: r.cone_angle_outer,
+                cone_direction: r.cone_direction,
+                cast_shadows: r.cast_shadows,
+            }
+        })
+        .collect()
 }
 
 fn convert_bvh_section(section: BvhSection) -> BvhTree {
@@ -355,6 +434,29 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             Some(data) => Some(PortalsSection::from_bytes(&data)?),
             None => None,
         };
+
+    // AlphaLights section (optional). Missing for maps compiled before the
+    // Lighting Foundation milestone — fall back to an empty light list with
+    // a warning so older maps still load.
+    let lights: Vec<MapLight> = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::AlphaLights as u32,
+    )? {
+        Some(data) => {
+            let section = AlphaLightsSection::from_bytes(&data)?;
+            let count = section.lights.len();
+            let converted = convert_alpha_lights(section);
+            log::info!("[PRL] AlphaLights: {count} lights loaded");
+            converted
+        }
+        None => {
+            log::warn!(
+                "[PRL] AlphaLights section missing — map predates the lighting foundation milestone; recompile with `prl-build` for lights to appear"
+            );
+            Vec::new()
+        }
+    };
 
     let has_pvs = pvs_section.is_some();
     let has_portals = portals_section.is_some();
@@ -528,6 +630,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         has_portals,
         texture_names,
         bvh,
+        lights,
     })
 }
 
@@ -616,6 +719,7 @@ mod tests {
             has_portals: false,
             texture_names: vec![],
             bvh: empty_bvh(),
+            lights: vec![],
         }
     }
 
@@ -659,6 +763,7 @@ mod tests {
             has_portals: false,
             texture_names: vec![],
             bvh: empty_bvh(),
+            lights: vec![],
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -694,6 +799,7 @@ mod tests {
             has_portals: false,
             texture_names: vec![],
             bvh: empty_bvh(),
+            lights: vec![],
         };
 
         let spawn = world.spawn_position();
@@ -718,6 +824,7 @@ mod tests {
             has_portals: false,
             texture_names: vec![],
             bvh: empty_bvh(),
+            lights: vec![],
         };
 
         let indices = face_leaf_indices(&world);
@@ -949,6 +1056,123 @@ mod tests {
         let tmp = std::env::temp_dir().join("postretro_test_truncated.prl");
         std::fs::write(&tmp, &[0x50, 0x52, 0x4C]).unwrap();
         assert!(load_prl(tmp.to_str().unwrap()).is_err());
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    fn sample_alpha_lights() -> AlphaLightsSection {
+        use postretro_level_format::alpha_lights::AlphaLightRecord;
+        AlphaLightsSection {
+            lights: vec![
+                AlphaLightRecord {
+                    origin: [1.0, 2.0, 3.0],
+                    light_type: AlphaLightType::Point,
+                    intensity: 300.0,
+                    color: [1.0, 0.8, 0.5],
+                    falloff_model: AlphaFalloffModel::InverseSquared,
+                    falloff_range: 50.0,
+                    cone_angle_inner: 0.0,
+                    cone_angle_outer: 0.0,
+                    cone_direction: [0.0, 0.0, 0.0],
+                    cast_shadows: true,
+                },
+                AlphaLightRecord {
+                    origin: [-4.0, 5.5, 6.0],
+                    light_type: AlphaLightType::Spot,
+                    intensity: 220.0,
+                    color: [0.7, 0.9, 1.0],
+                    falloff_model: AlphaFalloffModel::Linear,
+                    falloff_range: 25.0,
+                    cone_angle_inner: 0.5236,
+                    cone_angle_outer: 0.7854,
+                    cone_direction: [0.0, -1.0, 0.0],
+                    cast_shadows: false,
+                },
+                AlphaLightRecord {
+                    origin: [0.0, 10.0, 0.0],
+                    light_type: AlphaLightType::Directional,
+                    intensity: 180.0,
+                    color: [0.9, 0.95, 1.0],
+                    falloff_model: AlphaFalloffModel::Linear,
+                    falloff_range: 0.0,
+                    cone_angle_inner: 0.0,
+                    cone_angle_outer: 0.0,
+                    cone_direction: [0.0, -0.70710677, -0.70710677],
+                    cast_shadows: true,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn load_prl_parses_alpha_lights_section() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let alpha_lights = sample_alpha_lights();
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: alpha_lights.to_bytes(),
+            },
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_alpha_lights.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+
+        assert_eq!(world.lights.len(), 3);
+
+        assert_eq!(world.lights[0].light_type, LightType::Point);
+        assert_eq!(world.lights[0].origin, [1.0, 2.0, 3.0]);
+        assert_eq!(world.lights[0].intensity, 300.0);
+        assert_eq!(world.lights[0].falloff_model, FalloffModel::InverseSquared);
+        assert!((world.lights[0].falloff_range - 50.0).abs() < 1e-5);
+        assert!(world.lights[0].cast_shadows);
+
+        assert_eq!(world.lights[1].light_type, LightType::Spot);
+        assert_eq!(world.lights[1].falloff_model, FalloffModel::Linear);
+        assert!((world.lights[1].cone_angle_inner - 0.5236).abs() < 1e-4);
+        assert!((world.lights[1].cone_angle_outer - 0.7854).abs() < 1e-4);
+        assert_eq!(world.lights[1].cone_direction, [0.0, -1.0, 0.0]);
+        assert!(!world.lights[1].cast_shadows);
+
+        assert_eq!(world.lights[2].light_type, LightType::Directional);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_falls_back_to_empty_lights_when_section_absent() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_no_alpha_lights.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+        assert!(world.lights.is_empty());
+
         std::fs::remove_file(&tmp).ok();
     }
 }

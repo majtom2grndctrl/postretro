@@ -1,6 +1,7 @@
 // PRL binary container format: header, section table, read/write API.
 // See: context/lib/build_pipeline.md §PRL
 
+pub mod alpha_lights;
 pub mod bsp;
 pub mod bvh;
 pub mod geometry;
@@ -75,6 +76,12 @@ pub enum SectionId {
     /// + octahedral tangent with bitangent sign) and 8-byte `FaceMeta`.
     Geometry = 17,
 
+    /// AlphaLights section (interim). Flat per-light record array for the
+    /// direct-lighting path. Will be replaced by an entity-system
+    /// serialisation in Milestone 6+.
+    /// See `alpha_lights::AlphaLightsSection`.
+    AlphaLights = 18,
+
     /// Global BVH: flat node + leaf arrays. See `bvh::BvhSection`.
     Bvh = 19,
 }
@@ -88,6 +95,7 @@ impl SectionId {
             15 => Some(Self::Portals),
             16 => Some(Self::TextureNames),
             17 => Some(Self::Geometry),
+            18 => Some(Self::AlphaLights),
             19 => Some(Self::Bvh),
             _ => None,
         }

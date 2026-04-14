@@ -1207,4 +1207,36 @@
 ( 4 2272 0 ) ( 204 2288 0 ) ( 4 2288 0 ) debug_wall_yellow 0 0 0 1 1
 }
 }
-{ "classname" "info_player_start" "origin" "128 128 24" "angle" "0" }
+// entity 1 (player start)
+{
+"classname" "info_player_start"
+"origin" "128 128 24"
+"angle" "0"
+}
+// entity 2 (directional / sun light)
+{
+"classname" "light_sun"
+"origin" "-256 1104 480"
+"light" "200"
+"_color" "220 230 255"
+"delay" "0"
+"mangle" "-75 0 0"
+}
+// entity 3 (point light, corridor)
+{
+"classname" "light"
+"origin" "136 248 80"
+"light" "220"
+"_color" "255 170 90"
+"_fade" "1024"
+"delay" "2"
+}
+// entity 4 (point light, arena cluster)
+{
+"classname" "light"
+"origin" "448 1632 160"
+"light" "180"
+"_color" "160 200 255"
+"_fade" "1536"
+"delay" "0"
+}

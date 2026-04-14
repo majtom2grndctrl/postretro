@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL
 
 pub mod bvh_build;
+pub mod format;
 pub mod geometry;
 pub mod geometry_utils;
 pub mod map_data;
@@ -82,6 +83,8 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("[Compiler] BVH build complete.");
 
+    let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
+
     if args.pvs {
         log::info!("[Compiler] Writing precomputed PVS mode (--pvs).");
         pack::pack_and_write_pvs(
@@ -91,6 +94,7 @@ fn main() -> anyhow::Result<()> {
             &vis_result.leaves_section,
             &vis_result.leaf_pvs_section,
             &bvh_section,
+            &alpha_lights_section,
         )?;
     } else {
         log::info!("[Compiler] Writing portal graph mode (default).");
@@ -102,6 +106,7 @@ fn main() -> anyhow::Result<()> {
             &vis_result.leaves_section,
             &portals_section,
             &bvh_section,
+            &alpha_lights_section,
         )?;
     }
 

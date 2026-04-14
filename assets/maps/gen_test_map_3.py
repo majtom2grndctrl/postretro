@@ -331,6 +331,58 @@ def generate_map():
     lines.append('"angle" "0"')
     lines.append("}")
 
+    # --- Lights ---
+    # Exercise point + spot + directional per sub-plan 1 requirements.
+
+    # Entity 2: point light in Room 2 (the big central room). Warm tint,
+    # inverse-squared falloff. Origin centered in R2's interior air space.
+    r2_light_x = (r2[0] + r2[3]) // 2
+    r2_light_y = (r2[1] + r2[4]) // 2
+    r2_light_z = r2[5] - 24
+    lines.append("// entity 2 (point light)")
+    lines.append("{")
+    lines.append('"classname" "light"')
+    lines.append(f'"origin" "{r2_light_x} {r2_light_y} {r2_light_z}"')
+    lines.append('"light" "300"')
+    lines.append('"_color" "255 190 120"')
+    lines.append('"_fade" "4096"')
+    lines.append('"delay" "2"')
+    lines.append("}")
+
+    # Entity 3: spotlight aimed down Corridor 4, exercising cone culling.
+    # Place it on the Room 4 side above the corridor mouth, aimed south.
+    c4_light_x = (c4[0] + c4[2]) // 2
+    c4_light_y = r4[1] - 8
+    c4_light_z = DOOR_H - 8
+    lines.append("// entity 3 (spot light)")
+    lines.append("{")
+    lines.append('"classname" "light_spot"')
+    lines.append(f'"origin" "{c4_light_x} {c4_light_y} {c4_light_z}"')
+    lines.append('"light" "250"')
+    lines.append('"_color" "180 210 255"')
+    lines.append('"_fade" "2048"')
+    lines.append('"delay" "1"')
+    lines.append('"_cone" "25"')
+    lines.append('"_cone2" "40"')
+    # mangle: pitch=-10 (slight downward), yaw=270 (facing south in Quake),
+    # roll=0. Quake yaw convention: 0=+X, 90=+Y, 180=-X, 270=-Y.
+    lines.append('"mangle" "-10 270 0"')
+    lines.append("}")
+
+    # Entity 4: directional (sun) light — cool overhead ambient. Origin is
+    # placed inside Room 1 for readability; directional lights ignore origin
+    # for lighting math.
+    lines.append("// entity 4 (directional / sun light)")
+    lines.append("{")
+    lines.append('"classname" "light_sun"')
+    lines.append(f'"origin" "{spawn_x} {spawn_y} {r1[5] - 16}"')
+    lines.append('"light" "180"')
+    lines.append('"_color" "200 220 255"')
+    lines.append('"delay" "0"')
+    # Sun from roughly overhead, angled slightly forward.
+    lines.append('"mangle" "-70 45 0"')
+    lines.append("}")
+
     return "\n".join(lines)
 
 

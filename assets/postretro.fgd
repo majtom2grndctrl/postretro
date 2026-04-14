@@ -1,0 +1,47 @@
+// Postretro FGD: entity definitions for TrenchBroom authoring.
+// Parsed by postretro-level-compiler.
+// See: context/lib/build_pipeline.md §Custom FGD
+
+@BaseClass = Light
+[
+    light(integer) : "Intensity" : 300
+    _color(color255) : "Color" : "255 255 255"
+    _fade(integer) : "Falloff Distance (map units)"
+    delay(choices) : "Falloff Model" : 0 =
+    [
+        0 : "Linear"
+        1 : "Inverse Distance (1/x)"
+        2 : "Inverse Squared (1/x^2)"
+    ]
+    style(integer) : "Animation Style" : 0
+    _phase(string) : "Animation Phase Offset (0.0-1.0)" : "0.0"
+]
+
+@PointClass base(Light)
+    color(255 200 0)
+    size(-8 -8 -8, 8 8 8)
+    = light : "Point Light"
+[
+    origin(origin)
+]
+
+@PointClass base(Light)
+    color(255 150 0)
+    size(-8 -8 -8, 8 8 8)
+    = light_spot : "Spotlight"
+[
+    origin(origin)
+    _cone(integer) : "Inner Cone Angle (degrees)" : 30
+    _cone2(integer) : "Outer Cone Angle (degrees)" : 45
+    mangle(string) : "Direction (pitch yaw roll, degrees)" : ""
+    // target entity direction is deferred to Milestone 6 (requires entity system)
+]
+
+@PointClass base(Light)
+    color(255 100 0)
+    size(-8 -8 -8, 8 8 8)
+    = light_sun : "Directional Light"
+[
+    origin(origin)
+    mangle(string) : "Direction (pitch yaw roll, degrees)" : "-90 0 0"
+]

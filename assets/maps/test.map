@@ -400,4 +400,7 @@
 "classname" "light"
 "origin" "736 128 160"
 "light" "300"
+"_color" "255 220 180"
+"_fade" "2048"
+"delay" "2"
 }

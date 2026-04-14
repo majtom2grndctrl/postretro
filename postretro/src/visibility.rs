@@ -839,6 +839,7 @@ mod tests {
             has_portals: false,
             texture_names: vec![],
             bvh: empty_bvh(),
+            lights: vec![],
         }
     }
 
@@ -874,6 +875,7 @@ mod tests {
             has_portals: false,
             texture_names: vec![],
             bvh: empty_bvh(),
+            lights: vec![],
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();

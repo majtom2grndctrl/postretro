@@ -124,6 +124,96 @@ pub struct EntityInfo {
     pub origin: Option<DVec3>,
 }
 
+/// Light shape. Governs which fields of `MapLight` are meaningful.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightType {
+    /// Omnidirectional point light.
+    Point,
+    /// Spot light: uses `cone_angle_inner`, `cone_angle_outer`, `cone_direction`.
+    Spot,
+    /// Parallel directional light (e.g., sunlight). Ignores `falloff_range`;
+    /// uses `cone_direction` as the aim vector.
+    Directional,
+}
+
+/// How intensity falls off with distance. Applies to Point and Spot lights;
+/// Directional lights ignore this.
+///
+/// `falloff_range` is the distance at which the light reaches zero (Linear)
+/// or the clamp distance (InverseDistance / InverseSquared).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FalloffModel {
+    /// `brightness = 1 - (distance / falloff_range)`, clamped at 0.
+    Linear,
+    /// `brightness = 1 / distance`, clamped at `falloff_range`.
+    InverseDistance,
+    /// `brightness = 1 / (distance^2)`, clamped at `falloff_range`.
+    InverseSquared,
+}
+
+/// Curve-based animation over a repeating cycle.
+///
+/// Each channel is a `Vec` of samples distributed uniformly over the period.
+/// Runtime linearly interpolates between adjacent samples at the current
+/// cycle time. `None` channels hold constant for the cycle.
+///
+/// Format-agnostic — Quake light styles, Doom sector effects, UDMF curves,
+/// or hand-authored data all translate into this shape. Translators own
+/// their format's preset vocabulary and expand presets into sample curves.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LightAnimation {
+    /// Cycle duration in seconds.
+    pub period: f32,
+    /// 0-1 offset within the cycle (desync identical presets).
+    pub phase: f32,
+    /// Intensity multipliers, uniformly spaced over `period`.
+    pub brightness: Option<Vec<f32>>,
+    /// Linear RGB overrides, uniformly spaced over `period`.
+    pub color: Option<Vec<[f32; 3]>>,
+}
+
+/// Format-agnostic light record. The SH baker and runtime direct path both
+/// consume `Vec<MapLight>`; neither sees source-format vocabulary.
+///
+/// See `context/plans/in-progress/lighting-foundation/1-fgd-canonical.md`
+/// §Map light format for the full design rationale.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapLight {
+    /// Position in engine space (Y-up), meters. Directional lights still
+    /// carry a position for probe/debug purposes but it is not used for
+    /// lighting math.
+    pub origin: DVec3,
+    pub light_type: LightType,
+
+    /// Brightness scalar, unitless. Baker may normalize against chosen bake
+    /// output; the range is translator convention, not a format constraint.
+    pub intensity: f32,
+    /// Linear RGB, 0-1.
+    pub color: [f32; 3],
+
+    /// Falloff model for Point and Spot lights. Ignored for Directional.
+    pub falloff_model: FalloffModel,
+    /// Distance at which the light reaches zero (Linear) or the clamp
+    /// distance (InverseDistance / InverseSquared). Meters. Must be `> 0`
+    /// for Point and Spot lights; unused for Directional.
+    pub falloff_range: f32,
+
+    /// Inner cone half-angle in radians. `Some` only for Spot lights.
+    pub cone_angle_inner: Option<f32>,
+    /// Outer cone half-angle in radians. `Some` only for Spot lights.
+    pub cone_angle_outer: Option<f32>,
+    /// Normalized aim vector in engine space. `Some` for Spot and
+    /// Directional lights; `None` for Point.
+    pub cone_direction: Option<[f32; 3]>,
+
+    /// Animation curves. `None` means constant light.
+    pub animation: Option<LightAnimation>,
+
+    /// All FGD-authored lights cast shadows by default. The flag exists so
+    /// transient gameplay lights (Milestone 6+) can opt out programmatically.
+    pub cast_shadows: bool,
+}
+
 /// Parsed and classified .map data for downstream compiler stages.
 #[derive(Debug)]
 pub struct MapData {
@@ -136,4 +226,8 @@ pub struct MapData {
     pub entity_brushes: Vec<(String, usize)>,
     /// Info for all entities (classnames, origins).
     pub entities: Vec<EntityInfo>,
+    /// Format-agnostic lights translated from source-format entities. Feeds
+    /// the SH baker (sub-plan 2) and the runtime direct-lighting path
+    /// (sub-plan 3) via the AlphaLights PRL section.
+    pub lights: Vec<MapLight>,
 }

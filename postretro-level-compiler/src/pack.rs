@@ -5,6 +5,9 @@ use std::fs;
 use std::io::Cursor;
 use std::path::Path;
 
+use postretro_level_format::alpha_lights::{
+    AlphaFalloffModel, AlphaLightRecord, AlphaLightType, AlphaLightsSection,
+};
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::leaf_pvs::LeafPvsSection;
@@ -14,7 +17,43 @@ use postretro_level_format::{
 };
 
 use crate::geometry::GeometryResult;
+use crate::map_data::{FalloffModel, LightType, MapLight};
 use crate::portals::Portal;
+
+/// Convert translated map lights into an `AlphaLightsSection` for the format
+/// crate. Strips animation curves (direct lighting path uses static base
+/// properties only — sub-plan 3 of the Lighting Foundation plan).
+pub fn encode_alpha_lights(lights: &[MapLight]) -> AlphaLightsSection {
+    let records = lights
+        .iter()
+        .map(|l| {
+            let light_type = match l.light_type {
+                LightType::Point => AlphaLightType::Point,
+                LightType::Spot => AlphaLightType::Spot,
+                LightType::Directional => AlphaLightType::Directional,
+            };
+            let falloff_model = match l.falloff_model {
+                FalloffModel::Linear => AlphaFalloffModel::Linear,
+                FalloffModel::InverseDistance => AlphaFalloffModel::InverseDistance,
+                FalloffModel::InverseSquared => AlphaFalloffModel::InverseSquared,
+            };
+            AlphaLightRecord {
+                origin: [l.origin.x, l.origin.y, l.origin.z],
+                light_type,
+                intensity: l.intensity,
+                color: l.color,
+                falloff_model,
+                falloff_range: l.falloff_range,
+                cone_angle_inner: l.cone_angle_inner.unwrap_or(0.0),
+                cone_angle_outer: l.cone_angle_outer.unwrap_or(0.0),
+                cone_direction: l.cone_direction.unwrap_or([0.0, 0.0, 0.0]),
+                cast_shadows: l.cast_shadows,
+            }
+        })
+        .collect();
+
+    AlphaLightsSection { lights: records }
+}
 
 /// Convert compiler portal data into a `PortalsSection` for the format crate.
 pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
@@ -45,8 +84,8 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
     }
 }
 
-/// Write geometry, texture names, BSP nodes, BSP leaves, leaf PVS, and BVH
-/// sections to a .prl file (--pvs mode).
+/// Write geometry, texture names, BSP nodes, BSP leaves, leaf PVS, BVH, and
+/// alpha lights sections to a .prl file (--pvs mode).
 pub fn pack_and_write_pvs(
     output: &Path,
     geo_result: &GeometryResult,
@@ -54,6 +93,7 @@ pub fn pack_and_write_pvs(
     leaves: &BspLeavesSection,
     leaf_pvs: &LeafPvsSection,
     bvh: &BvhSection,
+    alpha_lights: &AlphaLightsSection,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -61,6 +101,7 @@ pub fn pack_and_write_pvs(
     let leaves_bytes = leaves.to_bytes();
     let leaf_pvs_bytes = leaf_pvs.to_bytes();
     let bvh_bytes = bvh.to_bytes();
+    let alpha_lights_bytes = alpha_lights.to_bytes();
 
     let sections = vec![
         SectionBlob {
@@ -93,6 +134,11 @@ pub fn pack_and_write_pvs(
             version: 1,
             data: bvh_bytes.clone(),
         },
+        SectionBlob {
+            section_id: SectionId::AlphaLights as u32,
+            version: 1,
+            data: alpha_lights_bytes.clone(),
+        },
     ];
 
     write_and_validate_sections(output, &sections)?;
@@ -107,12 +153,17 @@ pub fn pack_and_write_pvs(
     log::info!("[Compiler]   BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("[Compiler]   LeafPvs: {} bytes", leaf_pvs_bytes.len());
     log::info!("[Compiler]   Bvh: {} bytes", bvh_bytes.len());
+    log::info!(
+        "[Compiler]   AlphaLights: {} bytes ({} lights)",
+        alpha_lights_bytes.len(),
+        alpha_lights.lights.len()
+    );
 
     Ok(())
 }
 
-/// Write geometry, texture names, BSP nodes, BSP leaves, portals, and BVH
-/// sections to a .prl file (default mode).
+/// Write geometry, texture names, BSP nodes, BSP leaves, portals, BVH, and
+/// alpha lights sections to a .prl file (default mode).
 ///
 /// Clears pvs_offset and pvs_size in leaf records since no PVS section is written.
 pub fn pack_and_write_portals(
@@ -122,6 +173,7 @@ pub fn pack_and_write_portals(
     leaves: &BspLeavesSection,
     portals: &PortalsSection,
     bvh: &BvhSection,
+    alpha_lights: &AlphaLightsSection,
 ) -> anyhow::Result<()> {
     // Zero out PVS references in leaves since no LeafPvs section is written.
     let portal_leaves = BspLeavesSection {
@@ -145,6 +197,7 @@ pub fn pack_and_write_portals(
     let leaves_bytes = portal_leaves.to_bytes();
     let portals_bytes = portals.to_bytes();
     let bvh_bytes = bvh.to_bytes();
+    let alpha_lights_bytes = alpha_lights.to_bytes();
 
     let sections = vec![
         SectionBlob {
@@ -177,6 +230,11 @@ pub fn pack_and_write_portals(
             version: 1,
             data: bvh_bytes.clone(),
         },
+        SectionBlob {
+            section_id: SectionId::AlphaLights as u32,
+            version: 1,
+            data: alpha_lights_bytes.clone(),
+        },
     ];
 
     write_and_validate_sections(output, &sections)?;
@@ -191,6 +249,11 @@ pub fn pack_and_write_portals(
     log::info!("[Compiler]   BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("[Compiler]   Portals: {} bytes", portals_bytes.len());
     log::info!("[Compiler]   Bvh: {} bytes", bvh_bytes.len());
+    log::info!(
+        "[Compiler]   AlphaLights: {} bytes ({} lights)",
+        alpha_lights_bytes.len(),
+        alpha_lights.lights.len()
+    );
 
     Ok(())
 }
@@ -375,6 +438,10 @@ mod tests {
         }
     }
 
+    fn empty_alpha_lights() -> AlphaLightsSection {
+        AlphaLightsSection::default()
+    }
+
     #[test]
     fn pack_write_pvs_produces_valid_prl_file() {
         let dir = std::env::temp_dir().join("postretro_test_pack");
@@ -386,16 +453,25 @@ mod tests {
         let leaves = sample_leaves();
         let leaf_pvs = sample_leaf_pvs();
         let bvh = sample_bvh();
+        let alpha_lights = empty_alpha_lights();
 
-        pack_and_write_pvs(&output, &geo_result, &nodes, &leaves, &leaf_pvs, &bvh)
-            .expect("pack_and_write_pvs should succeed");
+        pack_and_write_pvs(
+            &output,
+            &geo_result,
+            &nodes,
+            &leaves,
+            &leaf_pvs,
+            &bvh,
+            &alpha_lights,
+        )
+        .expect("pack_and_write_pvs should succeed");
 
         let data = std::fs::read(&output).expect("should read output file");
         assert_eq!(&data[0..4], b"PRL\0");
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 6);
+        assert_eq!(meta.header.section_count, 7);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -403,6 +479,7 @@ mod tests {
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
+        assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -428,15 +505,24 @@ mod tests {
         };
         let bvh = sample_bvh();
 
-        pack_and_write_portals(&output, &geo_result, &nodes, &leaves, &portals, &bvh)
-            .expect("pack_and_write_portals should succeed");
+        let alpha_lights = empty_alpha_lights();
+        pack_and_write_portals(
+            &output,
+            &geo_result,
+            &nodes,
+            &leaves,
+            &portals,
+            &bvh,
+            &alpha_lights,
+        )
+        .expect("pack_and_write_portals should succeed");
 
         let data = std::fs::read(&output).expect("should read output file");
         assert_eq!(&data[0..4], b"PRL\0");
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 6);
+        assert_eq!(meta.header.section_count, 7);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -444,6 +530,7 @@ mod tests {
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
+        assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -457,8 +544,17 @@ mod tests {
         let leaves = sample_leaves();
         let leaf_pvs = sample_leaf_pvs();
         let bvh = sample_bvh();
+        let alpha_lights = empty_alpha_lights();
 
-        let result = pack_and_write_pvs(output, &geo_result, &nodes, &leaves, &leaf_pvs, &bvh);
+        let result = pack_and_write_pvs(
+            output,
+            &geo_result,
+            &nodes,
+            &leaves,
+            &leaf_pvs,
+            &bvh,
+            &alpha_lights,
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -492,6 +588,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let output = dir.join("test_pipeline_pvs.prl");
 
+        let alpha_lights = encode_alpha_lights(&map_data.lights);
         pack_and_write_pvs(
             &output,
             &geo_result,
@@ -499,6 +596,7 @@ mod tests {
             &vis_result.leaves_section,
             &vis_result.leaf_pvs_section,
             &bvh_section,
+            &alpha_lights,
         )
         .expect("full pipeline pvs pack should succeed");
 
@@ -506,11 +604,12 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 6);
+        assert_eq!(meta.header.section_count, 7);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
+        assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -543,6 +642,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let output = dir.join("test_pipeline_portals.prl");
 
+        let alpha_lights = encode_alpha_lights(&map_data.lights);
         pack_and_write_portals(
             &output,
             &geo_result,
@@ -550,6 +650,7 @@ mod tests {
             &vis_result.leaves_section,
             &portals_section,
             &bvh_section,
+            &alpha_lights,
         )
         .expect("full pipeline portal pack should succeed");
 
@@ -557,11 +658,12 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 6);
+        assert_eq!(meta.header.section_count, 7);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
+        assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());

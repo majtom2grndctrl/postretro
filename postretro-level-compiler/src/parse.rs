@@ -1,7 +1,7 @@
 // .map file parsing via shambler: brush classification and face extraction.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -12,7 +12,10 @@ use shambler::entity::EntityId;
 use shambler::face::face_planes;
 use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
-use crate::map_data::{BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, TextureProjection};
+use crate::format::quake_map;
+use crate::map_data::{
+    BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, MapLight, TextureProjection,
+};
 use crate::map_format::MapFormat;
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
@@ -61,6 +64,18 @@ fn get_property(geo_map: &GeoMap, entity_id: &EntityId, key: &str) -> Option<Str
     props.iter().find(|p| p.key == key).map(|p| p.value.clone())
 }
 
+/// Extract all key-value pairs for an entity as a property bag. Thin
+/// wrapper that isolates the shambler dependency from the translator.
+fn collect_entity_properties(geo_map: &GeoMap, entity_id: &EntityId) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    if let Some(props) = geo_map.entity_properties.get(entity_id) {
+        for p in props.iter() {
+            out.insert(p.key.clone(), p.value.clone());
+        }
+    }
+    out
+}
+
 /// Read and parse a .map file, classify brushes, and extract face geometry.
 ///
 /// The `format` parameter identifies the source map format. Its `units_to_meters()`
@@ -97,6 +112,10 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut entities = Vec::new();
     let mut entity_brushes_summary = Vec::new();
     let mut entity_classnames: Vec<String> = Vec::new();
+    // Lights translate to the canonical format as we walk entities — they
+    // share the origin/classname extraction but do not participate in BSP
+    // construction.
+    let mut lights: Vec<MapLight> = Vec::new();
 
     for entity_id in geo_map.entities.iter() {
         let classname =
@@ -121,9 +140,29 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 .get(entity_id)
                 .map(|v| v.len())
                 .unwrap_or(0);
-            entity_brushes_summary.push((classname, brush_count));
+            entity_brushes_summary.push((classname.clone(), brush_count));
+        }
+
+        // Lights: translate the property bag into a canonical `MapLight`.
+        // Errors block compilation; warnings are logged inside the translator.
+        if quake_map::is_light_classname(&classname) {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            let light_origin = origin.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "light entity '{classname}' missing origin — all light entities must have an origin"
+                )
+            })?;
+            match quake_map::translate_light(&props, light_origin, &classname) {
+                Ok(light) => lights.push(light),
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "failed to translate {classname} at {light_origin:?}: {e}"
+                    ));
+                }
+            }
         }
     }
+
 
     // Compute geometry for world brushes only
     let geo_planes = face_planes(&geo_map.face_planes);
@@ -311,11 +350,13 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         "[Compiler] Entity classnames: {}",
         entity_classnames.join(", ")
     );
+    log::info!("[Compiler] Lights: {}", lights.len());
 
     Ok(MapData {
         brush_volumes,
         entity_brushes: entity_brushes_summary,
         entities,
+        lights,
     })
 }
 

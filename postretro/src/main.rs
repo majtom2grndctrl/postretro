@@ -6,6 +6,7 @@ mod compute_cull;
 mod frame_timing;
 mod geometry;
 mod input;
+mod lighting;
 mod material;
 
 mod portal_vis;
@@ -270,6 +271,7 @@ impl ApplicationHandler for App {
             vertices: &world.vertices,
             indices: &world.indices,
             bvh: &world.bvh,
+            lights: &world.lights,
         });
 
         let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
@@ -460,7 +462,7 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.update_view_projection(view_proj);
+                    renderer.update_per_frame_uniforms(view_proj, interp.position);
 
                     if renderer.is_ready() {
                         if let Err(err) = renderer.render_frame_indirect(&visible_cells, view_proj)

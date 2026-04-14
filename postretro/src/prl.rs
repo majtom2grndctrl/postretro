@@ -121,7 +121,6 @@ pub enum FalloffModel {
 /// the Lighting Foundation plan uploads these to the direct-lighting GPU
 /// buffer; sub-plan 1 only guarantees parsing round-trips cleanly.
 /// See `context/plans/in-progress/lighting-foundation/1-fgd-canonical.md`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapLight {
     pub origin: [f64; 3],
@@ -133,6 +132,9 @@ pub struct MapLight {
     pub cone_angle_inner: f32,
     pub cone_angle_outer: f32,
     pub cone_direction: [f32; 3],
+    /// Reserved for sub-plan 4 (shadow maps). The direct-lighting path
+    /// built in sub-plan 3 does not consume this; the shader's
+    /// `shadow_info` slot is zeroed at upload time.
     pub cast_shadows: bool,
 }
 
@@ -162,8 +164,7 @@ pub struct LevelWorld {
     pub bvh: BvhTree,
     /// Lights loaded from the interim AlphaLights section (ID 18). Empty
     /// `Vec` if the section is absent (e.g. maps compiled before this
-    /// milestone) — sub-plan 3 is responsible for actually consuming these.
-    #[allow(dead_code)]
+    /// milestone). Consumed by the renderer's direct-lighting path.
     pub lights: Vec<MapLight>,
 }
 

@@ -4,12 +4,14 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::compute_cull::ComputeCullPipeline;
 use crate::geometry::BvhTree;
+use crate::lighting::{GPU_LIGHT_SIZE, pack_lights};
+use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 
@@ -22,27 +24,49 @@ const WIREFRAME_SHADER_SOURCE: &str = include_str!("shaders/wireframe.wgsl");
 
 // --- Uniform buffer layout ---
 
-/// Per-frame uniform data: view-projection matrix + ambient light.
-/// Layout must match the WGSL Uniforms struct (std140-aligned).
-/// mat4x4 = 64 bytes, vec3 = 12 bytes + 4 bytes padding = 80 bytes total.
-const UNIFORM_SIZE: usize = 80;
+/// Per-frame uniform data: view-projection, camera world-space position,
+/// ambient floor, and active light count.
+///
+/// Layout must match the WGSL `Uniforms` struct in `forward.wgsl` and
+/// `wireframe.wgsl` — both shaders bind the same buffer. std140 rules
+/// align `vec3<f32>` to 16 bytes, so `camera_position` (vec3) + trailing
+/// `ambient_floor` (f32) share one 16-byte slot. `light_count` (u32)
+/// starts a new slot and is padded out to a full vec4 slot for alignment.
+///
+/// Offsets (bytes):
+///   0..64   view_proj      (mat4x4<f32>)
+///   64..76  camera_position (vec3<f32>)
+///   76..80  ambient_floor   (f32)
+///   80..84  light_count     (u32)
+///   84..96  _padding        (3 × u32)
+const UNIFORM_SIZE: usize = 96;
 
-fn build_uniform_data(view_proj: &Mat4, ambient_light: [f32; 3]) -> [u8; UNIFORM_SIZE] {
+fn build_uniform_data(
+    view_proj: &Mat4,
+    camera_position: Vec3,
+    ambient_floor: f32,
+    light_count: u32,
+) -> [u8; UNIFORM_SIZE] {
     let mut bytes = [0u8; UNIFORM_SIZE];
-    // 16 mat4 floats, 3 ambient floats, 1 f32 of padding = 80 bytes.
-    // std140: vec3 is 16-byte aligned, so the trailing pad (bytes 76..80)
-    // stays zero.
     let cols = view_proj.to_cols_array();
     for (i, val) in cols.iter().enumerate() {
         let off = i * 4;
         bytes[off..off + 4].copy_from_slice(&val.to_ne_bytes());
     }
-    for (i, val) in ambient_light.iter().enumerate() {
-        let off = 64 + i * 4;
-        bytes[off..off + 4].copy_from_slice(&val.to_ne_bytes());
-    }
+    bytes[64..68].copy_from_slice(&camera_position.x.to_ne_bytes());
+    bytes[68..72].copy_from_slice(&camera_position.y.to_ne_bytes());
+    bytes[72..76].copy_from_slice(&camera_position.z.to_ne_bytes());
+    bytes[76..80].copy_from_slice(&ambient_floor.to_ne_bytes());
+    bytes[80..84].copy_from_slice(&light_count.to_ne_bytes());
+    // bytes 84..96 are _padding — left as zero.
     bytes
 }
+
+/// Default ambient floor applied when the caller doesn't override it.
+/// Provisional value from sub-plan 3; tuned via the ambient-floor slider
+/// in the settings menu. The right default is the lowest value where a
+/// player can still navigate dark areas.
+pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.05;
 
 // --- GPU texture ---
 
@@ -149,13 +173,16 @@ fn create_depth_texture(
 // --- Geometry data ---
 
 /// Geometry data the renderer needs from a level, including the BVH used to
-/// build the GPU-driven indirect draw pipeline.
+/// build the GPU-driven indirect draw pipeline and the map's light list.
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [crate::geometry::WorldVertex],
     pub indices: &'a [u32],
     /// Global BVH loaded from the `Bvh` section. Always present for valid
     /// PRL levels — pre-BVH maps fail earlier in the loader.
     pub bvh: &'a BvhTree,
+    /// Direct lights parsed from the AlphaLights PRL section. May be empty
+    /// on maps compiled before the Lighting Foundation milestone.
+    pub lights: &'a [MapLight],
 }
 
 // --- Renderer ---
@@ -173,6 +200,19 @@ pub struct Renderer {
     index_count: u32,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
+
+    /// Group 2 — storage buffer of packed `GpuLight` records, uploaded
+    /// once at level load. Always bound; maps with zero lights get a
+    /// 1-element dummy buffer so the binding is never empty (wgpu
+    /// rejects zero-sized storage buffer bindings).
+    lighting_bind_group: wgpu::BindGroup,
+    /// Number of real (non-dummy) lights uploaded — this is the loop
+    /// bound the fragment shader reads from `uniforms.light_count`.
+    light_count: u32,
+    /// Ambient floor applied before albedo multiply. Player-facing setting
+    /// (0.0–1.0 slider); default is `DEFAULT_AMBIENT_FLOOR`. A scalar
+    /// brightness only — no color.
+    ambient_floor: f32,
 
     depth_view: wgpu::TextureView,
 
@@ -336,11 +376,16 @@ impl Renderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        // Uniform buffer (view-projection + ambient light).
+        // Uniform buffer (view-projection + camera position + ambient floor
+        // + light count). Initial value is the hardcoded default view until
+        // `update_per_frame_uniforms` is called from the main loop.
         let view_proj = build_default_view_projection(
             surface_config.width as f32 / surface_config.height as f32,
         );
-        let uniform_data = build_uniform_data(&view_proj, [1.0, 1.0, 1.0]);
+        let light_count = geometry.map(|g| g.lights.len() as u32).unwrap_or(0);
+        let ambient_floor = DEFAULT_AMBIENT_FLOOR;
+        let uniform_data =
+            build_uniform_data(&view_proj, Vec3::ZERO, ambient_floor, light_count);
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
@@ -396,6 +441,47 @@ impl Renderer {
                     },
                 ],
             });
+
+        // Bind group layout for group 2: direct lighting storage buffer.
+        // Uploaded once at level load; animation and gameplay lights are
+        // follow-up work (Milestone 6+).
+        let lighting_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Lighting Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        // Pack the map's lights into GPU bytes and create the storage
+        // buffer. wgpu rejects a zero-size storage buffer, so we pad to a
+        // single dummy light record when there are no lights at all; the
+        // shader's `light_count` loop bound stays at 0 so the dummy is
+        // never read.
+        let lights_data = match geometry {
+            Some(g) if !g.lights.is_empty() => pack_lights(g.lights),
+            _ => vec![0u8; GPU_LIGHT_SIZE],
+        };
+        let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Direct Lights Storage Buffer"),
+            contents: &lights_data,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Lighting Bind Group"),
+            layout: &lighting_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: lights_buffer.as_entire_binding(),
+            }],
+        });
 
         // Create shared sampler: nearest filtering for retro pixel aesthetic, repeat.
         let base_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -460,12 +546,14 @@ impl Renderer {
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
 
-        // Pipeline layout.
+        // Pipeline layout. Group 2 is the direct-lighting storage buffer
+        // introduced in sub-plan 3 of the lighting foundation.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Textured Pipeline Layout"),
             bind_group_layouts: &[
                 Some(&uniform_bind_group_layout),
                 Some(&texture_bind_group_layout),
+                Some(&lighting_bind_group_layout),
             ],
             immediate_size: 0,
         });
@@ -663,6 +751,9 @@ impl Renderer {
             index_count,
             uniform_buffer,
             uniform_bind_group,
+            lighting_bind_group,
+            light_count,
+            ambient_floor,
             depth_view,
             gpu_textures,
             bvh_leaves,
@@ -711,7 +802,7 @@ impl Renderer {
 
     /// Handle window resize. Reconfigures the surface and recreates the depth buffer.
     /// The caller is responsible for updating the view-projection matrix via
-    /// `update_view_projection` after calling this (the camera owns aspect ratio).
+    /// `update_per_frame_uniforms` after calling this (the camera owns aspect ratio).
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
@@ -724,9 +815,33 @@ impl Renderer {
         self.is_surface_configured = true;
     }
 
-    pub fn update_view_projection(&self, view_proj: Mat4) {
-        let data = build_uniform_data(&view_proj, [1.0, 1.0, 1.0]);
+    /// Upload the per-frame uniform buffer (view-projection matrix, camera
+    /// world position, ambient floor, and light count). The ambient floor
+    /// and light count are pulled from renderer state — they only change
+    /// when the player adjusts the setting or a new level loads, but
+    /// including them in every write keeps the upload path simple.
+    pub fn update_per_frame_uniforms(&self, view_proj: Mat4, camera_position: Vec3) {
+        let data = build_uniform_data(
+            &view_proj,
+            camera_position,
+            self.ambient_floor,
+            self.light_count,
+        );
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
+    }
+
+    /// Current ambient floor value (player-facing 0.0–1.0 setting).
+    #[allow(dead_code)]
+    pub fn ambient_floor(&self) -> f32 {
+        self.ambient_floor
+    }
+
+    /// Update the ambient floor. Clamped to [0.0, 1.0] to match the
+    /// player-facing slider range. Takes effect on the next
+    /// `update_per_frame_uniforms` upload.
+    #[allow(dead_code)]
+    pub fn set_ambient_floor(&mut self, value: f32) {
+        self.ambient_floor = value.clamp(0.0, 1.0);
     }
 
     pub fn is_ready(&self) -> bool {
@@ -819,6 +934,7 @@ impl Renderer {
             if self.has_geometry && self.index_count > 0 {
                 render_pass.set_pipeline(&self.pipeline);
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                render_pass.set_bind_group(2, &self.lighting_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 render_pass
                     .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -1042,7 +1158,7 @@ mod tests {
     #[test]
     fn uniform_data_has_correct_size() {
         let vp = Mat4::IDENTITY;
-        let data = build_uniform_data(&vp, [1.0, 1.0, 1.0]);
+        let data = build_uniform_data(&vp, Vec3::ZERO, 0.05, 0);
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
 
@@ -1075,19 +1191,85 @@ mod tests {
         assert_eq!(lines, vec![0, 1, 1, 2, 2, 0]);
     }
 
+    /// Regression: both the CPU-side `build_uniform_data` packer and the
+    /// CPU-side `pack_light` packer must match the WGSL struct layouts
+    /// that the fragment shader compiles against. Parsing the live
+    /// shader source with naga catches drift before it reaches a GPU
+    /// round-trip (see the similar test in `compute_cull.rs`).
     #[test]
-    fn uniform_data_encodes_view_proj_and_ambient() {
-        let vp = Mat4::IDENTITY;
-        let ambient = [0.5, 0.7, 0.9];
-        let data = build_uniform_data(&vp, ambient);
+    fn forward_wgsl_struct_strides_match_cpu_layout() {
+        let module = naga::front::wgsl::parse_str(SHADER_SOURCE)
+            .expect("forward shader should parse as WGSL");
 
-        // Read back the view-proj matrix (first 64 bytes = 16 floats).
-        let mut floats = Vec::new();
-        for chunk in data.chunks_exact(4) {
-            floats.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
+        let mut seen = std::collections::HashMap::new();
+        for (_handle, ty) in module.types.iter() {
+            if let naga::TypeInner::Struct { span, .. } = &ty.inner
+                && let Some(name) = &ty.name
+            {
+                seen.insert(name.clone(), *span);
+            }
         }
 
-        // Identity matrix columns.
+        let uniforms_span = seen
+            .get("Uniforms")
+            .copied()
+            .expect("forward shader should declare struct Uniforms");
+        assert_eq!(
+            uniforms_span as usize, UNIFORM_SIZE,
+            "forward.wgsl Uniforms stride ({uniforms_span}) must match UNIFORM_SIZE ({UNIFORM_SIZE})",
+        );
+
+        let light_span = seen
+            .get("GpuLight")
+            .copied()
+            .expect("forward shader should declare struct GpuLight");
+        assert_eq!(
+            light_span as usize,
+            crate::lighting::GPU_LIGHT_SIZE,
+            "forward.wgsl GpuLight stride ({light_span}) must match GPU_LIGHT_SIZE ({})",
+            crate::lighting::GPU_LIGHT_SIZE,
+        );
+    }
+
+    /// Ensure the wireframe shader's `Uniforms` struct stays in sync with
+    /// the forward shader's — they share a single uniform buffer binding.
+    #[test]
+    fn wireframe_wgsl_uniforms_match_forward_layout() {
+        let module = naga::front::wgsl::parse_str(WIREFRAME_SHADER_SOURCE)
+            .expect("wireframe shader should parse as WGSL");
+
+        let mut seen = std::collections::HashMap::new();
+        for (_handle, ty) in module.types.iter() {
+            if let naga::TypeInner::Struct { span, .. } = &ty.inner
+                && let Some(name) = &ty.name
+            {
+                seen.insert(name.clone(), *span);
+            }
+        }
+
+        let uniforms_span = seen
+            .get("Uniforms")
+            .copied()
+            .expect("wireframe shader should declare struct Uniforms");
+        assert_eq!(
+            uniforms_span as usize, UNIFORM_SIZE,
+            "wireframe.wgsl Uniforms stride ({uniforms_span}) must match UNIFORM_SIZE ({UNIFORM_SIZE})",
+        );
+    }
+
+    #[test]
+    fn uniform_data_encodes_view_proj_camera_and_lighting_fields() {
+        let vp = Mat4::IDENTITY;
+        let camera = Vec3::new(10.0, 20.0, 30.0);
+        let ambient_floor = 0.125_f32;
+        let light_count = 7_u32;
+        let data = build_uniform_data(&vp, camera, ambient_floor, light_count);
+
+        // view_proj: first 64 bytes = 16 f32 identity columns.
+        let mut floats = Vec::new();
+        for chunk in data.chunks_exact(4).take(16) {
+            floats.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
+        }
         let identity = Mat4::IDENTITY.to_cols_array();
         for i in 0..16 {
             let epsilon = 1e-6;
@@ -1099,10 +1281,25 @@ mod tests {
             );
         }
 
-        // Ambient light at floats[16..19].
-        let epsilon = 1e-6;
-        assert!((floats[16] - 0.5).abs() < epsilon);
-        assert!((floats[17] - 0.7).abs() < epsilon);
-        assert!((floats[18] - 0.9).abs() < epsilon);
+        // camera_position at bytes 64..76.
+        let cx = f32::from_ne_bytes(data[64..68].try_into().unwrap());
+        let cy = f32::from_ne_bytes(data[68..72].try_into().unwrap());
+        let cz = f32::from_ne_bytes(data[72..76].try_into().unwrap());
+        assert_eq!(cx, 10.0);
+        assert_eq!(cy, 20.0);
+        assert_eq!(cz, 30.0);
+
+        // ambient_floor at bytes 76..80.
+        let af = f32::from_ne_bytes(data[76..80].try_into().unwrap());
+        assert!((af - ambient_floor).abs() < 1e-6);
+
+        // light_count at bytes 80..84.
+        let lc = u32::from_ne_bytes(data[80..84].try_into().unwrap());
+        assert_eq!(lc, light_count);
+
+        // Trailing pad (84..96) zero.
+        for &b in &data[84..96] {
+            assert_eq!(b, 0);
+        }
     }
 }

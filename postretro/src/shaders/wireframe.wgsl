@@ -8,9 +8,16 @@
 // The leaf index is passed via `instance_index` (first_instance in the
 // draw call). See: context/lib/rendering_pipeline.md §7.1
 
+// Layout must match the `Uniforms` struct in forward.wgsl — the two
+// shaders share a single uniform buffer binding.
 struct Uniforms {
     view_proj: mat4x4<f32>,
-    ambient_light: vec3<f32>,
+    camera_position: vec3<f32>,
+    ambient_floor: f32,
+    light_count: u32,
+    _pad_a: u32,
+    _pad_b: u32,
+    _pad_c: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;

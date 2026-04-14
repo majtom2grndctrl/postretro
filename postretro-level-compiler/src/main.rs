@@ -11,6 +11,7 @@ pub mod pack;
 pub mod parse;
 pub mod partition;
 pub mod portals;
+pub mod sh_bake;
 pub mod visibility;
 
 use std::path::PathBuf;
@@ -77,11 +78,27 @@ fn main() -> anyhow::Result<()> {
     // Build the global BVH over all static geometry. One acceleration
     // structure feeds both the runtime GPU traversal (via the flattened
     // BvhSection) and Milestone 5's CPU baker (via the live bvh::Bvh).
-    let (_bvh, _primitives, bvh_section) =
+    let (bvh, bvh_primitives, bvh_section) =
         bvh_build::build_bvh(&geo_result).map_err(|e| anyhow::anyhow!("BVH build failed: {e}"))?;
     bvh_build::log_stats(&bvh_section);
 
     log::info!("[Compiler] BVH build complete.");
+
+    // Bake the SH irradiance volume. Same BVH, different traversal: the
+    // baker walks the tree on the CPU via the `bvh` crate, so the runtime
+    // compute shader and the compile-time probe bake share one acceleration
+    // structure.
+    let sh_inputs = sh_bake::BakeInputs {
+        bvh: &bvh,
+        primitives: &bvh_primitives,
+        geometry: &geo_result,
+        tree: &result.tree,
+        lights: &map_data.lights,
+    };
+    let sh_volume_section = sh_bake::bake_sh_volume(&sh_inputs, args.probe_spacing);
+    sh_bake::log_stats(&sh_volume_section);
+
+    log::info!("[Compiler] SH volume bake complete.");
 
     let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
 
@@ -95,6 +112,7 @@ fn main() -> anyhow::Result<()> {
             &vis_result.leaf_pvs_section,
             &bvh_section,
             &alpha_lights_section,
+            &sh_volume_section,
         )?;
     } else {
         log::info!("[Compiler] Writing portal graph mode (default).");
@@ -107,6 +125,7 @@ fn main() -> anyhow::Result<()> {
             &portals_section,
             &bvh_section,
             &alpha_lights_section,
+            &sh_volume_section,
         )?;
     }
 
@@ -124,6 +143,8 @@ struct Args {
     pvs: bool,
     /// Map dialect to parse (default: IdTech2).
     format: MapFormat,
+    /// SH probe grid spacing in meters.
+    probe_spacing: f32,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -138,6 +159,7 @@ where
     let mut output: Option<PathBuf> = None;
     let mut pvs = false;
     let mut format = DEFAULT_MAP_FORMAT;
+    let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -158,6 +180,18 @@ where
                     .parse::<MapFormat>()
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
+            "--probe-spacing" => {
+                let spacing_str = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--probe-spacing requires a value"))?;
+                let parsed: f32 = spacing_str.parse().map_err(|_| {
+                    anyhow::anyhow!("--probe-spacing must be a positive number of meters")
+                })?;
+                if !parsed.is_finite() || parsed <= 0.0 {
+                    anyhow::bail!("--probe-spacing must be a positive number of meters");
+                }
+                probe_spacing = parsed;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -169,7 +203,8 @@ where
 
     let input = input.ok_or_else(|| {
         anyhow::anyhow!(
-            "usage: prl-build <input.map> [-o <output.prl>] [--pvs] [--format <FORMAT>]"
+            "usage: prl-build <input.map> [-o <output.prl>] [--pvs] \
+             [--format <FORMAT>] [--probe-spacing <METERS>]"
         )
     })?;
 
@@ -180,6 +215,7 @@ where
         output,
         pvs,
         format,
+        probe_spacing,
     })
 }
 
@@ -195,6 +231,41 @@ mod tests {
         assert_eq!(parsed.output, PathBuf::from("input.prl"));
         assert!(!parsed.pvs);
         assert_eq!(parsed.format, MapFormat::IdTech2);
+        assert_eq!(parsed.probe_spacing, sh_bake::DEFAULT_PROBE_SPACING);
+    }
+
+    #[test]
+    fn parse_args_probe_spacing() {
+        let args = vec![
+            "input.map".to_string(),
+            "--probe-spacing".to_string(),
+            "0.5".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.probe_spacing, 0.5);
+    }
+
+    #[test]
+    fn parse_args_probe_spacing_rejects_non_positive() {
+        let args = vec![
+            "input.map".to_string(),
+            "--probe-spacing".to_string(),
+            "0".to_string(),
+        ];
+        assert!(parse_args_from(args.into_iter()).is_err());
+
+        let args = vec![
+            "input.map".to_string(),
+            "--probe-spacing".to_string(),
+            "-1".to_string(),
+        ];
+        assert!(parse_args_from(args.into_iter()).is_err());
+    }
+
+    #[test]
+    fn parse_args_probe_spacing_requires_value() {
+        let args = vec!["input.map".to_string(), "--probe-spacing".to_string()];
+        assert!(parse_args_from(args.into_iter()).is_err());
     }
 
     #[test]

@@ -12,6 +12,7 @@ use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
+use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::{
     SectionBlob, SectionId, read_container, read_section_data, write_prl,
 };
@@ -84,8 +85,9 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
     }
 }
 
-/// Write geometry, texture names, BSP nodes, BSP leaves, leaf PVS, BVH, and
-/// alpha lights sections to a .prl file (--pvs mode).
+/// Write geometry, texture names, BSP nodes, BSP leaves, leaf PVS, BVH,
+/// alpha lights, and SH volume sections to a .prl file (--pvs mode).
+#[allow(clippy::too_many_arguments)]
 pub fn pack_and_write_pvs(
     output: &Path,
     geo_result: &GeometryResult,
@@ -94,6 +96,7 @@ pub fn pack_and_write_pvs(
     leaf_pvs: &LeafPvsSection,
     bvh: &BvhSection,
     alpha_lights: &AlphaLightsSection,
+    sh_volume: &ShVolumeSection,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -102,6 +105,7 @@ pub fn pack_and_write_pvs(
     let leaf_pvs_bytes = leaf_pvs.to_bytes();
     let bvh_bytes = bvh.to_bytes();
     let alpha_lights_bytes = alpha_lights.to_bytes();
+    let sh_volume_bytes = sh_volume.to_bytes();
 
     let sections = vec![
         SectionBlob {
@@ -139,6 +143,11 @@ pub fn pack_and_write_pvs(
             version: 1,
             data: alpha_lights_bytes.clone(),
         },
+        SectionBlob {
+            section_id: SectionId::ShVolume as u32,
+            version: 1,
+            data: sh_volume_bytes.clone(),
+        },
     ];
 
     write_and_validate_sections(output, &sections)?;
@@ -158,14 +167,20 @@ pub fn pack_and_write_pvs(
         alpha_lights_bytes.len(),
         alpha_lights.lights.len()
     );
+    log::info!(
+        "[Compiler]   ShVolume: {} bytes ({} probes)",
+        sh_volume_bytes.len(),
+        sh_volume.probes.len()
+    );
 
     Ok(())
 }
 
-/// Write geometry, texture names, BSP nodes, BSP leaves, portals, BVH, and
-/// alpha lights sections to a .prl file (default mode).
+/// Write geometry, texture names, BSP nodes, BSP leaves, portals, BVH,
+/// alpha lights, and SH volume sections to a .prl file (default mode).
 ///
 /// Clears pvs_offset and pvs_size in leaf records since no PVS section is written.
+#[allow(clippy::too_many_arguments)]
 pub fn pack_and_write_portals(
     output: &Path,
     geo_result: &GeometryResult,
@@ -174,6 +189,7 @@ pub fn pack_and_write_portals(
     portals: &PortalsSection,
     bvh: &BvhSection,
     alpha_lights: &AlphaLightsSection,
+    sh_volume: &ShVolumeSection,
 ) -> anyhow::Result<()> {
     // Zero out PVS references in leaves since no LeafPvs section is written.
     let portal_leaves = BspLeavesSection {
@@ -198,6 +214,7 @@ pub fn pack_and_write_portals(
     let portals_bytes = portals.to_bytes();
     let bvh_bytes = bvh.to_bytes();
     let alpha_lights_bytes = alpha_lights.to_bytes();
+    let sh_volume_bytes = sh_volume.to_bytes();
 
     let sections = vec![
         SectionBlob {
@@ -235,6 +252,11 @@ pub fn pack_and_write_portals(
             version: 1,
             data: alpha_lights_bytes.clone(),
         },
+        SectionBlob {
+            section_id: SectionId::ShVolume as u32,
+            version: 1,
+            data: sh_volume_bytes.clone(),
+        },
     ];
 
     write_and_validate_sections(output, &sections)?;
@@ -253,6 +275,11 @@ pub fn pack_and_write_portals(
         "[Compiler]   AlphaLights: {} bytes ({} lights)",
         alpha_lights_bytes.len(),
         alpha_lights.lights.len()
+    );
+    log::info!(
+        "[Compiler]   ShVolume: {} bytes ({} probes)",
+        sh_volume_bytes.len(),
+        sh_volume.probes.len()
     );
 
     Ok(())
@@ -442,6 +469,18 @@ mod tests {
         AlphaLightsSection::default()
     }
 
+    fn empty_sh_volume() -> ShVolumeSection {
+        ShVolumeSection {
+            grid_origin: [0.0, 0.0, 0.0],
+            cell_size: [1.0, 1.0, 1.0],
+            grid_dimensions: [0, 0, 0],
+            probe_stride: postretro_level_format::sh_volume::PROBE_STRIDE,
+            probes: Vec::new(),
+            animation_descriptors: Vec::new(),
+            per_light_sh: Vec::new(),
+        }
+    }
+
     #[test]
     fn pack_write_pvs_produces_valid_prl_file() {
         let dir = std::env::temp_dir().join("postretro_test_pack");
@@ -463,6 +502,7 @@ mod tests {
             &leaf_pvs,
             &bvh,
             &alpha_lights,
+            &empty_sh_volume(),
         )
         .expect("pack_and_write_pvs should succeed");
 
@@ -471,7 +511,7 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 7);
+        assert_eq!(meta.header.section_count, 8);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -480,6 +520,7 @@ mod tests {
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
+        assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -514,6 +555,7 @@ mod tests {
             &portals,
             &bvh,
             &alpha_lights,
+            &empty_sh_volume(),
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -522,7 +564,7 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 7);
+        assert_eq!(meta.header.section_count, 8);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -531,6 +573,7 @@ mod tests {
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
+        assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -554,6 +597,7 @@ mod tests {
             &leaf_pvs,
             &bvh,
             &alpha_lights,
+            &empty_sh_volume(),
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -581,8 +625,17 @@ mod tests {
         let generated_portals = crate::portals::generate_portals(&result.tree);
         let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
 
-        let (_bvh, _prims, bvh_section) =
+        let (bvh, primitives, bvh_section) =
             crate::bvh_build::build_bvh(&geo_result).expect("bvh build should succeed");
+
+        let sh_inputs = crate::sh_bake::BakeInputs {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geo_result,
+            tree: &result.tree,
+            lights: &map_data.lights,
+        };
+        let sh_volume = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
 
         let dir = std::env::temp_dir().join("postretro_test_pipeline");
         let _ = std::fs::create_dir_all(&dir);
@@ -597,6 +650,7 @@ mod tests {
             &vis_result.leaf_pvs_section,
             &bvh_section,
             &alpha_lights,
+            &sh_volume,
         )
         .expect("full pipeline pvs pack should succeed");
 
@@ -604,12 +658,13 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 7);
+        assert_eq!(meta.header.section_count, 8);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
+        assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -633,8 +688,17 @@ mod tests {
         let generated_portals = crate::portals::generate_portals(&result.tree);
         let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
 
-        let (_bvh, _prims, bvh_section) =
+        let (bvh, primitives, bvh_section) =
             crate::bvh_build::build_bvh(&geo_result).expect("bvh build should succeed");
+
+        let sh_inputs = crate::sh_bake::BakeInputs {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geo_result,
+            tree: &result.tree,
+            lights: &map_data.lights,
+        };
+        let sh_volume = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
 
         let portals_section = encode_portals(&generated_portals);
 
@@ -651,6 +715,7 @@ mod tests {
             &portals_section,
             &bvh_section,
             &alpha_lights,
+            &sh_volume,
         )
         .expect("full pipeline portal pack should succeed");
 
@@ -658,16 +723,79 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 7);
+        assert_eq!(meta.header.section_count, 8);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
+        assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
 
         let _ = std::fs::remove_file(&output);
+    }
+
+    /// Every test map in `assets/maps/` must compile end-to-end and emit an
+    /// SH volume section. The bake uses a coarse spacing (4 m) to keep test
+    /// time bounded — the probe count is a design parameter, not what this
+    /// test is exercising.
+    #[test]
+    fn every_test_map_compiles_with_sh_section() {
+        let maps_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join("assets/maps");
+
+        let mut map_count = 0;
+        for entry in std::fs::read_dir(&maps_dir).expect("maps dir should exist") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("map") {
+                continue;
+            }
+            map_count += 1;
+            let map_data =
+                crate::parse::parse_map_file(&path, crate::map_format::MapFormat::IdTech2)
+                    .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
+            let result = crate::partition::partition(&map_data.brush_volumes)
+                .unwrap_or_else(|e| panic!("failed to partition {}: {e}", path.display()));
+            let exterior = std::collections::HashSet::new();
+            let geo_result =
+                crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+            let (bvh, primitives, _) = crate::bvh_build::build_bvh(&geo_result)
+                .unwrap_or_else(|e| panic!("bvh build failed on {}: {e}", path.display()));
+
+            let sh_inputs = crate::sh_bake::BakeInputs {
+                bvh: &bvh,
+                primitives: &primitives,
+                geometry: &geo_result,
+                tree: &result.tree,
+                lights: &map_data.lights,
+            };
+            let section = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
+
+            // Every real test map has geometry, so the grid must have at
+            // least 1 probe along each axis, and the section must round-trip.
+            let dims = section.grid_dimensions;
+            assert!(
+                dims[0] > 0 && dims[1] > 0 && dims[2] > 0,
+                "{} produced an empty SH grid",
+                path.display()
+            );
+            let bytes = section.to_bytes();
+            let restored =
+                postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&bytes)
+                    .unwrap_or_else(|e| {
+                        panic!("sh volume round-trip failed for {}: {e}", path.display())
+                    });
+            assert_eq!(section, restored);
+        }
+        assert!(
+            map_count > 0,
+            "no .map files found in {}",
+            maps_dir.display()
+        );
     }
 }

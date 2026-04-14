@@ -8,6 +8,7 @@ pub mod geometry;
 pub mod leaf_pvs;
 pub mod octahedral;
 pub mod portals;
+pub mod sh_volume;
 pub mod texture_names;
 pub mod visibility;
 
@@ -84,6 +85,10 @@ pub enum SectionId {
 
     /// Global BVH: flat node + leaf arrays. See `bvh::BvhSection`.
     Bvh = 19,
+
+    /// SH irradiance volume: regular-grid L2 probes plus optional per-animated
+    /// light monochrome layers. See `sh_volume::ShVolumeSection`.
+    ShVolume = 20,
 }
 
 impl SectionId {
@@ -97,6 +102,7 @@ impl SectionId {
             17 => Some(Self::Geometry),
             18 => Some(Self::AlphaLights),
             19 => Some(Self::Bvh),
+            20 => Some(Self::ShVolume),
             _ => None,
         }
     }

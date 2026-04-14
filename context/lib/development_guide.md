@@ -154,7 +154,7 @@ Split along natural boundaries:
 ### 2.4 Directory structure
 
 - **Subsystem directories** (`src/render/`, `src/audio/`, `src/input/`): use `mod.rs` or a barrel file for the public API. Internal modules are `pub(crate)` or private.
-- **Shaders directory** `src/shaders`: Keep all shaders in `.wsgl` files under `src/shaders`. Load them with `include_str!()`. Never embed shader source inline in Rust files.
+- **Shaders directory** `src/shaders`: Keep all shaders in `.wgsl` files under `src/shaders`. Load them with `include_str!()`. Never embed shader source inline in Rust files.
 - **Flat is fine for uniform directories** (all the same kind of thing — e.g., all entity types, all texture loaders). 20+ files OK.
 - **Mixed-concern directories**: introduce subdirectories when you can't tell at a glance which files relate to each other.
 

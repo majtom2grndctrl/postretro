@@ -1,6 +1,7 @@
 // postretro-level-compiler: level compiler entry point.
 // See: context/lib/build_pipeline.md §PRL
 
+pub mod chunk_grouping;
 pub mod geometry;
 pub mod geometry_utils;
 pub mod map_data;
@@ -60,7 +61,7 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("[Compiler] Visibility computation complete.");
 
-    let geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
+    let mut geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
     let empty_leaf_count = result
         .tree
         .leaves
@@ -72,6 +73,14 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("[Compiler] Geometry extraction complete.");
 
+    // Group faces by (cell, material bucket), reorder indices, build chunk table.
+    let (reordered_indices, cell_chunks) =
+        chunk_grouping::build_cell_chunks(&geo_result.geometry);
+    geo_result.geometry.indices = reordered_indices;
+    chunk_grouping::log_stats(&cell_chunks);
+
+    log::info!("[Compiler] Per-cell chunk grouping complete.");
+
     if args.pvs {
         log::info!("[Compiler] Writing precomputed PVS mode (--pvs).");
         pack::pack_and_write_pvs(
@@ -80,6 +89,7 @@ fn main() -> anyhow::Result<()> {
             &vis_result.nodes_section,
             &vis_result.leaves_section,
             &vis_result.leaf_pvs_section,
+            &cell_chunks,
         )?;
     } else {
         log::info!("[Compiler] Writing portal graph mode (default).");
@@ -90,6 +100,7 @@ fn main() -> anyhow::Result<()> {
             &vis_result.nodes_section,
             &vis_result.leaves_section,
             &portals_section,
+            &cell_chunks,
         )?;
     }
 

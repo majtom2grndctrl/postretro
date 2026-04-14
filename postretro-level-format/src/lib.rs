@@ -2,8 +2,10 @@
 // See: context/lib/build_pipeline.md §PRL
 
 pub mod bsp;
+pub mod cell_chunks;
 pub mod geometry;
 pub mod leaf_pvs;
+pub mod octahedral;
 pub mod portals;
 pub mod texture_names;
 pub mod visibility;
@@ -60,8 +62,7 @@ pub enum SectionId {
     /// (with texture_index). Supersedes Geometry (ID 1).
     GeometryV2 = 3,
 
-    // Reserved: LightInfluence=4, LightProbes=5,
-    // NavMesh=6, Audio=7, Zones=8, Spawns=9, Textures=10
+    // Reserved: 4–10
     /// Retired. Was never shipped in a stable format version.
     VisibilityConfidence = 11,
 
@@ -79,6 +80,13 @@ pub enum SectionId {
 
     /// Flat list of texture name strings, indexed by FaceMeta.texture_index.
     TextureNames = 16,
+
+    /// Extended geometry section: 28-byte vertices (position + UV + octahedral
+    /// normal + octahedral tangent with bitangent sign). Supersedes GeometryV2.
+    GeometryV3 = 17,
+
+    /// Per-cell draw chunk table with cell→chunk-range index.
+    CellChunks = 18,
 }
 
 impl SectionId {
@@ -93,6 +101,8 @@ impl SectionId {
             14 => Some(Self::LeafPvs),
             15 => Some(Self::Portals),
             16 => Some(Self::TextureNames),
+            17 => Some(Self::GeometryV3),
+            18 => Some(Self::CellChunks),
             _ => None,
         }
     }

@@ -32,7 +32,9 @@ impl Modifiers {
 /// itself (renderer, visibility stats), never by game logic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiagnosticAction {
-    /// Cycle the wireframe overlay (Off → Culled → All → Off).
+    /// Toggle the culling-delta wireframe overlay on/off. Shows all chunks
+    /// color-coded by cull status: green = rendered, red = frustum-culled,
+    /// cyan = portal-culled.
     ToggleWireframe,
     /// Dump the next frame's portal walk (visited leaves, rejected portals,
     /// reject reasons) to the log. One-shot per press.

@@ -1,4 +1,4 @@
-// PRL level loading: read .prl files, produce BSP tree + leaf-based engine data structures.
+// PRL level loading: read .prl files, produce BSP tree + cell-chunk engine data structures.
 // See: context/lib/build_pipeline.md §PRL
 
 use std::collections::HashSet;
@@ -6,7 +6,10 @@ use std::path::Path;
 
 use glam::Vec3;
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
-use postretro_level_format::geometry::{GeometrySection, GeometrySectionV2, NO_TEXTURE};
+use postretro_level_format::cell_chunks::CellChunksSection;
+use postretro_level_format::geometry::{
+    GeometrySection, GeometrySectionV2, GeometrySectionV3, NO_TEXTURE,
+};
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -14,7 +17,7 @@ use postretro_level_format::visibility::decompress_pvs;
 use postretro_level_format::{self as prl_format, SectionId};
 use thiserror::Error;
 
-use crate::geometry::{TextureSubRange, TexturedVertex};
+use crate::geometry::{CellChunkTable, CellRange, DrawChunk, WorldVertex};
 use crate::material::{self, Material};
 
 #[derive(Debug, Error)]
@@ -74,9 +77,6 @@ pub struct LeafData {
     /// Decompressed PVS: pvs[i] = leaf i is visible from this leaf.
     pub pvs: Vec<bool>,
     pub is_solid: bool,
-    /// Pre-computed texture sub-ranges for draw call grouping.
-    /// Each entry is a contiguous run of indices sharing the same texture within this leaf.
-    pub texture_sub_ranges: Vec<TextureSubRange>,
 }
 
 /// A portal connecting two adjacent BSP leaves, loaded from the Portals section.
@@ -88,10 +88,10 @@ pub struct PortalData {
     pub back_leaf: usize,
 }
 
-/// BSP tree + leaf-based level data loaded from a .prl file.
+/// BSP tree + cell-chunk level data loaded from a .prl file.
 #[derive(Debug)]
 pub struct LevelWorld {
-    pub vertices: Vec<TexturedVertex>,
+    pub vertices: Vec<WorldVertex>,
     pub indices: Vec<u32>,
     pub face_meta: Vec<FaceMeta>,
     pub leaves: Vec<LeafData>,
@@ -109,6 +109,9 @@ pub struct LevelWorld {
     pub has_portals: bool,
     /// Texture names from the TextureNames section, indexed by face texture_index.
     pub texture_names: Vec<String>,
+    /// Per-cell draw chunk table loaded from the CellChunks section.
+    /// `None` when loading legacy PRL files without a CellChunks section.
+    pub cell_chunk_table: Option<CellChunkTable>,
 }
 
 impl LevelWorld {
@@ -223,59 +226,6 @@ fn sort_indices_by_leaf_and_texture(indices: &mut Vec<u32>, face_meta: &mut Vec<
     *face_meta = new_face_meta;
 }
 
-/// Build per-leaf texture sub-ranges from sorted face_meta and leaf data.
-/// Assumes the index buffer is already sorted by (leaf_index, texture_index).
-fn build_leaf_texture_sub_ranges(leaves: &mut [LeafData], face_meta: &[FaceMeta]) {
-    for leaf in leaves.iter_mut() {
-        leaf.texture_sub_ranges.clear();
-
-        if leaf.face_count == 0 {
-            continue;
-        }
-
-        let start = leaf.face_start as usize;
-        let count = leaf.face_count as usize;
-
-        let mut current_tex: Option<u32> = None;
-        let mut range_start = 0u32;
-        let mut range_count = 0u32;
-
-        for face in face_meta.iter().skip(start).take(count) {
-            if face.index_count == 0 {
-                continue;
-            }
-
-            let tex = face.texture_index.unwrap_or(NO_TEXTURE_INDEX);
-
-            if current_tex == Some(tex) {
-                range_count += face.index_count;
-            } else {
-                if range_count > 0 {
-                    leaf.texture_sub_ranges.push(TextureSubRange {
-                        texture_index: current_tex
-                            .expect("range_count > 0 implies current_tex is set"),
-                        index_offset: range_start,
-                        index_count: range_count,
-                    });
-                }
-                current_tex = Some(tex);
-                range_start = face.index_offset;
-                range_count = face.index_count;
-            }
-        }
-
-        if range_count > 0 {
-            if let Some(tex) = current_tex {
-                leaf.texture_sub_ranges.push(TextureSubRange {
-                    texture_index: tex,
-                    index_offset: range_start,
-                    index_count: range_count,
-                });
-            }
-        }
-    }
-}
-
 /// Decode a PRL sentinel-encoded child reference.
 ///
 /// Positive values are node indices; negative values encode leaves as `(-1 - leaf_index)`.
@@ -298,13 +248,16 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 
     let meta = prl_format::read_container(&mut cursor)?;
 
-    // Try GeometryV2 first (has UVs + texture indices), fall back to legacy Geometry.
+    // Try GeometryV3 first (packed normals/tangents), then V2 (UVs + texture indices),
+    // then legacy V1. Each supersedes the prior.
+    let geom_v3_data =
+        prl_format::read_section_data(&mut cursor, &meta, SectionId::GeometryV3 as u32)?;
     let geom_v2_data =
         prl_format::read_section_data(&mut cursor, &meta, SectionId::GeometryV2 as u32)?;
     let geom_v1_data =
         prl_format::read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)?;
 
-    // TextureNames section (optional, only meaningful with GeometryV2).
+    // TextureNames section (optional, meaningful with GeometryV2 and V3).
     let texture_names_data =
         prl_format::read_section_data(&mut cursor, &meta, SectionId::TextureNames as u32)?;
     let texture_names_section = match texture_names_data {
@@ -312,85 +265,200 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
 
+    // CellChunks section (optional, present alongside GeometryV3).
+    let cell_chunks_data =
+        prl_format::read_section_data(&mut cursor, &meta, SectionId::CellChunks as u32)?;
+
     // Build vertices, indices, face_meta, and texture_names from whichever geometry section is present.
-    let (vertices, mut indices, mut face_meta, texture_names) = if let Some(v2_data) = geom_v2_data
-    {
-        let geom_v2 = GeometrySectionV2::from_bytes(&v2_data)?;
-        let tex_names: Vec<String> = texture_names_section.map(|s| s.names).unwrap_or_default();
-        let mut warned_prefixes = HashSet::new();
+    let (vertices, mut indices, mut face_meta, texture_names) =
+        if let Some(v3_data) = geom_v3_data {
+            let geom_v3 = GeometrySectionV3::from_bytes(&v3_data)?;
+            let tex_names: Vec<String> =
+                texture_names_section.map(|s| s.names).unwrap_or_default();
+            let mut warned_prefixes = HashSet::new();
 
-        let verts: Vec<TexturedVertex> = geom_v2
-            .vertices
-            .iter()
-            .map(|v| TexturedVertex {
-                position: [v[0], v[1], v[2]],
-                // Store raw texel-space UVs; normalized in main.rs after texture dimensions are known.
-                base_uv: [v[3], v[4]],
-                vertex_color: [1.0, 1.0, 1.0, 1.0],
-            })
-            .collect();
+            let verts: Vec<WorldVertex> = geom_v3
+                .vertices
+                .iter()
+                .map(|v| WorldVertex {
+                    position: v.position,
+                    // Store raw texel-space UVs; normalized in main.rs after texture dimensions are known.
+                    base_uv: v.uv,
+                    normal_oct: v.normal_oct,
+                    tangent_packed: v.tangent_packed,
+                })
+                .collect();
 
-        let fm: Vec<FaceMeta> = geom_v2
-            .faces
-            .iter()
-            .map(|f| {
-                let (tex_idx, tex_name) = if f.texture_index == NO_TEXTURE {
-                    (None, String::new())
-                } else {
-                    let name = tex_names
-                        .get(f.texture_index as usize)
-                        .cloned()
-                        .unwrap_or_default();
-                    (Some(f.texture_index), name)
-                };
-                let mat = material::derive_material(&tex_name, &mut warned_prefixes);
-                FaceMeta {
+            let fm: Vec<FaceMeta> = geom_v3
+                .faces
+                .iter()
+                .map(|f| {
+                    let (tex_idx, tex_name) = if f.texture_index == NO_TEXTURE {
+                        (None, String::new())
+                    } else {
+                        let name = tex_names
+                            .get(f.texture_index as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        (Some(f.texture_index), name)
+                    };
+                    let mat = material::derive_material(&tex_name, &mut warned_prefixes);
+                    FaceMeta {
+                        index_offset: f.index_offset,
+                        index_count: f.index_count,
+                        leaf_index: f.leaf_index,
+                        texture_index: tex_idx,
+                        texture_dimensions: (64, 64),
+                        texture_name: tex_name,
+                        material: mat,
+                    }
+                })
+                .collect();
+
+            log::info!(
+                "[PRL] GeometryV3: {} vertices, {} textures referenced",
+                verts.len(),
+                tex_names.len()
+            );
+
+            (verts, geom_v3.indices, fm, tex_names)
+        } else if let Some(v2_data) = geom_v2_data {
+            let geom_v2 = GeometrySectionV2::from_bytes(&v2_data)?;
+            let tex_names: Vec<String> =
+                texture_names_section.map(|s| s.names).unwrap_or_default();
+            let mut warned_prefixes = HashSet::new();
+
+            // V2 has no normal/tangent data; fill with +Z normal and +X tangent.
+            let default_normal = postretro_level_format::octahedral::encode(0.0, 0.0, 1.0);
+            let default_tangent_oct = postretro_level_format::octahedral::encode(1.0, 0.0, 0.0);
+            let default_tangent_packed = {
+                let v_15bit =
+                    (default_tangent_oct[1] as u32 * 32767 / 65535) as u16;
+                [default_tangent_oct[0], v_15bit | 0x8000] // positive bitangent sign
+            };
+
+            let verts: Vec<WorldVertex> = geom_v2
+                .vertices
+                .iter()
+                .map(|v| WorldVertex {
+                    position: [v[0], v[1], v[2]],
+                    base_uv: [v[3], v[4]],
+                    normal_oct: default_normal,
+                    tangent_packed: default_tangent_packed,
+                })
+                .collect();
+
+            let fm: Vec<FaceMeta> = geom_v2
+                .faces
+                .iter()
+                .map(|f| {
+                    let (tex_idx, tex_name) = if f.texture_index == NO_TEXTURE {
+                        (None, String::new())
+                    } else {
+                        let name = tex_names
+                            .get(f.texture_index as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        (Some(f.texture_index), name)
+                    };
+                    let mat = material::derive_material(&tex_name, &mut warned_prefixes);
+                    FaceMeta {
+                        index_offset: f.index_offset,
+                        index_count: f.index_count,
+                        leaf_index: f.leaf_index,
+                        texture_index: tex_idx,
+                        texture_dimensions: (64, 64),
+                        texture_name: tex_name,
+                        material: mat,
+                    }
+                })
+                .collect();
+
+            log::info!("[PRL] GeometryV2: {} textures referenced", tex_names.len());
+
+            (verts, geom_v2.indices, fm, tex_names)
+        } else if let Some(v1_data) = geom_v1_data {
+            let geom = GeometrySection::from_bytes(&v1_data)?;
+
+            let default_normal = postretro_level_format::octahedral::encode(0.0, 0.0, 1.0);
+            let default_tangent_oct = postretro_level_format::octahedral::encode(1.0, 0.0, 0.0);
+            let default_tangent_packed = {
+                let v_15bit =
+                    (default_tangent_oct[1] as u32 * 32767 / 65535) as u16;
+                [default_tangent_oct[0], v_15bit | 0x8000]
+            };
+
+            let verts: Vec<WorldVertex> = geom
+                .vertices
+                .iter()
+                .map(|pos| WorldVertex {
+                    position: *pos,
+                    base_uv: [0.0, 0.0],
+                    normal_oct: default_normal,
+                    tangent_packed: default_tangent_packed,
+                })
+                .collect();
+
+            let fm: Vec<FaceMeta> = geom
+                .faces
+                .iter()
+                .map(|f| FaceMeta {
                     index_offset: f.index_offset,
                     index_count: f.index_count,
                     leaf_index: f.leaf_index,
-                    texture_index: tex_idx,
-                    texture_dimensions: (64, 64), // Updated after texture loading
-                    texture_name: tex_name,
-                    material: mat,
-                }
+                    texture_index: None,
+                    texture_dimensions: (64, 64),
+                    texture_name: String::new(),
+                    material: Material::Default,
+                })
+                .collect();
+
+            log::info!("[PRL] Legacy Geometry section (no texture data)");
+
+            (verts, geom.indices, fm, Vec::new())
+        } else {
+            return Err(PrlLoadError::NoGeometry);
+        };
+
+    // Parse CellChunks section into engine types.
+    let cell_chunk_table = match cell_chunks_data {
+        Some(data) => {
+            let section = CellChunksSection::from_bytes(&data)?;
+            let cell_ranges = section
+                .cell_ranges
+                .iter()
+                .map(|cr| CellRange {
+                    cell_id: cr.cell_id,
+                    chunk_start: cr.chunk_start,
+                    chunk_count: cr.chunk_count,
+                })
+                .collect();
+            let chunks = section
+                .chunks
+                .iter()
+                .map(|c| DrawChunk {
+                    cell_id: c.cell_id,
+                    aabb_min: c.aabb_min,
+                    aabb_max: c.aabb_max,
+                    index_offset: c.index_offset,
+                    index_count: c.index_count,
+                    material_bucket_id: c.material_bucket_id,
+                })
+                .collect();
+            log::info!(
+                "[PRL] CellChunks: {} cells, {} chunks",
+                section.cell_ranges.len(),
+                section.chunks.len()
+            );
+            Some(CellChunkTable {
+                cell_ranges,
+                chunks,
             })
-            .collect();
-
-        log::info!("[PRL] GeometryV2: {} textures referenced", tex_names.len());
-
-        (verts, geom_v2.indices, fm, tex_names)
-    } else if let Some(v1_data) = geom_v1_data {
-        let geom = GeometrySection::from_bytes(&v1_data)?;
-
-        let verts: Vec<TexturedVertex> = geom
-            .vertices
-            .iter()
-            .map(|pos| TexturedVertex {
-                position: *pos,
-                base_uv: [0.0, 0.0],
-                vertex_color: [1.0, 1.0, 1.0, 1.0],
-            })
-            .collect();
-
-        let fm: Vec<FaceMeta> = geom
-            .faces
-            .iter()
-            .map(|f| FaceMeta {
-                index_offset: f.index_offset,
-                index_count: f.index_count,
-                leaf_index: f.leaf_index,
-                texture_index: None,
-                texture_dimensions: (64, 64),
-                texture_name: String::new(),
-                material: Material::Default,
-            })
-            .collect();
-
-        log::info!("[PRL] Legacy Geometry section (no texture data)");
-
-        (verts, geom.indices, fm, Vec::new())
-    } else {
-        return Err(PrlLoadError::NoGeometry);
+        }
+        None => {
+            log::info!("[PRL] No CellChunks section — using legacy leaf-based draw path");
+            None
+        }
     };
 
     // BSP nodes section (optional — absent if tree is a single leaf).
@@ -440,7 +508,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     };
 
     // Build runtime leaves from the leaves section + PVS data.
-    let mut leaves: Vec<LeafData> = match &leaves_section {
+    let leaves: Vec<LeafData> = match &leaves_section {
         Some(leaf_sec) => {
             let leaf_count = leaf_sec.leaves.len();
             let pvs_byte_count = leaf_count.div_ceil(8);
@@ -487,7 +555,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                         face_count: lr.face_count,
                         pvs,
                         is_solid: lr.is_solid != 0,
-                        texture_sub_ranges: Vec::new(),
                     }
                 })
                 .collect()
@@ -509,7 +576,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                 face_count: face_meta.len() as u32,
                 pvs: vec![true],
                 is_solid: false,
-                texture_sub_ranges: Vec::new(),
             }]
         }
     };
@@ -571,24 +637,26 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         (Vec::new(), vec![Vec::new(); leaves.len()])
     };
 
-    // Sort index buffer by (leaf_index, texture_index) for draw call batching.
-    sort_indices_by_leaf_and_texture(&mut indices, &mut face_meta);
+    // When CellChunks are present, the index buffer is already organized by
+    // (cell, material_bucket). The old sort-by-(leaf, texture) path is only
+    // needed when falling back to legacy geometry without CellChunks.
+    if cell_chunk_table.is_none() {
+        sort_indices_by_leaf_and_texture(&mut indices, &mut face_meta);
+    }
 
-    // Rebuild leaf face_start/face_count after sorting (faces are already leaf-ordered
-    // from the compiler, and sort is stable within each leaf, so ranges stay valid).
-    // Build per-leaf texture sub-ranges for efficient draw calls.
-    build_leaf_texture_sub_ranges(&mut leaves, &face_meta);
-
-    let total_sub_ranges: usize = leaves.iter().map(|l| l.texture_sub_ranges.len()).sum();
+    let chunks_summary = match &cell_chunk_table {
+        Some(t) => format!("{} cells, {} chunks", t.cell_ranges.len(), t.chunks.len()),
+        None => "none (legacy)".to_string(),
+    };
     log::info!(
-        "[PRL] Loaded: {} vertices, {} indices ({} triangles), {} faces, {} nodes, {} leaves, {} sub-ranges, pvs={}, portals={}, textures={}",
+        "[PRL] Loaded: {} vertices, {} indices ({} triangles), {} faces, {} nodes, {} leaves, cell_chunks=[{}], pvs={}, portals={}, textures={}",
         vertices.len(),
         indices.len(),
         indices.len() / 3,
         face_meta.len(),
         nodes.len(),
         leaves.len(),
-        total_sub_ranges,
+        chunks_summary,
         has_pvs,
         portals.len(),
         texture_names.len(),
@@ -606,6 +674,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         leaf_portals,
         has_portals,
         texture_names,
+        cell_chunk_table,
     })
 }
 
@@ -650,7 +719,6 @@ mod tests {
             face_count,
             pvs,
             is_solid,
-            texture_sub_ranges: Vec::new(),
         }
     }
 
@@ -691,6 +759,7 @@ mod tests {
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
+            cell_chunk_table: None,
         }
     }
 
@@ -734,6 +803,7 @@ mod tests {
             leaf_portals: vec![vec![]],
             has_portals: false,
             texture_names: vec![],
+            cell_chunk_table: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -793,6 +863,7 @@ mod tests {
             leaf_portals: vec![vec![], vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
+            cell_chunk_table: None,
         };
 
         // X < 0 -> leaf 0
@@ -838,6 +909,7 @@ mod tests {
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
+            cell_chunk_table: None,
         };
 
         let spawn = world.spawn_position();
@@ -867,6 +939,7 @@ mod tests {
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
+            cell_chunk_table: None,
         };
 
         let indices = face_leaf_indices(&world);
@@ -1299,14 +1372,6 @@ mod tests {
                 .iter()
                 .any(|f| f.texture_name == "concrete/wall_03")
         );
-
-        // Texture sub-ranges should be built.
-        let total_sub_ranges: usize = world
-            .leaves
-            .iter()
-            .map(|l| l.texture_sub_ranges.len())
-            .sum();
-        assert!(total_sub_ranges > 0, "should have texture sub-ranges");
 
         std::fs::remove_file(&tmp).ok();
     }

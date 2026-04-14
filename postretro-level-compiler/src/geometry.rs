@@ -1,24 +1,29 @@
-// Geometry extraction: fan-triangulate faces, compute UVs, build vertex/index buffers.
-// See: context/lib/build_pipeline.md §PRL
+// Geometry extraction: fan-triangulate faces, compute UVs and tangent-space basis,
+// build vertex/index buffers in GeometryV3 format.
+// See: context/lib/build_pipeline.md §PRL, rendering_pipeline.md §6
 
 use std::collections::HashSet;
 
 use glam::DVec3;
-use postretro_level_format::geometry::{FaceMetaV2, GeometrySectionV2};
+use postretro_level_format::geometry::{FaceMetaV3, GeometrySectionV3, VertexV3};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use crate::map_data::{Face, TextureProjection};
 use crate::map_format::MapFormat;
 use crate::partition::BspTree;
 
-/// Result of geometry extraction: V2 geometry section plus texture name table.
+/// Result of geometry extraction: V3 geometry section plus texture name table.
 pub struct GeometryResult {
-    pub geometry: GeometrySectionV2,
+    pub geometry: GeometrySectionV3,
     pub texture_names: TextureNamesSection,
 }
 
-/// Fan-triangulate faces, compute texel-space UVs, and build a
-/// `GeometrySectionV2` with faces ordered by empty BSP leaf.
+/// Fan-triangulate faces, compute texel-space UVs and tangent-space basis,
+/// and build a `GeometrySectionV3` with faces ordered by empty BSP leaf.
+///
+/// Per-vertex normals come from the face plane. Tangents come from the UV
+/// s-axis (texture U direction) projected onto the face plane and
+/// renormalized. Bitangent sign is `sign(cross(normal, tangent) . t_axis)`.
 ///
 /// Coordinates are expected to be in engine space (Y-up) -- the Quake-to-engine
 /// transform is applied earlier, at the parse boundary in `parse.rs`. UV
@@ -26,13 +31,12 @@ pub struct GeometryResult {
 /// positions for texture projection.
 ///
 /// Only empty leaves contribute geometry. Solid leaves are skipped. The
-/// `leaf_index` field in `FaceMetaV2` stores the sequential index among empty
-/// leaves (not the raw leaf index in the BSP tree).
+/// `leaf_index` field in `FaceMetaV3` stores the raw BSP leaf index — the
+/// same index the engine's `find_leaf()` returns at runtime — so
+/// `chunks_for_cell(find_leaf(pos))` finds the correct draw chunks.
 ///
-/// Leaves listed in `exterior_leaves` contribute no faces but still advance
-/// the sequential empty-leaf counter, so `leaf_index` values remain aligned
-/// with the encoded `BspLeavesSection` produced by the visibility pass. Pass
-/// `&HashSet::new()` to disable exterior culling.
+/// Leaves listed in `exterior_leaves` contribute no faces but are still
+/// iterated. Pass `&HashSet::new()` to disable exterior culling.
 pub fn extract_geometry(
     faces: &[Face],
     tree: &BspTree,
@@ -40,7 +44,7 @@ pub fn extract_geometry(
 ) -> GeometryResult {
     if faces.is_empty() {
         return GeometryResult {
-            geometry: GeometrySectionV2 {
+            geometry: GeometrySectionV3 {
                 vertices: Vec::new(),
                 indices: Vec::new(),
                 faces: Vec::new(),
@@ -63,29 +67,41 @@ pub fn extract_geometry(
         texture_indices.push(idx as u32);
     }
 
-    // Build a face ordering sorted by empty-leaf index. Exterior leaves
-    // contribute no faces but still consume a sequential index slot so the
-    // `leaf_index` in FaceMetaV2 stays aligned with the BspLeavesSection.
+    // Build a face ordering sorted by BSP leaf index. Exterior leaves
+    // contribute no faces but are iterated for ordering consistency.
     let ordered_faces = build_leaf_ordered_faces(tree, exterior_leaves);
 
     let inverse_scale: f64 = 1.0 / MapFormat::IdTech2.units_to_meters();
 
-    let mut vertices: Vec<[f32; 5]> = Vec::new();
+    let mut vertices: Vec<VertexV3> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
-    let mut face_metas: Vec<FaceMetaV2> = Vec::new();
+    let mut face_metas: Vec<FaceMetaV3> = Vec::new();
 
-    for &(face_idx, leaf_seq_idx) in &ordered_faces {
+    for &(face_idx, bsp_leaf_idx) in &ordered_faces {
         let face = &faces[face_idx];
 
         let base_vertex = vertices.len() as u32;
 
-        // Emit vertices with position (engine space) + UV (texel space).
-        // This is the **output precision boundary** for geometry: all math is
-        // computed in f64, and we narrow to f32 only at the PRL vertex buffer write.
+        // Normal from face plane (engine space, already unit-length).
+        let normal_f32 = [face.normal.x as f32, face.normal.y as f32, face.normal.z as f32];
+
+        // Compute tangent and bitangent sign from texture projection axes.
+        let (tangent_f32, bitangent_sign) = compute_tangent_basis(face);
+
+        // Emit vertices with position (engine space), UV (texel space),
+        // and packed normal/tangent. This is the **output precision boundary**
+        // for geometry: positional math is computed in f64, then narrowed to
+        // f32 at the PRL vertex buffer write.
         for &v in &face.vertices {
             let quake_pos = engine_to_quake(v) * inverse_scale;
             let (u, v_coord) = compute_texel_uv(quake_pos, face);
-            vertices.push([v.x as f32, v.y as f32, v.z as f32, u as f32, v_coord as f32]);
+            vertices.push(VertexV3::new(
+                [v.x as f32, v.y as f32, v.z as f32],
+                [u as f32, v_coord as f32],
+                normal_f32,
+                tangent_f32,
+                bitangent_sign,
+            ));
         }
 
         // Fan-triangulate: (0, 1, 2), (0, 2, 3), ..., (0, n-2, n-1)
@@ -98,16 +114,16 @@ pub fn extract_geometry(
         }
         let index_count = (indices.len() as u32) - index_offset;
 
-        face_metas.push(FaceMetaV2 {
+        face_metas.push(FaceMetaV3 {
             index_offset,
             index_count,
-            leaf_index: leaf_seq_idx as u32,
+            leaf_index: bsp_leaf_idx as u32,
             texture_index: texture_indices[face_idx],
         });
     }
 
     GeometryResult {
-        geometry: GeometrySectionV2 {
+        geometry: GeometrySectionV3 {
             vertices,
             indices,
             faces: face_metas,
@@ -131,6 +147,108 @@ fn engine_to_quake(v: DVec3) -> DVec3 {
 /// Same transform as positions (direction vector, no scale).
 fn engine_normal_to_quake(n: DVec3) -> DVec3 {
     engine_to_quake(n)
+}
+
+/// Convert a Quake-space direction vector to engine space (Y-up).
+///
+/// Inverse of `engine_to_quake`:
+///   quake  = (qx, qy, qz)  → engine = (-qy, qz, -qx)
+fn quake_to_engine_dir(v: DVec3) -> DVec3 {
+    DVec3::new(-v.y, v.z, -v.x)
+}
+
+/// Compute the tangent vector and bitangent sign for a face from its texture
+/// projection. Tangent = UV s-axis projected onto the face plane, renormalized.
+/// Bitangent sign = sign of `cross(normal, tangent) . t_axis`.
+///
+/// Returns `(tangent_f32, bitangent_sign_positive)`.
+fn compute_tangent_basis(face: &Face) -> ([f32; 3], bool) {
+    let normal = face.normal;
+
+    // Get the UV s-axis and t-axis in engine space.
+    let (s_axis, t_axis) = uv_axes_engine_space(face);
+
+    // Project s-axis onto face plane: tangent = s - (s . n) * n, then normalize.
+    let tangent_raw = s_axis - normal * s_axis.dot(normal);
+    let tangent_len = tangent_raw.length();
+
+    let tangent = if tangent_len > 1e-8 {
+        tangent_raw / tangent_len
+    } else {
+        // Degenerate case: s-axis parallel to normal. Pick an arbitrary
+        // perpendicular direction.
+        let arbitrary = if normal.x.abs() < 0.9 {
+            DVec3::X
+        } else {
+            DVec3::Y
+        };
+        normal.cross(arbitrary).normalize()
+    };
+
+    // Bitangent sign: determines handedness of the tangent-space basis.
+    // bitangent = cross(normal, tangent) * sign
+    // We want the bitangent to align with the t-axis direction.
+    let computed_bitangent = normal.cross(tangent);
+    let bitangent_sign = computed_bitangent.dot(t_axis) >= 0.0;
+
+    let tangent_f32 = [tangent.x as f32, tangent.y as f32, tangent.z as f32];
+    (tangent_f32, bitangent_sign)
+}
+
+/// Compute the UV s-axis (texture U direction) and t-axis (texture V direction)
+/// in engine space for a given face's texture projection.
+fn uv_axes_engine_space(face: &Face) -> (DVec3, DVec3) {
+    match &face.tex_projection {
+        TextureProjection::Valve {
+            u_axis,
+            v_axis,
+            ..
+        } => {
+            // Valve 220: explicit axes in Quake space, convert to engine space.
+            (quake_to_engine_dir(*u_axis), quake_to_engine_dir(*v_axis))
+        }
+        TextureProjection::Standard {
+            angle,
+            ..
+        } => {
+            // Standard: axes derived from face normal (Quake space), then rotated.
+            let quake_normal = engine_normal_to_quake(face.normal);
+            let (s_quake, t_quake) = standard_uv_axes(quake_normal, *angle);
+            (quake_to_engine_dir(s_quake), quake_to_engine_dir(t_quake))
+        }
+    }
+}
+
+/// Compute the Standard-projection UV axes in Quake space before scale/offset.
+///
+/// Mirrors the axis selection in `standard_texel_uv` but returns direction
+/// vectors instead of scalar projections, incorporating the texture rotation.
+fn standard_uv_axes(quake_normal: DVec3, angle: f64) -> (DVec3, DVec3) {
+    let du = quake_normal.z.abs();
+    let dr = quake_normal.y.abs();
+    let df = quake_normal.x.abs();
+
+    // Base axes from closest axis to face normal (same as standard_texel_uv).
+    let (base_s, base_t) = if du >= dr && du >= df {
+        // Most upward/downward: XY plane → s = +X, t = -Y
+        (DVec3::X, DVec3::NEG_Y)
+    } else if dr >= du && dr >= df {
+        // Most left/right: XZ plane → s = +X, t = -Z
+        (DVec3::X, DVec3::NEG_Z)
+    } else {
+        // Most forward/backward: YZ plane → s = +Y, t = -Z
+        (DVec3::Y, DVec3::NEG_Z)
+    };
+
+    // Apply texture rotation
+    let rot_rad = angle.to_radians();
+    let cos_r = rot_rad.cos();
+    let sin_r = rot_rad.sin();
+
+    let s = base_s * cos_r - base_t * sin_r;
+    let t = base_s * sin_r + base_t * cos_r;
+
+    (s, t)
 }
 
 /// Compute un-normalized texel-space UV for a vertex in Quake space.
@@ -231,19 +349,14 @@ fn valve_texel_uv(
     (u, v)
 }
 
-/// Build a list of (face_index, empty_leaf_sequential_index) pairs ordered by
-/// sequential empty-leaf index.
+/// Build a list of (face_index, bsp_leaf_index) pairs ordered by BSP leaf.
 ///
-/// Iterates BSP leaves in order, skipping solid leaves. Each empty leaf gets a
-/// sequential index (0, 1, 2, ...) used as the `leaf_index` in face metadata.
+/// Iterates BSP leaves in order, skipping solid leaves. Each empty leaf's
+/// raw BSP index is used as the `leaf_index` in face metadata, matching
+/// the index the engine's `find_leaf()` returns at runtime.
 ///
-/// Leaves in `exterior_leaves` contribute no faces, but the sequential counter
-/// still advances through them. This keeps the sequential index a stable
-/// function of the BSP leaf array — interior leaves downstream of an exterior
-/// leaf land in the same sequential slot they would occupy without exterior
-/// culling — so emitting `face_count = 0` in `BspLeavesSection` for the same
-/// exterior set (see `visibility::encode_leaves_and_pvs`) keeps face ranges
-/// and geometry storage in lockstep.
+/// Leaves in `exterior_leaves` contribute no faces but are still iterated
+/// so the output ordering follows the full BSP leaf array.
 fn build_leaf_ordered_faces(
     tree: &BspTree,
     exterior_leaves: &HashSet<usize>,
@@ -257,17 +370,15 @@ fn build_leaf_ordered_faces(
         .sum();
     let mut ordered = Vec::with_capacity(capacity);
 
-    let mut empty_leaf_idx = 0usize;
     for (bsp_leaf_idx, leaf) in tree.leaves.iter().enumerate() {
         if leaf.is_solid {
             continue;
         }
         if !exterior_leaves.contains(&bsp_leaf_idx) {
             for &face_idx in &leaf.face_indices {
-                ordered.push((face_idx, empty_leaf_idx));
+                ordered.push((face_idx, bsp_leaf_idx));
             }
         }
-        empty_leaf_idx += 1;
     }
 
     ordered
@@ -277,7 +388,7 @@ fn build_leaf_ordered_faces(
 pub fn log_stats(result: &GeometryResult, empty_leaf_count: usize) {
     let section = &result.geometry;
     let triangle_count = section.indices.len() / 3;
-    log::info!("[Compiler] Vertices: {}", section.vertices.len());
+    log::info!("[Compiler] Vertices: {} (V3, 28 bytes each)", section.vertices.len());
     log::info!("[Compiler] Indices: {}", section.indices.len());
     log::info!("[Compiler] Triangles: {triangle_count}");
     log::info!("[Compiler] Faces: {}", section.faces.len());
@@ -292,7 +403,7 @@ pub fn log_stats(result: &GeometryResult, empty_leaf_count: usize) {
 mod tests {
     use super::*;
     use crate::partition::{Aabb, BspLeaf};
-    use postretro_level_format::geometry::NO_TEXTURE;
+    use postretro_level_format::geometry::{GeometrySectionV3, NO_TEXTURE};
 
     /// Shared empty exterior set for tests that don't exercise exterior
     /// culling — matches the no-op pass-through shape used by upstream
@@ -537,15 +648,15 @@ mod tests {
         let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
-        assert_eq!(section.vertices[0][0], -2.0);
-        assert_eq!(section.vertices[0][1], 3.0);
-        assert_eq!(section.vertices[0][2], -1.0);
-        assert_eq!(section.vertices[1][0], -5.0);
-        assert_eq!(section.vertices[1][1], 6.0);
-        assert_eq!(section.vertices[1][2], -4.0);
-        assert_eq!(section.vertices[2][0], -8.0);
-        assert_eq!(section.vertices[2][1], 9.0);
-        assert_eq!(section.vertices[2][2], -7.0);
+        assert_eq!(section.vertices[0].position[0], -2.0);
+        assert_eq!(section.vertices[0].position[1], 3.0);
+        assert_eq!(section.vertices[0].position[2], -1.0);
+        assert_eq!(section.vertices[1].position[0], -5.0);
+        assert_eq!(section.vertices[1].position[1], 6.0);
+        assert_eq!(section.vertices[1].position[2], -4.0);
+        assert_eq!(section.vertices[2].position[0], -8.0);
+        assert_eq!(section.vertices[2].position[1], 9.0);
+        assert_eq!(section.vertices[2].position[2], -7.0);
     }
 
     // -- Leaf ordering --
@@ -571,19 +682,51 @@ mod tests {
     fn solid_leaves_skipped_in_geometry() {
         let faces = vec![triangle_face(), quad_face(), pentagon_face()];
         // Leaf 0: solid (face 0 -- skipped)
-        // Leaf 1: empty (faces 1, 2 -- included as empty leaf 0)
+        // Leaf 1: empty (faces 1, 2 -- raw BSP index 1)
         let tree = make_tree_with_empty_leaves(vec![
-            (vec![0], true),     // solid leaf -- skipped
-            (vec![1, 2], false), // empty leaf 0
+            (vec![0], true),     // BSP leaf 0: solid -- skipped
+            (vec![1, 2], false), // BSP leaf 1: empty
         ]);
 
         let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
-        // Only faces from the empty leaf should appear
+        // Only faces from the empty leaf should appear, with raw BSP index
         assert_eq!(section.faces.len(), 2);
-        assert_eq!(section.faces[0].leaf_index, 0);
-        assert_eq!(section.faces[1].leaf_index, 0);
+        assert_eq!(section.faces[0].leaf_index, 1);
+        assert_eq!(section.faces[1].leaf_index, 1);
+    }
+
+    #[test]
+    fn leaf_index_is_raw_bsp_index_not_sequential() {
+        // BSP tree: solid, empty, solid, empty, empty
+        // Raw BSP indices:  0(solid), 1(empty), 2(solid), 3(empty), 4(empty)
+        // Sequential empty: -, 0, -, 1, 2
+        //
+        // The engine's find_leaf() returns raw BSP indices (1, 3, 4).
+        // leaf_index in FaceMetaV3 must match these so chunks_for_cell()
+        // can find the right chunks at runtime.
+        let faces = vec![
+            triangle_face(),  // face 0 -> BSP leaf 1
+            quad_face(),      // face 1 -> BSP leaf 3
+            pentagon_face(),  // face 2 -> BSP leaf 4
+        ];
+        let tree = make_tree_with_empty_leaves(vec![
+            (vec![], true),   // BSP leaf 0: solid
+            (vec![0], false), // BSP leaf 1: empty (face 0)
+            (vec![], true),   // BSP leaf 2: solid
+            (vec![1], false), // BSP leaf 3: empty (face 1)
+            (vec![2], false), // BSP leaf 4: empty (face 2)
+        ]);
+
+        let result = extract_geometry(&faces, &tree, &no_exterior());
+        let section = &result.geometry;
+
+        assert_eq!(section.faces.len(), 3);
+        // Must be raw BSP leaf indices, not sequential (0, 1, 2)
+        assert_eq!(section.faces[0].leaf_index, 1, "should be raw BSP index 1, not sequential 0");
+        assert_eq!(section.faces[1].leaf_index, 3, "should be raw BSP index 3, not sequential 1");
+        assert_eq!(section.faces[2].leaf_index, 4, "should be raw BSP index 4, not sequential 2");
     }
 
     #[test]
@@ -658,7 +801,7 @@ mod tests {
         }
     }
 
-    // -- GeometrySectionV2 round-trip --
+    // -- GeometrySectionV3 round-trip --
 
     #[test]
     fn geometry_section_round_trip() {
@@ -668,7 +811,7 @@ mod tests {
         let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
         let bytes = section.to_bytes();
-        let restored = GeometrySectionV2::from_bytes(&bytes).unwrap();
+        let restored = GeometrySectionV3::from_bytes(&bytes).unwrap();
 
         assert_eq!(*section, restored);
     }
@@ -726,10 +869,10 @@ mod tests {
         let result = extract_geometry(&faces, &tree, &no_exterior());
         let section = &result.geometry;
 
-        // Every vertex should have 5 floats (x, y, z, u, v)
+        // Every vertex should have finite UVs
         for vert in &section.vertices {
-            assert!(vert[3].is_finite(), "u should be finite");
-            assert!(vert[4].is_finite(), "v should be finite");
+            assert!(vert.uv[0].is_finite(), "u should be finite");
+            assert!(vert.uv[1].is_finite(), "v should be finite");
         }
     }
 
@@ -767,7 +910,7 @@ mod tests {
         let has_nonzero = section
             .vertices
             .iter()
-            .any(|v| v[3].abs() > 0.01 || v[4].abs() > 0.01);
+            .any(|v| v.uv[0].abs() > 0.01 || v.uv[1].abs() > 0.01);
         assert!(has_nonzero, "Valve projection should produce non-zero UVs");
     }
 
@@ -803,14 +946,14 @@ mod tests {
         // The vertex at origin should have UVs equal to the offsets (32, 16)
         let v0 = &section.vertices[0];
         assert!(
-            (v0[3] - 32.0).abs() < 0.01,
+            (v0.uv[0] - 32.0).abs() < 0.01,
             "u at origin should be offset (32.0), got {}",
-            v0[3]
+            v0.uv[0]
         );
         assert!(
-            (v0[4] - 16.0).abs() < 0.01,
+            (v0.uv[1] - 16.0).abs() < 0.01,
             "v at origin should be offset (16.0), got {}",
-            v0[4]
+            v0.uv[1]
         );
     }
 
@@ -828,6 +971,171 @@ mod tests {
             (recovered - original).length() < 1e-5,
             "round trip failed: {original} -> {engine} -> {recovered}"
         );
+    }
+
+    // -- Tangent-space basis tests --
+
+    #[test]
+    fn every_vertex_has_orthonormal_tangent_basis() {
+        // A Z-facing face with Standard projection should produce
+        // a well-formed tangent basis.
+        let faces = vec![quad_face()];
+        let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
+
+        let result = extract_geometry(&faces, &tree, &no_exterior());
+        let section = &result.geometry;
+
+        for vert in &section.vertices {
+            let n = vert.decode_normal();
+            let t = vert.decode_tangent();
+
+            // Normal is unit length
+            let n_len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!(
+                (n_len - 1.0).abs() < 0.01,
+                "normal not unit length: {n_len}"
+            );
+
+            // Tangent is unit length
+            let t_len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+            assert!(
+                (t_len - 1.0).abs() < 0.01,
+                "tangent not unit length: {t_len}"
+            );
+
+            // Normal and tangent are approximately perpendicular
+            let dot = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
+            assert!(
+                dot.abs() < 0.05,
+                "normal and tangent not perpendicular: dot={dot}"
+            );
+
+            // Bitangent (cross product) is unit length
+            let bx = n[1] * t[2] - n[2] * t[1];
+            let by = n[2] * t[0] - n[0] * t[2];
+            let bz = n[0] * t[1] - n[1] * t[0];
+            let b_len = (bx * bx + by * by + bz * bz).sqrt();
+            assert!(
+                (b_len - 1.0).abs() < 0.05,
+                "bitangent not unit length: {b_len}"
+            );
+        }
+    }
+
+    #[test]
+    fn bitangent_sign_consistent_across_face() {
+        let faces = vec![hexagon_face()];
+        let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
+
+        let result = extract_geometry(&faces, &tree, &no_exterior());
+        let section = &result.geometry;
+
+        // All vertices in a single face should have the same bitangent sign
+        let first_sign = section.vertices[0].bitangent_sign();
+        for vert in &section.vertices {
+            assert_eq!(
+                vert.bitangent_sign(),
+                first_sign,
+                "bitangent sign inconsistent within face"
+            );
+        }
+    }
+
+    #[test]
+    fn tangent_basis_for_axis_aligned_normals() {
+        // Test faces with different axis-aligned normals.
+        let normals = [
+            DVec3::Y,
+            DVec3::NEG_Y,
+            DVec3::X,
+            DVec3::NEG_X,
+            DVec3::Z,
+            DVec3::NEG_Z,
+        ];
+
+        for normal in &normals {
+            let face = Face {
+                vertices: vec![
+                    DVec3::ZERO,
+                    DVec3::new(1.0, 0.0, 0.0),
+                    DVec3::new(1.0, 1.0, 0.0),
+                ],
+                normal: *normal,
+                distance: 0.0,
+                texture: "test".to_string(),
+                tex_projection: default_projection(),
+                brush_index: 0,
+            };
+            let faces = vec![face];
+            let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
+
+            let result = extract_geometry(&faces, &tree, &no_exterior());
+
+            for vert in &result.geometry.vertices {
+                let n = vert.decode_normal();
+                let t = vert.decode_tangent();
+
+                let n_len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                assert!(
+                    (n_len - 1.0).abs() < 0.01,
+                    "normal not unit for face normal {:?}: len={n_len}",
+                    normal
+                );
+
+                let t_len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+                assert!(
+                    (t_len - 1.0).abs() < 0.01,
+                    "tangent not unit for face normal {:?}: len={t_len}",
+                    normal
+                );
+
+                let dot = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
+                assert!(
+                    dot.abs() < 0.05,
+                    "n.t={dot} for face normal {:?}",
+                    normal
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tangent_basis_with_valve_projection() {
+        let face = Face {
+            vertices: vec![
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(1.0, 0.0, 0.0),
+                DVec3::new(1.0, 0.0, -1.0),
+            ],
+            normal: DVec3::Y,
+            distance: 0.0,
+            texture: "test".to_string(),
+            tex_projection: TextureProjection::Valve {
+                u_axis: DVec3::new(1.0, 0.0, 0.0),
+                u_offset: 0.0,
+                v_axis: DVec3::new(0.0, 0.0, -1.0),
+                v_offset: 0.0,
+                scale_u: 1.0,
+                scale_v: 1.0,
+            },
+            brush_index: 0,
+        };
+
+        let faces = vec![face];
+        let tree = make_tree_with_empty_leaves(vec![(vec![0], false)]);
+
+        let result = extract_geometry(&faces, &tree, &no_exterior());
+
+        for vert in &result.geometry.vertices {
+            let n = vert.decode_normal();
+            let t = vert.decode_tangent();
+
+            let dot = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
+            assert!(
+                dot.abs() < 0.05,
+                "n.t not perpendicular with Valve projection: {dot}"
+            );
+        }
     }
 
     // -- Integration test with real map --
@@ -877,8 +1185,8 @@ mod tests {
 
         // UVs are finite
         for vert in &section.vertices {
-            assert!(vert[3].is_finite(), "u should be finite");
-            assert!(vert[4].is_finite(), "v should be finite");
+            assert!(vert.uv[0].is_finite(), "u should be finite");
+            assert!(vert.uv[1].is_finite(), "v should be finite");
         }
 
         // Texture names should be non-empty
@@ -898,9 +1206,33 @@ mod tests {
             );
         }
 
+        // Every vertex has orthonormal tangent basis
+        for (i, vert) in section.vertices.iter().enumerate() {
+            let n = vert.decode_normal();
+            let t = vert.decode_tangent();
+
+            let n_len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!(
+                (n_len - 1.0).abs() < 0.01,
+                "vertex {i}: normal not unit: {n_len}"
+            );
+
+            let t_len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+            assert!(
+                (t_len - 1.0).abs() < 0.01,
+                "vertex {i}: tangent not unit: {t_len}"
+            );
+
+            let dot = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
+            assert!(
+                dot.abs() < 0.05,
+                "vertex {i}: n.t not perpendicular: {dot}"
+            );
+        }
+
         // Round-trip serialization
         let bytes = section.to_bytes();
-        let restored = GeometrySectionV2::from_bytes(&bytes).unwrap();
+        let restored = GeometrySectionV3::from_bytes(&bytes).unwrap();
         assert_eq!(*section, restored);
 
         // TextureNames round-trip

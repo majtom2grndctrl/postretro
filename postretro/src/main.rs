@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md
 
 mod camera;
+mod compute_cull;
 mod frame_timing;
 mod geometry;
 mod input;
@@ -31,7 +32,9 @@ use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, DiagnosticAction};
 use crate::render::Renderer;
 use crate::texture::TextureSet;
-use crate::visibility::{DrawRange, VisibilityPath, VisibilityStats, VisibleFaces};
+use crate::visibility::{
+    DrawRange, VisibilityPath, VisibilityStats, VisibleCells, VisibleFaces,
+};
 
 const DEFAULT_MAP_PATH: &str = "assets/maps/test-3.prl";
 
@@ -139,6 +142,7 @@ fn main() -> Result<()> {
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
         capture_portal_walk_next_frame: false,
         scratch_ranges: Vec::new(),
+        scratch_cells: Vec::new(),
         frame_rate_meter: FrameRateMeter::new(),
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
@@ -220,12 +224,13 @@ struct App {
     /// the `postretro::portal_trace` log target for that one frame only.
     capture_portal_walk_next_frame: bool,
 
-    /// Persistent scratch buffer for per-frame `DrawRange` collection. The
-    /// PRL visibility entry point `std::mem::take`s this into
-    /// `VisibleFaces::Culled` so no allocation happens in steady state. After
-    /// `render_frame` consumes the `VisibleFaces`, the buffer is moved back
-    /// into this field with its capacity intact.
+    /// Persistent scratch buffer for per-frame `DrawRange` collection. Used
+    /// by the legacy CPU-driven render path when compute cull is unavailable.
     scratch_ranges: Vec<DrawRange>,
+
+    /// Persistent scratch buffer for per-frame visible cell ID collection.
+    /// Used by the GPU-driven compute cull path.
+    scratch_cells: Vec<u32>,
 
     /// Rolling ring buffer of per-frame CPU work durations. Sampled every
     /// frame, read at title-update cadence. Reports min/avg/max so hitches
@@ -264,11 +269,7 @@ impl ApplicationHandler for App {
         let geometry = self.level.as_ref().map(|world| render::LevelGeometry {
             vertices: &world.vertices,
             indices: &world.indices,
-            leaf_texture_sub_ranges: world
-                .leaves
-                .iter()
-                .map(|l| l.texture_sub_ranges.clone())
-                .collect(),
+            cell_chunk_table: world.cell_chunk_table.as_ref(),
         });
 
         let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
@@ -435,24 +436,103 @@ impl ApplicationHandler for App {
 
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 
-                let (visible, stats) = match self.level.as_ref() {
-                    Some(world) => visibility::determine_prl_visibility(
-                        interp.position,
-                        view_proj,
-                        world,
-                        capture_portal_walk,
-                        &mut self.scratch_ranges,
-                    ),
-                    None => (
-                        VisibleFaces::DrawAll,
-                        VisibilityStats {
-                            camera_leaf: 0,
-                            total_faces: 0,
-                            pvs_reach: 0,
-                            drawn_faces: 0,
-                            path: VisibilityPath::EmptyWorldFallback,
-                        },
-                    ),
+                // Determine whether to use GPU-driven (compute cull) or
+                // legacy CPU-driven rendering. The GPU path produces visible
+                // cell IDs; the CPU path produces per-face draw ranges.
+                //
+                // Set POSTRETRO_FORCE_LEGACY=1 to bypass compute cull and use
+                // the CPU-driven draw path (diagnostic toggle for isolating
+                // GPU cull issues).
+                let force_legacy = std::env::var("POSTRETRO_FORCE_LEGACY").is_ok();
+                let use_gpu_path = !force_legacy
+                    && self
+                        .renderer
+                        .as_ref()
+                        .is_some_and(|r| r.has_compute_cull());
+
+                let stats = if use_gpu_path {
+                    // GPU-driven path: visibility produces cell IDs, compute
+                    // shader culls per-chunk AABB, render pass issues indirect draws.
+                    let (visible_cells, stats) = match self.level.as_ref() {
+                        Some(world) => visibility::determine_visible_cells(
+                            interp.position,
+                            view_proj,
+                            world,
+                            capture_portal_walk,
+                            &mut self.scratch_cells,
+                        ),
+                        None => (
+                            VisibleCells::DrawAll,
+                            VisibilityStats {
+                                camera_leaf: 0,
+                                total_faces: 0,
+                                pvs_reach: 0,
+                                drawn_faces: 0,
+                                path: VisibilityPath::EmptyWorldFallback,
+                            },
+                        ),
+                    };
+
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        renderer.update_view_projection(view_proj);
+
+                        if renderer.is_ready() {
+                            if let Err(err) =
+                                renderer.render_frame_indirect(&visible_cells, view_proj)
+                            {
+                                self.exit_result = Err(err);
+                                event_loop.exit();
+                            }
+                        }
+                    }
+
+                    // Reclaim scratch buffer.
+                    if let VisibleCells::Culled(mut cells) = visible_cells {
+                        cells.clear();
+                        self.scratch_cells = cells;
+                    }
+
+                    stats
+                } else {
+                    // Legacy CPU-driven path.
+                    let (visible, stats) = match self.level.as_ref() {
+                        Some(world) => visibility::determine_prl_visibility(
+                            interp.position,
+                            view_proj,
+                            world,
+                            capture_portal_walk,
+                            &mut self.scratch_ranges,
+                        ),
+                        None => (
+                            VisibleFaces::DrawAll,
+                            VisibilityStats {
+                                camera_leaf: 0,
+                                total_faces: 0,
+                                pvs_reach: 0,
+                                drawn_faces: 0,
+                                path: VisibilityPath::EmptyWorldFallback,
+                            },
+                        ),
+                    };
+
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        renderer.update_view_projection(view_proj);
+
+                        if renderer.is_ready() {
+                            if let Err(err) = renderer.render_frame(&visible) {
+                                self.exit_result = Err(err);
+                                event_loop.exit();
+                            }
+                        }
+                    }
+
+                    // Reclaim scratch buffer.
+                    if let VisibleFaces::Culled(mut ranges) = visible {
+                        ranges.clear();
+                        self.scratch_ranges = ranges;
+                    }
+
+                    stats
                 };
 
                 let pos = interp.position;
@@ -498,9 +578,6 @@ impl ApplicationHandler for App {
                     if self.last_title_update.elapsed() >= Duration::from_millis(250) {
                         self.last_title_update = Instant::now();
                         self.title_buffer.clear();
-                        // Full rewrite into the persistent buffer — no
-                        // intermediate `format!` allocation, even on the
-                        // update frames.
                         let _ = write!(
                             &mut self.title_buffer,
                             "Postretro | {region_label}:{} path:{path_label} | draw:{} pvs:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
@@ -524,28 +601,6 @@ impl ApplicationHandler for App {
                         }
                         ws.window.set_title(&self.title_buffer);
                     }
-                }
-
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.update_view_projection(view_proj);
-
-                    if renderer.is_ready() {
-                        if let Err(err) = renderer.render_frame(&visible) {
-                            self.exit_result = Err(err);
-                            event_loop.exit();
-                        }
-                    }
-                }
-
-                // Reclaim the draw-range buffer from `visible` so its
-                // capacity persists across frames. Visibility entry points
-                // `std::mem::take` the scratch into `VisibleFaces::Culled`;
-                // reclaiming here is the other half of that contract, making
-                // the "no per-frame allocation" invariant hold in steady
-                // state without depending on render.rs internals.
-                if let VisibleFaces::Culled(mut ranges) = visible {
-                    ranges.clear();
-                    self.scratch_ranges = ranges;
                 }
 
                 // Record the CPU-side frame span. Measured from the `now`
@@ -593,7 +648,7 @@ impl App {
         match action {
             DiagnosticAction::ToggleWireframe => {
                 if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.cycle_wireframe_mode();
+                    renderer.toggle_wireframe();
                 }
             }
             DiagnosticAction::DumpPortalWalk => {

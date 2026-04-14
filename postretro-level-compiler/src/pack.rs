@@ -6,6 +6,7 @@ use std::io::Cursor;
 use std::path::Path;
 
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
+use postretro_level_format::cell_chunks::CellChunksSection;
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::{
@@ -44,24 +45,26 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
     }
 }
 
-/// Write geometry, texture names, BSP nodes, BSP leaves, and leaf PVS sections
-/// to a .prl file (--pvs mode).
+/// Write geometry, texture names, BSP nodes, BSP leaves, leaf PVS, and cell
+/// chunks sections to a .prl file (--pvs mode).
 pub fn pack_and_write_pvs(
     output: &Path,
     geo_result: &GeometryResult,
     nodes: &BspNodesSection,
     leaves: &BspLeavesSection,
     leaf_pvs: &LeafPvsSection,
+    cell_chunks: &CellChunksSection,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
     let nodes_bytes = nodes.to_bytes();
     let leaves_bytes = leaves.to_bytes();
     let leaf_pvs_bytes = leaf_pvs.to_bytes();
+    let cell_chunks_bytes = cell_chunks.to_bytes();
 
     let sections = vec![
         SectionBlob {
-            section_id: SectionId::GeometryV2 as u32,
+            section_id: SectionId::GeometryV3 as u32,
             version: 1,
             data: geometry_bytes.clone(),
         },
@@ -85,12 +88,17 @@ pub fn pack_and_write_pvs(
             version: 1,
             data: leaf_pvs_bytes.clone(),
         },
+        SectionBlob {
+            section_id: SectionId::CellChunks as u32,
+            version: 1,
+            data: cell_chunks_bytes.clone(),
+        },
     ];
 
     write_and_validate_sections(output, &sections)?;
 
     log::info!("[Compiler] Sections: {}", sections.len());
-    log::info!("[Compiler]   GeometryV2: {} bytes", geometry_bytes.len());
+    log::info!("[Compiler]   GeometryV3: {} bytes", geometry_bytes.len());
     log::info!(
         "[Compiler]   TextureNames: {} bytes",
         texture_names_bytes.len()
@@ -98,12 +106,13 @@ pub fn pack_and_write_pvs(
     log::info!("[Compiler]   BspNodes: {} bytes", nodes_bytes.len());
     log::info!("[Compiler]   BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("[Compiler]   LeafPvs: {} bytes", leaf_pvs_bytes.len());
+    log::info!("[Compiler]   CellChunks: {} bytes", cell_chunks_bytes.len());
 
     Ok(())
 }
 
-/// Write geometry, texture names, BSP nodes, BSP leaves, and portals sections
-/// to a .prl file (default mode).
+/// Write geometry, texture names, BSP nodes, BSP leaves, portals, and cell
+/// chunks sections to a .prl file (default mode).
 ///
 /// Clears pvs_offset and pvs_size in leaf records since no PVS section is written.
 pub fn pack_and_write_portals(
@@ -112,6 +121,7 @@ pub fn pack_and_write_portals(
     nodes: &BspNodesSection,
     leaves: &BspLeavesSection,
     portals: &PortalsSection,
+    cell_chunks: &CellChunksSection,
 ) -> anyhow::Result<()> {
     // Zero out PVS references in leaves since no LeafPvs section is written.
     let portal_leaves = BspLeavesSection {
@@ -134,10 +144,11 @@ pub fn pack_and_write_portals(
     let nodes_bytes = nodes.to_bytes();
     let leaves_bytes = portal_leaves.to_bytes();
     let portals_bytes = portals.to_bytes();
+    let cell_chunks_bytes = cell_chunks.to_bytes();
 
     let sections = vec![
         SectionBlob {
-            section_id: SectionId::GeometryV2 as u32,
+            section_id: SectionId::GeometryV3 as u32,
             version: 1,
             data: geometry_bytes.clone(),
         },
@@ -161,12 +172,17 @@ pub fn pack_and_write_portals(
             version: 1,
             data: portals_bytes.clone(),
         },
+        SectionBlob {
+            section_id: SectionId::CellChunks as u32,
+            version: 1,
+            data: cell_chunks_bytes.clone(),
+        },
     ];
 
     write_and_validate_sections(output, &sections)?;
 
     log::info!("[Compiler] Sections: {}", sections.len());
-    log::info!("[Compiler]   GeometryV2: {} bytes", geometry_bytes.len());
+    log::info!("[Compiler]   GeometryV3: {} bytes", geometry_bytes.len());
     log::info!(
         "[Compiler]   TextureNames: {} bytes",
         texture_names_bytes.len()
@@ -174,6 +190,7 @@ pub fn pack_and_write_portals(
     log::info!("[Compiler]   BspNodes: {} bytes", nodes_bytes.len());
     log::info!("[Compiler]   BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("[Compiler]   Portals: {} bytes", portals_bytes.len());
+    log::info!("[Compiler]   CellChunks: {} bytes", cell_chunks_bytes.len());
 
     Ok(())
 }
@@ -260,19 +277,20 @@ fn validate_readback(file_buf: &[u8], expected_sections: &[SectionBlob]) -> anyh
 mod tests {
     use super::*;
     use postretro_level_format::bsp::{BspLeafRecord, BspNodeRecord};
-    use postretro_level_format::geometry::{FaceMetaV2, GeometrySectionV2};
+    use postretro_level_format::cell_chunks::{CellRange, DrawChunk};
+    use postretro_level_format::geometry::{FaceMetaV3, GeometrySectionV3, VertexV3};
     use postretro_level_format::texture_names::TextureNamesSection;
 
     fn sample_geo_result() -> GeometryResult {
         GeometryResult {
-            geometry: GeometrySectionV2 {
+            geometry: GeometrySectionV3 {
                 vertices: vec![
-                    [1.0, 2.0, 3.0, 0.25, 0.75],
-                    [4.0, 5.0, 6.0, 0.5, 0.0],
-                    [7.0, 8.0, 9.0, 1.0, 1.0],
+                    VertexV3::new([1.0, 2.0, 3.0], [0.25, 0.75], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true),
+                    VertexV3::new([4.0, 5.0, 6.0], [0.5, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true),
+                    VertexV3::new([7.0, 8.0, 9.0], [1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true),
                 ],
                 indices: vec![0, 1, 2],
-                faces: vec![FaceMetaV2 {
+                faces: vec![FaceMetaV3 {
                     index_offset: 0,
                     index_count: 3,
                     leaf_index: 0,
@@ -327,6 +345,24 @@ mod tests {
         }
     }
 
+    fn sample_cell_chunks() -> CellChunksSection {
+        CellChunksSection {
+            cell_ranges: vec![CellRange {
+                cell_id: 0,
+                chunk_start: 0,
+                chunk_count: 1,
+            }],
+            chunks: vec![DrawChunk {
+                cell_id: 0,
+                aabb_min: [0.0, 0.0, 0.0],
+                aabb_max: [1.0, 1.0, 1.0],
+                index_offset: 0,
+                index_count: 3,
+                material_bucket_id: 0,
+            }],
+        }
+    }
+
     #[test]
     fn pack_write_pvs_produces_valid_prl_file() {
         let dir = std::env::temp_dir().join("postretro_test_pack");
@@ -337,8 +373,9 @@ mod tests {
         let nodes = sample_nodes();
         let leaves = sample_leaves();
         let leaf_pvs = sample_leaf_pvs();
+        let cell_chunks = sample_cell_chunks();
 
-        pack_and_write_pvs(&output, &geo_result, &nodes, &leaves, &leaf_pvs)
+        pack_and_write_pvs(&output, &geo_result, &nodes, &leaves, &leaf_pvs, &cell_chunks)
             .expect("pack_and_write_pvs should succeed");
 
         let data = std::fs::read(&output).expect("should read output file");
@@ -346,13 +383,14 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 5);
+        assert_eq!(meta.header.section_count, 6);
 
-        assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
+        assert!(meta.find_section(SectionId::GeometryV3 as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
+        assert!(meta.find_section(SectionId::CellChunks as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -376,8 +414,9 @@ mod tests {
                 back_leaf: 1,
             }],
         };
+        let cell_chunks = sample_cell_chunks();
 
-        pack_and_write_portals(&output, &geo_result, &nodes, &leaves, &portals)
+        pack_and_write_portals(&output, &geo_result, &nodes, &leaves, &portals, &cell_chunks)
             .expect("pack_and_write_portals should succeed");
 
         let data = std::fs::read(&output).expect("should read output file");
@@ -385,13 +424,14 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 5);
+        assert_eq!(meta.header.section_count, 6);
 
-        assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
+        assert!(meta.find_section(SectionId::GeometryV3 as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
+        assert!(meta.find_section(SectionId::CellChunks as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -404,8 +444,10 @@ mod tests {
         let nodes = sample_nodes();
         let leaves = sample_leaves();
         let leaf_pvs = sample_leaf_pvs();
+        let cell_chunks = sample_cell_chunks();
 
-        let result = pack_and_write_pvs(output, &geo_result, &nodes, &leaves, &leaf_pvs);
+        let result =
+            pack_and_write_pvs(output, &geo_result, &nodes, &leaves, &leaf_pvs, &cell_chunks);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -428,9 +470,14 @@ mod tests {
             crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
 
         let exterior = std::collections::HashSet::new();
-        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+        let mut geo_result =
+            crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
         let generated_portals = crate::portals::generate_portals(&result.tree);
         let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
+
+        let (reordered_indices, cell_chunks) =
+            crate::chunk_grouping::build_cell_chunks(&geo_result.geometry);
+        geo_result.geometry.indices = reordered_indices;
 
         let dir = std::env::temp_dir().join("postretro_test_pipeline");
         let _ = std::fs::create_dir_all(&dir);
@@ -442,6 +489,7 @@ mod tests {
             &vis_result.nodes_section,
             &vis_result.leaves_section,
             &vis_result.leaf_pvs_section,
+            &cell_chunks,
         )
         .expect("full pipeline pvs pack should succeed");
 
@@ -449,10 +497,11 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 5);
-        assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
+        assert_eq!(meta.header.section_count, 6);
+        assert!(meta.find_section(SectionId::GeometryV3 as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
+        assert!(meta.find_section(SectionId::CellChunks as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -472,9 +521,14 @@ mod tests {
             crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
 
         let exterior = std::collections::HashSet::new();
-        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+        let mut geo_result =
+            crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
         let generated_portals = crate::portals::generate_portals(&result.tree);
         let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
+
+        let (reordered_indices, cell_chunks) =
+            crate::chunk_grouping::build_cell_chunks(&geo_result.geometry);
+        geo_result.geometry.indices = reordered_indices;
 
         let portals_section = encode_portals(&generated_portals);
 
@@ -488,6 +542,7 @@ mod tests {
             &vis_result.nodes_section,
             &vis_result.leaves_section,
             &portals_section,
+            &cell_chunks,
         )
         .expect("full pipeline portal pack should succeed");
 
@@ -495,10 +550,11 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 5);
-        assert!(meta.find_section(SectionId::GeometryV2 as u32).is_some());
+        assert_eq!(meta.header.section_count, 6);
+        assert!(meta.find_section(SectionId::GeometryV3 as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
+        assert!(meta.find_section(SectionId::CellChunks as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());

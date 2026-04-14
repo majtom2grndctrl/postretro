@@ -1,5 +1,6 @@
 // Portal generation: emit portal polygons between adjacent BSP leaves.
-// Portals are compile-time only — consumed by the vis stage, then discarded.
+// In --pvs mode, portals are consumed by the vis stage then discarded.
+// In default mode, portals are also written to the PRL for runtime traversal.
 // Algorithm: recursive portal distribution (ericw-tools shape).
 // See: context/lib/build_pipeline.md §PRL Compilation
 
@@ -1151,7 +1152,7 @@ mod tests {
             for idx in start..end {
                 let vi = geo.geometry.indices[idx] as usize;
                 let p = &geo.geometry.vertices[vi];
-                let v = DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64);
+                let v = DVec3::new(p.position[0] as f64, p.position[1] as f64, p.position[2] as f64);
                 if !unique_verts
                     .iter()
                     .any(|u| (*u - v).length_squared() < 1e-6)

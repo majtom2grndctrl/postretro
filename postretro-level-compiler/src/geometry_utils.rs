@@ -1,5 +1,5 @@
 // Shared polygon clipping utilities (Sutherland-Hodgman).
-// See: context/plans/in-progress/portal-bsp-vis/task-03-portal-generation.md
+// See: context/lib/build_pipeline.md §PRL Compilation
 
 use glam::DVec3;
 

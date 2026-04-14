@@ -831,7 +831,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(32.0, 0.0, 0.0),
@@ -840,7 +839,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(64.0, 0.0, 0.0),
@@ -849,7 +847,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
             ],
             root: BspChild::Node(0),
@@ -862,6 +859,7 @@ mod tests {
             ],
             has_portals: true,
             texture_names: vec![],
+            cell_chunk_table: None,
         }
     }
 
@@ -933,6 +931,7 @@ mod tests {
             leaf_portals: vec![],
             has_portals: false,
             texture_names: vec![],
+            cell_chunk_table: None,
         };
 
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::NEG_Z);
@@ -982,7 +981,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(32.0, 0.0, 0.0),
@@ -991,7 +989,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(32.0, 0.0, 200.0),
@@ -1000,7 +997,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
             ],
             root: BspChild::Leaf(0),
@@ -1009,6 +1005,7 @@ mod tests {
             leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
             has_portals: true,
             texture_names: vec![],
+            cell_chunk_table: None,
         };
 
         // Camera in leaf A, looking straight along +X toward portal 0.
@@ -1284,7 +1281,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
                 // Leaf 1: left gap passage (B), Z=62..64
                 LeafData {
@@ -1294,7 +1290,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
                 // Leaf 2: right gap passage (C), Z=66..68
                 LeafData {
@@ -1304,7 +1299,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
                 // Leaf 3: far room (D), X=136..256
                 LeafData {
@@ -1314,7 +1308,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
             ],
             root: BspChild::Node(0),
@@ -1328,6 +1321,7 @@ mod tests {
             ],
             has_portals: true,
             texture_names: vec![],
+            cell_chunk_table: None,
         };
 
         // Camera looking through the LEFT passage (Z=63, center of Z=62..64 gap).
@@ -1708,7 +1702,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(10.0, -500.0, -500.0),
@@ -1717,7 +1710,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(15.0, 400.0, -500.0),
@@ -1726,7 +1718,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
             ],
             root: BspChild::Leaf(0),
@@ -1735,6 +1726,7 @@ mod tests {
             leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
             has_portals: true,
             texture_names: vec![],
+            cell_chunk_table: None,
         };
 
         let camera_pos = Vec3::new(1.0, 0.0, 0.0);
@@ -1866,7 +1858,6 @@ mod tests {
             face_count: 0,
             pvs: vec![],
             is_solid: false,
-            texture_sub_ranges: vec![],
         };
 
         let world = LevelWorld {
@@ -1896,6 +1887,7 @@ mod tests {
             ],
             has_portals: true,
             texture_names: vec![],
+            cell_chunk_table: None,
         };
 
         // Camera at origin looking +X. The camera frustum is wide enough that
@@ -1972,7 +1964,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
                 LeafData {
                     bounds_min: Vec3::new(-50.00, 0.00, -17.88),
@@ -1981,7 +1972,6 @@ mod tests {
                     face_count: 0,
                     pvs: vec![],
                     is_solid: false,
-                    texture_sub_ranges: vec![],
                 },
             ],
             root: BspChild::Leaf(0),
@@ -1990,6 +1980,7 @@ mod tests {
             leaf_portals: vec![vec![0], vec![0]],
             has_portals: true,
             texture_names: vec![],
+            cell_chunk_table: None,
         };
 
         // Camera pose from the captured blank-frame trace. The live trace

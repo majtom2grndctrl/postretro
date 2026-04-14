@@ -8,9 +8,10 @@ use glam::Mat4;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::geometry::TextureSubRange;
+use crate::compute_cull::ComputeCullPipeline;
+use crate::geometry::CellChunkTable;
 use crate::texture::{LoadedTexture, TextureSet};
-use crate::visibility::{DrawRange, VisibleFaces};
+use crate::visibility::{DrawRange, VisibleCells, VisibleFaces};
 
 // --- WGSL Shaders ---
 
@@ -28,37 +29,72 @@ struct Uniforms {
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) base_uv: vec2<f32>,
-    @location(2) vertex_color: vec4<f32>,
+    @location(2) normal_oct: vec2<u32>,
+    @location(3) tangent_packed: vec2<u32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) vert_color: vec4<f32>,
+    @location(1) world_normal: vec3<f32>,
+    @location(2) world_tangent: vec3<f32>,
+    @location(3) bitangent_sign: f32,
 };
+
+// Decode octahedral-encoded u16x2 to unit direction vector.
+fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
+    let ox = f32(enc.x) / 65535.0 * 2.0 - 1.0;
+    let oy = f32(enc.y) / 65535.0 * 2.0 - 1.0;
+    let z = 1.0 - abs(ox) - abs(oy);
+    var x: f32;
+    var y: f32;
+    if z < 0.0 {
+        x = (1.0 - abs(oy)) * select(-1.0, 1.0, ox >= 0.0);
+        y = (1.0 - abs(ox)) * select(-1.0, 1.0, oy >= 0.0);
+    } else {
+        x = ox;
+        y = oy;
+    }
+    return normalize(vec3<f32>(x, y, z));
+}
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = uniforms.view_proj * vec4<f32>(in.position, 1.0);
     out.uv = in.base_uv;
-    out.vert_color = in.vertex_color;
+
+    // Decode octahedral normal.
+    out.world_normal = oct_decode(in.normal_oct);
+
+    // Decode packed tangent: strip sign bit from v-component, remap 15-bit to 16-bit.
+    let sign_bit = in.tangent_packed.y & 0x8000u;
+    let v_15bit = in.tangent_packed.y & 0x7FFFu;
+    let v_16bit = v_15bit * 65535u / 32767u;
+    out.world_tangent = oct_decode(vec2<u32>(in.tangent_packed.x, v_16bit));
+    out.bitangent_sign = select(-1.0, 1.0, sign_bit != 0u);
+
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let base_color = textureSample(base_texture, base_sampler, in.uv);
-    let rgb = base_color.rgb * uniforms.ambient_light * in.vert_color.rgb;
-    let a = base_color.a * in.vert_color.a;
-    return vec4<f32>(rgb, a);
+    // Flat ambient — normal and tangent are present but unused until Phase 4.
+    let rgb = base_color.rgb * uniforms.ambient_light;
+    return vec4<f32>(rgb, base_color.a);
 }
 "#;
 
-// Wireframe overlay shader: shares the uniforms bind group (group 0) and vertex
-// format with the textured pipeline, but ignores UV and vertex_color. Emits a flat
-// bright-green color for high visibility over textured surfaces. Intended for
-// debug use only (toggled at runtime via Shift+\).
+// Wireframe overlay shader: culling-delta debug visualization.
+// Draws all chunks color-coded by cull status:
+//   green = rendered (passed portal vis + frustum)
+//   cyan  = portal-culled (cell not in visible set)
+//   red   = frustum-culled (cell visible, AABB outside frustum)
+//
+// The chunk index is passed via instance_index (first_instance in draw call).
+// Cull status is read from a storage buffer written by the compute cull shader.
+// See: context/lib/rendering_pipeline.md §7.1
 const WIREFRAME_SHADER_SOURCE: &str = r#"
 struct Uniforms {
     view_proj: mat4x4<f32>,
@@ -66,21 +102,37 @@ struct Uniforms {
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(1) @binding(0) var<storage, read> cull_status: array<u32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) base_uv: vec2<f32>,
-    @location(2) vertex_color: vec4<f32>,
+    @location(2) normal_oct: vec2<u32>,
+    @location(3) tangent_packed: vec2<u32>,
+};
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) @interpolate(flat) chunk_idx: u32,
 };
 
 @vertex
-fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
-    return uniforms.view_proj * vec4<f32>(in.position, 1.0);
+fn vs_main(in: VertexInput, @builtin(instance_index) instance_idx: u32) -> VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = uniforms.view_proj * vec4<f32>(in.position, 1.0);
+    out.chunk_idx = instance_idx;
+    return out;
 }
 
 @fragment
-fn fs_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.0, 1.0, 0.2, 1.0);
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let status = cull_status[in.chunk_idx];
+    // 0 = portal-culled, 1 = frustum-culled, 2 = visible
+    switch status {
+        case 2u: { return vec4<f32>(0.0, 1.0, 0.2, 1.0); }  // green: rendered
+        case 1u: { return vec4<f32>(1.0, 0.2, 0.15, 1.0); } // red: frustum-culled
+        default: { return vec4<f32>(0.0, 0.9, 0.9, 1.0); }  // cyan: portal-culled
+    }
 }
 "#;
 
@@ -179,7 +231,16 @@ fn upload_texture(
 
 // --- Depth buffer ---
 
-fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+/// Depth format used for the depth buffer.
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// Create the depth texture and return both the texture and its view
+/// (for depth attachment).
+fn create_depth_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let size = wgpu::Extent3d {
         width: width.max(1),
         height: height.max(1),
@@ -192,24 +253,24 @@ fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu:
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Depth24Plus,
+        format: DEPTH_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
 
-    depth_texture.create_view(&wgpu::TextureViewDescriptor::default())
+    let view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (depth_texture, view)
 }
 
 // --- Geometry data ---
 
-/// Geometry data the renderer needs from a level, including texture sub-ranges
-/// for draw call batching.
+/// Geometry data the renderer needs from a level, including cell chunk table
+/// for draw call dispatch.
 pub struct LevelGeometry<'a> {
-    pub vertices: &'a [crate::geometry::TexturedVertex],
+    pub vertices: &'a [crate::geometry::WorldVertex],
     pub indices: &'a [u32],
-    /// Per-leaf texture sub-ranges for draw call grouping.
-    /// Indexed by leaf index; each leaf contains a list of texture sub-ranges.
-    pub leaf_texture_sub_ranges: Vec<Vec<TextureSubRange>>,
+    /// Per-cell draw chunk table. `None` for legacy PRL files without CellChunks.
+    pub cell_chunk_table: Option<&'a CellChunkTable>,
 }
 
 // --- Renderer ---
@@ -232,10 +293,13 @@ pub struct Renderer {
 
     /// GPU textures indexed by texture index.
     gpu_textures: Vec<GpuTexture>,
-    /// Per-leaf texture sub-ranges for draw call grouping.
-    leaf_texture_sub_ranges: Vec<Vec<TextureSubRange>>,
+    /// Per-cell draw chunk table for draw call dispatch (CPU fallback + wireframe).
+    cell_chunk_table: Option<CellChunkTable>,
+    /// GPU-driven compute culling pipeline. `Some` when the level has a
+    /// CellChunkTable; `None` for legacy PRL files or no-geometry mode.
+    compute_cull: Option<ComputeCullPipeline>,
 
-    /// Debug wireframe overlay pipeline (LineList topology, flat-color shader).
+    /// Debug wireframe overlay pipeline (LineList topology, cull-status-driven color).
     wireframe_pipeline: wgpu::RenderPipeline,
     /// Line-list index buffer built from the triangle index buffer at load time.
     /// Layout is 1:1 parallel with the triangle index buffer: each triangle at
@@ -244,8 +308,10 @@ pub struct Renderer {
     /// triangle indices).
     wireframe_index_buffer: wgpu::Buffer,
     wireframe_index_count: u32,
-    /// Current wireframe debug overlay mode.
-    wireframe_mode: WireframeMode,
+    /// Bind group layout for the wireframe cull-status storage buffer (group 1).
+    wireframe_cull_status_bgl: wgpu::BindGroupLayout,
+    /// Whether the culling-delta wireframe overlay is active.
+    wireframe_enabled: bool,
 
     /// Whether the surface is currently configured with vsync on
     /// (`AutoVsync`) or off (`AutoNoVsync`). Toggled by the
@@ -257,32 +323,6 @@ pub struct Renderer {
     has_geometry: bool,
 }
 
-/// Debug wireframe overlay state. Cycled by `Alt+Shift+\` in the engine.
-///
-/// - `Off`: no overlay.
-/// - `Culled`: draws lines only for the sub-ranges the textured renderer
-///   actually drew this frame (reuses PVS + frustum + back-face culled set).
-/// - `All`: draws lines for the entire index buffer, regardless of visibility.
-///
-/// Comparing `Culled` against `All` reveals where the renderer is wrongly
-/// culling or wrongly including surfaces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WireframeMode {
-    Off,
-    Culled,
-    All,
-}
-
-impl WireframeMode {
-    /// Next state in the `Off → Culled → All → Off` cycle.
-    fn next(self) -> Self {
-        match self {
-            WireframeMode::Off => WireframeMode::Culled,
-            WireframeMode::Culled => WireframeMode::All,
-            WireframeMode::All => WireframeMode::Off,
-        }
-    }
-}
 
 impl Renderer {
     /// Create the renderer, taking ownership of all GPU state.
@@ -313,6 +353,20 @@ impl Renderer {
         .context("no suitable GPU adapter found")?;
 
         log::info!("[Renderer] GPU adapter: {}", adapter.get_info().name);
+
+        // Probe for multi_draw_indexed_indirect support via downlevel flags.
+        // Available on Vulkan, Metal, DX12; absent on WebGL2 (not a target).
+        let downlevel = adapter.get_downlevel_capabilities();
+        let has_multi_draw_indirect = downlevel
+            .flags
+            .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
+        if has_multi_draw_indirect {
+            log::info!("[Renderer] Indirect execution supported (multi_draw_indexed_indirect)");
+        } else {
+            log::info!(
+                "[Renderer] Indirect execution not supported — using singular draw_indexed_indirect fallback"
+            );
+        }
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Postretro Device"),
@@ -352,26 +406,26 @@ impl Renderer {
         {
             let count = geom.indices.len() as u32;
             (
-                cast_textured_vertices_to_bytes(geom.vertices),
+                cast_world_vertices_to_bytes(geom.vertices),
                 bytemuck_cast_slice_u32(geom.indices),
                 count,
             )
         } else {
             (
-                vec![0u8; 36], // one dummy vertex (9 floats)
+                vec![0u8; crate::geometry::WorldVertex::STRIDE], // one dummy vertex
                 vec![0u8; 4],  // one dummy index
                 0u32,
             )
         };
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("BSP Vertex Buffer"),
+            label: Some("World Vertex Buffer"),
             contents: &vertex_data,
             usage: wgpu::BufferUsages::VERTEX,
         });
 
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("BSP Index Buffer"),
+            label: Some("World Index Buffer"),
             contents: &index_data,
             usage: wgpu::BufferUsages::INDEX,
         });
@@ -506,13 +560,24 @@ impl Renderer {
             gpu_textures
         };
 
-        // Store per-leaf texture sub-ranges.
-        let leaf_texture_sub_ranges = geometry
-            .map(|g| g.leaf_texture_sub_ranges.clone())
-            .unwrap_or_default();
+        // Store per-cell draw chunk table and create compute cull pipeline.
+        let cell_chunk_table = geometry.and_then(|g| g.cell_chunk_table.cloned());
+        let compute_cull = cell_chunk_table.as_ref().map(|table| {
+            // Count distinct material buckets.
+            let max_bucket = table
+                .chunks
+                .iter()
+                .map(|c| c.material_bucket_id)
+                .max()
+                .unwrap_or(0);
+            let num_buckets = max_bucket + 1;
+            ComputeCullPipeline::new(&device, table, num_buckets, has_multi_draw_indirect)
+        });
 
         // Depth buffer.
-        let depth_view = create_depth_texture(&device, surface_config.width, surface_config.height);
+        let (_depth_texture, depth_view) =
+            create_depth_texture(&device, surface_config.width, surface_config.height);
+
 
         // Pipeline layout.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -536,7 +601,7 @@ impl Renderer {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: crate::geometry::TexturedVertex::STRIDE as wgpu::BufferAddress,
+                    array_stride: crate::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         // position: vec3<f32> at offset 0
@@ -551,11 +616,17 @@ impl Renderer {
                             shader_location: 1,
                             format: wgpu::VertexFormat::Float32x2,
                         },
-                        // vertex_color: vec4<f32> at offset 20
+                        // normal_oct: u16x2 at offset 20
                         wgpu::VertexAttribute {
                             offset: 20,
                             shader_location: 2,
-                            format: wgpu::VertexFormat::Float32x4,
+                            format: wgpu::VertexFormat::Uint16x2,
+                        },
+                        // tangent_packed: u16x2 at offset 24
+                        wgpu::VertexAttribute {
+                            offset: 24,
+                            shader_location: 3,
+                            format: wgpu::VertexFormat::Uint16x2,
                         },
                     ],
                 }],
@@ -568,7 +639,7 @@ impl Renderer {
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24Plus,
+                format: DEPTH_FORMAT,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
@@ -590,13 +661,30 @@ impl Renderer {
         });
 
         // --- Wireframe overlay pipeline ---
-        // Uses only the uniform bind group (group 0), matches the textured vertex
-        // buffer layout, draws line lists, and disables depth write + uses
-        // `CompareFunction::Always` so edges render on top of textured surfaces.
+        // Group 0 = uniforms (view_proj), group 1 = cull_status storage buffer.
+        // Draws line lists with depth test disabled so edges render on top.
+        // Colors are driven by per-chunk cull status from the compute shader.
+        let wireframe_cull_status_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Wireframe Cull Status BGL"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
         let wireframe_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Wireframe Pipeline Layout"),
-                bind_group_layouts: &[Some(&uniform_bind_group_layout)],
+                bind_group_layouts: &[
+                    Some(&uniform_bind_group_layout),
+                    Some(&wireframe_cull_status_layout),
+                ],
                 immediate_size: 0,
             });
 
@@ -612,7 +700,7 @@ impl Renderer {
                 module: &wireframe_shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: crate::geometry::TexturedVertex::STRIDE as wgpu::BufferAddress,
+                    array_stride: crate::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         wgpu::VertexAttribute {
@@ -628,7 +716,12 @@ impl Renderer {
                         wgpu::VertexAttribute {
                             offset: 20,
                             shader_location: 2,
-                            format: wgpu::VertexFormat::Float32x4,
+                            format: wgpu::VertexFormat::Uint16x2,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 24,
+                            shader_location: 3,
+                            format: wgpu::VertexFormat::Uint16x2,
                         },
                     ],
                 }],
@@ -641,7 +734,7 @@ impl Renderer {
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24Plus,
+                format: DEPTH_FORMAT,
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState::default(),
@@ -663,11 +756,15 @@ impl Renderer {
         });
 
         if has_geometry {
+            let chunk_summary = match &cell_chunk_table {
+                Some(t) => format!("{} cells, {} chunks", t.cell_ranges.len(), t.chunks.len()),
+                None => "none (legacy)".to_string(),
+            };
             log::info!(
-                "[Renderer] Textured pipeline ready: {} indices, {} textures, {} leaf sub-range groups",
+                "[Renderer] Textured pipeline ready: {} indices, {} textures, cell_chunks=[{}]",
                 index_count,
                 gpu_textures.len(),
-                leaf_texture_sub_ranges.len(),
+                chunk_summary,
             );
             log::info!(
                 "[Renderer] Wireframe overlay pipeline ready: {} line indices",
@@ -691,22 +788,26 @@ impl Renderer {
             uniform_bind_group,
             depth_view,
             gpu_textures,
-            leaf_texture_sub_ranges,
+            cell_chunk_table,
+            compute_cull,
             wireframe_pipeline,
             wireframe_index_buffer,
             wireframe_index_count,
-            wireframe_mode: WireframeMode::Off,
+            wireframe_cull_status_bgl: wireframe_cull_status_layout,
+            wireframe_enabled: false,
             vsync_enabled: true,
             has_geometry,
         })
     }
 
-    /// Advance the wireframe debug overlay to the next mode in the
-    /// `Off → Culled → All → Off` cycle. Returns the new mode.
-    pub fn cycle_wireframe_mode(&mut self) -> WireframeMode {
-        self.wireframe_mode = self.wireframe_mode.next();
-        log::info!("[Renderer] Wireframe overlay: {:?}", self.wireframe_mode);
-        self.wireframe_mode
+    /// Toggle the culling-delta wireframe debug overlay on/off.
+    pub fn toggle_wireframe(&mut self) -> bool {
+        self.wireframe_enabled = !self.wireframe_enabled;
+        log::info!(
+            "[Renderer] Wireframe overlay: {}",
+            if self.wireframe_enabled { "on" } else { "off" },
+        );
+        self.wireframe_enabled
     }
 
     /// Flip between `AutoVsync` and `AutoNoVsync`. Rebuilds the swapchain
@@ -741,7 +842,8 @@ impl Renderer {
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
-        self.depth_view = create_depth_texture(&self.device, width, height);
+        let (_depth_texture, depth_view) = create_depth_texture(&self.device, width, height);
+        self.depth_view = depth_view;
         self.is_surface_configured = true;
     }
 
@@ -754,10 +856,221 @@ impl Renderer {
         self.is_surface_configured
     }
 
-    /// Render a frame with visibility-based culling and textured draw calls.
+    /// Whether the compute cull pipeline is available (level has a CellChunkTable).
+    pub fn has_compute_cull(&self) -> bool {
+        self.compute_cull.is_some()
+    }
+
+    /// GPU-driven render frame: dispatch compute cull shader, then issue
+    /// indirect draw calls. This is the primary render path when a
+    /// CellChunkTable is available.
     ///
-    /// When `visible` is `VisibleFaces::Culled`, issues draw calls per (leaf, texture) pair
-    /// using pre-computed texture sub-ranges. When `DrawAll`, draws everything.
+    /// `visible` carries the set of potentially-visible cell IDs from the
+    /// CPU-side visibility system (portal traversal, PVS, or fallbacks).
+    /// The compute shader performs per-chunk AABB frustum culling and writes
+    /// DrawIndexedIndirect commands; the render pass consumes them via
+    /// multi_draw_indexed_indirect (or the singular fallback).
+    pub fn render_frame_indirect(
+        &mut self,
+        visible: &VisibleCells,
+        view_proj: Mat4,
+    ) -> Result<()> {
+        let output = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(tex) => tex,
+            wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                tex
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.surface.configure(&self.device, &self.surface_config);
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                anyhow::bail!("surface lost");
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                anyhow::bail!("surface validation error");
+            }
+        };
+
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Frame Encoder"),
+            });
+
+        // Collect visible cell IDs for compute dispatch and wireframe overlay.
+        let visible_cell_ids: Vec<u32> = match visible {
+            VisibleCells::DrawAll => {
+                // All cells visible — collect all cell IDs from the table.
+                if let Some(table) = &self.cell_chunk_table {
+                    table.cell_ranges.iter().map(|cr| cr.cell_id).collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            VisibleCells::Culled(cells) => cells.clone(),
+        };
+
+        // Dispatch compute cull shader. The fixed-slot design writes
+        // instance_count = 1 for visible chunks directly in the indirect
+        // buffer. No readback or GPU sync needed — the render pass
+        // consumes the buffer in the same command buffer submission.
+        if let Some(cull) = &mut self.compute_cull {
+            cull.dispatch(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &visible_cell_ids,
+                &view_proj,
+            );
+        }
+
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Textured Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.05,
+                            g: 0.05,
+                            b: 0.08,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+
+            if self.has_geometry && self.index_count > 0 {
+                render_pass.set_pipeline(&self.pipeline);
+                render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                render_pass
+                    .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
+                if let Some(cull) = &self.compute_cull {
+                    // GPU-driven indirect draw path.
+                    let gpu_textures = &self.gpu_textures;
+                    cull.draw_indirect(
+                        &mut render_pass,
+                        &|pass, bucket| {
+                            let bind_group = if (bucket as usize) < gpu_textures.len() {
+                                &gpu_textures[bucket as usize].bind_group
+                            } else {
+                                &gpu_textures[0].bind_group
+                            };
+                            pass.set_bind_group(1, bind_group, &[]);
+                        },
+                    );
+                } else {
+                    // Legacy CPU fallback (no CellChunkTable).
+                    let bind_group = self.texture_bind_group(0);
+                    render_pass.set_bind_group(1, bind_group, &[]);
+                    render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+                }
+            }
+        }
+
+        // Culling-delta wireframe overlay: draw ALL chunks color-coded by cull status.
+        if self.wireframe_enabled
+            && self.has_geometry
+            && self.wireframe_index_count > 0
+        {
+            if let (Some(cull), Some(table)) = (&self.compute_cull, &self.cell_chunk_table) {
+                let cull_status_bind_group =
+                    self.device
+                        .create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("Wireframe Cull Status BG"),
+                            layout: &self.wireframe_cull_status_bgl,
+                            entries: &[wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: cull.cull_status_buffer().as_entire_binding(),
+                            }],
+                        });
+
+                let mut overlay_pass =
+                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Wireframe Overlay Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: Some(
+                            wgpu::RenderPassDepthStencilAttachment {
+                                view: &self.depth_view,
+                                depth_ops: Some(wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                }),
+                                stencil_ops: None,
+                            },
+                        ),
+                        ..Default::default()
+                    });
+
+                overlay_pass.set_pipeline(&self.wireframe_pipeline);
+                overlay_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                overlay_pass.set_bind_group(1, &cull_status_bind_group, &[]);
+                overlay_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                overlay_pass.set_index_buffer(
+                    self.wireframe_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+
+                // Draw every chunk with its chunk index as instance_index so
+                // the shader can look up the cull status per chunk.
+                for (chunk_idx, chunk) in table.chunks.iter().enumerate() {
+                    let wire_offset = chunk.index_offset * 2;
+                    let wire_count = chunk.index_count * 2;
+                    let ci = chunk_idx as u32;
+                    overlay_pass.draw_indexed(
+                        wire_offset..wire_offset + wire_count,
+                        0,
+                        ci..ci + 1,
+                    );
+                }
+            }
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+
+        Ok(())
+    }
+
+    /// Render a frame with visibility-based culling and per-cell chunk draw calls.
+    /// Legacy path: CPU-driven per-cell draws. Used when compute cull is not
+    /// available or for backward compatibility.
+    ///
+    /// When `visible` is `VisibleFaces::Culled`, extracts visible cell ids from the
+    /// draw ranges and issues per-chunk draw calls for those cells. When `DrawAll`,
+    /// draws all chunks.
     pub fn render_frame(&self, visible: &VisibleFaces) -> Result<()> {
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
@@ -790,13 +1103,11 @@ impl Renderer {
                 label: Some("Frame Encoder"),
             });
 
-        // Compute the visible-leaf set once per frame when culling is active.
-        // Both the textured pass and the (optional) wireframe overlay pass
-        // consume the same set; computing it here avoids a redundant scan
-        // when the wireframe overlay is enabled.
-        let visible_leaves: Vec<usize> = match visible {
+        // Compute visible cell ids once per frame. Both the textured pass and
+        // the (optional) wireframe overlay pass consume the same set.
+        let visible_cells: Vec<u32> = match visible {
             VisibleFaces::DrawAll => Vec::new(),
-            VisibleFaces::Culled(ranges) => self.collect_visible_leaf_indices(ranges),
+            VisibleFaces::Culled(ranges) => self.collect_visible_cell_ids(ranges),
         };
 
         {
@@ -836,66 +1147,19 @@ impl Renderer {
 
                 match visible {
                     VisibleFaces::DrawAll => {
-                        self.draw_all_textured(&mut render_pass);
+                        self.draw_all_chunks(&mut render_pass);
                     }
                     VisibleFaces::Culled(_) => {
-                        self.draw_visible_textured(&mut render_pass, &visible_leaves);
+                        self.draw_visible_chunks(&mut render_pass, &visible_cells);
                     }
                 }
             }
         }
 
-        // Debug wireframe overlay pass. Loads the existing color target and depth
-        // buffer (no clear) and draws edges on top with depth test disabled.
-        //
-        // `Culled` reuses the same visible-leaf set the textured pass drew so
-        // the wireframe matches the ground truth of what was rendered. `All`
-        // draws every line in the buffer regardless of visibility; comparing
-        // the two reveals culling bugs.
-        if self.wireframe_mode != WireframeMode::Off
-            && self.has_geometry
-            && self.wireframe_index_count > 0
-        {
-            let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Wireframe Overlay Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
-
-            overlay_pass.set_pipeline(&self.wireframe_pipeline);
-            overlay_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            overlay_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            overlay_pass.set_index_buffer(
-                self.wireframe_index_buffer.slice(..),
-                wgpu::IndexFormat::Uint32,
-            );
-
-            match self.wireframe_mode {
-                WireframeMode::Off => {}
-                WireframeMode::All => {
-                    overlay_pass.draw_indexed(0..self.wireframe_index_count, 0, 0..1);
-                }
-                WireframeMode::Culled => {
-                    self.draw_visible_wireframe(&mut overlay_pass, visible, &visible_leaves);
-                }
-            }
-        }
+        // Culling-delta wireframe overlay requires the compute cull pipeline
+        // for per-chunk cull status. Not available in the legacy CPU path.
+        // (The legacy path is only used when POSTRETRO_FORCE_LEGACY=1 or
+        // no CellChunkTable is present.)
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
@@ -903,144 +1167,122 @@ impl Renderer {
         Ok(())
     }
 
-    /// Draw all geometry with texture sub-ranges. Used when PVS is unavailable.
-    fn draw_all_textured<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>) {
+    /// Draw all chunks. Used when visibility data is unavailable (DrawAll path).
+    fn draw_all_chunks<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>) {
         let mut draw_calls = 0u32;
-        for leaf_sub_ranges in &self.leaf_texture_sub_ranges {
-            for sub_range in leaf_sub_ranges {
-                let tex_idx = sub_range.texture_index as usize;
-                let bind_group = if tex_idx < self.gpu_textures.len() {
-                    &self.gpu_textures[tex_idx].bind_group
-                } else {
-                    // Fallback to first texture (placeholder).
-                    &self.gpu_textures[0].bind_group
-                };
-                render_pass.set_bind_group(1, bind_group, &[]);
-                let start = sub_range.index_offset;
-                let end = start + sub_range.index_count;
+
+        if let Some(table) = &self.cell_chunk_table {
+            let mut last_tex: Option<u32> = None;
+            for chunk in &table.chunks {
+                let tex_idx = chunk.material_bucket_id;
+                if last_tex != Some(tex_idx) {
+                    let bind_group = self.texture_bind_group(tex_idx as usize);
+                    render_pass.set_bind_group(1, bind_group, &[]);
+                    last_tex = Some(tex_idx);
+                }
+                let start = chunk.index_offset;
+                let end = start + chunk.index_count;
                 render_pass.draw_indexed(start..end, 0, 0..1);
                 draw_calls += 1;
             }
+        } else {
+            // Legacy fallback: draw the entire index buffer with the first texture.
+            let bind_group = self.texture_bind_group(0);
+            render_pass.set_bind_group(1, bind_group, &[]);
+            render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+            draw_calls = 1;
         }
+
         log::trace!("[Renderer] DrawAll: {draw_calls} draw calls");
     }
 
-    /// Draw visible faces using texture sub-ranges per leaf.
-    /// `visible_leaves` is the pre-computed set of visible leaf indices
-    /// (see `collect_visible_leaf_indices`), lifted to the caller so the
-    /// wireframe overlay pass can reuse it without rescanning.
-    ///
-    /// Deduplicates `set_bind_group` calls: per-leaf sub-ranges are already
-    /// sorted by `texture_index` by both world builders
-    /// (`build_leaf_texture_sub_ranges` in `prl.rs` for PRL maps and `bsp.rs`
-    /// for BSP maps), so tracking the last-set texture across the outer leaf
-    /// loop lets cross-leaf transitions skip redundant binds when leaf N's
-    /// final texture matches leaf N+1's first texture.
-    fn draw_visible_textured<'a>(
+    /// Draw chunks for visible cells. Uses the CellChunkTable to look up chunks
+    /// per cell_id and issues one draw call per chunk.
+    fn draw_visible_chunks<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
-        visible_leaves: &[usize],
+        visible_cells: &[u32],
     ) {
         let mut draw_calls = 0u32;
-        let mut last_tex: Option<usize> = None;
-        for leaf_idx in visible_leaves {
-            if let Some(sub_ranges) = self.leaf_texture_sub_ranges.get(*leaf_idx) {
-                for sub_range in sub_ranges {
-                    let tex_idx = sub_range.texture_index as usize;
+        let mut last_tex: Option<u32> = None;
+
+        if let Some(table) = &self.cell_chunk_table {
+            for &cell_id in visible_cells {
+                for chunk in table.chunks_for_cell(cell_id) {
+                    let tex_idx = chunk.material_bucket_id;
                     if last_tex != Some(tex_idx) {
-                        let bind_group = if tex_idx < self.gpu_textures.len() {
-                            &self.gpu_textures[tex_idx].bind_group
-                        } else {
-                            &self.gpu_textures[0].bind_group
-                        };
+                        let bind_group = self.texture_bind_group(tex_idx as usize);
                         render_pass.set_bind_group(1, bind_group, &[]);
                         last_tex = Some(tex_idx);
                     }
-                    let start = sub_range.index_offset;
-                    let end = start + sub_range.index_count;
+                    let start = chunk.index_offset;
+                    let end = start + chunk.index_count;
                     render_pass.draw_indexed(start..end, 0, 0..1);
                     draw_calls += 1;
                 }
             }
+        } else {
+            // Legacy fallback: draw the entire index buffer with the first texture.
+            let bind_group = self.texture_bind_group(0);
+            render_pass.set_bind_group(1, bind_group, &[]);
+            render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+            draw_calls = 1;
         }
+
         log::trace!(
-            "[Renderer] Culled: {draw_calls} draw calls, {} visible leaves",
-            visible_leaves.len(),
+            "[Renderer] Culled: {draw_calls} draw calls, {} visible cells",
+            visible_cells.len(),
         );
     }
 
-    /// Draw the debug wireframe overlay for the same visible sub-ranges the
-    /// textured pass drew this frame. Reuses the visibility determination
-    /// (`VisibleFaces`) produced upstream — no separate culling pass — so the
-    /// "Culled" wireframe is guaranteed to match the textured output exactly.
-    ///
-    /// The line index buffer is 1:1 parallel with the triangle index buffer
-    /// (6 line indices per 3 triangle indices), so each textured sub-range
-    /// `[start..end]` becomes the line sub-range `[start*2..end*2]`.
-    fn draw_visible_wireframe<'a>(
-        &'a self,
-        render_pass: &mut wgpu::RenderPass<'a>,
-        visible: &VisibleFaces,
-        visible_leaves: &[usize],
-    ) {
-        match visible {
-            VisibleFaces::DrawAll => {
-                // Visibility system said "draw everything", so the culled
-                // overlay matches the all overlay: draw the whole line buffer.
-                render_pass.draw_indexed(0..self.wireframe_index_count, 0, 0..1);
-            }
-            VisibleFaces::Culled(_) => {
-                let mut draw_calls = 0u32;
-                for leaf_idx in visible_leaves {
-                    if let Some(sub_ranges) = self.leaf_texture_sub_ranges.get(*leaf_idx) {
-                        for sub_range in sub_ranges {
-                            let start = sub_range.index_offset * 2;
-                            let end = (sub_range.index_offset + sub_range.index_count) * 2;
-                            render_pass.draw_indexed(start..end, 0, 0..1);
-                            draw_calls += 1;
-                        }
-                    }
-                }
-                log::trace!(
-                    "[Renderer] Wireframe Culled: {draw_calls} line draw calls, {} visible leaves",
-                    visible_leaves.len(),
-                );
-            }
+
+    /// Look up the texture bind group for a material bucket index. Falls back
+    /// to the first texture (placeholder) if the index is out of range.
+    fn texture_bind_group(&self, tex_idx: usize) -> &wgpu::BindGroup {
+        if tex_idx < self.gpu_textures.len() {
+            &self.gpu_textures[tex_idx].bind_group
+        } else {
+            &self.gpu_textures[0].bind_group
         }
     }
 
-    /// Identify which leaf indices are visible given a set of `DrawRange`s
-    /// produced by the visibility system. A leaf is visible iff any of its
-    /// texture sub-ranges overlap any visible draw range in index space.
+    /// Convert visibility draw ranges to a list of visible cell ids. The
+    /// Transitional bridge: converts legacy per-face draw ranges to cell IDs
+    /// for the GPU-driven path. O(cells * chunks * ranges) — fine at current
+    /// map sizes but should be removed once `determine_visible_cells` fully
+    /// replaces `determine_prl_visibility` in the GPU path.
     ///
-    /// Shared by both the textured and wireframe-culled draw paths so they
-    /// can never disagree on "which leaves are visible this frame".
-    fn collect_visible_leaf_indices(&self, ranges: &[DrawRange]) -> Vec<usize> {
-        let mut visible_leaves = Vec::new();
-        for (leaf_idx, sub_ranges) in self.leaf_texture_sub_ranges.iter().enumerate() {
-            if sub_ranges.is_empty() {
-                continue;
-            }
-            // Leaves have their sub-ranges sorted by index_offset, so the
-            // first/last entries bound the leaf's span in the index buffer.
-            let leaf_start = sub_ranges.first().map(|sr| sr.index_offset).unwrap_or(0);
-            let leaf_end = sub_ranges
-                .last()
-                .map(|sr| sr.index_offset + sr.index_count)
-                .unwrap_or(0);
+    /// The visibility system produces per-face draw ranges keyed by leaf; since
+    /// cell_id == leaf_index in the current compiler, we extract leaf indices
+    /// that overlap any draw range and use them as cell ids.
+    fn collect_visible_cell_ids(&self, ranges: &[DrawRange]) -> Vec<u32> {
+        let table = match &self.cell_chunk_table {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
 
-            let is_visible = ranges.iter().any(|r| {
-                let r_start = r.index_offset;
-                let r_end = r.index_offset + r.index_count;
-                // Overlap test.
-                r_start < leaf_end && r_end > leaf_start
+        let mut visible = Vec::new();
+        for cr in &table.cell_ranges {
+            let cell_id = cr.cell_id;
+            let start = cr.chunk_start as usize;
+            let end = start + cr.chunk_count as usize;
+
+            // A cell is visible if any of its chunks overlap any draw range.
+            let is_visible = table.chunks[start..end].iter().any(|chunk| {
+                let c_start = chunk.index_offset;
+                let c_end = chunk.index_offset + chunk.index_count;
+                ranges.iter().any(|r| {
+                    let r_start = r.index_offset;
+                    let r_end = r.index_offset + r.index_count;
+                    r_start < c_end && r_end > c_start
+                })
             });
 
             if is_visible {
-                visible_leaves.push(leaf_idx);
+                visible.push(cell_id);
             }
         }
-        visible_leaves
+        visible
     }
 }
 
@@ -1065,8 +1307,8 @@ fn build_default_view_projection(aspect: f32) -> Mat4 {
 
 // --- Byte casting helpers ---
 
-fn cast_textured_vertices_to_bytes(data: &[crate::geometry::TexturedVertex]) -> Vec<u8> {
-    let byte_len = data.len() * crate::geometry::TexturedVertex::STRIDE;
+fn cast_world_vertices_to_bytes(data: &[crate::geometry::WorldVertex]) -> Vec<u8> {
+    let byte_len = data.len() * crate::geometry::WorldVertex::STRIDE;
     let mut bytes = Vec::with_capacity(byte_len);
     for vertex in data {
         for &c in &vertex.position {
@@ -1075,7 +1317,10 @@ fn cast_textured_vertices_to_bytes(data: &[crate::geometry::TexturedVertex]) -> 
         for &c in &vertex.base_uv {
             bytes.extend_from_slice(&c.to_ne_bytes());
         }
-        for &c in &vertex.vertex_color {
+        for &c in &vertex.normal_oct {
+            bytes.extend_from_slice(&c.to_ne_bytes());
+        }
+        for &c in &vertex.tangent_packed {
             bytes.extend_from_slice(&c.to_ne_bytes());
         }
     }
@@ -1127,35 +1372,40 @@ mod tests {
     }
 
     #[test]
-    fn cast_textured_vertices_roundtrips() {
+    fn cast_world_vertices_roundtrips() {
         let input = vec![
-            crate::geometry::TexturedVertex {
+            crate::geometry::WorldVertex {
                 position: [1.0, 2.0, 3.0],
                 base_uv: [0.5, 0.75],
-                vertex_color: [1.0, 1.0, 1.0, 1.0],
+                normal_oct: [32768, 32768],
+                tangent_packed: [65535, 32768],
             },
-            crate::geometry::TexturedVertex {
+            crate::geometry::WorldVertex {
                 position: [4.0, 5.0, 6.0],
                 base_uv: [0.25, 0.125],
-                vertex_color: [0.5, 0.5, 0.5, 1.0],
+                normal_oct: [0, 32768],
+                tangent_packed: [32768, 0],
             },
         ];
-        let bytes = cast_textured_vertices_to_bytes(&input);
-        // 2 vertices * 9 floats * 4 bytes = 72 bytes
-        assert_eq!(bytes.len(), 72);
+        let bytes = cast_world_vertices_to_bytes(&input);
+        // 2 vertices * 28 bytes = 56 bytes
+        assert_eq!(bytes.len(), 56);
 
-        // Read back.
-        let mut output = Vec::new();
-        for chunk in bytes.chunks_exact(4) {
-            output.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
-        assert_eq!(
-            output,
-            vec![
-                1.0, 2.0, 3.0, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0, 4.0, 5.0, 6.0, 0.25, 0.125, 0.5, 0.5,
-                0.5, 1.0
-            ]
-        );
+        // Read back first vertex: 3 f32 pos + 2 f32 uv + 2 u16 normal + 2 u16 tangent = 28 bytes
+        let pos_x = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
+        let pos_y = f32::from_ne_bytes(bytes[4..8].try_into().unwrap());
+        let pos_z = f32::from_ne_bytes(bytes[8..12].try_into().unwrap());
+        let uv_u = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
+        let uv_v = f32::from_ne_bytes(bytes[16..20].try_into().unwrap());
+        let n_u = u16::from_ne_bytes(bytes[20..22].try_into().unwrap());
+        let n_v = u16::from_ne_bytes(bytes[22..24].try_into().unwrap());
+        let t_u = u16::from_ne_bytes(bytes[24..26].try_into().unwrap());
+        let t_v = u16::from_ne_bytes(bytes[26..28].try_into().unwrap());
+
+        assert_eq!([pos_x, pos_y, pos_z], [1.0, 2.0, 3.0]);
+        assert_eq!([uv_u, uv_v], [0.5, 0.75]);
+        assert_eq!([n_u, n_v], [32768, 32768]);
+        assert_eq!([t_u, t_v], [65535, 32768]);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 // Portal graph section: portal polygon array for runtime traversal.
-// See: context/plans/in-progress/portal-bsp-vis/task-08-runtime-portal-vis.md
+// See: context/lib/build_pipeline.md §PRL Compilation, context/lib/rendering_pipeline.md §5
 
 use crate::FormatError;
 

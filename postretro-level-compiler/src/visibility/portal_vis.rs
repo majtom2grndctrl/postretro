@@ -1,5 +1,5 @@
 // Portal flood-fill PVS: per-leaf visibility via BFS through portal graph.
-// See: context/plans/in-progress/portal-bsp-vis/task-04-portal-vis.md
+// See: context/lib/build_pipeline.md §PRL Compilation
 
 use std::collections::VecDeque;
 

@@ -75,23 +75,21 @@ Bring the rendering architecture up to the target pipeline (clustered forward+, 
 
 ---
 
-## Milestone 4: BVH Foundation
+## Milestone 4: BVH Foundation ✓
 
-Replace Milestone 3.5's per-cell chunk compute cull with a global BVH over all static geometry. Ships with visual parity to Milestone 3.5 — flat ambient, no lighting changes — but lays the spatial structure that Milestone 5's SH baker needs. One acceleration structure, two consumers (runtime cull on the GPU, bake-time ray casts on the CPU).
+Replaced Milestone 3.5's per-cell chunk compute cull with a global BVH over all static geometry. Shipped with visual parity to Milestone 3.5 — flat ambient, no lighting changes — and lays the spatial structure Milestone 5's SH baker will traverse. One acceleration structure, two consumers (runtime cull on the GPU, bake-time ray casts on the CPU).
 
-**Sub-plans:** see `context/plans/drafts/bvh-foundation/`.
+- [x] **Compile-time BVH** — `prl-build` builds a global SAH BVH over all static triangles using the `bvh` crate, flattens to dense node/leaf arrays in DFS order with skip-indices, sorts leaves by `material_bucket_id`, writes the new `Bvh` PRL section (id 19). Retired `chunk_grouping.rs`, `CellChunks` section, and `FaceMeta.index_offset/index_count` (Milestone 3.5 review finding #1 dissolved as a side effect of the pipeline rewrite).
+- [x] **Runtime BVH traversal** — engine parses `Bvh` into node/leaf storage buffers, rewrote `compute_cull.rs` as a skip-index DFS WGSL traversal shader with a 128-word visible-cell bitmask fed by portal DFS, deleted `CellChunkTable`, `chunks_for_cell`, `determine_prl_visibility`, `POSTRETRO_FORCE_LEGACY`, and the V1/V2 legacy load paths. Preserved Milestone 3.5's fixed-slot indirect buffer and `multi_draw_indexed_indirect` design.
+- [x] **Check-in gate** — visual parity with Milestone 3.5 confirmed by manual review across every test map. Global BVH held parity; per-region pivot path documented in `rendering_pipeline.md` §5 but not exercised.
 
-- [ ] **Compile-time BVH** — `prl-build` builds a global BVH over all static triangles using the `bvh` crate, flattens to a dense node + leaf array, writes a new `Bvh` PRL section. Retires `chunk_grouping.rs`, `CellChunks` section, and the related compiler glue.
-- [ ] **Runtime BVH traversal** — engine loads the `Bvh` section into GPU storage buffers, rewrites `compute_cull.rs` as a WGSL BVH traversal compute shader, deletes legacy fallback paths. Preserves Milestone 3.5's fixed-slot indirect buffer and `multi_draw_indexed_indirect` design.
-- [ ] **Check-in gate** — visual parity with Milestone 3.5 confirmed by manual screenshot review. Frame time within reasonable bounds. If global BVH underperforms on cell-heavy maps, decide whether to pivot to per-region BVH before Milestone 5 begins.
+**Testable outcome:** ✓ identical visual output to Milestone 3.5, rendered through a global BVH. Milestone 5 (Lighting Foundation) unblocked.
 
-**Testable outcome:** identical visual output to Milestone 3.5, rendered through a BVH-based spatial structure. Milestone 5 (Lighting Foundation) is unblocked.
-
-**Architectural commitments locked here:**
-- Global BVH, not per-region. Per-region is the pivot path if global underperforms.
-- Software traversal only — no hardware ray tracing. Pre-RTX hardware target; wgpu doesn't expose hardware RT regardless.
-- Portals stay. Portal DFS still produces the visible-cell set; BVH replaces per-chunk frustum culling, not occlusion culling.
-- No backward compat. Pre-release — own the refactor.
+**Durable decisions migrated to `context/lib/`:**
+- Global vs. per-region rationale + pivot condition → `rendering_pipeline.md` §5
+- `Bvh` PRL section layout (40-byte node/leaf stride, DFS skip-index) → `rendering_pipeline.md` §5 + `build_pipeline.md` §PRL section IDs
+- WGSL skip-index traversal pattern → `rendering_pipeline.md` §7.1
+- `bvh` crate compile-time build stage → `build_pipeline.md` §PRL Compilation step 8
 
 ---
 

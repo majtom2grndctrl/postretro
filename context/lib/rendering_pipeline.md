@@ -102,6 +102,8 @@ BVH nodes (40 bytes each) are stored in DFS order with a `skip_index` per node �
 
 Flow: portal traversal (§2) produces a visible-cell bitmask (128 `u32` words, 512 bytes) → BVH traversal compute (§7.1 step 2) walks the tree, tests each leaf AABB and its cell bitmask bit, writes/zeros the corresponding indirect buffer slot → opaque pass (§7.2) issues one `multi_draw_indexed_indirect` call per material bucket against its contiguous slot range.
 
+**Global vs. per-region.** One BVH over all static geometry, not one per cell. Global wins on shader simplicity (one traversal, one storage buffer pair, one dispatch per frame) and on tree quality (SAH sees the whole scene). Per-region is the pre-committed pivot path: if a cell-heavy map regresses on frame time, split into one BVH per portal cell for tighter cache behavior and smaller per-cell traversal. The pivot costs more bookkeeping, more storage buffers, and a baker that has to query the right sub-BVH per ray — worth it only when global has been measured to fall short. Software traversal only — no hardware ray tracing (not in baseline wgpu; pre-RTX hardware target regardless).
+
 ---
 
 ## 6. Vertex Format

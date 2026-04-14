@@ -62,7 +62,7 @@ See `build_pipeline.md` §Runtime visibility for the compile-side picture.
 
 ## 3. Level Loading Pipeline
 
-Loader parses PRL via the `postretro-level-format` crate. The heavy work happened at compile time in prl-build; runtime load is buffer hand-off and texture matching. Load builds vertex buffers in the §6 format, matches PNG textures by name string (checkerboard placeholder for missing albedo, neutral normal (0,0,1) for missing normal map), and groups faces into the per-cell draw chunks of §5. The renderer performs all GPU uploads and returns opaque handles; the loader never touches wgpu and raw PRL types do not cross into renderer code.
+Loader parses PRL via the `postretro-level-format` crate. The heavy work happened at compile time in prl-build; runtime load is buffer hand-off and texture matching. Load uploads the global vertex/index buffer and the BVH node[] + leaf[] arrays (§5) to GPU storage buffers, matches PNG textures by name string (checkerboard placeholder for missing albedo, neutral normal (0,0,1) for missing normal map), and allocates one permanent indirect buffer slot per BVH leaf. At load time the Rust side scans the sorted leaf array once to derive per-bucket `(first_slot, count)` ranges. The renderer performs all GPU uploads and returns opaque handles; the loader never touches wgpu and raw PRL types do not cross into renderer code.
 
 ---
 
@@ -82,23 +82,25 @@ Full spec: `plans/drafts/phase-4-baked-lighting/`
 
 ---
 
-## 5. Cells and Draw Chunks
+## 5. Cells, BVH, and Draw Leaves
 
-**Cell** = opaque draw-dispatch unit. The current compiler assigns one cell per empty BSP leaf; a future compiler could assign them differently. The runtime never interprets `cell_id` as a BSP leaf index — cells are the renderer's spatial primitive, decoupled from how they were produced. 1:1 with BSP leaves today; the separate term and opaque id leave room for non-BSP spatial structures without a runtime rewrite. **Cluster** = screen-space light-culling grid (§7.1 step 4), never spatial. Rule: cell = world space, cluster = screen space.
+**Cell** = opaque visibility unit. The compiler assigns one cell per empty BSP leaf; `cell_id` is the BSP leaf index, used as an opaque identifier at runtime. **Cluster** = screen-space light-culling grid (§7.1 step 4), never spatial. Rule: cell = world space, cluster = screen space.
 
-World geometry is grouped by cell at compile time. One chunk per (cell, material bucket) pair:
+World geometry is organized into a global BVH at compile time. Each **BVH leaf** covers one `(face, material_bucket)` pair:
 
 | Field | Content |
 |-------|---------|
-| `cell_id` | Opaque cell identifier |
-| `aabb` | World-space bounds for GPU frustum culling |
-| `index_offset` | Start of the chunk's indices in the shared index buffer |
-| `index_count` | Length of the index range |
-| `material_bucket` | (albedo, normal map) pair the indices reference |
+| `cell_id` | Opaque cell identifier (BSP leaf index) |
+| `aabb` | World-space bounds of this leaf's triangle set |
+| `index_offset` | Start of this leaf's triangles in the shared index buffer |
+| `index_count` | Number of indices |
+| `material_bucket_id` | `(albedo, normal_map)` pair the indices reference |
 
-Indices within a cell are ordered by material bucket, so each cell emits one indirect draw per material it touches (typical: 2–10). The chunk table includes a cell→chunk-range index so the GPU culling pass can look up all chunks for a given cell in O(log n) via binary search on sorted cell IDs. The chunk table lives in its own PRL section; the loader hands it to the renderer.
+Leaves are sorted by `material_bucket_id` in the flat leaf array so each bucket owns a contiguous slot range. Each leaf's position in the array is its permanent indirect buffer slot. No atomic counter; overflow is architecturally impossible.
 
-Flow: portal traversal (§2) produces the visible cell list → compute cell-culling prepass (§7.1 step 2) frustum-culls → emits `draw_indexed_indirect` commands → opaque pass (§7.2) consumes via `multi_draw_indexed_indirect`, one call per material bucket.
+BVH nodes (40 bytes each) are stored in DFS order with a `skip_index` per node — the node to jump to on AABB reject. Left child is always at `current_index + 1`. Internal nodes carry an AABB; leaf nodes additionally carry a `left_child_or_leaf_index` pointing into the leaf array.
+
+Flow: portal traversal (§2) produces a visible-cell bitmask (128 `u32` words, 512 bytes) → BVH traversal compute (§7.1 step 2) walks the tree, tests each leaf AABB and its cell bitmask bit, writes/zeros the corresponding indirect buffer slot → opaque pass (§7.2) issues one `multi_draw_indexed_indirect` call per material bucket against its contiguous slot range.
 
 ---
 
@@ -128,7 +130,7 @@ Clustered forward+ pipeline. Each frame runs a small set of compute prepasses th
 ### 7.1 Visibility and Culling Prepasses
 
 1. **Portal traversal** (CPU) — §2 flood-fill produces the visible cell set.
-2. **GPU cell culling** (compute, *Phase 3.5*) — each surviving cell's AABB is tested against the current frustum. Surviving cells emit `draw_indexed_indirect` commands into an indirect buffer, grouped by material bucket.
+2. **BVH traversal** (compute, *Milestone 4*) — reads the visible-cell bitmask (128 `u32` words) produced by portal DFS; walks the global BVH via flat skip-index DFS (no stack, no depth cap, single invocation); tests each leaf AABB against the frustum and the leaf's `cell_id` against the bitmask; writes or zeros the leaf's permanent indirect buffer slot.
 3. **Clustered light list** (compute, *Phase 4*) — builds per-cluster light index lists from the dynamic light set. Cluster grid is screen-space tiles × depth slices.
 
 ### 7.2 World Geometry

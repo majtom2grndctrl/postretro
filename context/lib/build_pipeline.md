@@ -88,8 +88,9 @@ parse .map → brush-volume BSP construction → brush-side projection → porta
 4. **Portal generation.** For each BSP internal node, clips the splitting-plane polygon against ancestor splitting planes to produce the portal polygon bounding that node's partition. Each portal is a convex polygon connecting two adjacent empty leaves. In default mode, portals are stored in the `.prl` file (section 15) for runtime traversal. In `--pvs` mode, portals are used as intermediate data and discarded.
 5. **Exterior leaf culling.** Flood-fills through the portal graph from a point outside the map's bounding volume. Every empty leaf reachable from outside is an exterior leaf. Exterior leaves produce no packed geometry — void-facing surfaces of the sealing brushes are absent from the output. A map with a leak has interior leaves incorrectly classified as exterior.
 6. **Portal vis** (`--pvs` mode only). Per empty leaf, floods through the portal graph. A leaf L' is potentially visible from L if any sequence of portals connects them. Output: per-leaf PVS bitsets, RLE-compressed. Computed in parallel (one task per leaf).
-7. **Geometry.** Fan-triangulates faces into vertex/index buffers. Faces grouped by leaf index for efficient per-leaf draw calls.
-8. **Pack.** Writes BSP tree nodes, BSP leaves (face ranges, bounds), and geometry to the `.prl` binary format. Default mode also writes the Portals section (15). `--pvs` mode writes the LeafPvs section (14) instead.
+7. **Geometry.** Fan-triangulates faces into a flat global vertex/index buffer. Each face carries a `material_bucket_id` (an `(albedo, normal_map)` pair index) and a `cell_id` (= `leaf_index`, the BSP leaf assigned during this pass).
+8. **BVH.** Collects one primitive per `(face, material_bucket)` pair with its AABB, `index_range`, `material_bucket_id`, and `cell_id`. Builds a global SAH BVH over all primitives. Flattens to dense node[] + leaf[] arrays in DFS order; sorts leaves by `material_bucket_id` so each bucket owns a contiguous slot range.
+9. **Pack.** Writes BSP tree nodes, BSP leaves, geometry, and the BVH section to the `.prl` binary format. Default mode also writes the Portals section (15). `--pvs` mode writes the LeafPvs section (14) instead.
 
 ### Leaf solidity
 
@@ -106,8 +107,8 @@ Step 2's inside-set tracking means leaf solidity is known the moment the leaf is
 | LeafPvs | 14 | `--pvs` mode only |
 | Portals | 15 | Default mode |
 | TextureNames | 16 | Always (deduplicated texture name list) |
-| GeometryV3 | 17 | Always (position + UV + octahedral normal/tangent, 28 bytes/vertex) |
-| CellChunks | 18 | Always (per-cell draw chunks with AABB and cell→chunk-range index) |
+| Geometry | 17 | Always (position + UV + octahedral normal/tangent, 28 bytes/vertex; renamed from GeometryV3) |
+| Bvh | 19 | Always (global BVH: flat node[] + leaf[] arrays, 40 bytes/entry; see BVH Foundation plan) |
 
 ### Runtime visibility
 

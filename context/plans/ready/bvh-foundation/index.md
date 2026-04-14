@@ -66,6 +66,28 @@ write Bvh PRL section                 WGSL BVH traversal compute
 
 ---
 
+## Data contracts
+
+These cross-sub-plan contracts are pinned here. Sub-plans reference them; don't duplicate.
+
+**Node/leaf byte layout (storage buffers)**
+- Node stride: 40 bytes (6×f32 + 4×u32). Natural (4-byte) alignment; no additional padding required for WGSL storage buffers.
+- Leaf stride: 40 bytes (6×f32 + 4×u32 including `cell_id`). Same rule.
+- Nodes written in DFS order. Each node carries `skip_index` (u32) pointing to the next sibling subtree root — the value to jump to on AABB reject. Left child is always at `current_index + 1`.
+
+**Leaf sort order and indirect buffer slot assignment**
+- Leaves are sorted by `material_bucket_id` in the flat leaf array. Each material bucket owns a contiguous slice `[first_leaf, first_leaf + count)`.
+- Each leaf's position in the leaf array is its permanent indirect buffer slot index. No atomic counter. Overflow is architecturally impossible.
+- The per-bucket `(first_slot, count)` table is **not stored in the PRL section**. At load time the runtime scans the sorted leaf array once (O(leaf_count)) to derive it. This scan runs once; it is not on a hot path. `multi_draw_indexed_indirect` issues one call per bucket using the derived ranges.
+
+**Visible-cell bitmask**
+- Fixed 128 `u32` words = 512 bytes, covering up to 4096 cells.
+- Bit test: `(bitmask[cell_id >> 5u] & (1u << (cell_id & 31u))) != 0u`.
+- `VisibleCells::DrawAll` → all 128 words `0xFFFFFFFF`.
+- Buffer cleared to zero at frame start; portal DFS sets bits for visible cells before compute dispatch.
+
+---
+
 ## Sub-plans
 
 This plan has three sub-files, executed in order:
@@ -88,7 +110,11 @@ Sub-plans 1 and 2 are concrete bodies of implementation work, each sized to fit 
 | BVH / CellChunks coexistence | **BVH replaces CellChunks entirely** | No backward compat shim. `CellChunks` section id retires; `chunk_grouping.rs`, `CellChunkTable`, `chunks_for_cell`, `POSTRETRO_FORCE_LEGACY`, and `determine_prl_visibility` all delete. Pre-release — own it. |
 | Runtime BVH traversal | **WGSL compute shader over flat storage buffers** | No Rust crate ships GPU BVH traversal for wgpu. Pre-RTX hardware target + wgpu doesn't expose hardware RT regardless. Custom shader is the established pattern. |
 | Bake-time BVH traversal | **CPU `bvh` crate — same tree, different traversal** | One acceleration structure, two consumers. Milestone 5's baker calls the `bvh` crate directly; no GPU round-trip at compile time. |
-| Milestone 3.5 review finding #1 | **Folded into sub-plan 1 as a drive-by** | Sub-plan 1 rewrites the compiler's face → index pipeline end-to-end. `FaceMetaV3.index_offset/index_count` staleness becomes unreachable as a side effect, no separate fix task needed. |
+| Milestone 3.5 review finding #1 | **`FaceMetaV3.index_offset/index_count` retired** | Sub-plan 1 rewrites the compiler's face → index pipeline end-to-end; these fields are removed from `GeometryV3`. All index ranges are owned by BVH leaves. |
+| `cell_id` provenance | **`FaceMetaV3.leaf_index` direct** | Faces never straddle BSP leaf boundaries — the geometry extractor splits hulls at leaf boundaries. `cell_id = leaf_index` at primitive collection; no new tracking needed. |
+| GPU traversal strategy | **Skip-index (flat DFS), not stack-based** | BVH flattened in DFS order with `skip_index` per node pointing to next sibling. No explicit stack, no depth cap, simpler shader. Standard approach for software GPU BVH. |
+| Visible-cell representation | **128-word bitmask (512 bytes fixed)** | O(1) per-leaf test vs. O(n) linear scan. `VisibleCells` Vec converted to bitmask on CPU before upload. Fixed size covers up to 4096 cells; never needs resizing. |
+| Indirect buffer slot partitioning | **Leaves sorted by `material_bucket_id`; contiguous per-bucket ranges** | Each bucket owns a contiguous slice of the leaf array (and thus the indirect buffer). `multi_draw_indexed_indirect` issues one call per bucket with `(first_slot, count)`. No per-bucket sub-buffers needed. |
 
 ---
 
@@ -98,7 +124,7 @@ Durable architectural decisions migrate to `context/lib/`:
 
 - Global BVH rationale and the per-region pivot condition — document the decision and the fallback, so a future contributor knows why we chose global and what would trigger a pivot.
 - `Bvh` PRL section layout (header + flat node/leaf arrays, byte shape, endianness).
-- WGSL BVH traversal shader structure — the stack-based pattern, depth cap, portal integration shape — lands as a new section in `rendering_pipeline.md` §5 (replacing the cell-chunk description).
+- WGSL BVH traversal shader structure — the skip-index (flat DFS) traversal pattern, portal bitmask integration shape — lands as a new section in `rendering_pipeline.md` §5 (replacing the cell-chunk description).
 - `bvh` crate usage for compile-time primitive build; flatten-to-buffer lowering.
 - Finding #1 postmortem note: `FaceMetaV3` stale-index-range bug and how it dissolved under the pipeline rewrite.
 

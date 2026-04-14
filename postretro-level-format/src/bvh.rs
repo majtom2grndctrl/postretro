@@ -13,6 +13,14 @@ pub const BVH_NODE_FLAG_LEAF: u32 = 1 << 0;
 /// (the value to jump to on AABB reject). For leaf nodes,
 /// `left_child_or_leaf_index` indexes into the `leaves` array and `skip_index`
 /// still points past this node for DFS continuation.
+///
+/// The serialized form (40 bytes, little-endian) lays out the AABB corners as
+/// six scalar f32s rather than a pair of `vec3<f32>`s: the matching WGSL
+/// storage-buffer struct must use scalar fields too, because WGSL's
+/// `AlignOf(vec3<f32>) = 16` would round the struct stride up to 48 and
+/// desync the GPU layout from this on-disk one. See the comment at the WGSL
+/// struct definition in `postretro/src/compute_cull.rs` for the full
+/// rationale; the engine has a naga-based regression test guarding this.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BvhNode {
     pub aabb_min: [f32; 3],
@@ -71,6 +79,40 @@ pub struct BvhSection {
 pub const NODE_STRIDE: usize = 40;
 pub const LEAF_STRIDE: usize = 40;
 pub const HEADER_SIZE: usize = 16;
+
+/// Contiguous leaf-index range owned by a single material bucket in a
+/// bucket-sorted leaf array. Produced by [`derive_bucket_ranges`]; consumed by
+/// both the runtime (to issue one `multi_draw_indexed_indirect` call per
+/// bucket) and the compiler (for stats/log output).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BucketRange {
+    pub material_bucket_id: u32,
+    pub first_leaf: u32,
+    pub leaf_count: u32,
+}
+
+/// Scan a leaf array sorted by `material_bucket_id` and emit one [`BucketRange`]
+/// per distinct bucket, in the order they appear. This is a pure helper over
+/// the shared on-disk leaf layout, so both the engine and the compiler use it
+/// as a single source of truth.
+pub fn derive_bucket_ranges(leaves: &[BvhLeaf]) -> Vec<BucketRange> {
+    let mut ranges: Vec<BucketRange> = Vec::new();
+    for (i, leaf) in leaves.iter().enumerate() {
+        match ranges.last_mut() {
+            Some(last) if last.material_bucket_id == leaf.material_bucket_id => {
+                last.leaf_count += 1;
+            }
+            _ => {
+                ranges.push(BucketRange {
+                    material_bucket_id: leaf.material_bucket_id,
+                    first_leaf: i as u32,
+                    leaf_count: 1,
+                });
+            }
+        }
+    }
+    ranges
+}
 
 impl BvhSection {
     pub fn to_bytes(&self) -> Vec<u8> {

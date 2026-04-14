@@ -34,3 +34,9 @@ env_logger.workspace = true
 
 # Workspace members
 postretro-level-format.workspace = true
+
+[dev-dependencies]
+# Pinned to the same version wgpu 29 re-exports transitively so the WGSL
+# struct-stride regression test parses against the exact WGSL dialect the
+# runtime shader compiles with.
+naga = { version = "29", features = ["wgsl-in"] }

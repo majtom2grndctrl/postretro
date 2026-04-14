@@ -485,7 +485,8 @@ mod tests {
         let generated_portals = crate::portals::generate_portals(&result.tree);
         let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
 
-        let (_bvh, _prims, bvh_section) = crate::bvh_build::build_bvh(&geo_result);
+        let (_bvh, _prims, bvh_section) =
+            crate::bvh_build::build_bvh(&geo_result).expect("bvh build should succeed");
 
         let dir = std::env::temp_dir().join("postretro_test_pipeline");
         let _ = std::fs::create_dir_all(&dir);
@@ -533,7 +534,8 @@ mod tests {
         let generated_portals = crate::portals::generate_portals(&result.tree);
         let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
 
-        let (_bvh, _prims, bvh_section) = crate::bvh_build::build_bvh(&geo_result);
+        let (_bvh, _prims, bvh_section) =
+            crate::bvh_build::build_bvh(&geo_result).expect("bvh build should succeed");
 
         let portals_section = encode_portals(&generated_portals);
 

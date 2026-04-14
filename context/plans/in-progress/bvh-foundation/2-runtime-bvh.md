@@ -22,26 +22,26 @@ The Milestone 3.5 invariants are preserved unchanged: fixed-slot indirect buffer
 
 The BVH is flattened in depth-first order by sub-plan 1. Each internal node carries a `skip_index`: the array index to jump to when the current subtree is rejected (i.e. the index of the next sibling subtree). This eliminates the explicit stack entirely, has no depth cap, and is the standard approach for software GPU BVH traversal.
 
-These WGSL structs must match the binary layout in sub-plan 1 byte-for-byte. The interleaved (vec3 + u32) layout takes advantage of WGSL storage buffer packing: `vec3<f32>` occupies 12 bytes (no implicit padding), so each pair of fields fits in a 16-byte row with no gaps.
+These WGSL structs must match the binary layout in sub-plan 1 byte-for-byte. The AABB corners are declared as six scalar `f32` fields rather than `vec3<f32>`: a WGSL `vec3<f32>` has *size* 12 but *alignment* 16, so any struct containing one is rounded up to stride 48. Scalar-only structs have 4-byte alignment and a natural 40-byte stride that matches the on-disk layout exactly. The traversal shader reconstructs `vec3<f32>` corners for frustum testing on entry to each node. See the comment at the struct definition in `postretro/src/compute_cull.rs` for the full rationale; the regression is locked in by a naga-based stride test.
 
 ```wgsl
 struct BvhNode {
-    aabb_min: vec3<f32>,           // offset  0, 12 bytes
-    skip_index: u32,               // offset 12,  4 bytes — jump here on AABB reject
-    aabb_max: vec3<f32>,           // offset 16, 12 bytes
-    left_child_or_leaf_index: u32, // offset 28,  4 bytes — leaf_array index if is_leaf, else 0
-    flags: u32,                    // offset 32,  4 bytes — bit 0: is_leaf; remaining bits reserved (0)
-    _pad: u32,                     // offset 36,  4 bytes
+    min_x: f32, min_y: f32, min_z: f32,  // AABB min, three scalar f32s
+    skip_index: u32,                     // offset 12 — jump here on AABB reject
+    max_x: f32, max_y: f32, max_z: f32,  // AABB max, three scalar f32s
+    left_child_or_leaf_index: u32,       // offset 28 — leaf_array index if is_leaf, else 0
+    flags: u32,                          // offset 32 — bit 0: is_leaf; remaining bits reserved (0)
+    _pad: u32,                           // offset 36
     // stride: 40 bytes
 };
 
 struct BvhLeaf {
-    aabb_min: vec3<f32>,   // offset  0, 12 bytes
-    material_bucket_id: u32, // offset 12,  4 bytes
-    aabb_max: vec3<f32>,   // offset 16, 12 bytes
-    index_offset: u32,     // offset 28,  4 bytes
-    index_count: u32,      // offset 32,  4 bytes
-    cell_id: u32,          // offset 36,  4 bytes
+    min_x: f32, min_y: f32, min_z: f32,  // AABB min
+    material_bucket_id: u32,             // offset 12
+    max_x: f32, max_y: f32, max_z: f32,  // AABB max
+    index_offset: u32,                   // offset 28
+    index_count: u32,                    // offset 32
+    cell_id: u32,                        // offset 36
     // stride: 40 bytes
 };
 ```

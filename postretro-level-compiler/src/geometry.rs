@@ -1,5 +1,5 @@
 // Geometry extraction: fan-triangulate faces, compute UVs and tangent-space basis,
-// build vertex/index buffers in GeometryV3 format.
+// build vertex/index buffers in the `Geometry` section format.
 // See: context/lib/build_pipeline.md §PRL, rendering_pipeline.md §6
 
 use std::collections::HashSet;
@@ -32,7 +32,7 @@ pub struct GeometryResult {
 }
 
 /// Fan-triangulate faces, compute texel-space UVs and tangent-space basis,
-/// and build a `GeometrySectionV3` with faces ordered by empty BSP leaf.
+/// and build a `GeometrySection` with faces ordered by empty BSP leaf.
 ///
 /// Per-vertex normals come from the face plane. Tangents come from the UV
 /// s-axis (texture U direction) projected onto the face plane and
@@ -44,9 +44,11 @@ pub struct GeometryResult {
 /// positions for texture projection.
 ///
 /// Only empty leaves contribute geometry. Solid leaves are skipped. The
-/// `leaf_index` field in `FaceMetaV3` stores the raw BSP leaf index — the
-/// same index the engine's `find_leaf()` returns at runtime — so
-/// `chunks_for_cell(find_leaf(pos))` finds the correct draw chunks.
+/// `leaf_index` field in `FaceMeta` stores the raw BSP leaf index — the
+/// same index the engine's `find_leaf()` returns at runtime. This index
+/// becomes the BVH leaf's `cell_id` (one cell per BSP leaf), which the BVH
+/// traversal compute shader checks against the per-frame visible-cell
+/// bitmask before emitting a draw command.
 ///
 /// Leaves listed in `exterior_leaves` contribute no faces but are still
 /// iterated. Pass `&HashSet::new()` to disable exterior culling.
@@ -722,8 +724,8 @@ mod tests {
         // Sequential empty: -, 0, -, 1, 2
         //
         // The engine's find_leaf() returns raw BSP indices (1, 3, 4).
-        // leaf_index in FaceMetaV3 must match these so chunks_for_cell()
-        // can find the right chunks at runtime.
+        // leaf_index in FaceMeta must match these so the BVH leaf's
+        // cell_id lines up with the visible-cell bitmask at runtime.
         let faces = vec![
             triangle_face(), // face 0 -> BSP leaf 1
             quad_face(),     // face 1 -> BSP leaf 3
@@ -827,7 +829,7 @@ mod tests {
         }
     }
 
-    // -- GeometrySectionV3 round-trip --
+    // -- GeometrySection round-trip --
 
     #[test]
     fn geometry_section_round_trip() {

@@ -27,6 +27,16 @@ use wgpu::util::DeviceExt;
 
 use crate::geometry::{BVH_NODE_FLAG_LEAF, BucketRange, BvhTree};
 
+// All GPU uploads below use little-endian byte order because the WGSL storage
+// buffers, PRL on-disk format, and every wgpu backend target (Vulkan, Metal,
+// DX12 on x86_64 / aarch64 / wasm32) are little-endian. Enforce at compile
+// time so a hypothetical big-endian build fails loudly instead of silently
+// scrambling BVH data.
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "postretro GPU upload path assumes little-endian; add a byte-swap layer before porting"
+);
+
 /// Size of a single DrawIndexedIndirect command in bytes.
 /// Layout: index_count(4) + instance_count(4) + first_index(4) +
 ///         base_vertex(4) + first_instance(4) = 20 bytes.
@@ -61,9 +71,14 @@ const MAX_VISIBLE_CELLS: u32 = (VISIBLE_CELLS_WORDS as u32) * 32;
 // O(1) per-leaf cost. See the BVH foundation sub-plan 2 notes.
 //
 // WGSL struct layouts must match the on-disk stride byte-for-byte (see
-// `1-compile-bvh.md` for the exact layouts): `vec3<f32>` in a storage buffer
-// occupies 12 bytes (not 16), so each pair of (vec3 + u32) fits in a 16-byte
-// row with no gaps and each struct's stride is 40 bytes.
+// `1-compile-bvh.md` for the exact layouts). The AABB corners are declared as
+// six scalar `f32` fields instead of `vec3<f32>` on purpose: in WGSL a
+// `vec3<f32>` has *size* 12 but *alignment* 16, which forces any containing
+// struct up to 16-byte alignment and rounds the stride from 40 to 48. Splitting
+// the vectors into scalars gives the struct 4-byte alignment and a natural
+// 40-byte stride that matches the on-disk layout exactly. We reconstruct the
+// corners as `vec3<f32>` once per node at traversal time — the constructor is
+// free on the GPU. Verified against naga 29.0.1 in `wgsl_struct_strides_are_40_bytes`.
 const CULL_SHADER_SOURCE: &str = r#"
 // BVH traversal compute shader — flat DFS with skip-index.
 //
@@ -80,19 +95,31 @@ struct CullUniforms {
     planes: array<FrustumPlane, 6>,
 };
 
+// AABB corners are stored as six scalar f32s, not vec3<f32>: WGSL's
+// AlignOf(vec3<f32>) = 16 would force struct stride to 48. Scalar-only structs
+// have 4-byte alignment, giving a natural 40-byte stride that matches the
+// on-disk layout. `wgsl_struct_strides_are_40_bytes` enforces this with naga.
 struct BvhNode {
-    aabb_min: vec3<f32>,            // offset  0
+    min_x: f32,                     // offset  0
+    min_y: f32,                     // offset  4
+    min_z: f32,                     // offset  8
     skip_index: u32,                // offset 12
-    aabb_max: vec3<f32>,            // offset 16
+    max_x: f32,                     // offset 16
+    max_y: f32,                     // offset 20
+    max_z: f32,                     // offset 24
     left_child_or_leaf_index: u32,  // offset 28
     flags: u32,                     // offset 32 (bit 0 = is_leaf)
     _pad: u32,                      // offset 36
 };
 
 struct BvhLeaf {
-    aabb_min: vec3<f32>,       // offset  0
+    min_x: f32,                // offset  0
+    min_y: f32,                // offset  4
+    min_z: f32,                // offset  8
     material_bucket_id: u32,   // offset 12
-    aabb_max: vec3<f32>,       // offset 16
+    max_x: f32,                // offset 16
+    max_y: f32,                // offset 20
+    max_z: f32,                // offset 24
     index_offset: u32,         // offset 28
     index_count: u32,          // offset 32
     cell_id: u32,              // offset 36
@@ -158,9 +185,11 @@ fn cull_main() {
         }
 
         let node = nodes[i];
+        let node_min = vec3<f32>(node.min_x, node.min_y, node.min_z);
+        let node_max = vec3<f32>(node.max_x, node.max_y, node.max_z);
 
         // Reject: jump over the entire subtree via skip_index.
-        if is_aabb_outside_frustum(node.aabb_min, node.aabb_max) {
+        if is_aabb_outside_frustum(node_min, node_max) {
             if (node.flags & 1u) != 0u {
                 // Leaf that didn't pass the frustum test.
                 let leaf_idx = node.left_child_or_leaf_index;
@@ -175,8 +204,10 @@ fn cull_main() {
             // Leaf: do the per-leaf tests and write its indirect slot.
             let leaf_idx = node.left_child_or_leaf_index;
             let leaf = leaves[leaf_idx];
+            let leaf_min = vec3<f32>(leaf.min_x, leaf.min_y, leaf.min_z);
+            let leaf_max = vec3<f32>(leaf.max_x, leaf.max_y, leaf.max_z);
 
-            if is_aabb_outside_frustum(leaf.aabb_min, leaf.aabb_max) {
+            if is_aabb_outside_frustum(leaf_min, leaf_max) {
                 indirect_draws[leaf_idx].index_count = 0u;
                 cull_status[leaf_idx] = 1u;
             } else if !cell_is_visible(leaf.cell_id) {
@@ -482,13 +513,13 @@ impl ComputeCullPipeline {
         let uniforms_bytes = serialize_cull_uniforms(&uniforms);
         queue.write_buffer(&self.uniform_buffer, 0, &uniforms_bytes);
 
-        // Reset cull_status to 0 (portal-culled) before dispatch. The
-        // compute shader writes 1 (frustum) or 2 (visible) for leaves it
-        // touches; untouched leaves (all of them are touched by the single
-        // DFS walk) retain 0.
+        // Reset cull_status to 0 (portal-culled) before dispatch via
+        // `clear_buffer`, which zeros directly on the GPU and avoids a
+        // per-frame host-side allocation. The compute shader writes 1
+        // (frustum) or 2 (visible) for leaves it touches; untouched leaves
+        // (all of them are touched by the single DFS walk) retain 0.
         if self.total_leaves > 0 {
-            let zeros = vec![0u8; self.total_leaves as usize * 4];
-            queue.write_buffer(&self.cull_status_buffer, 0, &zeros);
+            encoder.clear_buffer(&self.cull_status_buffer, 0, None);
         }
 
         // Early out: nothing to cull.
@@ -584,7 +615,7 @@ fn serialize_cull_uniforms(uniforms: &CullUniforms) -> Vec<u8> {
     let mut buf = Vec::with_capacity(CULL_UNIFORMS_SIZE);
     for plane in &uniforms.planes {
         for &v in plane {
-            buf.extend_from_slice(&v.to_ne_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
         }
     }
     buf
@@ -593,28 +624,36 @@ fn serialize_cull_uniforms(uniforms: &CullUniforms) -> Vec<u8> {
 fn serialize_u32_slice(slice: &[u32]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(slice.len() * 4);
     for &val in slice {
-        buf.extend_from_slice(&val.to_ne_bytes());
+        buf.extend_from_slice(&val.to_le_bytes());
     }
     buf
 }
 
 /// Serialize BVH nodes to the 40-byte WGSL storage layout.
+///
+/// Written as `min.x, min.y, min.z, skip_index, max.x, max.y, max.z,
+/// left_child_or_leaf_index, flags, _pad` — six scalar f32s + four u32s.
+/// This matches the scalar-field WGSL struct shape on purpose: declaring
+/// the AABB corners as `vec3<f32>` on the shader side would push the
+/// struct stride from 40 to 48 (see the comment at the WGSL struct
+/// definition above and the `wgsl_struct_strides_are_40_bytes` regression
+/// test), silently garbling every node after index 0.
 fn serialize_bvh_nodes(nodes: &[crate::geometry::BvhNode]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(nodes.len() * 40);
     for node in nodes {
         for &c in &node.aabb_min {
-            buf.extend_from_slice(&c.to_ne_bytes());
+            buf.extend_from_slice(&c.to_le_bytes());
         }
-        buf.extend_from_slice(&node.skip_index.to_ne_bytes());
+        buf.extend_from_slice(&node.skip_index.to_le_bytes());
         for &c in &node.aabb_max {
-            buf.extend_from_slice(&c.to_ne_bytes());
+            buf.extend_from_slice(&c.to_le_bytes());
         }
-        buf.extend_from_slice(&node.left_child_or_leaf_index.to_ne_bytes());
+        buf.extend_from_slice(&node.left_child_or_leaf_index.to_le_bytes());
         // Mask to the only flag bit we currently use; everything else is
         // reserved and must be zero to match the WGSL struct expectation.
         let flags = node.flags & BVH_NODE_FLAG_LEAF;
-        buf.extend_from_slice(&flags.to_ne_bytes());
-        buf.extend_from_slice(&0u32.to_ne_bytes()); // _pad
+        buf.extend_from_slice(&flags.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // _pad
     }
     buf
 }
@@ -624,15 +663,15 @@ fn serialize_bvh_leaves(leaves: &[crate::geometry::BvhLeaf]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(leaves.len() * 40);
     for leaf in leaves {
         for &c in &leaf.aabb_min {
-            buf.extend_from_slice(&c.to_ne_bytes());
+            buf.extend_from_slice(&c.to_le_bytes());
         }
-        buf.extend_from_slice(&leaf.material_bucket_id.to_ne_bytes());
+        buf.extend_from_slice(&leaf.material_bucket_id.to_le_bytes());
         for &c in &leaf.aabb_max {
-            buf.extend_from_slice(&c.to_ne_bytes());
+            buf.extend_from_slice(&c.to_le_bytes());
         }
-        buf.extend_from_slice(&leaf.index_offset.to_ne_bytes());
-        buf.extend_from_slice(&leaf.index_count.to_ne_bytes());
-        buf.extend_from_slice(&leaf.cell_id.to_ne_bytes());
+        buf.extend_from_slice(&leaf.index_offset.to_le_bytes());
+        buf.extend_from_slice(&leaf.index_count.to_le_bytes());
+        buf.extend_from_slice(&leaf.cell_id.to_le_bytes());
     }
     buf
 }
@@ -766,6 +805,49 @@ mod tests {
     fn visible_cells_bitmask_buffer_size() {
         assert_eq!(VISIBLE_CELLS_BYTES, 512);
         assert_eq!(MAX_VISIBLE_CELLS, 4096);
+    }
+
+    /// Regression: a WGSL `vec3<f32>` has alignment 16, so any struct that
+    /// contains one gets rounded up to 48-byte stride — silently shifting
+    /// every node/leaf after index 0 in the GPU storage buffers and reading
+    /// garbage. The fix is to store the AABB corners as six scalar `f32`
+    /// fields. This test parses the live shader source with naga and asserts
+    /// both `BvhNode` and `BvhLeaf` end up at 40 bytes. If someone re-vec3s
+    /// either struct, this test fails loudly before the breakage reaches
+    /// a GPU round-trip.
+    #[test]
+    fn wgsl_struct_strides_are_40_bytes() {
+        let module = naga::front::wgsl::parse_str(CULL_SHADER_SOURCE)
+            .expect("cull shader should parse as WGSL");
+
+        let mut seen = std::collections::HashMap::new();
+        for (_handle, ty) in module.types.iter() {
+            if let naga::TypeInner::Struct { span, .. } = &ty.inner {
+                if let Some(name) = &ty.name {
+                    seen.insert(name.clone(), *span);
+                }
+            }
+        }
+
+        let node_span = seen
+            .get("BvhNode")
+            .copied()
+            .expect("shader should declare struct BvhNode");
+        let leaf_span = seen
+            .get("BvhLeaf")
+            .copied()
+            .expect("shader should declare struct BvhLeaf");
+
+        assert_eq!(
+            node_span, 40,
+            "BvhNode WGSL stride is {node_span}, expected 40; \
+             a vec3<f32> field likely crept back in (align 16 → stride 48)"
+        );
+        assert_eq!(
+            leaf_span, 40,
+            "BvhLeaf WGSL stride is {leaf_span}, expected 40; \
+             a vec3<f32> field likely crept back in (align 16 → stride 48)"
+        );
     }
 
     #[test]

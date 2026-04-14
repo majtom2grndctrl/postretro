@@ -2005,6 +2005,7 @@ dependencies = [
  "image",
  "kira",
  "log",
+ "naga",
  "pollster",
  "postretro-level-format",
  "thiserror 2.0.18",

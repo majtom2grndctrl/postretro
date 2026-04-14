@@ -76,7 +76,8 @@ fn main() -> anyhow::Result<()> {
     // Build the global BVH over all static geometry. One acceleration
     // structure feeds both the runtime GPU traversal (via the flattened
     // BvhSection) and Milestone 5's CPU baker (via the live bvh::Bvh).
-    let (_bvh, _primitives, bvh_section) = bvh_build::build_bvh(&geo_result);
+    let (_bvh, _primitives, bvh_section) =
+        bvh_build::build_bvh(&geo_result).map_err(|e| anyhow::anyhow!("BVH build failed: {e}"))?;
     bvh_build::log_stats(&bvh_section);
 
     log::info!("[Compiler] BVH build complete.");

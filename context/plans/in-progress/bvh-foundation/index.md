@@ -71,7 +71,7 @@ write Bvh PRL section                 WGSL BVH traversal compute
 These cross-sub-plan contracts are pinned here. Sub-plans reference them; don't duplicate.
 
 **Node/leaf byte layout (storage buffers)**
-- Node stride: 40 bytes (6×f32 + 4×u32). Natural (4-byte) alignment; no additional padding required for WGSL storage buffers.
+- Node stride: 40 bytes (6×f32 + 4×u32). The WGSL structs declare the AABB corners as six scalar `f32` fields — not `vec3<f32>` — because `vec3<f32>` has 16-byte alignment and would force the struct stride up to 48. Scalar-only structs have 4-byte alignment; see the comment at the WGSL struct definition in `postretro/src/compute_cull.rs` for the full rationale.
 - Leaf stride: 40 bytes (6×f32 + 4×u32 including `cell_id`). Same rule.
 - Nodes written in DFS order. Each node carries `skip_index` (u32) pointing to the next sibling subtree root — the value to jump to on AABB reject. Left child is always at `current_index + 1`.
 

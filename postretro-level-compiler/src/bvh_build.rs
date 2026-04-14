@@ -12,10 +12,29 @@ use bvh::aabb::{Aabb, Bounded};
 use bvh::bounding_hierarchy::BHShape;
 use bvh::bvh::{Bvh, BvhNode};
 use nalgebra::Point3;
-use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode as FlatNode, BvhSection};
+use postretro_level_format::bvh::{
+    BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode as FlatNode, BvhSection, derive_bucket_ranges,
+};
 use postretro_level_format::geometry::GeometrySection;
 
 use crate::geometry::GeometryResult;
+
+/// Maximum cell id the runtime can represent in its visible-cell bitmask.
+/// The runtime bitmask is a fixed 128-word (512-byte) storage buffer covering
+/// cell ids 0..4096. A map whose geometry extractor produced a leaf with a
+/// higher BSP leaf index cannot be rendered, so we surface it as a compile
+/// error rather than silently dropping the affected BVH leaves.
+const MAX_CELL_ID_EXCLUSIVE: u32 = 4096;
+
+/// Error from BVH construction.
+#[derive(Debug, thiserror::Error)]
+pub enum BvhBuildError {
+    #[error(
+        "cell_id {cell_id} exceeds the runtime visible-cell bitmask capacity ({max}); \
+         the map has more than {max} BSP leaves contributing geometry and cannot be rendered"
+    )]
+    CellIdOutOfRange { cell_id: u32, max: u32 },
+}
 
 /// One primitive fed to the BVH builder. A primitive is the unit of index-range
 /// ownership in the final BVH: one contiguous slice of the shared index buffer
@@ -134,11 +153,26 @@ fn face_aabb(
 /// Milestone 5 SH baker to traverse on the CPU without rebuilding. The
 /// `BvhSection` contains the flattened GPU-facing representation sorted so
 /// each material bucket owns a contiguous leaf range.
-pub fn build_bvh(geo: &GeometryResult) -> (Bvh<f32, 3>, Vec<BvhPrimitive>, BvhSection) {
+pub fn build_bvh(
+    geo: &GeometryResult,
+) -> Result<(Bvh<f32, 3>, Vec<BvhPrimitive>, BvhSection), BvhBuildError> {
     let mut primitives = collect_primitives(geo);
 
+    // Bounds-check cell_id against the runtime bitmask capacity. The runtime
+    // visible-cell bitmask is a fixed 4096-bit structure; any leaf with a
+    // larger id would be silently dropped by the traversal shader, so fail
+    // the compile loudly here instead.
+    for prim in &primitives {
+        if prim.cell_id >= MAX_CELL_ID_EXCLUSIVE {
+            return Err(BvhBuildError::CellIdOutOfRange {
+                cell_id: prim.cell_id,
+                max: MAX_CELL_ID_EXCLUSIVE,
+            });
+        }
+    }
+
     if primitives.is_empty() {
-        return (
+        return Ok((
             Bvh { nodes: Vec::new() },
             primitives,
             BvhSection {
@@ -146,12 +180,12 @@ pub fn build_bvh(geo: &GeometryResult) -> (Bvh<f32, 3>, Vec<BvhPrimitive>, BvhSe
                 leaves: Vec::new(),
                 root_node_index: 0,
             },
-        );
+        ));
     }
 
     let bvh = Bvh::build(&mut primitives);
     let section = flatten(&bvh, &primitives);
-    (bvh, primitives, section)
+    Ok((bvh, primitives, section))
 }
 
 /// Flatten a built `bvh::Bvh` into the dense `BvhSection` layout.
@@ -224,7 +258,6 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
             BvhNode::Node {
                 child_l_index,
                 child_l_aabb,
-                child_r_index,
                 child_r_aabb,
                 ..
             } => {
@@ -246,23 +279,21 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
                 leaf_slot_for_flat.push(None);
 
                 // Sanity: left child must be at flat_idx + 1 in DFS order.
+                // The right child is visited later via the `subtree_end`
+                // pass below, which reads it back off `src_nodes`.
                 debug_assert_eq!(
                     flat_index_of[child_l_index],
                     flat_idx as u32 + 1,
                     "DFS invariant violated: left child is not current + 1"
                 );
-                let _ = child_r_index; // used below via flat_index_of
             }
         }
     }
 
     // Compute skip_index for every flat node. The skip target is the flat slot
     // where the next sibling subtree starts — i.e. the subtree immediately
-    // following the current one in DFS order. We use a parent stack to track
-    // the "next sibling" entry points as we walk.
-    let total = flat_nodes.len() as u32;
-    // Stack of (flat_idx_of_node_whose_skip_is_unknown, skip_target_once_its_subtree_ends)
-    // We instead do a second pass: for every internal node at flat slot f,
+    // following the current one in DFS order. We do a reverse pass to record
+    // "subtree end" per node: for every internal node at flat slot f,
     // its right child lives at flat_index_of[child_r_index]. Its skip_index is
     // whatever comes after its own subtree, which equals the parent's right
     // child target, cascading upward. The simplest implementation is to record
@@ -288,12 +319,11 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
     }
 
     // skip_index = subtree_end[flat_idx] for every node. This is the flat slot
-    // to visit after finishing the current subtree (or equal to `total` if
-    // the subtree is the last thing in the tree).
+    // to visit after finishing the current subtree (or equal to `flat_nodes.len()`
+    // if the subtree is the last thing in the tree).
     for flat_idx in 0..flat_nodes.len() {
         flat_nodes[flat_idx].skip_index = subtree_end[flat_idx];
     }
-    let _ = total;
 
     // Stable-sort leaves by material_bucket_id so each bucket owns a
     // contiguous range. Stable sort keeps determinism for leaves with the
@@ -346,15 +376,10 @@ pub fn log_stats(section: &BvhSection) {
         section.leaves.len()
     );
     if !section.leaves.is_empty() {
-        // Per-material-bucket contiguous range summary.
-        let mut bucket_count = 0usize;
-        let mut prev: Option<u32> = None;
-        for leaf in &section.leaves {
-            if Some(leaf.material_bucket_id) != prev {
-                bucket_count += 1;
-                prev = Some(leaf.material_bucket_id);
-            }
-        }
+        // Per-material-bucket contiguous range summary — derived via the
+        // shared format-crate helper so the compiler and engine agree on the
+        // bucket layout.
+        let bucket_count = derive_bucket_ranges(&section.leaves).len();
         log::info!("[Compiler]   Material buckets: {bucket_count}");
     }
 }
@@ -409,7 +434,7 @@ mod tests {
             &[(0, 3, 0, 0)],
             &[0, 1, 2],
         );
-        let (_bvh, _prims, section) = build_bvh(&geo);
+        let (_bvh, _prims, section) = build_bvh(&geo).unwrap();
         assert_eq!(section.leaves.len(), 1);
         assert_eq!(section.nodes.len(), 1);
         assert_eq!(
@@ -425,8 +450,8 @@ mod tests {
     #[test]
     fn deterministic_build() {
         let geo = multi_face_geometry();
-        let (_, _, a) = build_bvh(&geo);
-        let (_, _, b) = build_bvh(&geo);
+        let (_, _, a) = build_bvh(&geo).unwrap();
+        let (_, _, b) = build_bvh(&geo).unwrap();
         assert_eq!(a.to_bytes(), b.to_bytes(), "BVH build is not deterministic");
     }
 
@@ -442,8 +467,8 @@ mod tests {
         // Note: the reversed `faces`/`face_index_ranges` are consistent even
         // though `geometry.indices` stays in forward order, because each face
         // still points at its original index slice.
-        let (_, _, a) = build_bvh(&geo_forward);
-        let (_, _, b) = build_bvh(&geo_reverse);
+        let (_, _, a) = build_bvh(&geo_forward).unwrap();
+        let (_, _, b) = build_bvh(&geo_reverse).unwrap();
         assert_eq!(
             a.to_bytes(),
             b.to_bytes(),
@@ -454,7 +479,7 @@ mod tests {
     #[test]
     fn leaves_sorted_by_material_bucket() {
         let geo = multi_face_geometry();
-        let (_, _, section) = build_bvh(&geo);
+        let (_, _, section) = build_bvh(&geo).unwrap();
         for w in section.leaves.windows(2) {
             assert!(
                 w[0].material_bucket_id <= w[1].material_bucket_id,
@@ -468,7 +493,7 @@ mod tests {
         let geo = multi_face_geometry();
         let total_indices: u32 = geo.face_index_ranges.iter().map(|r| r.index_count).sum();
 
-        let (_, _, section) = build_bvh(&geo);
+        let (_, _, section) = build_bvh(&geo).unwrap();
 
         let leaf_indices: u32 = section.leaves.iter().map(|l| l.index_count).sum();
         assert_eq!(leaf_indices, total_indices, "leaf coverage mismatch");
@@ -488,7 +513,7 @@ mod tests {
     #[test]
     fn leaf_aabbs_tightly_bound_geometry() {
         let geo = multi_face_geometry();
-        let (_, _, section) = build_bvh(&geo);
+        let (_, _, section) = build_bvh(&geo).unwrap();
 
         for leaf in &section.leaves {
             let mut min = [f32::INFINITY; 3];
@@ -509,10 +534,40 @@ mod tests {
     #[test]
     fn round_trip_through_format_crate() {
         let geo = multi_face_geometry();
-        let (_, _, section) = build_bvh(&geo);
+        let (_, _, section) = build_bvh(&geo).unwrap();
         let bytes = section.to_bytes();
         let restored = BvhSection::from_bytes(&bytes).expect("round-trip should succeed");
         assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn build_bvh_rejects_cell_id_at_or_above_limit() {
+        // Forge a face whose leaf_index equals the bitmask limit. The BVH
+        // builder must reject it rather than silently dropping the resulting
+        // leaf at runtime.
+        let geo = make_geometry(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[(0, 3, MAX_CELL_ID_EXCLUSIVE, 0)],
+            &[0, 1, 2],
+        );
+        match build_bvh(&geo) {
+            Err(BvhBuildError::CellIdOutOfRange { cell_id, max }) => {
+                assert_eq!(cell_id, MAX_CELL_ID_EXCLUSIVE);
+                assert_eq!(max, MAX_CELL_ID_EXCLUSIVE);
+            }
+            Ok(_) => panic!("expected CellIdOutOfRange error"),
+        }
+    }
+
+    #[test]
+    fn build_bvh_accepts_cell_id_just_below_limit() {
+        let geo = make_geometry(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[(0, 3, MAX_CELL_ID_EXCLUSIVE - 1, 0)],
+            &[0, 1, 2],
+        );
+        let (_, _, section) = build_bvh(&geo).expect("cell_id = limit - 1 must be accepted");
+        assert_eq!(section.leaves[0].cell_id, MAX_CELL_ID_EXCLUSIVE - 1);
     }
 
     #[test]
@@ -526,7 +581,7 @@ mod tests {
             texture_names: TextureNamesSection { names: Vec::new() },
             face_index_ranges: Vec::new(),
         };
-        let (_, prims, section) = build_bvh(&geo);
+        let (_, prims, section) = build_bvh(&geo).unwrap();
         assert!(prims.is_empty());
         assert!(section.nodes.is_empty());
         assert!(section.leaves.is_empty());
@@ -538,7 +593,7 @@ mod tests {
         // should equal the subtree end (i.e. first flat slot beyond the
         // right subtree).
         let geo = multi_face_geometry();
-        let (_, _, section) = build_bvh(&geo);
+        let (_, _, section) = build_bvh(&geo).unwrap();
 
         // Walk nodes: every node's skip_index should be > its own index and
         // <= nodes.len(); for leaves, skip_index should equal current + 1

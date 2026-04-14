@@ -156,11 +156,16 @@ fn main() -> Result<()> {
 /// after `load_textures()` provides actual dimensions. BVH leaves own the
 /// index ranges now, so we walk the leaf array and use each leaf's
 /// `material_bucket_id` — which is the texture index for this face — to
-/// pick the correct texture's (w, h). Each vertex is normalized exactly
-/// once (a shared vertex between two leaves with the same texture is a
-/// no-op after the first leaf normalizes it, and a shared vertex between
-/// two leaves with different textures is impossible: the compiler splits
-/// vertices on material bucket changes).
+/// pick the correct texture's (w, h).
+///
+/// Invariant: the compiler emits a fresh copy of every face's vertices
+/// (`extract_geometry` appends to `vertices` at the start of each face's
+/// emit loop), so no vertex is shared between any two leaf `index_offset`
+/// ranges at all. That makes the one-pass `normalized[vi]` guard a pure
+/// defensive check — it would only trip on future pipeline changes that
+/// begin deduplicating vertices across faces, at which point sharing
+/// between different textures would become possible and this function
+/// would need revisiting.
 fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
     let mut normalized = vec![false; world.vertices.len()];
 

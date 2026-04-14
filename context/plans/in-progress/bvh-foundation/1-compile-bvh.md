@@ -59,7 +59,7 @@ Leaf array (leaf_count entries):      — stride: 40 bytes
   u32        cell_id                        ( 4 bytes, offset 36)
 ```
 
-The interleaved layout (vec3 + u32 pairs) matches the WGSL storage buffer struct layout exactly — `vec3<f32>` in a storage buffer occupies 12 bytes (not 16), so no padding is inserted between fields. Strides are 40 bytes (6×f32 + 4×u32); natural (4-byte) alignment throughout; no additional padding required.
+The on-disk layout is 40 bytes per node/leaf (6×f32 + 4×u32, natural 4-byte alignment, no internal padding). The matching WGSL storage-buffer structs declare the AABB corners as six scalar `f32` fields rather than `vec3<f32>` so the struct alignment stays at 4 bytes and the stride stays at 40 — see the comment at the WGSL struct definition in `postretro/src/compute_cull.rs` for why `vec3<f32>` would force a 48-byte stride.
 
 Leaves are sorted by `material_bucket_id` in the flat leaf array, so each bucket owns a contiguous slice. At load time the runtime scans the sorted leaf array once (O(leaf_count)) to build a per-bucket `(first_slot, count)` table; this table is not stored in the PRL section. The indirect buffer is sized to `leaf_count` slots (one permanent slot per leaf, indexed by leaf array position). See "Data contracts" in `index.md` for slot-range bookkeeping.
 

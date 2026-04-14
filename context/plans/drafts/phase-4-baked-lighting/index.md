@@ -10,22 +10,47 @@
 
 ## Goal
 
-Specify Postretro's lighting system end-to-end: how mappers author lights in TrenchBroom, how the compiler translates them into a canonical format, how the baker turns canonical lights into an SH irradiance volume, how the runtime samples indirect light, and how the same canonical lights drive dynamic direct shading. One spec, one pipeline, one place where format decisions live.
+Specify Postretro's lighting system end-to-end *and* the spatial-structure refactor that lighting needs. Lighting rides on top of a global BVH that replaces Phase 3.5's cell-chunk compute cull — one structure serving runtime visibility culling and compile-time baker ray casting.
 
-Four axes, one plan:
+**This phase splits into two parts with a check-in gate between them:**
 
-1. **Input** — mapper authoring (FGD) → parse → translator → canonical light format.
-2. **Indirect bake** — SH L2 irradiance volume baked from canonical lights over static geometry.
-3. **Direct shading** — clustered forward+ consumption of canonical lights plus transient gameplay lights, with shadow maps for dynamic shadow-casters.
-4. **Output** — PRL section shape for the SH volume; runtime sampling path in the world shader.
+- **Part A — BVH Foundation.** Replaces Phase 3.5's cell-chunk compute cull with a global BVH. Retires the `CellChunks` PRL section. Ships with visual parity to Phase 3.5 — flat ambient, no lighting changes, same frame output from a different spatial structure. Validates before Part B begins.
+- **Part B — Lighting.** Layers the full lighting pipeline onto the BVH foundation: FGD authoring, canonical light format, SH irradiance volume bake, normal maps, clustered forward+ direct lights, shadow maps. The SH baker ray-casts through the Part A BVH — one structure, two consumers, no second design pass.
+
+Five axes, one plan:
+
+1. **Spatial** — global BVH in prl-build; flat PRL section; WGSL compute traversal at runtime; CPU `bvh` crate traversal at bake time. Replaces Phase 3.5's `CellChunks` section and cell-chunk compute cull entirely.
+2. **Input** — mapper authoring (FGD) → parse → translator → canonical light format.
+3. **Indirect bake** — SH L2 irradiance volume, ray-cast through the Part A BVH over static geometry.
+4. **Direct shading** — clustered forward+ consumption of canonical lights plus transient gameplay lights, with shadow maps for dynamic shadow-casters.
+5. **Output** — PRL sections for BVH and SH volume; runtime sampling paths.
 
 The translator is decoupled from the parser: future map-format support (e.g., UDMF) adds a sibling module against the same canonical types, so the baker and everything downstream never learn the source format.
 
 ---
 
+## Spatial structure — why BVH, why now
+
+Phase 3.5 shipped a per-cell chunk table and compute-cull shader. That works, but Part B needs a compile-time acceleration structure for baker ray casts anyway — and Phase 3.5's review flagged finding #1 (`FaceMetaV3.index_offset/index_count` stale after chunk reordering) which reworks the same compiler data path. Doing the BVH refactor now gives us:
+
+- One acceleration structure for runtime cull *and* bake-time ray casts. No second design pass in Part B.
+- A clean place to land Phase 3.5 review finding #1 — the compiler's face→index pipeline gets rewritten end-to-end, so the stale-metadata bug evaporates as a free side effect.
+- No backward compat shim. `CellChunks` section id retires, `chunk_grouping.rs` deletes, `compute_cull.rs` rewrites, `POSTRETRO_FORCE_LEGACY` diagnostic deletes with it. Pre-release, own the refactor.
+
+**Architectural commitments:**
+
+- **Global BVH, not per-region.** Single flat hierarchy over all static geometry. Per-region is the pivot path if Stage A5 validation shows global doesn't hit frame-time parity on cell-heavy maps — designed for as a fallback, not as day-one scope.
+- **Software traversal only.** No hardware ray tracing. Target is pre-RTX hardware and wgpu (which doesn't expose hardware RT regardless). Runtime traversal is a WGSL compute shader over a flat node/leaf storage buffer. Bake-time traversal is CPU through the `bvh` crate. Same structure, two traversal implementations, zero hardware assumptions.
+- **Portals stay.** Portal DFS still produces the visible-cell set — BVH replaces per-chunk frustum culling, not occlusion culling. Portal output feeds the BVH traversal compute shader; the integration shape lands in Stage A4.
+- **Fixed-slot indirect buffer preserved.** Phase 3.5's no-atomic-counter design survives Part A: each BVH leaf gets a permanent indirect-buffer slot, so overflow stays architecturally impossible.
+
+---
+
 ## Context
 
-Phase 3 ships flat uniform lighting with no baked light sources. Phase 3.5 adds GPU-driven indirect draws, per-cell chunks, HiZ, and the vertex format (position + UV + packed normal + packed tangent) that lighting depends on — but continues to apply flat ambient. Phase 4 replaces flat ambient with the full lighting pipeline: SH L2 irradiance volume for indirect + clustered forward+ dynamic lights for direct + shadow maps + tangent-space normal maps. One phase, one deliverable.
+Phase 3 ships flat uniform lighting with no baked light sources. Phase 3.5 adds GPU-driven indirect draws, per-cell chunks, and the vertex format (position + UV + packed normal + packed tangent) that lighting depends on — but continues to apply flat ambient. Phase 4 replaces flat ambient with the full lighting pipeline: SH L2 irradiance volume for indirect + clustered forward+ dynamic lights for direct + shadow maps + tangent-space normal maps.
+
+Phase 4 is *two deliverables* behind one check-in gate: Part A lands the BVH refactor and validates visual/perf parity with Phase 3.5 output; Part B lands lighting on top of Part A's BVH. Part A keeps the Phase 3.5 vertex format and indirect-draw architecture; it only swaps the cell-chunk compute cull for a BVH traversal compute cull and retires the `CellChunks` PRL section.
 
 The current FGD (`assets/postretro.fgd`) defines `env_fog_volume`, `env_cubemap`, and `env_reverb_zone`. No light entities exist yet — Phase 3 was runnable without them. This plan adds them as the front of the pipeline.
 
@@ -36,7 +61,7 @@ Postretro's convention is to research established solutions before inventing. Se
 - **Source Engine** — ambient cubes (six-axis per-probe RGB). Considered and rejected: SH L2 gives smoother reconstruction at similar storage cost.
 - **ericw-tools `LIGHTGRID_OCTREE`** — sparse octree probe samples as a BSPX lump. The long-standing Quake-family answer. Considered and rejected: adaptive density is more complex for modest gain when the target map size is small and indoor.
 - **PBR lighting schemas** — structural alignment target for the canonical light format (falloff, cone, intensity axes). Postretro is not shipping PBR materials, but matching the structural shape means the format isn't painted into a corner.
-- **Rust ecosystem** — crates for SH projection (`spherical_harmonics`, hand-rolled per rendering_pipeline.md lineage) and ray-triangle intersection (`embree-rs`, `bvh`, hand-rolled). Preferred over writing from scratch if solid.
+- **Rust ecosystem** — crates for SH projection (`spherical_harmonics`, hand-rolled per rendering_pipeline.md lineage) and ray-triangle intersection (`bvh` — already the Part A choice, reused here). Preferred over writing from scratch if solid. Hardware-accelerated options (`embree-rs`, native OptiX bindings) are out of scope — no RT target, no native wrappers, pre-RTX commitment.
 
 ---
 
@@ -44,6 +69,16 @@ Postretro's convention is to research established solutions before inventing. Se
 
 ### In scope
 
+**Part A — BVH Foundation:**
+- Global BVH construction in `prl-build` using the `bvh` crate. BVH leaves carry `(material_bucket_id, index_range, AABB)` — no cell/region tagging in the initial cut.
+- New `Bvh` PRL section: header + flat node array + flat leaf array, serialized in tree order for direct GPU upload.
+- Retirement of the `CellChunks` section id, `chunk_grouping.rs`, the `CellChunkTable` runtime type, and all `chunks_for_cell` helpers. No compat shim.
+- Rewrite of `compute_cull.rs` to a WGSL BVH traversal compute shader. Preserves Phase 3.5's fixed-slot indirect-buffer design, `MULTI_DRAW_INDIRECT` feature probe, and singular `draw_indexed_indirect` fallback path.
+- Portal DFS output → BVH traversal integration: portal DFS still produces the visible-cell set; BVH traversal consumes it as a per-leaf filter. Exact integration shape decided in Stage A4.
+- Deletion of `POSTRETRO_FORCE_LEGACY` diagnostic mode, `determine_prl_visibility`, and the CPU-side draw-range reconstruction path. Part A's GPU path is the only path.
+- Part A validation: visual parity with Phase 3.5 reference capture (SSIM ≥ 0.99 or per-pixel diff ≤ 2/255), frame time within 5% of Phase 3.5 on cell-heavy maps, edge-case coverage. Check-in gate before Part B begins.
+
+**Part B — Lighting:**
 - Full lighting pipeline spec: FGD entities, Quake-map translator, canonical light format, SH irradiance volume baker, runtime SH sampling, clustered forward+ dynamic lighting, shadow maps, normal map rendering, PRL section shape.
 - FGD file at `assets/postretro.fgd` adding `light`, `light_spot`, `light_sun`.
 - `postretro-level-compiler/src/format/quake_map.rs` translator module. Pattern is `format/<name>.rs` per source format; each format's internal structure is its own decision.
@@ -60,6 +95,10 @@ Postretro's convention is to research established solutions before inventing. Se
 
 ### Out of scope
 
+- **Per-region / spatially-partitioned BVH.** Global BVH is the day-one commitment. Per-region is the Stage A5 pivot path if global underperforms — designed-for as a fallback, not as initial scope.
+- **Hardware ray tracing, anywhere.** Target is pre-RTX hardware and wgpu (which does not expose hardware RT). Runtime BVH traversal is WGSL compute; bake-time BVH traversal is CPU `bvh` crate. Shadow maps cover runtime shadowing.
+- **Mesh shaders.** wgpu does not expose them; GPU culling uses compute + indirect draws throughout both Part A and Part B.
+- **Dynamic BVH rebuilds.** The BVH is baked once at compile time and read-only at runtime. Dynamic entity geometry (Phase 5+) is handled separately — it is not added to the static BVH.
 - UDMF map-format support. Separate initiative. The `format/<name>.rs` architecture established here accommodates it without refactor.
 - `env_projector` and texture-projecting lights.
 - IES profiles / photometric data.
@@ -67,8 +106,6 @@ Postretro's convention is to research established solutions before inventing. Se
 - Second-bounce indirect. The SH volume captures direct-to-static bounces; multi-bounce is a follow-up if visuals demand it.
 - Runtime dynamic probe updates (DDGI-style). The SH volume is baked, read-only at runtime.
 - Runtime evaluation of light animation curves. The baker bakes animation into probe sample curves at compile time; runtime evaluation of dynamic light animations is a Phase 5 follow-up.
-- Hardware ray tracing. wgpu does not expose it; shadow maps cover runtime shadowing.
-- Mesh shaders. wgpu does not expose them; GPU culling uses compute + indirect draws.
 - Exhaustive academic literature review. "Survey what's known and pick a direction," not "produce a novel contribution."
 - Benchmarking probe baking performance. Decisions are made on design grounds; benchmarking belongs in the execution plan once sizing questions come up.
 
@@ -77,21 +114,186 @@ Postretro's convention is to research established solutions before inventing. Se
 ## Pipeline
 
 ```
-TrenchBroom authoring (FGD)
-  → .map file
-    → prl-build parser (extract property bag)
-      → format::quake_map::translate_light (validate, convert units, expand presets)
-        → CanonicalLight in MapData.lights
-          ├─→ SH irradiance volume baker (static-geometry raycast, SH L2 projection)
-          │     → SH section in .prl
-          │       → runtime trilinear sample (fragment shader, indirect term)
-          └─→ runtime direct light buffer (canonical lights + transient gameplay lights)
-                → clustered light list compute prepass
-                  → cluster walk in fragment shader (direct term)
-                    → shadow map sampling per shadow-casting light
+┌─── Part A: Spatial ────────────────────────────────────────────────┐
+│                                                                    │
+│  prl-build (compile time)              postretro (runtime)         │
+│  ────────────────────────              ─────────────────────       │
+│                                                                    │
+│  geometry + portals                    .prl loader                 │
+│    ↓                                     ↓                         │
+│  global BVH build (bvh crate)          BVH storage buffer upload   │
+│    ↓                                     ↓                         │
+│  flatten → node[] + leaf[]             portal DFS → visible cells  │
+│    ↓                                     ↓                         │
+│  write Bvh PRL section                 WGSL BVH traversal compute  │
+│                                          ↓                         │
+│                                        indirect draw buffer        │
+│                                          ↓                         │
+│                                        multi_draw_indexed_indirect │
+│                                          (one call per bucket)     │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
+                         │                        │
+                         │ (same BVH,             │ (Part A ships here;
+                         │  two consumers)        │  Part B layers on top)
+                         ↓                        ↓
+┌─── Part B: Lighting ───────────────────────────────────────────────┐
+│                                                                    │
+│  TrenchBroom authoring (FGD)                                       │
+│    → .map file                                                     │
+│      → prl-build parser (extract property bag)                     │
+│        → format::quake_map::translate_light (validate, convert)    │
+│          → CanonicalLight in MapData.lights                        │
+│            ├─→ SH irradiance volume baker                          │
+│            │     (ray-casts through Part A BVH via bvh crate,      │
+│            │      SH L2 projection, validity mask)                 │
+│            │     → SH section in .prl                              │
+│            │       → runtime trilinear sample (fragment shader,    │
+│            │          indirect term)                               │
+│            └─→ runtime direct light buffer                         │
+│                (canonical lights + transient gameplay lights)      │
+│                  → clustered light list compute prepass            │
+│                    → cluster walk in fragment shader (direct term) │
+│                      → shadow map sampling per shadow-casting light│
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
-Each stage below is one section of the spec. All stages are decided.
+Each stage below is one section of the spec. Part A stages (A1–A5) come first; Part B stages (1–6) match the original lighting spec and assume Part A has shipped.
+
+---
+
+## Part A — BVH Foundation
+
+Part A replaces Phase 3.5's cell-chunk compute cull with a global BVH. It ships with visual parity to Phase 3.5 (flat ambient, identical rendered output) and is validated before Part B begins. Part A's stages are `## Stage A1` through `## Stage A5`; they read as peers of Part B's `## Stage 1` through `## Stage 6` below.
+
+---
+
+## Stage A1 — CPU BVH construction in prl-build
+
+**Description:** After portal generation, collect all face-indices into BVH primitives. Each primitive carries `(material_bucket_id, index_range, AABB)` where `index_range` is a contiguous slice of the shared index buffer containing triangles for that `(face, material_bucket)` pair. Build a global BVH over these primitives using the `bvh` crate (SAH-driven, CPU, deterministic). Flatten the resulting tree into two arrays: a dense node array (internal nodes + links) and a dense leaf array (primitive metadata + AABB).
+
+This stage deletes `postretro-level-compiler/src/chunk_grouping.rs` entirely. Its role is subsumed by the BVH primitive collection step — there is no `(cell, material_bucket)` grouping anymore, only BVH leaves.
+
+**Finding #1 drive-by:** The compiler's face → index pipeline is rewritten end-to-end in this stage. `FaceMetaV3.index_offset/index_count` either get rewritten consistently during BVH construction or are retired from the `GeometryV3` section entirely (decided during implementation). Either way, the Phase 3.5 review's critical finding lands here as a side effect, not as a separate task.
+
+**Acceptance criteria:**
+- [ ] BVH builds deterministically: identical input geometry produces identical flattened node/leaf arrays byte-for-byte
+- [ ] Every triangle in the source geometry maps to exactly one BVH leaf
+- [ ] BVH leaf AABBs tightly bound each leaf's triangle set
+- [ ] `chunk_grouping.rs` removed; no references remain in the compiler
+- [ ] `FaceMetaV3.index_offset/index_count` staleness bug is no longer reachable (either fixed or retired)
+- [ ] `cargo test -p postretro-level-compiler` passes
+- [ ] `cargo clippy -p postretro-level-compiler -- -D warnings` clean
+
+**Depends on:** none (Phase 3.5 GeometryV3 vertex format is reused unchanged)
+
+---
+
+## Stage A2 — PRL section for BVH
+
+**Description:** Add a new `Bvh` section to `postretro-level-format`. Layout:
+
+```
+Header (fixed):
+  u32        node_count
+  u32        leaf_count
+  u32        root_node_index
+  u32        padding
+
+Node array (node_count entries):
+  f32 × 6    aabb_min.xyz, aabb_max.xyz
+  u32        left_child_or_leaf_index
+  u32        right_child_or_leaf_index
+  u32        flags          (bit 0: is_leaf)
+  u32        padding
+
+Leaf array (leaf_count entries):
+  f32 × 6    aabb_min.xyz, aabb_max.xyz
+  u32        material_bucket_id
+  u32        index_offset
+  u32        index_count
+  u32        padding
+```
+
+Allocate a new section id. Retire `SectionId::CellChunks = 18` — delete the variant and all read/write code. No backward compat: maps compiled before Part A will fail to load.
+
+**Acceptance criteria:**
+- [ ] New `Bvh` section id allocated in `postretro-level-format/src/lib.rs`
+- [ ] `SectionId::CellChunks` variant and all supporting code deleted
+- [ ] `Bvh` section write → read round-trip preserves all fields byte-for-byte
+- [ ] Truncated-section and malformed-header inputs reject cleanly with a clear error
+- [ ] `cargo test -p postretro-level-format` passes
+
+**Depends on:** A1 (needs BVH primitive shape to pin the leaf layout)
+
+---
+
+## Stage A3 — Runtime loader + GPU upload
+
+**Description:** Update `postretro/src/prl.rs` to parse the new `Bvh` section and expose `node_array` and `leaf_array` as `wgpu::Buffer` storage buffers. Delete the `CellChunkTable` type, all `chunks_for_cell` helpers, and the CPU-side draw-range reconstruction in `determine_prl_visibility`. Delete the `POSTRETRO_FORCE_LEGACY` diagnostic mode — the BVH path is the only path.
+
+**Acceptance criteria:**
+- [ ] `Bvh` section parses into GPU-ready storage buffers at level load
+- [ ] `CellChunkTable`, `chunks_for_cell`, `determine_prl_visibility`, and `POSTRETRO_FORCE_LEGACY` deleted; no references remain
+- [ ] Legacy V1/V2 `.prl` files (if any) either load cleanly or fail with a clear version error — no half-broken state
+- [ ] `cargo test -p postretro` passes
+- [ ] `cargo clippy -p postretro -- -D warnings` clean
+
+**Depends on:** A2
+
+---
+
+## Stage A4 — WGSL compute BVH traversal
+
+**Description:** Rewrite `postretro/src/compute_cull.rs` as a BVH traversal compute shader. The shader:
+
+1. Reads the node array and leaf array as storage buffers.
+2. Reads the portal DFS output (visible-cell bitmask or equivalent) as another storage buffer.
+3. Reads the view frustum as a uniform.
+4. Walks the BVH top-down from the root, stack-based with a fixed maximum depth (initial cap: 64 — revisit if deep trees surface).
+5. For each node, rejects subtrees whose AABB fails the frustum test. For survivors that are leaves, emits a `DrawIndexedIndirect` command into the fixed-slot indirect buffer.
+
+**Open question for implementation, resolved in this stage:** exactly how portal DFS output filters BVH leaves. Two candidates — (a) per-leaf check against a visible-cell bitmask, requiring BVH leaves to carry a cell id (cheap metadata, doesn't fragment the BVH); (b) traverse BVH once per frustum narrowed by portal DFS, union results (tighter cull, more traversals). Pick one, document the choice in a comment at the top of the shader, note the other as the fallback.
+
+**Preserved from Phase 3.5:**
+- Fixed-slot indirect buffer — each BVH leaf gets a permanent slot; no atomic counter, no overflow.
+- `MULTI_DRAW_INDIRECT` feature probe; singular `draw_indexed_indirect` fallback when absent.
+- One `multi_draw_indexed_indirect` call per material bucket in the render pass.
+- Per-leaf cull-status buffer feeding the wireframe overlay (`Alt+Shift+\\`).
+
+**Acceptance criteria:**
+- [ ] Compute shader dispatches each frame; render pass issues zero CPU per-leaf draws
+- [ ] All visibility fallback paths feed the BVH traversal: portal traversal, SolidLeafFallback, ExteriorCameraFallback (preserves X-ray behavior), EmptyWorldFallback — portal DFS stays, BVH replaces the cell-chunk cull only
+- [ ] Empty visible set → `multi_draw_indexed_indirect` with count 0, no GPU errors
+- [ ] `MULTI_DRAW_INDIRECT` absent → fallback dispatch mode produces identical visual output
+- [ ] Stack depth cap reached → compute shader aborts traversal cleanly (no invalid writes) and logs once
+- [ ] Visual parity with Phase 3.5 on all test maps — by eye first, formal parity check in Stage A5
+- [ ] `cargo test -p postretro` passes
+
+**Depends on:** A3
+
+---
+
+## Stage A5 — Part A validation (check-in gate)
+
+**Description:** Validate that Part A ships with visual and performance parity to Phase 3.5 before Part B begins. This is the pivot gate: if global BVH fails to hit parity on cell-heavy maps, the decision point is whether to pivot to per-region BVH or revisit the traversal strategy.
+
+**Acceptance criteria:**
+- [ ] Visual parity: SSIM ≥ 0.99 or per-pixel diff ≤ 2/255 against Phase 3.5 reference captures on every `assets/maps/` test map
+- [ ] Frame time within 5% of Phase 3.5 on a cell-heavy test map (20+ visible cells)
+- [ ] Edge cases exercised: camera in solid leaf, exterior camera, empty visible set, first frame, degenerate BVH (single-leaf map), deeply unbalanced BVH (thin corridor map)
+- [ ] All `cargo test` passes; `cargo clippy --workspace -- -D warnings` clean
+- [ ] `context/lib/rendering_pipeline.md` and `context/lib/build_pipeline.md` updated to describe the BVH architecture (cell/chunk language replaced throughout)
+- [ ] **Check-in gate:** Part B does not begin until this stage is signed off. If parity fails, document the gap and decide between per-region pivot, traversal strategy change, or scope adjustment before continuing.
+
+**Depends on:** A4
+
+---
+
+## Part B — Lighting
+
+Part B layers the lighting pipeline onto the BVH foundation shipped in Part A. The SH baker ray-casts through the Part A BVH (via the `bvh` crate on the CPU); one acceleration structure, two consumers. All Part B stages assume Part A is shipped and validated.
 
 ---
 
@@ -355,11 +557,11 @@ Each probe has a `u8` validity flag: `0` = invalid (inside solid), `1` = valid (
 For each valid probe:
 
 1. Fire **N stratified sample rays** from the probe (default `N = 256`) distributed over the sphere.
-2. For each ray, intersect against the static geometry's triangle set. Miss → sky/ambient. Hit → evaluate direct light at the hit point (shadow raycasts from each canonical light, sum Lambert contributions), then attenuate by surface albedo approximation to approximate one bounce.
+2. For each ray, traverse the **Part A BVH** (via the `bvh` crate on the CPU) to find the closest triangle hit. Miss → sky/ambient. Hit → evaluate direct light at the hit point (shadow raycasts from each canonical light traversing the same BVH, sum Lambert contributions), then attenuate by surface albedo approximation to approximate one bounce.
 3. Project the incoming radiance samples into SH L2 coefficients.
 4. Store coefficients in the probe grid; write validity flag.
 
-Ray count, BVH choice, and parallelism strategy are execution details — the plan fixes the algorithm shape, not the sizing. Rust crate options: `bvh` for acceleration, `rayon` for parallelism.
+Ray count and parallelism strategy are execution details — the plan fixes the algorithm shape, not the sizing. Parallelism: `rayon` over probes. Acceleration: no separate baker BVH — the Part A BVH is the acceleration structure. Same tree, same crate, same traversal code that Part A ships; the baker just calls it from the CPU side instead of the GPU compute shader.
 
 ### Animation baking
 
@@ -446,14 +648,19 @@ These questions were open in the prior draft and are now decided:
 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
+| **Part A: BVH spatial strategy** | **Global BVH, not per-region** | Try global first. Per-region is the Stage A5 pivot path if global underperforms on cell-heavy maps. Own the refactor; don't pre-optimize for a scaling problem that may never arrive. |
+| **Part A: BVH / CellChunks coexistence** | **BVH replaces CellChunks entirely** | No backward compat shim. `CellChunks` section id retires; `chunk_grouping.rs`, `CellChunkTable`, `chunks_for_cell`, `POSTRETRO_FORCE_LEGACY`, and `determine_prl_visibility` all delete. Pre-release — own it. |
+| **Part A: Runtime BVH traversal** | **WGSL compute shader over flat storage buffers** | No Rust crate ships GPU BVH traversal for wgpu. Pre-RTX hardware target + wgpu doesn't expose hardware RT regardless. Custom shader is the established pattern. |
+| **Part A: Bake-time BVH traversal** | **CPU `bvh` crate — same tree, different traversal** | One acceleration structure, two consumers. Baker calls the `bvh` crate directly; no GPU round-trip at compile time. |
+| **Part A: Phase 3.5 review finding #1** | **Folded into Stage A1 as a drive-by** | Stage A1 rewrites the compiler's face → index pipeline end-to-end. `FaceMetaV3.index_offset/index_count` staleness becomes unreachable as a side effect, no separate fix task needed. |
 | Baker approach | Probes only for indirect; dynamic direct at runtime | Lightmaps add a bake stage, an atlas, a UV channel, and a two-texture sampling path in the shader. SH volume + dynamic direct is lighter. |
 | Spatial layout | Regular 3D grid | Trivial indexing, hardware trilinear, low complexity. Octree adaptivity wins little on small indoor maps. |
 | Per-probe storage | SH L2 (27 f32/probe) | Smooth reconstruction, small shader cost, industry-standard. Ambient cube rejected as needing nearly as much storage for less smoothness. |
 | Probe evaluation | Trilinear interpolation on a 3D texture | Hardware-accelerated; zero shader complexity. |
-| Shadow strategy (bake) | Raycast at bake time, per light per probe | Bake is expensive but runs once. Runtime shadow estimation on the volume is not worth the complexity. |
-| Shadow strategy (runtime) | Shadow maps per dynamic shadow-caster | CSM for directional, cube for point/spot. Matches aesthetic (chunky edges at modest resolution). |
+| Shadow strategy (bake) | Raycast at bake time, per light per probe — traverses Part A BVH | Bake is expensive but runs once. Runtime shadow estimation on the volume is not worth the complexity. |
+| Shadow strategy (runtime) | Shadow maps per dynamic shadow-caster | CSM for directional, cube for point/spot. Matches aesthetic (chunky edges at modest resolution). Not hardware ray tracing. |
 | Animation baking | Bake per-probe sample vectors; defer to execution plan | Animation support may be cut from the initial revision if it complicates the first pass. |
-| PRL section shape | Header + probe records; see Stage 5 | Fixed layout, forward-compatible via `probe_stride`. |
+| PRL section shape (SH) | Header + probe records; see Stage 5 | Fixed layout, forward-compatible via `probe_stride`. |
 
 ---
 
@@ -461,13 +668,36 @@ These questions were open in the prior draft and are now decided:
 
 ### For draft → ready
 
-- Canonical format confirmed stable (stages 1–3 unchanged from prior draft, already reviewed).
-- SH irradiance volume design confirmed against the new rendering pipeline architecture (stage 4 above).
-- PRL section shape sketched concretely enough that the execution plan can anchor on it (stage 5 above).
+- Canonical format confirmed stable (Part B stages 1–3 unchanged from prior draft, already reviewed).
+- SH irradiance volume design confirmed against the new rendering pipeline architecture (Part B stage 4).
+- PRL section shape sketched concretely enough that the execution plan can anchor on it (Part B stage 5).
 - Direct-lighting and shadow-map integration points match `context/lib/rendering_pipeline.md` §4 and §7.
+- Part A BVH refactor scope locked: global BVH, WGSL compute traversal, `CellChunks` retirement, `bvh` crate for both runtime (via flattened buffer) and bake-time (via direct CPU calls).
 - Rust crate options for BVH and SH projection listed; detailed fitness assessment happens in the execution plan.
 
-### For implementation — stages 1–3 (FGD, translator, canonical format)
+### For implementation — Part A (Stages A1–A5)
+
+1. **BVH construction ships:** `prl-build` emits a `Bvh` PRL section for every test map. Build is deterministic — identical input → identical flattened buffer byte-for-byte.
+
+2. **`CellChunks` retired:** `SectionId::CellChunks`, `chunk_grouping.rs`, `CellChunkTable`, `chunks_for_cell`, `determine_prl_visibility`, `POSTRETRO_FORCE_LEGACY` all deleted. No references remain anywhere in the workspace.
+
+3. **Finding #1 unreachable:** `FaceMetaV3.index_offset/index_count` either consistent with the new index buffer ordering or removed from `GeometryV3` entirely. The multi-texture UV normalization path is verified correct on a two-texture test map with different `(w, h)` dimensions.
+
+4. **Runtime BVH traversal correct:** compute shader walks the BVH, frustum-culls, emits `DrawIndexedIndirect` commands into the fixed-slot buffer, one material bucket per `multi_draw_indexed_indirect` call. `MULTI_DRAW_INDIRECT` absent → singular `draw_indexed_indirect` fallback produces identical visual output.
+
+5. **Portal integration decided and documented:** the Stage A4 shader header comment explains how portal DFS output filters BVH leaves, with the other candidate approach noted as the fallback.
+
+6. **Stage A5 validation passes:**
+   - Visual parity: SSIM ≥ 0.99 or per-pixel diff ≤ 2/255 against Phase 3.5 reference captures on every `assets/maps/` test map
+   - Frame time within 5% of Phase 3.5 on a cell-heavy test map (20+ visible cells)
+   - Edge cases: camera in solid leaf, exterior camera, empty visible set, first frame, degenerate BVH (single-leaf map), deeply unbalanced BVH (thin corridor map)
+   - All `cargo test` passes; `cargo clippy --workspace -- -D warnings` clean
+
+7. **Documentation updated:** `context/lib/rendering_pipeline.md` and `context/lib/build_pipeline.md` describe the BVH architecture — cell/chunk language replaced throughout. Phase 3.5 plan entry in `roadmap.md` notes that its spatial structure was superseded by Part A.
+
+8. **Check-in gate signed off** before Part B begins. If parity fails, the pivot decision (per-region BVH, traversal strategy change, or scope adjustment) is documented in the plan before work on Part B starts.
+
+### For implementation — Part B stages 1–3 (FGD, translator, canonical format)
 
 1. **FGD file created and verified:** `assets/postretro.fgd` defines `light`, `light_spot`, `light_sun` with Quake-standard properties in TrenchBroom-compatible FGD syntax. FGD loads in TrenchBroom without errors; entity browser shows all three; SmartEdit renders color picker / dropdown / text field correctly.
 
@@ -493,11 +723,11 @@ These questions were open in the prior draft and are now decided:
 
 9. **No runtime engine changes in stages 1–3.** Canonical lights available via `MapData::lights` for the Stage 4 baker and Stage 6 runtime direct path.
 
-### For implementation — stages 4–5 (SH baker + PRL section)
+### For implementation — Part B stages 4–5 (SH baker + PRL section)
 
-1. **PRL section allocated:** new section ID in `postretro-level-format/src/lib.rs` for the SH irradiance volume, with read/write round-trip tests matching the existing section pattern.
+1. **PRL section allocated:** new section ID in `postretro-level-format/src/lib.rs` for the SH irradiance volume, with read/write round-trip tests matching the existing section pattern. (Part A owns the `Bvh` section id; Part B adds only the SH volume section.)
 
-2. **Baker stage in prl-build:** runs after geometry extraction and before pack. Produces a 3D grid of probe records following the Stage 4 algorithm: stratified sphere sampling, static-geometry raycast, SH L2 projection, validity masking.
+2. **Baker stage in prl-build:** runs after Part A BVH construction and before pack. Ray traversal goes through the Part A BVH via the `bvh` crate — no separate baker BVH. Produces a 3D grid of probe records following the Stage 4 algorithm: stratified sphere sampling, BVH-traversed raycasts, SH L2 projection, validity masking.
 
 3. **Determinism:** identical input `.map` produces identical SH coefficients. Stratified sampling uses a fixed seed.
 
@@ -507,7 +737,7 @@ These questions were open in the prior draft and are now decided:
 
 6. **Bake parallelism** via `rayon` — one task per probe or per probe slab.
 
-### For implementation — stage 6 (runtime lighting)
+### For implementation — Part B stage 6 (runtime lighting)
 
 1. **SH volume loader:** parse PRL section, upload to a 3D texture.
 
@@ -527,40 +757,92 @@ These questions were open in the prior draft and are now decided:
 
 ## Implementation tasks
 
-All stages are now concrete. `/orchestrate` can break this plan into execution chunks.
+All stages are now concrete. `/orchestrate` can break this plan into execution chunks. Each task below is sized to fit one execution-agent dispatch. Part A's five tasks run sequentially and must pass Stage A5 validation before any Part B task starts.
 
-### Stage 1 — FGD file
+### Part A — BVH Foundation
+
+#### Stage A1 — CPU BVH construction in prl-build
+
+A1. Add `bvh = "..."` to `postretro-level-compiler/Cargo.toml`. Implement BVH primitive collection in the geometry pipeline: walk face/index data, emit one primitive per `(face, material_bucket)` pair with its `index_range` and `AABB`. Feed into `bvh::Bvh::build`. Flatten the built tree into a dense node array and a dense leaf array for PRL serialization.
+
+A2. Delete `postretro-level-compiler/src/chunk_grouping.rs` and all references. Rewrite `FaceMetaV3` so `index_offset/index_count` either stay consistent through the BVH construction pipeline or get removed from `GeometryV3` entirely (decided during implementation — the review finding #1 fix lands here as a side effect).
+
+A3. Unit tests: deterministic build (two identical input sets → byte-identical flattened buffers), leaf-primitive-coverage (every source triangle in exactly one leaf), AABB tightness on each leaf, single-face and multi-texture test fixtures.
+
+#### Stage A2 — PRL section for BVH
+
+A4. Add `SectionId::Bvh` in `postretro-level-format/src/lib.rs`. Retire `SectionId::CellChunks` (delete the variant, delete `cell_chunks.rs`, delete all read/write callers).
+
+A5. Implement `BvhSection` with the layout spelled out in Stage A2. Write/read round-trip tests (byte-identical), truncation rejection, malformed header rejection. Match the existing section test patterns in `postretro-level-format`.
+
+A6. Wire `BvhSection` into the `prl-build` pack stage. Confirm every test map compiles and emits a `Bvh` section.
+
+#### Stage A3 — Runtime loader + GPU upload
+
+A7. Extend `postretro/src/prl.rs`: parse `Bvh` section, allocate node-array and leaf-array `wgpu::Buffer` storage buffers, expose them via `LevelWorld`. Delete `CellChunkTable`, `chunks_for_cell`, `determine_prl_visibility`, `POSTRETRO_FORCE_LEGACY`, and the CPU-side draw-range reconstruction path.
+
+A8. Update `postretro/src/visibility.rs` to stop producing `DrawRange` output. Portal DFS still produces a visible-cell set; the BVH traversal compute shader consumes it directly.
+
+A9. Verify legacy V1/V2 `.prl` files either load cleanly or fail with a clear version error. Run the full test suite; `cargo clippy -p postretro -- -D warnings` clean.
+
+#### Stage A4 — WGSL compute BVH traversal
+
+A10. Rewrite `postretro/src/compute_cull.rs` as a BVH traversal compute shader. Top-down stack-based traversal (fixed max depth 64); frustum test on internal nodes; emit `DrawIndexedIndirect` per surviving leaf into the fixed-slot indirect buffer.
+
+A11. Decide and implement the portal integration — either per-leaf visible-cell bitmask check (requires BVH leaves to carry cell id) or multi-frustum traversal (one pass per portal-narrowed frustum, union results). Document the choice in a header comment at the top of the WGSL file; note the rejected alternative.
+
+A12. Preserve Phase 3.5 invariants: `MULTI_DRAW_INDIRECT` feature probe + singular `draw_indexed_indirect` fallback, one `multi_draw_indexed_indirect` call per material bucket, per-leaf cull-status buffer feeding the wireframe overlay.
+
+A13. Edge-case tests: empty visible set, degenerate BVH (single leaf), deeply unbalanced BVH (simulate thin corridor map), first-frame dispatch before steady state.
+
+#### Stage A5 — Part A validation (check-in gate)
+
+A14. Capture Phase 3.5 reference screenshots from fixed cameras on every `assets/maps/` test map *before* Part A code lands. Store them under `assets/validation/phase-3-5/` (or equivalent) as the parity baseline.
+
+A15. Implement or invoke an SSIM comparison harness. Run parity checks against Part A output on every test map. Document any diffs that exceed the thresholds; classify each as accept / investigate / block.
+
+A16. Frame time capture on a cell-heavy test map (20+ visible cells). Compare against Phase 3.5 baseline. Must land within ±5%.
+
+A17. Update `context/lib/rendering_pipeline.md` and `context/lib/build_pipeline.md` to describe the BVH architecture; replace cell/chunk language throughout.
+
+A18. **Check-in gate.** Sign off Part A. If parity fails, document the pivot decision (per-region BVH, traversal strategy change, or scope adjustment) in this plan before any Part B task starts.
+
+---
+
+### Part B — Lighting
+
+#### Stage 1 — FGD file
 
 1. Create `assets/postretro.fgd` with `light`, `light_spot`, `light_sun` per the template above.
 2. Verify in TrenchBroom: copy to game config folder, open editor, confirm entity browser + SmartEdit property widgets behave without errors.
 
-### Stage 2 — Parse and translate
+#### Stage 2 — Parse and translate
 
 3. Create `postretro-level-compiler/src/format/mod.rs` and `format/quake_map.rs`. Implement `translate_light()` per signature. Include Quake style preset table and degrees-to-radians conversion.
 4. Extend `postretro-level-compiler/src/parse.rs`: recognize light classnames, extract property bag, dispatch to translator, propagate errors and warnings.
 5. Extend `assets/maps/test.map` with the three example entities above.
 6. Write translator unit tests covering every validation rule and the style preset conversion.
 
-### Stage 3 — Canonical format
+#### Stage 3 — Canonical format
 
 7. Add canonical types (`LightType`, `FalloffModel`, `LightAnimation`, `CanonicalLight`) to `postretro-level-compiler/src/map_data.rs`.
 8. Add `lights: Vec<CanonicalLight>` field to `MapData`.
 
-### Stage 4 — SH baker
+#### Stage 4 — SH baker
 
-9. Allocate a new PRL section ID for the SH irradiance volume.
+9. Allocate a new PRL section ID for the SH irradiance volume (separate from the Part A `Bvh` section id).
 10. Add probe record and section types to `postretro-level-format` with read/write + round-trip tests.
 11. Implement probe placement: regular grid over map AABB at configurable spacing; solidity query against BSP.
-12. Implement radiance sampling: stratified sphere rays, triangle intersection against static geometry, per-light shadow raycasts, Lambert evaluation at hit points.
+12. Implement radiance sampling: stratified sphere rays, traverse the **Part A BVH via the `bvh` crate** for closest-triangle hits, per-light shadow raycasts through the same BVH, Lambert evaluation at hit points. No separate baker BVH.
 13. Implement SH L2 projection from radiance samples.
-14. Parallelize with `rayon`; expose `--probe-spacing` CLI flag.
+14. Parallelize with `rayon` over probes; expose `--probe-spacing` CLI flag.
 
-### Stage 5 — PRL section
+#### Stage 5 — PRL section
 
 15. Wire the SH volume section into the prl-build pack stage.
 16. Engine loader parses the section and produces a GPU-ready upload descriptor (no wgpu calls in the loader).
 
-### Stage 6 — Runtime lighting and normal maps
+#### Stage 6 — Runtime lighting and normal maps
 
 17. Renderer: create SH volume 3D texture, upload from loader data, bind in the world shader.
 18. World shader: trilinear SH sample → irradiance reconstruction → replaces flat ambient.
@@ -572,7 +854,7 @@ All stages are now concrete. `/orchestrate` can break this plan into execution c
 24. Shadow map passes: CSM for directional, cube for point, single map for spot.
 25. Lighting test maps: author scenes that exercise indirect bleed, direct falloff, shadow crispness, and normal-map angle variation.
 
-### Docs
+#### Docs
 
 26. On ship, migrate the canonical format and pipeline sections into `context/lib/rendering_pipeline.md` §4 (already updated in this refactor).
 
@@ -582,10 +864,19 @@ All stages are now concrete. `/orchestrate` can break this plan into execution c
 
 Durable architectural decisions migrate to `context/lib/rendering_pipeline.md` (`context/lib/lighting.md` if the section outgrows §4). Candidates for migration:
 
+**From Part A (BVH Foundation):**
+- Global BVH rationale and the per-region pivot condition — document the decision and the fallback, so a future contributor knows why we chose global and what would trigger a pivot.
+- `Bvh` PRL section layout (header + flat node/leaf arrays, byte shape, endianness).
+- WGSL BVH traversal shader structure — the stack-based pattern, depth cap, portal integration shape — lands as a new section in `rendering_pipeline.md` §5 (replacing the cell-chunk description).
+- `bvh` crate usage for compile-time primitive build; flatten-to-buffer lowering.
+- Finding #1 postmortem note: `FaceMetaV3` stale-index-range bug and how it dissolved under the pipeline rewrite.
+
+**From Part B (Lighting):**
 - Canonical format struct shape and design rationale.
 - `format/<name>.rs` architecture for multi-format source support.
 - SH volume spatial layout, per-probe storage, validity masking.
-- PRL section shape.
+- SH volume PRL section shape.
 - Clustered forward+ cluster grid parameters and shadow map defaults.
+- Baker ↔ BVH sharing pattern: one acceleration structure, two consumers (bake-time CPU, runtime GPU).
 
 The plan document itself is ephemeral per `development_guide.md` §1.5.

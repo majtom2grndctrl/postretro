@@ -91,14 +91,14 @@ World geometry is grouped by cell at compile time. One chunk per (cell, material
 | Field | Content |
 |-------|---------|
 | `cell_id` | Opaque cell identifier |
-| `aabb` | World-space bounds for GPU frustum + HiZ culling |
+| `aabb` | World-space bounds for GPU frustum culling |
 | `index_offset` | Start of the chunk's indices in the shared index buffer |
 | `index_count` | Length of the index range |
 | `material_bucket` | (albedo, normal map) pair the indices reference |
 
-Indices within a cell are ordered by material bucket, so each cell emits one indirect draw per material it touches (typical: 2–10). The chunk table includes a cell→chunk-range index so the GPU culling pass can look up all chunks for a given cell in O(1). The chunk table lives in its own PRL section; the loader hands it to the renderer.
+Indices within a cell are ordered by material bucket, so each cell emits one indirect draw per material it touches (typical: 2–10). The chunk table includes a cell→chunk-range index so the GPU culling pass can look up all chunks for a given cell in O(log n) via binary search on sorted cell IDs. The chunk table lives in its own PRL section; the loader hands it to the renderer.
 
-Flow: portal traversal (§2) produces the visible cell list → compute cell-culling prepass (§7.1 step 3) frustum- and HiZ-culls → emits `draw_indexed_indirect` commands → opaque pass (§7.2) consumes via `multi_draw_indexed_indirect`, one call per material bucket.
+Flow: portal traversal (§2) produces the visible cell list → compute cell-culling prepass (§7.1 step 2) frustum-culls → emits `draw_indexed_indirect` commands → opaque pass (§7.2) consumes via `multi_draw_indexed_indirect`, one call per material bucket.
 
 ---
 
@@ -128,9 +128,8 @@ Clustered forward+ pipeline. Each frame runs a small set of compute prepasses th
 ### 7.1 Visibility and Culling Prepasses
 
 1. **Portal traversal** (CPU) — §2 flood-fill produces the visible cell set.
-2. **HiZ depth pyramid** (compute, *Phase 3.5*) — downsample the previous frame's depth buffer into a hierarchical-Z pyramid used for occlusion testing. First frame uses a permissive pass-all bound.
-3. **GPU cell culling** (compute, *Phase 3.5*) — each surviving cell's AABB is tested against the current frustum and HiZ pyramid. Surviving cells emit `draw_indexed_indirect` commands into an indirect buffer, grouped by material bucket.
-4. **Clustered light list** (compute, *Phase 4*) — builds per-cluster light index lists from the dynamic light set. Cluster grid is screen-space tiles × depth slices.
+2. **GPU cell culling** (compute, *Phase 3.5*) — each surviving cell's AABB is tested against the current frustum. Surviving cells emit `draw_indexed_indirect` commands into an indirect buffer, grouped by material bucket.
+3. **Clustered light list** (compute, *Phase 4*) — builds per-cluster light index lists from the dynamic light set. Cluster grid is screen-space tiles × depth slices.
 
 ### 7.2 World Geometry
 

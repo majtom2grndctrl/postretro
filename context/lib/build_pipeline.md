@@ -100,12 +100,14 @@ Step 2's inside-set tracking means leaf solidity is known the moment the leaf is
 | Section | ID | When present |
 |---------|-----|-------------|
 | Geometry | 1 | Legacy (pre-texture support) |
-| GeometryV2 | 3 | Always (position + UV vertices, texture index per face) |
+| GeometryV2 | 3 | Legacy (position + UV vertices, texture index per face) |
 | BspNodes | 12 | Always |
 | BspLeaves | 13 | Always |
 | LeafPvs | 14 | `--pvs` mode only |
 | Portals | 15 | Default mode |
 | TextureNames | 16 | Always (deduplicated texture name list) |
+| GeometryV3 | 17 | Always (position + UV + octahedral normal/tangent, 28 bytes/vertex) |
+| CellChunks | 18 | Always (per-cell draw chunks with AABB and cell→chunk-range index) |
 
 ### Runtime visibility
 

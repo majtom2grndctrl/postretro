@@ -8,7 +8,7 @@
 
 ## Goal
 
-Replace the CPU per-leaf draw loop with GPU-driven indirect draws, per-cell chunking, and HiZ occlusion culling. Upgrade the vertex format to carry packed normals and tangents. No lighting changes — Phase 4 layers lighting onto this foundation.
+Replace the CPU per-leaf draw loop with GPU-driven indirect draws and per-cell chunking. Upgrade the vertex format to carry packed normals and tangents. No lighting changes — Phase 4 layers lighting onto this foundation.
 
 Visual output identical to Phase 3. Different architecture underneath.
 
@@ -23,7 +23,6 @@ Visual output identical to Phase 3. Different architecture underneath.
 - Vertex format upgrade (`GeometryV3`): packed normals and tangents per vertex, per-vertex color removed. Spec: `rendering_pipeline.md` §6.
 - Per-cell draw chunks: geometry grouped by (cell, material bucket) with AABB and cell→chunk-range index. Spec: `rendering_pipeline.md` §5.
 - GPU-driven indirect draw path: compute cull → `multi_draw_indexed_indirect`. Spec: `rendering_pipeline.md` §7.1.
-- HiZ depth pyramid: previous-frame occlusion culling. Spec: `rendering_pipeline.md` §7.1.
 - World shader updated for new vertex attributes. Flat ambient stays.
 
 ### Out of scope
@@ -57,8 +56,7 @@ Every agent working this plan should read:
 - **Chunk table access pattern.** Chunks sorted by cell_id with a cell→chunk-range index. Compute shader reads one contiguous range per cell, emits one `DrawIndexedIndirect` per chunk.
 - **Migration: bump section ID.** `GeometryV3 = 17` supersedes `GeometryV2 = 3`. `CellChunks = 18`. Old `.prl` files fail with a clear version error. No backward compatibility needed (pre-stable format).
 - **`multi_draw_indexed_indirect` fallback.** Probe `Features::MULTI_DRAW_INDIRECT` at adapter init. If absent, CPU iterates the indirect buffer and issues singular `draw_indexed_indirect` per command. Same compute shader, same buffer, two dispatch modes.
-- **Indirect buffer cap.** 8,192 draws per frame. Compute shader stops writing past cap, logs once. Typical retro FPS: 100–500 cells × 2–10 materials = 200–5,000 draws.
-- **HiZ first-frame.** Bind pass-all HiZ (farthest depth) on frame 0 and after level load.
+- **Indirect buffer fixed slots.** Every chunk gets a permanent slot in the indirect buffer; the buffer is sized to `total_chunks` at level load and the compute shader writes through the slot for each chunk it processes. Overflow is architecturally impossible — there is no cap to exceed. Typical retro FPS sizing: 100–500 cells × 2–10 materials = 200–5,000 draws.
 - **BSP runtime dependencies remaining after this phase.** `BspNodes` (12) and `BspLeaves` (13) still emitted and consumed for camera-leaf lookup. These are the last BSP artifacts in the runtime path. Replacing them with a cell-location section is a future step — not this phase.
 
 ### Data flow
@@ -75,22 +73,20 @@ brush-side projection                     renderer GPU upload
   (emits per-vertex normal + tangent)             ↓
   ↓                                       per-cell chunk table → GPU storage buffer
 portal generation                                 ↓
-  ↓                                       ┌───────┴──────────┐
-per-cell chunk grouping                   ↓                    ↓
-  (group by cell × material bucket)   portal traversal   previous-frame depth
-  ↓                                       ↓                    ↓
-pack .prl                           visible cell list   HiZ pyramid (compute)
-  GeometryV3 (17)                         ↓                    ↓
-  CellChunks (18)                         └──→ cell culling (compute)
-                                                               ↓
-                                               indirect draw buffer
+  ↓                                         portal traversal
+per-cell chunk grouping                           ↓
+  (group by cell × material bucket)       visible cell list
+  ↓                                               ↓
+pack .prl                                 cell culling (compute)
+  GeometryV3 (17)                                 ↓
+  CellChunks (18)                         indirect draw buffer
                                           (N commands per material bucket)
-                                                               ↓
+                                                  ↓
                                           multi_draw_indexed_indirect
                                             (one call per bucket)
-                                                               ↓
-                                                     world shader
-                                                      (flat ambient)
+                                                  ↓
+                                             world shader
+                                             (flat ambient)
 ```
 
 ---
@@ -101,7 +97,7 @@ pack .prl                           visible cell list   HiZ pyramid (compute)
 
 **Description:** Add two new sections to `postretro-level-format`:
 
-- `GeometryV3` (section id 17): vertex layout per `rendering_pipeline.md` §6 — position (`f32 × 3`) + UV (`f32 × 2`) + octahedral normal (`u16 × 2`) + octahedral tangent with bitangent sign (`u16 × 2`). 24 bytes/vertex. Implement octahedral encode/decode helpers.
+- `GeometryV3` (section id 17): vertex layout per `rendering_pipeline.md` §6 — position (`f32 × 3`) + UV (`f32 × 2`) + octahedral normal (`u16 × 2`) + octahedral tangent with bitangent sign (`u16 × 2`). 28 bytes/vertex. Implement octahedral encode/decode helpers.
 - `CellChunks` (section id 18): per-cell draw chunk table per `rendering_pipeline.md` §5. Each record: cell_id, AABB, index_offset, index_count, material_bucket_id. Include a cell→chunk-range index header so consumers can look up all chunks for a given cell in O(1).
 
 **Acceptance criteria:**
@@ -151,7 +147,7 @@ pack .prl                           visible cell list   HiZ pyramid (compute)
 
 **Acceptance criteria:**
 - [ ] Engine loads `GeometryV3` and `CellChunks` from compiled test maps
-- [ ] World shader vertex input matches 24-byte layout; octahedral decode in vertex shader
+- [ ] World shader vertex input matches 28-byte layout; octahedral decode in vertex shader
 - [ ] Fragment shader outputs flat ambient (no lighting changes)
 - [ ] Per-leaf draw batching code removed
 - [ ] Renders correctly on all test maps (visual comparison with Phase 3)
@@ -169,7 +165,6 @@ pack .prl                           visible cell list   HiZ pyramid (compute)
 - [ ] Compute shader dispatched each frame; render pass issues zero CPU per-cell draws
 - [ ] All visibility fallback paths feed the compute cull pass: portal traversal, SolidLeafFallback, ExteriorCameraFallback (preserves X-ray behavior from commit 2a83108), NoPvsFallback, EmptyWorldFallback
 - [ ] Empty visible set → `multi_draw_indexed_indirect` with count 0, no GPU errors
-- [ ] Indirect buffer overflow → compute shader stops writing, logs once
 - [ ] `MULTI_DRAW_INDIRECT` absent → fallback dispatch mode, same visual output
 - [ ] Visual parity with Phase 3 on all test maps
 - [ ] `cargo test -p postretro` passes
@@ -178,33 +173,17 @@ pack .prl                           visible cell list   HiZ pyramid (compute)
 
 ---
 
-### Task 6: HiZ depth pyramid
-
-**Description:** After the opaque pass, copy the depth buffer into an `r32float` storage texture. Build a HiZ pyramid via compute kernel (each mip: `max()` over 2×2 footprint). Extend the cell-culling compute shader to sample the HiZ pyramid: project cell AABB to screen space, pick the mip whose texel covers the projection, compare nearest-Z. First frame and level load: bind pass-all HiZ (farthest depth).
-
-**Acceptance criteria:**
-- [ ] HiZ pyramid built each frame after opaque pass
-- [ ] Cell culling shader samples HiZ and rejects occluded cells
-- [ ] First frame / level load uses pass-all HiZ (no missing-texture errors)
-- [ ] One frame of stale HiZ after exterior transition acceptable (no popping, mild over-draw only)
-- [ ] Visual parity maintained — HiZ only removes draws that were already occluded
-- [ ] `cargo test -p postretro` passes
-
-**Depends on:** Task 5 (cell culling compute shader to extend)
-
----
-
-### Task 7: Validation and benchmarking
+### Task 6: Validation and benchmarking
 
 **Description:** Golden-image regression tests against Phase 3 baseline. Render every `assets/maps/` test map from a fixed camera, compare. Microbenchmark frame time on a cell-heavy test map. Exercise edge cases.
 
 **Acceptance criteria:**
 - [ ] Visual parity: SSIM ≥ 0.99 or per-pixel diff ≤ 2/255 on all test maps
 - [ ] Frame time within 5% of Phase 3 on cell-heavy map (20+ visible cells)
-- [ ] Edge cases exercised: camera in solid leaf, exterior camera, empty visible set, first frame, indirect buffer overflow
+- [ ] Edge cases exercised: camera in solid leaf, exterior camera, empty visible set, first frame
 - [ ] All `cargo test` passes; `cargo clippy -- -D warnings` clean
 
-**Depends on:** Tasks 5 and 6
+**Depends on:** Task 5
 
 ---
 
@@ -226,10 +205,7 @@ All phases are sequential — each builds directly on the prior phase's output.
 - Task 5 — compute culling and indirect draws. Depends on Task 4's renderer plumbing and chunk table upload.
 
 **Phase 5 (sequential, after Phase 4):**
-- Task 6 — HiZ pyramid. Extends Task 5's compute culling shader.
-
-**Phase 6 (sequential, after Phase 5):**
-- Task 7 — validation. Depends on all prior tasks.
+- Task 6 — validation. Depends on all prior tasks.
 
 ---
 
@@ -240,7 +216,6 @@ All phases are sequential — each builds directly on the prior phase's output.
 | `multi_draw_indexed_indirect` unavailable on backend | Medium | Feature probe + singular `draw_indexed_indirect` fallback. Same compute shader, different dispatch loop. |
 | Shader compile stutter from new compute kernels | Low | Eager pipeline compilation at level load. Pipeline cache persistence as follow-up if measurable. |
 | Octahedral precision insufficient for Phase 4 specular | Low | No specular in this phase. Bump to f16 or sign-remap encoding in Phase 4 if needed. |
-| HiZ false occlusion at grazing angles | Low | Conservative AABB projection + next-coarser mip. Over-inclusion acceptable. |
 | Tangent convention disagrees with Phase 4 normal maps | Medium | Convention documented (UV s-axis projection, MikkTSpace-adjacent). Phase 4 normal maps must match. Flagged in Phase 4 plan. |
 
 ---

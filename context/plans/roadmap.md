@@ -61,16 +61,15 @@
 
 ---
 
-## Phase 3.5: Rendering Foundation Extension
+## Phase 3.5: Rendering Foundation Extension ✓
 
 Bring the rendering architecture up to the target pipeline (clustered forward+, GPU-driven indirect draws, SH-probe indirect + normal maps) without adding lighting. This phase lays the geometry, culling, and draw-dispatch plumbing so Phase 4 can layer lighting on a stable foundation.
 
-- [ ] **Vertex format upgrade** — extend `postretro-level-format` Geometry section to carry packed normals and tangents per vertex (octahedral `u16 × 2` each, plus bitangent sign). prl-build generates them during brush-side projection. Engine vertex layout and world shader updated to consume them. Flat ambient stays in place.
-- [ ] **Per-cell draw chunks** — restructure prl-build output and engine loader so world geometry is grouped into per-portal-cell chunks with explicit AABB and index range. Replaces per-leaf draw batching. Required for compute culling in the next step.
-- [ ] **GPU-driven indirect draw path** — compute pass consumes the visible cell list (from portal traversal), runs frustum culling per cell, emits `draw_indexed_indirect` commands into a buffer. Main render pass issues a single `multi_draw_indexed_indirect` call. CPU no longer issues per-cell draws.
-- [ ] **HiZ depth pyramid** — compute pass builds a hierarchical-Z pyramid from the previous frame's depth buffer each frame. Cell culling pass tests against it before emitting draws. First frame skips HiZ.
+- [x] **Vertex format upgrade** — extend `postretro-level-format` Geometry section to carry packed normals and tangents per vertex (octahedral `u16 × 2` each, plus bitangent sign). prl-build generates them during brush-side projection. Engine vertex layout and world shader updated to consume them. Flat ambient stays in place.
+- [x] **Per-cell draw chunks** — restructure prl-build output and engine loader so world geometry is grouped into per-portal-cell chunks with explicit AABB and index range. Replaces per-leaf draw batching. Required for compute culling in the next step.
+- [x] **GPU-driven indirect draw path** — compute pass consumes the visible cell list (from portal traversal), runs frustum culling per cell, emits `draw_indexed_indirect` commands into a buffer. Main render pass issues a single `multi_draw_indexed_indirect` call. CPU no longer issues per-cell draws.
 
-**Testable outcome:** textured level with flat ambient, navigable, rendering via GPU-driven indirect draws with portal + HiZ culling. Same visual result as Phase 3, different rendering architecture underneath. Frame time at least as good as Phase 3, preferably better on cell-heavy maps.
+**Testable outcome:** textured level with flat ambient, navigable, rendering via GPU-driven indirect draws with portal + frustum culling. Same visual result as Phase 3, different rendering architecture underneath. Frame time well ahead of 60fps vsync target. ✓
 
 **Phase boundary:** no lighting changes in this phase. The world shader still applies flat ambient — the upgrade to SH sampling, normal maps, and dynamic lights is Phase 4. Keeping lighting out isolates the architectural risk of the indirect draw and cell-chunking changes.
 

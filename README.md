@@ -109,7 +109,7 @@ The engine is being built in phases, each of which produces something you can ac
 - **Phase 1** ✅ — PRL level loading, portal-based visibility with frustum clipping at runtime, free-fly camera, wireframe rendering, custom PRL level compiler
 - **Phase 2** ✅ — Fixed-timestep game loop, action-mapped input (keyboard, mouse, gamepad)
 - **Phase 3** ✅ — Textured world with solid rendering, depth buffer, material system
-- **Phase 3.5** — Rendering foundation: GPU-driven indirect draws, per-cell chunking, HiZ occlusion culling, vertex format upgrade (packed normals and tangents). Same visuals as Phase 3, different architecture underneath.
+- **Phase 3.5** — Rendering foundation: GPU-driven indirect draws, per-cell chunking, vertex format upgrade (packed normals and tangents). Same visuals as Phase 3, different architecture underneath.
 - **Phase 4** — Lighting foundation: SH irradiance volume (baked indirect), clustered forward+ dynamic lights, normal maps, shadow maps
 - **Phase 5** — Visual polish: billboard sprites, emissive surfaces, fog volumes
 - **Phase 6** — Post-processing: bloom, optional CRT filter, cubemap reflections

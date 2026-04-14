@@ -1,10 +1,11 @@
-// Format-agnostic vertex and draw-chunk types shared by the PRL loader and renderer.
+// Format-agnostic vertex and BVH runtime types shared by the PRL loader and renderer.
 // See: context/lib/rendering_pipeline.md §5, §6
+// See: context/plans/in-progress/bvh-foundation/2-runtime-bvh.md
 
 /// World-geometry vertex: position + UV + octahedral normal + octahedral tangent.
-/// Matches the GeometryV3 on-disk layout. Normal and tangent are decoded in the
+/// Matches the `Geometry` on-disk layout. Normal and tangent are decoded in the
 /// vertex shader; the fragment shader receives them as interpolants but does not
-/// use them until Phase 4 adds lighting.
+/// use them until lighting work lands in Milestone 5.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldVertex {
@@ -22,76 +23,80 @@ impl WorldVertex {
     pub const STRIDE: usize = 28;
 }
 
-/// A draw chunk referencing a contiguous index range for one (cell, material bucket)
-/// pair. Loaded from the CellChunks PRL section. The renderer uses these for
-/// per-cell, per-material draw call dispatch. AABB fields are consumed by GPU
-/// frustum culling in the compute prepass.
-#[derive(Debug, Clone)]
-pub struct DrawChunk {
-    /// Opaque cell identifier. Runtime never interprets this as a BSP leaf index.
-    /// Read by GPU via storage buffer upload in compute_cull.rs.
-    #[allow(dead_code)]
-    pub cell_id: u32,
-    /// World-space AABB minimum corner. Read by GPU for frustum culling.
-    #[allow(dead_code)]
+/// One flat BVH node, matching the WGSL `BvhNode` struct byte-for-byte.
+/// See `context/plans/in-progress/bvh-foundation/1-compile-bvh.md` for the layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BvhNode {
     pub aabb_min: [f32; 3],
-    /// World-space AABB maximum corner. Read by GPU for frustum culling.
-    #[allow(dead_code)]
+    /// Index of the next sibling subtree root — the array slot to jump to
+    /// when the current subtree is rejected.
+    pub skip_index: u32,
     pub aabb_max: [f32; 3],
-    /// Start of this chunk's indices in the shared index buffer.
-    pub index_offset: u32,
-    /// Number of indices in this chunk's range.
-    pub index_count: u32,
-    /// Material bucket (texture index) this chunk's indices reference.
+    /// For leaves, the index into `BvhTree::leaves`. For internal nodes,
+    /// ignored (left child is always `current_index + 1`).
+    pub left_child_or_leaf_index: u32,
+    /// Bit 0 (`BVH_NODE_FLAG_LEAF`) is set iff this node is a leaf.
+    pub flags: u32,
+}
+
+/// Flag bit 0 on `BvhNode.flags`: set iff the node is a leaf.
+pub const BVH_NODE_FLAG_LEAF: u32 = 1;
+
+/// One flat BVH leaf, matching the WGSL `BvhLeaf` struct byte-for-byte.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BvhLeaf {
+    pub aabb_min: [f32; 3],
     pub material_bucket_id: u32,
-}
-
-/// Cell-to-chunk-range index entry. Maps a cell_id to its contiguous
-/// range of chunks in the chunk array.
-#[derive(Debug, Clone)]
-pub struct CellRange {
+    pub aabb_max: [f32; 3],
+    pub index_offset: u32,
+    pub index_count: u32,
+    /// BSP leaf id this leaf's primitives live in — the value checked against
+    /// the visible-cell bitmask in the compute shader.
     pub cell_id: u32,
-    pub chunk_start: u32,
-    pub chunk_count: u32,
 }
 
-/// Per-cell draw chunk table loaded from the CellChunks PRL section.
-/// Provides O(log n) lookup of all chunks for a given cell via binary search
-/// on the sorted cell_ranges array.
+/// CPU-side view of the BVH section, held alongside the level geometry and
+/// used to size GPU buffers, derive per-bucket draw ranges, and drive the
+/// wireframe overlay. The data is uploaded verbatim to GPU storage buffers.
 #[derive(Debug, Clone)]
-pub struct CellChunkTable {
-    pub cell_ranges: Vec<CellRange>,
-    pub chunks: Vec<DrawChunk>,
+pub struct BvhTree {
+    pub nodes: Vec<BvhNode>,
+    pub leaves: Vec<BvhLeaf>,
+    pub root_node_index: u32,
 }
 
-impl CellChunkTable {
-    /// Look up all chunks for a given cell_id. Returns an empty slice if the
-    /// cell_id is not present. Uses binary search on the sorted cell_ranges.
-    pub fn chunks_for_cell(&self, cell_id: u32) -> &[DrawChunk] {
-        match self
-            .cell_ranges
-            .binary_search_by_key(&cell_id, |cr| cr.cell_id)
-        {
-            Ok(idx) => {
-                let range = &self.cell_ranges[idx];
-                let start = range.chunk_start as usize;
-                let end = start + range.chunk_count as usize;
-                &self.chunks[start..end]
+/// Contiguous leaf-index range owned by a single material bucket in the
+/// sorted leaf array. Derived at level load from the sorted leaf array by
+/// scanning `material_bucket_id` transitions (O(leaf_count)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BucketRange {
+    pub material_bucket_id: u32,
+    pub first_leaf: u32,
+    pub leaf_count: u32,
+}
+
+impl BvhTree {
+    /// Scan the sorted leaf array once and produce one `BucketRange` per
+    /// distinct `material_bucket_id`. Leaves are assumed to be sorted by
+    /// `material_bucket_id` (sub-plan 1 guarantees this). Buckets are
+    /// emitted in the order they appear, which matches the sort order.
+    pub fn derive_bucket_ranges(&self) -> Vec<BucketRange> {
+        let mut ranges: Vec<BucketRange> = Vec::new();
+        for (i, leaf) in self.leaves.iter().enumerate() {
+            match ranges.last_mut() {
+                Some(last) if last.material_bucket_id == leaf.material_bucket_id => {
+                    last.leaf_count += 1;
+                }
+                _ => {
+                    ranges.push(BucketRange {
+                        material_bucket_id: leaf.material_bucket_id,
+                        first_leaf: i as u32,
+                        leaf_count: 1,
+                    });
+                }
             }
-            Err(_) => &[],
         }
-    }
-
-    /// Return a list of all distinct cell IDs in the table.
-    #[cfg(test)]
-    fn cell_ids(&self) -> Vec<u32> {
-        self.cell_ranges.iter().map(|cr| cr.cell_id).collect()
-    }
-
-    /// Total number of chunks across all cells.
-    #[cfg(test)]
-    fn total_chunks(&self) -> usize {
-        self.chunks.len()
+        ranges
     }
 }
 
@@ -99,162 +104,83 @@ impl CellChunkTable {
 mod tests {
     use super::*;
 
-    fn sample_table() -> CellChunkTable {
-        CellChunkTable {
-            cell_ranges: vec![
-                CellRange {
-                    cell_id: 0,
-                    chunk_start: 0,
-                    chunk_count: 2,
-                },
-                CellRange {
-                    cell_id: 5,
-                    chunk_start: 2,
-                    chunk_count: 1,
-                },
-            ],
-            chunks: vec![
-                DrawChunk {
-                    cell_id: 0,
-                    aabb_min: [-1.0, -1.0, -1.0],
-                    aabb_max: [1.0, 1.0, 1.0],
-                    index_offset: 0,
-                    index_count: 6,
-                    material_bucket_id: 0,
-                },
-                DrawChunk {
-                    cell_id: 0,
-                    aabb_min: [-1.0, -1.0, -1.0],
-                    aabb_max: [1.0, 1.0, 1.0],
-                    index_offset: 6,
-                    index_count: 3,
-                    material_bucket_id: 1,
-                },
-                DrawChunk {
-                    cell_id: 5,
-                    aabb_min: [10.0, 0.0, 10.0],
-                    aabb_max: [20.0, 5.0, 20.0],
-                    index_offset: 9,
-                    index_count: 12,
-                    material_bucket_id: 0,
-                },
-            ],
+    fn leaf(material_bucket_id: u32, cell_id: u32) -> BvhLeaf {
+        BvhLeaf {
+            aabb_min: [0.0; 3],
+            material_bucket_id,
+            aabb_max: [1.0; 3],
+            index_offset: 0,
+            index_count: 3,
+            cell_id,
         }
     }
 
     #[test]
-    fn chunks_for_cell_returns_correct_range() {
-        let table = sample_table();
-        let cell0 = table.chunks_for_cell(0);
-        assert_eq!(cell0.len(), 2);
-        assert_eq!(cell0[0].material_bucket_id, 0);
-        assert_eq!(cell0[1].material_bucket_id, 1);
-
-        let cell5 = table.chunks_for_cell(5);
-        assert_eq!(cell5.len(), 1);
-        assert_eq!(cell5[0].index_offset, 9);
-    }
-
-    #[test]
-    fn chunks_for_absent_cell_returns_empty() {
-        let table = sample_table();
-        let empty = table.chunks_for_cell(999);
-        assert!(empty.is_empty());
-    }
-
-    #[test]
-    fn empty_table_returns_empty_for_any_cell() {
-        let table = CellChunkTable {
-            cell_ranges: vec![],
-            chunks: vec![],
+    fn derive_bucket_ranges_single_bucket() {
+        let tree = BvhTree {
+            nodes: vec![],
+            leaves: vec![leaf(0, 0), leaf(0, 1), leaf(0, 2)],
+            root_node_index: 0,
         };
-        assert!(table.chunks_for_cell(0).is_empty());
-        assert!(table.chunks_for_cell(u32::MAX).is_empty());
-        assert_eq!(table.total_chunks(), 0);
-        assert!(table.cell_ids().is_empty());
-    }
-
-    #[test]
-    fn cell_ids_returns_all_ids_in_order() {
-        let table = sample_table();
-        assert_eq!(table.cell_ids(), vec![0, 5]);
-    }
-
-    #[test]
-    fn total_chunks_counts_all_chunks() {
-        let table = sample_table();
-        assert_eq!(table.total_chunks(), 3);
-    }
-
-    #[test]
-    fn single_cell_single_chunk_lookup() {
-        let table = CellChunkTable {
-            cell_ranges: vec![CellRange {
-                cell_id: 42,
-                chunk_start: 0,
-                chunk_count: 1,
-            }],
-            chunks: vec![DrawChunk {
-                cell_id: 42,
-                aabb_min: [0.0; 3],
-                aabb_max: [1.0; 3],
-                index_offset: 0,
-                index_count: 3,
+        let ranges = tree.derive_bucket_ranges();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(
+            ranges[0],
+            BucketRange {
                 material_bucket_id: 0,
-            }],
-        };
-
-        let chunks = table.chunks_for_cell(42);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].cell_id, 42);
-        assert_eq!(chunks[0].index_count, 3);
+                first_leaf: 0,
+                leaf_count: 3,
+            }
+        );
     }
 
     #[test]
-    fn many_cells_lookup_spot_check() {
-        // 20+ cells to simulate a cell-heavy test map.
-        let num_cells = 25u32;
-        let mut cell_ranges = Vec::new();
-        let mut chunks = Vec::new();
-        for cell_id in 0..num_cells {
-            cell_ranges.push(CellRange {
-                cell_id,
-                chunk_start: cell_id * 2,
-                chunk_count: 2,
-            });
-            for mat in 0..2u32 {
-                chunks.push(DrawChunk {
-                    cell_id,
-                    aabb_min: [cell_id as f32, 0.0, 0.0],
-                    aabb_max: [cell_id as f32 + 1.0, 1.0, 1.0],
-                    index_offset: (cell_id * 2 + mat) * 6,
-                    index_count: 6,
-                    material_bucket_id: mat,
-                });
-            }
-        }
-        let table = CellChunkTable {
-            cell_ranges,
-            chunks,
+    fn derive_bucket_ranges_multiple_contiguous_buckets() {
+        let tree = BvhTree {
+            nodes: vec![],
+            leaves: vec![
+                leaf(0, 0),
+                leaf(0, 1),
+                leaf(1, 2),
+                leaf(2, 3),
+                leaf(2, 4),
+            ],
+            root_node_index: 0,
         };
+        let ranges = tree.derive_bucket_ranges();
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges[0].material_bucket_id, 0);
+        assert_eq!(ranges[0].first_leaf, 0);
+        assert_eq!(ranges[0].leaf_count, 2);
+        assert_eq!(ranges[1].material_bucket_id, 1);
+        assert_eq!(ranges[1].first_leaf, 2);
+        assert_eq!(ranges[1].leaf_count, 1);
+        assert_eq!(ranges[2].material_bucket_id, 2);
+        assert_eq!(ranges[2].first_leaf, 3);
+        assert_eq!(ranges[2].leaf_count, 2);
+    }
 
-        assert_eq!(table.total_chunks(), 50);
-        assert_eq!(table.cell_ids().len(), 25);
+    #[test]
+    fn derive_bucket_ranges_empty_leaves() {
+        let tree = BvhTree {
+            nodes: vec![],
+            leaves: vec![],
+            root_node_index: 0,
+        };
+        assert!(tree.derive_bucket_ranges().is_empty());
+    }
 
-        // Spot-check middle and edge cells.
-        let c0 = table.chunks_for_cell(0);
-        assert_eq!(c0.len(), 2);
-        assert_eq!(c0[0].cell_id, 0);
-
-        let c12 = table.chunks_for_cell(12);
-        assert_eq!(c12.len(), 2);
-        assert_eq!(c12[0].cell_id, 12);
-
-        let c24 = table.chunks_for_cell(24);
-        assert_eq!(c24.len(), 2);
-        assert_eq!(c24[0].cell_id, 24);
-
-        // Non-existent cell.
-        assert!(table.chunks_for_cell(25).is_empty());
+    #[test]
+    fn derive_bucket_ranges_single_leaf() {
+        let tree = BvhTree {
+            nodes: vec![],
+            leaves: vec![leaf(7, 42)],
+            root_node_index: 0,
+        };
+        let ranges = tree.derive_bucket_ranges();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].material_bucket_id, 7);
+        assert_eq!(ranges[0].first_leaf, 0);
+        assert_eq!(ranges[0].leaf_count, 1);
     }
 }

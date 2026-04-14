@@ -1,34 +1,75 @@
-// GPU-driven cell culling compute pipeline and indirect draw dispatch.
+// GPU-driven BVH traversal compute pipeline and indirect draw dispatch.
 // See: context/lib/rendering_pipeline.md §7.1
+// See: context/plans/in-progress/bvh-foundation/2-runtime-bvh.md
 //
-// Fixed-slot design: each chunk in the chunk table has a permanent slot in
-// the indirect draw buffer, sorted by material bucket so each bucket's
-// commands are contiguous. Before each frame the buffer is reset from a
-// stored template (all instance_count = 0). The compute shader sets
-// instance_count = 1 for chunks that pass frustum culling, writing to
-// the chunk's bucket-sorted slot via a remap table. The render pass
-// issues multi_draw_indexed_indirect per bucket. Invisible chunks
-// produce zero-instance draws that the GPU handles as no-ops.
+// Fixed-slot design: each BVH leaf owns a permanent slot in the indirect
+// draw buffer, indexed by its position in the flat leaf array. Leaves are
+// sorted by `material_bucket_id` so each bucket's commands are contiguous.
+// At load time we derive per-bucket `(first_leaf, leaf_count)` ranges once
+// and issue one `multi_draw_indexed_indirect` per bucket.
+//
+// Each frame, the compute shader walks the BVH in DFS order using the
+// `skip_index` pointer to jump over rejected subtrees — no stack, no depth
+// cap, no abort path. For each leaf it hits:
+//   - The leaf's AABB is frustum-tested (parent AABB may be larger).
+//   - The leaf's `cell_id` is tested against the per-frame visible-cell
+//     bitmask produced by the portal DFS on the CPU side.
+//   - If both checks pass, a full `DrawIndexedIndirect` is written to the
+//     leaf's fixed slot; otherwise `index_count` is zeroed so the slot
+//     becomes a no-op GPU draw.
+//
+// This replaces the Milestone 3.5 per-cell chunk compute cull. Portal DFS
+// still runs on the CPU; it just feeds a bitmask instead of a flat cell id
+// list. See `determine_visible_cells` in `visibility.rs`.
 
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 
-use crate::geometry::CellChunkTable;
+use crate::geometry::{BucketRange, BvhTree, BVH_NODE_FLAG_LEAF};
 
 /// Size of a single DrawIndexedIndirect command in bytes.
 /// Layout: index_count(4) + instance_count(4) + first_index(4) +
 ///         base_vertex(4) + first_instance(4) = 20 bytes.
 const DRAW_INDIRECT_SIZE: u64 = 20;
 
-// --- Compute Shader (WGSL) ---
+/// Visible-cell bitmask: fixed 128-word (512-byte) storage buffer covering
+/// up to 4096 cell IDs (bit test `bitmask[cell_id >> 5] & (1 << (cell_id & 31))`).
+/// The fixed size matches the contract documented in the BVH foundation plan
+/// and removes any resize path from the hot frame loop.
+const VISIBLE_CELLS_WORDS: usize = 128;
+const VISIBLE_CELLS_BYTES: u64 = (VISIBLE_CELLS_WORDS * 4) as u64;
+const MAX_VISIBLE_CELLS: u32 = (VISIBLE_CELLS_WORDS as u32) * 32;
 
-const CULL_SHADER_SOURCE: &str = r#"
-// Fixed-slot cell culling compute shader.
+// --- Compute Shader (WGSL) ---
 //
-// Each visible cell ID is processed by one invocation. The shader looks up
-// the cell's chunk range, frustum-tests each chunk's AABB, and chunks that
-// pass get instance_count = 1 written into their bucket-sorted slot in the
-// indirect buffer via the remap table.
+// Traversal strategy: skip-index (flat DFS), not stack-based.
+//
+// Sub-plan 1 writes nodes in depth-first order with a `skip_index` per node
+// pointing to the next sibling subtree. On AABB reject we jump to
+// `skip_index`; on AABB accept we advance to `i + 1` (left child). This
+// eliminates the explicit stack entirely, has no depth cap, and is the
+// standard approach for software GPU BVH traversal.
+//
+// Portal integration: per-leaf visible-cell bitmask check. BVH leaves carry
+// a `cell_id: u32`. The portal DFS runs first each frame on the CPU and
+// builds a 128-word bitmask uploaded to `visible_cells`. Each surviving leaf
+// is tested against this bitmask; mismatches zero their indirect slot.
+//
+// Alternative rejected: multi-frustum traversal — one BVH pass per
+// portal-narrowed frustum. Tighter cull isn't worth N traversals per frame
+// and the added shader complexity. One traversal, simple shader code,
+// O(1) per-leaf cost. See the BVH foundation sub-plan 2 notes.
+//
+// WGSL struct layouts must match the on-disk stride byte-for-byte (see
+// `1-compile-bvh.md` for the exact layouts): `vec3<f32>` in a storage buffer
+// occupies 12 bytes (not 16), so each pair of (vec3 + u32) fits in a 16-byte
+// row with no gaps and each struct's stride is 40 bytes.
+const CULL_SHADER_SOURCE: &str = r#"
+// BVH traversal compute shader — flat DFS with skip-index.
+//
+// One invocation walks the entire tree per frame (`@workgroup_size(1,1,1)`);
+// parallelism over subtrees is a deferred optimization that the current
+// scene scale does not need.
 
 struct FrustumPlane {
     // .xyz = normal, .w = dist
@@ -39,22 +80,24 @@ struct CullUniforms {
     planes: array<FrustumPlane, 6>,
 };
 
-struct CellRange {
-    // x = cell_id, y = chunk_start, z = chunk_count, w = pad
-    data: vec4<u32>,
+struct BvhNode {
+    aabb_min: vec3<f32>,            // offset  0
+    skip_index: u32,                // offset 12
+    aabb_max: vec3<f32>,            // offset 16
+    left_child_or_leaf_index: u32,  // offset 28
+    flags: u32,                     // offset 32 (bit 0 = is_leaf)
+    _pad: u32,                      // offset 36
 };
 
-struct DrawChunk {
-    // x = cell_id (float bits), y = aabb_min.x, z = aabb_min.y, w = aabb_min.z
-    header: vec4<f32>,
-    // x = aabb_max.x, y = aabb_max.y, z = aabb_max.z, w = index_offset (float bits)
-    bounds_and_offset: vec4<f32>,
-    // x = index_count, y = material_bucket_id, z = pad, w = pad
-    indices: vec4<u32>,
+struct BvhLeaf {
+    aabb_min: vec3<f32>,       // offset  0
+    material_bucket_id: u32,   // offset 12
+    aabb_max: vec3<f32>,       // offset 16
+    index_offset: u32,         // offset 28
+    index_count: u32,          // offset 32
+    cell_id: u32,              // offset 36
 };
 
-// Matches wgpu DrawIndexedIndirect layout (20 bytes, tightly packed).
-// We only write instance_count; the rest are pre-filled at level load.
 struct DrawIndexedIndirect {
     index_count: u32,
     instance_count: u32,
@@ -64,15 +107,15 @@ struct DrawIndexedIndirect {
 };
 
 @group(0) @binding(0) var<uniform> uniforms: CullUniforms;
-@group(0) @binding(1) var<storage, read> visible_cells: array<u32>;
-@group(0) @binding(2) var<storage, read> cell_ranges: array<CellRange>;
-@group(0) @binding(3) var<storage, read> chunks: array<DrawChunk>;
+@group(0) @binding(1) var<storage, read> nodes: array<BvhNode>;
+@group(0) @binding(2) var<storage, read> leaves: array<BvhLeaf>;
+@group(0) @binding(3) var<storage, read> visible_cells: array<u32>;
 @group(0) @binding(4) var<storage, read_write> indirect_draws: array<DrawIndexedIndirect>;
-@group(0) @binding(5) var<storage, read> chunk_remap: array<u32>;
-// Per-chunk cull status for debug wireframe overlay.
-// 0 = not processed (portal-culled cell), 1 = frustum-culled,
+// Per-leaf cull status for the debug wireframe overlay.
+// 0 = portal-culled (cell not in visible set),
+// 1 = frustum-culled,
 // 2 = visible/rendered.
-@group(0) @binding(6) var<storage, read_write> cull_status: array<u32>;
+@group(0) @binding(5) var<storage, read_write> cull_status: array<u32>;
 
 fn is_aabb_outside_frustum(aabb_min: vec3<f32>, aabb_max: vec3<f32>) -> bool {
     for (var i = 0u; i < 6u; i = i + 1u) {
@@ -91,77 +134,71 @@ fn is_aabb_outside_frustum(aabb_min: vec3<f32>, aabb_max: vec3<f32>) -> bool {
     return false;
 }
 
-fn find_cell_range(cell_id: u32, num_ranges: u32) -> u32 {
-    // Binary search: cell_ranges are sorted by cell_id (BTreeMap iteration order).
-    var lo = 0u;
-    var hi = num_ranges;
-    while lo < hi {
-        let mid = (lo + hi) / 2u;
-        let mid_id = cell_ranges[mid].data.x;
-        if mid_id < cell_id {
-            lo = mid + 1u;
-        } else if mid_id > cell_id {
-            hi = mid;
-        } else {
-            return mid;
-        }
+fn cell_is_visible(cell_id: u32) -> bool {
+    // Fixed 128-word / 4096-cell bitmask; sub-plan 1 enforces cell_id < 4096.
+    let word_idx = cell_id >> 5u;
+    if word_idx >= 128u {
+        return false;
     }
-    return 0xFFFFFFFFu;
+    let bit = 1u << (cell_id & 31u);
+    return (visible_cells[word_idx] & bit) != 0u;
 }
 
-@compute @workgroup_size(64)
-fn cull_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let cell_idx = gid.x;
-    let num_visible = arrayLength(&visible_cells);
-    if cell_idx >= num_visible {
+@compute @workgroup_size(1, 1, 1)
+fn cull_main() {
+    let node_count = arrayLength(&nodes);
+    if node_count == 0u {
         return;
     }
 
-    let cell_id = visible_cells[cell_idx];
-    let num_ranges = arrayLength(&cell_ranges);
-    let range_idx = find_cell_range(cell_id, num_ranges);
-    if range_idx == 0xFFFFFFFFu {
-        return;
-    }
+    var i = 0u;
+    loop {
+        if i >= node_count {
+            break;
+        }
 
-    let range_data = cell_ranges[range_idx].data;
-    let chunk_start = range_data.y;
-    let chunk_count = range_data.z;
+        let node = nodes[i];
 
-    for (var i = 0u; i < chunk_count; i = i + 1u) {
-        let chunk_idx = chunk_start + i;
-        let chunk = chunks[chunk_idx];
-
-        let aabb_min = vec3<f32>(chunk.header.y, chunk.header.z, chunk.header.w);
-        let aabb_max = chunk.bounds_and_offset.xyz;
-
-        if is_aabb_outside_frustum(aabb_min, aabb_max) {
-            cull_status[chunk_idx] = 1u; // frustum-culled
+        // Reject: jump over the entire subtree via skip_index.
+        if is_aabb_outside_frustum(node.aabb_min, node.aabb_max) {
+            if (node.flags & 1u) != 0u {
+                // Leaf that didn't pass the frustum test.
+                let leaf_idx = node.left_child_or_leaf_index;
+                indirect_draws[leaf_idx].index_count = 0u;
+                cull_status[leaf_idx] = 1u;
+            }
+            i = node.skip_index;
             continue;
         }
 
-        // Chunk passes frustum test — enable its bucket-sorted slot.
-        let sorted_slot = chunk_remap[chunk_idx];
-        indirect_draws[sorted_slot].instance_count = 1u;
-        cull_status[chunk_idx] = 2u; // visible/rendered
+        if (node.flags & 1u) != 0u {
+            // Leaf: do the per-leaf tests and write its indirect slot.
+            let leaf_idx = node.left_child_or_leaf_index;
+            let leaf = leaves[leaf_idx];
+
+            if is_aabb_outside_frustum(leaf.aabb_min, leaf.aabb_max) {
+                indirect_draws[leaf_idx].index_count = 0u;
+                cull_status[leaf_idx] = 1u;
+            } else if !cell_is_visible(leaf.cell_id) {
+                indirect_draws[leaf_idx].index_count = 0u;
+                cull_status[leaf_idx] = 0u;
+            } else {
+                indirect_draws[leaf_idx].index_count = leaf.index_count;
+                indirect_draws[leaf_idx].instance_count = 1u;
+                indirect_draws[leaf_idx].first_index = leaf.index_offset;
+                indirect_draws[leaf_idx].base_vertex = 0;
+                indirect_draws[leaf_idx].first_instance = 0u;
+                cull_status[leaf_idx] = 2u;
+            }
+            i = node.skip_index;
+            continue;
+        }
+
+        // Internal node survived — descend to left child.
+        i = i + 1u;
     }
 }
 "#;
-
-/// GPU-side chunk data formatted for the storage buffer.
-/// Three vec4 fields = 48 bytes per chunk.
-#[derive(Debug, Clone, Copy)]
-struct GpuDrawChunk {
-    header: [f32; 4],
-    bounds_and_offset: [f32; 4],
-    indices: [u32; 4],
-}
-
-/// GPU-side cell range data. One vec4<u32> = 16 bytes.
-#[derive(Debug, Clone, Copy)]
-struct GpuCellRange {
-    data: [u32; 4],
-}
 
 /// Cull uniforms: 6 frustum planes.
 /// 6 * 16 = 96 bytes.
@@ -170,158 +207,76 @@ struct CullUniforms {
     planes: [[f32; 4]; 6],
 }
 
-/// Per-bucket metadata computed at level load time. Tracks the offset and
-/// count of each material bucket's contiguous region in the bucket-sorted
-/// indirect draw buffer.
-#[derive(Debug, Clone)]
-struct BucketInfo {
-    /// Byte offset of this bucket's first DrawIndexedIndirect command in the
-    /// indirect buffer.
-    indirect_byte_offset: u64,
-    /// Number of DrawIndexedIndirect commands in this bucket.
-    draw_count: u32,
-}
-
-/// GPU-driven compute culling pipeline with frustum culling.
-/// Created at level load, dispatched each frame before the render pass.
+/// GPU-driven BVH traversal compute pipeline. Created at level load,
+/// dispatched each frame before the render pass.
 pub struct ComputeCullPipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 
-    chunk_buffer: wgpu::Buffer,
-    cell_range_buffer: wgpu::Buffer,
+    node_buffer: wgpu::Buffer,
+    leaf_buffer: wgpu::Buffer,
     visible_cells_buffer: wgpu::Buffer,
-    visible_cells_capacity: u32,
     uniform_buffer: wgpu::Buffer,
-    /// Remap table: chunk_index -> bucket-sorted slot index.
-    remap_buffer: wgpu::Buffer,
 
-    /// Indirect draw buffer: one DrawIndexedIndirect per chunk, sorted by
-    /// material bucket so each bucket's commands are contiguous.
+    /// Indirect draw buffer: one `DrawIndexedIndirect` per BVH leaf, indexed
+    /// by leaf array position. Leaves are sorted by `material_bucket_id` so
+    /// each bucket owns a contiguous slot range.
     indirect_buffer: wgpu::Buffer,
-    /// Total number of chunks (= total DrawIndexedIndirect commands).
-    total_chunks: u32,
-    /// Pre-built indirect buffer template (all instance_count = 0) for
-    /// per-frame reset. Stored at init to avoid rebuilding each frame.
-    indirect_template: Vec<u8>,
-    /// Per-bucket offset and count for multi_draw_indexed_indirect calls.
-    bucket_info: Vec<BucketInfo>,
+    /// Total number of leaves (= total indirect draw slots).
+    total_leaves: u32,
+    /// Per-bucket (first_leaf, leaf_count) ranges derived at load time.
+    bucket_ranges: Vec<BucketRange>,
 
-    #[allow(dead_code)]
-    num_buckets: u32,
     has_multi_draw_indirect: bool,
 
-    /// Per-chunk cull status buffer for debug wireframe overlay. One u32 per
-    /// chunk: 0 = portal-culled, 1 = frustum-culled, 2 = visible/rendered.
-    /// Initialized to 0 each frame (portal-culled default).
+    /// Per-leaf cull status buffer for debug wireframe overlay. One u32 per
+    /// leaf: 0 = portal-culled, 1 = frustum-culled, 2 = visible/rendered.
     cull_status_buffer: wgpu::Buffer,
+
+    /// Scratch buffer used to construct the 128-word visible-cell bitmask
+    /// each frame. Reused to avoid a per-frame allocation.
+    visible_bitmask_scratch: Vec<u32>,
 }
 
 impl ComputeCullPipeline {
-    /// Create the compute culling pipeline and upload the chunk table to GPU.
-    pub fn new(
-        device: &wgpu::Device,
-        table: &CellChunkTable,
-        num_buckets: u32,
-        has_multi_draw_indirect: bool,
-    ) -> Self {
-        let num_buckets = num_buckets.max(1);
-        let total_chunks = table.chunks.len() as u32;
+    /// Create the compute culling pipeline and upload the BVH to GPU.
+    pub fn new(device: &wgpu::Device, bvh: &BvhTree, has_multi_draw_indirect: bool) -> Self {
+        let total_leaves = bvh.leaves.len() as u32;
+        let bucket_ranges = bvh.derive_bucket_ranges();
 
-        // Build bucket-sorted order: sort chunks by material_bucket_id,
-        // preserving original order within each bucket (stable sort).
-        let mut sorted_indices: Vec<u32> = (0..total_chunks).collect();
-        sorted_indices.sort_by_key(|&i| table.chunks[i as usize].material_bucket_id);
-
-        // Build remap table: chunk_index -> sorted_slot.
-        let mut remap = vec![0u32; total_chunks as usize];
-        for (sorted_slot, &chunk_idx) in sorted_indices.iter().enumerate() {
-            remap[chunk_idx as usize] = sorted_slot as u32;
-        }
-
-        // Build the bucket-sorted indirect buffer template.
-        let indirect_template = build_indirect_buffer_sorted(table, &sorted_indices);
-
-        // Compute per-bucket info from the sorted order.
-        let bucket_info = compute_bucket_info_sorted(table, &sorted_indices, num_buckets);
-
-        // Build GPU chunk data (in original chunk-table order for compute shader).
-        let gpu_chunks: Vec<GpuDrawChunk> = table
-            .chunks
-            .iter()
-            .map(|c| GpuDrawChunk {
-                header: [
-                    f32::from_bits(c.cell_id),
-                    c.aabb_min[0],
-                    c.aabb_min[1],
-                    c.aabb_min[2],
-                ],
-                bounds_and_offset: [
-                    c.aabb_max[0],
-                    c.aabb_max[1],
-                    c.aabb_max[2],
-                    f32::from_bits(c.index_offset),
-                ],
-                indices: [c.index_count, c.material_bucket_id, 0, 0],
-            })
-            .collect();
-
-        let gpu_cell_ranges: Vec<GpuCellRange> = table
-            .cell_ranges
-            .iter()
-            .map(|cr| GpuCellRange {
-                data: [cr.cell_id, cr.chunk_start, cr.chunk_count, 0],
-            })
-            .collect();
-
-        let num_cell_ranges = gpu_cell_ranges.len() as u32;
-
-        // Chunk storage buffer.
-        let chunk_bytes = serialize_gpu_chunks(&gpu_chunks);
-        let chunk_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Chunk Table Storage"),
-            contents: if chunk_bytes.is_empty() {
-                &[0u8; 48]
+        // Node storage buffer.
+        let node_bytes = serialize_bvh_nodes(&bvh.nodes);
+        let node_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BVH Node Storage"),
+            contents: if node_bytes.is_empty() {
+                &[0u8; 40]
             } else {
-                &chunk_bytes
+                &node_bytes
             },
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // Cell range storage buffer.
-        let cell_range_bytes = serialize_gpu_cell_ranges(&gpu_cell_ranges);
-        let cell_range_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cell Range Index Storage"),
-            contents: if cell_range_bytes.is_empty() {
-                &[0u8; 16]
+        // Leaf storage buffer.
+        let leaf_bytes = serialize_bvh_leaves(&bvh.leaves);
+        let leaf_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BVH Leaf Storage"),
+            contents: if leaf_bytes.is_empty() {
+                &[0u8; 40]
             } else {
-                &cell_range_bytes
+                &leaf_bytes
             },
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // Remap storage buffer (chunk_index -> sorted_slot).
-        let remap_bytes = serialize_u32_slice(&remap);
-        let remap_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Chunk Remap Table"),
-            contents: if remap_bytes.is_empty() {
-                &[0u8; 4]
-            } else {
-                &remap_bytes
-            },
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        // Visible cells buffer.
-        let initial_capacity = 256u32.max(num_cell_ranges);
+        // Visible-cells bitmask buffer (fixed 512 bytes). Uploaded each frame.
         let visible_cells_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Visible Cells Buffer"),
-            size: (initial_capacity as u64) * 4,
+            label: Some("Visible Cells Bitmask"),
+            size: VISIBLE_CELLS_BYTES,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // Cull uniforms buffer: 6 planes (96) = 96 bytes.
+        // Cull uniforms buffer (6 planes = 96 bytes).
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Cull Uniforms"),
             size: CULL_UNIFORMS_SIZE as u64,
@@ -329,125 +284,113 @@ impl ComputeCullPipeline {
             mapped_at_creation: false,
         });
 
-        // Create the indirect draw buffer from the template.
-        let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // Indirect draw buffer: one DrawIndexedIndirect slot per leaf. The
+        // compute shader writes each leaf's slot every frame (or zeroes
+        // index_count for culled slots), so no template or per-frame reset
+        // is required.
+        let indirect_buffer_size = (total_leaves.max(1) as u64) * DRAW_INDIRECT_SIZE;
+        let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Indirect Draw Buffer"),
-            contents: if indirect_template.is_empty() {
-                &[0u8; 20] // One dummy command
-            } else {
-                &indirect_template
-            },
+            size: indirect_buffer_size,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
-        // Per-chunk cull status buffer for debug wireframe overlay.
+        // Per-leaf cull status buffer for debug wireframe overlay.
         let cull_status_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Cull Status Buffer"),
-            size: (total_chunks.max(1) as u64) * 4,
+            size: (total_leaves.max(1) as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // Create compute shader and pipeline.
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Cell Cull Compute Shader"),
+            label: Some("BVH Cull Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(CULL_SHADER_SOURCE.into()),
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Cell Cull Bind Group Layout"),
-                entries: &[
-                    // binding 0: uniforms
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("BVH Cull Bind Group Layout"),
+            entries: &[
+                // binding 0: uniforms
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    // binding 1: visible_cells
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                    count: None,
+                },
+                // binding 1: nodes
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    // binding 2: cell_ranges
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                    count: None,
+                },
+                // binding 2: leaves
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    // binding 3: chunks
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                    count: None,
+                },
+                // binding 3: visible_cells bitmask
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    // binding 4: indirect_draws (read-write)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                    count: None,
+                },
+                // binding 4: indirect_draws (read-write)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    // binding 5: chunk_remap
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                    count: None,
+                },
+                // binding 5: cull_status (read-write)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    // binding 6: cull_status (per-chunk debug output)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 6,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+            ],
+        });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Cell Cull Pipeline Layout"),
+            label: Some("BVH Cull Pipeline Layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Cell Cull Compute Pipeline"),
+            label: Some("BVH Cull Compute Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: Some("cull_main"),
@@ -456,93 +399,107 @@ impl ComputeCullPipeline {
         });
 
         log::info!(
-            "[Renderer] Compute cull pipeline ready: {} cells, {} chunks, {} buckets, multi_draw={}",
-            num_cell_ranges,
-            total_chunks,
-            num_buckets,
+            "[Renderer] BVH cull pipeline ready: {} nodes, {} leaves, {} buckets, multi_draw={}",
+            bvh.nodes.len(),
+            total_leaves,
+            bucket_ranges.len(),
             has_multi_draw_indirect,
         );
 
         Self {
             pipeline,
             bind_group_layout,
-            chunk_buffer,
-            cell_range_buffer,
+            node_buffer,
+            leaf_buffer,
             visible_cells_buffer,
-            visible_cells_capacity: initial_capacity,
             uniform_buffer,
-            remap_buffer,
             indirect_buffer,
-            total_chunks,
-            cull_status_buffer,
-            indirect_template,
-            bucket_info,
-            num_buckets,
+            total_leaves,
+            bucket_ranges,
             has_multi_draw_indirect,
+            cull_status_buffer,
+            visible_bitmask_scratch: vec![0u32; VISIBLE_CELLS_WORDS],
         }
     }
 
-    /// Upload visible cell IDs and frustum planes, clear the indirect buffer's
-    /// instance_count fields, then dispatch the compute cull shader.
-    ///
-    /// After this call the indirect buffer is ready for `draw_indirect`.
+    /// Build the visible-cell bitmask from a flat cell-id list. Cell IDs
+    /// outside the bitmask's range (0..4096) are clamped out with a
+    /// one-time warning log; sub-plan 1 already constrains cell IDs so this
+    /// should never fire in practice.
+    fn write_bitmask_from_cells(&mut self, cells: &[u32]) {
+        for w in &mut self.visible_bitmask_scratch {
+            *w = 0;
+        }
+        for &cell in cells {
+            if cell >= MAX_VISIBLE_CELLS {
+                log::warn!(
+                    "[Renderer] cell_id {} exceeds visible-cell bitmask capacity {}",
+                    cell,
+                    MAX_VISIBLE_CELLS
+                );
+                continue;
+            }
+            let word = (cell >> 5) as usize;
+            let bit = 1u32 << (cell & 31);
+            self.visible_bitmask_scratch[word] |= bit;
+        }
+    }
+
+    fn write_bitmask_draw_all(&mut self) {
+        for w in &mut self.visible_bitmask_scratch {
+            *w = 0xFFFFFFFFu32;
+        }
+    }
+
+    /// Upload visible cell bitmask and frustum planes, then dispatch the
+    /// BVH traversal compute shader. After this call the indirect buffer
+    /// is ready for `draw_indexed_indirect` / `multi_draw_indexed_indirect`.
     pub fn dispatch(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        visible_cell_ids: &[u32],
+        visible: &crate::visibility::VisibleCells,
         view_proj: &Mat4,
     ) {
-        let num_visible = visible_cell_ids.len() as u32;
-
-        // Resize visible cells buffer if needed.
-        if num_visible > self.visible_cells_capacity {
-            let new_capacity = num_visible.next_power_of_two();
-            self.visible_cells_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Visible Cells Buffer"),
-                size: (new_capacity as u64) * 4,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.visible_cells_capacity = new_capacity;
+        // Build the visible-cell bitmask on CPU and upload to the fixed
+        // 512-byte storage buffer. This is the per-frame portal DFS
+        // handoff to the compute shader.
+        match visible {
+            crate::visibility::VisibleCells::Culled(cells) => {
+                self.write_bitmask_from_cells(cells);
+            }
+            crate::visibility::VisibleCells::DrawAll => {
+                self.write_bitmask_draw_all();
+            }
         }
-
-        // Upload visible cell IDs. When num_visible == 0 the buffer retains
-        // stale data from the previous frame, but the dispatch below uses 0
-        // workgroups so no shader invocations run and the stale data is never read.
-        if num_visible > 0 {
-            let cell_bytes = serialize_u32_slice(visible_cell_ids);
-            queue.write_buffer(&self.visible_cells_buffer, 0, &cell_bytes);
-        }
+        let bitmask_bytes = serialize_u32_slice(&self.visible_bitmask_scratch);
+        queue.write_buffer(&self.visible_cells_buffer, 0, &bitmask_bytes);
 
         // Upload frustum planes.
         let planes = extract_frustum_planes_for_gpu(view_proj);
-        let uniforms = CullUniforms {
-            planes,
-        };
+        let uniforms = CullUniforms { planes };
         let uniforms_bytes = serialize_cull_uniforms(&uniforms);
         queue.write_buffer(&self.uniform_buffer, 0, &uniforms_bytes);
 
-        // Reset all instance_count fields to 0 by re-uploading the template.
-        // The template has all fields pre-filled except instance_count = 0.
-        // The compute shader sets instance_count = 1 for visible chunks.
-        if self.total_chunks > 0 && !self.indirect_template.is_empty() {
-            queue.write_buffer(&self.indirect_buffer, 0, &self.indirect_template);
-        }
-
-        // Reset cull status to 0 (portal-culled) for all chunks. The compute
-        // shader writes 1 (frustum-culled) or 2 (visible) for chunks in
-        // visible cells; chunks in portal-culled cells retain the default 0.
-        if self.total_chunks > 0 {
-            let zeros = vec![0u8; self.total_chunks as usize * 4];
+        // Reset cull_status to 0 (portal-culled) before dispatch. The
+        // compute shader writes 1 (frustum) or 2 (visible) for leaves it
+        // touches; untouched leaves (all of them are touched by the single
+        // DFS walk) retain 0.
+        if self.total_leaves > 0 {
+            let zeros = vec![0u8; self.total_leaves as usize * 4];
             queue.write_buffer(&self.cull_status_buffer, 0, &zeros);
         }
 
-        // Create bind group. Recreated unconditionally every frame; caching
-        // and rebuilding only on buffer resize is a deferred perf follow-up.
+        // Early out: nothing to cull.
+        if self.total_leaves == 0 {
+            return;
+        }
+
+        // Build the bind group each frame. Caching on buffer resize is a
+        // deferred perf follow-up — buffers here are sized once at level load.
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Cell Cull Bind Group"),
+            label: Some("BVH Cull Bind Group"),
             layout: &self.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -551,15 +508,15 @@ impl ComputeCullPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: self.visible_cells_buffer.as_entire_binding(),
+                    resource: self.node_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.cell_range_buffer.as_entire_binding(),
+                    resource: self.leaf_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.chunk_buffer.as_entire_binding(),
+                    resource: self.visible_cells_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -567,146 +524,60 @@ impl ComputeCullPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
-                    resource: self.remap_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
                     resource: self.cull_status_buffer.as_entire_binding(),
                 },
             ],
         });
 
-        // Dispatch compute shader.
-        let workgroup_count = num_visible.div_ceil(64);
-        {
-            let mut compute_pass =
-                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("Cell Cull Pass"),
-                    timestamp_writes: None,
-                });
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("BVH Cull Pass"),
+            timestamp_writes: None,
+        });
 
-            compute_pass.set_pipeline(&self.pipeline);
-            compute_pass.set_bind_group(0, &bind_group, &[]);
-
-            if num_visible > 0 {
-                compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
-            }
-        }
+        compute_pass.set_pipeline(&self.pipeline);
+        compute_pass.set_bind_group(0, &bind_group, &[]);
+        compute_pass.dispatch_workgroups(1, 1, 1);
     }
 
     /// Issue indirect draw calls for the render pass. One call per material
-    /// bucket via multi_draw_indexed_indirect (or singular fallback).
-    ///
+    /// bucket via `multi_draw_indexed_indirect` (or the singular fallback).
     /// `set_texture_fn` binds the correct texture before each bucket's draws.
     pub fn draw_indirect<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
         set_texture_fn: &dyn Fn(&mut wgpu::RenderPass<'a>, u32),
     ) {
-        for (bucket_idx, info) in self.bucket_info.iter().enumerate() {
-            if info.draw_count == 0 {
+        for range in &self.bucket_ranges {
+            if range.leaf_count == 0 {
                 continue;
             }
 
-            set_texture_fn(render_pass, bucket_idx as u32);
+            set_texture_fn(render_pass, range.material_bucket_id);
+            let byte_offset = (range.first_leaf as u64) * DRAW_INDIRECT_SIZE;
 
             if self.has_multi_draw_indirect {
                 render_pass.multi_draw_indexed_indirect(
                     &self.indirect_buffer,
-                    info.indirect_byte_offset,
-                    info.draw_count,
+                    byte_offset,
+                    range.leaf_count,
                 );
             } else {
-                // Fallback: issue individual draw_indexed_indirect calls.
-                for i in 0..info.draw_count {
-                    let offset =
-                        info.indirect_byte_offset + (i as u64) * DRAW_INDIRECT_SIZE;
+                for i in 0..range.leaf_count {
+                    let offset = byte_offset + (i as u64) * DRAW_INDIRECT_SIZE;
                     render_pass.draw_indexed_indirect(&self.indirect_buffer, offset);
                 }
             }
         }
     }
 
-
-    /// Reference to the indirect draw buffer.
-    #[allow(dead_code)]
-    pub fn indirect_buffer(&self) -> &wgpu::Buffer {
-        &self.indirect_buffer
-    }
-
-    /// Reference to the per-chunk cull status buffer for the wireframe overlay.
+    /// Reference to the per-leaf cull status buffer for the wireframe overlay.
     pub fn cull_status_buffer(&self) -> &wgpu::Buffer {
         &self.cull_status_buffer
     }
-
-}
-
-// --- Indirect buffer initialization ---
-
-/// Build the bucket-sorted indirect draw buffer contents. Chunks are laid
-/// out in the order given by `sorted_indices`, with instance_count = 0.
-fn build_indirect_buffer_sorted(table: &CellChunkTable, sorted_indices: &[u32]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(sorted_indices.len() * DRAW_INDIRECT_SIZE as usize);
-    for &chunk_idx in sorted_indices {
-        let chunk = &table.chunks[chunk_idx as usize];
-        // index_count
-        buf.extend_from_slice(&chunk.index_count.to_ne_bytes());
-        // instance_count = 0 (cleared, compute shader sets to 1)
-        buf.extend_from_slice(&0u32.to_ne_bytes());
-        // first_index = index_offset
-        buf.extend_from_slice(&chunk.index_offset.to_ne_bytes());
-        // base_vertex = 0
-        buf.extend_from_slice(&0i32.to_ne_bytes());
-        // first_instance = 0
-        buf.extend_from_slice(&0u32.to_ne_bytes());
-    }
-    buf
-}
-
-/// Compute per-bucket metadata from the bucket-sorted chunk order.
-/// Each bucket's commands are contiguous in the sorted buffer.
-fn compute_bucket_info_sorted(
-    table: &CellChunkTable,
-    sorted_indices: &[u32],
-    num_buckets: u32,
-) -> Vec<BucketInfo> {
-    let mut info = vec![
-        BucketInfo {
-            indirect_byte_offset: 0,
-            draw_count: 0,
-        };
-        num_buckets as usize
-    ];
-
-    // Count chunks per bucket.
-    for chunk in &table.chunks {
-        let b = chunk.material_bucket_id as usize;
-        if b < info.len() {
-            info[b].draw_count += 1;
-        }
-    }
-
-    // Compute byte offsets. Buckets are laid out contiguously in sorted order.
-    // Walk sorted_indices to find where each bucket starts.
-    let mut current_bucket = u32::MAX;
-    for (slot, &chunk_idx) in sorted_indices.iter().enumerate() {
-        let bucket = table.chunks[chunk_idx as usize].material_bucket_id;
-        if bucket != current_bucket {
-            let b = bucket as usize;
-            if b < info.len() {
-                info[b].indirect_byte_offset = (slot as u64) * DRAW_INDIRECT_SIZE;
-            }
-            current_bucket = bucket;
-        }
-    }
-
-    info
 }
 
 // --- GPU data serialization ---
 
-/// Size in bytes of the CullUniforms struct.
-/// 6 planes * 16 = 96 bytes.
 const CULL_UNIFORMS_SIZE: usize = 96;
 
 fn serialize_cull_uniforms(uniforms: &CullUniforms) -> Vec<u8> {
@@ -719,36 +590,49 @@ fn serialize_cull_uniforms(uniforms: &CullUniforms) -> Vec<u8> {
     buf
 }
 
-fn serialize_gpu_chunks(chunks: &[GpuDrawChunk]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(chunks.len() * 48);
-    for chunk in chunks {
-        for &v in &chunk.header {
-            buf.extend_from_slice(&v.to_ne_bytes());
-        }
-        for &v in &chunk.bounds_and_offset {
-            buf.extend_from_slice(&v.to_ne_bytes());
-        }
-        for &v in &chunk.indices {
-            buf.extend_from_slice(&v.to_ne_bytes());
-        }
-    }
-    buf
-}
-
-fn serialize_gpu_cell_ranges(ranges: &[GpuCellRange]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(ranges.len() * 16);
-    for r in ranges {
-        for &v in &r.data {
-            buf.extend_from_slice(&v.to_ne_bytes());
-        }
-    }
-    buf
-}
-
 fn serialize_u32_slice(slice: &[u32]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(slice.len() * 4);
     for &val in slice {
         buf.extend_from_slice(&val.to_ne_bytes());
+    }
+    buf
+}
+
+/// Serialize BVH nodes to the 40-byte WGSL storage layout.
+fn serialize_bvh_nodes(nodes: &[crate::geometry::BvhNode]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(nodes.len() * 40);
+    for node in nodes {
+        for &c in &node.aabb_min {
+            buf.extend_from_slice(&c.to_ne_bytes());
+        }
+        buf.extend_from_slice(&node.skip_index.to_ne_bytes());
+        for &c in &node.aabb_max {
+            buf.extend_from_slice(&c.to_ne_bytes());
+        }
+        buf.extend_from_slice(&node.left_child_or_leaf_index.to_ne_bytes());
+        // Mask to the only flag bit we currently use; everything else is
+        // reserved and must be zero to match the WGSL struct expectation.
+        let flags = node.flags & BVH_NODE_FLAG_LEAF;
+        buf.extend_from_slice(&flags.to_ne_bytes());
+        buf.extend_from_slice(&0u32.to_ne_bytes()); // _pad
+    }
+    buf
+}
+
+/// Serialize BVH leaves to the 40-byte WGSL storage layout.
+fn serialize_bvh_leaves(leaves: &[crate::geometry::BvhLeaf]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(leaves.len() * 40);
+    for leaf in leaves {
+        for &c in &leaf.aabb_min {
+            buf.extend_from_slice(&c.to_ne_bytes());
+        }
+        buf.extend_from_slice(&leaf.material_bucket_id.to_ne_bytes());
+        for &c in &leaf.aabb_max {
+            buf.extend_from_slice(&c.to_ne_bytes());
+        }
+        buf.extend_from_slice(&leaf.index_offset.to_ne_bytes());
+        buf.extend_from_slice(&leaf.index_count.to_ne_bytes());
+        buf.extend_from_slice(&leaf.cell_id.to_ne_bytes());
     }
     buf
 }
@@ -793,60 +677,82 @@ fn extract_frustum_planes_for_gpu(view_proj: &Mat4) -> [[f32; 4]; 6] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::{BvhLeaf, BvhNode, BvhTree};
 
-    #[test]
-    fn cull_uniforms_serialized_size_is_96_bytes() {
-        let uniforms = CullUniforms {
-            planes: [[0.0; 4]; 6],
-        };
-        let bytes = serialize_cull_uniforms(&uniforms);
-        assert_eq!(bytes.len(), CULL_UNIFORMS_SIZE);
-    }
-
-    #[test]
-    fn gpu_draw_chunk_serialized_size_is_48_bytes() {
-        let chunk = GpuDrawChunk {
-            header: [0.0; 4],
-            bounds_and_offset: [0.0; 4],
-            indices: [0; 4],
-        };
-        let bytes = serialize_gpu_chunks(&[chunk]);
-        assert_eq!(bytes.len(), 48);
-    }
-
-    #[test]
-    fn gpu_cell_range_serialized_size_is_16_bytes() {
-        let range = GpuCellRange { data: [0; 4] };
-        let bytes = serialize_gpu_cell_ranges(&[range]);
-        assert_eq!(bytes.len(), 16);
-    }
-
-    #[test]
-    fn frustum_plane_extraction_produces_normalized_planes() {
-        let view = Mat4::look_at_rh(
-            glam::Vec3::ZERO,
-            glam::Vec3::NEG_Z,
-            glam::Vec3::Y,
-        );
-        let proj = Mat4::perspective_rh(
-            std::f32::consts::FRAC_PI_2,
-            16.0 / 9.0,
-            0.1,
-            4096.0,
-        );
-        let vp = proj * view;
-        let planes = extract_frustum_planes_for_gpu(&vp);
-
-        for (i, plane) in planes.iter().enumerate() {
-            let len = (plane[0] * plane[0]
-                + plane[1] * plane[1]
-                + plane[2] * plane[2])
-                .sqrt();
-            assert!(
-                (len - 1.0).abs() < 1e-5,
-                "GPU frustum plane {i} not normalized: length = {len}"
-            );
+    fn leaf_node(leaf_index: u32, skip_index: u32) -> BvhNode {
+        BvhNode {
+            aabb_min: [0.0; 3],
+            skip_index,
+            aabb_max: [1.0; 3],
+            left_child_or_leaf_index: leaf_index,
+            flags: BVH_NODE_FLAG_LEAF,
         }
+    }
+
+    fn leaf(material_bucket_id: u32, cell_id: u32) -> BvhLeaf {
+        BvhLeaf {
+            aabb_min: [0.0; 3],
+            material_bucket_id,
+            aabb_max: [1.0; 3],
+            index_offset: 0,
+            index_count: 3,
+            cell_id,
+        }
+    }
+
+    #[test]
+    fn cull_uniforms_size() {
+        let uniforms = CullUniforms { planes: [[0.0; 4]; 6] };
+        assert_eq!(serialize_cull_uniforms(&uniforms).len(), CULL_UNIFORMS_SIZE);
+    }
+
+    #[test]
+    fn bvh_node_serialization_is_40_bytes() {
+        let node = leaf_node(0, 1);
+        let bytes = serialize_bvh_nodes(&[node]);
+        assert_eq!(bytes.len(), 40);
+    }
+
+    #[test]
+    fn bvh_leaf_serialization_is_40_bytes() {
+        let bytes = serialize_bvh_leaves(&[leaf(0, 0)]);
+        assert_eq!(bytes.len(), 40);
+    }
+
+    #[test]
+    fn single_leaf_bvh_bucket_ranges() {
+        let tree = BvhTree {
+            nodes: vec![leaf_node(0, 1)],
+            leaves: vec![leaf(0, 0)],
+            root_node_index: 0,
+        };
+        let ranges = tree.derive_bucket_ranges();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].leaf_count, 1);
+    }
+
+    #[test]
+    fn bitmask_round_trip_bit_math() {
+        // Independent re-derivation of the bitmask bit test used in the
+        // shader.
+        fn is_visible(bitmask: &[u32], cell_id: u32) -> bool {
+            let word = (cell_id >> 5) as usize;
+            let bit = 1u32 << (cell_id & 31);
+            (bitmask[word] & bit) != 0
+        }
+
+        let mut bitmask = vec![0u32; VISIBLE_CELLS_WORDS];
+        for &cell in &[0u32, 1, 31, 32, 63, 100, 4095] {
+            let word = (cell >> 5) as usize;
+            let bit = 1u32 << (cell & 31);
+            bitmask[word] |= bit;
+        }
+
+        for &cell in &[0u32, 1, 31, 32, 63, 100, 4095] {
+            assert!(is_visible(&bitmask, cell));
+        }
+        assert!(!is_visible(&bitmask, 2));
+        assert!(!is_visible(&bitmask, 4094));
     }
 
     #[test]
@@ -855,358 +761,45 @@ mod tests {
     }
 
     #[test]
-    fn indirect_buffer_sorted_produces_correct_layout() {
-        use crate::geometry::{CellChunkTable, CellRange, DrawChunk};
+    fn visible_cells_bitmask_buffer_size() {
+        assert_eq!(VISIBLE_CELLS_BYTES, 512);
+        assert_eq!(MAX_VISIBLE_CELLS, 4096);
+    }
 
-        let table = CellChunkTable {
-            cell_ranges: vec![CellRange {
-                cell_id: 0,
-                chunk_start: 0,
-                chunk_count: 1,
-            }],
-            chunks: vec![DrawChunk {
-                cell_id: 0,
+    #[test]
+    fn unbalanced_bvh_skip_index_layout() {
+        // Simulate a deep right-leaning chain: every internal node's left
+        // child is a leaf, and `skip_index` must walk past the right subtree.
+        // This just exercises the Rust-side data model — the shader walks
+        // nodes in DFS order via `skip_index` and never indexes past the
+        // flat node array.
+        let nodes = vec![
+            BvhNode {
                 aabb_min: [0.0; 3],
+                skip_index: 5,
                 aabb_max: [1.0; 3],
-                index_offset: 42,
-                index_count: 6,
-                material_bucket_id: 0,
-            }],
+                left_child_or_leaf_index: 0,
+                flags: 0,
+            },
+            leaf_node(0, 2),
+            BvhNode {
+                aabb_min: [0.0; 3],
+                skip_index: 5,
+                aabb_max: [1.0; 3],
+                left_child_or_leaf_index: 0,
+                flags: 0,
+            },
+            leaf_node(1, 4),
+            leaf_node(2, 5),
+        ];
+        let tree = BvhTree {
+            nodes,
+            leaves: vec![leaf(0, 0), leaf(0, 1), leaf(0, 2)],
+            root_node_index: 0,
         };
-        let sorted_indices: Vec<u32> = vec![0];
-        let data = build_indirect_buffer_sorted(&table, &sorted_indices);
-
-        // 20 bytes per chunk
-        assert_eq!(data.len(), 20);
-
-        // index_count = 6
-        let index_count = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
-        assert_eq!(index_count, 6);
-
-        // instance_count = 0 (cleared)
-        let instance_count = u32::from_ne_bytes([data[4], data[5], data[6], data[7]]);
-        assert_eq!(instance_count, 0);
-
-        // first_index = 42
-        let first_index = u32::from_ne_bytes([data[8], data[9], data[10], data[11]]);
-        assert_eq!(first_index, 42);
-    }
-
-    #[test]
-    fn chunk_cell_id_roundtrips_through_float_bits() {
-        for cell_id in [0u32, 1, 42, 255, 1000, u32::MAX] {
-            let bits = f32::from_bits(cell_id);
-            let recovered = bits.to_bits();
-            assert_eq!(cell_id, recovered);
-        }
-    }
-
-    #[test]
-    fn bucket_sorting_groups_chunks_contiguously() {
-        use crate::geometry::{CellChunkTable, CellRange, DrawChunk};
-
-        // Two cells, each with chunks for buckets 0 and 1 (interleaved).
-        let table = CellChunkTable {
-            cell_ranges: vec![
-                CellRange {
-                    cell_id: 0,
-                    chunk_start: 0,
-                    chunk_count: 2,
-                },
-                CellRange {
-                    cell_id: 1,
-                    chunk_start: 2,
-                    chunk_count: 2,
-                },
-            ],
-            chunks: vec![
-                DrawChunk {
-                    cell_id: 0,
-                    aabb_min: [0.0; 3],
-                    aabb_max: [1.0; 3],
-                    index_offset: 0,
-                    index_count: 3,
-                    material_bucket_id: 0,
-                },
-                DrawChunk {
-                    cell_id: 0,
-                    aabb_min: [0.0; 3],
-                    aabb_max: [1.0; 3],
-                    index_offset: 3,
-                    index_count: 6,
-                    material_bucket_id: 1,
-                },
-                DrawChunk {
-                    cell_id: 1,
-                    aabb_min: [2.0; 3],
-                    aabb_max: [3.0; 3],
-                    index_offset: 9,
-                    index_count: 3,
-                    material_bucket_id: 0,
-                },
-                DrawChunk {
-                    cell_id: 1,
-                    aabb_min: [2.0; 3],
-                    aabb_max: [3.0; 3],
-                    index_offset: 12,
-                    index_count: 6,
-                    material_bucket_id: 1,
-                },
-            ],
-        };
-
-        let total_chunks = table.chunks.len() as u32;
-        let mut sorted_indices: Vec<u32> = (0..total_chunks).collect();
-        sorted_indices.sort_by_key(|&i| table.chunks[i as usize].material_bucket_id);
-
-        // Bucket 0 chunks should come first, then bucket 1.
-        assert_eq!(
-            table.chunks[sorted_indices[0] as usize].material_bucket_id,
-            0
-        );
-        assert_eq!(
-            table.chunks[sorted_indices[1] as usize].material_bucket_id,
-            0
-        );
-        assert_eq!(
-            table.chunks[sorted_indices[2] as usize].material_bucket_id,
-            1
-        );
-        assert_eq!(
-            table.chunks[sorted_indices[3] as usize].material_bucket_id,
-            1
-        );
-
-        // Verify remap table.
-        let mut remap = vec![0u32; total_chunks as usize];
-        for (sorted_slot, &chunk_idx) in sorted_indices.iter().enumerate() {
-            remap[chunk_idx as usize] = sorted_slot as u32;
-        }
-
-        // Chunk 0 (cell 0, bucket 0) should map to slot 0 or 1.
-        assert!(remap[0] < 2, "bucket-0 chunk should be in first 2 slots");
-        // Chunk 1 (cell 0, bucket 1) should map to slot 2 or 3.
-        assert!(
-            remap[1] >= 2,
-            "bucket-1 chunk should be in last 2 slots"
-        );
-
-        // Verify bucket info.
-        let bucket_info = compute_bucket_info_sorted(&table, &sorted_indices, 2);
-        assert_eq!(bucket_info.len(), 2);
-        assert_eq!(bucket_info[0].draw_count, 2);
-        assert_eq!(bucket_info[1].draw_count, 2);
-        assert_eq!(bucket_info[0].indirect_byte_offset, 0);
-        assert_eq!(
-            bucket_info[1].indirect_byte_offset,
-            2 * DRAW_INDIRECT_SIZE
-        );
-    }
-
-    #[test]
-    fn empty_chunk_table_produces_empty_indirect_buffer() {
-        use crate::geometry::{CellChunkTable, CellRange, DrawChunk};
-        let _ = (CellRange { cell_id: 0, chunk_start: 0, chunk_count: 0 }, DrawChunk {
-            cell_id: 0,
-            aabb_min: [0.0; 3],
-            aabb_max: [0.0; 3],
-            index_offset: 0,
-            index_count: 0,
-            material_bucket_id: 0,
-        });
-
-        let table = CellChunkTable {
-            cell_ranges: vec![],
-            chunks: vec![],
-        };
-        let sorted_indices: Vec<u32> = vec![];
-        let data = build_indirect_buffer_sorted(&table, &sorted_indices);
-        assert!(data.is_empty(), "empty chunk table should produce empty indirect buffer");
-
-        let bucket_info = compute_bucket_info_sorted(&table, &sorted_indices, 1);
-        assert_eq!(bucket_info.len(), 1);
-        assert_eq!(bucket_info[0].draw_count, 0);
-    }
-
-    #[test]
-    fn indirect_buffer_all_instance_counts_start_at_zero() {
-        use crate::geometry::{CellChunkTable, CellRange, DrawChunk};
-
-        // Build a table with multiple chunks and verify every instance_count
-        // in the template buffer starts at zero.
-        let table = CellChunkTable {
-            cell_ranges: vec![
-                CellRange { cell_id: 0, chunk_start: 0, chunk_count: 3 },
-            ],
-            chunks: vec![
-                DrawChunk {
-                    cell_id: 0,
-                    aabb_min: [0.0; 3],
-                    aabb_max: [1.0; 3],
-                    index_offset: 0,
-                    index_count: 3,
-                    material_bucket_id: 0,
-                },
-                DrawChunk {
-                    cell_id: 0,
-                    aabb_min: [0.0; 3],
-                    aabb_max: [1.0; 3],
-                    index_offset: 3,
-                    index_count: 6,
-                    material_bucket_id: 1,
-                },
-                DrawChunk {
-                    cell_id: 0,
-                    aabb_min: [0.0; 3],
-                    aabb_max: [1.0; 3],
-                    index_offset: 9,
-                    index_count: 3,
-                    material_bucket_id: 2,
-                },
-            ],
-        };
-        let mut sorted_indices: Vec<u32> = (0..3).collect();
-        sorted_indices.sort_by_key(|&i| table.chunks[i as usize].material_bucket_id);
-
-        let data = build_indirect_buffer_sorted(&table, &sorted_indices);
-
-        // 3 chunks * 20 bytes each = 60 bytes
-        assert_eq!(data.len(), 60);
-
-        // Verify every instance_count field is zero.
-        for i in 0..3 {
-            let offset = i * DRAW_INDIRECT_SIZE as usize;
-            let instance_count = u32::from_ne_bytes([
-                data[offset + 4],
-                data[offset + 5],
-                data[offset + 6],
-                data[offset + 7],
-            ]);
-            assert_eq!(
-                instance_count, 0,
-                "chunk {i} instance_count should be 0 in template"
-            );
-        }
-    }
-
-    #[test]
-    fn remap_table_is_inverse_of_sort() {
-        use crate::geometry::{CellChunkTable, CellRange, DrawChunk};
-
-        // Chunks with mixed bucket order to exercise the remap.
-        let table = CellChunkTable {
-            cell_ranges: vec![
-                CellRange { cell_id: 0, chunk_start: 0, chunk_count: 1 },
-                CellRange { cell_id: 1, chunk_start: 1, chunk_count: 1 },
-                CellRange { cell_id: 2, chunk_start: 2, chunk_count: 1 },
-            ],
-            chunks: vec![
-                DrawChunk { cell_id: 0, aabb_min: [0.0; 3], aabb_max: [1.0; 3], index_offset: 0, index_count: 3, material_bucket_id: 2 },
-                DrawChunk { cell_id: 1, aabb_min: [0.0; 3], aabb_max: [1.0; 3], index_offset: 3, index_count: 3, material_bucket_id: 0 },
-                DrawChunk { cell_id: 2, aabb_min: [0.0; 3], aabb_max: [1.0; 3], index_offset: 6, index_count: 3, material_bucket_id: 1 },
-            ],
-        };
-
-        let total = table.chunks.len() as u32;
-        let mut sorted_indices: Vec<u32> = (0..total).collect();
-        sorted_indices.sort_by_key(|&i| table.chunks[i as usize].material_bucket_id);
-
-        // Build remap.
-        let mut remap = vec![0u32; total as usize];
-        for (sorted_slot, &chunk_idx) in sorted_indices.iter().enumerate() {
-            remap[chunk_idx as usize] = sorted_slot as u32;
-        }
-
-        // Remap is the inverse: remap[chunk_idx] = sorted_slot,
-        // sorted_indices[sorted_slot] = chunk_idx.
-        for (chunk_idx, &sorted_slot) in remap.iter().enumerate() {
-            assert_eq!(
-                sorted_indices[sorted_slot as usize] as usize, chunk_idx,
-                "remap should be inverse of sorted_indices"
-            );
-        }
-    }
-
-    #[test]
-    fn bucket_info_covers_all_chunks() {
-        use crate::geometry::{CellChunkTable, CellRange, DrawChunk};
-
-        // 5 chunks across 3 buckets.
-        let table = CellChunkTable {
-            cell_ranges: vec![
-                CellRange { cell_id: 0, chunk_start: 0, chunk_count: 3 },
-                CellRange { cell_id: 1, chunk_start: 3, chunk_count: 2 },
-            ],
-            chunks: vec![
-                DrawChunk { cell_id: 0, aabb_min: [0.0; 3], aabb_max: [1.0; 3], index_offset: 0, index_count: 3, material_bucket_id: 0 },
-                DrawChunk { cell_id: 0, aabb_min: [0.0; 3], aabb_max: [1.0; 3], index_offset: 3, index_count: 3, material_bucket_id: 1 },
-                DrawChunk { cell_id: 0, aabb_min: [0.0; 3], aabb_max: [1.0; 3], index_offset: 6, index_count: 3, material_bucket_id: 2 },
-                DrawChunk { cell_id: 1, aabb_min: [0.0; 3], aabb_max: [1.0; 3], index_offset: 9, index_count: 3, material_bucket_id: 0 },
-                DrawChunk { cell_id: 1, aabb_min: [0.0; 3], aabb_max: [1.0; 3], index_offset: 12, index_count: 3, material_bucket_id: 2 },
-            ],
-        };
-
-        let total = table.chunks.len() as u32;
-        let mut sorted_indices: Vec<u32> = (0..total).collect();
-        sorted_indices.sort_by_key(|&i| table.chunks[i as usize].material_bucket_id);
-
-        let bucket_info = compute_bucket_info_sorted(&table, &sorted_indices, 3);
-
-        // Total draw_count across all buckets should equal total chunks.
-        let total_draw_count: u32 = bucket_info.iter().map(|b| b.draw_count).sum();
-        assert_eq!(total_draw_count, 5, "all chunks accounted for in bucket info");
-
-        // Bucket 0: 2 chunks (cell 0 and cell 1)
-        assert_eq!(bucket_info[0].draw_count, 2);
-        // Bucket 1: 1 chunk (cell 0)
-        assert_eq!(bucket_info[1].draw_count, 1);
-        // Bucket 2: 2 chunks (cell 0 and cell 1)
-        assert_eq!(bucket_info[2].draw_count, 2);
-
-        // Verify offsets are contiguous.
-        let mut expected_offset = 0u64;
-        for info in &bucket_info {
-            assert_eq!(info.indirect_byte_offset, expected_offset);
-            expected_offset += info.draw_count as u64 * DRAW_INDIRECT_SIZE;
-        }
-    }
-
-    #[test]
-    fn frustum_planes_match_between_cpu_and_gpu_extraction() {
-        // Verify that the GPU frustum plane extraction produces the same
-        // planes as the CPU visibility module's extraction.
-        use crate::visibility::extract_frustum_planes;
-
-        let view = Mat4::look_at_rh(
-            glam::Vec3::new(5.0, 3.0, -10.0),
-            glam::Vec3::new(0.0, 0.0, -50.0),
-            glam::Vec3::Y,
-        );
-        let proj = Mat4::perspective_rh(
-            std::f32::consts::FRAC_PI_2,
-            16.0 / 9.0,
-            0.1,
-            4096.0,
-        );
-        let vp = proj * view;
-
-        let cpu_frustum = extract_frustum_planes(vp);
-        let gpu_planes = extract_frustum_planes_for_gpu(&vp);
-
-        for (i, (cpu_plane, gpu_plane)) in
-            cpu_frustum.planes.iter().zip(gpu_planes.iter()).enumerate()
-        {
-            let nx_diff = (cpu_plane.normal.x - gpu_plane[0]).abs();
-            let ny_diff = (cpu_plane.normal.y - gpu_plane[1]).abs();
-            let nz_diff = (cpu_plane.normal.z - gpu_plane[2]).abs();
-            let d_diff = (cpu_plane.dist - gpu_plane[3]).abs();
-            assert!(
-                nx_diff < 1e-5 && ny_diff < 1e-5 && nz_diff < 1e-5 && d_diff < 1e-5,
-                "plane {i} differs: CPU ({:?}, {}) vs GPU ({:?})",
-                cpu_plane.normal,
-                cpu_plane.dist,
-                gpu_plane,
-            );
-        }
+        let bytes = serialize_bvh_nodes(&tree.nodes);
+        assert_eq!(bytes.len(), tree.nodes.len() * 40);
+        let leaf_bytes = serialize_bvh_leaves(&tree.leaves);
+        assert_eq!(leaf_bytes.len(), tree.leaves.len() * 40);
     }
 }

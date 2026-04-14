@@ -32,9 +32,7 @@ use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, DiagnosticAction};
 use crate::render::Renderer;
 use crate::texture::TextureSet;
-use crate::visibility::{
-    DrawRange, VisibilityPath, VisibilityStats, VisibleCells, VisibleFaces,
-};
+use crate::visibility::{VisibilityPath, VisibilityStats, VisibleCells};
 
 const DEFAULT_MAP_PATH: &str = "assets/maps/test-3.prl";
 
@@ -141,7 +139,6 @@ fn main() -> Result<()> {
         frame_timing: FrameTiming::new(initial_state),
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
         capture_portal_walk_next_frame: false,
-        scratch_ranges: Vec::new(),
         scratch_cells: Vec::new(),
         frame_rate_meter: FrameRateMeter::new(),
         title_buffer: String::with_capacity(256),
@@ -155,17 +152,20 @@ fn main() -> Result<()> {
     app.exit_result
 }
 
-/// Normalize PRL texel-space UVs by dividing by texture dimensions.
-/// Called after `load_textures()` provides actual dimensions.
-/// Iterates faces, collects unique vertex indices, normalizes each vertex exactly once.
+/// Normalize PRL texel-space UVs by dividing by texture dimensions. Called
+/// after `load_textures()` provides actual dimensions. BVH leaves own the
+/// index ranges now, so we walk the leaf array and use each leaf's
+/// `material_bucket_id` — which is the texture index for this face — to
+/// pick the correct texture's (w, h). Each vertex is normalized exactly
+/// once (a shared vertex between two leaves with the same texture is a
+/// no-op after the first leaf normalizes it, and a shared vertex between
+/// two leaves with different textures is impossible: the compiler splits
+/// vertices on material bucket changes).
 fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
     let mut normalized = vec![false; world.vertices.len()];
 
-    for face in &world.face_meta {
-        let tex_idx = match face.texture_index {
-            Some(idx) => idx as usize,
-            None => continue,
-        };
+    for leaf in &world.bvh.leaves {
+        let tex_idx = leaf.material_bucket_id as usize;
         let (w, h) = match texture_set.textures.get(tex_idx) {
             Some(tex) => (tex.width, tex.height),
             None => continue,
@@ -174,8 +174,8 @@ fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
             continue;
         }
 
-        let start = face.index_offset as usize;
-        let count = face.index_count as usize;
+        let start = leaf.index_offset as usize;
+        let count = leaf.index_count as usize;
         for i in start..start + count {
             if let Some(&idx) = world.indices.get(i) {
                 let vi = idx as usize;
@@ -219,17 +219,12 @@ struct App {
     diagnostic_inputs: input::DiagnosticInputs,
 
     /// One-shot flag set by the `DumpPortalWalk` diagnostic chord. The next
-    /// redraw consumes it, passes it into `determine_prl_visibility`, and
+    /// redraw consumes it, passes it into `determine_visible_cells`, and
     /// clears it. The visibility module emits per-portal trace lines under
     /// the `postretro::portal_trace` log target for that one frame only.
     capture_portal_walk_next_frame: bool,
 
-    /// Persistent scratch buffer for per-frame `DrawRange` collection. Used
-    /// by the legacy CPU-driven render path when compute cull is unavailable.
-    scratch_ranges: Vec<DrawRange>,
-
     /// Persistent scratch buffer for per-frame visible cell ID collection.
-    /// Used by the GPU-driven compute cull path.
     scratch_cells: Vec<u32>,
 
     /// Rolling ring buffer of per-frame CPU work durations. Sampled every
@@ -269,7 +264,7 @@ impl ApplicationHandler for App {
         let geometry = self.level.as_ref().map(|world| render::LevelGeometry {
             vertices: &world.vertices,
             indices: &world.indices,
-            cell_chunk_table: world.cell_chunk_table.as_ref(),
+            bvh: &world.bvh,
         });
 
         let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
@@ -436,104 +431,47 @@ impl ApplicationHandler for App {
 
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 
-                // Determine whether to use GPU-driven (compute cull) or
-                // legacy CPU-driven rendering. The GPU path produces visible
-                // cell IDs; the CPU path produces per-face draw ranges.
-                //
-                // Set POSTRETRO_FORCE_LEGACY=1 to bypass compute cull and use
-                // the CPU-driven draw path (diagnostic toggle for isolating
-                // GPU cull issues).
-                let force_legacy = std::env::var("POSTRETRO_FORCE_LEGACY").is_ok();
-                let use_gpu_path = !force_legacy
-                    && self
-                        .renderer
-                        .as_ref()
-                        .is_some_and(|r| r.has_compute_cull());
-
-                let stats = if use_gpu_path {
-                    // GPU-driven path: visibility produces cell IDs, compute
-                    // shader culls per-chunk AABB, render pass issues indirect draws.
-                    let (visible_cells, stats) = match self.level.as_ref() {
-                        Some(world) => visibility::determine_visible_cells(
-                            interp.position,
-                            view_proj,
-                            world,
-                            capture_portal_walk,
-                            &mut self.scratch_cells,
-                        ),
-                        None => (
-                            VisibleCells::DrawAll,
-                            VisibilityStats {
-                                camera_leaf: 0,
-                                total_faces: 0,
-                                pvs_reach: 0,
-                                drawn_faces: 0,
-                                path: VisibilityPath::EmptyWorldFallback,
-                            },
-                        ),
-                    };
-
-                    if let Some(renderer) = self.renderer.as_mut() {
-                        renderer.update_view_projection(view_proj);
-
-                        if renderer.is_ready() {
-                            if let Err(err) =
-                                renderer.render_frame_indirect(&visible_cells, view_proj)
-                            {
-                                self.exit_result = Err(err);
-                                event_loop.exit();
-                            }
-                        }
-                    }
-
-                    // Reclaim scratch buffer.
-                    if let VisibleCells::Culled(mut cells) = visible_cells {
-                        cells.clear();
-                        self.scratch_cells = cells;
-                    }
-
-                    stats
-                } else {
-                    // Legacy CPU-driven path.
-                    let (visible, stats) = match self.level.as_ref() {
-                        Some(world) => visibility::determine_prl_visibility(
-                            interp.position,
-                            view_proj,
-                            world,
-                            capture_portal_walk,
-                            &mut self.scratch_ranges,
-                        ),
-                        None => (
-                            VisibleFaces::DrawAll,
-                            VisibilityStats {
-                                camera_leaf: 0,
-                                total_faces: 0,
-                                pvs_reach: 0,
-                                drawn_faces: 0,
-                                path: VisibilityPath::EmptyWorldFallback,
-                            },
-                        ),
-                    };
-
-                    if let Some(renderer) = self.renderer.as_mut() {
-                        renderer.update_view_projection(view_proj);
-
-                        if renderer.is_ready() {
-                            if let Err(err) = renderer.render_frame(&visible) {
-                                self.exit_result = Err(err);
-                                event_loop.exit();
-                            }
-                        }
-                    }
-
-                    // Reclaim scratch buffer.
-                    if let VisibleFaces::Culled(mut ranges) = visible {
-                        ranges.clear();
-                        self.scratch_ranges = ranges;
-                    }
-
-                    stats
+                // GPU-driven path: portal DFS produces visible cell IDs; the
+                // BVH traversal compute shader consumes them via the
+                // visible-cell bitmask and writes the indirect draw buffer.
+                let (visible_cells, stats) = match self.level.as_ref() {
+                    Some(world) => visibility::determine_visible_cells(
+                        interp.position,
+                        view_proj,
+                        world,
+                        capture_portal_walk,
+                        &mut self.scratch_cells,
+                    ),
+                    None => (
+                        VisibleCells::DrawAll,
+                        VisibilityStats {
+                            camera_leaf: 0,
+                            total_faces: 0,
+                            pvs_reach: 0,
+                            drawn_faces: 0,
+                            path: VisibilityPath::EmptyWorldFallback,
+                        },
+                    ),
                 };
+
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.update_view_projection(view_proj);
+
+                    if renderer.is_ready() {
+                        if let Err(err) =
+                            renderer.render_frame_indirect(&visible_cells, view_proj)
+                        {
+                            self.exit_result = Err(err);
+                            event_loop.exit();
+                        }
+                    }
+                }
+
+                // Reclaim scratch buffer.
+                if let VisibleCells::Culled(mut cells) = visible_cells {
+                    cells.clear();
+                    self.scratch_cells = cells;
+                }
 
                 let pos = interp.position;
                 let region_label = "leaf";

@@ -151,7 +151,7 @@ fn portal_traverse_inner(
 
     // Header line: the camera-leaf diagnostic fields we need for the current
     // flicker bug hunt. `solid` is intentionally omitted — solid leaves
-    // short-circuit in `determine_prl_visibility` before they ever reach
+    // short-circuit in `determine_visible_cells` before they ever reach
     // `portal_traverse`, so any leaf here is already known non-solid.
     if let Some(buf) = trace.as_mut() {
         let leaf = &world.leaves[camera_leaf];
@@ -859,7 +859,11 @@ mod tests {
             ],
             has_portals: true,
             texture_names: vec![],
-            cell_chunk_table: None,
+            bvh: crate::geometry::BvhTree {
+                nodes: vec![],
+                leaves: vec![],
+                root_node_index: 0,
+            },
         }
     }
 
@@ -931,7 +935,11 @@ mod tests {
             leaf_portals: vec![],
             has_portals: false,
             texture_names: vec![],
-            cell_chunk_table: None,
+            bvh: crate::geometry::BvhTree {
+                nodes: vec![],
+                leaves: vec![],
+                root_node_index: 0,
+            },
         };
 
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::NEG_Z);
@@ -1005,7 +1013,11 @@ mod tests {
             leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
             has_portals: true,
             texture_names: vec![],
-            cell_chunk_table: None,
+            bvh: crate::geometry::BvhTree {
+                nodes: vec![],
+                leaves: vec![],
+                root_node_index: 0,
+            },
         };
 
         // Camera in leaf A, looking straight along +X toward portal 0.
@@ -1321,7 +1333,11 @@ mod tests {
             ],
             has_portals: true,
             texture_names: vec![],
-            cell_chunk_table: None,
+            bvh: crate::geometry::BvhTree {
+                nodes: vec![],
+                leaves: vec![],
+                root_node_index: 0,
+            },
         };
 
         // Camera looking through the LEFT passage (Z=63, center of Z=62..64 gap).
@@ -1726,7 +1742,11 @@ mod tests {
             leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
             has_portals: true,
             texture_names: vec![],
-            cell_chunk_table: None,
+            bvh: crate::geometry::BvhTree {
+                nodes: vec![],
+                leaves: vec![],
+                root_node_index: 0,
+            },
         };
 
         let camera_pos = Vec3::new(1.0, 0.0, 0.0);
@@ -1887,7 +1907,11 @@ mod tests {
             ],
             has_portals: true,
             texture_names: vec![],
-            cell_chunk_table: None,
+            bvh: crate::geometry::BvhTree {
+                nodes: vec![],
+                leaves: vec![],
+                root_node_index: 0,
+            },
         };
 
         // Camera at origin looking +X. The camera frustum is wide enough that
@@ -1980,7 +2004,11 @@ mod tests {
             leaf_portals: vec![vec![0], vec![0]],
             has_portals: true,
             texture_names: vec![],
-            cell_chunk_table: None,
+            bvh: crate::geometry::BvhTree {
+                nodes: vec![],
+                leaves: vec![],
+                root_node_index: 0,
+            },
         };
 
         // Camera pose from the captured blank-frame trace. The live trace

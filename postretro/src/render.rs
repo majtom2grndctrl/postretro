@@ -9,9 +9,9 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::compute_cull::ComputeCullPipeline;
-use crate::geometry::CellChunkTable;
+use crate::geometry::BvhTree;
 use crate::texture::{LoadedTexture, TextureSet};
-use crate::visibility::{DrawRange, VisibleCells, VisibleFaces};
+use crate::visibility::VisibleCells;
 
 // --- WGSL Shaders ---
 
@@ -264,13 +264,14 @@ fn create_depth_texture(
 
 // --- Geometry data ---
 
-/// Geometry data the renderer needs from a level, including cell chunk table
-/// for draw call dispatch.
+/// Geometry data the renderer needs from a level, including the BVH used to
+/// build the GPU-driven indirect draw pipeline.
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [crate::geometry::WorldVertex],
     pub indices: &'a [u32],
-    /// Per-cell draw chunk table. `None` for legacy PRL files without CellChunks.
-    pub cell_chunk_table: Option<&'a CellChunkTable>,
+    /// Global BVH loaded from the `Bvh` section. Always present for valid
+    /// PRL levels — pre-BVH maps fail earlier in the loader.
+    pub bvh: &'a BvhTree,
 }
 
 // --- Renderer ---
@@ -293,10 +294,13 @@ pub struct Renderer {
 
     /// GPU textures indexed by texture index.
     gpu_textures: Vec<GpuTexture>,
-    /// Per-cell draw chunk table for draw call dispatch (CPU fallback + wireframe).
-    cell_chunk_table: Option<CellChunkTable>,
+    /// Cached BVH leaves, used by the wireframe overlay to size per-leaf
+    /// draw ranges. The renderer no longer consults this for the textured
+    /// pass — that flows entirely through the compute shader / indirect
+    /// buffer path.
+    bvh_leaves: Vec<crate::geometry::BvhLeaf>,
     /// GPU-driven compute culling pipeline. `Some` when the level has a
-    /// CellChunkTable; `None` for legacy PRL files or no-geometry mode.
+    /// non-empty BVH; `None` for no-geometry mode.
     compute_cull: Option<ComputeCullPipeline>,
 
     /// Debug wireframe overlay pipeline (LineList topology, cull-status-driven color).
@@ -560,19 +564,15 @@ impl Renderer {
             gpu_textures
         };
 
-        // Store per-cell draw chunk table and create compute cull pipeline.
-        let cell_chunk_table = geometry.and_then(|g| g.cell_chunk_table.cloned());
-        let compute_cull = cell_chunk_table.as_ref().map(|table| {
-            // Count distinct material buckets.
-            let max_bucket = table
-                .chunks
-                .iter()
-                .map(|c| c.material_bucket_id)
-                .max()
-                .unwrap_or(0);
-            let num_buckets = max_bucket + 1;
-            ComputeCullPipeline::new(&device, table, num_buckets, has_multi_draw_indirect)
-        });
+        // Store the BVH leaves (for the wireframe overlay) and create the
+        // compute cull pipeline off the loaded BVH. Empty-BVH levels skip
+        // the pipeline entirely.
+        let bvh_leaves: Vec<crate::geometry::BvhLeaf> = geometry
+            .map(|g| g.bvh.leaves.clone())
+            .unwrap_or_default();
+        let compute_cull = geometry
+            .filter(|g| !g.bvh.leaves.is_empty())
+            .map(|g| ComputeCullPipeline::new(&device, g.bvh, has_multi_draw_indirect));
 
         // Depth buffer.
         let (_depth_texture, depth_view) =
@@ -756,15 +756,11 @@ impl Renderer {
         });
 
         if has_geometry {
-            let chunk_summary = match &cell_chunk_table {
-                Some(t) => format!("{} cells, {} chunks", t.cell_ranges.len(), t.chunks.len()),
-                None => "none (legacy)".to_string(),
-            };
             log::info!(
-                "[Renderer] Textured pipeline ready: {} indices, {} textures, cell_chunks=[{}]",
+                "[Renderer] Textured pipeline ready: {} indices, {} textures, bvh_leaves={}",
                 index_count,
                 gpu_textures.len(),
-                chunk_summary,
+                bvh_leaves.len(),
             );
             log::info!(
                 "[Renderer] Wireframe overlay pipeline ready: {} line indices",
@@ -788,7 +784,7 @@ impl Renderer {
             uniform_bind_group,
             depth_view,
             gpu_textures,
-            cell_chunk_table,
+            bvh_leaves,
             compute_cull,
             wireframe_pipeline,
             wireframe_index_buffer,
@@ -856,20 +852,21 @@ impl Renderer {
         self.is_surface_configured
     }
 
-    /// Whether the compute cull pipeline is available (level has a CellChunkTable).
+    /// Whether the compute cull pipeline is available (level has a non-empty BVH).
+    #[allow(dead_code)]
     pub fn has_compute_cull(&self) -> bool {
         self.compute_cull.is_some()
     }
 
-    /// GPU-driven render frame: dispatch compute cull shader, then issue
-    /// indirect draw calls. This is the primary render path when a
-    /// CellChunkTable is available.
+    /// GPU-driven render frame: dispatch the BVH traversal compute shader,
+    /// then issue indirect draw calls. This is the only render path.
     ///
-    /// `visible` carries the set of potentially-visible cell IDs from the
+    /// `visible` carries the set of potentially-visible cells from the
     /// CPU-side visibility system (portal traversal, PVS, or fallbacks).
-    /// The compute shader performs per-chunk AABB frustum culling and writes
-    /// DrawIndexedIndirect commands; the render pass consumes them via
-    /// multi_draw_indexed_indirect (or the singular fallback).
+    /// The compute shader walks the BVH, frustum-culls each surviving leaf,
+    /// checks its cell id against the visible-cell bitmask, and writes one
+    /// `DrawIndexedIndirect` per surviving leaf. The render pass consumes
+    /// them via `multi_draw_indexed_indirect` (or the singular fallback).
     pub fn render_frame_indirect(
         &mut self,
         visible: &VisibleCells,
@@ -906,29 +903,16 @@ impl Renderer {
                 label: Some("Frame Encoder"),
             });
 
-        // Collect visible cell IDs for compute dispatch and wireframe overlay.
-        let visible_cell_ids: Vec<u32> = match visible {
-            VisibleCells::DrawAll => {
-                // All cells visible — collect all cell IDs from the table.
-                if let Some(table) = &self.cell_chunk_table {
-                    table.cell_ranges.iter().map(|cr| cr.cell_id).collect()
-                } else {
-                    Vec::new()
-                }
-            }
-            VisibleCells::Culled(cells) => cells.clone(),
-        };
-
-        // Dispatch compute cull shader. The fixed-slot design writes
-        // instance_count = 1 for visible chunks directly in the indirect
-        // buffer. No readback or GPU sync needed — the render pass
-        // consumes the buffer in the same command buffer submission.
+        // Dispatch the BVH traversal compute shader. Portal DFS already
+        // produced the visible-cell set on the CPU; the shader writes
+        // per-leaf `DrawIndexedIndirect` commands into the indirect buffer
+        // in the same command submission — no readback or GPU sync needed.
         if let Some(cull) = &mut self.compute_cull {
             cull.dispatch(
                 &self.device,
                 &self.queue,
                 &mut encoder,
-                &visible_cell_ids,
+                visible,
                 &view_proj,
             );
         }
@@ -970,7 +954,7 @@ impl Renderer {
                     .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
                 if let Some(cull) = &self.compute_cull {
-                    // GPU-driven indirect draw path.
+                    // GPU-driven indirect draw path — the only path.
                     let gpu_textures = &self.gpu_textures;
                     cull.draw_indirect(
                         &mut render_pass,
@@ -983,21 +967,17 @@ impl Renderer {
                             pass.set_bind_group(1, bind_group, &[]);
                         },
                     );
-                } else {
-                    // Legacy CPU fallback (no CellChunkTable).
-                    let bind_group = self.texture_bind_group(0);
-                    render_pass.set_bind_group(1, bind_group, &[]);
-                    render_pass.draw_indexed(0..self.index_count, 0, 0..1);
                 }
             }
         }
 
-        // Culling-delta wireframe overlay: draw ALL chunks color-coded by cull status.
+        // Culling-delta wireframe overlay: draw ALL BVH leaves color-coded by cull status.
         if self.wireframe_enabled
             && self.has_geometry
             && self.wireframe_index_count > 0
+            && !self.bvh_leaves.is_empty()
         {
-            if let (Some(cull), Some(table)) = (&self.compute_cull, &self.cell_chunk_table) {
+            if let Some(cull) = &self.compute_cull {
                 let cull_status_bind_group =
                     self.device
                         .create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1043,16 +1023,16 @@ impl Renderer {
                     wgpu::IndexFormat::Uint32,
                 );
 
-                // Draw every chunk with its chunk index as instance_index so
-                // the shader can look up the cull status per chunk.
-                for (chunk_idx, chunk) in table.chunks.iter().enumerate() {
-                    let wire_offset = chunk.index_offset * 2;
-                    let wire_count = chunk.index_count * 2;
-                    let ci = chunk_idx as u32;
+                // Draw every BVH leaf with its leaf index as instance_index
+                // so the shader can look up the per-leaf cull status.
+                for (leaf_idx, leaf) in self.bvh_leaves.iter().enumerate() {
+                    let wire_offset = leaf.index_offset * 2;
+                    let wire_count = leaf.index_count * 2;
+                    let li = leaf_idx as u32;
                     overlay_pass.draw_indexed(
                         wire_offset..wire_offset + wire_count,
                         0,
-                        ci..ci + 1,
+                        li..li + 1,
                     );
                 }
             }
@@ -1064,226 +1044,6 @@ impl Renderer {
         Ok(())
     }
 
-    /// Render a frame with visibility-based culling and per-cell chunk draw calls.
-    /// Legacy path: CPU-driven per-cell draws. Used when compute cull is not
-    /// available or for backward compatibility.
-    ///
-    /// When `visible` is `VisibleFaces::Culled`, extracts visible cell ids from the
-    /// draw ranges and issues per-chunk draw calls for those cells. When `DrawAll`,
-    /// draws all chunks.
-    pub fn render_frame(&self, visible: &VisibleFaces) -> Result<()> {
-        let output = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(tex) => tex,
-            wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
-                self.surface.configure(&self.device, &self.surface_config);
-                tex
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(());
-            }
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.surface_config);
-                return Ok(());
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                anyhow::bail!("surface lost");
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                anyhow::bail!("surface validation error");
-            }
-        };
-
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Frame Encoder"),
-            });
-
-        // Compute visible cell ids once per frame. Both the textured pass and
-        // the (optional) wireframe overlay pass consume the same set.
-        let visible_cells: Vec<u32> = match visible {
-            VisibleFaces::DrawAll => Vec::new(),
-            VisibleFaces::Culled(ranges) => self.collect_visible_cell_ids(ranges),
-        };
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Textured Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.05,
-                            g: 0.05,
-                            b: 0.08,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
-
-            if self.has_geometry && self.index_count > 0 {
-                render_pass.set_pipeline(&self.pipeline);
-                render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                render_pass
-                    .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-
-                match visible {
-                    VisibleFaces::DrawAll => {
-                        self.draw_all_chunks(&mut render_pass);
-                    }
-                    VisibleFaces::Culled(_) => {
-                        self.draw_visible_chunks(&mut render_pass, &visible_cells);
-                    }
-                }
-            }
-        }
-
-        // Culling-delta wireframe overlay requires the compute cull pipeline
-        // for per-chunk cull status. Not available in the legacy CPU path.
-        // (The legacy path is only used when POSTRETRO_FORCE_LEGACY=1 or
-        // no CellChunkTable is present.)
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-
-        Ok(())
-    }
-
-    /// Draw all chunks. Used when visibility data is unavailable (DrawAll path).
-    fn draw_all_chunks<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>) {
-        let mut draw_calls = 0u32;
-
-        if let Some(table) = &self.cell_chunk_table {
-            let mut last_tex: Option<u32> = None;
-            for chunk in &table.chunks {
-                let tex_idx = chunk.material_bucket_id;
-                if last_tex != Some(tex_idx) {
-                    let bind_group = self.texture_bind_group(tex_idx as usize);
-                    render_pass.set_bind_group(1, bind_group, &[]);
-                    last_tex = Some(tex_idx);
-                }
-                let start = chunk.index_offset;
-                let end = start + chunk.index_count;
-                render_pass.draw_indexed(start..end, 0, 0..1);
-                draw_calls += 1;
-            }
-        } else {
-            // Legacy fallback: draw the entire index buffer with the first texture.
-            let bind_group = self.texture_bind_group(0);
-            render_pass.set_bind_group(1, bind_group, &[]);
-            render_pass.draw_indexed(0..self.index_count, 0, 0..1);
-            draw_calls = 1;
-        }
-
-        log::trace!("[Renderer] DrawAll: {draw_calls} draw calls");
-    }
-
-    /// Draw chunks for visible cells. Uses the CellChunkTable to look up chunks
-    /// per cell_id and issues one draw call per chunk.
-    fn draw_visible_chunks<'a>(
-        &'a self,
-        render_pass: &mut wgpu::RenderPass<'a>,
-        visible_cells: &[u32],
-    ) {
-        let mut draw_calls = 0u32;
-        let mut last_tex: Option<u32> = None;
-
-        if let Some(table) = &self.cell_chunk_table {
-            for &cell_id in visible_cells {
-                for chunk in table.chunks_for_cell(cell_id) {
-                    let tex_idx = chunk.material_bucket_id;
-                    if last_tex != Some(tex_idx) {
-                        let bind_group = self.texture_bind_group(tex_idx as usize);
-                        render_pass.set_bind_group(1, bind_group, &[]);
-                        last_tex = Some(tex_idx);
-                    }
-                    let start = chunk.index_offset;
-                    let end = start + chunk.index_count;
-                    render_pass.draw_indexed(start..end, 0, 0..1);
-                    draw_calls += 1;
-                }
-            }
-        } else {
-            // Legacy fallback: draw the entire index buffer with the first texture.
-            let bind_group = self.texture_bind_group(0);
-            render_pass.set_bind_group(1, bind_group, &[]);
-            render_pass.draw_indexed(0..self.index_count, 0, 0..1);
-            draw_calls = 1;
-        }
-
-        log::trace!(
-            "[Renderer] Culled: {draw_calls} draw calls, {} visible cells",
-            visible_cells.len(),
-        );
-    }
-
-
-    /// Look up the texture bind group for a material bucket index. Falls back
-    /// to the first texture (placeholder) if the index is out of range.
-    fn texture_bind_group(&self, tex_idx: usize) -> &wgpu::BindGroup {
-        if tex_idx < self.gpu_textures.len() {
-            &self.gpu_textures[tex_idx].bind_group
-        } else {
-            &self.gpu_textures[0].bind_group
-        }
-    }
-
-    /// Convert visibility draw ranges to a list of visible cell ids. The
-    /// Transitional bridge: converts legacy per-face draw ranges to cell IDs
-    /// for the GPU-driven path. O(cells * chunks * ranges) — fine at current
-    /// map sizes but should be removed once `determine_visible_cells` fully
-    /// replaces `determine_prl_visibility` in the GPU path.
-    ///
-    /// The visibility system produces per-face draw ranges keyed by leaf; since
-    /// cell_id == leaf_index in the current compiler, we extract leaf indices
-    /// that overlap any draw range and use them as cell ids.
-    fn collect_visible_cell_ids(&self, ranges: &[DrawRange]) -> Vec<u32> {
-        let table = match &self.cell_chunk_table {
-            Some(t) => t,
-            None => return Vec::new(),
-        };
-
-        let mut visible = Vec::new();
-        for cr in &table.cell_ranges {
-            let cell_id = cr.cell_id;
-            let start = cr.chunk_start as usize;
-            let end = start + cr.chunk_count as usize;
-
-            // A cell is visible if any of its chunks overlap any draw range.
-            let is_visible = table.chunks[start..end].iter().any(|chunk| {
-                let c_start = chunk.index_offset;
-                let c_end = chunk.index_offset + chunk.index_count;
-                ranges.iter().any(|r| {
-                    let r_start = r.index_offset;
-                    let r_end = r.index_offset + r.index_count;
-                    r_start < c_end && r_end > c_start
-                })
-            });
-
-            if is_visible {
-                visible.push(cell_id);
-            }
-        }
-        visible
-    }
 }
 
 // --- Hardcoded view-projection ---

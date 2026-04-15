@@ -612,6 +612,20 @@ impl App {
                     log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
                 }
             }
+            DiagnosticAction::LowerAmbientFloor => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    let next = renderer.ambient_floor() - input::AMBIENT_FLOOR_STEP;
+                    renderer.set_ambient_floor(next);
+                    log::info!("[Renderer] ambient floor: {:.3}", renderer.ambient_floor());
+                }
+            }
+            DiagnosticAction::RaiseAmbientFloor => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    let next = renderer.ambient_floor() + input::AMBIENT_FLOOR_STEP;
+                    renderer.set_ambient_floor(next);
+                    log::info!("[Renderer] ambient floor: {:.3}", renderer.ambient_floor());
+                }
+            }
         }
     }
 }

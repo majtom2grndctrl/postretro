@@ -1053,7 +1053,7 @@ mod tests {
     #[test]
     fn load_prl_truncated_file_produces_clear_error() {
         let tmp = std::env::temp_dir().join("postretro_test_truncated.prl");
-        std::fs::write(&tmp, &[0x50, 0x52, 0x4C]).unwrap();
+        std::fs::write(&tmp, [0x50, 0x52, 0x4C]).unwrap();
         assert!(load_prl(tmp.to_str().unwrap()).is_err());
         std::fs::remove_file(&tmp).ok();
     }
@@ -1081,8 +1081,8 @@ mod tests {
                     color: [0.7, 0.9, 1.0],
                     falloff_model: AlphaFalloffModel::Linear,
                     falloff_range: 25.0,
-                    cone_angle_inner: 0.5236,
-                    cone_angle_outer: 0.7854,
+                    cone_angle_inner: std::f32::consts::FRAC_PI_6,
+                    cone_angle_outer: std::f32::consts::FRAC_PI_4,
                     cone_direction: [0.0, -1.0, 0.0],
                     cast_shadows: false,
                 },
@@ -1140,8 +1140,8 @@ mod tests {
 
         assert_eq!(world.lights[1].light_type, LightType::Spot);
         assert_eq!(world.lights[1].falloff_model, FalloffModel::Linear);
-        assert!((world.lights[1].cone_angle_inner - 0.5236).abs() < 1e-4);
-        assert!((world.lights[1].cone_angle_outer - 0.7854).abs() < 1e-4);
+        assert!((world.lights[1].cone_angle_inner - std::f32::consts::FRAC_PI_6).abs() < 1e-4);
+        assert!((world.lights[1].cone_angle_outer - std::f32::consts::FRAC_PI_4).abs() < 1e-4);
         assert_eq!(world.lights[1].cone_direction, [0.0, -1.0, 0.0]);
         assert!(!world.lights[1].cast_shadows);
 

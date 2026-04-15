@@ -57,7 +57,9 @@ pub struct AlphaLightRecord {
     /// World position, engine meters (Y-up).
     pub origin: [f64; 3],
     pub light_type: AlphaLightType,
-    /// Unitless brightness scalar.
+    /// Linear brightness multiplier applied to `color`. Format-normalized
+    /// at the translator boundary — runtime consumers treat this as a
+    /// straight linear scalar with no further scaling.
     pub intensity: f32,
     /// Linear RGB, 0-1.
     pub color: [f32; 3],
@@ -210,8 +212,8 @@ mod tests {
             color: [1.0, 0.5, 0.25],
             falloff_model: AlphaFalloffModel::InverseSquared,
             falloff_range: 104.0576,
-            cone_angle_inner: 0.5236, // ~30 deg
-            cone_angle_outer: 0.7854, // ~45 deg
+            cone_angle_inner: std::f32::consts::FRAC_PI_6, // 30 deg
+            cone_angle_outer: std::f32::consts::FRAC_PI_4, // 45 deg
             cone_direction: [0.0, -1.0, 0.0],
             cast_shadows: true,
         }
@@ -263,7 +265,11 @@ mod tests {
                     falloff_range: 0.0,
                     cone_angle_inner: 0.0,
                     cone_angle_outer: 0.0,
-                    cone_direction: [0.0, -0.7071, -0.7071],
+                    cone_direction: [
+                        0.0,
+                        -std::f32::consts::FRAC_1_SQRT_2,
+                        -std::f32::consts::FRAC_1_SQRT_2,
+                    ],
                     cast_shadows: false,
                 },
             ],

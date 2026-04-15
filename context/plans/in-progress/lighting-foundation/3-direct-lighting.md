@@ -25,7 +25,7 @@ Storage buffer containing packed light structs, uploaded once at level load. One
 ### GPU light struct
 
 ```
-struct GpuLight {                         // 96 bytes, 16-byte aligned
+struct GpuLight {                         // 80 bytes, 16-byte aligned (5 × vec4<f32>)
     position_and_type: vec4<f32>,         // xyz = world position, w = bitcast light_type (0=Point, 1=Spot, 2=Directional)
     color_and_falloff_model: vec4<f32>,   // xyz = linear RGB × intensity (pre-multiplied), w = bitcast falloff_model (0=Linear, 1=InverseDistance, 2=InverseSquared)
     direction_and_range: vec4<f32>,       // xyz = normalized direction (Spot/Directional), w = falloff_range (meters)
@@ -166,7 +166,7 @@ A uniform minimum light level added to the lighting sum before albedo multiplica
 
 ## Acceptance criteria
 
-- [ ] `GpuLight` struct defined in `postretro` with 96-byte layout matching the GPU struct above; `shadow_info` zero-initialized
+- [ ] `GpuLight` struct defined in `postretro` with 80-byte layout matching the GPU struct above; `shadow_info` zero-initialized
 - [ ] Engine parses AlphaLights PRL section (ID 18) at level load, deserializes into `Vec<MapLight>`, converts to `GpuLight` structs, and uploads to a storage buffer
 - [ ] Forward pipeline bind group layout extended: group 2 with light storage buffer
 - [ ] Uniforms extended with `camera_position`, `ambient_floor`, `light_count`; old `ambient_light: vec3<f32>` removed

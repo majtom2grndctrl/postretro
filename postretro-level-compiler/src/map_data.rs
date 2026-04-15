@@ -185,8 +185,12 @@ pub struct MapLight {
     pub origin: DVec3,
     pub light_type: LightType,
 
-    /// Brightness scalar, unitless. Baker may normalize against chosen bake
-    /// output; the range is translator convention, not a format constraint.
+    /// Linear brightness multiplier applied to `color`. Range 0–1+ (close-
+    /// range InverseSquared falloff legitimately exceeds 1.0). Format-
+    /// specific authoring conventions (Quake's 0–300 radiosity-energy scale,
+    /// etc.) are normalized at the translator boundary; downstream consumers
+    /// (SH baker, direct light shader) treat this as a plain linear scalar
+    /// with no further scaling.
     pub intensity: f32,
     /// Linear RGB, 0-1.
     pub color: [f32; 3],

@@ -10,7 +10,9 @@ mod look;
 mod types;
 
 pub use defaults::default_bindings;
-pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
+pub use diagnostics::{
+    AMBIENT_FLOOR_STEP, DiagnosticAction, DiagnosticInputs, default_diagnostic_chords,
+};
 pub use look::LookInputs;
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
 

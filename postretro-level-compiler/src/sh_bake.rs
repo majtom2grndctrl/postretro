@@ -42,9 +42,12 @@ const SKY_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
 /// the probe origin and at shadow-ray hit points.
 const RAY_EPSILON: f32 = 1.0e-3;
 
-/// Fixed RNG seed for stratified sphere sampling. Two bakes of identical
-/// input must produce byte-identical probe coefficients.
-const SAMPLING_SEED: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
+/// Fixed rotation offset applied to the Fibonacci-lattice sample directions.
+/// The sampler is deterministic — there is no RNG — so two bakes of identical
+/// input produce byte-identical probe coefficients. The constant just rotates
+/// the lattice off the `(0, 0, 1)` axis so axis-aligned light directions
+/// don't land on a degenerate sample.
+const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 
 /// Inputs the baker pulls together from the rest of the compile stages.
 pub struct BakeInputs<'a> {
@@ -467,22 +470,43 @@ fn light_shadow_origin(light: &MapLight, surface_point: Vec3) -> Vec3 {
     }
 }
 
+/// Distance attenuation for Point and Spot lights.
+///
+/// Must match `falloff` in `postretro/src/shaders/forward.wgsl` exactly —
+/// the runtime direct path and the bake-time indirect projection share one
+/// authored intensity, so any divergence here produces "ghost glow" or
+/// missing bounce light at the light's edge of influence.
+///
+/// - Linear: `1 - d/range`, clamped to `[0, 1]`.
+/// - InverseDistance: `1/d` with a hard zero past `range`. No upper clamp —
+///   close-range values may exceed 1.0, exactly as the shader allows.
+/// - InverseSquared: `1/d²` with a hard zero past `range`. Same no-upper-clamp
+///   convention as InverseDistance.
 fn falloff(light: &MapLight, distance: f32) -> f32 {
     let range = light.falloff_range.max(1.0e-4);
     match light.falloff_model {
         FalloffModel::Linear => (1.0 - distance / range).clamp(0.0, 1.0),
         FalloffModel::InverseDistance => {
-            let clamped = distance.max(range * 0.01);
-            (1.0 / clamped).min(1.0 / range.max(1.0e-4) * range)
+            if distance > range {
+                return 0.0;
+            }
+            1.0 / distance.max(1.0e-4)
         }
         FalloffModel::InverseSquared => {
-            let clamped = (distance * distance).max(1.0e-4);
-            let max_val = 1.0 / (range * range).max(1.0e-4);
-            (1.0 / clamped).min(max_val * range * range)
+            if distance > range {
+                return 0.0;
+            }
+            let d2 = (distance * distance).max(1.0e-4);
+            1.0 / d2
         }
     }
 }
 
+/// Spot cone attenuation matching the shader's `cone_attenuation` in
+/// `forward.wgsl` — Hermite cubic smoothstep between `cos_outer` and
+/// `cos_inner`. The shader uses WGSL's built-in `smoothstep`, which is
+/// `t² × (3 - 2t)` over the unit interval; we reproduce that here so direct
+/// and indirect agree along the cone fringe.
 fn spot_cone_attenuation(light: &MapLight, light_to_surface: Vec3) -> f32 {
     let dir = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0])).normalize_or_zero();
     let inner = light.cone_angle_inner.unwrap_or(0.0);
@@ -490,13 +514,14 @@ fn spot_cone_attenuation(light: &MapLight, light_to_surface: Vec3) -> f32 {
     let cos_outer = outer.cos();
     let cos_inner = inner.cos();
     let cos_theta = dir.dot(light_to_surface.normalize_or_zero());
-    if cos_theta <= cos_outer {
-        0.0
-    } else if cos_theta >= cos_inner {
-        1.0
-    } else {
-        (cos_theta - cos_outer) / (cos_inner - cos_outer).max(1.0e-4)
-    }
+    smoothstep(cos_outer, cos_inner, cos_theta)
+}
+
+/// Hermite cubic smoothstep matching WGSL's `smoothstep(edge0, edge1, x)`.
+/// Returns 0 below `edge0`, 1 above `edge1`, and `t² × (3 - 2t)` between.
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0).max(1.0e-4)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 // ---------------------------------------------------------------------------
@@ -554,7 +579,7 @@ fn bake_probe_rgb(
     probe_pos: Vec3,
     static_lights: &[&MapLight],
 ) -> [f32; 27] {
-    let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_SEED);
+    let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
     let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
     let mut acc = [0f32; 27];
     for dir in &directions {
@@ -571,7 +596,7 @@ fn bake_probe_mono(inputs: &BakeInputs<'_>, probe_pos: Vec3, light: &MapLight) -
     // Bake at unit intensity / white — the runtime applies base_color and
     // curves via the animation descriptor.
     let unit_light = unit_reference_light(light);
-    let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_SEED);
+    let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
     let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
     let mut acc = [0f32; 9];
     for dir in &directions {
@@ -673,9 +698,79 @@ mod tests {
     use super::*;
     use crate::bvh_build::{build_bvh, collect_primitives};
     use crate::geometry::FaceIndexRange;
+    use crate::map_data::{FalloffModel, LightType};
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+
+    fn point_light_with_falloff(model: FalloffModel, range: f32) -> MapLight {
+        MapLight {
+            origin: glam::DVec3::ZERO,
+            light_type: LightType::Point,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: model,
+            falloff_range: range,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            animation: None,
+            cast_shadows: true,
+        }
+    }
+
+    // --- falloff: shader parity ---
+    //
+    // These pin the contract that `sh_bake::falloff` mirrors `falloff` in
+    // `postretro/src/shaders/forward.wgsl`. A drift here produces "ghost
+    // glow" — probes pick up indirect contribution from lights that the
+    // direct pass has correctly culled — and that's exactly the bug the
+    // first review caught after sub-plan 3 landed.
+
+    #[test]
+    fn linear_falloff_matches_shader_curve() {
+        let light = point_light_with_falloff(FalloffModel::Linear, 10.0);
+        // f(0) = 1, f(range) = 0, f(range/2) = 0.5
+        assert!((falloff(&light, 0.0) - 1.0).abs() < 1e-6);
+        assert!((falloff(&light, 5.0) - 0.5).abs() < 1e-6);
+        assert!(falloff(&light, 10.0).abs() < 1e-6);
+        // Past range stays clamped to zero.
+        assert_eq!(falloff(&light, 15.0), 0.0);
+    }
+
+    #[test]
+    fn inverse_distance_zeroes_past_range() {
+        let light = point_light_with_falloff(FalloffModel::InverseDistance, 10.0);
+        // Inside range: 1/d, no upper clamp.
+        assert!((falloff(&light, 1.0) - 1.0).abs() < 1e-6);
+        assert!((falloff(&light, 5.0) - 0.2).abs() < 1e-6);
+        // Past range: hard zero — must match shader behavior.
+        assert_eq!(falloff(&light, 10.001), 0.0);
+        assert_eq!(falloff(&light, 50.0), 0.0);
+    }
+
+    #[test]
+    fn inverse_squared_zeroes_past_range() {
+        let light = point_light_with_falloff(FalloffModel::InverseSquared, 10.0);
+        // Inside range: 1/d², close-range exceeds 1.0 deliberately.
+        assert!((falloff(&light, 1.0) - 1.0).abs() < 1e-6);
+        assert!((falloff(&light, 0.5) - 4.0).abs() < 1e-6);
+        // Past range: hard zero.
+        assert_eq!(falloff(&light, 10.001), 0.0);
+        assert_eq!(falloff(&light, 100.0), 0.0);
+    }
+
+    #[test]
+    fn smoothstep_matches_wgsl_definition() {
+        // `t² × (3 - 2t)` over the unit interval, clamped at the edges.
+        assert_eq!(smoothstep(0.0, 1.0, -0.5), 0.0);
+        assert_eq!(smoothstep(0.0, 1.0, 1.5), 1.0);
+        assert!((smoothstep(0.0, 1.0, 0.5) - 0.5).abs() < 1e-6); // exact midpoint
+        // Symmetric around the midpoint.
+        let lower = smoothstep(0.0, 1.0, 0.25);
+        let upper = smoothstep(0.0, 1.0, 0.75);
+        assert!((lower + upper - 1.0).abs() < 1e-6);
+    }
 
     fn tri_vertex(pos: [f32; 3]) -> Vertex {
         Vertex::new(pos, [0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true)
@@ -922,7 +1017,7 @@ mod tests {
         // Sanity check: the integral of 1 over the sphere is 4π. The Monte
         // Carlo estimator at the sample count we use should converge on this
         // value for a constant integrand.
-        let dirs = sphere_directions(RAYS_PER_PROBE, SAMPLING_SEED);
+        let dirs = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
         let weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
         let integral: f32 = dirs.iter().map(|_| 1.0 * weight).sum();
         let expected = 4.0 * std::f32::consts::PI;

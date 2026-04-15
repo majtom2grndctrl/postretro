@@ -829,16 +829,18 @@ impl Renderer {
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
     }
 
-    /// Current ambient floor value (player-facing 0.0–1.0 setting).
-    #[allow(dead_code)]
+    /// Current ambient floor value (0.0–1.0). Read by the diagnostic
+    /// `Alt+Shift+{` / `Alt+Shift+}` chords so each press steps from the
+    /// current value rather than a stored target. Will move to the
+    /// settings menu when one exists.
     pub fn ambient_floor(&self) -> f32 {
         self.ambient_floor
     }
 
-    /// Update the ambient floor. Clamped to [0.0, 1.0] to match the
-    /// player-facing slider range. Takes effect on the next
-    /// `update_per_frame_uniforms` upload.
-    #[allow(dead_code)]
+    /// Update the ambient floor, clamped to [0.0, 1.0]. Takes effect on
+    /// the next `update_per_frame_uniforms` upload. Player-facing entry
+    /// point is currently the `Alt+Shift+{` / `Alt+Shift+}` diagnostic
+    /// chords; will move to the settings menu when one exists.
     pub fn set_ambient_floor(&mut self, value: f32) {
         self.ambient_floor = value.clamp(0.0, 1.0);
     }

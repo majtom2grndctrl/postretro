@@ -44,7 +44,21 @@ pub enum DiagnosticAction {
     /// against real CPU cost when the meter is saturated against the frame
     /// budget.
     ToggleVsync,
+    /// Lower the renderer's ambient floor by one step (0.025), clamped to
+    /// 0.0. Interim diagnostic chord — ambient floor will move to the
+    /// settings menu when one exists. Sub-plan 3 acceptance criterion.
+    LowerAmbientFloor,
+    /// Raise the renderer's ambient floor by one step (0.025), clamped to
+    /// 1.0. Interim diagnostic chord — ambient floor will move to the
+    /// settings menu when one exists. Sub-plan 3 acceptance criterion.
+    RaiseAmbientFloor,
 }
+
+/// Per-press step size for the ambient-floor diagnostic chords. 0.025
+/// gives 40 steps across the full 0.0–1.0 range — fine enough for tuning,
+/// coarse enough that a held key (each press fires once, no repeat) walks
+/// the slider in a few seconds.
+pub const AMBIENT_FLOOR_STEP: f32 = 0.025;
 
 /// A modifier+key combination bound to a diagnostic action.
 #[derive(Debug, Clone, Copy)]
@@ -141,6 +155,21 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
             key: KeyCode::KeyV,
             action: DiagnosticAction::ToggleVsync,
         },
+        // `Alt+Shift+{` and `Alt+Shift+}` adjust the ambient floor at runtime.
+        // KeyCode is positional, so the chord matches whichever physical
+        // key sits where `[` / `]` are on a US layout — the player still
+        // holds Shift to type the brace, which is exactly what the chord
+        // requires.
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::BracketLeft,
+            action: DiagnosticAction::LowerAmbientFloor,
+        },
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::BracketRight,
+            action: DiagnosticAction::RaiseAmbientFloor,
+        },
     ]
 }
 
@@ -212,6 +241,24 @@ mod tests {
         d.handle_key(KeyCode::AltLeft, true, false);
         let action = d.handle_key(KeyCode::KeyV, true, false);
         assert_eq!(action, Some(DiagnosticAction::ToggleVsync));
+    }
+
+    #[test]
+    fn alt_shift_bracket_left_fires_lower_ambient_floor() {
+        let mut d = fresh();
+        d.handle_key(KeyCode::ShiftLeft, true, false);
+        d.handle_key(KeyCode::AltLeft, true, false);
+        let action = d.handle_key(KeyCode::BracketLeft, true, false);
+        assert_eq!(action, Some(DiagnosticAction::LowerAmbientFloor));
+    }
+
+    #[test]
+    fn alt_shift_bracket_right_fires_raise_ambient_floor() {
+        let mut d = fresh();
+        d.handle_key(KeyCode::ShiftLeft, true, false);
+        d.handle_key(KeyCode::AltLeft, true, false);
+        let action = d.handle_key(KeyCode::BracketRight, true, false);
+        assert_eq!(action, Some(DiagnosticAction::RaiseAmbientFloor));
     }
 
     #[test]

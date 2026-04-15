@@ -17,6 +17,14 @@ use crate::map_format::MapFormat;
 /// Quake-family light classnames recognised by the translator.
 pub const LIGHT_CLASSNAMES: &[&str] = &["light", "light_spot", "light_sun"];
 
+/// Quake authoring reference for the `light` property. A mapper-authored
+/// `light 300` (the Quake default and the "fully lit room" baseline)
+/// translates to `MapLight.intensity = 1.0` after division by this
+/// constant. Tunable if the retro aesthetic wants a different center, but
+/// 300 matches the documented Quake `light.c` default and keeps existing
+/// map values behaving as mappers expect.
+const QUAKE_INTENSITY_REFERENCE: f32 = 300.0;
+
 /// Returns true if the classname names a Quake-family light entity.
 pub fn is_light_classname(classname: &str) -> bool {
     LIGHT_CLASSNAMES.contains(&classname)
@@ -64,14 +72,25 @@ pub fn translate_light(
     };
 
     // -- Intensity (accept both "light" and "_light") --
-    let intensity = parse_optional_int(props, "light")?
+    //
+    // Quake authoring convention is a 0–300 "radiosity energy" scalar with
+    // 300 as the default "fully lit room" value. The canonical `MapLight`
+    // format is a modern 0–1+ linear multiplier on `color`, so we divide by
+    // `QUAKE_INTENSITY_REFERENCE` at the translation boundary. A mapper-
+    // authored `light 300` lands at `intensity 1.0` and multiplies its color
+    // at full strength; `light 180` lands at `0.6`, and so on. Consumers
+    // (direct light shader, SH baker) treat `intensity` as a straight
+    // linear factor with no further scaling.
+    let raw_intensity = parse_optional_int(props, "light")?
         .or(parse_optional_int(props, "_light")?)
         .map(|v| v as f32)
-        .unwrap_or(300.0);
+        .unwrap_or(QUAKE_INTENSITY_REFERENCE);
 
-    if intensity == 0.0 {
+    if raw_intensity == 0.0 {
         log::warn!("[Compiler] light entity has intensity 0; it will contribute nothing");
     }
+
+    let intensity = raw_intensity / QUAKE_INTENSITY_REFERENCE;
 
     // -- Color --
     let color = if let Some(color_str) = props.get("_color") {
@@ -432,7 +451,8 @@ mod tests {
             .expect("point light should translate");
 
         assert_eq!(light.light_type, LightType::Point);
-        assert_eq!(light.intensity, 250.0);
+        // 250 / 300 (QUAKE_INTENSITY_REFERENCE)
+        assert!((light.intensity - (250.0 / 300.0)).abs() < 1e-6);
         assert_vec_close(
             light.color,
             [1.0, 128.0 / 255.0, 64.0 / 255.0],
@@ -568,7 +588,8 @@ mod tests {
             ("_fade", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
-        assert_eq!(light.intensity, 200.0);
+        // 200 / 300 (QUAKE_INTENSITY_REFERENCE)
+        assert!((light.intensity - (200.0 / 300.0)).abs() < 1e-6);
     }
 
     #[test]
@@ -580,7 +601,8 @@ mod tests {
             ("_fade", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
-        assert_eq!(light.intensity, 300.0);
+        // Authored 300 is the Quake reference value → normalized to 1.0.
+        assert_eq!(light.intensity, 1.0);
     }
 
     // -- Style and animation --

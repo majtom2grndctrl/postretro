@@ -135,7 +135,7 @@ Errors block compilation. Warnings log and proceed with defaults.
 
 ### Translator notes
 
-- `light` is unitless. Typical Quake-family range is 0–300; the baker (sub-plan 2) may normalize against chosen bake output, but the range is translator convention for Quake source maps, not a map light format constraint.
+- `light` is authored in the Quake 0–300 radiosity-energy convention where `300` is the "fully lit room" default. The translator normalizes to the canonical `MapLight.intensity` by dividing by `QUAKE_INTENSITY_REFERENCE = 300.0`, so an authored `light 300` lands at `intensity 1.0` and an authored `light 180` lands at `0.6`. The canonical format is a modern linear `color × intensity` multiplier in 0–1+ range, so all downstream consumers (SH baker, direct light shader) treat intensity as a straight linear factor with no further scaling. Quake-specific authoring conventions stop at the translator boundary.
 - `_fade` is authored in map units (Quake units), consistent with all spatial coordinates in `.map` files. The translator converts to engine meters by multiplying by 0.0254 (1 map unit = 1 inch). `falloff_range` in `MapLight` is always engine meters. Guideline: `_fade ≈ light × 200` in map units (e.g., `light 300` → `_fade 60000` ≈ 1,524 m); scale down for tight indoor maps, leave large for outdoor or vista-scale geometry.
 - Spotlight direction via `mangle` (pitch yaw roll in degrees, engine space) only. `target` entity resolution is deferred to Milestone 6 — the entity system is needed to look up entity origins by name. If `target` is present, emit an error directing the mapper to use `mangle`.
 - Cone degrees → radians conversion happens at the translation boundary. Canonical format is radians-only.
@@ -185,7 +185,7 @@ pub struct MapLight {
     pub light_type: LightType,
 
     // Appearance
-    pub intensity: f32,                   // brightness scalar, unitless
+    pub intensity: f32,                   // linear brightness scalar (0–1+), format-normalized
     pub color: [f32; 3],                  // linear RGB, 0-1
 
     // Falloff (Point and Spot only; ignored for Directional)
@@ -217,7 +217,7 @@ pub struct MapLight {
 - **`falloff_range`.** PBR-conventional naming.
 - **`FalloffModel` enum retained despite PBR alignment.** PBR uses physical inverse-square only; the retro aesthetic needs linear and inverse-distance as well for authored looks. Aligning with PBR conventions is about *axes*, not *physics*.
 - **`LightType::Directional` (not `Sun`).** Directional is a graphics primitive; "Sun" implies a specific use case. Does not require or imply global illumination — probe-based lighting samples directional lights the same way it samples point lights.
-- **Intensity unitless.** Baker may normalize against chosen bake output; refined after probe visuals.
+- **Intensity as a linear multiplier.** The canonical format treats `intensity` as a plain linear scalar applied directly to `color` — the same role an intensity/luminance scalar plays in any modern PBR light format. Format-specific authoring conventions (Quake's 0–300 radiosity-energy scale, Doom sector brightness, etc.) are format-specific and stop at the translator boundary. Sub-plan 2's SH baker and sub-plan 3's direct light shader both assume `intensity × color` is the final linear brightness — no downstream consumer applies a second scale.
 - **`cast_shadows`.** All FGD-authored lights cast shadows by default (`cast_shadows: true`). No FGD key is needed — the flag exists so transient gameplay lights (Milestone 6+) can opt out programmatically. Sub-plan 4 activates shadow map evaluation against this field. `bake_only` and similar per-light routing flags remain deferred.
 
 ---

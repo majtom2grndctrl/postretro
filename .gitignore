@@ -21,6 +21,7 @@ target
 *.prl
 assets/maps/*
 !assets/maps/*.map
+!assets/maps/*.py
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

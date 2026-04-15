@@ -24,7 +24,17 @@ R1 and R6 should have minimal/no mutual visibility — separated by two right-an
 All units in Quake coordinates (right-handed, Z-up).
 """
 
-TEXTURE = "__TB_empty"
+# Texture constants (stems of PNG files in assets/textures/50-free-textures/)
+TEX_FLOOR = "concrete_pavement_036"
+TEX_CEIL = "concrete_stone_021"
+TEX_WALL = "concrete_stone_022"
+TEX_CORR_FLOOR = "concrete_pavement_044"
+TEX_CORR_CEIL = "concrete_stone_023"
+TEX_CORR_WALL = "concrete_stone_024"
+TEX_PILLAR = "wood_bark_046"
+TEX_EMPTY = "__TB_empty"
+
+TEXTURE = TEX_EMPTY
 
 
 def box_brush(x1, y1, z1, x2, y2, z2, tex=TEXTURE, comment=None):
@@ -44,15 +54,16 @@ def box_brush(x1, y1, z1, x2, y2, z2, tex=TEXTURE, comment=None):
 
 
 def sealed_room(interior, wall=16, opening_east=None, opening_west=None,
-                opening_north=None, opening_south=None):
+                opening_north=None, opening_south=None,
+                tex_floor=TEX_FLOOR, tex_ceil=TEX_CEIL, tex_wall=TEX_WALL):
     """Build a sealed room. Openings are (lo, hi, z_top) on the relevant axis."""
     ix1, iy1, iz1, ix2, iy2, iz2 = interior
     ox1, oy1, oz1 = ix1 - wall, iy1 - wall, iz1 - wall
     ox2, oy2, oz2 = ix2 + wall, iy2 + wall, iz2 + wall
     brushes = []
 
-    brushes.append(box_brush(ox1, oy1, oz1, ox2, oy2, iz1, comment="floor"))
-    brushes.append(box_brush(ox1, oy1, iz2, ox2, oy2, oz2, comment="ceiling"))
+    brushes.append(box_brush(ox1, oy1, oz1, ox2, oy2, iz1, tex=tex_floor, comment="floor"))
+    brushes.append(box_brush(ox1, oy1, iz2, ox2, oy2, oz2, tex=tex_ceil, comment="ceiling"))
 
     for name, at_min, opening, lo_axis, hi_axis in [
         ("west",  True,  opening_west,  iy1, iy2),
@@ -67,16 +78,16 @@ def sealed_room(interior, wall=16, opening_east=None, opening_west=None,
                 olo, ohi, ztop = opening
                 if olo > lo_axis:
                     brushes.append(box_brush(wx, lo_axis, iz1, wx2, olo, iz2,
-                                             comment=f"{name} wall segment A"))
+                                             tex=tex_wall, comment=f"{name} wall segment A"))
                 if ohi < hi_axis:
                     brushes.append(box_brush(wx, ohi, iz1, wx2, hi_axis, iz2,
-                                             comment=f"{name} wall segment B"))
+                                             tex=tex_wall, comment=f"{name} wall segment B"))
                 if ztop < iz2:
                     brushes.append(box_brush(wx, olo, ztop, wx2, ohi, iz2,
-                                             comment=f"{name} wall lintel"))
+                                             tex=tex_wall, comment=f"{name} wall lintel"))
             else:
                 brushes.append(box_brush(wx, lo_axis, iz1, wx2, hi_axis, iz2,
-                                         comment=f"{name} wall"))
+                                         tex=tex_wall, comment=f"{name} wall"))
         else:  # south/north
             wy = oy1 if at_min else iy2
             wy2 = iy1 if at_min else oy2
@@ -84,43 +95,43 @@ def sealed_room(interior, wall=16, opening_east=None, opening_west=None,
                 olo, ohi, ztop = opening
                 if olo > lo_axis:
                     brushes.append(box_brush(lo_axis, wy, iz1, olo, wy2, iz2,
-                                             comment=f"{name} wall segment A"))
+                                             tex=tex_wall, comment=f"{name} wall segment A"))
                 if ohi < hi_axis:
                     brushes.append(box_brush(ohi, wy, iz1, hi_axis, wy2, iz2,
-                                             comment=f"{name} wall segment B"))
+                                             tex=tex_wall, comment=f"{name} wall segment B"))
                 if ztop < iz2:
                     brushes.append(box_brush(olo, wy, ztop, ohi, wy2, iz2,
-                                             comment=f"{name} wall lintel"))
+                                             tex=tex_wall, comment=f"{name} wall lintel"))
             else:
                 brushes.append(box_brush(lo_axis, wy, iz1, hi_axis, wy2, iz2,
-                                         comment=f"{name} wall"))
+                                         tex=tex_wall, comment=f"{name} wall"))
     return brushes
 
 
-def corridor_x(interior, wall=16):
+def corridor_x(interior, wall=16, tex_floor=TEX_CORR_FLOOR, tex_ceil=TEX_CORR_CEIL, tex_wall=TEX_CORR_WALL):
     """Corridor running along the X axis."""
     ix1, iy1, iz1, ix2, iy2, iz2 = interior
     return [
-        box_brush(ix1, iy1 - wall, iz1 - wall, ix2, iy2 + wall, iz1, comment="corr floor"),
-        box_brush(ix1, iy1 - wall, iz2, ix2, iy2 + wall, iz2 + wall, comment="corr ceiling"),
-        box_brush(ix1, iy1 - wall, iz1, ix2, iy1, iz2, comment="corr south wall"),
-        box_brush(ix1, iy2, iz1, ix2, iy2 + wall, iz2, comment="corr north wall"),
+        box_brush(ix1, iy1 - wall, iz1 - wall, ix2, iy2 + wall, iz1, tex=tex_floor, comment="corr floor"),
+        box_brush(ix1, iy1 - wall, iz2, ix2, iy2 + wall, iz2 + wall, tex=tex_ceil, comment="corr ceiling"),
+        box_brush(ix1, iy1 - wall, iz1, ix2, iy1, iz2, tex=tex_wall, comment="corr south wall"),
+        box_brush(ix1, iy2, iz1, ix2, iy2 + wall, iz2, tex=tex_wall, comment="corr north wall"),
     ]
 
 
-def corridor_y(interior, wall=16):
+def corridor_y(interior, wall=16, tex_floor=TEX_CORR_FLOOR, tex_ceil=TEX_CORR_CEIL, tex_wall=TEX_CORR_WALL):
     """Corridor running along the Y axis."""
     ix1, iy1, iz1, ix2, iy2, iz2 = interior
     return [
-        box_brush(ix1 - wall, iy1, iz1 - wall, ix2 + wall, iy2, iz1, comment="corr floor"),
-        box_brush(ix1 - wall, iy1, iz2, ix2 + wall, iy2, iz2 + wall, comment="corr ceiling"),
-        box_brush(ix1 - wall, iy1, iz1, ix1, iy2, iz2, comment="corr west wall"),
-        box_brush(ix2, iy1, iz1, ix2 + wall, iy2, iz2, comment="corr east wall"),
+        box_brush(ix1 - wall, iy1, iz1 - wall, ix2 + wall, iy2, iz1, tex=tex_floor, comment="corr floor"),
+        box_brush(ix1 - wall, iy1, iz2, ix2 + wall, iy2, iz2 + wall, tex=tex_ceil, comment="corr ceiling"),
+        box_brush(ix1 - wall, iy1, iz1, ix1, iy2, iz2, tex=tex_wall, comment="corr west wall"),
+        box_brush(ix2, iy1, iz1, ix2 + wall, iy2, iz2, tex=tex_wall, comment="corr east wall"),
     ]
 
 
-def filler(x1, y1, z1, x2, y2, z2, comment="filler"):
-    return box_brush(x1, y1, z1, x2, y2, z2, comment=comment)
+def filler(x1, y1, z1, x2, y2, z2, tex=TEX_EMPTY, comment="filler"):
+    return box_brush(x1, y1, z1, x2, y2, z2, tex=tex, comment=comment)
 
 
 def generate_map():
@@ -217,7 +228,7 @@ def generate_map():
     r2_cy = (r2[1] + r2[4]) // 2
     brushes.append("// ---- Room 2: center pillar ----")
     brushes.append(box_brush(r2_cx - 32, r2_cy - 32, 0, r2_cx + 32, r2_cy + 32, r2[5],
-                             comment="pillar"))
+                             tex=TEX_PILLAR, comment="pillar"))
 
     # Corridor 2
     brushes.append("// ---- Corridor 2 (R2 -> R3) ----")
@@ -315,7 +326,7 @@ def generate_map():
 
     brush_num = 0
     for item in brushes:
-        if item.startswith("//"):
+        if item.startswith("//") and not item.startswith("// brush") and "{" not in item:
             lines.append(item)
         else:
             lines.append(f"// brush {brush_num}")

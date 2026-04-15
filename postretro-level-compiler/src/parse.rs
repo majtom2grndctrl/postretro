@@ -163,7 +163,6 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         }
     }
 
-
     // Compute geometry for world brushes only
     let geo_planes = face_planes(&geo_map.face_planes);
 

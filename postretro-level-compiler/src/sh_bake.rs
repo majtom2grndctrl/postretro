@@ -81,10 +81,8 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
 
     // Decompose lights into static (folded into the base coefficients) and
     // animated (one per-light mono layer each).
-    let (static_lights, animated_lights): (Vec<&MapLight>, Vec<&MapLight>) = inputs
-        .lights
-        .iter()
-        .partition(|l| l.animation.is_none());
+    let (static_lights, animated_lights): (Vec<&MapLight>, Vec<&MapLight>) =
+        inputs.lights.iter().partition(|l| l.animation.is_none());
 
     // Build probe list and flag validity against the BSP tree.
     let probe_positions: Vec<DVec3> = (0..total)
@@ -93,13 +91,7 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
 
     let validity: Vec<u8> = probe_positions
         .iter()
-        .map(|&p| {
-            if probe_is_valid(inputs.tree, p) {
-                1
-            } else {
-                0
-            }
-        })
+        .map(|&p| if probe_is_valid(inputs.tree, p) { 1 } else { 0 })
         .collect();
 
     // Static-light base coefficients, parallelized per probe.
@@ -141,11 +133,7 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
     }
 
     ShVolumeSection {
-        grid_origin: [
-            world_min.x as f32,
-            world_min.y as f32,
-            world_min.z as f32,
-        ],
+        grid_origin: [world_min.x as f32, world_min.y as f32, world_min.z as f32],
         cell_size: [probe_spacing_meters; 3],
         grid_dimensions: dims,
         probe_stride: PROBE_STRIDE,
@@ -178,7 +166,11 @@ fn world_aabb(inputs: &BakeInputs<'_>) -> (DVec3, DVec3) {
     let mut min = DVec3::splat(f64::INFINITY);
     let mut max = DVec3::splat(f64::NEG_INFINITY);
     for v in &inputs.geometry.geometry.vertices {
-        let p = DVec3::new(v.position[0] as f64, v.position[1] as f64, v.position[2] as f64);
+        let p = DVec3::new(
+            v.position[0] as f64,
+            v.position[1] as f64,
+            v.position[2] as f64,
+        );
         min = min.min(p);
         max = max.max(p);
     }
@@ -326,13 +318,7 @@ fn closest_hit(
 /// Double-sided Möller-Trumbore intersection. Returns `(t, geometric_normal)`.
 /// The normal is flipped to face the incoming ray so indirect illumination
 /// does not vanish at back-facing walls.
-fn ray_triangle_hit(
-    origin: Vec3,
-    dir: Vec3,
-    a: Vec3,
-    b: Vec3,
-    c: Vec3,
-) -> Option<(f32, Vec3)> {
+fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<(f32, Vec3)> {
     let edge1 = b - a;
     let edge2 = c - a;
     let h = dir.cross(edge2);
@@ -408,11 +394,7 @@ fn segment_clear(inputs: &BakeInputs<'_>, from: Vec3, to: Vec3) -> bool {
 /// Lambert contribution from one light at a surface point. Does not include
 /// visibility — shadow testing is done by the caller so the same path can be
 /// reused by both static and animated light bakes.
-fn light_contribution_lambert(
-    light: &MapLight,
-    surface_point: Vec3,
-    surface_normal: Vec3,
-) -> Vec3 {
+fn light_contribution_lambert(light: &MapLight, surface_point: Vec3, surface_normal: Vec3) -> Vec3 {
     match light.light_type {
         LightType::Point => {
             let to_light = Vec3::new(
@@ -585,11 +567,7 @@ fn bake_probe_rgb(
 /// Bake a single animated light at unit intensity / white color and project
 /// into monochrome SH L2. The runtime multiplies the 9-coeff layer by the
 /// light's evaluated animation color and brightness per frame.
-fn bake_probe_mono(
-    inputs: &BakeInputs<'_>,
-    probe_pos: Vec3,
-    light: &MapLight,
-) -> [f32; 9] {
+fn bake_probe_mono(inputs: &BakeInputs<'_>, probe_pos: Vec3, light: &MapLight) -> [f32; 9] {
     // Bake at unit intensity / white — the runtime applies base_color and
     // curves via the animation descriptor.
     let unit_light = unit_reference_light(light);
@@ -629,12 +607,7 @@ fn sample_radiance_rgb(
 
 /// Same as `sample_radiance_rgb` but returns scalar luminance (average of
 /// RGB) for a single light baked at unit intensity.
-fn sample_radiance_mono(
-    inputs: &BakeInputs<'_>,
-    origin: Vec3,
-    dir: Vec3,
-    light: &MapLight,
-) -> f32 {
+fn sample_radiance_mono(inputs: &BakeInputs<'_>, origin: Vec3, dir: Vec3, light: &MapLight) -> f32 {
     match closest_hit(inputs, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
         None => 0.0,
         Some(hit) => {
@@ -887,11 +860,11 @@ mod tests {
         assert_eq!(section.animation_descriptors.len(), 1);
         assert_eq!(section.per_light_sh.len(), 1);
         assert_eq!(section.animation_descriptors[0].period, 1.0);
-        assert_eq!(section.animation_descriptors[0].base_color, [1.0, 0.5, 0.25]);
         assert_eq!(
-            section.per_light_sh[0].len(),
-            section.total_probes() * 9
+            section.animation_descriptors[0].base_color,
+            [1.0, 0.5, 0.25]
         );
+        assert_eq!(section.per_light_sh[0].len(), section.total_probes() * 9);
     }
 
     #[test]

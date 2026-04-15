@@ -6,9 +6,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use glam::Vec3;
-use postretro_level_format::alpha_lights::{
-    AlphaFalloffModel, AlphaLightType, AlphaLightsSection,
-};
+use postretro_level_format::alpha_lights::{AlphaFalloffModel, AlphaLightType, AlphaLightsSection};
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};

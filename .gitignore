@@ -30,3 +30,4 @@ assets/maps/*
 #.idea/
 
 /tools
+.claude/worktrees/

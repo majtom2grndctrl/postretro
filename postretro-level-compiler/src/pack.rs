@@ -785,11 +785,10 @@ mod tests {
                 path.display()
             );
             let bytes = section.to_bytes();
-            let restored =
-                postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&bytes)
-                    .unwrap_or_else(|e| {
-                        panic!("sh volume round-trip failed for {}: {e}", path.display())
-                    });
+            let restored = postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&bytes)
+                .unwrap_or_else(|e| {
+                    panic!("sh volume round-trip failed for {}: {e}", path.display())
+                });
             assert_eq!(section, restored);
         }
         assert!(

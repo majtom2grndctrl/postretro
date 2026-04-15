@@ -384,8 +384,7 @@ impl Renderer {
         );
         let light_count = geometry.map(|g| g.lights.len() as u32).unwrap_or(0);
         let ambient_floor = DEFAULT_AMBIENT_FLOOR;
-        let uniform_data =
-            build_uniform_data(&view_proj, Vec3::ZERO, ambient_floor, light_count);
+        let uniform_data = build_uniform_data(&view_proj, Vec3::ZERO, ambient_floor, light_count);
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),

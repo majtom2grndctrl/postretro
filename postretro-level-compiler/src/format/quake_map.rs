@@ -187,8 +187,7 @@ pub fn translate_light(
                     "[Compiler] light_sun missing 'mangle'; defaulting to straight down (-90 0 0)"
                 );
                 // "-90 0 0" → engine (0, -1, 0), matching sub-plan 1.
-                parse_mangle_direction("-90 0 0")
-                    .expect("built-in default mangle must parse")
+                parse_mangle_direction("-90 0 0").expect("built-in default mangle must parse")
             };
             cone_direction = Some(dir);
         }
@@ -361,16 +360,16 @@ fn parse_mangle_direction(s: &str) -> Option<[f32; 3]> {
 fn quake_style_animation(style: i32, phase: f32) -> Option<LightAnimation> {
     // Source: Quake 1 `r_light.c` / `m_menu.c` classic style strings.
     let pattern = match style {
-        1 => "mmnmmommommnonmmonqnmmo",       // flicker (first variety)
+        1 => "mmnmmommommnonmmonqnmmo", // flicker (first variety)
         2 => "abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba", // slow strong pulse
         3 => "mmmmmaaaaammmmmaaaaaabcdefgabcdefg", // candle (first variety)
-        4 => "mamamamamama",                  // fast strobe
+        4 => "mamamamamama",            // fast strobe
         5 => "jklmnopqrstuvwxyzyxwvutsrqponmlkj", // gentle pulse 1
-        6 => "nmonqnmomnmomomno",             // flicker (second variety)
-        7 => "mmmaaaabcdefgmmmmaaaammmaamm",  // candle (second variety)
+        6 => "nmonqnmomnmomomno",       // flicker (second variety)
+        7 => "mmmaaaabcdefgmmmmaaaammmaamm", // candle (second variety)
         8 => "mmmaaammmaaammmabcdefaaaammmmabcdefmmmaaaa", // candle (third variety)
-        9 => "aaaaaaaazzzzzzzz",              // slow strobe (fourth variety)
-        10 => "mmamammmmammamamaaamammma",    // flourescent flicker
+        9 => "aaaaaaaazzzzzzzz",        // slow strobe (fourth variety)
+        10 => "mmamammmmammamamaaamammma", // flourescent flicker
         11 => "abcdefghijklmnopqrrqponmlkjihgfedcba", // slow pulse, no black
         _ => return None,
     };
@@ -434,7 +433,12 @@ mod tests {
 
         assert_eq!(light.light_type, LightType::Point);
         assert_eq!(light.intensity, 250.0);
-        assert_vec_close(light.color, [1.0, 128.0 / 255.0, 64.0 / 255.0], 1e-5, "color");
+        assert_vec_close(
+            light.color,
+            [1.0, 128.0 / 255.0, 64.0 / 255.0],
+            1e-5,
+            "color",
+        );
         assert_eq!(light.falloff_model, FalloffModel::InverseSquared);
         // 4096 units * 0.0254 m/unit = 104.0384 m
         assert!((light.falloff_range - 104.0384).abs() < 1e-3);
@@ -454,8 +458,8 @@ mod tests {
             ("_cone2", "40"),
             ("mangle", "-90 0 0"),
         ]);
-        let light = translate_light(&p, DVec3::ZERO, "light_spot")
-            .expect("spot light should translate");
+        let light =
+            translate_light(&p, DVec3::ZERO, "light_spot").expect("spot light should translate");
 
         assert_eq!(light.light_type, LightType::Spot);
         let inner = light.cone_angle_inner.expect("inner cone");
@@ -549,8 +553,8 @@ mod tests {
 
     #[test]
     fn unknown_classname_errors() {
-        let err = translate_light(&props(&[]), DVec3::ZERO, "light_banana")
-            .expect_err("should error");
+        let err =
+            translate_light(&props(&[]), DVec3::ZERO, "light_banana").expect_err("should error");
         assert!(matches!(err, TranslateError::UnknownClassname(_)));
     }
 

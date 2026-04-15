@@ -123,9 +123,7 @@ impl ShVolumeSection {
         debug_assert_eq!(self.probes.len(), total_probes);
         debug_assert_eq!(self.animation_descriptors.len(), self.per_light_sh.len());
 
-        let mut buf = Vec::with_capacity(
-            Self::HEADER_SIZE + total_probes * PROBE_STRIDE as usize,
-        );
+        let mut buf = Vec::with_capacity(Self::HEADER_SIZE + total_probes * PROBE_STRIDE as usize);
 
         // Header
         for v in &self.grid_origin {
@@ -219,9 +217,8 @@ impl ShVolumeSection {
             )));
         }
 
-        let total_probes = grid_dimensions[0] as usize
-            * grid_dimensions[1] as usize
-            * grid_dimensions[2] as usize;
+        let total_probes =
+            grid_dimensions[0] as usize * grid_dimensions[1] as usize * grid_dimensions[2] as usize;
 
         let base_bytes = total_probes * probe_stride as usize;
         if data.len() < Self::HEADER_SIZE + base_bytes {
@@ -389,8 +386,7 @@ mod tests {
     fn round_trip_probes_only() {
         let section = empty_section([2, 3, 4]);
         let bytes = section.to_bytes();
-        let expected_len =
-            ShVolumeSection::HEADER_SIZE + (2 * 3 * 4) * PROBE_STRIDE as usize;
+        let expected_len = ShVolumeSection::HEADER_SIZE + (2 * 3 * 4) * PROBE_STRIDE as usize;
         assert_eq!(bytes.len(), expected_len);
         let restored = ShVolumeSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
@@ -485,7 +481,10 @@ mod tests {
         let section = empty_section([1, 1, 1]);
         let bytes = section.to_bytes();
         // Header + 1 probe_stride
-        assert_eq!(bytes.len(), ShVolumeSection::HEADER_SIZE + PROBE_STRIDE as usize);
+        assert_eq!(
+            bytes.len(),
+            ShVolumeSection::HEADER_SIZE + PROBE_STRIDE as usize
+        );
         // animated_light_count bytes at offset 40..44 should be zero.
         assert_eq!(&bytes[40..44], &0u32.to_le_bytes());
     }
@@ -496,9 +495,7 @@ mod tests {
     /// section is not an error" rule for the SH volume.
     #[test]
     fn prl_container_returns_none_for_missing_sh_volume_section() {
-        use crate::{
-            SectionBlob, SectionId, read_container, read_section_data, write_prl,
-        };
+        use crate::{SectionBlob, SectionId, read_container, read_section_data, write_prl};
 
         // Pack a single unrelated section — no ShVolume — and read back.
         let sections = vec![SectionBlob {
@@ -512,8 +509,7 @@ mod tests {
         let mut cursor = std::io::Cursor::new(&buf);
         let meta = read_container(&mut cursor).unwrap();
         assert!(meta.find_section(SectionId::ShVolume as u32).is_none());
-        let result =
-            read_section_data(&mut cursor, &meta, SectionId::ShVolume as u32).unwrap();
+        let result = read_section_data(&mut cursor, &meta, SectionId::ShVolume as u32).unwrap();
         assert!(result.is_none(), "missing SH volume must return None");
     }
 }

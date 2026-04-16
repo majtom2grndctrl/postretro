@@ -24,6 +24,7 @@
 - **Draft plans / future features** → `plans/drafts/`
 - **Shipped plans** → `plans/done/` — historical record, frozen at ship time. May describe stale state. Read only when explicitly referenced.
 - **Research archive** → `research/` — past research, not current design. Do not read unless explicitly instructed.
+- **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).
 
 ---
 

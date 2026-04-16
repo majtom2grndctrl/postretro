@@ -2,6 +2,7 @@
 
 > **Read this when:** implementing or modifying the renderer, level loading, lighting, or any visual pass.
 > **Key invariant:** renderer owns all wgpu calls. Other subsystems never touch GPU types. Level loaders produce handles; renderer consumes them.
+> **wgpu (context7):** `/gfx-rs/wgpu` for API lookup; `/websites/sotrh_github_io_learn-wgpu` for design rationale.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) §4.1, §4.3
 
 ---

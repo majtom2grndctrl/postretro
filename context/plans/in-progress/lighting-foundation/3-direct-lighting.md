@@ -4,7 +4,7 @@
 > **Scope:** Upload map lights to GPU, evaluate per-fragment direct lighting via a flat light loop, add an ambient floor uniform. No clustered binning, no shadow maps, no normal maps — those are subsequent sub-plans.
 > **Crates touched:** `postretro` only.
 > **Depends on:** sub-plan 1 (`MapData.lights` populated with map lights).
-> **Blocks:** sub-plan 4 (shadow maps need lights to shadow), sub-plan 5 (normal maps need lights to validate against).
+> **Blocks:** sub-plan 4 (light influence volumes optimize the light loop built here), sub-plan 5 (shadow maps modulate the direct term built here), sub-plan 6 (normal maps perturb the shading normal used here).
 
 ---
 
@@ -12,7 +12,7 @@
 
 Replace flat ambient with per-fragment direct light evaluation. Upload map lights to a GPU storage buffer, loop over all lights per fragment, evaluate Lambert diffuse with per-type attenuation. Add a uniform ambient floor to prevent pitch-black unlit areas.
 
-This sub-plan uses a **flat per-fragment loop** over all active lights — not clustered forward+. With 3–10 lights on test maps, a flat loop produces identical pixels to a clustered approach and is far simpler to build, debug, and validate. Clustered forward+ binning is a future optimization when light counts demand it; the fragment shader's light evaluation code (falloff, cone attenuation, Lambert) carries over unchanged.
+This sub-plan uses a **flat per-fragment loop** over all active lights — not clustered forward+. With 3–10 lights on test maps, a flat loop produces identical pixels to a clustered approach and is far simpler to build, debug, and validate. The plan targets up to **500 authored lights per level**; sub-plan 4 adds per-light influence-volume early-outs so the per-fragment cost scales with nearby lights rather than total lights. Clustered forward+ binning is a future optimization if profiling shows the flat loop + influence-volume combination bottlenecks at high visible-light counts; the fragment shader's light evaluation code (falloff, cone attenuation, Lambert) carries over unchanged.
 
 ---
 

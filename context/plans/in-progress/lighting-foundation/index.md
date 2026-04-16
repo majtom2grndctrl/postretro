@@ -13,7 +13,7 @@
 Replace flat ambient with the full target lighting pipeline:
 
 - **Indirect:** SH L2 irradiance volume baked at compile time, sampled per fragment via 3D texture trilinear interpolation.
-- **Direct:** dynamic lights (point, spot, directional) authored as FGD entities and consumed both by the bake and by the runtime direct path. Initial runtime uses a flat per-fragment loop; clustered forward+ binning is a future optimization when light counts demand it.
+- **Direct:** dynamic lights (point, spot, directional) authored as FGD entities and consumed both by the bake and by the runtime direct path. Target: up to **500 authored lights per level**. The runtime uses a flat per-fragment loop with per-light influence-volume early-out (sub-plan 4); clustered forward+ binning is a future optimization if profiling shows the flat loop bottlenecks at high visible-light counts.
 - **Surface detail:** tangent-space normal maps perturbing the per-fragment normal before shading.
 - **Dynamic shadows:** cascaded shadow maps for directional lights, cube shadow maps for point lights, single 2D shadow maps for spot lights. Low-resolution, nearest-neighbor sampling — chunky pixel shadow edges match the target aesthetic.
 
@@ -58,14 +58,14 @@ TrenchBroom authoring (FGD)
 
 ## Sub-plans
 
-This plan has seven sub-files. Sub-plans 1–2 are compiler/data work; sub-plans 3–7 are engine-side, ordered so each step has a clear visual validation surface before the next layer is added. Sub-plan 1 has no engine impact and could overlap with the tail end of Milestone 4 in principle, but the rule is: nothing from this plan starts until Milestone 4's check-in gate signs off.
+This plan has eight sub-files. Sub-plans 1–2 are compiler/data work; sub-plans 3–8 are engine-side, ordered so each step has a clear visual validation surface before the next layer is added. Sub-plan 1 has no engine impact and could overlap with the tail end of Milestone 4 in principle, but the rule is: nothing from this plan starts until Milestone 4's check-in gate signs off.
 
 **Dependency graph summary:**
 - Sub-plan 1 must complete before anything else.
 - Sub-plans 2 (compiler-side SH baker) and 3 (engine-side direct lighting) can proceed **in parallel** once sub-plan 1 is done — they are independent work streams.
-- Sub-plans 4 (shadows) and 5 (normal maps) both depend on sub-plan 3, but are **independent of each other** and can proceed in parallel.
-- Sub-plan 6 (SH volume runtime) depends on sub-plans 2 and 3, but is independent of sub-plans 4 and 5.
-- Sub-plan 7 (animated SH) depends on sub-plan 6.
+- Sub-plan 4 (light influence volumes) depends on sub-plan 3. Sub-plan 5 (shadows) depends on sub-plan 3 and **benefits from sub-plan 4** (the CPU frustum-visibility test sub-plan 4 provides enables shadow-slot allocation; sub-plan 5 can ship without it by allocating a fixed slot per light, but the intended design expects sub-plan 4 to land first). Sub-plan 6 (normal maps) depends on sub-plan 3 only. Sub-plans 4, 5, and 6 are otherwise independent of each other.
+- Sub-plan 7 (SH volume runtime) depends on sub-plans 2 and 3, but is independent of sub-plans 5 and 6.
+- Sub-plan 8 (animated SH) depends on sub-plan 7.
 
 ### Compiler / data pipeline
 
@@ -75,15 +75,17 @@ This plan has seven sub-files. Sub-plans 1–2 are compiler/data work; sub-plans
 
 ### Engine runtime (ordered by visual validation dependencies)
 
-3. **[3-direct-lighting.md](./3-direct-lighting.md)** — Direct lighting via a flat per-fragment light loop + ambient floor. Uploads map lights to a GPU storage buffer, evaluates Lambert diffuse with per-type falloff and spot cone attenuation. This is the foundation — sub-plans 4 and 5 are both validated relative to what this shows. Uses a flat loop, not clustered forward+; clustering is a future optimization when light counts demand it. **Depends on:** sub-plan 1. **Parallel with:** sub-plan 2.
+3. **[3-direct-lighting.md](./3-direct-lighting.md)** — Direct lighting via a flat per-fragment light loop + ambient floor. Uploads map lights to a GPU storage buffer, evaluates Lambert diffuse with per-type falloff and spot cone attenuation. This is the foundation — sub-plans 4, 5, and 6 are all validated relative to what this shows. Uses a flat loop, not clustered forward+; clustering is a future optimization when light counts demand it. **Depends on:** sub-plan 1. **Parallel with:** sub-plan 2.
 
-4. **[4-shadow-maps.md](./4-shadow-maps.md)** — Shadow map passes modulating the direct term. CSM for directional, cube shadow maps for point, single 2D for spot. Nearest-neighbor sampling for chunky retro shadow edges. **Depends on:** sub-plan 3. **Independent of:** sub-plan 5.
+4. **[4-light-influence-volumes.md](./4-light-influence-volumes.md)** — Light influence volumes (compile-time per-light sphere bounds in PRL, runtime spatial culling). **Depends on:** sub-plan 3. **Enables:** sub-plan 5's shadow-slot allocation (the CPU frustum-visibility test produced here gates which lights need an active shadow map this frame).
 
-5. **[5-normal-maps.md](./5-normal-maps.md)** — Tangent-space normal maps. Activates the TBN data already in the vertex format (Milestone 3.5). Perturbs the per-fragment shading normal before both direct and indirect evaluation. **Depends on:** sub-plan 3. **Independent of:** sub-plan 4.
+5. **[5-shadow-maps.md](./5-shadow-maps.md)** — Shadow map passes modulating the direct term. CSM for directional, cube shadow maps for point, single 2D for spot. Nearest-neighbor sampling for chunky retro shadow edges. **Depends on:** sub-plan 3. **Benefits from:** sub-plan 4 (CPU frustum-visibility test for slot allocation). **Independent of:** sub-plan 6.
 
-6. **[6-sh-volume.md](./6-sh-volume.md)** — SH irradiance volume sampling (indirect lighting). Loads the SH PRL section from sub-plan 2, uploads to 3D textures, trilinear samples in the fragment shader, reconstructs SH L2 irradiance. Replaces flat ambient as the indirect term. **Depends on:** sub-plans 2 and 3. **Independent of:** sub-plans 4 and 5.
+6. **[6-normal-maps.md](./6-normal-maps.md)** — Tangent-space normal maps. Activates the TBN data already in the vertex format (Milestone 3.5). Perturbs the per-fragment shading normal before both direct and indirect evaluation. **Depends on:** sub-plan 3. **Independent of:** sub-plans 4 and 5.
 
-7. **[7-animated-sh.md](./7-animated-sh.md)** — Animated SH layers. Loads per-light monochrome SH layers and animation descriptors, evaluates brightness/color curves per frame, modulates and adds to base SH. Final sub-plan. **Depends on:** sub-plan 6.
+7. **[7-sh-volume.md](./7-sh-volume.md)** — SH irradiance volume sampling (indirect lighting). Loads the SH PRL section from sub-plan 2, uploads to 3D textures, trilinear samples in the fragment shader, reconstructs SH L2 irradiance. Replaces flat ambient as the indirect term. **Depends on:** sub-plans 2 and 3. **Independent of:** sub-plans 5 and 6.
+
+8. **[8-animated-sh.md](./8-animated-sh.md)** — Animated SH layers. Loads per-light monochrome SH layers and animation descriptors, evaluates brightness/color curves per frame, modulates and adds to base SH. Final sub-plan. **Depends on:** sub-plan 7.
 
 ---
 
@@ -100,7 +102,7 @@ This plan has seven sub-files. Sub-plans 1–2 are compiler/data work; sub-plans
 - SH irradiance volume baker: probe placement, radiance evaluation with shadow raycasting through the Milestone 4 BVH, SH L2 projection, validity masking, PRL section writer.
 - Runtime SH volume sampling: parse PRL section to 3D texture, trilinear sampling in world shader.
 - Normal map loading and tangent-space shading in the world shader.
-- Flat per-fragment direct light loop: per-light-type evaluation (point/spot/directional), falloff models, spot cone attenuation. Clustered forward+ binning deferred until light counts demand it.
+- Flat per-fragment direct light loop with influence-volume early-out: per-light-type evaluation (point/spot/directional), falloff models, spot cone attenuation. Target: 500 authored lights per level; influence volumes ensure the per-fragment cost scales with nearby lights, not total lights. Clustered forward+ binning deferred until profiling shows the flat loop bottlenecks.
 - Shadow map pipeline: CSM for directional, cube shadow maps for point/spot, sampling in the world shader.
 - Test map coverage extending `assets/maps/test.map`.
 - Documentation update to `context/lib/build_pipeline.md` §Custom FGD table.

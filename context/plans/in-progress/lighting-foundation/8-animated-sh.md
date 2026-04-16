@@ -1,9 +1,9 @@
-# Sub-plan 7 — Animated SH Layers
+# Sub-plan 8 — Animated SH Layers
 
 > **Parent plan:** [Lighting Foundation](./index.md) — read first for goals.
-> **Scope:** Runtime loading and evaluation of per-light animated SH layers baked in sub-plan 2. Single packed storage buffer for all per-light SH data, animation descriptor buffer, curve interpolation and manual trilinear interpolation in the fragment shader. Extends the base SH sampling path from sub-plan 6.
+> **Scope:** Runtime loading and evaluation of per-light animated SH layers baked in sub-plan 2. Single packed storage buffer for all per-light SH data, animation descriptor buffer, curve interpolation and manual trilinear interpolation in the fragment shader. Extends the base SH sampling path from sub-plan 7.
 > **Crates touched:** `postretro` only.
-> **Depends on:** sub-plan 6 (base SH volume sampling must be working — animated layers add to the base SH).
+> **Depends on:** sub-plan 7 (base SH volume sampling must be working — animated layers add to the base SH).
 > **Blocks:** nothing. This is the final sub-plan in the lighting foundation.
 
 ---
@@ -12,7 +12,7 @@
 
 When the `ShVolume` PRL section contains animated light layers (`animated_light_count > 0`), the loader packs all per-light monochrome SH probe data into a single storage buffer. The fragment shader evaluates each animated light's contribution at the current time, performs manual trilinear interpolation over the probe grid, modulates the monochrome SH by the light's animated color and brightness, and adds it to the base SH before irradiance reconstruction.
 
-When `animated_light_count = 0`, no per-light buffer is created and the shader path is identical to sub-plan 6's static-only case.
+When `animated_light_count = 0`, no per-light buffer is created and the shader path is identical to sub-plan 7's static-only case.
 
 ---
 
@@ -28,7 +28,7 @@ Band ordering matches the base SH convention (L0..L2, 9 coefficients total). The
 
 ### Upload
 
-After loading base SH probes (sub-plan 6), if `animated_light_count > 0`:
+After loading base SH probes (sub-plan 7), if `animated_light_count > 0`:
 1. Parse the animation descriptor table (one entry per animated light: period, phase, base_color, brightness samples, color samples).
 2. Allocate a buffer of `animated_light_count * probe_count * 9 * 4` bytes.
 3. For each animated light, write its monochrome SH coefficients into the buffer at the appropriate offset.
@@ -65,12 +65,12 @@ Color samples are stored as interleaved `[r, g, b, r, g, b, ...]` in the samples
 Extend **group 3 (SH volume)** with animated light bindings:
 
 ```
-// existing from sub-plan 6:
+// existing from sub-plan 7:
 @group(3) @binding(0) var sh_sampler: sampler;
 @group(3) @binding(1..N) var sh_texture_*: texture_3d<f32>;  // base SH
 @group(3) @binding(N+1) var<uniform> sh_grid: ShGridInfo;
 
-// new for animated lights:
+// new for animated lights (sub-plan 8):
 @group(3) @binding(N+2) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(N+3) var<storage, read> anim_samples: array<f32>;
 @group(3) @binding(N+4) var<storage, read> anim_sh_data: array<f32>;  // all per-light monochrome SH
@@ -86,7 +86,7 @@ Add `time: f32` to the per-frame uniforms (group 0). This is the elapsed time in
 
 ## Fragment shader: animated SH evaluation
 
-After sampling base SH (sub-plan 6), for each animated light:
+After sampling base SH (sub-plan 7), for each animated light (sub-plan 8):
 
 ```wgsl
 // Per animated light (loop 0..animated_light_count)
@@ -182,8 +182,8 @@ The modulated SH coefficients are added to the base SH *before* irradiance recon
 
 | Condition | Behavior |
 |-----------|----------|
-| `animated_light_count = 0` | No per-light storage buffer created. Shader skips animation loop. Identical to sub-plan 6. |
-| SH section missing entirely | No SH textures at all. Indirect = 0. Same as sub-plan 6 degradation. |
+| `animated_light_count = 0` | No per-light storage buffer created. Shader skips animation loop. Identical to sub-plan 7. |
+| SH section missing entirely | No SH textures at all. Indirect = 0. Same as sub-plan 7 degradation. |
 | Animation with `brightness_count = 0` | Brightness stays 1.0 (constant). Only color animation applies. |
 | Animation with `color_count = 0` | Color stays `base_color`. Only brightness animation applies. |
 

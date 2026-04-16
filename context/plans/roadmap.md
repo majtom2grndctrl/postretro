@@ -95,7 +95,7 @@ Replaced Milestone 3.5's per-cell chunk compute cull with a global BVH over all 
 
 ## Milestone 5: Lighting Foundation
 
-Replace flat ambient with the full target lighting pipeline: SH irradiance volume for indirect, clustered forward+ dynamic lights for direct, normal maps for surface detail, shadow maps for dynamic lights. Milestone 5 delivers a fully lit level. The architectural direction is locked in `context/lib/rendering_pipeline.md` §4.
+Replace flat ambient with the full target lighting pipeline: SH irradiance volume for indirect, flat per-fragment dynamic lights (up to 500 per level) with compile-time influence volumes for spatial culling, normal maps for surface detail, shadow maps from a fixed slot pool. Milestone 5 delivers a fully lit level. Clustered forward+ binning is deferred until profiling shows the flat loop + influence-volume combination bottlenecks. The architectural direction is locked in `context/lib/rendering_pipeline.md` §4.
 
 **Prerequisite:** Milestone 4 (BVH Foundation). The SH baker ray-casts through the BVH built in Milestone 4 — one structure, two consumers, no second design pass.
 
@@ -106,7 +106,7 @@ Replace flat ambient with the full target lighting pipeline: SH irradiance volum
 - [ ] **SH irradiance volume baker** — prl-build stage that places probes on a regular 3D grid over empty space, evaluates SH L2 coefficients by raycasting against static geometry through the Milestone 4 BVH with canonical lights as sources, and writes a new PRL section. Probe validity mask flags probes inside solid brushes.
 - [ ] **Runtime SH probe sampling** — parse the probe section into a 3D texture, sample trilinearly in the world shader, replace flat ambient with the SH-reconstructed irradiance.
 - [ ] **Normal map rendering** — author normal maps alongside albedo in `textures/`, load them as BC5 (or RGBA placeholder), reconstruct TBN in vertex shader, perturb per-fragment normal before shading.
-- [ ] **Clustered forward+ direct lighting** — compute prepass builds per-cluster light index lists from canonical lights plus transient gameplay lights. World shader walks its cluster and accumulates direct contributions.
+- [ ] **Flat per-fragment direct lighting with influence volumes** — flat loop over all lights per fragment with per-light influence-volume early-out (compile-time sphere bounds). CPU sphere-vs-frustum test gates shadow-slot assignment. Scales to 500 authored lights; clustered forward+ deferred until profiling demands it.
 - [ ] **Shadow maps for dynamic lights** — cascaded shadow maps for directional lights, cube shadow maps for point and spot lights. Low-resolution, nearest-neighbor sampling — chunky pixel shadow edges match the target aesthetic.
 - [ ] **Lighting test maps** — author maps that exercise indirect bleed, direct falloff, bright-to-dark transitions, normal-mapped surfaces at varied angles.
 

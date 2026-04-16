@@ -1,10 +1,10 @@
-# Sub-plan 5 — Normal Maps
+# Sub-plan 6 — Normal Maps
 
 > **Parent plan:** [Lighting Foundation](./index.md) — read first for goals.
 > **Scope:** Normal map loading, TBN reconstruction in the vertex shader, tangent-space normal perturbation in the fragment shader. No new lighting math — this sub-plan changes which normal the existing lighting evaluates against.
 > **Crates touched:** `postretro` only.
 > **Depends on:** sub-plan 3 (direct lighting must be working to validate normal map effects visually).
-> **Blocks:** nothing directly. Sub-plans 6–7 are independent. Normal maps improve both direct and indirect shading once both are running.
+> **Blocks:** nothing directly. Sub-plans 5, 7–8 are independent. Normal maps improve both direct and indirect shading once both are running.
 
 ---
 
@@ -12,7 +12,7 @@
 
 Add tangent-space normal maps to the world rendering pipeline. Each material pairs an albedo (base color) texture with an optional normal map. The vertex shader reconstructs the TBN matrix from the octahedral-encoded normal, packed tangent, and bitangent sign already present in the `WorldVertex` format (shipped in Milestone 3.5). The fragment shader samples the normal map, decodes the tangent-space normal, transforms it to world space via TBN, and uses it as the shading normal for all lighting terms.
 
-This is a **surface detail** feature. It does not add new lights or change the lighting equation — it changes the per-fragment normal that the existing light loop (sub-plan 3) and future indirect sampling (sub-plan 6) evaluate against.
+This is a **surface detail** feature. It does not add new lights or change the lighting equation — it changes the per-fragment normal that the existing light loop (sub-plan 3) and future indirect sampling (sub-plan 7) evaluate against.
 
 ---
 
@@ -72,7 +72,7 @@ struct VertexOutput {
 }
 ```
 
-`world_position` is already needed for the light loop (sub-plan 3). The only new varyings are `world_normal`, `world_tangent`, and `bitangent_sign` — all three are already computed in the vertex shader but were discarded.
+`world_position` is already needed for the light loop (sub-plan 3). The only new varyings are `world_normal`, `world_tangent`, and `bitangent_sign` — all three are already computed in the vertex shader but were discarded. This sub-plan activates them.
 
 ---
 
@@ -96,7 +96,7 @@ let TBN = mat3x3<f32>(T, B, N);
 let shading_normal = normalize(TBN * tangent_normal);
 ```
 
-`shading_normal` replaces the geometric normal in all lighting calculations — both the direct light loop (sub-plan 3) and future indirect SH sampling (sub-plan 6).
+`shading_normal` replaces the geometric normal in all lighting calculations — both the direct light loop (sub-plan 3) and future indirect SH sampling (sub-plan 7).
 
 **Normalization after interpolation** is important. Interpolated normals and tangents are not unit-length after rasterization; `normalize()` corrects this.
 

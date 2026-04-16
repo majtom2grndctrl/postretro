@@ -1,16 +1,16 @@
-# Sub-plan 6 — SH Volume Sampling (Indirect Lighting)
+# Sub-plan 7 — SH Volume Sampling (Indirect Lighting)
 
 > **Parent plan:** [Lighting Foundation](./index.md) — read first for goals and the BVH dependency.
 > **Scope:** Runtime loading and sampling of the SH irradiance volume baked in sub-plan 2. 3D texture creation and upload, trilinear SH sampling in the fragment shader, SH L2 irradiance reconstruction. Replaces flat ambient floor as the indirect lighting term (ambient floor remains as a minimum beneath the indirect contribution).
 > **Crates touched:** `postretro` only.
 > **Depends on:** sub-plan 2 (SH PRL section must exist in compiled maps) **and** sub-plan 3 (ambient floor and direct lighting must be working — indirect is additive to the direct term).
-> **Blocks:** sub-plan 7 (animated SH layers extend the base SH sampling path built here).
+> **Blocks:** sub-plan 8 (animated SH layers extend the base SH sampling path built here).
 
 ---
 
 ## Description
 
-Parse the `ShVolume` PRL section (section ID 20, written by the baker in sub-plan 2), upload SH probe data to 3D GPU textures, and sample them trilinearly in the fragment shader to reconstruct per-fragment irradiance. This replaces flat ambient as the indirect lighting contribution. The ambient floor (sub-plan 3) remains as a minimum beneath the indirect term — it prevents pitch-black areas where neither direct lights nor indirect probes contribute.
+Parse the `ShVolume` PRL section (section ID 20, written by the baker in sub-plan 2), upload SH probe data to 3D GPU textures, and sample them trilinearly in the fragment shader to reconstruct per-fragment irradiance. This replaces flat ambient as the indirect lighting contribution. The ambient floor (sub-plan 3) remains as a minimum beneath the indirect term — it prevents pitch-black areas where neither direct lights nor indirect probes contribute. This sub-plan provides the foundation that sub-plan 8 (animated SH) builds upon.
 
 Missing SH section degrades cleanly to the pre-Milestone-5 behavior: the shader skips SH sampling and uses the ambient floor alone.
 
@@ -119,7 +119,7 @@ let rgb = base_color.rgb * (ambient_floor + indirect + direct_sum);
 
 Where:
 - `ambient_floor` — minimum light level (sub-plan 3, scalar)
-- `indirect` — SH irradiance sample (this sub-plan, vec3)
+- `indirect` — SH irradiance sample (sub-plan 7, vec3)
 - `direct_sum` — accumulated direct light contributions (sub-plan 3, vec3)
 
 When no SH volume is loaded, `indirect` is `vec3(0.0)` and the lighting equation degrades to `ambient_floor + direct_sum` — matching the post-sub-plan-3 behavior.

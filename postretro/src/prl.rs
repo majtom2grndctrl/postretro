@@ -7,6 +7,7 @@ use std::path::Path;
 
 use glam::Vec3;
 use postretro_level_format::alpha_lights::{AlphaFalloffModel, AlphaLightType, AlphaLightsSection};
+use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
@@ -164,6 +165,10 @@ pub struct LevelWorld {
     /// `Vec` if the section is absent (e.g. maps compiled before this
     /// milestone). Consumed by the renderer's direct-lighting path.
     pub lights: Vec<MapLight>,
+    /// Per-light influence volumes loaded from the LightInfluence section
+    /// (ID 21). Index `i` corresponds to `lights[i]`. Empty if the section
+    /// is absent — the renderer treats all lights as infinite-bound.
+    pub light_influences: Vec<crate::lighting::influence::LightInfluence>,
 }
 
 impl LevelWorld {
@@ -457,6 +462,50 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
     };
 
+    // LightInfluence section (optional). Missing for maps compiled before
+    // sub-plan 4 — fall back to empty (all lights treated as infinite-bound).
+    let light_influences: Vec<crate::lighting::influence::LightInfluence> =
+        match prl_format::read_section_data(
+            &mut cursor,
+            &meta,
+            SectionId::LightInfluence as u32,
+        )? {
+            Some(data) => {
+                let section = LightInfluenceSection::from_bytes(&data)?;
+                if section.records.len() != lights.len() {
+                    return Err(PrlLoadError::FormatError(prl_format::FormatError::Io(
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "LightInfluence record count ({}) does not match AlphaLights count ({})",
+                                section.records.len(),
+                                lights.len()
+                            ),
+                        ),
+                    )));
+                }
+                let converted: Vec<_> = section
+                    .records
+                    .into_iter()
+                    .map(|r| crate::lighting::influence::LightInfluence {
+                        center: glam::Vec3::from(r.center),
+                        radius: r.radius,
+                    })
+                    .collect();
+                log::info!(
+                    "[PRL] LightInfluence: {} records loaded",
+                    converted.len()
+                );
+                converted
+            }
+            None => {
+                log::warn!(
+                    "[Loader] LightInfluence section missing, no spatial culling this map"
+                );
+                Vec::new()
+            }
+        };
+
     let has_pvs = pvs_section.is_some();
     let has_portals = portals_section.is_some();
 
@@ -630,6 +679,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         texture_names,
         bvh,
         lights,
+        light_influences,
     })
 }
 
@@ -719,6 +769,7 @@ mod tests {
             texture_names: vec![],
             bvh: empty_bvh(),
             lights: vec![],
+            light_influences: vec![],
         }
     }
 
@@ -763,6 +814,7 @@ mod tests {
             texture_names: vec![],
             bvh: empty_bvh(),
             lights: vec![],
+            light_influences: vec![],
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -799,6 +851,7 @@ mod tests {
             texture_names: vec![],
             bvh: empty_bvh(),
             lights: vec![],
+            light_influences: vec![],
         };
 
         let spawn = world.spawn_position();
@@ -824,6 +877,7 @@ mod tests {
             texture_names: vec![],
             bvh: empty_bvh(),
             lights: vec![],
+            light_influences: vec![],
         };
 
         let indices = face_leaf_indices(&world);
@@ -1146,6 +1200,99 @@ mod tests {
         assert!(!world.lights[1].cast_shadows);
 
         assert_eq!(world.lights[2].light_type, LightType::Directional);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_absent_light_influence_falls_back_to_empty() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let alpha_lights = sample_alpha_lights();
+
+        // AlphaLights present, LightInfluence absent — should warn but load.
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: alpha_lights.to_bytes(),
+            },
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_no_light_influence.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+
+        assert_eq!(world.lights.len(), 3, "lights should still parse");
+        assert!(
+            world.light_influences.is_empty(),
+            "missing LightInfluence section should give empty vec"
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_light_influence_count_mismatch_is_error() {
+        use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
+
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let alpha_lights = sample_alpha_lights(); // 3 lights
+
+        // Only 2 influence records — mismatch.
+        let influence = LightInfluenceSection {
+            records: vec![
+                InfluenceRecord {
+                    center: [1.0, 2.0, 3.0],
+                    radius: 50.0,
+                },
+                InfluenceRecord {
+                    center: [-4.0, 5.5, 6.0],
+                    radius: 25.0,
+                },
+            ],
+        };
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: alpha_lights.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::LightInfluence as u32,
+                version: 1,
+                data: influence.to_bytes(),
+            },
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_influence_mismatch.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not match"),
+            "expected count mismatch error, got: {msg}"
+        );
 
         std::fs::remove_file(&tmp).ok();
     }

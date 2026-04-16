@@ -11,6 +11,7 @@ use postretro_level_format::alpha_lights::{
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::leaf_pvs::LeafPvsSection;
+use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::{
@@ -56,6 +57,28 @@ pub fn encode_alpha_lights(lights: &[MapLight]) -> AlphaLightsSection {
     AlphaLightsSection { lights: records }
 }
 
+/// Derive influence records from the same light list used for AlphaLights.
+/// Same iteration order — record `i` corresponds to light `i` in AlphaLights.
+pub fn encode_light_influence(lights: &[MapLight]) -> LightInfluenceSection {
+    let records = lights
+        .iter()
+        .map(|l| {
+            let (center, radius) = match l.light_type {
+                LightType::Directional => ([0.0f32, 0.0, 0.0], f32::MAX),
+                LightType::Point | LightType::Spot => {
+                    let cx = l.origin.x as f32;
+                    let cy = l.origin.y as f32;
+                    let cz = l.origin.z as f32;
+                    ([cx, cy, cz], l.falloff_range)
+                }
+            };
+            InfluenceRecord { center, radius }
+        })
+        .collect();
+
+    LightInfluenceSection { records }
+}
+
 /// Convert compiler portal data into a `PortalsSection` for the format crate.
 pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
     let mut vertices = Vec::new();
@@ -86,7 +109,7 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
 }
 
 /// Write geometry, texture names, BSP nodes, BSP leaves, leaf PVS, BVH,
-/// alpha lights, and SH volume sections to a .prl file (--pvs mode).
+/// alpha lights, light influence, and SH volume sections to a .prl file (--pvs mode).
 #[allow(clippy::too_many_arguments)]
 pub fn pack_and_write_pvs(
     output: &Path,
@@ -96,6 +119,7 @@ pub fn pack_and_write_pvs(
     leaf_pvs: &LeafPvsSection,
     bvh: &BvhSection,
     alpha_lights: &AlphaLightsSection,
+    light_influence: &LightInfluenceSection,
     sh_volume: &ShVolumeSection,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
@@ -105,6 +129,7 @@ pub fn pack_and_write_pvs(
     let leaf_pvs_bytes = leaf_pvs.to_bytes();
     let bvh_bytes = bvh.to_bytes();
     let alpha_lights_bytes = alpha_lights.to_bytes();
+    let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
 
     let sections = vec![
@@ -144,6 +169,11 @@ pub fn pack_and_write_pvs(
             data: alpha_lights_bytes.clone(),
         },
         SectionBlob {
+            section_id: SectionId::LightInfluence as u32,
+            version: 1,
+            data: light_influence_bytes.clone(),
+        },
+        SectionBlob {
             section_id: SectionId::ShVolume as u32,
             version: 1,
             data: sh_volume_bytes.clone(),
@@ -168,6 +198,11 @@ pub fn pack_and_write_pvs(
         alpha_lights.lights.len()
     );
     log::info!(
+        "[Compiler]   LightInfluence: {} bytes ({} records)",
+        light_influence_bytes.len(),
+        light_influence.records.len()
+    );
+    log::info!(
         "[Compiler]   ShVolume: {} bytes ({} probes)",
         sh_volume_bytes.len(),
         sh_volume.probes.len()
@@ -177,7 +212,7 @@ pub fn pack_and_write_pvs(
 }
 
 /// Write geometry, texture names, BSP nodes, BSP leaves, portals, BVH,
-/// alpha lights, and SH volume sections to a .prl file (default mode).
+/// alpha lights, light influence, and SH volume sections to a .prl file (default mode).
 ///
 /// Clears pvs_offset and pvs_size in leaf records since no PVS section is written.
 #[allow(clippy::too_many_arguments)]
@@ -189,6 +224,7 @@ pub fn pack_and_write_portals(
     portals: &PortalsSection,
     bvh: &BvhSection,
     alpha_lights: &AlphaLightsSection,
+    light_influence: &LightInfluenceSection,
     sh_volume: &ShVolumeSection,
 ) -> anyhow::Result<()> {
     // Zero out PVS references in leaves since no LeafPvs section is written.
@@ -214,6 +250,7 @@ pub fn pack_and_write_portals(
     let portals_bytes = portals.to_bytes();
     let bvh_bytes = bvh.to_bytes();
     let alpha_lights_bytes = alpha_lights.to_bytes();
+    let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
 
     let sections = vec![
@@ -253,6 +290,11 @@ pub fn pack_and_write_portals(
             data: alpha_lights_bytes.clone(),
         },
         SectionBlob {
+            section_id: SectionId::LightInfluence as u32,
+            version: 1,
+            data: light_influence_bytes.clone(),
+        },
+        SectionBlob {
             section_id: SectionId::ShVolume as u32,
             version: 1,
             data: sh_volume_bytes.clone(),
@@ -275,6 +317,11 @@ pub fn pack_and_write_portals(
         "[Compiler]   AlphaLights: {} bytes ({} lights)",
         alpha_lights_bytes.len(),
         alpha_lights.lights.len()
+    );
+    log::info!(
+        "[Compiler]   LightInfluence: {} bytes ({} records)",
+        light_influence_bytes.len(),
+        light_influence.records.len()
     );
     log::info!(
         "[Compiler]   ShVolume: {} bytes ({} probes)",
@@ -469,6 +516,10 @@ mod tests {
         AlphaLightsSection::default()
     }
 
+    fn empty_light_influence() -> LightInfluenceSection {
+        LightInfluenceSection::default()
+    }
+
     fn empty_sh_volume() -> ShVolumeSection {
         ShVolumeSection {
             grid_origin: [0.0, 0.0, 0.0],
@@ -502,6 +553,7 @@ mod tests {
             &leaf_pvs,
             &bvh,
             &alpha_lights,
+            &empty_light_influence(),
             &empty_sh_volume(),
         )
         .expect("pack_and_write_pvs should succeed");
@@ -511,7 +563,7 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 8);
+        assert_eq!(meta.header.section_count, 9);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -520,6 +572,7 @@ mod tests {
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
+        assert!(meta.find_section(SectionId::LightInfluence as u32).is_some());
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
@@ -555,6 +608,7 @@ mod tests {
             &portals,
             &bvh,
             &alpha_lights,
+            &empty_light_influence(),
             &empty_sh_volume(),
         )
         .expect("pack_and_write_portals should succeed");
@@ -564,7 +618,7 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 8);
+        assert_eq!(meta.header.section_count, 9);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -573,6 +627,7 @@ mod tests {
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
+        assert!(meta.find_section(SectionId::LightInfluence as u32).is_some());
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
 
@@ -597,6 +652,7 @@ mod tests {
             &leaf_pvs,
             &bvh,
             &alpha_lights,
+            &empty_light_influence(),
             &empty_sh_volume(),
         );
         assert!(result.is_err());
@@ -642,6 +698,7 @@ mod tests {
         let output = dir.join("test_pipeline_pvs.prl");
 
         let alpha_lights = encode_alpha_lights(&map_data.lights);
+        let light_influence = encode_light_influence(&map_data.lights);
         pack_and_write_pvs(
             &output,
             &geo_result,
@@ -650,6 +707,7 @@ mod tests {
             &vis_result.leaf_pvs_section,
             &bvh_section,
             &alpha_lights,
+            &light_influence,
             &sh_volume,
         )
         .expect("full pipeline pvs pack should succeed");
@@ -658,12 +716,13 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 8);
+        assert_eq!(meta.header.section_count, 9);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
+        assert!(meta.find_section(SectionId::LightInfluence as u32).is_some());
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
@@ -707,6 +766,7 @@ mod tests {
         let output = dir.join("test_pipeline_portals.prl");
 
         let alpha_lights = encode_alpha_lights(&map_data.lights);
+        let light_influence = encode_light_influence(&map_data.lights);
         pack_and_write_portals(
             &output,
             &geo_result,
@@ -715,6 +775,7 @@ mod tests {
             &portals_section,
             &bvh_section,
             &alpha_lights,
+            &light_influence,
             &sh_volume,
         )
         .expect("full pipeline portal pack should succeed");
@@ -723,12 +784,13 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 8);
+        assert_eq!(meta.header.section_count, 9);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
+        assert!(meta.find_section(SectionId::LightInfluence as u32).is_some());
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
@@ -796,5 +858,68 @@ mod tests {
             "no .map files found in {}",
             maps_dir.display()
         );
+    }
+
+    #[test]
+    fn encode_light_influence_derives_correct_bounds() {
+        use crate::map_data::{FalloffModel, LightType, MapLight};
+        use glam::DVec3;
+
+        let lights = vec![
+            MapLight {
+                origin: DVec3::new(10.0, 20.0, 30.0),
+                light_type: LightType::Point,
+                intensity: 1.0,
+                color: [1.0, 1.0, 1.0],
+                falloff_model: FalloffModel::InverseSquared,
+                falloff_range: 50.0,
+                cone_angle_inner: None,
+                cone_angle_outer: None,
+                cone_direction: None,
+                animation: None,
+                cast_shadows: false,
+            },
+            MapLight {
+                origin: DVec3::new(-4.0, 1.0, 0.5),
+                light_type: LightType::Spot,
+                intensity: 1.5,
+                color: [1.0, 0.8, 0.6],
+                falloff_model: FalloffModel::Linear,
+                falloff_range: 25.0,
+                cone_angle_inner: Some(0.5),
+                cone_angle_outer: Some(0.8),
+                cone_direction: Some([0.0, -1.0, 0.0]),
+                animation: None,
+                cast_shadows: true,
+            },
+            MapLight {
+                origin: DVec3::new(0.0, 100.0, 0.0),
+                light_type: LightType::Directional,
+                intensity: 0.9,
+                color: [0.9, 0.95, 1.0],
+                falloff_model: FalloffModel::Linear,
+                falloff_range: 0.0,
+                cone_angle_inner: None,
+                cone_angle_outer: None,
+                cone_direction: Some([0.0, -1.0, 0.0]),
+                animation: None,
+                cast_shadows: false,
+            },
+        ];
+
+        let section = encode_light_influence(&lights);
+        assert_eq!(section.records.len(), 3);
+
+        // Point: center = position (f64→f32), radius = falloff_range.
+        assert_eq!(section.records[0].center, [10.0, 20.0, 30.0]);
+        assert_eq!(section.records[0].radius, 50.0);
+
+        // Spot: same derivation as Point.
+        assert_eq!(section.records[1].center, [-4.0, 1.0, 0.5]);
+        assert_eq!(section.records[1].radius, 25.0);
+
+        // Directional: center zeroed, radius = f32::MAX sentinel.
+        assert_eq!(section.records[2].center, [0.0, 0.0, 0.0]);
+        assert_eq!(section.records[2].radius, f32::MAX);
     }
 }

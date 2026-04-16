@@ -6,6 +6,7 @@ pub mod bsp;
 pub mod bvh;
 pub mod geometry;
 pub mod leaf_pvs;
+pub mod light_influence;
 pub mod octahedral;
 pub mod portals;
 pub mod sh_volume;
@@ -89,6 +90,11 @@ pub enum SectionId {
     /// SH irradiance volume: regular-grid L2 probes plus optional per-animated
     /// light monochrome layers. See `sh_volume::ShVolumeSection`.
     ShVolume = 20,
+
+    /// Per-light influence volumes (compile-time sphere bounds) for spatial
+    /// culling in the fragment shader and CPU-side shadow-slot allocation.
+    /// See `light_influence::LightInfluenceSection`.
+    LightInfluence = 21,
 }
 
 impl SectionId {
@@ -103,6 +109,7 @@ impl SectionId {
             18 => Some(Self::AlphaLights),
             19 => Some(Self::Bvh),
             20 => Some(Self::ShVolume),
+            21 => Some(Self::LightInfluence),
             _ => None,
         }
     }

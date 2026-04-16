@@ -10,6 +10,7 @@ use winit::window::Window;
 
 use crate::compute_cull::ComputeCullPipeline;
 use crate::geometry::BvhTree;
+use crate::lighting::influence::{self, LightInfluence};
 use crate::lighting::{GPU_LIGHT_SIZE, pack_lights};
 use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
@@ -183,6 +184,9 @@ pub struct LevelGeometry<'a> {
     /// Direct lights parsed from the AlphaLights PRL section. May be empty
     /// on maps compiled before the Lighting Foundation milestone.
     pub lights: &'a [MapLight],
+    /// Per-light influence volumes from the LightInfluence PRL section.
+    /// Same length as `lights` when present; empty if absent.
+    pub light_influences: &'a [LightInfluence],
 }
 
 // --- Renderer ---
@@ -213,6 +217,15 @@ pub struct Renderer {
     /// (0.0–1.0 slider); default is `DEFAULT_AMBIENT_FLOOR`. A scalar
     /// brightness only — no color.
     ambient_floor: f32,
+
+    /// Per-light influence volumes for CPU-side frustum test. Stored at
+    /// load time; consumed once per frame by `visible_lights` to determine
+    /// which shadow-casting lights need active shadow-map slots.
+    light_influences: Vec<LightInfluence>,
+    /// Indices of lights whose influence volumes intersect the camera
+    /// frustum this frame. Populated by `update_visible_lights` and
+    /// consumed by sub-plan 5 (shadow-slot allocation).
+    visible_light_indices: Vec<u32>,
 
     depth_view: wgpu::TextureView,
 
@@ -441,27 +454,40 @@ impl Renderer {
                 ],
             });
 
-        // Bind group layout for group 2: direct lighting storage buffer.
+        // Bind group layout for group 2: direct lighting storage buffers.
+        // Binding 0 = GpuLight array, binding 1 = influence volumes.
         // Uploaded once at level load; animation and gameplay lights are
         // follow-up work (Milestone 6+).
         let lighting_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Lighting Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
             });
 
         // Pack the map's lights into GPU bytes and create the storage
         // buffer. wgpu rejects a zero-size storage buffer, so we pad to a
-        // single dummy light record when there are no lights at all; the
+        // single dummy record when there are no lights at all; the
         // shader's `light_count` loop bound stays at 0 so the dummy is
         // never read.
         let lights_data = match geometry {
@@ -473,13 +499,33 @@ impl Renderer {
             contents: &lights_data,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
+
+        // Influence volume buffer (binding 1). Same dummy strategy as lights.
+        let influence_data = match geometry {
+            Some(g) if !g.light_influences.is_empty() => {
+                influence::pack_influence(g.light_influences)
+            }
+            _ => vec![0u8; 16], // one dummy vec4<f32>
+        };
+        let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Light Influence Storage Buffer"),
+            contents: &influence_data,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         let lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Lighting Bind Group"),
             layout: &lighting_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: lights_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: lights_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: influence_buffer.as_entire_binding(),
+                },
+            ],
         });
 
         // Create shared sampler: nearest filtering for retro pixel aesthetic, repeat.
@@ -738,6 +784,10 @@ impl Renderer {
             log::info!("[Renderer] Pipeline ready (no geometry loaded)");
         }
 
+        let light_influences: Vec<LightInfluence> = geometry
+            .map(|g| g.light_influences.to_vec())
+            .unwrap_or_default();
+
         Ok(Self {
             device,
             queue,
@@ -753,6 +803,8 @@ impl Renderer {
             lighting_bind_group,
             light_count,
             ambient_floor,
+            light_influences,
+            visible_light_indices: Vec::new(),
             depth_view,
             gpu_textures,
             bvh_leaves,
@@ -843,6 +895,20 @@ impl Renderer {
     /// chords; will move to the settings menu when one exists.
     pub fn set_ambient_floor(&mut self, value: f32) {
         self.ambient_floor = value.clamp(0.0, 1.0);
+    }
+
+    /// Run the per-frame sphere-vs-frustum test on all light influence
+    /// volumes. Stashes the result for sub-plan 5 (shadow-slot allocation).
+    /// Call once per frame, passing the same `Frustum` already produced by
+    /// `extract_frustum_planes` for portal traversal.
+    pub fn update_visible_lights(&mut self, frustum: &crate::visibility::Frustum) {
+        self.visible_light_indices =
+            influence::visible_lights(&self.light_influences, frustum);
+        log::debug!(
+            "[Renderer] visible_lights: {}/{}",
+            self.visible_light_indices.len(),
+            self.light_influences.len(),
+        );
     }
 
     pub fn is_ready(&self) -> bool {

@@ -14,7 +14,7 @@ struct Uniforms {
     _pad_c: u32,
 };
 
-// Five vec4<f32> slots — see postretro/src/lighting.rs for field semantics.
+// Five vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
 struct GpuLight {
     position_and_type: vec4<f32>,
     color_and_falloff_model: vec4<f32>,
@@ -29,6 +29,10 @@ struct GpuLight {
 @group(1) @binding(1) var base_sampler: sampler;
 
 @group(2) @binding(0) var<storage, read> lights: array<GpuLight>;
+// Per-light influence volume: xyz = sphere center, w = radius.
+// Radius > 1.0e30 signals "always active" (directional / infinite bound).
+// Compiler writes f32::MAX (~3.4e38) for directional lights.
+@group(2) @binding(1) var<storage, read> light_influence: array<vec4<f32>>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -142,6 +146,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var total_light = vec3<f32>(uniforms.ambient_floor);
 
     for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u) {
+        // Influence-volume early-out: skip lights whose sphere bound does
+        // not contain this fragment. Pure optimization — no pixel change.
+        let influence = light_influence[i];
+        let inf_radius = influence.w;
+        if inf_radius <= 1.0e30 {
+            let d = in.world_position - influence.xyz;
+            if dot(d, d) > inf_radius * inf_radius {
+                continue;
+            }
+        }
+
         let light = lights[i];
         let light_type = bitcast<u32>(light.position_and_type.w);
         let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);

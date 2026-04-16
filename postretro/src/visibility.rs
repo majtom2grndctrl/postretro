@@ -281,6 +281,8 @@ struct LeafVisResult {
     total_faces: u32,
     pvs_reach: u32,
     path: LeafVisPath,
+    /// The camera frustum extracted for this frame.
+    frustum: Frustum,
 }
 
 /// Collect all non-solid non-empty leaves that pass AABB frustum culling.
@@ -306,6 +308,7 @@ fn determine_visible_leaf_set(
     capture_portal_walk: bool,
 ) -> LeafVisResult {
     let total_faces = world.face_meta.len() as u32;
+    let frustum = extract_frustum_planes(view_proj);
 
     if world.leaves.is_empty() {
         return LeafVisResult {
@@ -314,11 +317,11 @@ fn determine_visible_leaf_set(
             total_faces,
             pvs_reach: total_faces,
             path: LeafVisPath::EmptyWorld,
+            frustum,
         };
     }
 
     let camera_leaf_idx = world.find_leaf(camera_position);
-    let frustum = extract_frustum_planes(view_proj);
 
     // Solid leaf fallback.
     let in_solid = world
@@ -331,12 +334,14 @@ fn determine_visible_leaf_set(
             "[Visibility] path=SolidLeafFallback camera in solid leaf {}",
             camera_leaf_idx,
         );
+        let visible = visible_leaves_frustum_all(&world.leaves, &frustum);
         return LeafVisResult {
-            leaves: Some(visible_leaves_frustum_all(&world.leaves, &frustum)),
+            leaves: Some(visible),
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
             pvs_reach: total_faces,
             path: LeafVisPath::SolidLeaf,
+            frustum,
         };
     }
 
@@ -349,12 +354,14 @@ fn determine_visible_leaf_set(
         .is_some_and(|l| !l.is_solid && l.face_count == 0);
 
     if in_exterior {
+        let visible = visible_leaves_frustum_all(&world.leaves, &frustum);
         return LeafVisResult {
-            leaves: Some(visible_leaves_frustum_all(&world.leaves, &frustum)),
+            leaves: Some(visible),
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
             pvs_reach: total_faces,
             path: LeafVisPath::ExteriorCamera,
+            frustum,
         };
     }
 
@@ -391,16 +398,19 @@ fn determine_visible_leaf_set(
             total_faces,
             pvs_reach,
             path: LeafVisPath::Portal,
+            frustum,
         };
     }
 
     if !world.has_pvs {
+        let visible = visible_leaves_frustum_all(&world.leaves, &frustum);
         return LeafVisResult {
-            leaves: Some(visible_leaves_frustum_all(&world.leaves, &frustum)),
+            leaves: Some(visible),
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
             pvs_reach: total_faces,
             path: LeafVisPath::NoPvs,
+            frustum,
         };
     }
 
@@ -430,6 +440,7 @@ fn determine_visible_leaf_set(
         total_faces,
         pvs_reach,
         path: LeafVisPath::Pvs,
+        frustum,
     }
 }
 
@@ -515,7 +526,7 @@ pub fn determine_visible_cells(
     world: &LevelWorld,
     capture_portal_walk: bool,
     scratch: &mut Vec<u32>,
-) -> (VisibleCells, VisibilityStats) {
+) -> (VisibleCells, VisibilityStats, Frustum) {
     let result = determine_visible_leaf_set(camera_position, view_proj, world, capture_portal_walk);
 
     let visible_leaves = match result.leaves {
@@ -527,7 +538,7 @@ pub fn determine_visible_cells(
                 drawn_faces: result.total_faces,
                 path: VisibilityPath::EmptyWorldFallback,
             };
-            return (VisibleCells::DrawAll, stats);
+            return (VisibleCells::DrawAll, stats, result.frustum);
         }
         Some(ref leaves) => leaves,
     };
@@ -538,7 +549,7 @@ pub fn determine_visible_cells(
     }
 
     let stats = build_visibility_stats(&result, visible_leaves, world);
-    (VisibleCells::Culled(std::mem::take(scratch)), stats)
+    (VisibleCells::Culled(std::mem::take(scratch)), stats, result.frustum)
 }
 
 // --- Tests ---
@@ -840,6 +851,7 @@ mod tests {
             texture_names: vec![],
             bvh: empty_bvh(),
             lights: vec![],
+            light_influences: vec![],
         }
     }
 
@@ -848,7 +860,7 @@ mod tests {
         let world = two_leaf_prl_world();
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
-        let (result, stats) =
+        let (result, stats, _frustum) =
             determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         match result {
             VisibleCells::Culled(cells) => {
@@ -876,10 +888,11 @@ mod tests {
             texture_names: vec![],
             bvh: empty_bvh(),
             lights: vec![],
+            light_influences: vec![],
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();
-        let (result, stats) = determine_visible_cells(Vec3::ZERO, vp, &world, false, &mut scratch);
+        let (result, stats, _frustum) = determine_visible_cells(Vec3::ZERO, vp, &world, false, &mut scratch);
         assert!(matches!(result, VisibleCells::DrawAll));
         assert_eq!(stats.total_faces, 0);
         assert!(matches!(stats.path, VisibilityPath::EmptyWorldFallback));
@@ -895,7 +908,7 @@ mod tests {
         let vp = proj * view;
 
         let mut scratch = Vec::new();
-        let (result, stats) = determine_visible_cells(position, vp, &world, false, &mut scratch);
+        let (result, stats, _frustum) = determine_visible_cells(position, vp, &world, false, &mut scratch);
         match result {
             VisibleCells::Culled(cells) => {
                 assert_eq!(cells.len(), 1, "should cull leaf behind camera");
@@ -913,7 +926,7 @@ mod tests {
         world.leaves[0].is_solid = true;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
-        let (result, stats) =
+        let (result, stats, _frustum) =
             determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         // Solid fallback draws all non-solid non-zero leaves.
         match result {
@@ -933,7 +946,7 @@ mod tests {
         world.leaves[0].face_count = 0;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
-        let (result, stats) =
+        let (result, stats, _frustum) =
             determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         match result {
             VisibleCells::Culled(cells) => {

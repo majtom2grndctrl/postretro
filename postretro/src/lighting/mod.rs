@@ -4,6 +4,8 @@
 // See: context/lib/rendering_pipeline.md §4
 //      context/plans/in-progress/lighting-foundation/3-direct-lighting.md
 
+pub mod influence;
+
 use crate::prl::{FalloffModel, LightType, MapLight};
 
 /// On-disk size of a single `GpuLight` record in the storage buffer.

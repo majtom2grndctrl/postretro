@@ -272,6 +272,7 @@ impl ApplicationHandler for App {
             indices: &world.indices,
             bvh: &world.bvh,
             lights: &world.lights,
+            light_influences: &world.light_influences,
         });
 
         let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
@@ -441,7 +442,7 @@ impl ApplicationHandler for App {
                 // GPU-driven path: portal DFS produces visible cell IDs; the
                 // BVH traversal compute shader consumes them via the
                 // visible-cell bitmask and writes the indirect draw buffer.
-                let (visible_cells, stats) = match self.level.as_ref() {
+                let (visible_cells, stats, frustum) = match self.level.as_ref() {
                     Some(world) => visibility::determine_visible_cells(
                         interp.position,
                         view_proj,
@@ -458,11 +459,13 @@ impl ApplicationHandler for App {
                             drawn_faces: 0,
                             path: VisibilityPath::EmptyWorldFallback,
                         },
+                        visibility::extract_frustum_planes(view_proj),
                     ),
                 };
 
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.update_per_frame_uniforms(view_proj, interp.position);
+                    renderer.update_visible_lights(&frustum);
 
                     if renderer.is_ready() {
                         if let Err(err) = renderer.render_frame_indirect(&visible_cells, view_proj)

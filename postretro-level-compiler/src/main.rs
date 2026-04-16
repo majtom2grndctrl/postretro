@@ -101,6 +101,7 @@ fn main() -> anyhow::Result<()> {
     log::info!("[Compiler] SH volume bake complete.");
 
     let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
+    let light_influence_section = pack::encode_light_influence(&map_data.lights);
 
     if args.pvs {
         log::info!("[Compiler] Writing precomputed PVS mode (--pvs).");
@@ -112,6 +113,7 @@ fn main() -> anyhow::Result<()> {
             &vis_result.leaf_pvs_section,
             &bvh_section,
             &alpha_lights_section,
+            &light_influence_section,
             &sh_volume_section,
         )?;
     } else {
@@ -125,6 +127,7 @@ fn main() -> anyhow::Result<()> {
             &portals_section,
             &bvh_section,
             &alpha_lights_section,
+            &light_influence_section,
             &sh_volume_section,
         )?;
     }

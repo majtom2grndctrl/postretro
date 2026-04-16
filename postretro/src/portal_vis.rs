@@ -865,6 +865,7 @@ mod tests {
                 root_node_index: 0,
             },
             lights: vec![],
+            light_influences: vec![],
         }
     }
 
@@ -942,6 +943,7 @@ mod tests {
                 root_node_index: 0,
             },
             lights: vec![],
+            light_influences: vec![],
         };
 
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::NEG_Z);
@@ -1021,6 +1023,7 @@ mod tests {
                 root_node_index: 0,
             },
             lights: vec![],
+            light_influences: vec![],
         };
 
         // Camera in leaf A, looking straight along +X toward portal 0.
@@ -1342,6 +1345,7 @@ mod tests {
                 root_node_index: 0,
             },
             lights: vec![],
+            light_influences: vec![],
         };
 
         // Camera looking through the LEFT passage (Z=63, center of Z=62..64 gap).
@@ -1752,6 +1756,7 @@ mod tests {
                 root_node_index: 0,
             },
             lights: vec![],
+            light_influences: vec![],
         };
 
         let camera_pos = Vec3::new(1.0, 0.0, 0.0);
@@ -1918,6 +1923,7 @@ mod tests {
                 root_node_index: 0,
             },
             lights: vec![],
+            light_influences: vec![],
         };
 
         // Camera at origin looking +X. The camera frustum is wide enough that
@@ -2016,6 +2022,7 @@ mod tests {
                 root_node_index: 0,
             },
             lights: vec![],
+            light_influences: vec![],
         };
 
         // Camera pose from the captured blank-frame trace. The live trace

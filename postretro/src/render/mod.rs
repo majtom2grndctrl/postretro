@@ -1,6 +1,8 @@
 // Textured renderer: GPU init, texture upload, pipeline, and draw.
 // See: context/lib/rendering_pipeline.md
 
+pub mod shadow_pass;
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -11,22 +13,25 @@ use winit::window::Window;
 use crate::compute_cull::ComputeCullPipeline;
 use crate::geometry::BvhTree;
 use crate::lighting::influence::{self, LightInfluence};
-use crate::lighting::{GPU_LIGHT_SIZE, pack_lights};
+use crate::lighting::shadow;
+use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_shadows};
 use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 
+use shadow_pass::ShadowResources;
+
 // --- WGSL Shaders ---
 
-const SHADER_SOURCE: &str = include_str!("shaders/forward.wgsl");
+const SHADER_SOURCE: &str = include_str!("../shaders/forward.wgsl");
 
 // Wireframe overlay: culling-delta debug visualization. See shader header.
-const WIREFRAME_SHADER_SOURCE: &str = include_str!("shaders/wireframe.wgsl");
+const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 
 // --- Uniform buffer layout ---
 
 /// Per-frame uniform data: view-projection, camera world-space position,
-/// ambient floor, and active light count.
+/// ambient floor, light count, CSM cascade splits, and view matrix.
 ///
 /// Layout must match the WGSL `Uniforms` struct in `forward.wgsl` and
 /// `wireframe.wgsl` — both shaders bind the same buffer. std140 rules
@@ -35,18 +40,22 @@ const WIREFRAME_SHADER_SOURCE: &str = include_str!("shaders/wireframe.wgsl");
 /// starts a new slot and is padded out to a full vec4 slot for alignment.
 ///
 /// Offsets (bytes):
-///   0..64   view_proj      (mat4x4<f32>)
-///   64..76  camera_position (vec3<f32>)
-///   76..80  ambient_floor   (f32)
-///   80..84  light_count     (u32)
-///   84..96  _padding        (3 × u32)
-const UNIFORM_SIZE: usize = 96;
+///   0..64    view_proj        (mat4x4<f32>)
+///   64..76   camera_position  (vec3<f32>)
+///   76..80   ambient_floor    (f32)
+///   80..84   light_count      (u32)
+///   84..96   _padding         (3 × u32)
+///   96..112  csm_splits       (vec4<f32>)
+///   112..176 view_matrix      (mat4x4<f32>)
+const UNIFORM_SIZE: usize = 176;
 
 fn build_uniform_data(
     view_proj: &Mat4,
     camera_position: Vec3,
     ambient_floor: f32,
     light_count: u32,
+    csm_splits: [f32; 4],
+    view_matrix: &Mat4,
 ) -> [u8; UNIFORM_SIZE] {
     let mut bytes = [0u8; UNIFORM_SIZE];
     let cols = view_proj.to_cols_array();
@@ -60,6 +69,20 @@ fn build_uniform_data(
     bytes[76..80].copy_from_slice(&ambient_floor.to_ne_bytes());
     bytes[80..84].copy_from_slice(&light_count.to_ne_bytes());
     // bytes 84..96 are _padding — left as zero.
+
+    // CSM cascade splits at bytes 96..112.
+    for (i, &split) in csm_splits.iter().enumerate() {
+        let off = 96 + i * 4;
+        bytes[off..off + 4].copy_from_slice(&split.to_ne_bytes());
+    }
+
+    // View matrix at bytes 112..176.
+    let view_cols = view_matrix.to_cols_array();
+    for (i, val) in view_cols.iter().enumerate() {
+        let off = 112 + i * 4;
+        bytes[off..off + 4].copy_from_slice(&val.to_ne_bytes());
+    }
+
     bytes
 }
 
@@ -218,14 +241,26 @@ pub struct Renderer {
     /// brightness only — no color.
     ambient_floor: f32,
 
-    /// Per-light influence volumes for CPU-side frustum test. Stored at
-    /// load time; consumed once per frame by `visible_lights` to determine
-    /// which shadow-casting lights need active shadow-map slots.
+    /// Per-light influence volumes for CPU-side frustum test.
     light_influences: Vec<LightInfluence>,
     /// Indices of lights whose influence volumes intersect the camera
     /// frustum this frame. Populated by `update_visible_lights` and
-    /// consumed by sub-plan 5 (shadow-slot allocation).
+    /// consumed by shadow-slot allocation.
     visible_light_indices: Vec<u32>,
+    /// Map lights stored at load time for shadow pass rendering.
+    map_lights: Vec<MapLight>,
+    /// Lighting bind group layout — needed to rebuild the bind group when
+    /// shadow info changes the lights buffer.
+    #[allow(dead_code)] // Retained for future bind group rebuilds.
+    lighting_bind_group_layout: wgpu::BindGroupLayout,
+    /// Direct lights storage buffer (rewritten per-frame with shadow info).
+    lights_buffer: wgpu::Buffer,
+    /// Influence volume storage buffer (bound at load, immutable).
+    #[allow(dead_code)] // Retained for future bind group rebuilds.
+    influence_buffer: wgpu::Buffer,
+    /// Shadow map GPU resources. Always present — allocated at level load
+    /// even for maps with no shadow-casting lights (dummy textures).
+    shadow_resources: ShadowResources,
 
     depth_view: wgpu::TextureView,
 
@@ -262,6 +297,13 @@ pub struct Renderer {
     vsync_enabled: bool,
 
     has_geometry: bool,
+
+    /// Cached CSM cascade split distances for the current frame. Written
+    /// during shadow assignment in `render_frame_indirect` and read by
+    /// `update_per_frame_uniforms` so the forward shader can select
+    /// the correct cascade. Public so `main.rs` can pass them back
+    /// into `update_per_frame_uniforms`.
+    pub csm_splits_cache: [f32; 4],
 }
 
 impl Renderer {
@@ -397,7 +439,22 @@ impl Renderer {
         );
         let light_count = geometry.map(|g| g.lights.len() as u32).unwrap_or(0);
         let ambient_floor = DEFAULT_AMBIENT_FLOOR;
-        let uniform_data = build_uniform_data(&view_proj, Vec3::ZERO, ambient_floor, light_count);
+        let initial_csm_splits = {
+            let s = shadow::compute_cascade_splits(
+                crate::camera::NEAR,
+                crate::camera::FAR,
+                0.5,
+            );
+            [s[0], s[1], s[2], 0.0]
+        };
+        let uniform_data = build_uniform_data(
+            &view_proj,
+            Vec3::ZERO,
+            ambient_floor,
+            light_count,
+            initial_csm_splits,
+            &Mat4::IDENTITY,
+        );
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
@@ -454,14 +511,21 @@ impl Renderer {
                 ],
             });
 
-        // Bind group layout for group 2: direct lighting storage buffers.
-        // Binding 0 = GpuLight array, binding 1 = influence volumes.
-        // Uploaded once at level load; animation and gameplay lights are
-        // follow-up work (Milestone 6+).
+        // Create shadow map resources (textures, pipelines, samplers).
+        let shadow_resources = ShadowResources::new(
+            &device,
+            crate::geometry::WorldVertex::STRIDE as u64,
+        );
+
+        // Bind group layout for group 2: lighting + shadow map bindings.
+        // 0 = lights, 1 = influence, 2 = shadow sampler, 3 = CSM depth array,
+        // 4 = CSM VP storage, 5 = point shadow array, 6 = spot shadow array,
+        // 7 = spot VP storage.
         let lighting_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Lighting Bind Group Layout"),
                 entries: &[
+                    // binding 0: GpuLight array
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -472,8 +536,71 @@ impl Renderer {
                         },
                         count: None,
                     },
+                    // binding 1: influence volumes
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 2: shadow comparison sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                    // binding 3: CSM depth 2D array
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // binding 4: CSM view-proj storage
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 5: point shadow 2D array
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // binding 6: spot shadow 2D array
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // binding 7: spot view-proj storage
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -524,6 +651,30 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: influence_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&shadow_resources.shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadow_resources.csm_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: shadow_resources.csm_vp_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&shadow_resources.point_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&shadow_resources.spot_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: shadow_resources.spot_vp_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -788,6 +939,10 @@ impl Renderer {
             .map(|g| g.light_influences.to_vec())
             .unwrap_or_default();
 
+        let map_lights: Vec<MapLight> = geometry
+            .map(|g| g.lights.to_vec())
+            .unwrap_or_default();
+
         Ok(Self {
             device,
             queue,
@@ -805,6 +960,11 @@ impl Renderer {
             ambient_floor,
             light_influences,
             visible_light_indices: Vec::new(),
+            map_lights,
+            lighting_bind_group_layout,
+            lights_buffer,
+            influence_buffer,
+            shadow_resources,
             depth_view,
             gpu_textures,
             bvh_leaves,
@@ -816,6 +976,14 @@ impl Renderer {
             wireframe_enabled: false,
             vsync_enabled: true,
             has_geometry,
+            csm_splits_cache: {
+                let s = shadow::compute_cascade_splits(
+                    crate::camera::NEAR,
+                    crate::camera::FAR,
+                    0.5,
+                );
+                [s[0], s[1], s[2], 0.0]
+            },
         })
     }
 
@@ -866,17 +1034,24 @@ impl Renderer {
         self.is_surface_configured = true;
     }
 
-    /// Upload the per-frame uniform buffer (view-projection matrix, camera
-    /// world position, ambient floor, and light count). The ambient floor
-    /// and light count are pulled from renderer state — they only change
-    /// when the player adjusts the setting or a new level loads, but
-    /// including them in every write keeps the upload path simple.
-    pub fn update_per_frame_uniforms(&self, view_proj: Mat4, camera_position: Vec3) {
+    /// Upload the per-frame uniform buffer (view-projection, camera position,
+    /// ambient floor, light count, CSM splits, and view matrix). The view
+    /// matrix and CSM splits are needed by the fragment shader for shadow
+    /// cascade selection.
+    pub fn update_per_frame_uniforms(
+        &self,
+        view_proj: Mat4,
+        camera_position: Vec3,
+        csm_splits: [f32; 4],
+        view_matrix: &Mat4,
+    ) {
         let data = build_uniform_data(
             &view_proj,
             camera_position,
             self.ambient_floor,
             self.light_count,
+            csm_splits,
+            view_matrix,
         );
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
     }
@@ -968,6 +1143,43 @@ impl Renderer {
         // in the same command submission — no readback or GPU sync needed.
         if let Some(cull) = &mut self.compute_cull {
             cull.dispatch(&self.device, &self.queue, &mut encoder, visible, &view_proj);
+        }
+
+        // Shadow map passes: assign slots and render depth-only passes for
+        // each active shadow-casting light. Runs after BVH cull and before
+        // the opaque forward pass. See sub-plan 5 §Shadow pass structure.
+        if self.has_geometry && self.index_count > 0 && !self.map_lights.is_empty() {
+            let assignment = self.shadow_resources.slot_pool.assign(
+                &self.map_lights,
+                &self.visible_light_indices,
+                // Camera position: extract from view-proj inverse. This is an
+                // approximation — precise enough for distance-based slot sorting.
+                view_proj.inverse().transform_point3(Vec3::ZERO),
+            );
+
+            // Re-upload lights buffer with shadow info for this frame.
+            let lights_data = pack_lights_with_shadows(&self.map_lights, &assignment.per_light_info);
+            self.queue.write_buffer(&self.lights_buffer, 0, &lights_data);
+
+            let camera_near = crate::camera::NEAR;
+            let camera_far = crate::camera::FAR;
+
+            // Compute CSM splits for the uniform buffer.
+            let csm_splits_arr = shadow::compute_cascade_splits(camera_near, camera_far, 0.5);
+            self.csm_splits_cache = [csm_splits_arr[0], csm_splits_arr[1], csm_splits_arr[2], 0.0];
+
+            self.shadow_resources.render_shadow_passes(
+                &mut encoder,
+                &self.queue,
+                &assignment,
+                &self.map_lights,
+                &self.vertex_buffer,
+                &self.index_buffer,
+                self.index_count,
+                view_proj,
+                camera_near,
+                camera_far,
+            );
         }
 
         {
@@ -1225,7 +1437,7 @@ mod tests {
     #[test]
     fn uniform_data_has_correct_size() {
         let vp = Mat4::IDENTITY;
-        let data = build_uniform_data(&vp, Vec3::ZERO, 0.05, 0);
+        let data = build_uniform_data(&vp, Vec3::ZERO, 0.05, 0, [0.0; 4], &Mat4::IDENTITY);
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
 
@@ -1330,7 +1542,7 @@ mod tests {
         let camera = Vec3::new(10.0, 20.0, 30.0);
         let ambient_floor = 0.125_f32;
         let light_count = 7_u32;
-        let data = build_uniform_data(&vp, camera, ambient_floor, light_count);
+        let data = build_uniform_data(&vp, camera, ambient_floor, light_count, [0.0; 4], &Mat4::IDENTITY);
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
         let mut floats = Vec::new();

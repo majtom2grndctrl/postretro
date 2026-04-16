@@ -464,7 +464,13 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.update_per_frame_uniforms(view_proj, interp.position);
+                    let view_matrix = interp.view_matrix(self.camera.yaw, self.camera.pitch);
+                    renderer.update_per_frame_uniforms(
+                        view_proj,
+                        interp.position,
+                        renderer.csm_splits_cache,
+                        &view_matrix,
+                    );
                     renderer.update_visible_lights(&frustum);
 
                     if renderer.is_ready() {

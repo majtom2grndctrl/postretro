@@ -5,6 +5,7 @@
 //      context/plans/in-progress/lighting-foundation/3-direct-lighting.md
 
 pub mod influence;
+pub mod shadow;
 
 use crate::prl::{FalloffModel, LightType, MapLight};
 
@@ -88,9 +89,25 @@ pub fn pack_light(light: &MapLight) -> [u8; GPU_LIGHT_SIZE] {
     write_f32(&mut bytes, 52, light.cone_angle_outer);
     // bytes 56..64 stay zero — reserved pad.
 
-    // slot 4: shadow_info — reserved for sub-plan 5 (shadow maps). Zero.
-    // bytes 64..80 stay zero.
+    // slot 4: shadow_info — written by shadow::write_shadow_info when
+    // shadow assignment is active; stays zero for unshadowed lights.
+    // bytes 64..80 stay zero here; caller patches via write_shadow_info.
 
+    bytes
+}
+
+/// Pack the light list with per-light shadow info. `shadow_info[i]` is
+/// the 4-u32 shadow assignment for light `i` (from `ShadowAssignment`).
+/// Lights beyond `shadow_info.len()` get zeroed shadow slots.
+pub fn pack_lights_with_shadows(lights: &[MapLight], shadow_info: &[[u32; 4]]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(lights.len() * GPU_LIGHT_SIZE);
+    for (i, light) in lights.iter().enumerate() {
+        let mut record = pack_light(light);
+        if let Some(info) = shadow_info.get(i) {
+            shadow::write_shadow_info(&mut record, *info);
+        }
+        bytes.extend_from_slice(&record);
+    }
     bytes
 }
 

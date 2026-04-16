@@ -35,14 +35,20 @@ impl InterpolableState {
     /// (not the tick-state) so mouse motion is never lost on zero-tick frames.
     /// We recompute the matrix from scratch rather than interpolating matrices
     /// (which doesn't produce correct results).
-    pub fn view_projection(&self, aspect: f32, yaw: f32, pitch: f32) -> Mat4 {
+    /// View matrix only — used by shadow cascade selection (the forward
+    /// shader needs view-space depth to pick the right CSM cascade).
+    pub fn view_matrix(&self, yaw: f32, pitch: f32) -> Mat4 {
         let look_dir = Vec3::new(
             -yaw.sin() * pitch.cos(),
             pitch.sin(),
             -yaw.cos() * pitch.cos(),
         );
         let target = self.position + look_dir;
-        let view = Mat4::look_at_rh(self.position, target, Vec3::Y);
+        Mat4::look_at_rh(self.position, target, Vec3::Y)
+    }
+
+    pub fn view_projection(&self, aspect: f32, yaw: f32, pitch: f32) -> Mat4 {
+        let view = self.view_matrix(yaw, pitch);
 
         // Clamp aspect to avoid degenerate projection (near-zero aspect produces
         // vfov near PI, which makes tan(vfov/2) explode).

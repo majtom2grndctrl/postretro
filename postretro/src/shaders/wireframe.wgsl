@@ -18,6 +18,8 @@ struct Uniforms {
     _pad_a: u32,
     _pad_b: u32,
     _pad_c: u32,
+    csm_splits: vec4<f32>,
+    view_matrix: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;

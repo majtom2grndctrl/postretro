@@ -109,6 +109,7 @@ Step 2's inside-set tracking means leaf solidity is known the moment the leaf is
 | AlphaLights | 18 | Always (interim flat per-light record array; 67 bytes/record; replaced by the entity system in Milestone 6+) |
 | Bvh | 19 | Always (global BVH: flat node + leaf arrays, 40 bytes/entry; see BVH Foundation plan) |
 | ShVolume | 20 | Milestone 5+ (SH L2 irradiance volume: probe grid header + packed probe records; see Lighting Foundation plan) |
+| LightInfluence | 21 | Milestone 5+ (per-light sphere bounds for spatial culling: 16-byte header + 16 bytes/record; see Lighting Foundation sub-plan 4) |
 
 ### Runtime visibility
 

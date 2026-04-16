@@ -70,7 +70,7 @@ Loader parses PRL via the `postretro-level-format` crate. The heavy work happene
 
 Lighting has two components: **dynamic direct illumination** (flat per-fragment light loop with shadow maps) and **baked indirect illumination** (SH irradiance volume sampled per fragment). Both are evaluated in the world shader during the opaque geometry pass — no deferred stages, no lightmap atlas.
 
-**Direct illumination.** Dynamic lights (point, spot, directional) are iterated per fragment each frame — the fragment shader loops over all active lights, accumulates contributions from lights whose volume reaches that fragment, and samples shadow maps during accumulation. Shadow-casting lights write to shadow maps (cascaded shadow maps for directional, cube shadow maps for point and spot) before the main pass. Light sources originate from FGD entities (`light`, `light_spot`, `light_sun`) and from gameplay effects (muzzle flashes, explosions). Clustered forward+ binning (screen-space tile × depth-slice grid) is a future optimization deferred until light counts demand it.
+**Direct illumination.** Target: up to **500 authored lights per level**. Dynamic lights (point, spot, directional) are iterated per fragment each frame — the fragment shader loops over all active lights, skips lights whose influence volume does not reach the fragment (compile-time sphere bound, squared-distance early-out), and samples shadow maps for contributing lights. Shadow-casting lights draw from a fixed slot pool (not one texture per light); a CPU sphere-vs-frustum test each frame determines which shadow-casters are visible and assigns slots by distance priority. Light sources originate from FGD entities (`light`, `light_spot`, `light_sun`) and from gameplay effects (muzzle flashes, explosions). Clustered forward+ binning (screen-space tile × depth-slice grid) is a future optimization deferred until profiling shows the flat loop + influence-volume combination bottlenecks.
 
 **Indirect illumination.** prl-build bakes a regular 3D grid of SH L2 probes over the level's empty space, evaluating incoming radiance at each probe by raycasting against static geometry with canonical lights as sources. The runtime samples the probe grid via trilinear interpolation in the fragment shader. Missing probe section falls back to the ambient floor.
 
@@ -131,7 +131,7 @@ Flat per-fragment lighting pipeline. Each frame runs a small set of compute prep
 
 1. **Portal traversal** (CPU) — §2 flood-fill produces the visible cell set.
 2. **BVH traversal** (compute, *Milestone 4*) — reads the visible-cell bitmask (128 `u32` words) produced by portal DFS; walks the global BVH via flat skip-index DFS (no stack, no depth cap, single invocation); tests each leaf AABB against the frustum and the leaf's `cell_id` against the bitmask; writes or zeros the leaf's permanent indirect buffer slot.
-3. **Light list upload** (*Milestone 5*) — uploads the active dynamic light array to a GPU storage buffer. The fragment shader iterates all lights per fragment (flat loop). Clustered forward+ binning is a future optimization deferred until light counts demand it.
+3. **Light list upload** (*Milestone 5*) — uploads the active dynamic light array (up to 500 lights per level) and per-light influence volumes to GPU storage buffers. The fragment shader iterates all lights per fragment with an influence-volume early-out that skips lights whose sphere bound does not contain the fragment. Clustered forward+ binning is a future optimization deferred until profiling shows the flat loop bottlenecks.
 
 ### 7.2 World Geometry
 
@@ -183,7 +183,7 @@ Camera position and orientation produce a view matrix each frame. The view matri
 
 ## 10. Non-Goals
 
-- **Deferred rendering** — flat per-fragment forward lighting is sufficient for the target light count and aesthetic. Deferred adds complexity without benefit here.
+- **Deferred rendering** — flat per-fragment forward lighting with influence-volume early-out scales to the 500-light target. Indoor portal-isolated geometry keeps per-fragment light iteration cheap (most fragments touch 3–10 lights, not 500). Deferred adds complexity without benefit here.
 - **Baked lightmaps** — indirect lighting lives in the SH irradiance volume. No lightmap atlas, no per-face lightmap UVs, no lightmap bake stage.
 - **PBR materials** — albedo + normal map is the full material vocabulary. Metallic/roughness workflows are out of scope.
 - **Hardware ray tracing** — not available in baseline wgpu. Shadow maps cover dynamic shadowing; the SH volume covers indirect illumination.

@@ -84,6 +84,8 @@ Lights with `LightAnimation` bake into separate monochrome SH layers — one lay
 
 Bake-time raycast occlusion. Each map light contribution at a probe is modulated by a shadow ray from the light position (or direction, for `Directional`) to the probe. Visible → full contribution; occluded → zero. This is the full cost during the bake, but the bake happens once per compile.
 
+**Influence-volume early-out.** Before firing a shadow ray from light L to hit point P, check whether P falls within L's `falloff_range` sphere (already on `MapLight` from sub-plan 1). If not, the light contributes zero irradiance at P regardless of occlusion, so skip the shadow ray entirely. With the 500-light-per-level target this turns O(lights) BVH traversals per sample hit into O(nearby lights), avoiding billions of wasted rays on large maps.
+
 Runtime dynamic lights rely on shadow maps (sub-plan 3), not probe data.
 
 ---

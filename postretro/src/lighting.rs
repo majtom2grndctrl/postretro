@@ -14,7 +14,7 @@ use crate::prl::{FalloffModel, LightType, MapLight};
 ///   1: color_and_falloff_model  (xyz = linear RGB × intensity, w = bitcast<f32>(falloff_model))
 ///   2: direction_and_range      (xyz = aim direction, w = falloff_range meters)
 ///   3: cone_angles_and_pad      (x = inner angle rad, y = outer angle rad, zw = pad)
-///   4: shadow_info              (reserved for sub-plan 4 — zero-initialized)
+///   4: shadow_info              (reserved for sub-plan 5 — zero-initialized)
 ///
 /// Each vec4<f32> is 16 bytes; the struct has only vec4 members so its
 /// alignment is 16 and the array stride is an exact multiple of 16. The
@@ -86,7 +86,7 @@ pub fn pack_light(light: &MapLight) -> [u8; GPU_LIGHT_SIZE] {
     write_f32(&mut bytes, 52, light.cone_angle_outer);
     // bytes 56..64 stay zero — reserved pad.
 
-    // slot 4: shadow_info — reserved for sub-plan 4 (shadow maps). Zero.
+    // slot 4: shadow_info — reserved for sub-plan 5 (shadow maps). Zero.
     // bytes 64..80 stay zero.
 
     bytes

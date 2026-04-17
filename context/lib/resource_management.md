@@ -69,6 +69,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 | Behavior | Status |
 |----------|--------|
 | **Emissive flag** | Implemented — flag on enum variant. Rendering bypass planned. |
+| **Shininess** | Implemented (Milestone 5) — specular exponent on enum variant. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
@@ -83,13 +84,34 @@ Unknown prefix maps to a default material. Engine logs a warning at load time id
 
 ---
 
-## 4. Normal Maps
+## 4. Surface Map Convention
 
-> **Phase 5+. Not yet implemented.**
+Optional sibling textures provide per-texel surface properties. Suffixes are appended to the diffuse texture name (e.g., `wall.png` → `wall_s.png`).
 
-Optional per-texture normal maps for fine surface detail. Convention: `_n` suffix alongside the diffuse texture (`floor_01.png` / `floor_01_n.png`). Absence is the common case — no warning. Tangent-space RGB PNGs matching the diffuse dimensions.
+### 4.1 Specular Maps (Milestone 5)
 
-When implemented, normal maps perturb the shading normal in the fragment shader, affecting both diffuse and specular response. See `rendering_pipeline.md` §7.1.
+Per-texel specular intensity modulates the direct lighting highlight.
+
+- **Naming:** `{name}_s.png` suffix.
+- **Format:** R8Unorm (sampled as `.r` in shader).
+- **Color Space:** Linear.
+- **Dimensions:** Must match the diffuse texture.
+- **Fallback:** If `{name}_s.png` is absent or dimensions mismatch, the engine uses a shared 1x1 black texture (zero specular response). Mismatch logs a warning at load time.
+
+### 4.2 Generation Tool
+
+`tools/gen_specular.py` generates specular maps from diffuse textures using material-prefix heuristics.
+
+- **Heuristics:** `metal_` (high intensity, low gamma), `concrete_` (low intensity, high gamma), `wood_` (moderate).
+- **Dependency:** Requires `Pillow`, managed via `uv`.
+- **Setup:** `uv venv && source .venv/bin/activate && uv pip install Pillow`.
+- **Usage:** `python3 tools/gen_specular.py --input <path> --recursive`.
+
+### 4.3 Normal Maps (Phase 5+)
+
+> **Not yet implemented.**
+
+Optional per-texture normal maps for fine surface detail. Convention: `_n` suffix alongside the diffuse texture. Tangent-space RGB PNGs matching the diffuse dimensions.
 
 ---
 

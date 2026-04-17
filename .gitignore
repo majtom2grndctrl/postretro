@@ -32,3 +32,4 @@ assets/maps/*
 
 /tools
 .claude/worktrees/
+.venv/

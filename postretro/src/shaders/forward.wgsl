@@ -39,12 +39,8 @@ struct GpuLight {
 @group(2) @binding(2) var shadow_sampler: sampler_comparison;
 @group(2) @binding(3) var csm_depth_array: texture_depth_2d_array;
 @group(2) @binding(4) var<storage, read> csm_view_proj: array<mat4x4<f32>>;
-// Point shadows stored as a cube map array: one cube per light slot.
-// Hardware performs face selection and UV derivation, matching the rasterizer
-// bit-for-bit so boundary seams disappear.
-@group(2) @binding(5) var point_shadow_array: texture_depth_cube_array;
-@group(2) @binding(6) var spot_shadow_array: texture_depth_2d_array;
-@group(2) @binding(7) var<storage, read> spot_view_proj: array<mat4x4<f32>>;
+// Bindings 5+ reserved for sub-plan 9 (SDF atlas, sampler, top-level index,
+// meta uniform). Do not claim them for anything else.
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -166,44 +162,9 @@ fn sample_csm_shadow(frag_world_pos: vec3<f32>, shadow_map_index: u32) -> f32 {
     return textureSampleCompareLevel(csm_depth_array, shadow_sampler, uv, cascade_index, depth);
 }
 
-// Point light shadow map sampling via hardware cube map array.
-// The rasterizer writes linear depth (dist / light_range) into each of the
-// 6 faces of cube `shadow_map_index`. Hardware cube sampling picks the face
-// and derives face-local UVs from `dir` using the same math the rasterizer
-// used — eliminating the boundary seams that manual face selection produces.
-fn sample_point_shadow(light_pos: vec3<f32>, frag_world_pos: vec3<f32>, light_range: f32, shadow_map_index: u32, NdotL: f32) -> f32 {
-    let to_frag = frag_world_pos - light_pos;
-    let dist = length(to_frag);
-    // Linear depth with slope-scaled bias to reduce shadow acne. Hardware
-    // depth bias has no effect on point shadow maps because the fragment
-    // shader writes frag_depth explicitly. At grazing angles (small NdotL),
-    // depth varies rapidly across a shadow map texel, so we scale the bias
-    // inversely with NdotL.
-    let base_bias = 0.002;
-    let slope_bias = base_bias / max(NdotL, 0.05);
-    let depth = dist / max(light_range, 0.001) - slope_bias;
-    let dir = normalize(to_frag);
-
-    return textureSampleCompareLevel(
-        point_shadow_array, shadow_sampler, dir, i32(shadow_map_index), depth,
-    );
-}
-
-// Sample 2D shadow map for a spot light.
-fn sample_spot_shadow(frag_world_pos: vec3<f32>, shadow_map_index: u32) -> f32 {
-    let vp = spot_view_proj[shadow_map_index];
-    let light_space_pos = vp * vec4<f32>(frag_world_pos, 1.0);
-    let ndc = light_space_pos.xyz / light_space_pos.w;
-    let shadow_uv = ndc.xy * 0.5 + 0.5;
-    let uv = vec2<f32>(shadow_uv.x, 1.0 - shadow_uv.y);
-    let depth = ndc.z;
-
-    if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
-        return 1.0;
-    }
-
-    return textureSampleCompareLevel(spot_shadow_array, shadow_sampler, uv, shadow_map_index, depth);
-}
+// Shadow kinds other than CSM (e.g. `shadow_kind == 2` — reserved for
+// sub-plan 9's SDF sphere-trace — and any unknown value) fall through to
+// unshadowed (factor 1.0) in the fragment main until sub-plan 9 lands.
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -263,23 +224,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let NdotL = max(dot(N, L), 0.0);
 
         // Shadow modulation: sample shadow map if this light casts shadows.
+        // `shadow_kind == 1` → CSM (directional). `shadow_kind == 2` is
+        // reserved for sub-plan 9's SDF sphere-trace (point + spot); until
+        // that lands, it falls through to unshadowed. Any other value is
+        // also unshadowed.
         let shadow_kind = bitcast<u32>(light.shadow_info.z);
         var shadow_factor = 1.0;
         if shadow_kind == 1u {
-            // CSM (directional)
             shadow_factor = sample_csm_shadow(in.world_position, bitcast<u32>(light.shadow_info.y));
-        } else if shadow_kind == 2u {
-            // Cube (point) — stored in 2D array with 6 layers per slot.
-            shadow_factor = sample_point_shadow(
-                light.position_and_type.xyz,
-                in.world_position,
-                light.direction_and_range.w,
-                bitcast<u32>(light.shadow_info.y),
-                NdotL,
-            );
-        } else if shadow_kind == 3u {
-            // Spot 2D
-            shadow_factor = sample_spot_shadow(in.world_position, bitcast<u32>(light.shadow_info.y));
         }
 
         total_light = total_light + light.color_and_falloff_model.xyz * attenuation * NdotL * shadow_factor;

@@ -18,28 +18,19 @@ pub const CSM_TOTAL_LAYERS: usize = MAX_CSM_LIGHTS * CSM_CASCADE_COUNT;
 /// Resolution of each CSM cascade layer.
 pub const CSM_RESOLUTION: u32 = 1024;
 
-/// Maximum number of point lights with active cube shadow map slots.
-pub const MAX_POINT_SHADOW_LIGHTS: usize = 16;
-/// Resolution of each cube shadow map face.
-pub const POINT_SHADOW_RESOLUTION: u32 = 512;
-
-/// Maximum number of spot lights with active shadow map slots.
-pub const MAX_SPOT_SHADOW_LIGHTS: usize = 16;
-/// Resolution of each spot shadow map layer.
-pub const SPOT_SHADOW_RESOLUTION: u32 = 1024;
-
-/// Number of faces per cube map.
-pub const CUBE_FACES: usize = 6;
-
 // --- Shadow kind discriminant ---
 
 /// Shader-side discriminant stored in `GpuLight.shadow_info.z`.
-/// Matches the `switch` in the forward shader's shadow sampling.
+/// Matches the branches in the forward shader's shadow sampling.
+///
+/// Discriminator values:
+/// - `0` = no shadow (unshadowed)
+/// - `1` = CSM (directional lights, this sub-plan)
+/// - `2` = **reserved for SDF sphere-trace** (point and spot lights, sub-plan 9).
+///   Do not reuse this value for any other shadow path — sub-plan 9 depends on it.
 #[allow(dead_code)] // Part of the shadow kind enum; used implicitly as the zero-default.
 pub const SHADOW_KIND_NONE: u32 = 0;
 pub const SHADOW_KIND_CSM: u32 = 1;
-pub const SHADOW_KIND_CUBE: u32 = 2;
-pub const SHADOW_KIND_SPOT_2D: u32 = 3;
 
 // --- Cascade split calculation ---
 
@@ -224,72 +215,6 @@ fn unproject_ndc(inv_view_proj: Mat4, ndc: Vec3) -> Vec3 {
     world.truncate() / world.w
 }
 
-// --- Cube shadow map view matrices ---
-
-/// Build the 6 view-projection matrices for a point light's cube shadow map.
-/// Each face uses a 90-degree FOV perspective projection.
-pub fn point_light_cube_matrices(light_pos: Vec3, light_range: f32) -> [Mat4; 6] {
-    // Cube face directions and up vectors (OpenGL convention, matches wgpu's
-    // texture_cube expectation: +X, -X, +Y, -Y, +Z, -Z).
-    let directions: [(Vec3, Vec3); 6] = [
-        (Vec3::X, Vec3::NEG_Y),     // +X
-        (Vec3::NEG_X, Vec3::NEG_Y), // -X
-        (Vec3::Y, Vec3::Z),         // +Y
-        (Vec3::NEG_Y, Vec3::NEG_Z), // -Y
-        (Vec3::Z, Vec3::NEG_Y),     // +Z
-        (Vec3::NEG_Z, Vec3::NEG_Y), // -Z
-    ];
-
-    let proj = Mat4::perspective_rh(
-        std::f32::consts::FRAC_PI_2, // 90 degrees
-        1.0,
-        0.1,
-        light_range,
-    );
-
-    // WebGPU cube-sampling convention (inherited from D3D/Vulkan) expects
-    // texture V to increase toward the +t direction of each face's (s, t)
-    // parameterization. `perspective_rh` combined with our `look_to_rh` face
-    // views emits the framebuffer Y flipped relative to that convention — so
-    // without this correction, the depth written at screen-top lands where
-    // the hardware sampler expects screen-bottom content, and vice versa.
-    // That mismatch causes geometry on one side of each face (e.g. pillars
-    // below the light) to be sampled when the shader asks for the opposite
-    // direction (e.g. toward the ceiling above the light).
-    //
-    // Pre-multiplying by a Y-flip in NDC realigns the rendered content with
-    // the cube-sampling UV convention. Note: this inverts triangle winding in
-    // screen space, so the point-shadow pipeline culls front faces instead of
-    // back faces (see shadow_pass.rs).
-    let flip_y = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
-
-    let mut matrices = [Mat4::IDENTITY; 6];
-    for (i, (dir, up)) in directions.iter().enumerate() {
-        let view = Mat4::look_to_rh(light_pos, *dir, *up);
-        matrices[i] = flip_y * proj * view;
-    }
-    matrices
-}
-
-/// Build the view-projection matrix for a spot light's single shadow map.
-pub fn spot_light_matrix(
-    light_pos: Vec3,
-    light_dir: Vec3,
-    outer_angle: f32,
-    light_range: f32,
-) -> Mat4 {
-    let fov = outer_angle * 2.0; // outer_angle is half-angle
-    let fov = fov.min(std::f32::consts::PI - 0.01); // clamp to < 180 degrees
-    let up = if light_dir.y.abs() > 0.99 {
-        Vec3::Z
-    } else {
-        Vec3::Y
-    };
-    let view = Mat4::look_to_rh(light_pos, light_dir, up);
-    let proj = Mat4::perspective_rh(fov, 1.0, 0.1, light_range.max(1.0));
-    proj * view
-}
-
 // --- Slot pool and cache ---
 
 /// Per-frame assignment of a shadow-casting light to a slot in the pool.
@@ -297,32 +222,26 @@ pub fn spot_light_matrix(
 pub struct ShadowSlot {
     /// Index of the light in the global light array.
     pub light_index: u32,
-    /// Shadow kind (CSM, cube, spot-2D).
+    /// Shadow kind (currently only CSM — see `SHADOW_KIND_*`).
     pub shadow_kind: u32,
-    /// Index into the type-specific pool (cascade base for CSM, cube slot for
-    /// point, array layer for spot).
+    /// Index into the type-specific pool (cascade base for CSM).
     pub pool_slot: u32,
-    /// Whether this slot's shadow map content is still valid from a previous
-    /// frame (the light held this slot last frame and nothing changed).
-    pub cached: bool,
 }
 
 /// Manages the fixed shadow map slot pool and per-frame assignment.
+///
+/// Today only CSM (directional) slots are tracked. Point and spot lights
+/// receive their shadow contribution from sub-plan 9's SDF sphere-trace,
+/// which has no per-light slot allocation.
 pub struct ShadowSlotPool {
-    /// light_index -> pool_slot mapping from the previous frame.
-    /// CSM, point, and spot each have independent namespaces — the key includes
-    /// the shadow kind to disambiguate.
+    /// light_index -> pool_slot mapping from the previous frame for CSM.
     prev_csm: HashMap<u32, u32>,
-    prev_point: HashMap<u32, u32>,
-    prev_spot: HashMap<u32, u32>,
 }
 
 impl ShadowSlotPool {
     pub fn new() -> Self {
         Self {
             prev_csm: HashMap::new(),
-            prev_point: HashMap::new(),
-            prev_spot: HashMap::new(),
         }
     }
 
@@ -331,65 +250,40 @@ impl ShadowSlotPool {
     ///
     /// `visible_light_indices` comes from sub-plan 4's frustum test; if empty,
     /// all shadow-casting lights are candidates. `lights` is the full light list.
-    /// `camera_pos` is used for distance-priority sorting.
+    /// `_camera_pos` is unused today but retained for the eventual distance-priority
+    /// sort when additional slot pools are introduced.
     pub fn assign(
         &mut self,
         lights: &[MapLight],
         visible_light_indices: &[u32],
-        camera_pos: Vec3,
+        _camera_pos: Vec3,
     ) -> ShadowAssignment {
-        // Collect shadow-casting lights that are visible this frame, separated by type.
-        let candidates: Vec<u32> = if visible_light_indices.is_empty() {
-            // No influence data — all shadow-casting lights are candidates.
+        // Collect shadow-casting directional lights that are visible this frame.
+        // Point and spot lights never get a CSM slot — their shadow path lives
+        // in sub-plan 9 (SDF sphere-trace).
+        let directional_candidates: Vec<u32> = if visible_light_indices.is_empty() {
             (0..lights.len() as u32)
-                .filter(|&i| lights[i as usize].cast_shadows)
+                .filter(|&i| {
+                    let l = &lights[i as usize];
+                    l.cast_shadows && matches!(l.light_type, LightType::Directional)
+                })
                 .collect()
         } else {
             visible_light_indices
                 .iter()
                 .copied()
-                .filter(|&i| (i as usize) < lights.len() && lights[i as usize].cast_shadows)
+                .filter(|&i| {
+                    if (i as usize) >= lights.len() {
+                        return false;
+                    }
+                    let l = &lights[i as usize];
+                    l.cast_shadows && matches!(l.light_type, LightType::Directional)
+                })
                 .collect()
         };
 
-        let mut directional_candidates: Vec<u32> = Vec::new();
-        let mut point_candidates: Vec<(u32, f32)> = Vec::new(); // (index, distance²)
-        let mut spot_candidates: Vec<(u32, f32)> = Vec::new();
-
-        for &li in &candidates {
-            let light = &lights[li as usize];
-            match light.light_type {
-                LightType::Directional => directional_candidates.push(li),
-                LightType::Point => {
-                    let pos = Vec3::new(
-                        light.origin[0] as f32,
-                        light.origin[1] as f32,
-                        light.origin[2] as f32,
-                    );
-                    let dist_sq = pos.distance_squared(camera_pos);
-                    point_candidates.push((li, dist_sq));
-                }
-                LightType::Spot => {
-                    let pos = Vec3::new(
-                        light.origin[0] as f32,
-                        light.origin[1] as f32,
-                        light.origin[2] as f32,
-                    );
-                    let dist_sq = pos.distance_squared(camera_pos);
-                    spot_candidates.push((li, dist_sq));
-                }
-            }
-        }
-
-        // Sort by distance (nearest first).
-        point_candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        spot_candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Assign slots.
         let mut slots = Vec::new();
         let mut new_csm: HashMap<u32, u32> = HashMap::new();
-        let mut new_point: HashMap<u32, u32> = HashMap::new();
-        let mut new_spot: HashMap<u32, u32> = HashMap::new();
 
         // Directional lights always get a CSM slot (up to MAX_CSM_LIGHTS).
         for (slot_idx, &li) in directional_candidates
@@ -398,95 +292,16 @@ impl ShadowSlotPool {
             .enumerate()
         {
             let pool_slot = slot_idx as u32;
-            // CSM always re-renders (camera-dependent).
-            let cached = false;
             slots.push(ShadowSlot {
                 light_index: li,
                 shadow_kind: SHADOW_KIND_CSM,
                 pool_slot,
-                cached,
             });
             new_csm.insert(li, pool_slot);
         }
 
-        // Point lights — prefer keeping the same slot from last frame.
-        let mut used_point_slots = [false; MAX_POINT_SHADOW_LIGHTS];
-        let mut point_assignments: Vec<(u32, u32, bool)> = Vec::new(); // (li, slot, cached)
-
-        // First pass: lights that still hold a slot from last frame.
-        for &(li, _) in point_candidates.iter().take(MAX_POINT_SHADOW_LIGHTS) {
-            if let Some(&prev_slot) = self.prev_point.get(&li) {
-                if (prev_slot as usize) < MAX_POINT_SHADOW_LIGHTS
-                    && !used_point_slots[prev_slot as usize]
-                {
-                    used_point_slots[prev_slot as usize] = true;
-                    point_assignments.push((li, prev_slot, true));
-                }
-            }
-        }
-        // Second pass: assign free slots to new lights.
-        let assigned_point: std::collections::HashSet<u32> =
-            point_assignments.iter().map(|&(li, _, _)| li).collect();
-        let mut free_point_slots: Vec<u32> = (0..MAX_POINT_SHADOW_LIGHTS as u32)
-            .filter(|&s| !used_point_slots[s as usize])
-            .collect();
-        for &(li, _) in point_candidates.iter().take(MAX_POINT_SHADOW_LIGHTS) {
-            if !assigned_point.contains(&li) {
-                if let Some(slot) = free_point_slots.pop() {
-                    point_assignments.push((li, slot, false));
-                }
-            }
-        }
-        for (li, slot, cached) in point_assignments {
-            slots.push(ShadowSlot {
-                light_index: li,
-                shadow_kind: SHADOW_KIND_CUBE,
-                pool_slot: slot,
-                cached,
-            });
-            new_point.insert(li, slot);
-        }
-
-        // Spot lights — same caching strategy as point lights.
-        let mut used_spot_slots = [false; MAX_SPOT_SHADOW_LIGHTS];
-        let mut spot_assignments: Vec<(u32, u32, bool)> = Vec::new();
-
-        for &(li, _) in spot_candidates.iter().take(MAX_SPOT_SHADOW_LIGHTS) {
-            if let Some(&prev_slot) = self.prev_spot.get(&li) {
-                if (prev_slot as usize) < MAX_SPOT_SHADOW_LIGHTS
-                    && !used_spot_slots[prev_slot as usize]
-                {
-                    used_spot_slots[prev_slot as usize] = true;
-                    spot_assignments.push((li, prev_slot, true));
-                }
-            }
-        }
-        let assigned_spot: std::collections::HashSet<u32> =
-            spot_assignments.iter().map(|&(li, _, _)| li).collect();
-        let mut free_spot_slots: Vec<u32> = (0..MAX_SPOT_SHADOW_LIGHTS as u32)
-            .filter(|&s| !used_spot_slots[s as usize])
-            .collect();
-        for &(li, _) in spot_candidates.iter().take(MAX_SPOT_SHADOW_LIGHTS) {
-            if !assigned_spot.contains(&li) {
-                if let Some(slot) = free_spot_slots.pop() {
-                    spot_assignments.push((li, slot, false));
-                }
-            }
-        }
-        for (li, slot, cached) in spot_assignments {
-            slots.push(ShadowSlot {
-                light_index: li,
-                shadow_kind: SHADOW_KIND_SPOT_2D,
-                pool_slot: slot,
-                cached,
-            });
-            new_spot.insert(li, slot);
-        }
-
         // Update cache for next frame.
         self.prev_csm = new_csm;
-        self.prev_point = new_point;
-        self.prev_spot = new_spot;
 
         // Build per-light shadow info (indexed by global light index).
         let mut per_light_info = vec![[0u32; 4]; lights.len()];
@@ -532,11 +347,6 @@ pub fn pack_csm_view_proj_buffer(matrices: &[Mat4]) -> Vec<u8> {
         }
     }
     bytes
-}
-
-/// Pack spot view-projection matrices into a contiguous byte buffer.
-pub fn pack_spot_view_proj_buffer(matrices: &[Mat4]) -> Vec<u8> {
-    pack_csm_view_proj_buffer(matrices) // Same layout — array of mat4x4<f32>.
 }
 
 #[cfg(test)]
@@ -603,24 +413,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn point_light_cube_matrices_are_finite() {
-        let matrices = point_light_cube_matrices(Vec3::ZERO, 100.0);
-        for (i, m) in matrices.iter().enumerate() {
-            for &val in &m.to_cols_array() {
-                assert!(val.is_finite(), "cube face {i} matrix has non-finite value");
-            }
-        }
-    }
-
-    #[test]
-    fn spot_light_matrix_is_finite() {
-        let m = spot_light_matrix(Vec3::ZERO, Vec3::NEG_Z, 0.5, 50.0);
-        for &val in &m.to_cols_array() {
-            assert!(val.is_finite(), "spot matrix has non-finite value");
-        }
-    }
-
     fn sample_lights() -> Vec<MapLight> {
         vec![
             MapLight {
@@ -669,67 +461,62 @@ mod tests {
                 cone_angle_inner: 0.0,
                 cone_angle_outer: 0.0,
                 cone_direction: [0.0, 0.0, 0.0],
-                cast_shadows: false, // does not cast shadows
+                cast_shadows: false,
             },
         ]
     }
 
     #[test]
-    fn slot_pool_assigns_all_shadow_casters() {
+    fn slot_pool_assigns_directional_only() {
+        // CSM is the only shadow kind this pool manages. Point/spot lights,
+        // shadowed or not, receive `per_light_info == [0,0,0,0]` — their
+        // shadow contribution comes from sub-plan 9's SDF sphere-trace at
+        // runtime, not from a slot allocated here.
         let lights = sample_lights();
         let visible: Vec<u32> = (0..lights.len() as u32).collect();
         let mut pool = ShadowSlotPool::new();
         let assignment = pool.assign(&lights, &visible, Vec3::ZERO);
 
-        // 3 shadow casters: 1 directional, 1 point, 1 spot.
-        assert_eq!(assignment.slots.len(), 3);
+        assert_eq!(assignment.slots.len(), 1, "only 1 directional caster");
         assert_eq!(
             assignment.per_light_info[0],
             [1, 0, SHADOW_KIND_CSM, 0],
             "directional light should get CSM slot 0"
         );
-        assert_eq!(
-            assignment.per_light_info[1][0], 1,
-            "point should have shadow"
-        );
-        assert_eq!(assignment.per_light_info[1][2], SHADOW_KIND_CUBE);
-        assert_eq!(
-            assignment.per_light_info[2][0], 1,
-            "spot should have shadow"
-        );
-        assert_eq!(assignment.per_light_info[2][2], SHADOW_KIND_SPOT_2D);
-        assert_eq!(
-            assignment.per_light_info[3],
-            [0, 0, 0, 0],
-            "non-shadow-casting light should have no shadow info"
-        );
+        // Point/spot lights — no pool-assigned shadow info.
+        assert_eq!(assignment.per_light_info[1], [0, 0, 0, 0]);
+        assert_eq!(assignment.per_light_info[2], [0, 0, 0, 0]);
+        assert_eq!(assignment.per_light_info[3], [0, 0, 0, 0]);
     }
 
     #[test]
-    fn slot_pool_caches_point_light_slots_across_frames() {
-        let lights = sample_lights();
+    fn slot_pool_respects_csm_light_limit() {
+        // More directional lights than MAX_CSM_LIGHTS — the excess must be
+        // dropped (no silent overflow into an adjacent slot).
+        let lights: Vec<MapLight> = (0..MAX_CSM_LIGHTS + 2)
+            .map(|_| MapLight {
+                origin: [0.0, 100.0, 0.0],
+                light_type: LightType::Directional,
+                intensity: 1.0,
+                color: [1.0, 1.0, 1.0],
+                falloff_model: crate::prl::FalloffModel::Linear,
+                falloff_range: 0.0,
+                cone_angle_inner: 0.0,
+                cone_angle_outer: 0.0,
+                cone_direction: [0.0, -1.0, 0.0],
+                cast_shadows: true,
+            })
+            .collect();
         let visible: Vec<u32> = (0..lights.len() as u32).collect();
         let mut pool = ShadowSlotPool::new();
-
-        // First frame — all new.
-        let a1 = pool.assign(&lights, &visible, Vec3::ZERO);
-        let point_slot_1 = a1
-            .slots
-            .iter()
-            .find(|s| s.shadow_kind == SHADOW_KIND_CUBE)
-            .expect("should have a point shadow slot");
-        assert!(!point_slot_1.cached, "first frame should not be cached");
-        let slot_idx = point_slot_1.pool_slot;
-
-        // Second frame — same visible set, point light should be cached.
-        let a2 = pool.assign(&lights, &visible, Vec3::ZERO);
-        let point_slot_2 = a2
-            .slots
-            .iter()
-            .find(|s| s.shadow_kind == SHADOW_KIND_CUBE)
-            .expect("should still have point shadow slot");
-        assert!(point_slot_2.cached, "second frame should be cached");
-        assert_eq!(point_slot_2.pool_slot, slot_idx, "should keep same slot");
+        let assignment = pool.assign(&lights, &visible, Vec3::ZERO);
+        assert_eq!(assignment.slots.len(), MAX_CSM_LIGHTS);
+        for i in 0..MAX_CSM_LIGHTS {
+            assert_eq!(assignment.per_light_info[i][0], 1);
+        }
+        for i in MAX_CSM_LIGHTS..lights.len() {
+            assert_eq!(assignment.per_light_info[i], [0, 0, 0, 0]);
+        }
     }
 
     #[test]
@@ -741,45 +528,6 @@ mod tests {
 
         // Light 3 has cast_shadows=false.
         assert_eq!(assignment.per_light_info[3], [0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn slot_pool_degrades_when_pool_full() {
-        // Create more point lights than MAX_POINT_SHADOW_LIGHTS.
-        let lights: Vec<MapLight> = (0..MAX_POINT_SHADOW_LIGHTS + 5)
-            .map(|i| MapLight {
-                origin: [i as f64 * 10.0, 5.0, 0.0],
-                light_type: LightType::Point,
-                intensity: 100.0,
-                color: [1.0, 1.0, 1.0],
-                falloff_model: crate::prl::FalloffModel::InverseSquared,
-                falloff_range: 50.0,
-                cone_angle_inner: 0.0,
-                cone_angle_outer: 0.0,
-                cone_direction: [0.0, 0.0, 0.0],
-                cast_shadows: true,
-            })
-            .collect();
-
-        let visible: Vec<u32> = (0..lights.len() as u32).collect();
-        let mut pool = ShadowSlotPool::new();
-        let assignment = pool.assign(&lights, &visible, Vec3::ZERO);
-
-        // Only MAX_POINT_SHADOW_LIGHTS should get slots.
-        let point_slots: Vec<_> = assignment
-            .slots
-            .iter()
-            .filter(|s| s.shadow_kind == SHADOW_KIND_CUBE)
-            .collect();
-        assert_eq!(point_slots.len(), MAX_POINT_SHADOW_LIGHTS);
-
-        // Remaining lights should have shadow_kind 0.
-        let unshadowed: Vec<_> = assignment
-            .per_light_info
-            .iter()
-            .filter(|info| info[0] == 0)
-            .collect();
-        assert_eq!(unshadowed.len(), 5, "5 lights should degrade to unshadowed");
     }
 
     // --- CSM texel-snapping regression tests ---
@@ -950,154 +698,10 @@ mod tests {
         }
     }
 
-    // --- Slot assignment priority invariants ---
-    //
-    // `assign` sorts candidates by distance and takes the top MAX before
-    // first-pass retention runs, so cached lights farther than any uncached
-    // closer candidate are pruned before retention sees them. These tests
-    // lock in that contract: closer uncached candidates always receive slots
-    // ahead of farther cached ones, across point and spot pools.
-
-    fn point_light_at(x: f32) -> MapLight {
-        MapLight {
-            origin: [x as f64, 0.0, 0.0],
-            light_type: LightType::Point,
-            intensity: 100.0,
-            color: [1.0, 1.0, 1.0],
-            falloff_model: crate::prl::FalloffModel::InverseSquared,
-            falloff_range: 50.0,
-            cone_angle_inner: 0.0,
-            cone_angle_outer: 0.0,
-            cone_direction: [0.0, 0.0, 0.0],
-            cast_shadows: true,
-        }
-    }
-
-    #[test]
-    fn closer_uncached_light_evicts_farthest_cached_when_pool_full() {
-        // Frame 1: 16 far lights (x = 100..=115). All fill the pool.
-        // Frame 2: a new light arrives at x=10 (far closer than any cached).
-        //          The farthest cached (x=115) must be evicted; the new light
-        //          must receive that slot.
-        let mut lights: Vec<MapLight> = (0..MAX_POINT_SHADOW_LIGHTS)
-            .map(|i| point_light_at(100.0 + i as f32))
-            .collect();
-        let visible: Vec<u32> = (0..lights.len() as u32).collect();
-
-        let mut pool = ShadowSlotPool::new();
-        let _a1 = pool.assign(&lights, &visible, Vec3::ZERO);
-
-        // Add the new closer light.
-        lights.push(point_light_at(10.0));
-        let visible: Vec<u32> = (0..lights.len() as u32).collect();
-        let a2 = pool.assign(&lights, &visible, Vec3::ZERO);
-
-        // Farthest cached (index 15, x=115) should be evicted → unshadowed.
-        let farthest_idx = (MAX_POINT_SHADOW_LIGHTS - 1) as usize;
-        assert_eq!(
-            a2.per_light_info[farthest_idx][0], 0,
-            "farthest cached light (index {farthest_idx}) should be evicted and unshadowed"
-        );
-
-        // The new closer light should hold a shadow slot.
-        let new_idx = lights.len() - 1;
-        assert_eq!(
-            a2.per_light_info[new_idx][0], 1,
-            "newly arrived closer light should receive a shadow slot"
-        );
-        assert_eq!(
-            a2.per_light_info[new_idx][2], SHADOW_KIND_CUBE,
-            "new light is a point light"
-        );
-    }
-
-    #[test]
-    fn multiple_closer_candidates_evict_multiple_cached() {
-        // Frame 1: 16 far lights (x = 100..115).
-        // Frame 2: 3 new much closer lights at x = 5, 10, 15.
-        // All 3 should receive slots; the 3 farthest cached (113, 114, 115)
-        // should be evicted.
-        let mut lights: Vec<MapLight> = (0..MAX_POINT_SHADOW_LIGHTS)
-            .map(|i| point_light_at(100.0 + i as f32))
-            .collect();
-        let visible: Vec<u32> = (0..lights.len() as u32).collect();
-
-        let mut pool = ShadowSlotPool::new();
-        let _ = pool.assign(&lights, &visible, Vec3::ZERO);
-
-        lights.push(point_light_at(5.0));
-        lights.push(point_light_at(10.0));
-        lights.push(point_light_at(15.0));
-        let visible: Vec<u32> = (0..lights.len() as u32).collect();
-        let a2 = pool.assign(&lights, &visible, Vec3::ZERO);
-
-        // The 3 new closer lights all get slots.
-        for i in MAX_POINT_SHADOW_LIGHTS..MAX_POINT_SHADOW_LIGHTS + 3 {
-            assert_eq!(
-                a2.per_light_info[i][0], 1,
-                "new closer light {i} should receive a slot"
-            );
-        }
-        // The 3 farthest cached are evicted.
-        for i in (MAX_POINT_SHADOW_LIGHTS - 3)..MAX_POINT_SHADOW_LIGHTS {
-            assert_eq!(
-                a2.per_light_info[i][0], 0,
-                "farthest cached light {i} should be evicted"
-            );
-        }
-        // Still exactly MAX_POINT_SHADOW_LIGHTS point slots in use.
-        let point_slot_count = a2
-            .slots
-            .iter()
-            .filter(|s| s.shadow_kind == SHADOW_KIND_CUBE)
-            .count();
-        assert_eq!(point_slot_count, MAX_POINT_SHADOW_LIGHTS);
-    }
-
-    #[test]
-    fn eviction_applies_to_spot_pool_independently() {
-        // Same invariant for spot pool. Fill with 16 far spot lights, then
-        // add one close spot. Farthest cached spot must be evicted.
-        fn spot_at(x: f32) -> MapLight {
-            MapLight {
-                origin: [x as f64, 0.0, 0.0],
-                light_type: LightType::Spot,
-                intensity: 100.0,
-                color: [1.0, 1.0, 1.0],
-                falloff_model: crate::prl::FalloffModel::Linear,
-                falloff_range: 30.0,
-                cone_angle_inner: 0.3,
-                cone_angle_outer: 0.5,
-                cone_direction: [0.0, -1.0, 0.0],
-                cast_shadows: true,
-            }
-        }
-        let mut lights: Vec<MapLight> = (0..MAX_SPOT_SHADOW_LIGHTS)
-            .map(|i| spot_at(100.0 + i as f32))
-            .collect();
-        let visible: Vec<u32> = (0..lights.len() as u32).collect();
-
-        let mut pool = ShadowSlotPool::new();
-        let _ = pool.assign(&lights, &visible, Vec3::ZERO);
-
-        lights.push(spot_at(5.0));
-        let visible: Vec<u32> = (0..lights.len() as u32).collect();
-        let a2 = pool.assign(&lights, &visible, Vec3::ZERO);
-
-        let farthest_idx = MAX_SPOT_SHADOW_LIGHTS - 1;
-        assert_eq!(
-            a2.per_light_info[farthest_idx][0], 0,
-            "farthest cached spot should be evicted"
-        );
-        let new_idx = lights.len() - 1;
-        assert_eq!(a2.per_light_info[new_idx][0], 1);
-        assert_eq!(a2.per_light_info[new_idx][2], SHADOW_KIND_SPOT_2D);
-    }
-
     #[test]
     fn write_shadow_info_encodes_correctly() {
         let mut bytes = [0u8; 80];
-        write_shadow_info(&mut bytes, [1, 5, SHADOW_KIND_CUBE, 0]);
+        write_shadow_info(&mut bytes, [1, 5, SHADOW_KIND_CSM, 0]);
         assert_eq!(
             u32::from_ne_bytes(bytes[64..68].try_into().unwrap()),
             1,
@@ -1110,7 +714,7 @@ mod tests {
         );
         assert_eq!(
             u32::from_ne_bytes(bytes[72..76].try_into().unwrap()),
-            SHADOW_KIND_CUBE,
+            SHADOW_KIND_CSM,
             "shadow_kind"
         );
         assert_eq!(

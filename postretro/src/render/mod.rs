@@ -589,39 +589,9 @@ impl Renderer {
                         },
                         count: None,
                     },
-                    // binding 5: point shadow cube map array (6 layers per slot).
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::CubeArray,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    // binding 6: spot shadow 2D array
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 6,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2Array,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    // binding 7: spot view-proj storage
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 7,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
+                    // Bindings 5+ reserved for sub-plan 9 (SDF atlas, sampler,
+                    // top-level index, meta uniform). See
+                    // context/plans/in-progress/lighting-foundation/8-sdf-shadows.md.
                 ],
             });
 
@@ -677,18 +647,7 @@ impl Renderer {
                     binding: 4,
                     resource: shadow_resources.csm_vp_buffer.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&shadow_resources.point_array_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(&shadow_resources.spot_array_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: shadow_resources.spot_vp_buffer.as_entire_binding(),
-                },
+                // Bindings 5+ reserved for sub-plan 9 (SDF).
             ],
         });
 

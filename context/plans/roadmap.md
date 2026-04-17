@@ -97,18 +97,17 @@ Replace flat ambient with the full pivot lighting pipeline: a **probe grid** for
 **Sub-plans:** see `context/plans/in-progress/lighting-foundation/`.
 
 - [x] **FGD light entities** (sub-plan 1) — `light`, `light_spot`, `light_sun` in `assets/postretro.fgd`; canonical light format; `_bake_only` property distinguishes runtime-dynamic lights from probe-grid-only contributors.
-- [ ] **SH irradiance volume baker** (sub-plan 2) — prl-build stage; ray-casts through the Milestone 4 BVH; SH L2 projection; validity mask.
-- [ ] **Direct lighting loop** (sub-plan 3) — flat per-fragment light loop over runtime lights; per-type evaluation; Lambert diffuse.
-- [ ] **Light influence volumes** (sub-plan 4) — per-light sphere bounds in PRL; runtime spatial culling; gates CSM slot assignment and SDF sphere-trace per-light activation.
+- [x] **SH irradiance volume baker** (sub-plan 2) — prl-build stage; ray-casts through the Milestone 4 BVH; SH L2 projection; validity mask.
+- [x] **Direct lighting loop** (sub-plan 3) — flat per-fragment light loop over runtime lights; per-type evaluation; Lambert diffuse.
+- [x] **Light influence volumes** (sub-plan 4) — per-light sphere bounds in PRL; runtime spatial culling; gates CSM slot assignment and SDF sphere-trace per-light activation.
 - [x] **CSM sun shadows** (sub-plan 5) — 3 cascades, 1024², bounding-sphere fit with rotation-invariant texel snapping. Hard edges match aesthetic; SDF path provides penumbrae elsewhere.
-- [ ] **Runtime probe sampling** (sub-plan 6) — parse SH section as 3D texture; trilinear sample in world shader for both static surfaces and dynamic entities.
+- [x] **Runtime probe sampling** (sub-plan 6) — parse SH section as 3D texture; trilinear sample in world shader for both static surfaces and dynamic entities.
+- [x] **Animated SH layers** (sub-plan 7) — per-light monochrome SH layers, animation descriptor + sample buffers, per-frame brightness/color curve evaluation in the fragment shader.
 - [ ] **SDF atlas + sphere-traced soft shadows** (sub-plan 8) — brick-indexed sparse distance field baked by prl-build; WGSL sphere trace per visible shadow-casting point/spot light; soft penumbrae from spot cone angle. Chunk-friendly brick addressing so Milestone 8's migration is additive. Target: 1–2 ms total across all visible lights.
 - [ ] **Specular maps** (sub-plan 9) — per-texel specular highlights in the direct light loop. Shading model decision (Phong vs. PBR) required before implementation starts.
 - [ ] **Lighting test maps** — exercise probe indirect, CSM sun shadows, SDF soft shadows for point/spot, specular surfaces.
 
 **Testable outcome:** textured level with probe-sampled indirect on both static surfaces and dynamic entities, CSM-driven sun shadows, SDF-driven soft shadows for point and spot lights, and per-texel specular highlights. Static lights contribute only to the probe bake; dynamic lights participate in both the bake and the runtime direct loop.
-
-**Deferred within M5:** animated SH layers (sub-plan 8) ships as a follow-up once the rest of M5 is complete.
 
 ---
 

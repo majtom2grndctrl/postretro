@@ -9,8 +9,10 @@ struct Uniforms {
     camera_position: vec3<f32>,
     ambient_floor: f32,
     light_count: u32,
+    // Elapsed seconds since renderer start. Consumed by SH animated-layer
+    // evaluation (sub-plan 7); wrapping is handled per-light via fract().
+    time: f32,
     // pad out to 16-byte alignment for the UBO std140 rules.
-    _pad_a: u32,
     _pad_b: u32,
     _pad_c: u32,
     // CSM cascade split distances (view-space Z far for cascades 0/1/2, w reserved).
@@ -52,7 +54,25 @@ struct ShGridInfo {
     cell_size: vec3<f32>,
     _pad0: u32,
     grid_dimensions: vec3<u32>,
-    _pad1: u32,
+    animated_light_count: u32,
+};
+
+// Per-light animation descriptor — matches ANIMATION_DESCRIPTOR_SIZE (48 B)
+// in postretro/src/render/sh_volume.rs. Field order diverges from the spec
+// prose to hit exactly 48 bytes: with the spec's original order, color_count
+// ends at byte 44 and _padding: vec2<f32> (AlignOf=8) would be pushed to 48,
+// making the struct 56 B and stride 64. Instead we pack four scalars after
+// base_color so color_count ends at 36; _padding then lands at 40 (4-byte
+// implicit gap at 36..40) and occupies 40..48 for a 48-byte stride.
+struct AnimationDescriptor {
+    period: f32,
+    phase: f32,
+    brightness_offset: u32,
+    brightness_count: u32,
+    base_color: vec3<f32>,
+    color_offset: u32,
+    color_count: u32,
+    _padding: vec2<f32>,
 };
 
 @group(3) @binding(0) var sh_sampler: sampler;
@@ -66,6 +86,12 @@ struct ShGridInfo {
 @group(3) @binding(8) var sh_band7: texture_3d<f32>;
 @group(3) @binding(9) var sh_band8: texture_3d<f32>;
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
+
+// Animation buffers (sub-plan 7). Always bound; the shader guards on
+// `sh_grid.animated_light_count == 0` so dummy bindings are never read.
+@group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
+@group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
+@group(3) @binding(13) var<storage, read> anim_sh_data: array<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -224,6 +250,88 @@ fn sh_irradiance(
     return r;
 }
 
+// Evaluate an animated light's current brightness by linearly interpolating
+// its brightness samples over its period, with wrap-around. Returns 1.0
+// when the light has no brightness animation.
+fn eval_animated_brightness(desc: AnimationDescriptor, cycle_t: f32) -> f32 {
+    if desc.brightness_count == 0u {
+        return 1.0;
+    }
+    let sample_pos = cycle_t * f32(desc.brightness_count);
+    let idx0 = u32(floor(sample_pos)) % desc.brightness_count;
+    let idx1 = (idx0 + 1u) % desc.brightness_count;
+    let frac_t = fract(sample_pos);
+    return mix(
+        anim_samples[desc.brightness_offset + idx0],
+        anim_samples[desc.brightness_offset + idx1],
+        frac_t,
+    );
+}
+
+// Evaluate an animated light's current color. Falls back to `base_color`
+// when `color_count == 0`.
+fn eval_animated_color(desc: AnimationDescriptor, cycle_t: f32) -> vec3<f32> {
+    if desc.color_count == 0u {
+        return desc.base_color;
+    }
+    let sample_pos = cycle_t * f32(desc.color_count);
+    let idx0 = u32(floor(sample_pos)) % desc.color_count;
+    let idx1 = (idx0 + 1u) % desc.color_count;
+    let frac_t = fract(sample_pos);
+    let off0 = desc.color_offset + idx0 * 3u;
+    let off1 = desc.color_offset + idx1 * 3u;
+    let c0 = vec3<f32>(
+        anim_samples[off0],
+        anim_samples[off0 + 1u],
+        anim_samples[off0 + 2u],
+    );
+    let c1 = vec3<f32>(
+        anim_samples[off1],
+        anim_samples[off1 + 1u],
+        anim_samples[off1 + 2u],
+    );
+    return mix(c0, c1, frac_t);
+}
+
+// Manual trilinear interpolation of one band of one animated light's
+// monochrome SH from the packed per-light storage buffer. Works in
+// integer grid space so clamp-to-edge behavior matches the base SH path.
+fn sample_anim_mono_band(
+    light_idx: u32,
+    band: u32,
+    gi: vec3<u32>,
+    gfrac: vec3<f32>,
+) -> f32 {
+    let gx = sh_grid.grid_dimensions.x;
+    let gy = sh_grid.grid_dimensions.y;
+    let gz = sh_grid.grid_dimensions.z;
+    let probe_count = gx * gy * gz;
+    let base_offset = light_idx * probe_count;
+
+    // Fetch 8 corner coefficients.
+    var c: array<f32, 8>;
+    for (var dz: u32 = 0u; dz < 2u; dz = dz + 1u) {
+        for (var dy: u32 = 0u; dy < 2u; dy = dy + 1u) {
+            for (var dx: u32 = 0u; dx < 2u; dx = dx + 1u) {
+                let cx = min(gi.x + dx, gx - 1u);
+                let cy = min(gi.y + dy, gy - 1u);
+                let cz = min(gi.z + dz, gz - 1u);
+                let probe_idx = (cz * gy + cy) * gx + cx;
+                let slot = dz * 4u + dy * 2u + dx;
+                c[slot] = anim_sh_data[(base_offset + probe_idx) * 9u + band];
+            }
+        }
+    }
+
+    let c00 = mix(c[0], c[1], gfrac.x);
+    let c01 = mix(c[2], c[3], gfrac.x);
+    let c10 = mix(c[4], c[5], gfrac.x);
+    let c11 = mix(c[6], c[7], gfrac.x);
+    let c0 = mix(c00, c01, gfrac.y);
+    let c1 = mix(c10, c11, gfrac.y);
+    return mix(c0, c1, gfrac.z);
+}
+
 fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
@@ -236,20 +344,53 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     let cell_coord = (world_pos - sh_grid.grid_origin) / max(sh_grid.cell_size, vec3<f32>(1.0e-6));
     let grid_uv = (cell_coord + vec3<f32>(0.5)) / dims;
 
-    let s0 = textureSample(sh_band0, sh_sampler, grid_uv).rgb;
-    let s1 = textureSample(sh_band1, sh_sampler, grid_uv).rgb;
-    let s2 = textureSample(sh_band2, sh_sampler, grid_uv).rgb;
-    let s3 = textureSample(sh_band3, sh_sampler, grid_uv).rgb;
-    let s4 = textureSample(sh_band4, sh_sampler, grid_uv).rgb;
-    let s5 = textureSample(sh_band5, sh_sampler, grid_uv).rgb;
-    let s6 = textureSample(sh_band6, sh_sampler, grid_uv).rgb;
-    let s7 = textureSample(sh_band7, sh_sampler, grid_uv).rgb;
-    let s8 = textureSample(sh_band8, sh_sampler, grid_uv).rgb;
+    var b0 = textureSample(sh_band0, sh_sampler, grid_uv).rgb;
+    var b1 = textureSample(sh_band1, sh_sampler, grid_uv).rgb;
+    var b2 = textureSample(sh_band2, sh_sampler, grid_uv).rgb;
+    var b3 = textureSample(sh_band3, sh_sampler, grid_uv).rgb;
+    var b4 = textureSample(sh_band4, sh_sampler, grid_uv).rgb;
+    var b5 = textureSample(sh_band5, sh_sampler, grid_uv).rgb;
+    var b6 = textureSample(sh_band6, sh_sampler, grid_uv).rgb;
+    var b7 = textureSample(sh_band7, sh_sampler, grid_uv).rgb;
+    var b8 = textureSample(sh_band8, sh_sampler, grid_uv).rgb;
+
+    // Accumulate animated-light contributions into the SH coefficient
+    // vector before reconstruction. SH is linear in its coefficients, so
+    // one reconstruction pass suffices regardless of light count.
+    let anim_count = sh_grid.animated_light_count;
+    if anim_count != 0u {
+        // Integer grid coordinates for manual trilinear interpolation.
+        // clamp_cell keeps us inside [0, dim-1] so the `min(gi+dx, dim-1)`
+        // guards in sample_anim_mono_band cover the upper bound only.
+        let gdims_u = sh_grid.grid_dimensions;
+        let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
+        let gf = clamp(cell_coord, vec3<f32>(0.0), gdims_f);
+        let gi = vec3<u32>(floor(gf));
+        let gfrac = fract(gf);
+
+        for (var i: u32 = 0u; i < anim_count; i = i + 1u) {
+            let desc = anim_descriptors[i];
+            let cycle_t = fract(uniforms.time / max(desc.period, 1.0e-6) + desc.phase);
+            let brightness = eval_animated_brightness(desc, cycle_t);
+            let color = eval_animated_color(desc, cycle_t);
+            let modulate = color * brightness;
+
+            b0 = b0 + sample_anim_mono_band(i, 0u, gi, gfrac) * modulate;
+            b1 = b1 + sample_anim_mono_band(i, 1u, gi, gfrac) * modulate;
+            b2 = b2 + sample_anim_mono_band(i, 2u, gi, gfrac) * modulate;
+            b3 = b3 + sample_anim_mono_band(i, 3u, gi, gfrac) * modulate;
+            b4 = b4 + sample_anim_mono_band(i, 4u, gi, gfrac) * modulate;
+            b5 = b5 + sample_anim_mono_band(i, 5u, gi, gfrac) * modulate;
+            b6 = b6 + sample_anim_mono_band(i, 6u, gi, gfrac) * modulate;
+            b7 = b7 + sample_anim_mono_band(i, 7u, gi, gfrac) * modulate;
+            b8 = b8 + sample_anim_mono_band(i, 8u, gi, gfrac) * modulate;
+        }
+    }
 
     // Clamp negative irradiance to zero per channel — SH L2 can ring for
     // sharp transitions (Gibbs). Standard practice; see sub-plan 6.
     return max(
-        sh_irradiance(s0, s1, s2, s3, s4, s5, s6, s7, s8, normal),
+        sh_irradiance(b0, b1, b2, b3, b4, b5, b6, b7, b8, normal),
         vec3<f32>(0.0),
     );
 }

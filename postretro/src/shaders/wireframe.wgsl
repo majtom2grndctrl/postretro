@@ -15,7 +15,7 @@ struct Uniforms {
     camera_position: vec3<f32>,
     ambient_floor: f32,
     light_count: u32,
-    _pad_a: u32,
+    time: f32,
     _pad_b: u32,
     _pad_c: u32,
     csm_splits: vec4<f32>,

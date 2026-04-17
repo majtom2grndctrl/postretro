@@ -5,6 +5,7 @@ pub mod shadow_pass;
 pub mod sh_volume;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use glam::{Mat4, Vec3};
@@ -33,7 +34,8 @@ const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 // --- Uniform buffer layout ---
 
 /// Per-frame uniform data: view-projection, camera world-space position,
-/// ambient floor, light count, CSM cascade splits, and view matrix.
+/// ambient floor, light count, elapsed time, CSM cascade splits, and view
+/// matrix.
 ///
 /// Layout must match the WGSL `Uniforms` struct in `forward.wgsl` and
 /// `wireframe.wgsl` — both shaders bind the same buffer. std140 rules
@@ -46,7 +48,8 @@ const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 ///   64..76   camera_position  (vec3<f32>)
 ///   76..80   ambient_floor    (f32)
 ///   80..84   light_count      (u32)
-///   84..96   _padding         (3 × u32)
+///   84..88   time             (f32, elapsed seconds for SH animation)
+///   88..96   _padding         (2 × u32)
 ///   96..112  csm_splits       (vec4<f32>)
 ///   112..176 view_matrix      (mat4x4<f32>)
 const UNIFORM_SIZE: usize = 176;
@@ -56,6 +59,7 @@ fn build_uniform_data(
     camera_position: Vec3,
     ambient_floor: f32,
     light_count: u32,
+    time: f32,
     csm_splits: [f32; 4],
     view_matrix: &Mat4,
 ) -> [u8; UNIFORM_SIZE] {
@@ -70,7 +74,8 @@ fn build_uniform_data(
     bytes[72..76].copy_from_slice(&camera_position.z.to_ne_bytes());
     bytes[76..80].copy_from_slice(&ambient_floor.to_ne_bytes());
     bytes[80..84].copy_from_slice(&light_count.to_ne_bytes());
-    // bytes 84..96 are _padding — left as zero.
+    bytes[84..88].copy_from_slice(&time.to_ne_bytes());
+    // bytes 88..96 are _padding — left as zero.
 
     // CSM cascade splits at bytes 96..112.
     for (i, &split) in csm_splits.iter().enumerate() {
@@ -329,6 +334,11 @@ pub struct Renderer {
     debug_prev_vp_hash: u32,
     /// Previous frame's VisibleCells variant label + cell count.
     debug_prev_visible: (&'static str, usize),
+
+    /// Wall-clock timestamp of renderer creation. The per-frame uniform's
+    /// `time` field is `app_start.elapsed()`; the fragment shader wraps it
+    /// per-light via `fract(time / period + phase)` for SH animation.
+    app_start: Instant,
 }
 
 impl Renderer {
@@ -477,6 +487,7 @@ impl Renderer {
             Vec3::ZERO,
             ambient_floor,
             light_count,
+            0.0,
             initial_csm_splits,
             &Mat4::IDENTITY,
         );
@@ -987,6 +998,7 @@ impl Renderer {
             debug_prev_bitmask: (u32::MAX, u32::MAX),
             debug_prev_vp_hash: u32::MAX,
             debug_prev_visible: ("init", usize::MAX),
+            app_start: Instant::now(),
         })
     }
 
@@ -1038,9 +1050,10 @@ impl Renderer {
     }
 
     /// Upload the per-frame uniform buffer (view-projection, camera position,
-    /// ambient floor, light count, CSM splits, and view matrix). The view
-    /// matrix and CSM splits are needed by the fragment shader for shadow
-    /// cascade selection.
+    /// ambient floor, light count, elapsed time, CSM splits, and view
+    /// matrix). The view matrix and CSM splits are needed by the fragment
+    /// shader for shadow cascade selection; the time is used by the SH
+    /// animated-light layers (sub-plan 7) to evaluate curves per frame.
     pub fn update_per_frame_uniforms(
         &self,
         view_proj: Mat4,
@@ -1048,11 +1061,13 @@ impl Renderer {
         csm_splits: [f32; 4],
         view_matrix: &Mat4,
     ) {
+        let time = self.app_start.elapsed().as_secs_f32();
         let data = build_uniform_data(
             &view_proj,
             camera_position,
             self.ambient_floor,
             self.light_count,
+            time,
             csm_splits,
             view_matrix,
         );
@@ -1512,7 +1527,7 @@ mod tests {
     #[test]
     fn uniform_data_has_correct_size() {
         let vp = Mat4::IDENTITY;
-        let data = build_uniform_data(&vp, Vec3::ZERO, 0.05, 0, [0.0; 4], &Mat4::IDENTITY);
+        let data = build_uniform_data(&vp, Vec3::ZERO, 0.05, 0, 0.0, [0.0; 4], &Mat4::IDENTITY);
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
 
@@ -1613,6 +1628,125 @@ mod tests {
             "forward.wgsl ShGridInfo stride ({span}) must match SH_GRID_INFO_SIZE ({})",
             sh_volume::SH_GRID_INFO_SIZE,
         );
+
+        let desc_span = seen
+            .get("AnimationDescriptor")
+            .copied()
+            .expect("forward shader should declare struct AnimationDescriptor");
+        assert_eq!(
+            desc_span as usize,
+            sh_volume::ANIMATION_DESCRIPTOR_SIZE,
+            "forward.wgsl AnimationDescriptor stride ({desc_span}) must match ANIMATION_DESCRIPTOR_SIZE ({})",
+            sh_volume::ANIMATION_DESCRIPTOR_SIZE,
+        );
+    }
+
+    /// Regression: every storage/uniform buffer binding in `forward.wgsl` must
+    /// receive a payload large enough to satisfy wgpu's minimum-binding-size
+    /// validation. The original bug was `anim_descriptors` bound with 16 B while
+    /// `array<AnimationDescriptor>` requires ≥ 48 B (one full element stride).
+    ///
+    /// Strategy: parse the live shader with naga, derive the minimum required
+    /// size for every buffer binding from the WGSL type information, then check
+    /// that the Rust-side dummy payloads (empty-map / no-SH-section case) are
+    /// at least that large. Catches mismatches at `cargo test` time, not at
+    /// draw time on real hardware.
+    #[test]
+    fn forward_wgsl_dummy_buffers_meet_shader_min_binding_size() {
+        use std::collections::HashMap;
+
+        let module = naga::front::wgsl::parse_str(SHADER_SOURCE)
+            .expect("forward shader should parse as WGSL");
+
+        // Build (group, binding) → minimum byte count required by the shader.
+        // Only storage and uniform address spaces produce buffer bindings.
+        let mut min_sizes: HashMap<(u32, u32), u64> = HashMap::new();
+        for (_handle, var) in module.global_variables.iter() {
+            let is_buffer = matches!(
+                var.space,
+                naga::AddressSpace::Storage { .. } | naga::AddressSpace::Uniform
+            );
+            if !is_buffer {
+                continue;
+            }
+            let Some(rb) = &var.binding else { continue };
+            let ty = &module.types[var.ty];
+            let min: u64 = match &ty.inner {
+                // Unbounded array<T> — shader needs at least one element.
+                naga::TypeInner::Array {
+                    stride,
+                    size: naga::ArraySize::Dynamic,
+                    ..
+                } => *stride as u64,
+                // Bounded array<T, N> — shader needs all N elements.
+                naga::TypeInner::Array {
+                    stride,
+                    size: naga::ArraySize::Constant(n),
+                    ..
+                } => n.get() as u64 * *stride as u64,
+                // Struct — shader needs the full declared span.
+                naga::TypeInner::Struct { span, .. } => *span as u64,
+                // Scalars / vectors / matrices: trivially satisfied; skip.
+                _ => continue,
+            };
+            min_sizes.insert((rb.group, rb.binding), min);
+        }
+
+        // Verify that the empty-map dummy animation buffers (no SH section)
+        // satisfy the shader's per-binding size requirements.
+        //
+        // binding 11: array<AnimationDescriptor> — stride = ANIMATION_DESCRIPTOR_SIZE
+        // binding 12: array<f32>                 — stride = 4
+        // binding 13: array<f32>                 — stride = 4
+        let (anim_desc, anim_samples, anim_sh, _count) =
+            sh_volume::build_animation_buffers(None);
+
+        for (label, binding, buf) in [
+            (
+                "anim_descriptors",
+                sh_volume::BIND_ANIM_DESCRIPTORS,
+                anim_desc.as_slice(),
+            ),
+            (
+                "anim_samples",
+                sh_volume::BIND_ANIM_SAMPLES,
+                anim_samples.as_slice(),
+            ),
+            (
+                "anim_sh_data",
+                sh_volume::BIND_ANIM_SH_DATA,
+                anim_sh.as_slice(),
+            ),
+        ] {
+            if let Some(&min) = min_sizes.get(&(3, binding)) {
+                assert!(
+                    buf.len() as u64 >= min,
+                    "dummy {label} buffer (group=3, binding={binding}): Rust side \
+                     produces {} B but forward.wgsl min binding size is {min} B \
+                     (array element stride — at least one element required)",
+                    buf.len(),
+                );
+            } else {
+                panic!("forward.wgsl has no buffer at group=3 binding={binding}; \
+                        check BIND_* constants match shader @binding decorators");
+            }
+        }
+
+        // Verify the ShGridInfo uniform payload size.
+        let sh_grid_binding = (1 + sh_volume::SH_BAND_COUNT) as u32; // = 10
+        let grid_info =
+            sh_volume::build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false, 0);
+        if let Some(&min) = min_sizes.get(&(3, sh_grid_binding)) {
+            assert!(
+                grid_info.len() as u64 >= min,
+                "sh_grid uniform (group=3, binding={sh_grid_binding}): Rust side \
+                 produces {} B but forward.wgsl struct span is {min} B",
+                grid_info.len(),
+            );
+        } else {
+            panic!("forward.wgsl has no uniform at group=3 binding={sh_grid_binding}; \
+                    check SH_BAND_COUNT matches shader @binding decorators");
+        }
     }
 
     /// Ensure the wireframe shader's `Uniforms` struct stays in sync with
@@ -1647,7 +1781,7 @@ mod tests {
         let camera = Vec3::new(10.0, 20.0, 30.0);
         let ambient_floor = 0.125_f32;
         let light_count = 7_u32;
-        let data = build_uniform_data(&vp, camera, ambient_floor, light_count, [0.0; 4], &Mat4::IDENTITY);
+        let data = build_uniform_data(&vp, camera, ambient_floor, light_count, 0.0, [0.0; 4], &Mat4::IDENTITY);
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
         let mut floats = Vec::new();
@@ -1681,8 +1815,12 @@ mod tests {
         let lc = u32::from_ne_bytes(data[80..84].try_into().unwrap());
         assert_eq!(lc, light_count);
 
-        // Trailing pad (84..96) zero.
-        for &b in &data[84..96] {
+        // time at bytes 84..88 (passed 0.0 in this test).
+        let t = f32::from_ne_bytes(data[84..88].try_into().unwrap());
+        assert_eq!(t, 0.0);
+
+        // Trailing pad (88..96) zero.
+        for &b in &data[88..96] {
             assert_eq!(b, 0);
         }
     }

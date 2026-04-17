@@ -1211,8 +1211,8 @@
 // entity 2
 {
 "classname" "light"
-"origin" "136 200 80"
-"light" "300"
+"origin" "180 245 80"
+"light" "400"
 "_color" "255 170 90"
 "_fade" "1024"
 "delay" "2"
@@ -1230,10 +1230,10 @@
 {
 "classname" "light_sun"
 "origin" "-256 1104 480"
-"light" "15"
+"light" "0"
 "_color" "220 230 255"
 "delay" "0"
-"mangle" "0 0 -15"
+"mangle" "0 0 -160"
 }
 // entity 5
 {

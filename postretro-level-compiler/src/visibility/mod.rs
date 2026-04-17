@@ -74,7 +74,7 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
 
     if tree.leaves[seed].is_solid {
         log::warn!(
-            "WARNING: void probe landed in a solid leaf — exterior leaf culling skipped"
+            "Void probe landed in a solid leaf — exterior leaf culling skipped"
         );
         return HashSet::new();
     }
@@ -103,21 +103,31 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
     }
 
     let exterior_count = exterior.len();
-    let interior_empty_count = tree
-        .leaves
-        .iter()
-        .enumerate()
-        .filter(|(idx, leaf)| !leaf.is_solid && !exterior.contains(idx))
-        .count();
+    if log::log_enabled!(log::Level::Info) {
+        let interior_empty_count = tree
+            .leaves
+            .iter()
+            .enumerate()
+            .filter(|(idx, leaf)| !leaf.is_solid && !exterior.contains(idx))
+            .count();
 
-    log::info!(
-        "Exterior flood-fill: {exterior_count} exterior leaves, {interior_empty_count} interior empty leaves"
-    );
-
-    if exterior_count > 0 && interior_empty_count == 0 {
-        log::warn!(
-            "WARNING: no interior empty leaves remain after exterior culling — map may be unsealed or have a leak"
+        log::info!(
+            "Exterior flood-fill: {exterior_count} exterior leaves, {interior_empty_count} interior empty leaves"
         );
+    }
+
+    if exterior_count > 0 {
+        let interior_empty_count = tree
+            .leaves
+            .iter()
+            .enumerate()
+            .filter(|(idx, leaf)| !leaf.is_solid && !exterior.contains(idx))
+            .count();
+        if interior_empty_count == 0 {
+            log::warn!(
+                "No interior empty leaves remain after exterior culling — map may be unsealed or have a leak"
+            );
+        }
     }
 
     exterior

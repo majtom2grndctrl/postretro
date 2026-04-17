@@ -39,10 +39,6 @@ pub fn partition(brush_volumes: &[BrushVolume]) -> Result<PartitionResult> {
 
     let mut tree = build_bsp_from_brushes(brush_volumes)?;
 
-    let solid_count = tree.leaves.iter().filter(|l| l.is_solid).count();
-    let empty_count = tree.leaves.len() - solid_count;
-    log::info!("BSP leaves: {solid_count} solid, {empty_count} empty");
-
     let FaceExtractionResult {
         faces,
         coplanar_conflicts,
@@ -55,12 +51,14 @@ pub fn partition(brush_volumes: &[BrushVolume]) -> Result<PartitionResult> {
         );
     }
 
-    log_stats(&tree, &faces);
-
     Ok(PartitionResult { tree, faces })
 }
 
-fn log_stats(tree: &BspTree, faces: &[Face]) {
+pub fn log_stats(tree: &BspTree, faces: &[Face]) {
+    let solid_count = tree.leaves.iter().filter(|l| l.is_solid).count();
+    let empty_count = tree.leaves.len() - solid_count;
+    log::info!("BSP leaves: {solid_count} solid, {empty_count} empty");
+
     let max_depth = compute_max_depth(tree);
     let avg_faces: f64 = if tree.leaves.is_empty() {
         0.0

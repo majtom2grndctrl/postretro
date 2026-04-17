@@ -51,6 +51,9 @@ fn main() -> anyhow::Result<()> {
     // emits a polygon into a solid leaf.
     let result = partition::partition(&map_data.brush_volumes)?;
     timings.push(("Partitioning", stage_start.elapsed()));
+    if args.verbose {
+        partition::log_stats(&result.tree, &result.faces);
+    }
 
     announce(started, "Starting visibility computation...");
     let stage_start = Instant::now();
@@ -68,25 +71,25 @@ fn main() -> anyhow::Result<()> {
     let exterior_leaves = visibility::find_exterior_leaves(&result.tree, &generated_portals);
 
     let vis_result = visibility::encode_vis(&result.tree, &generated_portals, &exterior_leaves);
+    timings.push(("Visibility", stage_start.elapsed()));
     if args.verbose {
         visibility::log_stats(&vis_result, portal_count);
     }
-    timings.push(("Visibility", stage_start.elapsed()));
 
     announce(started, "Starting geometry extraction...");
     let stage_start = Instant::now();
     let geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
-    let empty_leaf_count = result
-        .tree
-        .leaves
-        .iter()
-        .enumerate()
-        .filter(|(idx, l)| !l.is_solid && !exterior_leaves.contains(idx))
-        .count();
+    timings.push(("Geometry", stage_start.elapsed()));
     if args.verbose {
+        let empty_leaf_count = result
+            .tree
+            .leaves
+            .iter()
+            .enumerate()
+            .filter(|(idx, l)| !l.is_solid && !exterior_leaves.contains(idx))
+            .count();
         geometry::log_stats(&geo_result, empty_leaf_count);
     }
-    timings.push(("Geometry", stage_start.elapsed()));
 
     announce(started, "Starting BVH build...");
     let stage_start = Instant::now();
@@ -95,10 +98,10 @@ fn main() -> anyhow::Result<()> {
     // BvhSection) and Milestone 5's CPU baker (via the live bvh::Bvh).
     let (bvh, bvh_primitives, bvh_section) =
         bvh_build::build_bvh(&geo_result).map_err(|e| anyhow::anyhow!("BVH build failed: {e}"))?;
+    timings.push(("BVH Build", stage_start.elapsed()));
     if args.verbose {
         bvh_build::log_stats(&bvh_section);
     }
-    timings.push(("BVH Build", stage_start.elapsed()));
 
     announce(started, "Starting SH volume bake...");
     let stage_start = Instant::now();
@@ -114,10 +117,10 @@ fn main() -> anyhow::Result<()> {
         lights: &map_data.lights,
     };
     let sh_volume_section = sh_bake::bake_sh_volume(&sh_inputs, args.probe_spacing);
+    timings.push(("SH Bake", stage_start.elapsed()));
     if args.verbose {
         sh_bake::log_stats(&sh_volume_section);
     }
-    timings.push(("SH Bake", stage_start.elapsed()));
 
     announce(started, "Starting packing and writing...");
     let stage_start = Instant::now();

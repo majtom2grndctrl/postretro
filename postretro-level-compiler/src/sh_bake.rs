@@ -570,6 +570,42 @@ fn accumulate_sh_rgb(acc: &mut [f32; 27], dir: Vec3, value: Vec3, weight: f32) {
     }
 }
 
+// Cosine-lobe convolution coefficients (Ramamoorthi & Hanrahan 2001, eq. 11).
+// Convert L2 radiance projection coefficients into L2 irradiance coefficients
+// by multiplying each band by its zonal-harmonic cosine-lobe factor.
+const COSINE_LOBE_L0: f32 = std::f32::consts::PI; // π
+const COSINE_LOBE_L1: f32 = 2.0 * std::f32::consts::PI / 3.0; // 2π/3
+const COSINE_LOBE_L2: f32 = std::f32::consts::PI * 0.25; // π/4
+
+/// Fold the cosine-lobe convolution into the SH coefficients in-place. After
+/// this step the coefficients reconstruct irradiance (not radiance) when
+/// sampled in the shading-normal direction, so the runtime shader only
+/// applies the SH basis — no per-fragment A_l multiply.
+fn apply_cosine_lobe_rgb(acc: &mut [f32; 27]) {
+    for band in 0..9 {
+        let factor = cosine_lobe_factor(band);
+        let base = band * 3;
+        acc[base] *= factor;
+        acc[base + 1] *= factor;
+        acc[base + 2] *= factor;
+    }
+}
+
+fn apply_cosine_lobe_mono(acc: &mut [f32; 9]) {
+    for (band, v) in acc.iter_mut().enumerate() {
+        *v *= cosine_lobe_factor(band);
+    }
+}
+
+fn cosine_lobe_factor(band: usize) -> f32 {
+    match band {
+        0 => COSINE_LOBE_L0,
+        1..=3 => COSINE_LOBE_L1,
+        4..=8 => COSINE_LOBE_L2,
+        _ => 0.0,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Probe bakes
 
@@ -586,6 +622,7 @@ fn bake_probe_rgb(
         let radiance = sample_radiance_rgb(inputs, probe_pos, *dir, static_lights);
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
     }
+    apply_cosine_lobe_rgb(&mut acc);
     acc
 }
 
@@ -603,6 +640,7 @@ fn bake_probe_mono(inputs: &BakeInputs<'_>, probe_pos: Vec3, light: &MapLight) -
         let luminance = sample_radiance_mono(inputs, probe_pos, *dir, &unit_light);
         accumulate_sh(&mut acc, *dir, luminance, mc_weight);
     }
+    apply_cosine_lobe_mono(&mut acc);
     acc
 }
 
@@ -878,6 +916,50 @@ mod tests {
         // Determinism: same input yields same output.
         let again = sphere_directions(32, 1);
         assert_eq!(dirs, again);
+    }
+
+    #[test]
+    fn cosine_lobe_makes_constant_radiance_reconstruct_to_pi() {
+        // Identity: for constant incident radiance L = 1, the diffuse
+        // irradiance integral equals π. Project constant 1 onto signed L2
+        // basis, apply cosine-lobe convolution, reconstruct with the same
+        // signed basis — must land near π regardless of normal direction.
+        let samples = 8192usize;
+        let weight = 4.0 * std::f32::consts::PI / samples as f32;
+        let mut coeffs = [0f32; 9];
+        let phi = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt()); // golden angle
+        for i in 0..samples {
+            let t = (i as f32 + 0.5) / samples as f32;
+            let z = 1.0 - 2.0 * t;
+            let r = (1.0 - z * z).max(0.0).sqrt();
+            let theta = phi * i as f32;
+            let dir = Vec3::new(r * theta.cos(), r * theta.sin(), z);
+            accumulate_sh(&mut coeffs, dir, 1.0, weight);
+        }
+        apply_cosine_lobe_mono(&mut coeffs);
+
+        let reconstruct = |n: Vec3| -> f32 {
+            let b = sh_basis_l2(n);
+            (0..9).map(|i| coeffs[i] * b[i]).sum()
+        };
+
+        let expected = std::f32::consts::PI;
+        for n in [
+            Vec3::X,
+            Vec3::Y,
+            Vec3::Z,
+            -Vec3::X,
+            -Vec3::Y,
+            -Vec3::Z,
+            Vec3::new(0.577, 0.577, 0.577).normalize(),
+        ] {
+            let got = reconstruct(n);
+            assert!(
+                (got - expected).abs() < 0.05,
+                "constant radiance L=1 should reconstruct to π irradiance; \
+                 got {got} for normal {n:?}, expected {expected}",
+            );
+        }
     }
 
     #[test]

@@ -1230,10 +1230,10 @@
 {
 "classname" "light_sun"
 "origin" "-256 1104 480"
-"light" "250"
+"light" "15"
 "_color" "220 230 255"
 "delay" "0"
-"mangle" "0 0 -75"
+"mangle" "0 0 -15"
 }
 // entity 5
 {

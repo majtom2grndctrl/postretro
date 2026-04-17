@@ -1,6 +1,6 @@
 # Lighting Foundation
 
-> **Status:** ready — all sub-plans complete, durable decisions captured in `context/lib/`.
+> **Status:** in progress — sub-plans 1–5 complete; sub-plan 6 (SH volume runtime) is next. Durable decisions migrate to `context/lib/` when the full plan ships.
 > **Milestone:** 5 (Lighting Foundation) — see `context/plans/roadmap.md`.
 > **Related:** `context/lib/rendering_pipeline.md` §4 · `context/lib/build_pipeline.md` §Custom FGD · `context/lib/entity_model.md` · `context/reference/light-entities-across-engines.md`
 > **Prerequisite:** Milestone 4 (BVH Foundation) — must ship and pass its check-in gate before any work in this plan begins. The SH baker traverses the BVH built in Milestone 4. See `context/plans/done/bvh-foundation/`.

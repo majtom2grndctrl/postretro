@@ -42,6 +42,31 @@ struct GpuLight {
 // Bindings 5+ reserved for sub-plan 9 (SDF atlas, sampler, top-level index,
 // meta uniform). Do not claim them for anything else.
 
+// Group 3 — SH irradiance volume. 9 3D textures (one per SH L2 band) carry
+// RGB coefficients in their .rgb channels (.a unused). When `grid.has_sh_volume`
+// is 0 the bindings point at dummy 1×1×1 textures and the shader skips SH
+// sampling. See sub-plan 6 and postretro/src/render/sh_volume.rs.
+struct ShGridInfo {
+    grid_origin: vec3<f32>,
+    has_sh_volume: u32,
+    cell_size: vec3<f32>,
+    _pad0: u32,
+    grid_dimensions: vec3<u32>,
+    _pad1: u32,
+};
+
+@group(3) @binding(0) var sh_sampler: sampler;
+@group(3) @binding(1) var sh_band0: texture_3d<f32>;
+@group(3) @binding(2) var sh_band1: texture_3d<f32>;
+@group(3) @binding(3) var sh_band2: texture_3d<f32>;
+@group(3) @binding(4) var sh_band3: texture_3d<f32>;
+@group(3) @binding(5) var sh_band4: texture_3d<f32>;
+@group(3) @binding(6) var sh_band5: texture_3d<f32>;
+@group(3) @binding(7) var sh_band6: texture_3d<f32>;
+@group(3) @binding(8) var sh_band7: texture_3d<f32>;
+@group(3) @binding(9) var sh_band8: texture_3d<f32>;
+@group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) base_uv: vec2<f32>,
@@ -166,12 +191,79 @@ fn sample_csm_shadow(frag_world_pos: vec3<f32>, shadow_map_index: u32) -> f32 {
 // sub-plan 9's SDF sphere-trace — and any unknown value) fall through to
 // unshadowed (factor 1.0) in the fragment main until sub-plan 9 lands.
 
+// --- SH irradiance volume sampling ---
+//
+// Constants are the standard real spherical harmonic L0..L2 basis
+// normalization factors. Signs on bands 1, 3, 5, 7 match the signed basis
+// used by the baker (postretro-level-compiler/src/sh_bake.rs::sh_basis_l2) —
+// projection and reconstruction MUST use the same signed basis, or the
+// L1-y / L1-x / L2-yz / L2-xz terms invert.
+//
+// The Ramamoorthi-Hanrahan cosine-lobe convolution (A_0=π, A_1=2π/3, A_2=π/4)
+// is folded into the baked coefficients at bake time — see
+// sh_bake.rs::apply_cosine_lobe_rgb. Runtime reconstruction applies only the
+// basis. If the indirect looks wrong, the bug is in the baker or the upload
+// path, not these constants. See sub-plan 6 §"Notes for implementation".
+fn sh_irradiance(
+    b0: vec3<f32>, b1: vec3<f32>, b2: vec3<f32>, b3: vec3<f32>,
+    b4: vec3<f32>, b5: vec3<f32>, b6: vec3<f32>, b7: vec3<f32>, b8: vec3<f32>,
+    normal: vec3<f32>,
+) -> vec3<f32> {
+    let nx = normal.x;
+    let ny = normal.y;
+    let nz = normal.z;
+    var r: vec3<f32> = b0 * 0.282095;                 // L0
+    r = r + b1 * (-0.488603 * ny);                    // L1 y  (signed basis)
+    r = r + b2 * ( 0.488603 * nz);                    // L1 z
+    r = r + b3 * (-0.488603 * nx);                    // L1 x  (signed basis)
+    r = r + b4 * ( 1.092548 * nx * ny);               // L2 xy
+    r = r + b5 * (-1.092548 * ny * nz);               // L2 yz (signed basis)
+    r = r + b6 * ( 0.315392 * (3.0 * nz * nz - 1.0)); // L2 z^2
+    r = r + b7 * (-1.092548 * nx * nz);               // L2 xz (signed basis)
+    r = r + b8 * ( 0.546274 * (nx * nx - ny * ny));   // L2 x^2 - y^2
+    return r;
+}
+
+fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    if sh_grid.has_sh_volume == 0u {
+        return vec3<f32>(0.0);
+    }
+    // Grid UV: place probes at texel centers. With probe i sitting at
+    // `origin + i * cell_size` in world space, the texel-center UV for
+    // probe i is `(i + 0.5) / N`. Fragments outside the probe grid clamp
+    // to the nearest edge probe via the sampler's `clamp-to-edge` mode.
+    let dims = max(vec3<f32>(sh_grid.grid_dimensions), vec3<f32>(1.0));
+    let cell_coord = (world_pos - sh_grid.grid_origin) / max(sh_grid.cell_size, vec3<f32>(1.0e-6));
+    let grid_uv = (cell_coord + vec3<f32>(0.5)) / dims;
+
+    let s0 = textureSample(sh_band0, sh_sampler, grid_uv).rgb;
+    let s1 = textureSample(sh_band1, sh_sampler, grid_uv).rgb;
+    let s2 = textureSample(sh_band2, sh_sampler, grid_uv).rgb;
+    let s3 = textureSample(sh_band3, sh_sampler, grid_uv).rgb;
+    let s4 = textureSample(sh_band4, sh_sampler, grid_uv).rgb;
+    let s5 = textureSample(sh_band5, sh_sampler, grid_uv).rgb;
+    let s6 = textureSample(sh_band6, sh_sampler, grid_uv).rgb;
+    let s7 = textureSample(sh_band7, sh_sampler, grid_uv).rgb;
+    let s8 = textureSample(sh_band8, sh_sampler, grid_uv).rgb;
+
+    // Clamp negative irradiance to zero per channel — SH L2 can ring for
+    // sharp transitions (Gibbs). Standard practice; see sub-plan 6.
+    return max(
+        sh_irradiance(s0, s1, s2, s3, s4, s5, s6, s7, s8, normal),
+        vec3<f32>(0.0),
+    );
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let base_color = textureSample(base_texture, base_sampler, in.uv);
     let N = normalize(in.world_normal);
 
-    var total_light = vec3<f32>(uniforms.ambient_floor);
+    // Indirect term: baked SH irradiance. Zero when no SH volume is loaded.
+    let indirect = sample_sh_indirect(in.world_position, N);
+
+    // Total light = ambient floor (minimum) + indirect + direct sum.
+    var total_light = vec3<f32>(uniforms.ambient_floor) + indirect;
 
     for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u) {
         // Influence-volume early-out: skip lights whose sphere bound does

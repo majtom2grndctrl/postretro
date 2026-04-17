@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md
 
 pub mod shadow_pass;
+pub mod sh_volume;
 
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 
 use shadow_pass::ShadowResources;
+use sh_volume::ShVolumeResources;
 
 // --- WGSL Shaders ---
 
@@ -210,6 +212,10 @@ pub struct LevelGeometry<'a> {
     /// Per-light influence volumes from the LightInfluence PRL section.
     /// Same length as `lights` when present; empty if absent.
     pub light_influences: &'a [LightInfluence],
+    /// Baked SH L2 irradiance volume from the `ShVolume` PRL section. `None`
+    /// when the section is absent — the renderer binds dummy 1×1×1 textures
+    /// and the shader skips SH sampling.
+    pub sh_volume: Option<&'a postretro_level_format::sh_volume::ShVolumeSection>,
 }
 
 // --- Renderer ---
@@ -261,6 +267,12 @@ pub struct Renderer {
     /// Shadow map GPU resources. Always present — allocated at level load
     /// even for maps with no shadow-casting lights (dummy textures).
     shadow_resources: ShadowResources,
+
+    /// Group 3 — SH irradiance volume resources. Always allocated; when no
+    /// SH section is present the bind group binds dummy 1×1×1 textures and
+    /// the fragment shader's `has_sh_volume` flag is 0 so SH sampling is
+    /// skipped. See `sh_volume` module for layout.
+    sh_volume_resources: ShVolumeResources,
 
     depth_view: wgpu::TextureView,
 
@@ -714,14 +726,26 @@ impl Renderer {
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
 
+        // Group 3: SH irradiance volume (indirect lighting). Always created —
+        // when the level has no SH section, dummies are bound and the shader
+        // skips SH sampling via the `has_sh_volume` flag in the grid-info
+        // uniform. See sub-plan 6.
+        let sh_volume_resources = ShVolumeResources::new(
+            &device,
+            &queue,
+            geometry.and_then(|g| g.sh_volume),
+        );
+
         // Pipeline layout. Group 2 is the direct-lighting storage buffer
-        // introduced in sub-plan 3 of the lighting foundation.
+        // introduced in sub-plan 3 of the lighting foundation; group 3 is
+        // the SH irradiance volume introduced in sub-plan 6.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Textured Pipeline Layout"),
             bind_group_layouts: &[
                 Some(&uniform_bind_group_layout),
                 Some(&texture_bind_group_layout),
                 Some(&lighting_bind_group_layout),
+                Some(&sh_volume_resources.bind_group_layout),
             ],
             immediate_size: 0,
         });
@@ -937,6 +961,7 @@ impl Renderer {
             lights_buffer,
             influence_buffer,
             shadow_resources,
+            sh_volume_resources,
             depth_view,
             gpu_textures,
             bvh_leaves,
@@ -1263,6 +1288,7 @@ impl Renderer {
                 render_pass.set_pipeline(&self.pipeline);
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.lighting_bind_group, &[]);
+                render_pass.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 render_pass
                     .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -1556,6 +1582,36 @@ mod tests {
             crate::lighting::GPU_LIGHT_SIZE,
             "forward.wgsl GpuLight stride ({light_span}) must match GPU_LIGHT_SIZE ({})",
             crate::lighting::GPU_LIGHT_SIZE,
+        );
+    }
+
+    /// Regression: the SH volume's `ShGridInfo` uniform struct must have
+    /// matching byte stride on both sides of the bind group — CPU packer
+    /// (`sh_volume::build_grid_info_bytes`) and the fragment shader's
+    /// declaration in `forward.wgsl`.
+    #[test]
+    fn forward_wgsl_sh_grid_info_matches_cpu_layout() {
+        let module = naga::front::wgsl::parse_str(SHADER_SOURCE)
+            .expect("forward shader should parse as WGSL");
+
+        let mut seen = std::collections::HashMap::new();
+        for (_handle, ty) in module.types.iter() {
+            if let naga::TypeInner::Struct { span, .. } = &ty.inner
+                && let Some(name) = &ty.name
+            {
+                seen.insert(name.clone(), *span);
+            }
+        }
+
+        let span = seen
+            .get("ShGridInfo")
+            .copied()
+            .expect("forward shader should declare struct ShGridInfo");
+        assert_eq!(
+            span as usize,
+            sh_volume::SH_GRID_INFO_SIZE,
+            "forward.wgsl ShGridInfo stride ({span}) must match SH_GRID_INFO_SIZE ({})",
+            sh_volume::SH_GRID_INFO_SIZE,
         );
     }
 

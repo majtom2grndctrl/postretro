@@ -13,6 +13,7 @@ use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::visibility::decompress_pvs;
 use postretro_level_format::{self as prl_format, SectionId};
@@ -169,6 +170,10 @@ pub struct LevelWorld {
     /// (ID 21). Index `i` corresponds to `lights[i]`. Empty if the section
     /// is absent — the renderer treats all lights as infinite-bound.
     pub light_influences: Vec<crate::lighting::influence::LightInfluence>,
+    /// Baked SH L2 irradiance volume loaded from the ShVolume section
+    /// (ID 20). `None` for maps without baked indirect — the renderer
+    /// degrades to `ambient_floor + direct_sum`.
+    pub sh_volume: Option<ShVolumeSection>,
 }
 
 impl LevelWorld {
@@ -506,6 +511,33 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
+    // ShVolume section (optional). Missing for maps compiled before sub-plan 2
+    // — the renderer falls back to `ambient_floor + direct_sum`.
+    let sh_volume: Option<ShVolumeSection> = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::ShVolume as u32,
+    )? {
+        Some(data) => {
+            let section = ShVolumeSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] ShVolume: {}×{}×{} grid ({} probes, {} animated layers)",
+                section.grid_dimensions[0],
+                section.grid_dimensions[1],
+                section.grid_dimensions[2],
+                section.probes.len(),
+                section.animation_descriptors.len(),
+            );
+            Some(section)
+        }
+        None => {
+            log::warn!(
+                "[PRL] ShVolume section missing — indirect lighting disabled for this map"
+            );
+            None
+        }
+    };
+
     let has_pvs = pvs_section.is_some();
     let has_portals = portals_section.is_some();
 
@@ -680,6 +712,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         bvh,
         lights,
         light_influences,
+        sh_volume,
     })
 }
 
@@ -770,6 +803,7 @@ mod tests {
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
+            sh_volume: None,
         }
     }
 
@@ -815,6 +849,7 @@ mod tests {
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
+            sh_volume: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -852,6 +887,7 @@ mod tests {
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
+            sh_volume: None,
         };
 
         let spawn = world.spawn_position();
@@ -878,6 +914,7 @@ mod tests {
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
+            sh_volume: None,
         };
 
         let indices = face_leaf_indices(&world);

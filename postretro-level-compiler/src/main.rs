@@ -17,7 +17,60 @@ pub mod visibility;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use map_format::{DEFAULT_MAP_FORMAT, MapFormat};
+
+struct BuildProgress {
+    started: Instant,
+    pb: Option<ProgressBar>,
+    verbose: bool,
+}
+
+impl BuildProgress {
+    fn new(started: Instant, verbose: bool) -> Self {
+        Self {
+            started,
+            pb: None,
+            verbose,
+        }
+    }
+
+    fn start_stage(&mut self, msg: &str) {
+        if let Some(pb) = self.pb.take() {
+            pb.finish();
+        }
+
+        let elapsed = self.started.elapsed();
+
+        if !self.verbose {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{elapsed:>4}  {spinner} {msg}")
+                    .unwrap(),
+            );
+            // We can't easily set the "start time" of an indicatif ProgressBar to the past
+            // but we can use a custom formatter or just accept that it shows time-in-stage.
+            // Actually, the user liked the "time since start" feel.
+            
+            // To show total elapsed time in the spinner line, we can use a template that 
+            // doesn't rely on the PB's internal clock if we want to be exact,
+            // but indicatif's {elapsed} is fine for showing active progress.
+            
+            pb.set_message(msg.to_string());
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
+            self.pb = Some(pb);
+        } else {
+            eprintln!("{:>6.2}s  {}", elapsed.as_secs_f32(), msg);
+        }
+    }
+
+    fn finish(&mut self) {
+        if let Some(pb) = self.pb.take() {
+            pb.finish();
+        }
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
@@ -37,13 +90,14 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut timings = Vec::new();
+    let mut progress = BuildProgress::new(started, args.verbose);
 
-    announce(started, "Starting map parsing...");
+    progress.start_stage("Parsing map...");
     let stage_start = Instant::now();
     let map_data = parse::parse_map_file(&args.input, args.format)?;
     timings.push(("Parsing", stage_start.elapsed()));
 
-    announce(started, "Starting BSP partitioning...");
+    progress.start_stage("BSP partitioning...");
     let stage_start = Instant::now();
     // Partition space with brush-derived planes, then project each brush
     // side through the resulting tree to recover the world face list.
@@ -55,7 +109,7 @@ fn main() -> anyhow::Result<()> {
         partition::log_stats(&result.tree, &result.faces);
     }
 
-    announce(started, "Starting visibility computation...");
+    progress.start_stage("Visibility computation...");
     let stage_start = Instant::now();
     // Portals feed both the exterior flood-fill and the BSP/leaf encoder:
     // the encoder uses the exterior set to emit `face_count = 0` for
@@ -76,7 +130,7 @@ fn main() -> anyhow::Result<()> {
         visibility::log_stats(&vis_result, portal_count);
     }
 
-    announce(started, "Starting geometry extraction...");
+    progress.start_stage("Geometry extraction...");
     let stage_start = Instant::now();
     let geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
     timings.push(("Geometry", stage_start.elapsed()));
@@ -91,7 +145,7 @@ fn main() -> anyhow::Result<()> {
         geometry::log_stats(&geo_result, empty_leaf_count);
     }
 
-    announce(started, "Starting BVH build...");
+    progress.start_stage("BVH build...");
     let stage_start = Instant::now();
     // Build the global BVH over all static geometry. One acceleration
     // structure feeds both the runtime GPU traversal (via the flattened
@@ -103,7 +157,7 @@ fn main() -> anyhow::Result<()> {
         bvh_build::log_stats(&bvh_section);
     }
 
-    announce(started, "Starting SH volume bake...");
+    progress.start_stage("SH volume bake...");
     let stage_start = Instant::now();
     // Bake the SH irradiance volume. Same BVH, different traversal: the
     // baker walks the tree on the CPU via the `bvh` crate, so the runtime
@@ -122,7 +176,7 @@ fn main() -> anyhow::Result<()> {
         sh_bake::log_stats(&sh_volume_section);
     }
 
-    announce(started, "Starting packing and writing...");
+    progress.start_stage("Packing and writing...");
     let stage_start = Instant::now();
     let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
     let light_influence_section = pack::encode_light_influence(&map_data.lights);
@@ -161,6 +215,8 @@ fn main() -> anyhow::Result<()> {
     }
     timings.push(("Packing", stage_start.elapsed()));
 
+    progress.finish();
+
     println!("\nBuild Summary:");
     for (name, duration) in &timings {
         println!("  {: <15} {:>6.2}s", name, duration.as_secs_f32());
@@ -168,11 +224,6 @@ fn main() -> anyhow::Result<()> {
     println!("  {: <15} {:>6.2}s", "Total", started.elapsed().as_secs_f32());
 
     Ok(())
-}
-
-fn announce(started: Instant, msg: &str) {
-    let elapsed = started.elapsed();
-    eprintln!("{:>6.2}s  {}", elapsed.as_secs_f32(), msg);
 }
 
 

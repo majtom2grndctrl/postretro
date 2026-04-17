@@ -76,6 +76,18 @@ When a test is written in response to a bug, include a comment naming the bug it
 fn span_generator_handles_zero_height_floor() { ... }
 ```
 
+### Property-based testing
+
+Use `proptest` when the claim is "this always holds for any valid input" rather than "this produces X for input Y."
+
+| Domain | Example invariants |
+|--------|-------------------|
+| Geometric math | Shadow ortho bounds quantized to texel size for any frustum slice. Projection UVs stay in [0, 1] for any valid camera pose. |
+| Numerical monotonicity | Cascade splits strictly increase for any (near, far, λ). Falloff non-increasing with distance. |
+| Algorithmic properties | Sort order preserved after filtering. Assignment always ≤ pool size regardless of candidate count. |
+
+Use a regular `#[test]` when the expected output is a specific value.
+
 ### Floating-point comparison
 
 Game engine code is full of floating-point math (positions, UVs, colors, interpolation). Never assert exact equality on floats. Use approximate comparison with an explicit epsilon.

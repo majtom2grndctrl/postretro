@@ -394,3 +394,25 @@ Do not reuse the camera visibility bitmask to skip shadow geometry. If shadow-pa
 - **Front-face vs. back-face culling.** Directional and spot shadow passes use back-face culling (matches the forward pass). Point shadow passes use **front-face culling** because of the mandatory Y-flip in the projection matrix (see §Per-face rendering) — this is a correctness requirement, not an acne-tuning choice. If shadow acne persists after bias tuning, the fix is **not** to flip culling; that breaks the Y-flip invariant. Instead, increase bias or investigate the geometry.
 - **Reverse-Z is not used.** The forward pipeline uses standard depth (0 near, 1 far) with `CompareFunction::Less` (verified in `postretro/src/render.rs`). Shadow pipelines must match — do not silently introduce reverse-Z in shadow passes, it will make `Less` comparisons meaningless.
 - **Queue-write coalescing trap.** `queue.write_buffer` calls within a single submit do not interleave with encoded passes. All writes execute at submit start; multiple writes to the same buffer offset collapse to the last write. Any per-pass uniform upload (CSM cascades, point light faces, spot lights) must use a dynamic-offset buffer with unique regions per pass — see §Per-face rendering for the architecture. A naive "write + bind, repeat" implementation will silently produce wrong shadows.
+
+---
+
+## Pending refactors
+
+Two known gaps identified post-ship. Both are TDD-first: write failing tests that specify the correct behavior, then fix the implementation.
+
+### CSM texel-snapping
+
+**Problem.** `cascade_ortho_matrix` does not snap ortho bounds to texel boundaries. As the camera rotates, the shadow projection drifts continuously — shadow edges shimmer and crawl across surfaces.
+
+**Fix.** After computing the light-space AABB, quantize the origin to multiples of `aabb_extent / CSM_RESOLUTION` before building the ortho matrix.
+
+**Test strategy.** Property-based (`proptest`): for any camera pose, the ortho origin is a multiple of texel size; a small camera rotation produces either identical bounds or a clean single-texel step. Verify visually with fast mouse-look on a hard shadow edge after the tests pass.
+
+### Slot eviction priority inversion
+
+**Problem.** `ShadowSlotPool::assign` does not evict cached far lights when a closer new light arrives. First-pass retention fills all slots with whatever was cached last frame; a closer new light is silently degraded to unshadowed even though it should take priority. Invisible at current content scale (3 lights); breaks once a level has more than 16 simultaneous shadow-casting point or spot lights.
+
+**Fix.** After first-pass slot retention, if the pool is full and uncached candidates remain that are closer than the farthest cached light, evict the farthest cached light and assign its slot to the closer candidate.
+
+**Test strategy.** Unit tests: 17 candidates, 16-slot pool, closest is uncached → gets a slot, farthest cached is evicted. Edge cases: equidistant lights, newly-arrived light only marginally closer than farthest cached (acceptable to degrade; hysteresis not required in the initial fix).

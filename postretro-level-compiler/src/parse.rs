@@ -340,16 +340,16 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let world_brush_count = world_brush_ids.len();
     let entity_brush_count = total_brushes - world_brush_count;
 
-    log::info!("[Compiler] Total brushes: {total_brushes}");
-    log::info!("[Compiler] World brushes: {world_brush_count}");
-    log::info!("[Compiler] Entity brushes: {entity_brush_count}");
-    log::info!("[Compiler] Brush sides: {total_side_count}");
-    log::info!("[Compiler] Total vertices: {total_vertex_count}");
+    log::info!("Total brushes: {total_brushes}");
+    log::info!("World brushes: {world_brush_count}");
+    log::info!("Entity brushes: {entity_brush_count}");
+    log::info!("Brush sides: {total_side_count}");
+    log::info!("Total vertices: {total_vertex_count}");
     log::info!(
-        "[Compiler] Entity classnames: {}",
+        "Entity classnames: {}",
         entity_classnames.join(", ")
     );
-    log::info!("[Compiler] Lights: {}", lights.len());
+    log::info!("Lights: {}", lights.len());
 
     Ok(MapData {
         brush_volumes,

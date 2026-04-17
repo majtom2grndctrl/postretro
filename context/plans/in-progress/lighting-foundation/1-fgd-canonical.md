@@ -37,6 +37,7 @@ Three entities: `light`, `light_spot`, `light_sun`. Mappers author with familiar
 | `style` | integer (0–11) | `animation` (preset → sample curves) | 0 (no animation) |
 | `_phase` | string (0.0–1.0) | `animation.phase` | 0.0 (sync with cycle start) |
 | `mangle` | vector (pitch yaw roll degrees) | `cone_direction` | **Required for Spot; error if missing** |
+| `_bake_only` | boolean (0 / 1) | `bake_only` | 0 (false — light exists at runtime) |
 | `target` | target name | — | **Deferred to Milestone 6** (entity system needed to resolve names to origins); error if set: "use `mangle` for spotlight direction" |
 
 ### FGD template
@@ -55,6 +56,11 @@ Three entities: `light`, `light_spot`, `light_sun`. Mappers author with familiar
     ]
     style(integer) : "Animation Style" : 0
     _phase(string) : "Animation Phase Offset (0.0-1.0)" : "0.0"
+    _bake_only(choices) : "Bake Only (no runtime direct contribution)" : 0 =
+    [
+        0 : "No — runtime dynamic light (default)"
+        1 : "Yes — contributes only to the baked probe grid"
+    ]
 ]
 
 @PointClass base(Light)
@@ -132,6 +138,8 @@ Errors block compilation. Warnings log and proceed with defaults.
 | Directional missing `mangle` | **Warning** | Defaults to straight down: `"-90 0 0"` (pitch −90°, aim vector `(0, −1, 0)`). |
 | `_phase` outside 0.0–1.0 | **Warning** | Clamp to 0.0–1.0; proceed. |
 | `_phase` set but `style` = 0 | **Warning** | Phase has no effect without animation; ignored. |
+| `_bake_only` = 1 with `style` ≠ 0 | **Warning** | Animation has no effect on a bake-only light; animation curves are ignored. |
+| `_bake_only` = 1 near a chunk tagged destructible | **Warning** (future; no-op until Milestone 10) | Static bake will go stale when geometry changes. Reserved — emit when destructible tagging exists. |
 
 ### Translator notes
 
@@ -202,6 +210,9 @@ pub struct MapLight {
 
     // Shadow casting
     pub cast_shadows: bool,              // default true; false lets transient gameplay lights (Milestone 6+) opt out
+
+    // Runtime presence
+    pub bake_only: bool,                 // true = contributes only to the probe grid bake; not serialized to AlphaLights
 }
 ```
 
@@ -218,7 +229,8 @@ pub struct MapLight {
 - **`FalloffModel` enum retained despite PBR alignment.** PBR uses physical inverse-square only; the retro aesthetic needs linear and inverse-distance as well for authored looks. Aligning with PBR conventions is about *axes*, not *physics*.
 - **`LightType::Directional` (not `Sun`).** Directional is a graphics primitive; "Sun" implies a specific use case. Does not require or imply global illumination — probe-based lighting samples directional lights the same way it samples point lights.
 - **Intensity as a linear multiplier.** The canonical format treats `intensity` as a plain linear scalar applied directly to `color` — the same role an intensity/luminance scalar plays in any modern PBR light format. Format-specific authoring conventions (Quake's 0–300 radiosity-energy scale, Doom sector brightness, etc.) are format-specific and stop at the translator boundary. Sub-plan 2's SH baker and sub-plan 3's direct light shader both assume `intensity × color` is the final linear brightness — no downstream consumer applies a second scale.
-- **`cast_shadows`.** All FGD-authored lights cast shadows by default (`cast_shadows: true`). No FGD key is needed — the flag exists so transient gameplay lights (Milestone 6+) can opt out programmatically. Sub-plan 4 activates shadow map evaluation against this field. `bake_only` and similar per-light routing flags remain deferred.
+- **`cast_shadows`.** All FGD-authored lights cast shadows by default (`cast_shadows: true`). No FGD key is needed — the flag exists so transient gameplay lights (Milestone 6+) can opt out programmatically. Sub-plan 4 activates shadow map evaluation against this field.
+- **`bake_only`.** Authored as `_bake_only` on all three light entity types. When `true`, the light is fed to the SH baker (sub-plan 2) during compilation but is **not** written to the AlphaLights section — it has no runtime presence. Static geometry gets indirect bleed from the baked probes; the light does not appear in the runtime direct loop and therefore has no effect on dynamic entities. When `false` (default), the light appears in both the baker and AlphaLights — static surfaces get indirect via the probes AND direct via the runtime loop; dynamic entities get direct via the runtime loop and indirect via probe sampling at their position. This maps the two-tier design (static vs. dynamic lights) onto a single FGD property rather than distinct entity classnames.
 
 ---
 
@@ -299,7 +311,7 @@ The type name used in both the compiler and engine code is `MapLight`. The compi
 
 Sub-plan 1 compiler task list gains:
 
-8. After all lights are translated into `MapData::lights`, serialize them into the AlphaLights section (ID 18) during the pack step. Each `MapLight` maps one-to-one to a serialized record per the layout above.
+8. After all lights are translated into `MapData::lights`, serialize them into the AlphaLights section (ID 18) during the pack step. **Only lights with `bake_only == false` are written** — bake-only lights feed the SH baker (sub-plan 2) and have no runtime representation. Each surviving `MapLight` maps one-to-one to a serialized record per the layout above.
 
 ### Engine responsibility
 
@@ -329,6 +341,9 @@ At level load, the engine parses the AlphaLights section, deserializes the flat 
   - `_phase` = 0.5 with `style` = 1 → `LightAnimation.phase` = 0.5.
   - `_phase` outside 0.0–1.0 → warning, clamped.
   - `_phase` set with `style` = 0 → warning, ignored.
+  - `_bake_only` = 1 → `MapLight.bake_only` = true; light is excluded from the AlphaLights section but still present in `MapData::lights` for the SH baker.
+  - `_bake_only` = 0 (or absent) → `MapLight.bake_only` = false; light appears in both `MapData::lights` and AlphaLights.
+  - `_bake_only` = 1 with `style` ≠ 0 → warning; animation curves stripped for that light.
 - [ ] AlphaLights PRL section (ID 18) written by the compiler and readable by the engine: compiler serializes `MapData::lights` to the flat record layout above; engine parses the section at level load and produces a `Vec<MapLight>` with correct field values for every record.
 - [ ] No other runtime engine changes in this sub-plan. Map lights available via `MapData::lights` for sub-plan 2's baker.
 - [ ] `cargo test -p postretro-level-compiler` passes

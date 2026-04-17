@@ -15,6 +15,11 @@
     ]
     style(integer) : "Animation Style" : 0
     _phase(string) : "Animation Phase Offset (0.0-1.0)" : "0.0"
+    _bake_only(choices) : "Bake Only" : 0 =
+    [
+        0 : "Runtime dynamic (direct loop + probe bake)"
+        1 : "Bake only (probe bake, no runtime presence)"
+    ]
 ]
 
 @PointClass base(Light)

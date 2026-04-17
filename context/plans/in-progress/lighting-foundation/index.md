@@ -12,14 +12,14 @@
 
 Replace flat ambient with the full target lighting pipeline:
 
-- **Indirect:** SH L2 irradiance volume baked at compile time, sampled per fragment via 3D texture trilinear interpolation.
-- **Direct:** dynamic lights (point, spot, directional) authored as FGD entities and consumed both by the bake and by the runtime direct path. Target: up to **500 authored lights per level**. The runtime uses a flat per-fragment loop with per-light influence-volume early-out (sub-plan 4); clustered forward+ binning is a future optimization if profiling shows the flat loop bottlenecks at high visible-light counts.
-- **Surface detail:** tangent-space normal maps perturbing the per-fragment normal before shading.
-- **Dynamic shadows:** cascaded shadow maps for directional lights, cube shadow maps for point lights, single 2D shadow maps for spot lights. Low-resolution, nearest-neighbor sampling — chunky pixel shadow edges match the target aesthetic.
+- **Indirect:** SH L2 irradiance volume baked at compile time, sampled per fragment via 3D texture trilinear interpolation. Indirect bleed lights both static surfaces and dynamic entities via probe sampling.
+- **Direct:** lights (point, spot, directional) authored as FGD entities. Each light is either **runtime-dynamic** (participates in the runtime direct loop AND contributes to the probe bake) or **bake-only** (contributes to the probe bake only, has no runtime presence). The distinction is a single `_bake_only` FGD property, not separate entity classnames. Target: up to **500 authored lights per level**. The runtime uses a flat per-fragment loop with per-light influence-volume early-out (sub-plan 4); clustered forward+ binning is a future optimization if profiling shows the flat loop bottlenecks at high visible-light counts.
+- **Surface detail:** per-texel specular response from specular maps, evaluated in the direct light loop (sub-plan 9). Shading model TBD (Phong vs. PBR).
+- **Shadows:** two complementary paths. **CSM (sub-plan 5)** provides hard-edge cascaded shadows for directional lights (the sun), matching the chunky aesthetic. **SDF sphere-tracing (sub-plan 8)** provides soft-edge shadows for point and spot lights by sphere-tracing a baked signed distance field of the world. Uniform quality across all omnidirectional lights, one fragment-shader pass for all lights, no cube shadow maps.
 
 The translator is decoupled from the parser: future map-format support (e.g., UDMF) adds a sibling module against the same canonical types, so the baker and everything downstream never learn the source format.
 
-**Shadow coverage:** the SH irradiance volume captures indirect light bounces at bake time; dynamic shadow maps cover direct-light occlusion at runtime. Together these replace what lightmaps would contribute in a traditional Quake-lineage pipeline.
+**Shadow coverage:** the SH irradiance volume captures indirect light bounces at bake time; CSM + SDF cover direct-light occlusion at runtime. Together these replace what lightmaps would contribute in a traditional Quake-lineage pipeline — without the per-surface UV unwrap or lightmap texture overhead.
 
 ---
 
@@ -41,51 +41,66 @@ TrenchBroom authoring (FGD)
   → .map file
     → prl-build parser (extract property bag)
       → format::quake_map::translate_light (validate, convert)
-        → MapLight in MapData.lights
-          ├─→ SH irradiance volume baker
-          │     (ray-casts through the Milestone 4 BVH via bvh crate,
+        → MapLight in MapData.lights                       (all lights)
+          │
+          ├─→ SH irradiance volume baker                   (all lights)
+          │     (ray-casts through the Milestone 4 BVH,
           │      SH L2 projection, validity mask)
           │     → SH section in .prl
           │       → runtime trilinear sample (fragment shader,
-          │          indirect term)
-          └─→ runtime direct light buffer
-              (map lights; transient gameplay lights in Milestone 6+)
+          │          indirect term for static surfaces AND
+          │          dynamic entities at their position)
+          │
+          ├─→ SDF atlas baker                              (static geometry, not light-specific)
+          │     (closest-point queries through the BVH,
+          │      brick-indexed sparse distance field)
+          │     → SdfAtlas section in .prl
+          │       → runtime sphere trace (fragment shader,
+          │          point + spot shadow term)
+          │
+          └─→ runtime direct light buffer                  (bake_only=false lights only)
+              (AlphaLights section; transient gameplay lights join in Milestone 6+)
                 → flat per-fragment light loop (direct term)
-                  → shadow map sampling per shadow-casting light
+                  → CSM sample for directional (sub-plan 5)
+                  → SDF sphere trace for point/spot (sub-plan 8)
 ```
 
 ---
 
 ## Sub-plans
 
-This plan has eight sub-files. Sub-plans 1–2 are compiler/data work; sub-plans 3–8 are engine-side, ordered so each step has a clear visual validation surface before the next layer is added. Sub-plan 1 has no engine impact and could overlap with the tail end of Milestone 4 in principle, but the rule is: nothing from this plan starts until Milestone 4's check-in gate signs off.
+This plan has eight sub-files. Sub-plans 1–2 and 8's baker half are compiler/data work; sub-plans 3–6, 8, and 9's runtime half are engine-side, ordered so each step has a clear visual validation surface before the next layer is added. Sub-plan 1 has no engine impact and could overlap with the tail end of Milestone 4 in principle, but the rule is: nothing from this plan starts until Milestone 4's check-in gate signs off.
 
 **Dependency graph summary:**
 - Sub-plan 1 must complete before anything else.
 - Sub-plans 2 (compiler-side SH baker) and 3 (engine-side direct lighting) can proceed **in parallel** once sub-plan 1 is done — they are independent work streams.
-- Sub-plan 4 (light influence volumes) depends on sub-plan 3. Sub-plan 5 (shadows) depends on sub-plan 3 and **benefits from sub-plan 4** (the CPU frustum-visibility test sub-plan 4 provides enables shadow-slot allocation; sub-plan 5 can ship without it by allocating a fixed slot per light, but the intended design expects sub-plan 4 to land first). Sub-plan 6 (normal maps) depends on sub-plan 3 only. Sub-plans 4, 5, and 6 are otherwise independent of each other.
-- Sub-plan 7 (SH volume runtime) depends on sub-plans 2 and 3, but is independent of sub-plans 5 and 6.
-- Sub-plan 8 (animated SH) depends on sub-plan 7.
+- Sub-plan 4 (light influence volumes) depends on sub-plan 3. Sub-plan 5 (CSM) depends on sub-plan 3 and **benefits from** sub-plan 4. Sub-plans 4 and 5 are otherwise independent of each other.
+- Sub-plan 6 (SH volume runtime) depends on sub-plans 2 and 3, but is independent of sub-plans 5 and 8.
+- Sub-plan 7 (animated SH) is deprioritized to Future (see Out of scope); it can ship as a follow-up once the rest of Milestone 5 is complete.
+- Sub-plan 8 (SDF + sphere-traced shadows) depends on sub-plan 3 and the Milestone 4 BVH; **benefits from** sub-plan 4. Independent of sub-plans 5 and 6.
+- Sub-plan 9 (specular maps) depends on sub-plan 8 and a shading model decision recorded in the sub-plan file before implementation starts.
 
 ### Compiler / data pipeline
 
-1. **[1-fgd-canonical.md](./1-fgd-canonical.md)** — FGD light entities, parser wiring, translator, map light format. Pure compiler/data work, no engine changes. Output: `MapData.lights: Vec<MapLight>` populated for every test map. **Gate:** sub-plans 2 and 3 may not start until this is done.
+1. **[1-fgd-canonical.md](./1-fgd-canonical.md)** — FGD light entities, parser wiring, translator, map light format. Pure compiler/data work, no engine changes. Output: `MapData.lights: Vec<MapLight>` populated for every test map; `_bake_only` authored lights skip the runtime AlphaLights section. **Gate:** sub-plans 2, 3, and 9 may not start until this is done.
 
-2. **[2-sh-baker.md](./2-sh-baker.md)** — SH irradiance volume baker stage in `prl-build`, plus the SH PRL section. Ray-casts through the Milestone 4 BVH. Output: every test map emits an SH section. **Depends on:** sub-plan 1. **Parallel with:** sub-plan 3.
+2. **[2-sh-baker.md](./2-sh-baker.md)** — SH irradiance volume baker stage in `prl-build`, plus the SH PRL section. Ray-casts through the Milestone 4 BVH. Consumes all `MapData.lights` (both runtime-dynamic and bake-only). Output: every test map emits an SH section. **Depends on:** sub-plan 1. **Parallel with:** sub-plan 3.
 
 ### Engine runtime (ordered by visual validation dependencies)
 
-3. **[3-direct-lighting.md](./3-direct-lighting.md)** — Direct lighting via a flat per-fragment light loop + ambient floor. Uploads map lights to a GPU storage buffer, evaluates Lambert diffuse with per-type falloff and spot cone attenuation. This is the foundation — sub-plans 4, 5, and 6 are all validated relative to what this shows. Uses a flat loop, not clustered forward+; clustering is a future optimization when light counts demand it. **Depends on:** sub-plan 1. **Parallel with:** sub-plan 2.
+3. **[3-direct-lighting.md](./3-direct-lighting.md)** — Direct lighting via a flat per-fragment light loop + ambient floor. Uploads map lights (runtime-dynamic only) to a GPU storage buffer, evaluates Lambert diffuse with per-type falloff and spot cone attenuation. This is the foundation — sub-plans 4, 5, and 9 are all validated relative to what this shows. Uses a flat loop, not clustered forward+; clustering is a future optimization when light counts demand it. **Depends on:** sub-plan 1. **Parallel with:** sub-plan 2.
 
-4. **[4-light-influence-volumes.md](./4-light-influence-volumes.md)** — Light influence volumes (compile-time per-light sphere bounds in PRL, runtime spatial culling). **Depends on:** sub-plan 3. **Enables:** sub-plan 5's shadow-slot allocation (the CPU frustum-visibility test produced here gates which lights need an active shadow map this frame).
+4. **[4-light-influence-volumes.md](./4-light-influence-volumes.md)** — Light influence volumes (compile-time per-light sphere bounds in PRL, runtime spatial culling). **Depends on:** sub-plan 3. **Enables:** sub-plan 5's CSM slot allocation and sub-plan 9's per-light sphere-trace gating (lights whose influence volume doesn't intersect the view don't trace).
 
-5. **[5-shadow-maps.md](./5-shadow-maps.md)** — Shadow map passes modulating the direct term. CSM for directional, cube shadow maps for point, single 2D for spot. Nearest-neighbor sampling for chunky retro shadow edges. **Depends on:** sub-plan 3. **Benefits from:** sub-plan 4 (CPU frustum-visibility test for slot allocation). **Independent of:** sub-plan 6.
+5. **[5-shadow-maps.md](./5-shadow-maps.md)** — CSM for directional/sun shadows. Hard-edge cascaded shadow maps with nearest-neighbor sampling and rotation-invariant texel snapping. Point and spot shadows are handled by sub-plan 9 (SDF sphere-trace), not here. **Depends on:** sub-plan 3. **Benefits from:** sub-plan 4.
 
-6. **[6-normal-maps.md](./6-normal-maps.md)** — Tangent-space normal maps. Activates the TBN data already in the vertex format (Milestone 3.5). Perturbs the per-fragment shading normal before both direct and indirect evaluation. **Depends on:** sub-plan 3. **Independent of:** sub-plans 4 and 5.
+6. **[6-sh-volume.md](./6-sh-volume.md)** — SH irradiance volume sampling (indirect lighting). Loads the SH PRL section from sub-plan 2, uploads to 3D textures, trilinear samples in the fragment shader, reconstructs SH L2 irradiance. Replaces flat ambient as the indirect term for static surfaces and provides indirect lighting for dynamic entities via probe sampling at the entity's position. **Depends on:** sub-plans 2 and 3. **Independent of:** sub-plans 5 and 8.
 
-7. **[7-sh-volume.md](./7-sh-volume.md)** — SH irradiance volume sampling (indirect lighting). Loads the SH PRL section from sub-plan 2, uploads to 3D textures, trilinear samples in the fragment shader, reconstructs SH L2 irradiance. Replaces flat ambient as the indirect term. **Depends on:** sub-plans 2 and 3. **Independent of:** sub-plans 5 and 6.
+7. **[7-animated-sh.md](./7-animated-sh.md)** — Animated SH layers. Loads per-light monochrome SH layers and animation descriptors, evaluates brightness/color curves per frame, modulates and adds to base SH. **Deprioritized to Future** — ships as a follow-up once the rest of Milestone 5 is complete. **Depends on:** sub-plan 6.
 
-8. **[8-animated-sh.md](./8-animated-sh.md)** — Animated SH layers. Loads per-light monochrome SH layers and animation descriptors, evaluates brightness/color curves per frame, modulates and adds to base SH. Final sub-plan. **Depends on:** sub-plan 7.
+8. **[8-sdf-shadows.md](./8-sdf-shadows.md)** — SDF atlas baker + sphere-traced soft shadows for point and spot lights. Replaces cube shadow maps entirely. Bake-time: brick-indexed sparse distance field over all static geometry, written as a new PRL section. Runtime: single fragment-shader trace per visible shadow-casting light, gated by `shadow_kind == 2`. Chunk-friendly brick addressing so Milestone 8's chunk primitive migration is additive. **Depends on:** sub-plan 3, Milestone 4 BVH. **Benefits from:** sub-plan 4.
+
+9. **[9-specular-maps.md](./9-specular-maps.md)** — Specular maps. Per-texel specular intensity and color evaluated in the direct light loop, adding a highlight term on top of Lambert diffuse. Shading model decision (Phong vs. PBR) required before implementation starts — recorded in the sub-plan file. **Depends on:** sub-plan 8.
 
 ---
 
@@ -101,9 +116,8 @@ This plan has eight sub-files. Sub-plans 1–2 are compiler/data work; sub-plans
 - Quake `style` integer → `LightAnimation` preset conversion. Canonical format is preset-free; the translator owns the Quake style table.
 - SH irradiance volume baker: probe placement, radiance evaluation with shadow raycasting through the Milestone 4 BVH, SH L2 projection, validity masking, PRL section writer.
 - Runtime SH volume sampling: parse PRL section to 3D texture, trilinear sampling in world shader.
-- Normal map loading and tangent-space shading in the world shader.
 - Flat per-fragment direct light loop with influence-volume early-out: per-light-type evaluation (point/spot/directional), falloff models, spot cone attenuation. Target: 500 authored lights per level; influence volumes ensure the per-fragment cost scales with nearby lights, not total lights. Clustered forward+ binning deferred until profiling shows the flat loop bottlenecks.
-- Shadow map pipeline: CSM for directional, cube shadow maps for point/spot, sampling in the world shader.
+- Shadow pipeline: CSM for directional (sub-plan 5); SDF atlas + sphere-traced soft shadows for point and spot (sub-plan 9). No cube shadow maps, no per-spot 2D shadow maps.
 - Test map coverage extending `assets/maps/test.map`.
 - Documentation update to `context/lib/build_pipeline.md` §Custom FGD table.
 
@@ -115,6 +129,8 @@ This plan has eight sub-files. Sub-plans 1–2 are compiler/data work; sub-plans
 - Area lights (rectangle, disk). Point / spot / directional cover the target feature set.
 - Second-bounce indirect. The SH volume captures direct-to-static bounces; multi-bounce is a follow-up if visuals demand it.
 - Runtime dynamic probe updates (DDGI-style). The SH volume is baked, read-only at runtime.
+- Animated SH layers (sub-plan 7). Deprioritized to Future — ships as a follow-up once the rest of Milestone 5 is complete.
+- Dynamic SDF rebake. The sub-plan 9 SDF is baked once per level; kinematic clusters and destruction-driven SDF invalidation are addressed in Milestones 9 and 10.
 - Runtime evaluation of light animation curves. The baker bakes animation into probe sample curves at compile time; runtime evaluation of dynamic light animations is a Milestone 6+ follow-up.
 - Hardware ray tracing. Pre-RTX target locked in Milestone 4.
 - Exhaustive academic literature review.
@@ -131,7 +147,8 @@ Durable architectural decisions migrate to `context/lib/rendering_pipeline.md` (
 - SH volume spatial layout, per-probe storage, validity masking.
 - SH volume PRL section shape.
 - Flat light loop design and migration path to clustered forward+ when needed.
-- Shadow map defaults (resolution, cascade count, depth bias).
-- Baker ↔ BVH sharing pattern: one acceleration structure, two consumers (bake-time CPU, runtime GPU).
+- CSM defaults (resolution, cascade count, depth bias, bounding-sphere texel-snap fit).
+- SDF atlas layout (brick indirection, voxel quantization, sentinel slots) and sphere-trace soft-shadow parameters.
+- Baker ↔ BVH sharing pattern: one acceleration structure, three consumers (runtime cull GPU, SH baker CPU, SDF baker CPU).
 
 The plan document itself is ephemeral per `development_guide.md` §1.5.

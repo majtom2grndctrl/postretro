@@ -304,6 +304,19 @@ pub struct Renderer {
     /// the correct cascade. Public so `main.rs` can pass them back
     /// into `update_per_frame_uniforms`.
     pub csm_splits_cache: [f32; 4],
+
+    /// Monotonic frame counter for debug logging.
+    debug_frame: u64,
+    /// Previous frame's slot assignments for delta logging (light_index, kind, pool_slot).
+    debug_prev_slots: Vec<(u32, u32, u32)>,
+    /// Previous frame's CSM w-axis columns for delta logging (per layer).
+    debug_prev_csm_w: Vec<[f32; 4]>,
+    /// Previous frame's visible-cell bitmask fingerprint (popcount, xor_hash).
+    debug_prev_bitmask: (u32, u32),
+    /// Previous frame's view_proj matrix fingerprint (bitwise xor of all 16 f32 bits).
+    debug_prev_vp_hash: u32,
+    /// Previous frame's VisibleCells variant label + cell count.
+    debug_prev_visible: (&'static str, usize),
 }
 
 impl Renderer {
@@ -984,6 +997,12 @@ impl Renderer {
                 );
                 [s[0], s[1], s[2], 0.0]
             },
+            debug_frame: 0,
+            debug_prev_slots: Vec::new(),
+            debug_prev_csm_w: Vec::new(),
+            debug_prev_bitmask: (u32::MAX, u32::MAX),
+            debug_prev_vp_hash: u32::MAX,
+            debug_prev_visible: ("init", usize::MAX),
         })
     }
 
@@ -1106,6 +1125,7 @@ impl Renderer {
     /// `DrawIndexedIndirect` per surviving leaf. The render pass consumes
     /// them via `multi_draw_indexed_indirect` (or the singular fallback).
     pub fn render_frame_indirect(&mut self, visible: &VisibleCells, view_proj: Mat4) -> Result<()> {
+        self.debug_frame = self.debug_frame.wrapping_add(1);
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
             wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
@@ -1143,6 +1163,47 @@ impl Renderer {
         // in the same command submission — no readback or GPU sync needed.
         if let Some(cull) = &mut self.compute_cull {
             cull.dispatch(&self.device, &self.queue, &mut encoder, visible, &view_proj);
+
+            if log::log_enabled!(log::Level::Debug) {
+                let f = self.debug_frame;
+
+                // Bitmask fingerprint: popcount + xor hash of all words.
+                let bm = cull.debug_bitmask_fingerprint();
+                if bm != self.debug_prev_bitmask {
+                    log::debug!(
+                        "[cull f={f}] visible-cell bitmask changed: pop={} hash={:#010x} (was pop={} hash={:#010x})",
+                        bm.0, bm.1, self.debug_prev_bitmask.0, self.debug_prev_bitmask.1,
+                    );
+                    self.debug_prev_bitmask = bm;
+                }
+
+                // View-proj fingerprint: XOR of all 16 f32 bit-patterns.
+                let mut vp_hash = 0u32;
+                for i in 0..4 {
+                    let col = view_proj.col(i);
+                    vp_hash ^= col.x.to_bits();
+                    vp_hash ^= col.y.to_bits().rotate_left(7);
+                    vp_hash ^= col.z.to_bits().rotate_left(13);
+                    vp_hash ^= col.w.to_bits().rotate_left(19);
+                }
+                if vp_hash != self.debug_prev_vp_hash {
+                    log::debug!("[cull f={f}] view_proj changed: hash={:#010x}", vp_hash);
+                    self.debug_prev_vp_hash = vp_hash;
+                }
+
+                // VisibleCells variant + size.
+                let cur_vis = match visible {
+                    VisibleCells::Culled(cells) => ("Culled", cells.len()),
+                    VisibleCells::DrawAll => ("DrawAll", 0),
+                };
+                if cur_vis != self.debug_prev_visible {
+                    log::debug!(
+                        "[cull f={f}] VisibleCells changed: {}(n={}) (was {}(n={}))",
+                        cur_vis.0, cur_vis.1, self.debug_prev_visible.0, self.debug_prev_visible.1,
+                    );
+                    self.debug_prev_visible = cur_vis;
+                }
+            }
         }
 
         // Shadow map passes: assign slots and render depth-only passes for
@@ -1168,7 +1229,7 @@ impl Renderer {
             let csm_splits_arr = shadow::compute_cascade_splits(camera_near, camera_far, 0.5);
             self.csm_splits_cache = [csm_splits_arr[0], csm_splits_arr[1], csm_splits_arr[2], 0.0];
 
-            self.shadow_resources.render_shadow_passes(
+            let csm_matrices = self.shadow_resources.render_shadow_passes(
                 &mut encoder,
                 &self.queue,
                 &assignment,
@@ -1180,6 +1241,35 @@ impl Renderer {
                 camera_near,
                 camera_far,
             );
+
+            // Delta logging: emit only when slot assignments or CSM matrices change.
+            if log::log_enabled!(log::Level::Debug) {
+                let f = self.debug_frame;
+
+                let cur_slots: Vec<(u32, u32, u32)> = assignment.slots.iter()
+                    .map(|s| (s.light_index, s.shadow_kind, s.pool_slot))
+                    .collect();
+                if cur_slots != self.debug_prev_slots {
+                    log::debug!(
+                        "[shadow f={f}] slot assignment changed: visible_lights={} slots={:?}",
+                        self.visible_light_indices.len(), cur_slots,
+                    );
+                    self.debug_prev_slots = cur_slots;
+                }
+
+                let cur_csm_w: Vec<[f32; 4]> = csm_matrices.iter()
+                    .map(|m| [m.w_axis.x, m.w_axis.y, m.w_axis.z, m.w_axis.w])
+                    .collect();
+                if cur_csm_w != self.debug_prev_csm_w {
+                    for (i, w) in cur_csm_w.iter().enumerate() {
+                        log::debug!(
+                            "[shadow f={f}] csm[{i}] w_axis changed: ({:.3},{:.3},{:.3},{:.3})",
+                            w[0], w[1], w[2], w[3],
+                        );
+                    }
+                    self.debug_prev_csm_w = cur_csm_w;
+                }
+            }
         }
 
         {

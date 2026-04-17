@@ -201,42 +201,42 @@ Directional lights still consume shadow-map slots when they cast shadows — spe
 
 ## Acceptance criteria
 
-- [ ] `SectionId::LightInfluence = 21` added to `postretro-level-format/src/lib.rs` and wired through `from_u32`
-- [ ] `postretro-level-format/src/light_influence.rs` implements read/write for the section with `version`, `record_count`, `record_stride`, and packed 16-byte records
-- [ ] `prl-build` emits a `LightInfluence` section alongside `AlphaLights`, one record per `MapLight`, same order
-- [ ] Point and spot lights encode as `(position, falloff_range)`; directional lights encode as `([0,0,0], f32::MAX)`
-- [ ] Engine parses `LightInfluence` at level load and uploads to a new storage buffer bound at group 2 binding 1
-- [ ] Engine asserts record count matches light count; mismatch is a load error
-- [ ] Missing section is not an error — engine logs a warning and treats all lights as infinite-bound
-- [ ] Fragment shader skips lights whose influence volume does not contain the fragment, via squared-distance test
-- [ ] Directional lights bypass the spatial test via the infinity sentinel
-- [ ] **Pixel output is identical to sub-plan 3** on every test map (verified by visual diff at minimum; golden-image test if the harness supports it)
-- [ ] `visible_lights(&[LightInfluence], &Frustum) -> Vec<u32>` implemented, taking the existing `Frustum` from `visibility.rs`
-- [ ] `visible_lights` is called once per frame, passing the `Frustum` already produced for portal traversal — no second `extract_frustum_planes` call
-- [ ] Result is available for sub-plan 5 to consume (for now, just assert it runs and log the count under `RUST_LOG=debug`)
-- [ ] `cargo test -p postretro-level-format` covers round-trip read/write of the new section
-- [ ] `cargo test -p postretro` covers `visible_lights` with hand-rolled `Frustum` cases: light fully inside, fully outside, straddling a plane, `f32::MAX` sentinel (always visible)
-- [ ] `cargo clippy -p postretro -p postretro-level-format -p postretro-level-compiler -- -D warnings` clean
+- [x] `SectionId::LightInfluence = 21` added to `postretro-level-format/src/lib.rs` and wired through `from_u32`
+- [x] `postretro-level-format/src/light_influence.rs` implements read/write for the section with `version`, `record_count`, `record_stride`, and packed 16-byte records
+- [x] `prl-build` emits a `LightInfluence` section alongside `AlphaLights`, one record per `MapLight`, same order
+- [x] Point and spot lights encode as `(position, falloff_range)`; directional lights encode as `([0,0,0], f32::MAX)`
+- [x] Engine parses `LightInfluence` at level load and uploads to a new storage buffer bound at group 2 binding 1
+- [x] Engine asserts record count matches light count; mismatch is a load error
+- [x] Missing section is not an error — engine logs a warning and treats all lights as infinite-bound
+- [x] Fragment shader skips lights whose influence volume does not contain the fragment, via squared-distance test
+- [x] Directional lights bypass the spatial test via the infinity sentinel
+- [x] **Pixel output is identical to sub-plan 3** on every test map (verified by visual diff at minimum; golden-image test if the harness supports it)
+- [x] `visible_lights(&[LightInfluence], &Frustum) -> Vec<u32>` implemented, taking the existing `Frustum` from `visibility.rs`
+- [x] `visible_lights` is called once per frame, passing the `Frustum` already produced for portal traversal — no second `extract_frustum_planes` call
+- [x] Result is available for sub-plan 5 to consume (for now, just assert it runs and log the count under `RUST_LOG=debug`)
+- [x] `cargo test -p postretro-level-format` covers round-trip read/write of the new section
+- [x] `cargo test -p postretro` covers `visible_lights` with hand-rolled `Frustum` cases: light fully inside, fully outside, straddling a plane, `f32::MAX` sentinel (always visible)
+- [x] `cargo clippy -p postretro -p postretro-level-format -p postretro-level-compiler -- -D warnings` clean
 
 ---
 
 ## Implementation tasks
 
-1. **Format crate.** Add `SectionId::LightInfluence = 21`. Create `light_influence.rs` with `InfluenceRecord`, section header constants, and `read`/`write` functions. Use `alpha_lights.rs` as a structural model but implement the 16-byte `version + record_count + record_stride + reserved` header specified in §PRL section — not `alpha_lights.rs`'s bare `u32 count` header. Unit-test round-trip for a record array containing one of each light type (including a `f32::MAX` sentinel).
+1. ✅ **Format crate.** Add `SectionId::LightInfluence = 21`. Create `light_influence.rs` with `InfluenceRecord`, section header constants, and `read`/`write` functions. Use `alpha_lights.rs` as a structural model but implement the 16-byte `version + record_count + record_stride + reserved` header specified in §PRL section — not `alpha_lights.rs`'s bare `u32 count` header. Unit-test round-trip for a record array containing one of each light type (including a `f32::MAX` sentinel).
 
-2. **Compiler.** In `postretro-level-compiler`, after the AlphaLights writer runs, derive influence records from `MapData.lights` and write the `LightInfluence` section. Shared iteration order with the AlphaLights writer is load-bearing — factor the ordering into a single iterator if needed to prevent drift.
+2. ✅ **Compiler.** In `postretro-level-compiler`, after the AlphaLights writer runs, derive influence records from `MapData.lights` and write the `LightInfluence` section. Shared iteration order with the AlphaLights writer is load-bearing — factor the ordering into a single iterator if needed to prevent drift.
 
-3. **Engine load path.** Parse the `LightInfluence` section in the same load stage that parses `AlphaLights`. Assert counts match. Build `Vec<LightInfluence>` (runtime struct, distinct from the format-crate `InfluenceRecord` if alignment differs). Pack as `Vec<[f32; 4]>` and upload to a `wgpu::Buffer` with `STORAGE | COPY_DST`.
+3. ✅ **Engine load path.** Parse the `LightInfluence` section in the same load stage that parses `AlphaLights`. Assert counts match. Build `Vec<LightInfluence>` (runtime struct, distinct from the format-crate `InfluenceRecord` if alignment differs). Pack as `Vec<[f32; 4]>` and upload to a `wgpu::Buffer` with `STORAGE | COPY_DST`.
 
-4. **Bind group.** Add binding 1 to the group 2 layout. Rebuild the group 2 bind group after the influence buffer is uploaded. Update the forward pipeline layout.
+4. ✅ **Bind group.** Add binding 1 to the group 2 layout. Rebuild the group 2 bind group after the influence buffer is uploaded. Update the forward pipeline layout.
 
-5. **Shader.** Add the `light_influence` binding. Insert the early-out at the top of the light loop. Verify visually against sub-plan 3 screenshots — no pixel should change.
+5. ✅ **Shader.** Add the `light_influence` binding. Insert the early-out at the top of the light loop. Verify visually against sub-plan 3 screenshots — no pixel should change.
 
-6. **CPU sphere-vs-frustum.** Implement `visible_lights(&[LightInfluence], &Frustum) -> Vec<u32>` using the inward-normal `FrustumPlane` convention from `visibility.rs` (`plane.normal.dot(center) + plane.dist < -radius` ⇒ outside). Unit-test with a hand-constructed `Frustum`: light at camera origin (visible), light behind the far plane (not visible), light whose sphere straddles a side plane (visible), `f32::MAX` sentinel (always visible).
+6. ✅ **CPU sphere-vs-frustum.** Implement `visible_lights(&[LightInfluence], &Frustum) -> Vec<u32>` using the inward-normal `FrustumPlane` convention from `visibility.rs` (`plane.normal.dot(center) + plane.dist < -radius` ⇒ outside). Unit-test with a hand-constructed `Frustum`: light at camera origin (visible), light behind the far plane (not visible), light whose sphere straddles a side plane (visible), `f32::MAX` sentinel (always visible).
 
-7. **Frame wiring.** Call `visible_lights` once per frame in the renderer, passing the `Frustum` already produced by `extract_frustum_planes` for portal traversal — no second extraction. Log the count at debug level. Stash the result where sub-plan 5 can pick it up (a field on the renderer's per-frame state is fine).
+7. ✅ **Frame wiring.** Call `visible_lights` once per frame in the renderer, passing the `Frustum` already produced by `extract_frustum_planes` for portal traversal — no second extraction. Log the count at debug level. Stash the result where sub-plan 5 can pick it up (a field on the renderer's per-frame state is fine).
 
-8. **Test maps.** Use the existing sub-plan 1 / sub-plan 3 test maps. No new content needed — the goal is no-op correctness plus a measurable reduction in the per-fragment light loop.
+8. ✅ **Test maps.** Use the existing sub-plan 1 / sub-plan 3 test maps. No new content needed — the goal is no-op correctness plus a measurable reduction in the per-fragment light loop.
 
 ---
 

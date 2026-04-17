@@ -498,6 +498,8 @@ impl ShadowResources {
     }
 
     /// Encode shadow render passes for the current frame's slot assignment.
+    /// Returns the CSM view-projection matrices built this frame (indexed by
+    /// layer = pool_slot * CSM_CASCADE_COUNT + cascade), for delta logging.
     #[allow(clippy::too_many_arguments)]
     pub fn render_shadow_passes(
         &self,
@@ -511,7 +513,7 @@ impl ShadowResources {
         camera_view_proj: Mat4,
         camera_near: f32,
         camera_far: f32,
-    ) {
+    ) -> Vec<Mat4> {
         let mut csm_matrices = vec![Mat4::IDENTITY; CSM_TOTAL_LAYERS];
         let mut spot_matrices = vec![Mat4::IDENTITY; MAX_SPOT_SHADOW_LIGHTS];
 
@@ -561,6 +563,8 @@ impl ShadowResources {
             &self.spot_vp_buffer, 0,
             &shadow::pack_spot_view_proj_buffer(&spot_matrices),
         );
+
+        csm_matrices
     }
 
     #[allow(clippy::too_many_arguments)]

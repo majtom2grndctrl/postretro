@@ -369,7 +369,7 @@ pub fn log_stats(section: &BvhSection) {
         .count();
     let leaves = section.nodes.len() - internal;
     log::info!(
-        "[Compiler] Bvh: {} nodes ({} internal, {} leaf), {} leaf entries",
+        "Bvh: {} nodes ({} internal, {} leaf), {} leaf entries",
         section.nodes.len(),
         internal,
         leaves,
@@ -380,7 +380,7 @@ pub fn log_stats(section: &BvhSection) {
         // shared format-crate helper so the compiler and engine agree on the
         // bucket layout.
         let bucket_count = derive_bucket_ranges(&section.leaves).len();
-        log::info!("[Compiler]   Material buckets: {bucket_count}");
+        log::info!("  Material buckets: {bucket_count}");
     }
 }
 

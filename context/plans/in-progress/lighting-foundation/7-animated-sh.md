@@ -1,10 +1,10 @@
-# Sub-plan 8 — Animated SH Layers
+# Sub-plan 7 — Animated SH Layers
 
 > **Parent plan:** [Lighting Foundation](./index.md) — read first for goals.
-> **Scope:** Runtime loading and evaluation of per-light animated SH layers baked in sub-plan 2. Single packed storage buffer for all per-light SH data, animation descriptor buffer, curve interpolation and manual trilinear interpolation in the fragment shader. Extends the base SH sampling path from sub-plan 7.
+> **Scope:** Runtime loading and evaluation of per-light animated SH layers baked in sub-plan 2. Single packed storage buffer for all per-light SH data, animation descriptor buffer, curve interpolation and manual trilinear interpolation in the fragment shader. Extends the base SH sampling path from sub-plan 6.
 > **Crates touched:** `postretro` only.
-> **Depends on:** sub-plan 7 (base SH volume sampling must be working — animated layers add to the base SH).
-> **Blocks:** nothing. This is the final sub-plan in the lighting foundation.
+> **Depends on:** sub-plan 6 (base SH volume sampling must be working — animated layers add to the base SH).
+> **Blocks:** nothing directly — deprioritized to Future.
 
 ---
 

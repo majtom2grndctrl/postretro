@@ -435,6 +435,18 @@ impl ComputeCullPipeline {
     pub fn cull_status_buffer(&self) -> &wgpu::Buffer {
         &self.cull_status_buffer
     }
+
+    /// Debug fingerprint of the current visible-cell bitmask scratch:
+    /// `(popcount, xor_hash_of_words)`. Call after `dispatch`.
+    pub fn debug_bitmask_fingerprint(&self) -> (u32, u32) {
+        let mut pop = 0u32;
+        let mut hash = 0u32;
+        for (i, &w) in self.visible_bitmask_scratch.iter().enumerate() {
+            pop += w.count_ones();
+            hash ^= w.wrapping_mul((i as u32).wrapping_mul(2654435761).wrapping_add(1));
+        }
+        (pop, hash)
+    }
 }
 
 // --- GPU data serialization ---

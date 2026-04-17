@@ -87,7 +87,7 @@ pub fn translate_light(
         .unwrap_or(QUAKE_INTENSITY_REFERENCE);
 
     if raw_intensity == 0.0 {
-        log::warn!("[Compiler] light entity has intensity 0; it will contribute nothing");
+        log::warn!("light entity has intensity 0; it will contribute nothing");
     }
 
     let intensity = raw_intensity / QUAKE_INTENSITY_REFERENCE;
@@ -100,7 +100,7 @@ pub fn translate_light(
             reason: "expected three integers 0-255",
         })?
     } else {
-        log::warn!("[Compiler] light entity missing '_color'; defaulting to white");
+        log::warn!("light entity missing '_color'; defaulting to white");
         [1.0, 1.0, 1.0]
     };
 
@@ -156,7 +156,7 @@ pub fn translate_light(
                 Some(v) => v as f32,
                 None => {
                     log::warn!(
-                        "[Compiler] light_spot missing '_cone'; defaulting to 30 degrees inner"
+                        "light_spot missing '_cone'; defaulting to 30 degrees inner"
                     );
                     30.0
                 }
@@ -165,14 +165,14 @@ pub fn translate_light(
                 Some(v) => v as f32,
                 None => {
                     log::warn!(
-                        "[Compiler] light_spot missing '_cone2'; defaulting to 45 degrees outer"
+                        "light_spot missing '_cone2'; defaulting to 45 degrees outer"
                     );
                     45.0
                 }
             };
             if inner_deg > outer_deg {
                 log::warn!(
-                    "[Compiler] light_spot _cone ({inner_deg}) > _cone2 ({outer_deg}); outer smaller than inner"
+                    "light_spot _cone ({inner_deg}) > _cone2 ({outer_deg}); outer smaller than inner"
                 );
             }
             cone_angle_inner = Some(inner_deg.to_radians());
@@ -203,7 +203,7 @@ pub fn translate_light(
                 })?
             } else {
                 log::warn!(
-                    "[Compiler] light_sun missing 'mangle'; defaulting to straight down (-90 0 0)"
+                    "light_sun missing 'mangle'; defaulting to straight down (-90 0 0)"
                 );
                 // "-90 0 0" → engine (0, -1, 0), matching sub-plan 1.
                 parse_mangle_direction("-90 0 0").expect("built-in default mangle must parse")
@@ -215,7 +215,7 @@ pub fn translate_light(
 
     // -- Animation --
     let style = parse_optional_int(props, "style")?.unwrap_or_else(|| {
-        log::warn!("[Compiler] light entity missing 'style'; defaulting to 0 (no animation)");
+        log::warn!("light entity missing 'style'; defaulting to 0 (no animation)");
         0
     });
 
@@ -228,7 +228,7 @@ pub fn translate_light(
         None => 0.0,
     };
     let phase = if !(0.0..=1.0).contains(&phase_raw) {
-        log::warn!("[Compiler] light _phase {phase_raw} outside 0.0-1.0; clamping");
+        log::warn!("light _phase {phase_raw} outside 0.0-1.0; clamping");
         phase_raw.clamp(0.0, 1.0)
     } else {
         phase_raw
@@ -237,7 +237,7 @@ pub fn translate_light(
     let animation = if style == 0 {
         if props.contains_key("_phase") && phase_raw != 0.0 {
             log::warn!(
-                "[Compiler] light _phase set but style=0 (no animation); phase has no effect"
+                "light _phase set but style=0 (no animation); phase has no effect"
             );
         }
         None
@@ -246,12 +246,31 @@ pub fn translate_light(
             Some(anim) => Some(anim),
             None => {
                 log::warn!(
-                    "[Compiler] light style {style} has no preset defined; treating as constant"
+                    "light style {style} has no preset defined; treating as constant"
                 );
                 None
             }
         }
     };
+
+    // -- Bake only --
+    let bake_only = match parse_optional_int(props, "_bake_only")? {
+        None | Some(0) => false,
+        Some(1) => true,
+        Some(other) => {
+            return Err(TranslateError::InvalidProperty {
+                key: "_bake_only",
+                value: other.to_string(),
+                reason: "expected 0 (false) or 1 (true)",
+            });
+        }
+    };
+
+    if bake_only && animation.is_some() {
+        log::warn!(
+            "light has _bake_only=1 and an animation style set; animated indirect contribution will bake but the light has no runtime presence"
+        );
+    }
 
     Ok(MapLight {
         origin,
@@ -265,6 +284,7 @@ pub fn translate_light(
         cone_direction,
         animation,
         cast_shadows: true,
+        bake_only,
     })
 }
 
@@ -738,5 +758,60 @@ mod tests {
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!((light.falloff_range - 25.4).abs() < 1e-4);
+    }
+
+    // -- _bake_only property --
+
+    #[test]
+    fn bake_only_default_is_false() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(!light.bake_only);
+    }
+
+    #[test]
+    fn bake_only_zero_is_false() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_bake_only", "0"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(!light.bake_only);
+    }
+
+    #[test]
+    fn bake_only_one_is_true() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_bake_only", "1"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(light.bake_only);
+    }
+
+    #[test]
+    fn bake_only_invalid_errors() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_bake_only", "2"),
+        ]);
+        let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
+        assert!(matches!(
+            err,
+            TranslateError::InvalidProperty {
+                key: "_bake_only",
+                ..
+            }
+        ));
     }
 }

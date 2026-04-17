@@ -4,6 +4,8 @@
 > **Purpose:** milestone-by-milestone plan from "wgpu window exists" through a moddable, playable game. Each milestone produces something visible and testable.
 > **Related:** `context/lib/index.md`, `context/lib/rendering_pipeline.md`
 
+> **Architectural pivot (Milestone 5 onward):** the engine is being re-cut around **chunks as a universal primitive** — every piece of world geometry is a chunk with a transform, a collider, an SDF contribution, and a dependency link to neighbors. "Static world vs. entity" is gone as a split in the renderer and collision system; identity-transform chunks just happen to stay asleep. Lighting is **probe grid + SDF-based soft shadows**, with CSM retained only as a sun optimization. Cube shadow maps, lightmaps, and the BSP runtime partition are dropped. BSP remains available as a compile-time intermediate only where useful. This pivot front-loads harder graphics work (SDF baking, sphere tracing, probe lighting) in exchange for a simpler runtime and a game that can deliver the "boom" in boomer shooter — floating barges, collapsing floors, and destructible pillars are first-class, not bolted on.
+
 ---
 
 ## Milestone 1: BSP Loading and Wireframe ✓
@@ -33,7 +35,7 @@
 
 **Testable outcome:** compile .map → .prl, fly through in wireframe with voxel-based PVS culling. Visibility matches expectations across varied room sizes. ✓
 
-**Status note:** PRL compiler works but BSP + portal PVS may replace the voxel pipeline. Voxel code remains in repo. See `context/reference/voxels-vs-bsp-tradeoffs.md` for analysis.
+**Status note:** superseded by the BVH + portal pipeline in Milestone 4. Voxel code remains in repo as reference.
 
 ---
 
@@ -63,138 +65,194 @@
 
 ## Milestone 3.5: Rendering Foundation Extension ✓
 
-Bring the rendering architecture up to the target pipeline (clustered forward+, GPU-driven indirect draws, SH-probe indirect + normal maps) without adding lighting. This milestone lays the geometry, culling, and draw-dispatch plumbing so later milestones can layer lighting on a stable foundation.
+- [x] **Vertex format upgrade** — packed normals and tangents per vertex (octahedral `u16 × 2` each, plus bitangent sign).
+- [x] **Per-cell draw chunks** — world geometry grouped into per-portal-cell chunks with explicit AABB and index range.
+- [x] **GPU-driven indirect draw path** — compute cull → `multi_draw_indexed_indirect`.
 
-- [x] **Vertex format upgrade** — extend `postretro-level-format` Geometry section to carry packed normals and tangents per vertex (octahedral `u16 × 2` each, plus bitangent sign). prl-build generates them during brush-side projection. Engine vertex layout and world shader updated to consume them. Flat ambient stays in place.
-- [x] **Per-cell draw chunks** — restructure prl-build output and engine loader so world geometry is grouped into per-portal-cell chunks with explicit AABB and index range. Replaces per-leaf draw batching. Required for compute culling in the next step.
-- [x] **GPU-driven indirect draw path** — compute pass consumes the visible cell list (from portal traversal), runs frustum culling per cell, emits `draw_indexed_indirect` commands into a buffer. Main render pass issues a single `multi_draw_indexed_indirect` call. CPU no longer issues per-cell draws.
-
-**Testable outcome:** textured level with flat ambient, navigable, rendering via GPU-driven indirect draws with portal + frustum culling. Same visual result as Milestone 3, different rendering architecture underneath. Frame time well ahead of 60fps vsync target. ✓
-
-**Note:** Milestone 4 (BVH Foundation) supersedes the per-cell chunk spatial structure shipped here. The vertex format and indirect-draw architecture from Milestone 3.5 remain intact.
+**Testable outcome:** textured level with flat ambient, navigable, rendering via GPU-driven indirect draws with portal + frustum culling. ✓
 
 ---
 
 ## Milestone 4: BVH Foundation ✓
 
-Replaced Milestone 3.5's per-cell chunk compute cull with a global BVH over all static geometry. Shipped with visual parity to Milestone 3.5 — flat ambient, no lighting changes — and lays the spatial structure Milestone 5's SH baker will traverse. One acceleration structure, two consumers (runtime cull on the GPU, bake-time ray casts on the CPU).
+- [x] **Compile-time BVH** — global SAH BVH over all static triangles, flattened to dense node/leaf arrays in DFS order, new `Bvh` PRL section.
+- [x] **Runtime BVH traversal** — WGSL skip-index DFS traversal with visible-cell bitmask fed by portal DFS.
+- [x] **Check-in gate** — visual parity with Milestone 3.5 confirmed.
 
-- [x] **Compile-time BVH** — `prl-build` builds a global SAH BVH over all static triangles using the `bvh` crate, flattens to dense node/leaf arrays in DFS order with skip-indices, sorts leaves by `material_bucket_id`, writes the new `Bvh` PRL section (id 19). Retired `chunk_grouping.rs`, `CellChunks` section, and `FaceMeta.index_offset/index_count` (Milestone 3.5 review finding #1 dissolved as a side effect of the pipeline rewrite).
-- [x] **Runtime BVH traversal** — engine parses `Bvh` into node/leaf storage buffers, rewrote `compute_cull.rs` as a skip-index DFS WGSL traversal shader with a 128-word visible-cell bitmask fed by portal DFS, deleted `CellChunkTable`, `chunks_for_cell`, `determine_prl_visibility`, `POSTRETRO_FORCE_LEGACY`, and the V1/V2 legacy load paths. Preserved Milestone 3.5's fixed-slot indirect buffer and `multi_draw_indexed_indirect` design.
-- [x] **Check-in gate** — visual parity with Milestone 3.5 confirmed by manual review across every test map. Global BVH held parity; per-region pivot path documented in `rendering_pipeline.md` §5 but not exercised.
-
-**Testable outcome:** ✓ identical visual output to Milestone 3.5, rendered through a global BVH. Milestone 5 (Lighting Foundation) unblocked.
+**Testable outcome:** ✓ identical visual output to Milestone 3.5, rendered through a global BVH. Milestone 5 unblocked.
 
 **Durable decisions migrated to `context/lib/`:**
-- Global vs. per-region rationale + pivot condition → `rendering_pipeline.md` §5
-- `Bvh` PRL section layout (40-byte node/leaf stride, DFS skip-index) → `rendering_pipeline.md` §5 + `build_pipeline.md` §PRL section IDs
+- Global vs. per-region rationale → `rendering_pipeline.md` §5
+- `Bvh` PRL section layout → `rendering_pipeline.md` §5 + `build_pipeline.md`
 - WGSL skip-index traversal pattern → `rendering_pipeline.md` §7.1
-- `bvh` crate compile-time build stage → `build_pipeline.md` §PRL Compilation step 8
 
 ---
 
-## Milestone 5: Lighting Foundation
+## Milestone 5: Lighting Foundation (Probes + SDF)
 
-Replace flat ambient with the full target lighting pipeline: SH irradiance volume for indirect, flat per-fragment dynamic lights (up to 500 per level) with compile-time influence volumes for spatial culling, normal maps for surface detail, shadow maps from a fixed slot pool. Milestone 5 delivers a fully lit level. Clustered forward+ binning is deferred until profiling shows the flat loop + influence-volume combination bottlenecks. The architectural direction is locked in `context/lib/rendering_pipeline.md` §4.
+Replace flat ambient with the full pivot lighting pipeline: a **probe grid** for indirect (SH L2 irradiance volume), **CSM** for directional/sun shadows, and **SDF sphere-tracing** for point and spot shadows. Lightmaps are not baked. Cube shadow maps are not implemented. Lights are authored as `_bake_only` (probe-grid-only contribution) or runtime-dynamic via a single FGD property.
 
-**Prerequisite:** Milestone 4 (BVH Foundation). The SH baker ray-casts through the BVH built in Milestone 4 — one structure, two consumers, no second design pass.
+**Prerequisite:** Milestone 4 (BVH). One acceleration structure, three consumers: runtime cull (GPU), SH baker (CPU), SDF baker (CPU).
 
-**Sub-plans:** see `context/plans/drafts/lighting-foundation/`.
+**Sub-plans:** see `context/plans/in-progress/lighting-foundation/`.
 
-- [ ] **FGD light entities** — define `light`, `light_spot`, `light_sun` in `assets/postretro.fgd`. Parser extracts property bags; translator converts to canonical format; validation blocks compilation on errors.
-- [ ] **Canonical light format** — `CanonicalLight` struct in the compiler, format-agnostic, fed by per-format translators (`format/quake_map.rs` first; future `format/udmf.rs` etc.).
-- [ ] **SH irradiance volume baker** — prl-build stage that places probes on a regular 3D grid over empty space, evaluates SH L2 coefficients by raycasting against static geometry through the Milestone 4 BVH with canonical lights as sources, and writes a new PRL section. Probe validity mask flags probes inside solid brushes.
-- [ ] **Runtime SH probe sampling** — parse the probe section into a 3D texture, sample trilinearly in the world shader, replace flat ambient with the SH-reconstructed irradiance.
-- [ ] **Normal map rendering** — author normal maps alongside albedo in `textures/`, load them as BC5 (or RGBA placeholder), reconstruct TBN in vertex shader, perturb per-fragment normal before shading.
-- [ ] **Flat per-fragment direct lighting with influence volumes** — flat loop over all lights per fragment with per-light influence-volume early-out (compile-time sphere bounds). CPU sphere-vs-frustum test gates shadow-slot assignment. Scales to 500 authored lights; clustered forward+ deferred until profiling demands it.
-- [ ] **Shadow maps for dynamic lights** — cascaded shadow maps for directional lights, cube shadow maps for point and spot lights. Low-resolution, nearest-neighbor sampling — chunky pixel shadow edges match the target aesthetic.
-- [ ] **Lighting test maps** — author maps that exercise indirect bleed, direct falloff, bright-to-dark transitions, normal-mapped surfaces at varied angles.
+- [x] **FGD light entities** (sub-plan 1) — `light`, `light_spot`, `light_sun` in `assets/postretro.fgd`; canonical light format; `_bake_only` property distinguishes runtime-dynamic lights from probe-grid-only contributors.
+- [ ] **SH irradiance volume baker** (sub-plan 2) — prl-build stage; ray-casts through the Milestone 4 BVH; SH L2 projection; validity mask.
+- [ ] **Direct lighting loop** (sub-plan 3) — flat per-fragment light loop over runtime lights; per-type evaluation; Lambert diffuse.
+- [ ] **Light influence volumes** (sub-plan 4) — per-light sphere bounds in PRL; runtime spatial culling; gates CSM slot assignment and SDF sphere-trace per-light activation.
+- [x] **CSM sun shadows** (sub-plan 5) — 3 cascades, 1024², bounding-sphere fit with rotation-invariant texel snapping. Hard edges match aesthetic; SDF path provides penumbrae elsewhere.
+- [ ] **Runtime probe sampling** (sub-plan 6) — parse SH section as 3D texture; trilinear sample in world shader for both static surfaces and dynamic entities.
+- [ ] **SDF atlas + sphere-traced soft shadows** (sub-plan 8) — brick-indexed sparse distance field baked by prl-build; WGSL sphere trace per visible shadow-casting point/spot light; soft penumbrae from spot cone angle. Chunk-friendly brick addressing so Milestone 8's migration is additive. Target: 1–2 ms total across all visible lights.
+- [ ] **Specular maps** (sub-plan 9) — per-texel specular highlights in the direct light loop. Shading model decision (Phong vs. PBR) required before implementation starts.
+- [ ] **Lighting test maps** — exercise probe indirect, CSM sun shadows, SDF soft shadows for point/spot, specular surfaces.
 
-**Testable outcome:** textured, normal-mapped level with spatially varying indirect illumination from baked SH probes, dynamic point/spot/directional lights casting shadow-mapped shadows. FGD light entities author both the bake inputs and the runtime direct lights from one source.
+**Testable outcome:** textured level with probe-sampled indirect on both static surfaces and dynamic entities, CSM-driven sun shadows, SDF-driven soft shadows for point and spot lights, and per-texel specular highlights. Static lights contribute only to the probe bake; dynamic lights participate in both the bake and the runtime direct loop.
 
-**Shadow coverage:** the SH irradiance volume captures indirect light bounces at bake time; dynamic shadow maps cover direct-light occlusion at runtime. Together these replace what lightmaps would contribute in a traditional Quake-lineage pipeline.
-
----
-
-## Milestone 6: Embedded Scripting and Entity Foundation
-
-Make modding a first-class concern by building the entity model and the scripting layer together from day one. This milestone is bigger than "pick a scripting language and add bindings" — it defines the entity API surface that every subsequent milestone (player movement, weapons, NPCs, world entities) consumes through scripts rather than through hardcoded Rust.
-
-- [ ] Choose embedded scripting language (Rhai, Lua via mlua, or similar — research and decision in a draft plan)
-- [ ] Entity model: typed collections, lifecycle (spawn / update / destroy), parent/child relationships, world-space transforms
-- [ ] Entity parsing from `.map` entity lump → typed entities at compile time, classname-keyed
-- [ ] Spotlight `target` entity resolution — resolve spotlight `target` property to a world-space aim direction using the entity system to look up entity origins by name (deferred from Milestone 5 where the entity system didn't exist yet)
-- [ ] Fixed-timestep integration: entity updates run at the fixed tick rate established in Milestone 2; renderer interpolates entity positions
-- [ ] Game event system: entities emit events, scripts subscribe, audio and renderer consume
-- [ ] Script bindings for the entity API: spawn / query / move / event subscribe / event emit
-- [ ] Hot reload of scripts during development
-- [ ] Documentation: modder-facing API reference
-
-**Testable outcome:** a level loads, entities defined in `.map` files spawn into the world, simple scripted behaviors run (e.g., a door that opens when touched, written entirely in script).
-
-**Why scripting first:** retrofitting a scripting layer onto a Rust-native entity system is far harder than building both at once. By making this Milestone 6, every subsequent feature (player movement, weapons, NPCs) gets designed with the modder API as a primary surface, not as an afterthought.
+**Deferred within M5:** animated SH layers (sub-plan 8) ships as a follow-up once the rest of M5 is complete.
 
 ---
 
-## Milestone 7: Player Movement (Modder-Friendly)
+## Milestone 6: Sector Graph + Portal Culling
 
-Player movement split into two layers: an engine floor (collision, raycasts, ground detection) and a script API that lets modders craft their own movement style — Quake-style bunnyhop, Doom-style sliding, Half-Life-style air control, whatever the modder wants.
+Replace the BSP-as-runtime-scaffolding with an **author-defined sector graph**. BSP stays as an optional compile-time intermediate for convex cell decomposition only where useful; the runtime no longer walks BSP nodes. This unblocks kinematic clusters (they need their own sector graphs) and destruction (latent portals).
 
-- [ ] Engine floor: brush volume collision via convex hull intersection (BSP path: BRUSHLIST BSPX lump; PRL path: brush volumes section). See `context/reference/collision-without-bsp.md`.
-- [ ] Engine floor: ground detection (walkable surface normal threshold), raycasts, sweep tests
-- [ ] Script API: expose collision/raycast primitives, expose player input state, expose entity transforms
-- [ ] Reference movement script: a default first-person movement implementation written entirely in script, demonstrating gravity, walls, stair step-up, jump
-- [ ] Hot reload the movement script during gameplay
+- [ ] **Sector volume authoring** — FGD entity or brush tag for author-defined sector volumes in `.map`.
+- [ ] **Sector graph extractor** — prl-build emits a sector graph with portal polygons on edges. Replaces `BspNodes`/`BspLeaves` sections for runtime use.
+- [ ] **Latent portals** — portals flagged as "activate on event" (for pre-authored destruction reveals).
+- [ ] **Runtime portal PVS** — hierarchical frustum-through-portal culling over the sector graph; feeds the BVH cull shader's visible-cell bitmask.
+- [ ] **Retire BSP runtime path** — remove camera-leaf lookup, `BspNodes`/`BspLeaves` section parsing; BSP compiler stages that aren't consumed can stay or be removed as convenient.
 
-**Testable outcome:** player walks through a level with gravity, collides with walls and floors, steps up stairs, jumps — and a modder can swap the movement script for their own without touching engine code.
-
----
-
-## Milestone 8: Weapons (Modder-Friendly)
-
-Weapons as scripted entities. Engine provides projectile primitives, hit detection, and visual/audio hooks; script defines weapon behavior.
-
-- [ ] Engine primitives: projectile spawning, hitscan raycasts, damage events
-- [ ] Script API: weapon definition (fire rate, ammo, projectile type, damage), pickup behavior, viewmodel hooks
-- [ ] Reference weapons: a couple of examples covering hitscan and projectile modes
-
-**Testable outcome:** scripted weapons fire, do damage, and can be added or modified by editing scripts.
+**Testable outcome:** identical visual + perf to Milestone 5, with sector graph replacing BSP as the visibility authority.
 
 ---
 
-## Milestone 9: NPC Entities (Modder-Friendly)
+## Milestone 7: Entity Model (Rust-only)
 
-NPCs as scripted entities with engine-provided AI primitives.
+Establish the core entity layer in pure Rust before any scripting language is bound to it. The goal is a fast-iteration window: rename fields, restructure event types, change lifecycle shapes — all with Rust's compiler catching inconsistencies, no scripting contract to break. The constraint that shapes every decision here is **scripting-layer exposure**: all public APIs must be expressible in a scripting language's terms — IDs/handles rather than Rust references, simple owned event types, no lifetimes in the surface, no generics that can't be erased at the binding layer.
 
-- [ ] Engine primitives: navigation queries, line-of-sight tests, animation hooks
-- [ ] Script API: AI state machines, perception (sight/sound), behavior trees or coroutines
-- [ ] Reference NPC: a basic enemy with patrol / chase / attack behavior, written in script
+- [ ] **Typed entity collections** — spawn / query / destroy, keyed by stable numeric ID. Classname registry for FGD-defined types.
+- [ ] **Lifecycle** — spawn, update tick, destroy. Parent/child relationships with transform inheritance. Updates run in the fixed-timestep game logic stage.
+- [ ] **World-space transforms** — position, rotation, scale. Interpolation state for the render stage.
+- [ ] **Event system** — entities emit typed events; subscriptions are classname- or ID-scoped. Event types are simple owned structs (scripting-bindable by construction).
+- [ ] **Scripting surface audit** — before moving on, review the entire public API against the constraint: "could a Lua or Rhai script call this?" Flag and fix anything that leaks Rust-specific types. This is the cheap window to make those changes.
+- [ ] **Reference entity behaviors (Rust-only)** — a `RotatorDriver` (sets a target transform each tick), a `DamageSource` (debug keybind → emits a damage event). These are the first consumers that validate the API shape.
 
-**Testable outcome:** scripted NPCs spawn from `.map` entities, navigate the world, react to the player.
+**Testable outcome:** spawn a `RotatorDriver` entity in a test level, confirm it emits transform events at the fixed tick rate. Nothing visual yet — this is architecture validation. The public API surface passes the scripting-exposure audit.
+
+**Why before scripting:** once a scripting runtime is bound, every API shape decision becomes a public contract. Iterate fast in Rust first, stabilize, then bind. The `DamageSource` and `RotatorDriver` reference behaviors also directly feed Milestones 8 and 9 as their stub drivers.
 
 ---
 
-## Milestone 10: World Entities (Scripted)
+## Milestone 8: Chunk Primitive + Physics
 
-Doors, pickups, triggers, monster closets, scripted set pieces — all authored as scripted entities. The bar is "what if monster closets could be scripted to feel more badass."
+Promote the renderer's unit-of-work to a **chunk**: mesh + collider + SDF contribution + transform + dependency link. Static world geometry is "chunks with identity transforms, asleep in the broadphase." Stand up a rigidbody solver so kinematic and dynamic chunks have somewhere to live.
 
-- [ ] Common base entity types in script: door, pickup, trigger volume, brush mover
-- [ ] Script API: brush model manipulation, sound triggers, visual effects, timeline/sequence helpers
-- [ ] Sample set pieces: a scripted ambush, a moving platform, a scripted door sequence
+**Note:** "chunk" supersedes the "per-portal-cell draw chunk" term from Milestone 3.5. The old draw chunks are renamed to "draw ranges" in the PRL schema. One term, one concept going forward.
 
-**Testable outcome:** a level walkthrough with scripted doors, pickups, ambush triggers, and a set piece — all modifiable by editing scripts.
+- [ ] **Chunk record in PRL** — replace the current static-geometry schema: each chunk carries its mesh range, collider hull, SDF brick refs, sector membership, and neighbor dependency edges. Identity-transform by default. (Rename "draw chunk" → "draw range" in existing code and docs.)
+- [ ] **Unified chunk render path** — one draw path for all geometry; renderer iterates the chunk pool each frame.
+- [ ] **Chunk collider broadphase** — BVH over chunk AABBs; asleep chunks cached, awake chunks re-inserted each tick.
+- [ ] **Rigidbody solver** — select and integrate a Rust physics library (research doc required before implementation; Rapier is the likely candidate). Sleep/wake integration with the chunk pool.
+- [ ] **Frame-order update** — physics tick placed between Game logic and Audio. This extends the canonical frame order to: Input → Game logic → **Physics** → Audio → Render → Present. Update `CLAUDE.md` and `index.md` when this lands.
+
+**Testable outcome:** same visual result as Milestone 7, but a test map with a single "free" chunk demonstrates rigidbody motion driven by the solver. World geometry renders through the unified chunk path.
+
+---
+
+## Milestone 9: Kinematic Clusters (Moving Geometry)
+
+A **kinematic cluster** is a sub-world compiled like the main world but with a transform — the barge, the elevator, the tilting floor. Same chunks, same renderer path, same collider path, just a non-identity transform. Cluster transforms are driven by entities from Milestone 7 (`KinematicDriver` entity sets the transform each tick).
+
+- [ ] **Cluster authoring** — FGD entity or brush tag for cluster volumes; compiler emits each cluster as its own sector graph + chunk group.
+- [ ] **Dynamic portals at cluster boundaries** — when a cluster's ramp/hatch aligns with a static sector portal, connect them at runtime. V1 scope: portal activates only when cluster transform is within ε of a docked pose.
+- [ ] **Cluster transforms in the render path** — chunk draw calls consume the cluster transform; shadow pass includes cluster chunks automatically (CSM and SDF already re-evaluate casters each frame).
+- [ ] **Cluster colliders** — broadphase transforms cluster AABBs into world space each tick.
+- [ ] **Reference clusters** — a moving elevator and a drifting barge test map. Both driven by `KinematicDriver` entities authored in the `.map` file.
+
+**Testable outcome:** stand on a moving barge, ride an elevator. Lighting and shadows behave correctly. Collision is stable on moving surfaces.
+
+---
+
+## Milestone 10: Destruction (Pre-Fracture + Promotion)
+
+Destruction is topology change expressed at **authoring time**: brushes are pre-fractured into chunks with dependency edges, and runtime just promotes chunks from asleep-static to awake-dynamic when damage or dependency failure says so. Interior break-faces are pre-authored and unhidden on fracture.
+
+**Note on damage source:** weapons are not available until Milestone 13. The "Die Hard" test map uses a `DamageSource` entity (debug keybind → emits damage event) from Milestone 7 as the trigger.
+
+- [ ] **Fracture authoring** — FGD properties for `hp`, `supports=[...]`, and interior break-face tagging; compiler emits dependency graph as a new PRL section.
+- [ ] **Promotion pipeline** — damage system walks the dependency graph, moves chunks from static pool to dynamic-chunk pool, hands rigidbodies over, reveals interior faces, activates latent portals (from Milestone 6).
+- [ ] **SDF invalidation** — mark affected SDF bricks dirty on promotion; sphere-trace queries run against stale data during the dirty window (visual error accepted for 1–2 frames). Optional partial rebake streamed over frames.
+- [ ] **Reference scenarios** — the "Die Hard pillar" test map: trigger the `DamageSource` entity, floor slabs above lose support and collapse.
+
+**Testable outcome:** trigger a keybind, watch a pillar take damage, watch dependent floor sections collapse with correct lighting, collision, and culling.
+
+---
+
+## Milestone 11: Scripting Layer
+
+Bind the entity API from Milestone 7 to an embedded scripting language. By this point the entity model has been validated by two real consumers (kinematic clusters, destruction), so the API surface is stable. The scripting language research doc is a prerequisite — this is a big decision.
+
+- [ ] **Research and language selection** — draft plan comparing candidates (JavaScript via QuickJS, Lua via mlua, Rhai, Wren, etc.) against the scripting-exposure API from Milestone 7. Decide before implementation starts.
+- [ ] **Script runtime integration** — embed chosen language; hook into fixed-timestep update and event dispatch.
+- [ ] **Bindings** — entity API (spawn / query / move / destroy), event subscribe/emit, chunk promotion, cluster transform control, damage events, portal activation. All bindings must honor the scripting-exposure constraints from Milestone 7.
+- [ ] **Entity parsing from `.map`** — `.map` entity lump → typed entities at compile time, classname-keyed.
+- [ ] **Hot reload** — reload scripts during gameplay without restarting.
+- [ ] **Modder-facing API reference** — generated or hand-written, covers all bound APIs.
+
+**Testable outcome:** a scripted door (kinematic cluster driven by script instead of `KinematicDriver`), a scripted trigger, a scripted destruction sequence — all editable without touching Rust. Replace at least one Milestone 7 Rust-only driver behavior with a script equivalent.
+
+---
+
+## Milestone 12: Player Movement (Modder-Friendly)
+
+- [ ] Engine floor: chunk-collider queries (convex hull intersection against awake + relevant static chunks), ground detection, sweep tests, raycasts.
+- [ ] Script API: collision/raycast primitives, input state, entity transforms.
+- [ ] Reference movement script: gravity, walls, stair step-up, jump — written entirely in script.
+- [ ] Hot reload of movement script during gameplay.
+
+**Testable outcome:** player walks through a level with full collision and movement, including standing on moving clusters and reacting to destruction. Modder can swap the movement script.
+
+---
+
+## Milestone 13: Weapons (Modder-Friendly)
+
+- [ ] Engine primitives: projectile spawning, hitscan raycasts through the chunk collider pool, damage events (feeds Milestone 10's promotion pipeline with real weapons replacing the `DamageSource` debug entity).
+- [ ] Script API: weapon definition, pickup behavior, viewmodel hooks.
+- [ ] Reference weapons: hitscan + projectile examples, at least one that triggers chunk destruction.
+
+**Testable outcome:** scripted weapons that can knock clusters around and shoot out support pillars.
+
+---
+
+## Milestone 14: NPC Entities (Modder-Friendly)
+
+- [ ] Engine primitives: navigation queries, line-of-sight via SDF (free benefit of the Milestone 5 SDF), animation hooks.
+- [ ] Script API: AI state machines, perception, behavior trees or coroutines.
+- [ ] Reference NPC: patrol / chase / attack, entirely in script.
+
+**Testable outcome:** scripted NPCs that navigate dynamic worlds — they path around destroyed sections and ride moving clusters.
+
+---
+
+## Milestone 15: World Entities and Set Pieces
+
+Most traditional "world entity" types (doors, movers, ambushes) are already expressible as kinematic clusters + scripts by this point. This milestone fills in what's left.
+
+- [ ] Common base scripts: pickup, trigger volume, timeline/sequence helpers.
+- [ ] Visual/audio effects hooks for set pieces.
+- [ ] Sample set piece: a scripted ambush that includes destruction choreography.
+
+**Testable outcome:** a level walkthrough with scripted doors, pickups, ambush triggers, and a destruction set piece — all modifiable by editing scripts.
 
 ---
 
 ## Future / unscoped
 
-Features and milestones that aren't on the critical path but will likely come up:
-
-- **Visual polish** — billboard sprite rendering, emissive / fullbright surfaces (neon, screens), fog volumes (`env_fog_volume`)
-- **Post-processing** — bloom on emissive surfaces, optional CRT/scanline filter, environment-mapped reflections from baked cubemaps (`env_cubemap`)
-- **Audio foundation** — kira integration, spatial audio, reverb zones, weapon and footstep sounds
+- **Visual polish** — billboard sprite rendering, emissive / fullbright surfaces, fog volumes
+- **Post-processing** — bloom, optional CRT/scanline filter, baked cubemap reflections
+- **Audio foundation** — kira integration, spatial audio, reverb zones
 - **HUD and UI** — health, ammo, crosshair, menus
 - **Cubemap bake tool** — see `context/plans/drafts/cubemap-bake-tool/`
-- **Custom level compiler** — justified when ericw-tools can't produce needed baked data (nav mesh, audio propagation, custom probe density, light influence maps, destruction/movement state variants)
+- **Dynamic SDF rebake for mid-level destruction** — partial brick updates around fracture events, beyond Milestone 9's dirty-marking
 - **Specific entity type libraries** — see `context/plans/drafts/entity-types/`
 - **Multi-format map support** — UDMF, etc., via `format/<name>.rs` sibling modules

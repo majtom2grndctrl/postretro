@@ -152,7 +152,7 @@ pub fn log_stats(section: &ShVolumeSection) {
     let total = section.total_probes();
     let valid = section.probes.iter().filter(|p| p.validity == 1).count();
     log::info!(
-        "[Compiler] ShVolume: grid {}x{}x{} = {total} probes ({valid} valid), \
+        "ShVolume: grid {}x{}x{} = {total} probes ({valid} valid), \
          cell {}m, {} animated layer(s)",
         dims[0],
         dims[1],
@@ -716,6 +716,7 @@ mod tests {
             cone_direction: None,
             animation: None,
             cast_shadows: true,
+            bake_only: false,
         }
     }
 
@@ -908,6 +909,7 @@ mod tests {
             cone_direction: None,
             animation: None,
             cast_shadows: true,
+            bake_only: false,
         };
         let inputs = BakeInputs {
             bvh: &bvh,
@@ -943,6 +945,7 @@ mod tests {
                 color: None,
             }),
             cast_shadows: true,
+            bake_only: false,
         };
         let inputs = BakeInputs {
             bvh: &bvh,

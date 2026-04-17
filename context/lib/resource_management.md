@@ -40,19 +40,13 @@ Frame ordering derives from the numeric suffix. Playback rate is defined by the 
 
 ## 2. Texture Binding
 
-World textures are currently bound individually — one bind group per unique texture. Draw calls are grouped by (leaf, texture) to minimize bind group changes without allocating an atlas.
+World textures use individual bind groups — one per unique material. Draw calls batch by material to minimize bind group switches. No atlas; atlas packing is an unscheduled optimization.
 
 ### 2.1 SH Irradiance Volume (Milestone 5)
 
-> **Milestone 5. Not yet implemented.**
+> **Not yet implemented.**
 
-Indirect lighting is carried by an SH L2 irradiance volume (3D probe grid), not by per-face lightmaps. The probe section is loaded from PRL and uploaded as a 3D texture; the world shader samples it trilinearly per fragment. See `rendering_pipeline.md` §4 and `context/plans/drafts/lighting-foundation/`.
-
-### 2.2 World Texture Atlas
-
-> **Unscheduled optimization.**
-
-Pack world textures into a shared atlas for further draw-call reduction. Same UV-remapping approach. Textures exceeding atlas capacity fall back to individual binds.
+Indirect lighting is carried by an SH L2 irradiance volume (3D probe grid), not by per-face lightmaps. The probe section is loaded from PRL and sampled trilinearly per fragment in the world shader. See `rendering_pipeline.md` §4.
 
 ---
 
@@ -74,12 +68,12 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive flag** | Flag set on enum variant. Rendering bypass is Phase 5+. |
-| **Footstep sounds** | Phase 4. |
-| **Bullet impact particles** | Phase 5+. |
-| **Ricochet behavior** | Phase 5+. |
-| **Decal selection** | Phase 5+. |
-| **Environment-mapped reflections** | Phase 5+. See §5. |
+| **Emissive flag** | Implemented — flag on enum variant. Rendering bypass planned. |
+| **Footstep sounds** | Planned. |
+| **Bullet impact particles** | Planned. |
+| **Ricochet behavior** | Planned. |
+| **Decal selection** | Planned. |
+| **Environment-mapped reflections** | Planned. See §5. |
 
 Each behavior is a property of the material enum variant. Which prefixes carry which flags is a content concern — the engine provides the mechanism.
 
@@ -95,7 +89,7 @@ Unknown prefix maps to a default material. Engine logs a warning at load time id
 
 Optional per-texture normal maps for fine surface detail. Convention: `_n` suffix alongside the diffuse texture (`floor_01.png` / `floor_01_n.png`). Absence is the common case — no warning. Tangent-space RGB PNGs matching the diffuse dimensions.
 
-When implemented, normal maps combine with LIGHTINGDIR data for view-dependent specular highlights. See `rendering_pipeline.md` §7.1.
+When implemented, normal maps perturb the shading normal in the fragment shader, affecting both diffuse and specular response. See `rendering_pipeline.md` §7.1.
 
 ---
 
@@ -112,13 +106,13 @@ When implemented, normal maps combine with LIGHTINGDIR data for view-dependent s
 
 ### 5.2 Bake Pipeline
 
-A separate offline tool renders six axis-aligned views from each `env_cubemap` position, producing a cubemap texture per entity. The bake tool is out of initial scope — define the entity format now, build the tool later.
+> **Not yet implemented.** Entity format defined; bake tool deferred.
 
-Baked cubemaps are stored as six-face PNG sets or a cross-layout PNG per probe, in a directory alongside the map file.
+A separate offline tool bakes one cubemap per `env_cubemap` entity position. Baked output lives alongside the map file. See `build_pipeline.md` when this is planned.
 
 ### 5.3 Runtime Consumption
 
-At load time, cubemap PNGs are loaded and uploaded as cubemap textures. Surfaces that use environment-mapped reflections (wet floors, chrome, glass) sample from the nearest `env_cubemap` probe. Probe assignment is spatial — each reflective surface binds to the closest probe by world-space distance.
+Reflective surfaces (wet floors, chrome, glass) sample from the nearest `env_cubemap` probe by world-space distance.
 
 ---
 

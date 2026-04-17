@@ -1,10 +1,10 @@
-# Sub-plan 7 — SH Volume Sampling (Indirect Lighting)
+# Sub-plan 6 — SH Volume Sampling (Indirect Lighting)
 
 > **Parent plan:** [Lighting Foundation](./index.md) — read first for goals and the BVH dependency.
 > **Scope:** Runtime loading and sampling of the SH irradiance volume baked in sub-plan 2. 3D texture creation and upload, trilinear SH sampling in the fragment shader, SH L2 irradiance reconstruction. Replaces flat ambient floor as the indirect lighting term (ambient floor remains as a minimum beneath the indirect contribution).
 > **Crates touched:** `postretro` only.
 > **Depends on:** sub-plan 2 (SH PRL section must exist in compiled maps) **and** sub-plan 3 (ambient floor and direct lighting must be working — indirect is additive to the direct term).
-> **Blocks:** sub-plan 8 (animated SH layers extend the base SH sampling path built here).
+> **Blocks:** sub-plan 7 (animated SH layers extend the base SH sampling path built here).
 
 ---
 

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6a4f29e2aac3833519c6fec73a114ed999d647d8a2fefe599e6fc1a8cc4836fc # shrinks to cam_x = 0.0, cam_y = 0.0, cam_z = 0.0, yaw = 0.0, pitch = 0.0, light_x = 0.0, light_y = -0.1, light_z = 0.0
+cc c3c34a182d53b03f87d429ca04642512e866393e95f08002bbff033755c7d69a # shrinks to base_yaw = 2.7059689, delta = 6.451841e-5

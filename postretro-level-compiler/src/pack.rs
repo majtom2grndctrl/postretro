@@ -25,9 +25,12 @@ use crate::portals::Portal;
 /// Convert translated map lights into an `AlphaLightsSection` for the format
 /// crate. Strips animation curves (direct lighting path uses static base
 /// properties only — sub-plan 3 of the Lighting Foundation plan).
+/// Bake-only lights are excluded; see `encode_light_influence` for the
+/// invariant this maintains.
 pub fn encode_alpha_lights(lights: &[MapLight]) -> AlphaLightsSection {
     let records = lights
         .iter()
+        .filter(|l| !l.bake_only)
         .map(|l| {
             let light_type = match l.light_type {
                 LightType::Point => AlphaLightType::Point,
@@ -59,9 +62,13 @@ pub fn encode_alpha_lights(lights: &[MapLight]) -> AlphaLightsSection {
 
 /// Derive influence records from the same light list used for AlphaLights.
 /// Same iteration order — record `i` corresponds to light `i` in AlphaLights.
+/// Bake-only lights are excluded with the same filter as `encode_alpha_lights`
+/// to maintain the invariant that record `i` in LightInfluence corresponds to
+/// record `i` in AlphaLights.
 pub fn encode_light_influence(lights: &[MapLight]) -> LightInfluenceSection {
     let records = lights
         .iter()
+        .filter(|l| !l.bake_only)
         .map(|l| {
             let (center, radius) = match l.light_type {
                 LightType::Directional => ([0.0f32, 0.0, 0.0], f32::MAX),
@@ -182,28 +189,28 @@ pub fn pack_and_write_pvs(
 
     write_and_validate_sections(output, &sections)?;
 
-    log::info!("[Compiler] Sections: {}", sections.len());
-    log::info!("[Compiler]   Geometry: {} bytes", geometry_bytes.len());
+    log::info!("Sections: {}", sections.len());
+    log::info!("  Geometry: {} bytes", geometry_bytes.len());
     log::info!(
-        "[Compiler]   TextureNames: {} bytes",
+        "  TextureNames: {} bytes",
         texture_names_bytes.len()
     );
-    log::info!("[Compiler]   BspNodes: {} bytes", nodes_bytes.len());
-    log::info!("[Compiler]   BspLeaves: {} bytes", leaves_bytes.len());
-    log::info!("[Compiler]   LeafPvs: {} bytes", leaf_pvs_bytes.len());
-    log::info!("[Compiler]   Bvh: {} bytes", bvh_bytes.len());
+    log::info!("  BspNodes: {} bytes", nodes_bytes.len());
+    log::info!("  BspLeaves: {} bytes", leaves_bytes.len());
+    log::info!("  LeafPvs: {} bytes", leaf_pvs_bytes.len());
+    log::info!("  Bvh: {} bytes", bvh_bytes.len());
     log::info!(
-        "[Compiler]   AlphaLights: {} bytes ({} lights)",
+        "  AlphaLights: {} bytes ({} lights)",
         alpha_lights_bytes.len(),
         alpha_lights.lights.len()
     );
     log::info!(
-        "[Compiler]   LightInfluence: {} bytes ({} records)",
+        "  LightInfluence: {} bytes ({} records)",
         light_influence_bytes.len(),
         light_influence.records.len()
     );
     log::info!(
-        "[Compiler]   ShVolume: {} bytes ({} probes)",
+        "  ShVolume: {} bytes ({} probes)",
         sh_volume_bytes.len(),
         sh_volume.probes.len()
     );
@@ -303,28 +310,28 @@ pub fn pack_and_write_portals(
 
     write_and_validate_sections(output, &sections)?;
 
-    log::info!("[Compiler] Sections: {}", sections.len());
-    log::info!("[Compiler]   Geometry: {} bytes", geometry_bytes.len());
+    log::info!("Sections: {}", sections.len());
+    log::info!("  Geometry: {} bytes", geometry_bytes.len());
     log::info!(
-        "[Compiler]   TextureNames: {} bytes",
+        "  TextureNames: {} bytes",
         texture_names_bytes.len()
     );
-    log::info!("[Compiler]   BspNodes: {} bytes", nodes_bytes.len());
-    log::info!("[Compiler]   BspLeaves: {} bytes", leaves_bytes.len());
-    log::info!("[Compiler]   Portals: {} bytes", portals_bytes.len());
-    log::info!("[Compiler]   Bvh: {} bytes", bvh_bytes.len());
+    log::info!("  BspNodes: {} bytes", nodes_bytes.len());
+    log::info!("  BspLeaves: {} bytes", leaves_bytes.len());
+    log::info!("  Portals: {} bytes", portals_bytes.len());
+    log::info!("  Bvh: {} bytes", bvh_bytes.len());
     log::info!(
-        "[Compiler]   AlphaLights: {} bytes ({} lights)",
+        "  AlphaLights: {} bytes ({} lights)",
         alpha_lights_bytes.len(),
         alpha_lights.lights.len()
     );
     log::info!(
-        "[Compiler]   LightInfluence: {} bytes ({} records)",
+        "  LightInfluence: {} bytes ({} records)",
         light_influence_bytes.len(),
         light_influence.records.len()
     );
     log::info!(
-        "[Compiler]   ShVolume: {} bytes ({} probes)",
+        "  ShVolume: {} bytes ({} probes)",
         sh_volume_bytes.len(),
         sh_volume.probes.len()
     );
@@ -347,14 +354,14 @@ fn write_and_validate_sections(output: &Path, sections: &[SectionBlob]) -> anyho
 
     let total_size = file_buf.len();
     log::info!(
-        "[Compiler] Wrote {} ({} bytes)",
+        "Wrote {} ({} bytes)",
         output.display(),
         total_size
     );
 
     // Read-back validation: verify all sections round-trip.
     validate_readback(&file_buf, sections)?;
-    log::info!("[Compiler] Read-back validation passed.");
+    log::info!("Read-back validation passed.");
 
     Ok(())
 }
@@ -878,6 +885,7 @@ mod tests {
                 cone_direction: None,
                 animation: None,
                 cast_shadows: false,
+                bake_only: false,
             },
             MapLight {
                 origin: DVec3::new(-4.0, 1.0, 0.5),
@@ -891,6 +899,7 @@ mod tests {
                 cone_direction: Some([0.0, -1.0, 0.0]),
                 animation: None,
                 cast_shadows: true,
+                bake_only: false,
             },
             MapLight {
                 origin: DVec3::new(0.0, 100.0, 0.0),
@@ -904,6 +913,7 @@ mod tests {
                 cone_direction: Some([0.0, -1.0, 0.0]),
                 animation: None,
                 cast_shadows: false,
+                bake_only: false,
             },
         ];
 

@@ -40,3 +40,6 @@ postretro-level-format.workspace = true
 # struct-stride regression test parses against the exact WGSL dialect the
 # runtime shader compiles with.
 naga = { version = "29", features = ["wgsl-in"] }
+
+# Property-based testing for shadow math invariants.
+proptest = { workspace = true }

@@ -166,38 +166,38 @@ A uniform minimum light level added to the lighting sum before albedo multiplica
 
 ## Acceptance criteria
 
-- [ ] `GpuLight` struct defined in `postretro` with 80-byte layout matching the GPU struct above; `shadow_info` zero-initialized
-- [ ] Engine parses AlphaLights PRL section (ID 18) at level load, deserializes into `Vec<MapLight>`, converts to `GpuLight` structs, and uploads to a storage buffer
-- [ ] Forward pipeline bind group layout extended: group 2 with light storage buffer
-- [ ] Uniforms extended with `camera_position`, `ambient_floor`, `light_count`; old `ambient_light: vec3<f32>` removed
-- [ ] Fragment shader evaluates Lambert diffuse per light in a flat loop
-- [ ] Point light falloff matches all three `FalloffModel` variants
-- [ ] Spot light cone attenuation via smoothstep between inner and outer angles
-- [ ] Directional light evaluates without distance attenuation
-- [ ] Ambient floor applied as a minimum light level before albedo multiply
-- [ ] Ambient floor exposed as a player-facing setting with default 0.05
-- [ ] Test maps from sub-plan 1 (which place light entities as part of FGD validation) render with visible, correct illumination and falloff
-- [ ] Unlit areas are not pitch-black (ambient floor working)
-- [ ] `cargo test -p postretro` passes
-- [ ] `cargo clippy -p postretro -- -D warnings` clean
+- [x] `GpuLight` struct defined in `postretro` with 80-byte layout matching the GPU struct above; `shadow_info` zero-initialized
+- [x] Engine parses AlphaLights PRL section (ID 18) at level load, deserializes into `Vec<MapLight>`, converts to `GpuLight` structs, and uploads to a storage buffer
+- [x] Forward pipeline bind group layout extended: group 2 with light storage buffer
+- [x] Uniforms extended with `camera_position`, `ambient_floor`, `light_count`; old `ambient_light: vec3<f32>` removed
+- [x] Fragment shader evaluates Lambert diffuse per light in a flat loop
+- [x] Point light falloff matches all three `FalloffModel` variants
+- [x] Spot light cone attenuation via smoothstep between inner and outer angles
+- [x] Directional light evaluates without distance attenuation
+- [x] Ambient floor applied as a minimum light level before albedo multiply
+- [x] Ambient floor exposed as a player-facing setting with default 0.05
+- [x] Test maps from sub-plan 1 (which place light entities as part of FGD validation) render with visible, correct illumination and falloff
+- [x] Unlit areas are not pitch-black (ambient floor working)
+- [x] `cargo test -p postretro` passes
+- [x] `cargo clippy -p postretro -- -D warnings` clean
 
 ---
 
 ## Implementation tasks
 
-1. Define `GpuLight` Rust struct with `bytemuck` derivation for buffer upload. Write conversion from `MapLight`.
+1. ✅ Define `GpuLight` Rust struct with `bytemuck` derivation for buffer upload. Write conversion from `MapLight`.
 
-2. At level load, parse the AlphaLights PRL section (ID 18) into `Vec<MapLight>`, convert to `Vec<GpuLight>`, and create the light storage buffer and bind group (group 2). If the section is absent, use an empty list and log a warning.
+2. ✅ At level load, parse the AlphaLights PRL section (ID 18) into `Vec<MapLight>`, convert to `Vec<GpuLight>`, and create the light storage buffer and bind group (group 2). If the section is absent, use an empty list and log a warning.
 
-3. Extend `Uniforms` struct: add `camera_position`, `ambient_floor`, `light_count`; remove `ambient_light`. Update `update_view_projection()` (or rename to `update_per_frame_uniforms()`).
+3. ✅ Extend `Uniforms` struct: add `camera_position`, `ambient_floor`, `light_count`; remove `ambient_light`. Update `update_view_projection()` (or rename to `update_per_frame_uniforms()`).
 
-4. Update forward pipeline layout to include group 2 bind group layout.
+4. ✅ Update forward pipeline layout to include group 2 bind group layout.
 
-5. Write the fragment shader light loop: per-light-type branching, falloff evaluation, cone attenuation, Lambert diffuse, ambient floor.
+5. ✅ Write the fragment shader light loop: per-light-type branching, falloff evaluation, cone attenuation, Lambert diffuse, ambient floor.
 
-6. Wire ambient floor to a player-facing setting (settings menu slider).
+6. ✅ Wire ambient floor to a player-facing setting (settings menu slider).
 
-7. Validate visually using the test maps from sub-plan 1 — those maps already contain point, spot, and directional light entities placed as part of FGD validation. No new maps needed.
+7. ✅ Validate visually using the test maps from sub-plan 1 — those maps already contain point, spot, and directional light entities placed as part of FGD validation. No new maps needed.
 
 ---
 

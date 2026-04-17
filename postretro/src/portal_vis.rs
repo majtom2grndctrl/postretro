@@ -360,20 +360,45 @@ fn flood(
         // result unifies "portal entirely outside cone" and "portal
         // degenerate after clipping" into one rejection path.
         //
+        // When the camera sits on the portal's supporting plane, the
+        // portal is at zero depth from the apex and the view frustum's
+        // cross-section there is a single point — Sutherland-Hodgman
+        // crushes the polygon to a degenerate line. That is geometric
+        // truth, not a clipper bug: side planes pass through the apex,
+        // so no slide fixes it. In that case the portal *is* the view,
+        // and `narrow_frustum` consumes the full polygon directly
+        // (edge_dir × to_camera stays non-degenerate because both
+        // vectors lie in the portal plane and their cross product is
+        // perpendicular to it). Gated on all vertices being within
+        // CLIP_EPSILON of the portal's supporting plane as seen from
+        // the apex — a pure geometric test independent of view angle.
+        //
         // `narrowed` is computed inside an inner scope so that the borrows of
         // `clip_scratch_a`/`clip_scratch_b` end before the recursive call
         // below, which needs mutable access to both scratch buffers again.
         // `clipped_len` is captured ahead of the scope so trace logging and
         // path updates downstream can still read it.
         let (narrowed_opt, clipped_len) = {
-            let clipped =
-                clip_polygon_to_frustum(&portal.polygon, frustum, clip_scratch_a, clip_scratch_b);
-            let len = clipped.len();
-            if len < 3 {
-                (None, len)
+            let apex_on_portal_plane =
+                camera_on_polygon_plane(state.camera_position, &portal.polygon);
+            if apex_on_portal_plane {
+                let narrowed =
+                    narrow_frustum(state.camera_position, &portal.polygon, frustum);
+                (narrowed, portal.polygon.len())
             } else {
-                let narrowed = narrow_frustum(state.camera_position, clipped, frustum);
-                (narrowed, len)
+                let clipped = clip_polygon_to_frustum(
+                    &portal.polygon,
+                    frustum,
+                    clip_scratch_a,
+                    clip_scratch_b,
+                );
+                let len = clipped.len();
+                if len < 3 {
+                    (None, len)
+                } else {
+                    let narrowed = narrow_frustum(state.camera_position, clipped, frustum);
+                    (narrowed, len)
+                }
             }
         };
 
@@ -628,6 +653,43 @@ fn compute_split_point_on_plane(
     }
 
     mid
+}
+
+/// Tolerance for "camera lies on the portal's supporting plane".
+///
+/// Signed distance from the apex to the polygon's plane, measured in world
+/// units. Looser than `CLIP_EPSILON` because the camera only needs to be
+/// *near enough* that the view-frustum cross-section at the portal collapses
+/// to something Sutherland-Hodgman can't keep convex — a sub-millimeter
+/// margin around the plane is plenty to catch the "player on the portal
+/// boundary" case without triggering on genuinely-frontal portals.
+const APEX_ON_PORTAL_PLANE_EPSILON: f32 = 1e-3;
+
+/// Return true when `apex` lies on (or within `APEX_ON_PORTAL_PLANE_EPSILON`
+/// of) the supporting plane of `polygon`.
+///
+/// Uses Newell's method for the polygon normal — robust against near-colinear
+/// or near-duplicate vertices that would collapse a simple `(v1−v0)×(v2−v0)`
+/// cross product.
+fn camera_on_polygon_plane(apex: Vec3, polygon: &[Vec3]) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+    let n = polygon.len();
+    let centroid = polygon.iter().copied().sum::<Vec3>() / n as f32;
+    let mut normal = Vec3::ZERO;
+    for i in 0..n {
+        let cur = polygon[i];
+        let nxt = polygon[(i + 1) % n];
+        normal.x += (cur.y - nxt.y) * (cur.z + nxt.z);
+        normal.y += (cur.z - nxt.z) * (cur.x + nxt.x);
+        normal.z += (cur.x - nxt.x) * (cur.y + nxt.y);
+    }
+    if normal.length_squared() < 1e-12 {
+        return false;
+    }
+    let normal = normal.normalize();
+    normal.dot(apex - centroid).abs() < APEX_ON_PORTAL_PLANE_EPSILON
 }
 
 /// Narrow a frustum by constructing clip planes through the camera and the
@@ -2066,6 +2128,119 @@ mod tests {
              the render pipeline's 0.1-unit near clip) is clipping the \
              entire portal polygon to empty — the blank-frame bug in \
              tight corridors."
+        );
+    }
+
+    /// Camera sitting **exactly on** a portal plane, looking through it.
+    ///
+    /// This reproduces the gray-patch flicker captured on
+    /// `occlusion-test.prl` at 2026-04-17T04:50:11Z. The live trace at
+    /// frame 360 showed `cam=(-34.54, 6.50, -13.00) leaf=31` with all 7
+    /// outbound portals rejecting `v=0/4 clip` and `reach=1` — the
+    /// renderer fell back to drawing just the camera leaf while the
+    /// player could see into several neighbors. The camera Z matched the
+    /// leaf's max-Z face to the float, and adjacent frames oscillated
+    /// between two view-proj hashes (sub-texel camera jitter), one of
+    /// which clipped every portal to empty.
+    ///
+    /// Setup:
+    /// - Leaf A: a slab `x ∈ [−36.37, −34.34], y ∈ [0, 13], z ∈ [−13.41, −13.00]`
+    ///   matching leaf 31's bounds from the trace.
+    /// - Portal on leaf A's `+Z` face (`z = −13.00`), shared with leaf B
+    ///   on the `+Z` side.
+    /// - Camera at `(−34.54, 6.50, −13.00)` — the same position as the
+    ///   captured trace, sitting exactly on the portal plane.
+    /// - Look direction `+Z`, staring straight through the portal.
+    ///
+    /// If the near-plane slide leaves portal vertices sitting exactly on
+    /// the slid plane and any side/near plane's `CLIP_EPSILON`
+    /// classification rejects them as BACK, Sutherland-Hodgman clips the
+    /// polygon to empty and `leaf B` is unreachable — the blank-frame
+    /// bug, but for the "camera on the portal plane" case rather than
+    /// "0.03 units in front of it".
+    #[test]
+    fn portal_traverse_reaches_neighbor_when_camera_is_on_portal_plane() {
+        use crate::camera;
+        use crate::visibility::extract_frustum_planes;
+
+        // Portal on the +Z face of leaf A, shared with leaf B. Vertices
+        // are all at z = -13.00 (the plane the camera will sit on).
+        let portal = PortalData {
+            polygon: vec![
+                Vec3::new(-36.37, 0.00, -13.00),
+                Vec3::new(-34.34, 0.00, -13.00),
+                Vec3::new(-34.34, 13.00, -13.00),
+                Vec3::new(-36.37, 13.00, -13.00),
+            ],
+            front_leaf: 0,
+            back_leaf: 1,
+        };
+
+        let world = LevelWorld {
+            vertices: vec![],
+            indices: vec![],
+            face_meta: vec![],
+            nodes: vec![],
+            leaves: vec![
+                // Leaf A — camera leaf, matches bounds of leaf 31 from
+                // the live trace.
+                LeafData {
+                    bounds_min: Vec3::new(-36.37, 0.00, -13.41),
+                    bounds_max: Vec3::new(-34.34, 13.00, -13.00),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                },
+                // Leaf B — neighbor on the +Z side of the portal.
+                LeafData {
+                    bounds_min: Vec3::new(-36.37, 0.00, -13.00),
+                    bounds_max: Vec3::new(-34.34, 13.00, -5.00),
+                    face_start: 0,
+                    face_count: 0,
+                    pvs: vec![],
+                    is_solid: false,
+                },
+            ],
+            root: BspChild::Leaf(0),
+            has_pvs: false,
+            portals: vec![portal],
+            leaf_portals: vec![vec![0], vec![0]],
+            has_portals: true,
+            texture_names: vec![],
+            bvh: crate::geometry::BvhTree {
+                nodes: vec![],
+                leaves: vec![],
+                root_node_index: 0,
+            },
+            lights: vec![],
+            light_influences: vec![],
+        };
+
+        // Camera pose from the captured blank-frame trace. z = -13.00
+        // puts the camera exactly on the portal plane.
+        let camera_pos = Vec3::new(-34.54, 6.50, -13.00);
+        let look_dir = Vec3::Z;
+
+        let aspect = 16.0 / 9.0;
+        let vfov = 2.0 * ((camera::HFOV / 2.0).tan() / aspect).atan();
+        let view = Mat4::look_at_rh(camera_pos, camera_pos + look_dir, Vec3::Y);
+        let proj = Mat4::perspective_rh(vfov, aspect, camera::NEAR, camera::FAR);
+        let frustum = extract_frustum_planes(proj * view);
+
+        let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
+
+        assert!(visible[0], "camera leaf must always be visible");
+        assert!(
+            visible[1],
+            "leaf B must be reachable through the portal when the camera \
+             sits exactly on the portal plane and looks through it. \
+             Failure here means Sutherland-Hodgman is being used even \
+             though the view-frustum cross-section at apex depth is a \
+             single point — the `camera_on_polygon_plane` bypass in \
+             `flood` is not firing. Reproduces the occlusion-test.prl \
+             gray-patch flicker captured 2026-04-17T04:50:11Z at \
+             cam=(-34.54,6.50,-13.00)."
         );
     }
 

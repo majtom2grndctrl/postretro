@@ -41,7 +41,7 @@ pub fn partition(brush_volumes: &[BrushVolume]) -> Result<PartitionResult> {
 
     let solid_count = tree.leaves.iter().filter(|l| l.is_solid).count();
     let empty_count = tree.leaves.len() - solid_count;
-    log::info!("[Compiler] BSP leaves: {solid_count} solid, {empty_count} empty");
+    log::info!("BSP leaves: {solid_count} solid, {empty_count} empty");
 
     let FaceExtractionResult {
         faces,
@@ -50,7 +50,7 @@ pub fn partition(brush_volumes: &[BrushVolume]) -> Result<PartitionResult> {
 
     if !coplanar_conflicts.is_empty() {
         log::info!(
-            "[Compiler] Coplanar dedup resolved {} brush-side conflict(s)",
+            "Coplanar dedup resolved {} brush-side conflict(s)",
             coplanar_conflicts.len()
         );
     }
@@ -69,14 +69,14 @@ fn log_stats(tree: &BspTree, faces: &[Face]) {
         total as f64 / tree.leaves.len() as f64
     };
 
-    log::info!("[Compiler] BSP nodes: {}", tree.nodes.len());
-    log::info!("[Compiler] BSP leaves: {}", tree.leaves.len());
-    log::info!("[Compiler] BSP max depth: {max_depth}");
+    log::info!("BSP nodes: {}", tree.nodes.len());
+    log::info!("BSP leaves: {}", tree.leaves.len());
+    log::info!("BSP max depth: {max_depth}");
     log::info!(
-        "[Compiler] Total faces (after brush-side extraction): {}",
+        "Total faces (after brush-side extraction): {}",
         faces.len()
     );
-    log::info!("[Compiler] Average faces per leaf: {avg_faces:.1}");
+    log::info!("Average faces per leaf: {avg_faces:.1}");
 }
 
 fn compute_max_depth(tree: &BspTree) -> usize {

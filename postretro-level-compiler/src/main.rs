@@ -20,31 +20,40 @@ use std::time::Instant;
 use map_format::{DEFAULT_MAP_FORMAT, MapFormat};
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
     let started = Instant::now();
     let args = parse_args()?;
 
-    log::info!("[Compiler] Input: {}", args.input.display());
-    log::info!("[Compiler] Output: {}", args.output.display());
-    log::info!("[Compiler] Map format: {:?}", args.format);
+    let log_level = if args.verbose { "info" } else { "warn" };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+
+    if args.verbose {
+        log::info!("Input: {}", args.input.display());
+        log::info!("Output: {}", args.output.display());
+        log::info!("Map format: {:?}", args.format);
+    }
 
     if !args.format.is_supported() {
         anyhow::bail!("map format '{:?}' is not yet supported", args.format);
     }
 
+    let mut timings = Vec::new();
+
+    announce(started, "Starting map parsing...");
+    let stage_start = Instant::now();
     let map_data = parse::parse_map_file(&args.input, args.format)?;
+    timings.push(("Parsing", stage_start.elapsed()));
 
-    log::info!("[Compiler] Parsing complete.");
-
+    announce(started, "Starting BSP partitioning...");
+    let stage_start = Instant::now();
     // Partition space with brush-derived planes, then project each brush
     // side through the resulting tree to recover the world face list.
     // Solidity is assigned during construction, so face extraction never
     // emits a polygon into a solid leaf.
     let result = partition::partition(&map_data.brush_volumes)?;
+    timings.push(("Partitioning", stage_start.elapsed()));
 
-    log::info!("[Compiler] BSP partitioning complete.");
-
+    announce(started, "Starting visibility computation...");
+    let stage_start = Instant::now();
     // Portals feed both the exterior flood-fill and the BSP/leaf encoder:
     // the encoder uses the exterior set to emit `face_count = 0` for
     // outside-the-map leaves in lockstep with the geometry section.
@@ -52,17 +61,20 @@ fn main() -> anyhow::Result<()> {
     let portal_count = generated_portals.len();
     if portal_count == 0 {
         log::warn!(
-            "[Compiler] Portal generation produced 0 portals. Vis will treat all leaves as mutually visible."
+            "Portal generation produced 0 portals. Vis will treat all leaves as mutually visible."
         );
     }
 
     let exterior_leaves = visibility::find_exterior_leaves(&result.tree, &generated_portals);
 
     let vis_result = visibility::encode_vis(&result.tree, &generated_portals, &exterior_leaves);
-    visibility::log_stats(&vis_result, portal_count);
+    if args.verbose {
+        visibility::log_stats(&vis_result, portal_count);
+    }
+    timings.push(("Visibility", stage_start.elapsed()));
 
-    log::info!("[Compiler] Visibility computation complete.");
-
+    announce(started, "Starting geometry extraction...");
+    let stage_start = Instant::now();
     let geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
     let empty_leaf_count = result
         .tree
@@ -71,19 +83,25 @@ fn main() -> anyhow::Result<()> {
         .enumerate()
         .filter(|(idx, l)| !l.is_solid && !exterior_leaves.contains(idx))
         .count();
-    geometry::log_stats(&geo_result, empty_leaf_count);
+    if args.verbose {
+        geometry::log_stats(&geo_result, empty_leaf_count);
+    }
+    timings.push(("Geometry", stage_start.elapsed()));
 
-    log::info!("[Compiler] Geometry extraction complete.");
-
+    announce(started, "Starting BVH build...");
+    let stage_start = Instant::now();
     // Build the global BVH over all static geometry. One acceleration
     // structure feeds both the runtime GPU traversal (via the flattened
     // BvhSection) and Milestone 5's CPU baker (via the live bvh::Bvh).
     let (bvh, bvh_primitives, bvh_section) =
         bvh_build::build_bvh(&geo_result).map_err(|e| anyhow::anyhow!("BVH build failed: {e}"))?;
-    bvh_build::log_stats(&bvh_section);
+    if args.verbose {
+        bvh_build::log_stats(&bvh_section);
+    }
+    timings.push(("BVH Build", stage_start.elapsed()));
 
-    log::info!("[Compiler] BVH build complete.");
-
+    announce(started, "Starting SH volume bake...");
+    let stage_start = Instant::now();
     // Bake the SH irradiance volume. Same BVH, different traversal: the
     // baker walks the tree on the CPU via the `bvh` crate, so the runtime
     // compute shader and the compile-time probe bake share one acceleration
@@ -96,15 +114,20 @@ fn main() -> anyhow::Result<()> {
         lights: &map_data.lights,
     };
     let sh_volume_section = sh_bake::bake_sh_volume(&sh_inputs, args.probe_spacing);
-    sh_bake::log_stats(&sh_volume_section);
+    if args.verbose {
+        sh_bake::log_stats(&sh_volume_section);
+    }
+    timings.push(("SH Bake", stage_start.elapsed()));
 
-    log::info!("[Compiler] SH volume bake complete.");
-
+    announce(started, "Starting packing and writing...");
+    let stage_start = Instant::now();
     let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
     let light_influence_section = pack::encode_light_influence(&map_data.lights);
 
     if args.pvs {
-        log::info!("[Compiler] Writing precomputed PVS mode (--pvs).");
+        if args.verbose {
+            log::info!("Writing precomputed PVS mode (--pvs).");
+        }
         pack::pack_and_write_pvs(
             &args.output,
             &geo_result,
@@ -117,7 +140,9 @@ fn main() -> anyhow::Result<()> {
             &sh_volume_section,
         )?;
     } else {
-        log::info!("[Compiler] Writing portal graph mode (default).");
+        if args.verbose {
+            log::info!("Writing portal graph mode (default).");
+        }
         let portals_section = pack::encode_portals(&generated_portals);
         pack::pack_and_write_portals(
             &args.output,
@@ -131,12 +156,22 @@ fn main() -> anyhow::Result<()> {
             &sh_volume_section,
         )?;
     }
+    timings.push(("Packing", stage_start.elapsed()));
 
-    let elapsed = started.elapsed();
-    log::info!("[Compiler] Done in {elapsed:.2?}.");
+    println!("\nBuild Summary:");
+    for (name, duration) in &timings {
+        println!("  {: <15} {:>6.2}s", name, duration.as_secs_f32());
+    }
+    println!("  {: <15} {:>6.2}s", "Total", started.elapsed().as_secs_f32());
 
     Ok(())
 }
+
+fn announce(started: Instant, msg: &str) {
+    let elapsed = started.elapsed();
+    eprintln!("{:>6.2}s  {}", elapsed.as_secs_f32(), msg);
+}
+
 
 #[derive(Debug)]
 struct Args {
@@ -144,6 +179,8 @@ struct Args {
     output: PathBuf,
     /// When true, emit precomputed PVS (LeafPvs section) instead of portal graph.
     pvs: bool,
+    /// Enable detailed logging.
+    verbose: bool,
     /// Map dialect to parse (default: IdTech2).
     format: MapFormat,
     /// SH probe grid spacing in meters.
@@ -161,6 +198,7 @@ where
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut pvs = false;
+    let mut verbose = false;
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
 
@@ -174,6 +212,9 @@ where
             }
             "--pvs" => {
                 pvs = true;
+            }
+            "-v" | "--verbose" => {
+                verbose = true;
             }
             "--format" => {
                 let fmt_str = args
@@ -206,7 +247,7 @@ where
 
     let input = input.ok_or_else(|| {
         anyhow::anyhow!(
-            "usage: prl-build <input.map> [-o <output.prl>] [--pvs] \
+            "usage: prl-build <input.map> [-o <output.prl>] [--pvs] [-v|--verbose] \
              [--format <FORMAT>] [--probe-spacing <METERS>]"
         )
     })?;
@@ -217,6 +258,7 @@ where
         input,
         output,
         pvs,
+        verbose,
         format,
         probe_spacing,
     })
@@ -233,8 +275,20 @@ mod tests {
         assert_eq!(parsed.input, PathBuf::from("input.map"));
         assert_eq!(parsed.output, PathBuf::from("input.prl"));
         assert!(!parsed.pvs);
+        assert!(!parsed.verbose);
         assert_eq!(parsed.format, MapFormat::IdTech2);
         assert_eq!(parsed.probe_spacing, sh_bake::DEFAULT_PROBE_SPACING);
+    }
+
+    #[test]
+    fn parse_args_verbose_flag() {
+        let args = vec!["input.map".to_string(), "-v".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(parsed.verbose);
+
+        let args = vec!["input.map".to_string(), "--verbose".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(parsed.verbose);
     }
 
     #[test]

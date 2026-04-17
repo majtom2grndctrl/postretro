@@ -175,6 +175,10 @@ pub struct LightAnimation {
 /// Format-agnostic light record. The SH baker and runtime direct path both
 /// consume `Vec<MapLight>`; neither sees source-format vocabulary.
 ///
+/// When `bake_only` is true the light contributes to the SH irradiance volume
+/// bake only and is excluded from the runtime direct-lighting path (AlphaLights
+/// and LightInfluence PRL sections).
+///
 /// See `context/plans/in-progress/lighting-foundation/1-fgd-canonical.md`
 /// §Map light format for the full design rationale.
 #[derive(Debug, Clone, PartialEq)]
@@ -216,6 +220,11 @@ pub struct MapLight {
     /// All FGD-authored lights cast shadows by default. The flag exists so
     /// transient gameplay lights (Milestone 6+) can opt out programmatically.
     pub cast_shadows: bool,
+
+    /// When true, the light participates only in the SH irradiance volume bake
+    /// and is excluded from the runtime direct-lighting path (AlphaLights PRL
+    /// section and LightInfluence PRL section). Defaults to false.
+    pub bake_only: bool,
 }
 
 /// Parsed and classified .map data for downstream compiler stages.

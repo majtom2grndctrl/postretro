@@ -135,44 +135,44 @@ Missing section is not an error. The world shader degrades to flat white ambient
 
 ## Acceptance criteria
 
-- [ ] `SectionId::ShVolume = 20` allocated in `postretro-level-format/src/lib.rs`
-- [ ] Probe record and section types added to `postretro-level-format` with read/write + round-trip tests matching the existing section pattern
-- [ ] Baker stage in `prl-build` runs after Milestone 4's BVH construction and before pack
-- [ ] Ray traversal goes through the Milestone 4 BVH via the `bvh` crate — no separate baker BVH
-- [ ] Probe placement: regular grid over map AABB at configurable spacing; solidity query against BSP populates the validity mask
-- [ ] Stratified sphere sampling produces SH L2 coefficients per probe
-- [ ] Shadow raycasts traverse the same BVH; map lights modulated by visibility
-- [ ] Animated lights bake into separate monochrome SH layers (9 f32 per probe per animated light)
-- [ ] Static and animated light contributions are correctly decomposed: base SH excludes animated lights; per-light layers capture each animated light at unit intensity
-- [ ] Animation descriptor table written to PRL with correct period, phase, base_color, and sample arrays from `LightAnimation`
-- [ ] `animated_light_count` header field is 0 when no lights have animation; section degrades to static-only layout
-- [ ] Determinism: identical input `.map` produces identical SH coefficients (stratified sampling uses a fixed seed)
-- [ ] `--probe-spacing <meters>` CLI flag implemented with default of 1.0
-- [ ] Bake parallelism via `rayon` — one task per probe or per probe slab
-- [ ] Every test map in `assets/maps/` compiles and emits an SH section
-- [ ] Missing SH section degrades cleanly (verified by removing the section from a test PRL and loading it; no error)
-- [ ] `cargo test -p postretro-level-compiler -p postretro-level-format` passes
-- [ ] `cargo clippy -p postretro-level-compiler -p postretro-level-format -- -D warnings` clean
+- [x] `SectionId::ShVolume = 20` allocated in `postretro-level-format/src/lib.rs`
+- [x] Probe record and section types added to `postretro-level-format` with read/write + round-trip tests matching the existing section pattern
+- [x] Baker stage in `prl-build` runs after Milestone 4's BVH construction and before pack
+- [x] Ray traversal goes through the Milestone 4 BVH via the `bvh` crate — no separate baker BVH
+- [x] Probe placement: regular grid over map AABB at configurable spacing; solidity query against BSP populates the validity mask
+- [x] Stratified sphere sampling produces SH L2 coefficients per probe
+- [x] Shadow raycasts traverse the same BVH; map lights modulated by visibility
+- [x] Animated lights bake into separate monochrome SH layers (9 f32 per probe per animated light)
+- [x] Static and animated light contributions are correctly decomposed: base SH excludes animated lights; per-light layers capture each animated light at unit intensity
+- [x] Animation descriptor table written to PRL with correct period, phase, base_color, and sample arrays from `LightAnimation`
+- [x] `animated_light_count` header field is 0 when no lights have animation; section degrades to static-only layout
+- [x] Determinism: identical input `.map` produces identical SH coefficients (stratified sampling uses a fixed seed)
+- [x] `--probe-spacing <meters>` CLI flag implemented with default of 1.0
+- [x] Bake parallelism via `rayon` — one task per probe or per probe slab
+- [x] Every test map in `assets/maps/` compiles and emits an SH section
+- [x] Missing SH section degrades cleanly (verified by removing the section from a test PRL and loading it; no error)
+- [x] `cargo test -p postretro-level-compiler -p postretro-level-format` passes
+- [x] `cargo clippy -p postretro-level-compiler -p postretro-level-format -- -D warnings` clean
 
 ---
 
 ## Implementation tasks
 
-1. Allocate `SectionId::ShVolume = 20` in `postretro-level-format/src/lib.rs` (next after Milestone 4's `SectionId::Bvh = 19`).
+1. ✅ Allocate `SectionId::ShVolume = 20` in `postretro-level-format/src/lib.rs` (next after Milestone 4's `SectionId::Bvh = 19`).
 
-2. Add probe record and section types to `postretro-level-format` with read/write + round-trip tests.
+2. ✅ Add probe record and section types to `postretro-level-format` with read/write + round-trip tests.
 
-3. Implement probe placement in the baker: regular grid over map AABB at configurable spacing; solidity query against BSP populates the validity mask.
+3. ✅ Implement probe placement in the baker: regular grid over map AABB at configurable spacing; solidity query against BSP populates the validity mask.
 
-4. Implement radiance sampling: stratified sphere rays, traverse the **Milestone 4 BVH via the `bvh` crate** for closest-triangle hits, per-light shadow raycasts through the same BVH, Lambert evaluation at hit points. No separate baker BVH.
+4. ✅ Implement radiance sampling: stratified sphere rays, traverse the **Milestone 4 BVH via the `bvh` crate** for closest-triangle hits, per-light shadow raycasts through the same BVH, Lambert evaluation at hit points. No separate baker BVH.
 
-5. Implement SH L2 projection from radiance samples.
+5. ✅ Implement SH L2 projection from radiance samples.
 
-6. Parallelize with `rayon` over probes; expose `--probe-spacing` CLI flag.
+6. ✅ Parallelize with `rayon` over probes; expose `--probe-spacing` CLI flag.
 
-7. Wire the SH volume section into the `prl-build` pack stage.
+7. ✅ Wire the SH volume section into the `prl-build` pack stage.
 
-8. Implement animated light decomposition: separate map lights into static and animated sets, bake animated lights into monochrome SH layers at unit intensity, write animation descriptor table and per-light layers to the PRL section.
+8. ✅ Implement animated light decomposition: separate map lights into static and animated sets, bake animated lights into monochrome SH layers at unit intensity, write animation descriptor table and per-light layers to the PRL section.
 
 ---
 

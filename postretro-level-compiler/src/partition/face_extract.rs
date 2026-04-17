@@ -119,7 +119,7 @@ pub fn extract_faces(tree: &mut BspTree, brushes: &[BrushVolume]) -> FaceExtract
 
     for conflict in &coplanar_conflicts {
         log::warn!(
-            "[Compiler] Coplanar brush sides with mismatched textures: \
+            "Coplanar brush sides with mismatched textures: \
              brush {} (tex '{}') wins over brush {} (tex '{}'). \
              Check brush placement — overlapping coplanar surfaces should \
              carry the same material.",

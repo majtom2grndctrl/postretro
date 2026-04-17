@@ -74,7 +74,7 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
 
     if tree.leaves[seed].is_solid {
         log::warn!(
-            "[Compiler] WARNING: void probe landed in a solid leaf — exterior leaf culling skipped"
+            "WARNING: void probe landed in a solid leaf — exterior leaf culling skipped"
         );
         return HashSet::new();
     }
@@ -111,12 +111,12 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
         .count();
 
     log::info!(
-        "[Compiler] Exterior flood-fill: {exterior_count} exterior leaves, {interior_empty_count} interior empty leaves"
+        "Exterior flood-fill: {exterior_count} exterior leaves, {interior_empty_count} interior empty leaves"
     );
 
     if exterior_count > 0 && interior_empty_count == 0 {
         log::warn!(
-            "[Compiler] WARNING: no interior empty leaves remain after exterior culling — map may be unsealed or have a leak"
+            "WARNING: no interior empty leaves remain after exterior culling — map may be unsealed or have a leak"
         );
     }
 
@@ -287,7 +287,7 @@ fn encode_leaves_and_pvs(
 /// Log visibility statistics.
 pub fn log_stats(result: &VisibilityResult, portal_count: usize) {
     if result.empty_leaf_count == 0 {
-        log::info!("[Compiler] Visibility: 0 empty leaves, 0 portals");
+        log::info!("Visibility: 0 empty leaves, 0 portals");
         return;
     }
 
@@ -321,13 +321,13 @@ pub fn log_stats(result: &VisibilityResult, portal_count: usize) {
     };
 
     log::info!(
-        "[Compiler] Visibility: {} empty leaves, {} portals, {} bytes compressed PVS",
+        "Visibility: {} empty leaves, {} portals, {} bytes compressed PVS",
         result.empty_leaf_count,
         portal_count,
         result.compressed_pvs_bytes,
     );
     log::info!(
-        "[Compiler] Visible leaves per leaf: min={min_vis}, max={max_vis}, avg={avg_vis:.1}",
+        "Visible leaves per leaf: min={min_vis}, max={max_vis}, avg={avg_vis:.1}",
     );
 }
 

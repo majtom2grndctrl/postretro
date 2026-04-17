@@ -406,15 +406,15 @@ pub fn log_stats(result: &GeometryResult, empty_leaf_count: usize) {
     let section = &result.geometry;
     let triangle_count = section.indices.len() / 3;
     log::info!(
-        "[Compiler] Vertices: {} (28 bytes each)",
+        "Vertices: {} (28 bytes each)",
         section.vertices.len()
     );
-    log::info!("[Compiler] Indices: {}", section.indices.len());
-    log::info!("[Compiler] Triangles: {triangle_count}");
-    log::info!("[Compiler] Faces: {}", section.faces.len());
-    log::info!("[Compiler] Empty leaves: {empty_leaf_count}");
+    log::info!("Indices: {}", section.indices.len());
+    log::info!("Triangles: {triangle_count}");
+    log::info!("Faces: {}", section.faces.len());
+    log::info!("Empty leaves: {empty_leaf_count}");
     log::info!(
-        "[Compiler] Unique textures: {}",
+        "Unique textures: {}",
         result.texture_names.names.len()
     );
 }

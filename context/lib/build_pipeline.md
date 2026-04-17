@@ -16,7 +16,7 @@ TrenchBroom (.map) ──► prl-build (postretro-level-compiler) ──► PRL 
 Engine loads PRL + PNGs at runtime
 ```
 
-**PRL path:** prl-build builds a BSP tree as a compiler intermediate, generates portal geometry, builds a global BVH over all static triangles, and packs runtime data into a custom binary format. The BSP tree drives spatial partitioning and portal generation at compile time; the runtime consumes cells, portals, and the flat BVH node/leaf arrays without walking BSP nodes. (`BspNodes` and `BspLeaves` sections are still emitted for camera-leaf lookup; replacing that with a cell-location section is a future step.) Default mode stores portal geometry for runtime traversal; `--pvs` mode computes a precomputed PVS instead. Engine loads via the postretro-level-format crate.
+prl-build builds a BSP tree as a compiler intermediate, generates portal geometry, builds a global BVH over all static triangles, and packs runtime data into a custom binary format. BSP drives spatial partitioning and portal generation at compile time; the runtime consumes cells, portals, and BVH arrays. Engine loads via the `postretro-level-format` crate.
 
 ---
 
@@ -24,7 +24,7 @@ Engine loads PRL + PNGs at runtime
 
 prl-build accepts idTech2 `.map` files (Quake 1/2 dialect, parsed via shambler/shalrath). Unit scale: 1 unit = 0.0254 m (one inch, exact).
 
-**Texture projection:** both Standard (axis-aligned) and Valve 220 (explicit UV axes) are supported end-to-end. Shalrath auto-detects per face, so they can coexist in one `.map` file — TrenchBroom produces mixed output. UV computation handles both variants.
+Both Standard (axis-aligned) and Valve 220 (explicit UV axes) texture projections are supported. Shalrath auto-detects per face; they can coexist in one `.map` file.
 
 ---
 
@@ -47,20 +47,20 @@ No WAD files. Textures are authored as PNGs.
 Project deliverable alongside the engine. Defines Postretro-specific entities for TrenchBroom.
 
 | Entity | Type | Purpose | Key Properties |
-|--------|------|---------|------------|
+|--------|------|---------|----------------|
 | `light` | point | Omnidirectional light | `light` (intensity), `_color` (RGB), `_fade` (falloff distance, required), `delay` (falloff model), `style` (animation), `_phase` (style cycle offset) |
-| `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles, degrees), `mangle` (direction; `target` is deferred to Milestone 6) |
-| `light_sun` | point | Directional sun light | + `mangle` (direction vector, degrees) |
+| `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles), `mangle` (direction) |
+| `light_sun` | point | Directional sun light | + `mangle` (direction vector) |
 | `env_fog_volume` | brush | Per-region fog | `color`, `density`, `falloff` |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
 
 ### Entity resolution
 
-- **`light`, `light_spot`, `light_sun`** — parsed, translated to the internal map light format, and validated at compile time. Validation rules: falloff distance required, spotlight direction verified, intensity bounds checked. Map lights feed the SH irradiance volume baker and the runtime direct lighting path. Compilation fails on validation errors.
-- **`env_fog_volume`** — resolved to BSP leaves at load time. Each leaf in the volume gets per-leaf atmospheric haze parameters.
+- **`light`, `light_spot`, `light_sun`** — validated at compile time (falloff distance required, spotlight direction verified, intensity bounds checked). Feed the SH irradiance volume baker and the runtime direct lighting path. Compilation fails on validation errors.
+- **`env_fog_volume`** — resolved to BSP leaves at load time. Each leaf in the volume gets per-leaf fog parameters.
 - **`env_cubemap`** — marks a position for offline cubemap baking. Bake tool is out of initial scope.
-- **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf in the volume gets spatial reverb parameters for the audio subsystem.
+- **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf gets spatial reverb parameters for the audio subsystem.
 
 ---
 
@@ -79,22 +79,18 @@ Unknown prefix falls back to a default material with a warning at load time.
 ### Compiler pipeline
 
 ```
-parse .map → brush-volume BSP construction → brush-side projection → portal generation → exterior leaf culling → portal vis → geometry → pack .prl
+parse .map → BSP construction → brush-side projection → portal generation → exterior leaf culling → portal vis → geometry → BVH → pack .prl
 ```
 
-1. **Parse.** Shambler extracts brush volumes, brush sides, and entities. Parse applies two transforms at the boundary: axis swizzle (Quake Z-up → engine Y-up) and unit scale (idTech2: 0.0254 m/unit, exact). Vertex positions, entity origins, and plane distances convert to engine meters; plane normals receive the swizzle only — scale must not apply to direction vectors. The scale comes from a single map-format source, never duplicated at call sites. Brush sides — the textured half-plane polygons bounding each brush — are grouped per brush; they are the input to BSP construction, not world faces. Light entities route to the translation layer (see §Custom FGD) for validation and canonical-format conversion; they do not participate in BSP construction and feed the Milestone 5 SH baker plus the runtime direct-lighting path.
-2. **Brush-volume BSP construction.** Partitions space by recursively splitting the world AABB with brush-derived planes. Recursion tracks the inside set — the brush indices whose half-spaces fully contain the current region — and terminates at a leaf when the region is uniformly inside one brush set (solid) or uniformly outside every brush (empty). Leaf solidity is structural: it is established during construction, not inferred from face positions afterward. Splitter candidates are drawn from the full set of bounding planes of candidate brushes, including planes no face sits on, so narrow air gaps and adjacent brush boundaries are always detected. The world AABB is the union of brush AABBs with a one-meter slack margin on each axis. Recursion depth is hard-capped; pathological input yields a compiler error rather than a stack overflow.
-3. **Brush-side projection.** Derives world faces from brush sides in two passes. Pass 1 walks each brush side down the tree using plane-index equality as the routing primitive (a polygon on a splitting plane goes to one side only, never both), splits on all other planes, and accumulates surviving fragments into empty leaves as a per-side visible hull. Pass 2 distributes each visible hull back through the tree, emitting a triangulated face in every empty leaf it reaches. Fragments that land in solid leaves are dropped — face-in-solid culling falls out of the walk for free. When two coplanar brush sides reach the same leaf, containment resolves: the fully-contained polygon is dropped as redundant, or if the incoming polygon contains an existing face the existing face is superseded. Partial overlap emits both polygons and leaves any z-fighting as an authoring diagnostic — the compiler does not attempt 2D polygon union, because the intended home for flush decorative detail is a future non-splitting detail-brush class, not a splitter-set tiebreaker. Mismatched textures on a containment drop are surfaced as a warning.
-4. **Portal generation.** For each BSP internal node, clips the splitting-plane polygon against ancestor splitting planes to produce the portal polygon bounding that node's partition. Each portal is a convex polygon connecting two adjacent empty leaves. In default mode, portals are stored in the `.prl` file (section 15) for runtime traversal. In `--pvs` mode, portals are used as intermediate data and discarded.
-5. **Exterior leaf culling.** Flood-fills through the portal graph from a point outside the map's bounding volume. Every empty leaf reachable from outside is an exterior leaf. Exterior leaves produce no packed geometry — void-facing surfaces of the sealing brushes are absent from the output. A map with a leak has interior leaves incorrectly classified as exterior.
-6. **Portal vis** (`--pvs` mode only). Per empty leaf, floods through the portal graph. A leaf L' is potentially visible from L if any sequence of portals connects them. Output: per-leaf PVS bitsets, RLE-compressed. Computed in parallel (one task per leaf).
-7. **Geometry.** Fan-triangulates faces into a flat global vertex/index buffer. Each face carries a `material_bucket_id` (an `(albedo, normal_map)` pair index) and a `cell_id` (= `leaf_index`, the BSP leaf assigned during this pass).
-8. **BVH.** Collects one primitive per `(face, material_bucket)` pair with its AABB, `index_range`, `material_bucket_id`, and `cell_id`. Builds a global SAH BVH over all primitives. Flattens to dense node[] + leaf[] arrays in DFS order; sorts leaves by `material_bucket_id` so each bucket owns a contiguous slot range.
-9. **Pack.** Writes BSP tree nodes, BSP leaves, geometry, and the BVH section to the `.prl` binary format. Default mode also writes the Portals section (15). `--pvs` mode writes the LeafPvs section (14) instead.
-
-### Leaf solidity
-
-Step 2's inside-set tracking means leaf solidity is known the moment the leaf is produced: inside the intersection of its bounding brushes' half-spaces (solid) or outside all of them (empty). This avoids the class of bugs where centroid-based classification on a post-hoc face list misclassifies narrow gaps, shared surfaces, or regions whose interior contains no face. Downstream stages — portal generation, exterior leaf culling, portal vis — consume solidity as authoritative.
+1. **Parse.** Extracts brush volumes, brush sides, and entities. Applies coordinate transform (Quake Z-up → engine Y-up) and unit scale. Light entities route to FGD translation and validation; they don't participate in BSP construction.
+2. **BSP construction.** Partitions world space into solid and empty leaves using brush-derived planes. Leaf solidity is established during construction from the brush half-space intersection — not inferred from face positions afterward.
+3. **Brush-side projection.** Derives visible world faces from brush sides. Produces triangulated geometry per empty leaf; faces in solid space are discarded.
+4. **Portal generation.** Clips splitting-plane polygons against ancestor planes to produce convex portals connecting adjacent empty leaves. Stored in PRL for runtime traversal (default) or consumed by vis (`--pvs` mode) and discarded.
+5. **Exterior leaf culling.** Flood-fills through the portal graph from outside the map boundary. Exterior-reachable leaves produce no geometry. A map with a leak has interior leaves incorrectly classified as exterior.
+6. **Portal vis** (`--pvs` mode only). Computes per-leaf PVS bitsets by flooding through the portal graph. Output: RLE-compressed bitsets.
+7. **Geometry.** Fan-triangulates faces into a global vertex/index buffer. Associates each face with a material bucket and cell ID.
+8. **BVH.** Builds a global SAH BVH over all static geometry organized by `(face, material_bucket)` pair. Flattens to dense arrays; leaves sorted by material bucket for contiguous per-bucket indirect draw slots.
+9. **Pack.** Writes all sections to the `.prl` binary format.
 
 ### PRL section IDs
 
@@ -104,32 +100,23 @@ Step 2's inside-set tracking means leaf solidity is known the moment the leaf is
 | BspLeaves | 13 | Always |
 | LeafPvs | 14 | `--pvs` mode only |
 | Portals | 15 | Default mode |
-| TextureNames | 16 | Always (deduplicated texture name list) |
-| Geometry | 17 | Always (position + UV + octahedral normal/tangent, 28 bytes/vertex) |
-| AlphaLights | 18 | Always (interim flat per-light record array; 67 bytes/record; replaced by the entity system in Milestone 6+) |
-| Bvh | 19 | Always (global BVH: flat node + leaf arrays, 40 bytes/entry; see BVH Foundation plan) |
-| ShVolume | 20 | Milestone 5+ (SH L2 irradiance volume: probe grid header + packed probe records; see Lighting Foundation plan) |
-| LightInfluence | 21 | Milestone 5+ (per-light sphere bounds for spatial culling: 16-byte header + 16 bytes/record; see Lighting Foundation sub-plan 4) |
+| TextureNames | 16 | Always |
+| Geometry | 17 | Always |
+| AlphaLights | 18 | Always |
+| Bvh | 19 | Always |
+| ShVolume | 20 | When compiled with lighting |
+| LightInfluence | 21 | When compiled with lighting |
 
 ### Runtime visibility
 
 Two paths, selected by which PRL section is present:
 
-| PRL section present | Runtime path | Notes |
-|---------------------|--------------|-------|
-| Portals (15) | Per-frame portal flood-fill with frustum narrowing | Default. Handles corners and narrow apertures without precomputation. |
-| LeafPvs (14) | Precomputed PVS bitset lookup | Fallback for `--pvs` builds. |
+| PRL section present | Runtime path |
+|---------------------|--------------|
+| Portals (15) | Per-frame portal flood-fill with frustum narrowing |
+| LeafPvs (14) | Precomputed PVS bitset lookup |
 
-**Architectural stance: id Tech 4 (Doom 3, 2004), not Quake 1.** Visibility is computed per frame from portal geometry, not baked into a precomputed bitset. Carmack's reasoning for the break from Quake's vis pipeline still applies: precomputed PVS lengthens compile cycles, fights with dynamic geometry, and the per-frame cost is trivial at modern leaf counts. The compiler still supports `--pvs` so a precomputed fallback exists, but the default path is runtime traversal.
-
-Algorithm details (clip-and-narrow, per-chain cycle tracking, clipping robustness): `rendering_pipeline.md` §2.
-
-### Key differences from the former voxel approach
-
-- No voxel grid. Solid/empty classification uses brush half-plane geometry directly.
-- Leaf-based visibility replaces cluster-based PVS. BSP leaves are the visibility units.
-- BSP tree stored in `.prl` — enables O(log n) point-in-leaf at runtime.
-- Portal geometry stored in `.prl` by default — enables per-frame frustum-clipped portal traversal.
+Portal traversal is the default and preferred path. See `rendering_pipeline.md` §2.
 
 ---
 

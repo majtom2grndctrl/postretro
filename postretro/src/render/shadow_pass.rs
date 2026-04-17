@@ -1,6 +1,8 @@
 // Shadow pass GPU resources: textures, pipelines, and per-frame rendering.
 // See: context/plans/in-progress/lighting-foundation/5-shadow-maps.md
 
+use std::num::NonZeroU64;
+
 use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
@@ -20,6 +22,21 @@ const SHADOW_POINT_SHADER_SOURCE: &str = include_str!("../shaders/shadow_depth_p
 
 /// Total layers in the point shadow 2D array (6 faces per slot).
 const POINT_TOTAL_LAYERS: u32 = (MAX_POINT_SHADOW_LIGHTS * CUBE_FACES) as u32;
+
+/// Byte size of one mat4x4<f32> (shadow view-projection).
+const MAT4_SIZE: u64 = 64;
+
+/// Byte size of one `PointLightParams` record (vec3 pos + f32 range).
+const POINT_PARAMS_SIZE: u64 = 32;
+
+/// Total number of dynamic-offset slots in `shadow_uniform_buffer`.
+///
+/// The buffer is widened so each shadow pass owns a unique region,
+/// addressed via dynamic offsets. This sidesteps the
+/// `queue.write_buffer` + single-submit coalescing that otherwise
+/// causes every pass to see only the last-written matrix.
+const SHADOW_UNIFORM_SLOT_COUNT: usize =
+    CSM_TOTAL_LAYERS + POINT_TOTAL_LAYERS as usize + MAX_SPOT_SHADOW_LIGHTS;
 
 /// All GPU-side shadow map resources: textures, views, pipelines, uniform buffers.
 pub struct ShadowResources {
@@ -63,6 +80,28 @@ pub struct ShadowResources {
 
     // --- Slot pool ---
     pub slot_pool: ShadowSlotPool,
+
+    // --- Dynamic-offset strides (padded to device alignment) ---
+    uniform_stride: u32,
+    point_params_stride: u32,
+}
+
+/// Compute offset index (0-based pass slot) for a CSM cascade layer.
+#[inline]
+fn csm_uniform_slot(layer: usize) -> u32 {
+    layer as u32
+}
+
+/// Compute offset index for a point-shadow face within a slot.
+#[inline]
+fn point_uniform_slot(pool_slot: u32, face: usize) -> u32 {
+    CSM_TOTAL_LAYERS as u32 + pool_slot * CUBE_FACES as u32 + face as u32
+}
+
+/// Compute offset index for a spot-shadow slot.
+#[inline]
+fn spot_uniform_slot(pool_slot: u32) -> u32 {
+    CSM_TOTAL_LAYERS as u32 + POINT_TOTAL_LAYERS + pool_slot
 }
 
 impl ShadowResources {
@@ -136,10 +175,15 @@ impl ShadowResources {
             })
             .collect();
 
+        // Sampled as a hardware cube map array so the GPU performs the same
+        // face-selection math the rasterizer used. Avoids boundary seams that
+        // manual `cube_face_from_dir` + per-face UV derivation cannot match
+        // exactly. Each group of 6 consecutive layers forms one cube map in
+        // the WebGPU order (+X, -X, +Y, -Y, +Z, -Z).
         let point_array_view = point_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Point Shadow Array View"),
+            label: Some("Point Shadow Cube Array View"),
             format: Some(SHADOW_DEPTH_FORMAT),
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            dimension: Some(wgpu::TextureViewDimension::CubeArray),
             ..Default::default()
         });
 
@@ -192,6 +236,15 @@ impl ShadowResources {
             ..Default::default()
         });
 
+        // --- Dynamic-offset alignment ---
+        // Each shadow pass needs its own matrix region in a single wide
+        // uniform buffer, addressed via dynamic offset. The per-slot stride
+        // must be a multiple of the device's min uniform buffer alignment
+        // (256 on most desktop backends).
+        let align = device.limits().min_uniform_buffer_offset_alignment as u64;
+        let uniform_stride = align.max(MAT4_SIZE);
+        let point_params_stride = align.max(POINT_PARAMS_SIZE);
+
         // --- Bind group layouts ---
         let shadow_uniform_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shadow Uniform BGL"),
@@ -200,8 +253,8 @@ impl ShadowResources {
                 visibility: wgpu::ShaderStages::VERTEX,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                    has_dynamic_offset: true,
+                    min_binding_size: NonZeroU64::new(MAT4_SIZE),
                 },
                 count: None,
             }],
@@ -215,8 +268,8 @@ impl ShadowResources {
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        has_dynamic_offset: true,
+                        min_binding_size: NonZeroU64::new(MAT4_SIZE),
                     },
                     count: None,
                 },
@@ -225,8 +278,8 @@ impl ShadowResources {
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        has_dynamic_offset: true,
+                        min_binding_size: NonZeroU64::new(POINT_PARAMS_SIZE),
                     },
                     count: None,
                 },
@@ -234,9 +287,14 @@ impl ShadowResources {
         });
 
         // --- Uniform buffers ---
+        // The shadow uniform buffer is wide enough to hold one mat4 per pass
+        // slot (CSM cascades + point faces + spot lights), each region padded
+        // to `uniform_stride`. Each shadow pass binds its own dynamic offset,
+        // so writes do not trample each other before `submit()` flushes.
+        let shadow_uniform_size = uniform_stride * SHADOW_UNIFORM_SLOT_COUNT as u64;
         let shadow_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Shadow Uniform Buffer"),
-            contents: &[0u8; 64],
+            contents: &vec![0u8; shadow_uniform_size as usize],
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -245,13 +303,21 @@ impl ShadowResources {
             layout: &shadow_uniform_bgl,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: shadow_uniform_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &shadow_uniform_buffer,
+                    offset: 0,
+                    size: NonZeroU64::new(MAT4_SIZE),
+                }),
             }],
         });
 
+        // One params region per point-shadow slot; also addressed via dynamic
+        // offset so multiple shadow-casting point lights in the same frame
+        // don't stomp each other's params before submit().
+        let point_params_size = point_params_stride * MAX_POINT_SHADOW_LIGHTS as u64;
         let point_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Point Light Params Buffer"),
-            contents: &[0u8; 32],
+            contents: &vec![0u8; point_params_size as usize],
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -261,11 +327,19 @@ impl ShadowResources {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: shadow_uniform_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &shadow_uniform_buffer,
+                        offset: 0,
+                        size: NonZeroU64::new(MAT4_SIZE),
+                    }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: point_params_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &point_params_buffer,
+                        offset: 0,
+                        size: NonZeroU64::new(POINT_PARAMS_SIZE),
+                    }),
                 },
             ],
         });
@@ -353,7 +427,13 @@ impl ShadowResources {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                // Point-shadow view-projection matrices are pre-multiplied by a
+                // Y-flip in NDC to align with WebGPU cube-sampling UV convention
+                // (see `shadow::point_light_cube_matrices`). The Y-flip inverts
+                // triangle winding in screen space, so back-facing geometry
+                // becomes front-facing here — hence we cull FRONT to keep
+                // culling behavior consistent with the CSM/spot pipelines.
+                cull_mode: Some(wgpu::Face::Front),
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -412,6 +492,8 @@ impl ShadowResources {
             csm_vp_buffer,
             spot_vp_buffer,
             slot_pool: ShadowSlotPool::new(),
+            uniform_stride: uniform_stride as u32,
+            point_params_stride: point_params_stride as u32,
         }
     }
 
@@ -511,7 +593,10 @@ impl ShadowResources {
             let layer_idx = slot.pool_slot as usize * CSM_CASCADE_COUNT + cascade;
             csm_matrices[layer_idx] = light_vp;
 
-            write_mat4_to_buffer(queue, &self.shadow_uniform_buffer, &light_vp);
+            let dyn_offset = csm_uniform_slot(layer_idx) * self.uniform_stride;
+            write_mat4_to_buffer(
+                queue, &self.shadow_uniform_buffer, dyn_offset as u64, &light_vp,
+            );
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(&format!("CSM light={} cascade={cascade}", slot.light_index)),
@@ -528,7 +613,7 @@ impl ShadowResources {
             });
 
             pass.set_pipeline(&self.shadow_pipeline);
-            pass.set_bind_group(0, &self.shadow_uniform_bind_group, &[]);
+            pass.set_bind_group(0, &self.shadow_uniform_bind_group, &[dyn_offset]);
             pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..index_count, 0, 0..1);
@@ -550,18 +635,24 @@ impl ShadowResources {
         let range = light.falloff_range;
         let face_matrices = shadow::point_light_cube_matrices(pos, range);
 
-        // Upload point light params.
-        let mut params = [0u8; 32];
+        // Upload point light params at this slot's dedicated offset. Multiple
+        // shadow-casting point lights in one frame would collide at offset 0;
+        // dynamic-offset binding keeps each light's params isolated.
+        let params_offset = slot.pool_slot * self.point_params_stride;
+        let mut params = [0u8; POINT_PARAMS_SIZE as usize];
         params[0..4].copy_from_slice(&pos.x.to_ne_bytes());
         params[4..8].copy_from_slice(&pos.y.to_ne_bytes());
         params[8..12].copy_from_slice(&pos.z.to_ne_bytes());
         params[12..16].copy_from_slice(&range.to_ne_bytes());
-        queue.write_buffer(&self.point_params_buffer, 0, &params);
+        queue.write_buffer(&self.point_params_buffer, params_offset as u64, &params);
 
         let base_layer = slot.pool_slot as usize * CUBE_FACES;
 
         for (face, face_vp) in face_matrices.iter().enumerate().take(CUBE_FACES) {
-            write_mat4_to_buffer(queue, &self.shadow_uniform_buffer, face_vp);
+            let vp_offset = point_uniform_slot(slot.pool_slot, face) * self.uniform_stride;
+            write_mat4_to_buffer(
+                queue, &self.shadow_uniform_buffer, vp_offset as u64, face_vp,
+            );
 
             let layer_idx = base_layer + face;
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -579,7 +670,11 @@ impl ShadowResources {
             });
 
             pass.set_pipeline(&self.point_shadow_pipeline);
-            pass.set_bind_group(0, &self.point_uniform_bind_group, &[]);
+            pass.set_bind_group(
+                0,
+                &self.point_uniform_bind_group,
+                &[vp_offset, params_offset],
+            );
             pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..index_count, 0, 0..1);
@@ -598,7 +693,8 @@ impl ShadowResources {
         index_count: u32,
         vp: &Mat4,
     ) {
-        write_mat4_to_buffer(queue, &self.shadow_uniform_buffer, vp);
+        let dyn_offset = spot_uniform_slot(slot.pool_slot) * self.uniform_stride;
+        write_mat4_to_buffer(queue, &self.shadow_uniform_buffer, dyn_offset as u64, vp);
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(&format!("Spot light={}", slot.light_index)),
@@ -615,7 +711,7 @@ impl ShadowResources {
         });
 
         pass.set_pipeline(&self.shadow_pipeline);
-        pass.set_bind_group(0, &self.shadow_uniform_bind_group, &[]);
+        pass.set_bind_group(0, &self.shadow_uniform_bind_group, &[dyn_offset]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..index_count, 0, 0..1);
@@ -638,10 +734,10 @@ fn light_dir(light: &MapLight) -> Vec3 {
     )
 }
 
-fn write_mat4_to_buffer(queue: &wgpu::Queue, buffer: &wgpu::Buffer, mat: &Mat4) {
+fn write_mat4_to_buffer(queue: &wgpu::Queue, buffer: &wgpu::Buffer, offset: u64, mat: &Mat4) {
     let mut bytes = [0u8; 64];
     for (i, &val) in mat.to_cols_array().iter().enumerate() {
         bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_ne_bytes());
     }
-    queue.write_buffer(buffer, 0, &bytes);
+    queue.write_buffer(buffer, offset, &bytes);
 }

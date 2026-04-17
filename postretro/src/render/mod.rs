@@ -576,13 +576,13 @@ impl Renderer {
                         },
                         count: None,
                     },
-                    // binding 5: point shadow 2D array
+                    // binding 5: point shadow cube map array (6 layers per slot).
                     wgpu::BindGroupLayoutEntry {
                         binding: 5,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            view_dimension: wgpu::TextureViewDimension::CubeArray,
                             multisampled: false,
                         },
                         count: None,

@@ -160,10 +160,26 @@ pub fn point_light_cube_matrices(light_pos: Vec3, light_range: f32) -> [Mat4; 6]
         light_range,
     );
 
+    // WebGPU cube-sampling convention (inherited from D3D/Vulkan) expects
+    // texture V to increase toward the +t direction of each face's (s, t)
+    // parameterization. `perspective_rh` combined with our `look_to_rh` face
+    // views emits the framebuffer Y flipped relative to that convention — so
+    // without this correction, the depth written at screen-top lands where
+    // the hardware sampler expects screen-bottom content, and vice versa.
+    // That mismatch causes geometry on one side of each face (e.g. pillars
+    // below the light) to be sampled when the shader asks for the opposite
+    // direction (e.g. toward the ceiling above the light).
+    //
+    // Pre-multiplying by a Y-flip in NDC realigns the rendered content with
+    // the cube-sampling UV convention. Note: this inverts triangle winding in
+    // screen space, so the point-shadow pipeline culls front faces instead of
+    // back faces (see shadow_pass.rs).
+    let flip_y = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
+
     let mut matrices = [Mat4::IDENTITY; 6];
     for (i, (dir, up)) in directions.iter().enumerate() {
         let view = Mat4::look_to_rh(light_pos, *dir, *up);
-        matrices[i] = proj * view;
+        matrices[i] = flip_y * proj * view;
     }
     matrices
 }

@@ -39,9 +39,10 @@ struct GpuLight {
 @group(2) @binding(2) var shadow_sampler: sampler_comparison;
 @group(2) @binding(3) var csm_depth_array: texture_depth_2d_array;
 @group(2) @binding(4) var<storage, read> csm_view_proj: array<mat4x4<f32>>;
-// Point shadows stored as a 2D array: 6 layers per light (one per cube face).
-// slot * 6 + face_index selects the layer.
-@group(2) @binding(5) var point_shadow_array: texture_depth_2d_array;
+// Point shadows stored as a cube map array: one cube per light slot.
+// Hardware performs face selection and UV derivation, matching the rasterizer
+// bit-for-bit so boundary seams disappear.
+@group(2) @binding(5) var point_shadow_array: texture_depth_cube_array;
 @group(2) @binding(6) var spot_shadow_array: texture_depth_2d_array;
 @group(2) @binding(7) var<storage, read> spot_view_proj: array<mat4x4<f32>>;
 
@@ -165,59 +166,27 @@ fn sample_csm_shadow(frag_world_pos: vec3<f32>, shadow_map_index: u32) -> f32 {
     return textureSampleCompareLevel(csm_depth_array, shadow_sampler, uv, cascade_index, depth);
 }
 
-// Determine which cube face to sample from a direction vector.
-// Returns (face_index, uv) for sampling from a 2D array texture.
-fn cube_face_from_dir(dir: vec3<f32>) -> u32 {
-    let abs_dir = abs(dir);
-    if abs_dir.x >= abs_dir.y && abs_dir.x >= abs_dir.z {
-        if dir.x > 0.0 { return 0u; } else { return 1u; }
-    } else if abs_dir.y >= abs_dir.x && abs_dir.y >= abs_dir.z {
-        if dir.y > 0.0 { return 2u; } else { return 3u; }
-    } else {
-        if dir.z > 0.0 { return 4u; } else { return 5u; }
-    }
-}
-
-// Point light shadow maps use per-face view-projection matrices stored in
-// csm_view_proj buffer starting at offset MAX_CSM_LIGHTS * 3 cascades.
-// Actually, point light shadows store linear depth and are sampled via the
-// comparison sampler against normalized distance. We project the fragment
-// through the face's VP matrix and compare.
-fn sample_point_shadow(light_pos: vec3<f32>, frag_world_pos: vec3<f32>, light_range: f32, shadow_map_index: u32) -> f32 {
+// Point light shadow map sampling via hardware cube map array.
+// The rasterizer writes linear depth (dist / light_range) into each of the
+// 6 faces of cube `shadow_map_index`. Hardware cube sampling picks the face
+// and derives face-local UVs from `dir` using the same math the rasterizer
+// used — eliminating the boundary seams that manual face selection produces.
+fn sample_point_shadow(light_pos: vec3<f32>, frag_world_pos: vec3<f32>, light_range: f32, shadow_map_index: u32, NdotL: f32) -> f32 {
     let to_frag = frag_world_pos - light_pos;
     let dist = length(to_frag);
-    // Linear depth: normalized distance to light, with a small bias to
-    // reduce shadow acne. Hardware depth bias has no effect on point shadow
-    // maps because the fragment shader writes frag_depth explicitly.
-    let depth = dist / max(light_range, 0.001) - 0.002;
+    // Linear depth with slope-scaled bias to reduce shadow acne. Hardware
+    // depth bias has no effect on point shadow maps because the fragment
+    // shader writes frag_depth explicitly. At grazing angles (small NdotL),
+    // depth varies rapidly across a shadow map texel, so we scale the bias
+    // inversely with NdotL.
+    let base_bias = 0.002;
+    let slope_bias = base_bias / max(NdotL, 0.05);
+    let depth = dist / max(light_range, 0.001) - slope_bias;
     let dir = normalize(to_frag);
-    let face = cube_face_from_dir(dir);
 
-    // Face major axis and uv derivation for 2D array lookup.
-    let abs_dir = abs(dir);
-    var uv: vec2<f32>;
-    if face == 0u {
-        // +X
-        uv = vec2<f32>(-dir.z / abs_dir.x, -dir.y / abs_dir.x) * 0.5 + 0.5;
-    } else if face == 1u {
-        // -X
-        uv = vec2<f32>(dir.z / abs_dir.x, -dir.y / abs_dir.x) * 0.5 + 0.5;
-    } else if face == 2u {
-        // +Y
-        uv = vec2<f32>(dir.x / abs_dir.y, dir.z / abs_dir.y) * 0.5 + 0.5;
-    } else if face == 3u {
-        // -Y
-        uv = vec2<f32>(dir.x / abs_dir.y, -dir.z / abs_dir.y) * 0.5 + 0.5;
-    } else if face == 4u {
-        // +Z
-        uv = vec2<f32>(dir.x / abs_dir.z, -dir.y / abs_dir.z) * 0.5 + 0.5;
-    } else {
-        // -Z
-        uv = vec2<f32>(-dir.x / abs_dir.z, -dir.y / abs_dir.z) * 0.5 + 0.5;
-    }
-
-    let layer = shadow_map_index * 6u + face;
-    return textureSampleCompareLevel(point_shadow_array, shadow_sampler, uv, layer, depth);
+    return textureSampleCompareLevel(
+        point_shadow_array, shadow_sampler, dir, i32(shadow_map_index), depth,
+    );
 }
 
 // Sample 2D shadow map for a spot light.
@@ -306,6 +275,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 in.world_position,
                 light.direction_and_range.w,
                 bitcast<u32>(light.shadow_info.y),
+                NdotL,
             );
         } else if shadow_kind == 3u {
             // Spot 2D

@@ -486,7 +486,7 @@ mod tests {
             nodes: vec![BspNodeRecord {
                 plane_normal: [1.0, 0.0, 0.0],
                 plane_distance: 32.0,
-                front: -1 - 0, // leaf 0
+                front: -1, // leaf 0
                 back: -1 - 1,  // leaf 1
             }],
         }
@@ -937,6 +937,7 @@ mod tests {
                 animation: None,
                 cast_shadows: false,
                 bake_only: false,
+                is_dynamic: false,
             },
             MapLight {
                 origin: DVec3::new(-4.0, 1.0, 0.5),
@@ -951,6 +952,7 @@ mod tests {
                 animation: None,
                 cast_shadows: true,
                 bake_only: false,
+                is_dynamic: false,
             },
             MapLight {
                 origin: DVec3::new(0.0, 100.0, 0.0),
@@ -965,6 +967,7 @@ mod tests {
                 animation: None,
                 cast_shadows: false,
                 bake_only: false,
+                is_dynamic: false,
             },
         ];
 

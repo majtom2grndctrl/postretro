@@ -27,6 +27,15 @@ use wgpu::util::DeviceExt;
 
 use crate::geometry::{BVH_NODE_FLAG_LEAF, BucketRange, BvhTree};
 
+/// Callback used by `draw_indirect` to bind the per-bucket texture bind
+/// group before emitting that bucket's draws. Receives the active render
+/// pass and the bucket's `material_bucket_id`.
+///
+/// The `+ 'a` bound is required because type aliases default the trait
+/// object lifetime to `'static`, unlike an inline `&dyn Fn(...)` which
+/// picks up the outer reference's lifetime via elision.
+pub type SetTextureFn<'a> = dyn Fn(&mut wgpu::RenderPass<'a>, u32) + 'a;
+
 // All GPU uploads below use little-endian byte order because the WGSL storage
 // buffers, PRL on-disk format, and every wgpu backend target (Vulkan, Metal,
 // DX12 on x86_64 / aarch64 / wasm32) are little-endian. Enforce at compile
@@ -416,7 +425,7 @@ impl ComputeCullPipeline {
     pub fn draw_indirect<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
-        set_texture_fn: Option<&dyn Fn(&mut wgpu::RenderPass<'a>, u32)>,
+        set_texture_fn: Option<&SetTextureFn<'a>>,
     ) {
         for range in &self.bucket_ranges {
             if range.leaf_count == 0 {

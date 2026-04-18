@@ -772,7 +772,7 @@ mod tests {
             position: [0.0; 3],
             base_uv: [0.0; 2],
             normal_oct: [32768, 32768],
-            tangent_packed: [65535, 32768 | 0x8000],
+            tangent_packed: [65535, 0x8000],
         }
     }
 

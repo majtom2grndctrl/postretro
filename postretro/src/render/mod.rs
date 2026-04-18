@@ -116,8 +116,11 @@ impl LightingIsolation {
     }
 }
 
-fn build_uniform_data(
-    view_proj: &Mat4,
+/// CPU-side mirror of the per-frame uniform buffer. Fields map 1:1 to the
+/// WGSL uniform layout; `build_uniform_data` is the single source of truth
+/// for the byte packing.
+struct FrameUniforms {
+    view_proj: Mat4,
     camera_position: Vec3,
     ambient_floor: f32,
     light_count: u32,
@@ -126,33 +129,35 @@ fn build_uniform_data(
     sdf_distance_viz: bool,
     lighting_isolation: LightingIsolation,
     csm_splits: [f32; 4],
-    view_matrix: &Mat4,
-) -> [u8; UNIFORM_SIZE] {
+    view_matrix: Mat4,
+}
+
+fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     let mut bytes = [0u8; UNIFORM_SIZE];
-    let cols = view_proj.to_cols_array();
+    let cols = u.view_proj.to_cols_array();
     for (i, val) in cols.iter().enumerate() {
         let off = i * 4;
         bytes[off..off + 4].copy_from_slice(&val.to_ne_bytes());
     }
-    bytes[64..68].copy_from_slice(&camera_position.x.to_ne_bytes());
-    bytes[68..72].copy_from_slice(&camera_position.y.to_ne_bytes());
-    bytes[72..76].copy_from_slice(&camera_position.z.to_ne_bytes());
-    bytes[76..80].copy_from_slice(&ambient_floor.to_ne_bytes());
-    bytes[80..84].copy_from_slice(&light_count.to_ne_bytes());
-    bytes[84..88].copy_from_slice(&time.to_ne_bytes());
-    let viz_flag: u32 = if sdf_sign_viz { 1 } else { 0 };
+    bytes[64..68].copy_from_slice(&u.camera_position.x.to_ne_bytes());
+    bytes[68..72].copy_from_slice(&u.camera_position.y.to_ne_bytes());
+    bytes[72..76].copy_from_slice(&u.camera_position.z.to_ne_bytes());
+    bytes[76..80].copy_from_slice(&u.ambient_floor.to_ne_bytes());
+    bytes[80..84].copy_from_slice(&u.light_count.to_ne_bytes());
+    bytes[84..88].copy_from_slice(&u.time.to_ne_bytes());
+    let viz_flag: u32 = if u.sdf_sign_viz { 1 } else { 0 };
     bytes[88..92].copy_from_slice(&viz_flag.to_ne_bytes());
-    let dist_viz_flag: u32 = if sdf_distance_viz { 1 } else { 0 };
+    let dist_viz_flag: u32 = if u.sdf_distance_viz { 1 } else { 0 };
     bytes[92..96].copy_from_slice(&dist_viz_flag.to_ne_bytes());
 
     // CSM cascade splits at bytes 96..112.
-    for (i, &split) in csm_splits.iter().enumerate() {
+    for (i, &split) in u.csm_splits.iter().enumerate() {
         let off = 96 + i * 4;
         bytes[off..off + 4].copy_from_slice(&split.to_ne_bytes());
     }
 
     // View matrix at bytes 112..176.
-    let view_cols = view_matrix.to_cols_array();
+    let view_cols = u.view_matrix.to_cols_array();
     for (i, val) in view_cols.iter().enumerate() {
         let off = 112 + i * 4;
         bytes[off..off + 4].copy_from_slice(&val.to_ne_bytes());
@@ -160,7 +165,7 @@ fn build_uniform_data(
 
     // Lighting isolation mode at bytes 176..180 (12 trailing bytes are
     // padding — already zero-initialized above).
-    let isolation: u32 = lighting_isolation as u32;
+    let isolation: u32 = u.lighting_isolation as u32;
     bytes[176..180].copy_from_slice(&isolation.to_ne_bytes());
 
     bytes
@@ -616,18 +621,18 @@ impl Renderer {
             );
             [s[0], s[1], s[2], 0.0]
         };
-        let uniform_data = build_uniform_data(
-            &view_proj,
-            Vec3::ZERO,
+        let uniform_data = build_uniform_data(&FrameUniforms {
+            view_proj,
+            camera_position: Vec3::ZERO,
             ambient_floor,
             light_count,
-            0.0,
-            false,
-            false,
-            LightingIsolation::Normal,
-            initial_csm_splits,
-            &Mat4::IDENTITY,
-        );
+            time: 0.0,
+            sdf_sign_viz: false,
+            sdf_distance_viz: false,
+            lighting_isolation: LightingIsolation::Normal,
+            csm_splits: initial_csm_splits,
+            view_matrix: Mat4::IDENTITY,
+        });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
@@ -1364,18 +1369,18 @@ impl Renderer {
         view_matrix: &Mat4,
     ) {
         let time = self.app_start.elapsed().as_secs_f32();
-        let data = build_uniform_data(
-            &view_proj,
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj,
             camera_position,
-            self.ambient_floor,
-            self.light_count,
+            ambient_floor: self.ambient_floor,
+            light_count: self.light_count,
             time,
-            self.sdf_sign_viz_enabled,
-            self.sdf_distance_viz_enabled,
-            self.lighting_isolation,
+            sdf_sign_viz: self.sdf_sign_viz_enabled,
+            sdf_distance_viz: self.sdf_distance_viz_enabled,
+            lighting_isolation: self.lighting_isolation,
             csm_splits,
-            view_matrix,
-        );
+            view_matrix: *view_matrix,
+        });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
     }
 
@@ -1905,19 +1910,18 @@ mod tests {
 
     #[test]
     fn uniform_data_has_correct_size() {
-        let vp = Mat4::IDENTITY;
-        let data = build_uniform_data(
-            &vp,
-            Vec3::ZERO,
-            0.05,
-            0,
-            0.0,
-            false,
-            false,
-            LightingIsolation::Normal,
-            [0.0; 4],
-            &Mat4::IDENTITY,
-        );
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.05,
+            light_count: 0,
+            time: 0.0,
+            sdf_sign_viz: false,
+            sdf_distance_viz: false,
+            lighting_isolation: LightingIsolation::Normal,
+            csm_splits: [0.0; 4],
+            view_matrix: Mat4::IDENTITY,
+        });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
 
@@ -2184,22 +2188,21 @@ mod tests {
 
     #[test]
     fn uniform_data_encodes_view_proj_camera_and_lighting_fields() {
-        let vp = Mat4::IDENTITY;
         let camera = Vec3::new(10.0, 20.0, 30.0);
         let ambient_floor = 0.125_f32;
         let light_count = 7_u32;
-        let data = build_uniform_data(
-            &vp,
-            camera,
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: camera,
             ambient_floor,
             light_count,
-            0.0,
-            false,
-            false,
-            LightingIsolation::Normal,
-            [0.0; 4],
-            &Mat4::IDENTITY,
-        );
+            time: 0.0,
+            sdf_sign_viz: false,
+            sdf_distance_viz: false,
+            lighting_isolation: LightingIsolation::Normal,
+            csm_splits: [0.0; 4],
+            view_matrix: Mat4::IDENTITY,
+        });
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
         let mut floats = Vec::new();

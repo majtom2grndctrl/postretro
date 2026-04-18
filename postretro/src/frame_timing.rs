@@ -331,7 +331,7 @@ mod tests {
         // Midpoint should be near 2*PI (i.e., near 0), not near PI.
         let normalized = result.rem_euclid(2.0 * PI);
         assert!(
-            normalized > 2.0 * PI - 0.2 || normalized < 0.2,
+            !(0.2..=2.0 * PI - 0.2).contains(&normalized),
             "should be near 0/2PI, got {normalized:.5}"
         );
     }
@@ -344,7 +344,7 @@ mod tests {
         let result = lerp_angle(from, to, 0.5);
         let normalized = result.rem_euclid(2.0 * PI);
         assert!(
-            normalized > 2.0 * PI - 0.2 || normalized < 0.2,
+            !(0.2..=2.0 * PI - 0.2).contains(&normalized),
             "should be near 0/2PI, got {normalized:.5}"
         );
     }

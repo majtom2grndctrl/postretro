@@ -317,7 +317,7 @@ mod tests {
         // 3 vertices produce header(12) + verts(3*28) + indices(3*4) + faces(1*8)
         let section = sample_section();
         let bytes = section.to_bytes();
-        let expected = 12 + (3 * 28) + (3 * 4) + (1 * 8);
+        let expected = 12 + (3 * 28) + (3 * 4) + 8;
         assert_eq!(bytes.len(), expected);
     }
 

@@ -193,10 +193,10 @@ mod tests {
 
         let pvs = compute_pvs(&portals, 4, &solid);
 
-        for i in 0..4 {
-            for j in 0..4 {
+        for (i, row) in pvs.iter().enumerate() {
+            for (j, &visible) in row.iter().enumerate() {
                 assert!(
-                    pvs[i][j],
+                    visible,
                     "leaf {i} should see leaf {j} in fully connected diamond"
                 );
             }

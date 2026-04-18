@@ -681,7 +681,7 @@ mod tests {
             ],
             per_light_sh: vec![
                 (0..total_probes * 9).map(|i| i as f32).collect(),
-                (0..total_probes * 9).map(|i| (i as f32) * -1.0).collect(),
+                (0..total_probes * 9).map(|i| -(i as f32)).collect(),
             ],
         };
 
@@ -718,7 +718,7 @@ mod tests {
         assert_eq!(color_count_1, 2);
 
         // Samples = 4 brightness (light 0) + 0 (light 1) + 2*3 color rgb.
-        assert_eq!(samples.len(), (4 + 0 + 6) * 4);
+        assert_eq!(samples.len(), (4 + 6) * 4);
 
         // SH data size: 2 lights * 2 probes * 9 bands * 4 bytes.
         assert_eq!(sh_data.len(), 2 * 2 * 9 * 4);

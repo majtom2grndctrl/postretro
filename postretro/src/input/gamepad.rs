@@ -12,6 +12,11 @@ const DEAD_ZONE: f32 = 0.15;
 /// Trigger value above which a trigger counts as a button press.
 const TRIGGER_BUTTON_THRESHOLD: f32 = 0.5;
 
+/// Returns whether an analog trigger value counts as a button press.
+fn trigger_is_active(value: f32) -> bool {
+    value >= TRIGGER_BUTTON_THRESHOLD
+}
+
 /// Manages gamepad input via gilrs.
 ///
 /// Each frame, call `update()` to drain gilrs events and feed processed
@@ -97,11 +102,11 @@ impl GamepadSystem {
         // Triggers also produce button state via threshold.
         input_system.set_physical_input(
             PhysicalInput::GamepadButton(Button::LeftTrigger2),
-            left_trigger >= TRIGGER_BUTTON_THRESHOLD,
+            trigger_is_active(left_trigger),
         );
         input_system.set_physical_input(
             PhysicalInput::GamepadButton(Button::RightTrigger2),
-            right_trigger >= TRIGGER_BUTTON_THRESHOLD,
+            trigger_is_active(right_trigger),
         );
 
         // Read digital buttons.
@@ -269,16 +274,16 @@ mod tests {
 
     #[test]
     fn trigger_below_threshold_is_inactive() {
-        assert!(0.3 < TRIGGER_BUTTON_THRESHOLD);
+        assert!(!trigger_is_active(0.3));
     }
 
     #[test]
     fn trigger_at_threshold_is_active() {
-        assert!(TRIGGER_BUTTON_THRESHOLD >= TRIGGER_BUTTON_THRESHOLD);
+        assert!(trigger_is_active(TRIGGER_BUTTON_THRESHOLD));
     }
 
     #[test]
     fn trigger_above_threshold_is_active() {
-        assert!(0.8 >= TRIGGER_BUTTON_THRESHOLD);
+        assert!(trigger_is_active(0.8));
     }
 }

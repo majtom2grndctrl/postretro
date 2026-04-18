@@ -253,8 +253,8 @@ mod tests {
         let dir = tempdir("name_map_basic");
         let collection = dir.join("metal");
         fs::create_dir(&collection).unwrap();
-        fs::write(collection.join("floor_01.png"), &minimal_png()).unwrap();
-        fs::write(collection.join("wall_02.png"), &minimal_png()).unwrap();
+        fs::write(collection.join("floor_01.png"), minimal_png()).unwrap();
+        fs::write(collection.join("wall_02.png"), minimal_png()).unwrap();
 
         let map = build_name_to_path_map(&dir);
 
@@ -268,7 +268,7 @@ mod tests {
         let dir = tempdir("name_map_case");
         let collection = dir.join("concrete");
         fs::create_dir(&collection).unwrap();
-        fs::write(collection.join("BRICK_Wall.PNG"), &minimal_png()).unwrap();
+        fs::write(collection.join("BRICK_Wall.PNG"), minimal_png()).unwrap();
 
         let map = build_name_to_path_map(&dir);
 
@@ -282,7 +282,7 @@ mod tests {
         fs::create_dir(&collection).unwrap();
         fs::write(collection.join("notes.txt"), b"not a texture").unwrap();
         fs::write(collection.join("data.jpg"), b"not png").unwrap();
-        fs::write(collection.join("real.png"), &minimal_png()).unwrap();
+        fs::write(collection.join("real.png"), minimal_png()).unwrap();
 
         let map = build_name_to_path_map(&dir);
 
@@ -301,7 +301,7 @@ mod tests {
         // Files directly in the texture root (not in a collection subdirectory)
         // should be ignored.
         let dir = tempdir("name_map_root_files");
-        fs::write(dir.join("stray.png"), &minimal_png()).unwrap();
+        fs::write(dir.join("stray.png"), minimal_png()).unwrap();
 
         let map = build_name_to_path_map(&dir);
         assert!(map.is_empty());

@@ -740,6 +740,7 @@ mod tests {
             primitives: &primitives,
             geometry: &geo_result,
             tree: &result.tree,
+            exterior_leaves: &exterior,
             lights: &map_data.lights,
         };
         let sh_volume = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
@@ -808,6 +809,7 @@ mod tests {
             primitives: &primitives,
             geometry: &geo_result,
             tree: &result.tree,
+            exterior_leaves: &exterior,
             lights: &map_data.lights,
         };
         let sh_volume = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
@@ -889,6 +891,7 @@ mod tests {
                 primitives: &primitives,
                 geometry: &geo_result,
                 tree: &result.tree,
+                exterior_leaves: &exterior,
                 lights: &map_data.lights,
             };
             let section = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);

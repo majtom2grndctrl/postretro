@@ -170,6 +170,7 @@ fn main() -> anyhow::Result<()> {
         primitives: &bvh_primitives,
         geometry: &geo_result,
         tree: &result.tree,
+        exterior_leaves: &exterior_leaves,
         lights: &map_data.lights,
     };
     let sh_volume_section = sh_bake::bake_sh_volume(&sh_inputs, args.probe_spacing);

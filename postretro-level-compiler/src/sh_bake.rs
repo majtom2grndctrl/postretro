@@ -7,6 +7,8 @@
 //
 // See: context/plans/in-progress/lighting-foundation/2-sh-baker.md
 
+use std::collections::HashSet;
+
 use bvh::bvh::Bvh;
 use bvh::ray::Ray;
 use glam::{DVec3, Vec3};
@@ -55,6 +57,11 @@ pub struct BakeInputs<'a> {
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
     pub tree: &'a BspTree,
+    /// Leaves classified as "outside the playable volume" by the visibility
+    /// flood-fill. Probes that fall into these leaves are flagged invalid so
+    /// the SH volume doesn't carry radiance for out-of-map points — those
+    /// values pollute trilinear interpolation at the playable edge.
+    pub exterior_leaves: &'a HashSet<usize>,
     pub lights: &'a [MapLight],
 }
 
@@ -94,7 +101,13 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
 
     let validity: Vec<u8> = probe_positions
         .iter()
-        .map(|&p| if probe_is_valid(inputs.tree, p) { 1 } else { 0 })
+        .map(|&p| {
+            if probe_is_valid(inputs.tree, inputs.exterior_leaves, p) {
+                1
+            } else {
+                0
+            }
+        })
         .collect();
 
     // Static-light base coefficients, parallelized per probe.
@@ -210,12 +223,18 @@ fn probe_position(linear: usize, dims: [u32; 3], origin: DVec3, spacing: f32) ->
     )
 }
 
-fn probe_is_valid(tree: &BspTree, pos: DVec3) -> bool {
+fn probe_is_valid(tree: &BspTree, exterior: &HashSet<usize>, pos: DVec3) -> bool {
     if tree.leaves.is_empty() {
         return true;
     }
     let leaf = find_leaf_for_point(tree, pos);
-    !tree.leaves[leaf].is_solid
+    if tree.leaves[leaf].is_solid {
+        return false;
+    }
+    // Exterior-empty leaves sit outside the playable volume. Baking their
+    // probes would pour sky / out-of-map radiance into trilinear neighbors
+    // along the map boundary — see sub-plan 10 §"Fix D".
+    !exterior.contains(&leaf)
 }
 
 fn vec3_from(v: DVec3) -> Vec3 {
@@ -864,11 +883,13 @@ mod tests {
         let tree = tree_all_empty();
         let bvh = bvh::bvh::Bvh { nodes: Vec::new() };
         let primitives: Vec<BvhPrimitive> = Vec::new();
+        let exterior: HashSet<usize> = HashSet::new();
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geo,
             tree: &tree,
+            exterior_leaves: &exterior,
             lights: &[],
         };
         let section = bake_sh_volume(&inputs, 1.0);
@@ -993,11 +1014,13 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
         };
+        let exterior: HashSet<usize> = HashSet::new();
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
             tree: &tree,
+            exterior_leaves: &exterior,
             lights: std::slice::from_ref(&light),
         };
         let a = bake_sh_volume(&inputs, 1.0);
@@ -1029,11 +1052,13 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
         };
+        let exterior: HashSet<usize> = HashSet::new();
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
             tree: &tree,
+            exterior_leaves: &exterior,
             lights: std::slice::from_ref(&animated),
         };
         let section = bake_sh_volume(&inputs, 1.0);
@@ -1052,11 +1077,13 @@ mod tests {
         let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
             tree: &tree,
+            exterior_leaves: &exterior,
             lights: &[],
         };
         let section = bake_sh_volume(&inputs, 1.0);
@@ -1084,16 +1111,123 @@ mod tests {
         };
         let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let exterior: HashSet<usize> = HashSet::new();
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
             tree: &tree,
+            exterior_leaves: &exterior,
             lights: &[],
         };
         let section = bake_sh_volume(&inputs, 1.0);
         for probe in &section.probes {
             assert_eq!(probe.validity, 0);
+        }
+    }
+
+    #[test]
+    fn exterior_leaf_probes_are_flagged_invalid() {
+        // Regression: sub-plan 10 Fix D — probes that fall into a leaf the
+        // visibility flood-fill classified as "outside the playable volume"
+        // must be marked invalid. Without this, out-of-map radiance leaks
+        // into trilinear interpolation at the playable boundary.
+        //
+        // Build a 3-leaf tree: one solid, one empty-interior, one empty-
+        // exterior. `find_leaf_for_point` walks `tree.nodes`; with no nodes
+        // it returns leaf 0. To exercise the three cases independently we
+        // verify `probe_is_valid` directly rather than through the full bake.
+        let solid_leaf = BspLeaf {
+            face_indices: Vec::new(),
+            bounds: CompilerAabb {
+                min: DVec3::splat(-1.0),
+                max: DVec3::splat(1.0),
+            },
+            is_solid: true,
+        };
+        let interior_leaf = BspLeaf {
+            face_indices: Vec::new(),
+            bounds: CompilerAabb {
+                min: DVec3::splat(-1.0),
+                max: DVec3::splat(1.0),
+            },
+            is_solid: false,
+        };
+        let exterior_leaf = BspLeaf {
+            face_indices: Vec::new(),
+            bounds: CompilerAabb {
+                min: DVec3::splat(-1.0),
+                max: DVec3::splat(1.0),
+            },
+            is_solid: false,
+        };
+
+        // Interior-leaf tree: leaf 0 is empty-interior, not in the exterior set.
+        let tree_interior = BspTree {
+            nodes: Vec::new(),
+            leaves: vec![interior_leaf.clone()],
+        };
+        let mut exterior_set_empty: HashSet<usize> = HashSet::new();
+        assert!(probe_is_valid(
+            &tree_interior,
+            &exterior_set_empty,
+            DVec3::ZERO
+        ));
+
+        // Solid-leaf tree: leaf 0 is solid. Must reject regardless of the
+        // exterior set.
+        let tree_solid = BspTree {
+            nodes: Vec::new(),
+            leaves: vec![solid_leaf],
+        };
+        assert!(!probe_is_valid(&tree_solid, &exterior_set_empty, DVec3::ZERO));
+
+        // Exterior-leaf tree: leaf 0 is empty, but listed as exterior.
+        // Must reject.
+        let tree_exterior = BspTree {
+            nodes: Vec::new(),
+            leaves: vec![exterior_leaf],
+        };
+        exterior_set_empty.insert(0);
+        assert!(!probe_is_valid(
+            &tree_exterior,
+            &exterior_set_empty,
+            DVec3::ZERO
+        ));
+    }
+
+    #[test]
+    fn bake_sh_volume_marks_exterior_leaf_probes_invalid() {
+        // Integration: close the "does BakeInputs silently drop exterior_leaves?"
+        // gap by running the full bake against a tree whose sole empty leaf is
+        // listed as exterior. The companion unit test above pokes
+        // `probe_is_valid` directly — this one exercises the wiring.
+        let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        // Single empty leaf (not solid), but the exterior set contains leaf 0 —
+        // every probe falls into leaf 0 via `find_leaf_for_point` (tree has no
+        // nodes), so every probe should end up invalid.
+        let tree = tree_all_empty();
+        let mut exterior: HashSet<usize> = HashSet::new();
+        exterior.insert(0);
+        let inputs = BakeInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            lights: &[],
+        };
+        let section = bake_sh_volume(&inputs, 1.0);
+        assert!(
+            !section.probes.is_empty(),
+            "expected at least one probe in the bake output",
+        );
+        for probe in &section.probes {
+            assert_eq!(
+                probe.validity, 0,
+                "probes in an exterior-flagged leaf must be invalid after bake",
+            );
         }
     }
 

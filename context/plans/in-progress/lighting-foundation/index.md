@@ -102,6 +102,8 @@ This plan has eight sub-files. Sub-plans 1–2 and 8's baker half are compiler/d
 
 9. **[9-specular-maps.md](./9-specular-maps.md)** — Specular maps. Per-texel specular intensity and color evaluated in the direct light loop, adding a highlight term on top of Lambert diffuse. Shading model decision (Phong vs. PBR) required before implementation starts — recorded in the sub-plan file. **Depends on:** sub-plan 8.
 
+10. **[10-sh-leak-fix.md](./10-sh-leak-fix.md)** — SH indirect light-leak fix. Three composed fixes: exterior-leaf probe invalidation (baker), normal-offset sampling (shader), and SDF-weighted trilinear visibility (shader, reusing sub-plan 8's SDF atlas). Stops the SH volume from bleeding exterior lighting through thin interior walls — a bug discovered via the `LightingIsolation::IndirectOnly` diagnostic chord. **Depends on:** sub-plans 2, 6, 8.
+
 ---
 
 ## Scope

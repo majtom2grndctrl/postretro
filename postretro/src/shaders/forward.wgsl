@@ -437,6 +437,78 @@ fn sample_csm_shadow(frag_world_pos: vec3<f32>, shadow_map_index: u32) -> f32 {
 // sub-plan 9's SDF sphere-trace — and any unknown value) fall through to
 // unshadowed (factor 1.0) in the fragment main until sub-plan 9 lands.
 
+// --- SH visibility-weighted sampling constants (sub-plan 10) ---
+//
+// The SH irradiance volume's trilinear lookup is wall-blind: probes on both
+// sides of a thin wall contribute to every fragment whose cell cube straddles
+// the wall. These constants drive the fix from sub-plan 10 §"Fix B" (normal
+// offset) and §"Fix A" (SDF-weighted trilinear). All bias / step / epsilon
+// values are expressed as voxel multiples of `sdf_meta.voxel_size_m`, matching
+// `sample_sdf_shadow`'s tuning pattern — retuning the SDF voxel size
+// automatically retunes these.
+//
+// Fix B: push the sample point off the surface before the grid lookup, so
+// fragments sitting on a wall don't get equal weight from probes on the
+// exterior side. Expressed as a fraction of the probe cell size (not an
+// absolute meter value) because the offset's job is to clear the
+// probe-interpolation footprint — the relevant length scale is the SH cell
+// size, not the SDF voxel size (10× smaller at current settings). 10% is
+// small enough that concave-corner fragments don't offset through a
+// perpendicular wall, large enough to move the lookup cleanly off the
+// surface.
+const SH_NORMAL_OFFSET_CELLS: f32 = 0.1;
+
+// Fix A: per-corner sphere trace budget and softness.
+const SH_VIS_MAX_STEPS: u32 = 12u;               // segments are at most one cell diagonal
+const SH_VIS_SELF_BIAS_VOXELS: f32 = 0.5;
+const SH_VIS_MIN_STEP_VOXELS: f32 = 0.5;
+const SH_VIS_HIT_EPSILON_VOXELS: f32 = 0.25;     // matches sample_sdf_shadow
+const SH_VIS_MIN_DIST: f32 = 0.01;                // skip degenerate same-point case
+const SH_VIS_SOFTNESS: f32 = 16.0;                // harder edge than direct shadows
+const SH_VIS_WEIGHT_EPS: f32 = 1.0e-4;
+
+// If the SDF reports the offset sample point is farther from any surface
+// than this many cell-sizes, every corner of the 8-probe cube is fully
+// visible — no trace can possibly hit an occluder. Slightly above √3 ≈
+// 1.732 (the worst-case cell diagonal in cells). Used by the fast path
+// to skip 8 sphere traces and fall back to hardware trilinear.
+const SH_VIS_SKIP_DIST_CELLS: f32 = 1.75;
+
+// Visibility weight for one corner probe. Returns 1.0 if the corner is
+// fully visible from `from`, 0.0 if the SDF reports the segment is blocked,
+// and smoothly in between (Inigo Quilez soft-shadow formula — same one
+// `sample_sdf_shadow` uses, so direct and indirect occlusion agree).
+fn sh_corner_visibility(origin: vec3<f32>, corner_world: vec3<f32>) -> f32 {
+    if sdf_meta.has_sdf_atlas == 0u {
+        return 1.0;
+    }
+    let delta = corner_world - origin;
+    let dist = length(delta);
+    if dist < SH_VIS_MIN_DIST {
+        return 1.0;
+    }
+    let dir = delta / dist;
+    var t: f32 = sdf_meta.voxel_size_m * SH_VIS_SELF_BIAS_VOXELS;
+    var occlusion: f32 = 1.0;
+    let k = SH_VIS_SOFTNESS;
+    let hit_eps = sdf_meta.voxel_size_m * SH_VIS_HIT_EPSILON_VOXELS;
+    let min_step = sdf_meta.voxel_size_m * SH_VIS_MIN_STEP_VOXELS;
+    for (var i: u32 = 0u; i < SH_VIS_MAX_STEPS; i = i + 1u) {
+        if t > dist {
+            break;
+        }
+        let p = origin + dir * t;
+        let d = sample_sdf(p);
+        if d < hit_eps {
+            occlusion = 0.0;
+            break;
+        }
+        occlusion = min(occlusion, k * d / t);
+        t = t + max(d, min_step);
+    }
+    return clamp(occlusion, 0.0, 1.0);
+}
+
 // --- SH irradiance volume sampling ---
 //
 // Constants are the standard real spherical harmonic L0..L2 basis
@@ -513,23 +585,38 @@ fn eval_animated_color(desc: AnimationDescriptor, cycle_t: f32) -> vec3<f32> {
     return mix(c0, c1, frac_t);
 }
 
-// Manual trilinear interpolation of one band of one animated light's
-// monochrome SH from the packed per-light storage buffer. Works in
-// integer grid space so clamp-to-edge behavior matches the base SH path.
-fn sample_anim_mono_band(
+// Accumulate all 9 SH bands of one animated light in a single 8-corner
+// traversal, using precomputed final (tri * visibility / weight_sum) weights.
+//
+// Replaces the earlier per-band `sample_anim_mono_band` helper. The animated
+// buffer layout stores the 9 bands of one probe contiguously
+// (`anim_sh_data[(base + probe_idx) * 9 + band]`); iterating bands inside the
+// corner loop reads those 9 floats in order, giving a contiguous cache line
+// per corner. The previous outer-band-inner-corner layout strided by 9 floats
+// between reads, wasting cache.
+//
+// `final_weights[slot]` must equal `tri_weight * corner_vis / weight_sum` —
+// normalization folded in so the per-band division the old helper performed
+// is gone. Caller guarantees `weight_sum >= SH_VIS_WEIGHT_EPS` before
+// computing `final_weights`.
+//
+// Out-parameter: WGSL can't cleanly return `array<vec3<f32>, 9>` from a
+// function in all targets, and the animated buffer is mono (f32 per band) —
+// the vec3 math happens only when the caller multiplies by the color
+// modulate. We emit scalar accumulators via a ptr<function, _> and let the
+// caller do the modulate multiply and vec3 promotion.
+fn accumulate_anim_all_bands(
     light_idx: u32,
-    band: u32,
     gi: vec3<u32>,
-    gfrac: vec3<f32>,
-) -> f32 {
+    final_weights: array<f32, 8>,
+    accum: ptr<function, array<f32, 9>>,
+) {
     let gx = sh_grid.grid_dimensions.x;
     let gy = sh_grid.grid_dimensions.y;
     let gz = sh_grid.grid_dimensions.z;
     let probe_count = gx * gy * gz;
     let base_offset = light_idx * probe_count;
 
-    // Fetch 8 corner coefficients.
-    var c: array<f32, 8>;
     for (var dz: u32 = 0u; dz < 2u; dz = dz + 1u) {
         for (var dy: u32 = 0u; dy < 2u; dy = dy + 1u) {
             for (var dx: u32 = 0u; dx < 2u; dx = dx + 1u) {
@@ -538,56 +625,62 @@ fn sample_anim_mono_band(
                 let cz = min(gi.z + dz, gz - 1u);
                 let probe_idx = (cz * gy + cy) * gx + cx;
                 let slot = dz * 4u + dy * 2u + dx;
-                c[slot] = anim_sh_data[(base_offset + probe_idx) * 9u + band];
+                let w = final_weights[slot];
+                let probe_base = (base_offset + probe_idx) * 9u;
+                // Contiguous 9-float read per corner.
+                for (var band: u32 = 0u; band < 9u; band = band + 1u) {
+                    (*accum)[band] = (*accum)[band] + w * anim_sh_data[probe_base + band];
+                }
             }
         }
     }
-
-    let c00 = mix(c[0], c[1], gfrac.x);
-    let c01 = mix(c[2], c[3], gfrac.x);
-    let c10 = mix(c[4], c[5], gfrac.x);
-    let c11 = mix(c[6], c[7], gfrac.x);
-    let c0 = mix(c00, c01, gfrac.y);
-    let c1 = mix(c10, c11, gfrac.y);
-    return mix(c0, c1, gfrac.z);
 }
 
-fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
-    if sh_grid.has_sh_volume == 0u {
-        return vec3<f32>(0.0);
-    }
-    // Grid UV: place probes at texel centers. With probe i sitting at
-    // `origin + i * cell_size` in world space, the texel-center UV for
-    // probe i is `(i + 0.5) / N`. Fragments outside the probe grid clamp
-    // to the nearest edge probe via the sampler's `clamp-to-edge` mode.
-    let dims = max(vec3<f32>(sh_grid.grid_dimensions), vec3<f32>(1.0));
-    let cell_coord = (world_pos - sh_grid.grid_origin) / max(sh_grid.cell_size, vec3<f32>(1.0e-6));
-    let grid_uv = (cell_coord + vec3<f32>(0.5)) / dims;
+// Fast path: hardware-trilinear fetch of all 9 SH bands, plus the animated
+// layers with plain trilinear weights. Used when we're far enough from any
+// surface (per a single SDF probe at the offset point) that no corner trace
+// can hit an occluder — saves 72 textureSampleLevel fetches + 8 sphere
+// traces vs. the full path.
+fn sample_sh_indirect_fast(
+    offset_world: vec3<f32>,
+    normal: vec3<f32>,
+    gi: vec3<u32>,
+    gfrac: vec3<f32>,
+) -> vec3<f32> {
+    // Hardware trilinear on the base SH textures. UVW computed from the
+    // offset world position in [0, 1] texture space.
+    let gdims_f = max(vec3<f32>(sh_grid.grid_dimensions), vec3<f32>(1.0));
+    let cell_center_uvw = (vec3<f32>(gi) + vec3<f32>(0.5) + gfrac) / gdims_f;
+    // `cell_center_uvw` lands between the 8 texel centers, so hardware
+    // trilinear reproduces the per-corner weighting exactly — one sample
+    // per band in lieu of eight manual fetches.
+    var b0 = textureSampleLevel(sh_band0, sh_sampler, cell_center_uvw, 0.0).rgb;
+    var b1 = textureSampleLevel(sh_band1, sh_sampler, cell_center_uvw, 0.0).rgb;
+    var b2 = textureSampleLevel(sh_band2, sh_sampler, cell_center_uvw, 0.0).rgb;
+    var b3 = textureSampleLevel(sh_band3, sh_sampler, cell_center_uvw, 0.0).rgb;
+    var b4 = textureSampleLevel(sh_band4, sh_sampler, cell_center_uvw, 0.0).rgb;
+    var b5 = textureSampleLevel(sh_band5, sh_sampler, cell_center_uvw, 0.0).rgb;
+    var b6 = textureSampleLevel(sh_band6, sh_sampler, cell_center_uvw, 0.0).rgb;
+    var b7 = textureSampleLevel(sh_band7, sh_sampler, cell_center_uvw, 0.0).rgb;
+    var b8 = textureSampleLevel(sh_band8, sh_sampler, cell_center_uvw, 0.0).rgb;
 
-    var b0 = textureSample(sh_band0, sh_sampler, grid_uv).rgb;
-    var b1 = textureSample(sh_band1, sh_sampler, grid_uv).rgb;
-    var b2 = textureSample(sh_band2, sh_sampler, grid_uv).rgb;
-    var b3 = textureSample(sh_band3, sh_sampler, grid_uv).rgb;
-    var b4 = textureSample(sh_band4, sh_sampler, grid_uv).rgb;
-    var b5 = textureSample(sh_band5, sh_sampler, grid_uv).rgb;
-    var b6 = textureSample(sh_band6, sh_sampler, grid_uv).rgb;
-    var b7 = textureSample(sh_band7, sh_sampler, grid_uv).rgb;
-    var b8 = textureSample(sh_band8, sh_sampler, grid_uv).rgb;
-
-    // Accumulate animated-light contributions into the SH coefficient
-    // vector before reconstruction. SH is linear in its coefficients, so
-    // one reconstruction pass suffices regardless of light count.
+    // Animated layers: same plain-trilinear weights (all corners fully
+    // visible, weight_sum == 1 by construction, so final_weights = tri_w).
     let anim_count = sh_grid.animated_light_count;
     if anim_count != 0u {
-        // Integer grid coordinates for manual trilinear interpolation.
-        // clamp_cell keeps us inside [0, dim-1] so the `min(gi+dx, dim-1)`
-        // guards in sample_anim_mono_band cover the upper bound only.
-        let gdims_u = sh_grid.grid_dimensions;
-        let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
-        let gf = clamp(cell_coord, vec3<f32>(0.0), gdims_f);
-        let gi = vec3<u32>(floor(gf));
-        let gfrac = fract(gf);
-
+        var tri_w: array<f32, 8>;
+        for (var dz: u32 = 0u; dz < 2u; dz = dz + 1u) {
+            for (var dy: u32 = 0u; dy < 2u; dy = dy + 1u) {
+                for (var dx: u32 = 0u; dx < 2u; dx = dx + 1u) {
+                    let tri = vec3<f32>(
+                        select(1.0 - gfrac.x, gfrac.x, dx == 1u),
+                        select(1.0 - gfrac.y, gfrac.y, dy == 1u),
+                        select(1.0 - gfrac.z, gfrac.z, dz == 1u),
+                    );
+                    tri_w[dz * 4u + dy * 2u + dx] = tri.x * tri.y * tri.z;
+                }
+            }
+        }
         for (var i: u32 = 0u; i < anim_count; i = i + 1u) {
             let desc = anim_descriptors[i];
             let cycle_t = fract(uniforms.time / max(desc.period, 1.0e-6) + desc.phase);
@@ -595,15 +688,208 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
             let color = eval_animated_color(desc, cycle_t);
             let modulate = color * brightness;
 
-            b0 = b0 + sample_anim_mono_band(i, 0u, gi, gfrac) * modulate;
-            b1 = b1 + sample_anim_mono_band(i, 1u, gi, gfrac) * modulate;
-            b2 = b2 + sample_anim_mono_band(i, 2u, gi, gfrac) * modulate;
-            b3 = b3 + sample_anim_mono_band(i, 3u, gi, gfrac) * modulate;
-            b4 = b4 + sample_anim_mono_band(i, 4u, gi, gfrac) * modulate;
-            b5 = b5 + sample_anim_mono_band(i, 5u, gi, gfrac) * modulate;
-            b6 = b6 + sample_anim_mono_band(i, 6u, gi, gfrac) * modulate;
-            b7 = b7 + sample_anim_mono_band(i, 7u, gi, gfrac) * modulate;
-            b8 = b8 + sample_anim_mono_band(i, 8u, gi, gfrac) * modulate;
+            var accum: array<f32, 9>;
+            for (var band: u32 = 0u; band < 9u; band = band + 1u) {
+                accum[band] = 0.0;
+            }
+            accumulate_anim_all_bands(i, gi, tri_w, &accum);
+            b0 = b0 + accum[0] * modulate;
+            b1 = b1 + accum[1] * modulate;
+            b2 = b2 + accum[2] * modulate;
+            b3 = b3 + accum[3] * modulate;
+            b4 = b4 + accum[4] * modulate;
+            b5 = b5 + accum[5] * modulate;
+            b6 = b6 + accum[6] * modulate;
+            b7 = b7 + accum[7] * modulate;
+            b8 = b8 + accum[8] * modulate;
+        }
+    }
+
+    return max(
+        sh_irradiance(b0, b1, b2, b3, b4, b5, b6, b7, b8, normal),
+        vec3<f32>(0.0),
+    );
+}
+
+fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    if sh_grid.has_sh_volume == 0u {
+        return vec3<f32>(0.0);
+    }
+
+    // Sub-plan 10 Fix B: push the sample point off the surface before the
+    // grid lookup. Without this, a fragment on the interior face of a wall
+    // lies *on* the wall, and trilinear weights pull equally from probes
+    // on both sides. Offsetting by the normal biases the fetch toward the
+    // interior side. Offset scales with the probe cell size (see constant
+    // comment) — use the smallest axis so anisotropic cell dimensions
+    // don't over-offset on the short axis.
+    let cell_min = min(
+        sh_grid.cell_size.x,
+        min(sh_grid.cell_size.y, sh_grid.cell_size.z),
+    );
+    let offset_world = world_pos + normal * (cell_min * SH_NORMAL_OFFSET_CELLS);
+
+    let gdims_u = sh_grid.grid_dimensions;
+    let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
+    let cell_coord = (offset_world - sh_grid.grid_origin) /
+        max(sh_grid.cell_size, vec3<f32>(1.0e-6));
+    let gf = clamp(cell_coord, vec3<f32>(0.0), gdims_f);
+    let gi = vec3<u32>(floor(gf));
+    let gfrac = fract(gf);
+
+    // Fast path A: no SDF atlas → every corner visibility weight is 1.0 —
+    // skip the 8 sphere traces and the 72 manual texture fetches, use
+    // hardware trilinear.
+    // Fast path B: the fragment's unclamped cell_coord is outside the grid
+    // on some axis — the cell cube is degenerate and visibility weights are
+    // meaningless. Falling through to the clamped hardware trilinear is the
+    // cleanest degradation.
+    // Fast path C: single SDF probe at offset_world reports distance >
+    // √3 cell_size (rounded up to SH_VIS_SKIP_DIST_CELLS). No corner trace
+    // could possibly hit, because the corner set is contained in a cube of
+    // diagonal √3 × cell_size centred on the sample point.
+    let max_cell = max(
+        sh_grid.cell_size.x,
+        max(sh_grid.cell_size.y, sh_grid.cell_size.z),
+    );
+    let skip_dist = max_cell * SH_VIS_SKIP_DIST_CELLS;
+    let out_of_grid = any(cell_coord < vec3<f32>(0.0)) ||
+                      any(cell_coord > vec3<f32>(gdims_u) - vec3<f32>(1.0));
+    if sdf_meta.has_sdf_atlas == 0u || out_of_grid {
+        return sample_sh_indirect_fast(offset_world, normal, gi, gfrac);
+    }
+    let probe_d = sample_sdf(offset_world);
+    if probe_d > skip_dist {
+        return sample_sh_indirect_fast(offset_world, normal, gi, gfrac);
+    }
+
+    let gx = gdims_u.x;
+    let gy = gdims_u.y;
+    let gz = gdims_u.z;
+    let dims_f = max(vec3<f32>(gdims_u), vec3<f32>(1.0));
+
+    // Sub-plan 10 Fix A: manual 8-corner fetch, each corner weighted by
+    // its trilinear weight times its SDF visibility from `offset_world`.
+    var band_accum: array<vec3<f32>, 9>;
+    for (var b: u32 = 0u; b < 9u; b = b + 1u) {
+        band_accum[b] = vec3<f32>(0.0);
+    }
+    var tri_w_arr: array<f32, 8>;
+    var corner_vis: array<f32, 8>;
+    var weight_sum: f32 = 0.0;
+
+    for (var dz: u32 = 0u; dz < 2u; dz = dz + 1u) {
+        for (var dy: u32 = 0u; dy < 2u; dy = dy + 1u) {
+            for (var dx: u32 = 0u; dx < 2u; dx = dx + 1u) {
+                let cx = min(gi.x + dx, gx - 1u);
+                let cy = min(gi.y + dy, gy - 1u);
+                let cz = min(gi.z + dz, gz - 1u);
+
+                let tri = vec3<f32>(
+                    select(1.0 - gfrac.x, gfrac.x, dx == 1u),
+                    select(1.0 - gfrac.y, gfrac.y, dy == 1u),
+                    select(1.0 - gfrac.z, gfrac.z, dz == 1u),
+                );
+                let tri_w = tri.x * tri.y * tri.z;
+
+                // Corner world position uses the *unclamped* corner so cell-
+                // boundary corners don't collapse to the same trace point (two
+                // of the 8 corners would otherwise duplicate at the edge of
+                // the grid, wasting a trace and biasing the weight sum).
+                let corner_world = sh_grid.grid_origin +
+                    vec3<f32>(f32(gi.x + dx), f32(gi.y + dy), f32(gi.z + dz)) *
+                    sh_grid.cell_size;
+                // Texture UVW uses the *clamped* corner so the fetch stays
+                // in-bounds (clamp-to-edge semantics) — the probe index the
+                // animated buffer reads is the same clamped index.
+                let vis = sh_corner_visibility(offset_world, corner_world);
+                let slot = dz * 4u + dy * 2u + dx;
+                tri_w_arr[slot] = tri_w;
+                corner_vis[slot] = vis;
+                let w = tri_w * vis;
+                weight_sum = weight_sum + w;
+
+                // Point-sample each band at the corner probe's texel center.
+                // `textureSampleLevel` with explicit mip 0 avoids the
+                // derivative-based LOD selection `textureSample` would do.
+                // The SH textures have a single mip so the effective LOD is
+                // 0 anyway; being explicit sidesteps any "derivative inside
+                // non-uniform control flow" concerns a compiler might flag
+                // if this code is ever reused under a dynamic branch.
+                let uvw = (vec3<f32>(f32(cx), f32(cy), f32(cz)) + vec3<f32>(0.5)) / dims_f;
+                band_accum[0] = band_accum[0] +
+                    w * textureSampleLevel(sh_band0, sh_sampler, uvw, 0.0).rgb;
+                band_accum[1] = band_accum[1] +
+                    w * textureSampleLevel(sh_band1, sh_sampler, uvw, 0.0).rgb;
+                band_accum[2] = band_accum[2] +
+                    w * textureSampleLevel(sh_band2, sh_sampler, uvw, 0.0).rgb;
+                band_accum[3] = band_accum[3] +
+                    w * textureSampleLevel(sh_band3, sh_sampler, uvw, 0.0).rgb;
+                band_accum[4] = band_accum[4] +
+                    w * textureSampleLevel(sh_band4, sh_sampler, uvw, 0.0).rgb;
+                band_accum[5] = band_accum[5] +
+                    w * textureSampleLevel(sh_band5, sh_sampler, uvw, 0.0).rgb;
+                band_accum[6] = band_accum[6] +
+                    w * textureSampleLevel(sh_band6, sh_sampler, uvw, 0.0).rgb;
+                band_accum[7] = band_accum[7] +
+                    w * textureSampleLevel(sh_band7, sh_sampler, uvw, 0.0).rgb;
+                band_accum[8] = band_accum[8] +
+                    w * textureSampleLevel(sh_band8, sh_sampler, uvw, 0.0).rgb;
+            }
+        }
+    }
+
+    // Full-occlusion path: every corner is blocked. Return 0 and let the
+    // caller's ambient floor carry the baseline. Any other choice
+    // (nearest-visible probe, reflect into interior SDF) is future work.
+    if weight_sum < SH_VIS_WEIGHT_EPS {
+        return vec3<f32>(0.0);
+    }
+    let inv_w = 1.0 / weight_sum;
+    var b0 = band_accum[0] * inv_w;
+    var b1 = band_accum[1] * inv_w;
+    var b2 = band_accum[2] * inv_w;
+    var b3 = band_accum[3] * inv_w;
+    var b4 = band_accum[4] * inv_w;
+    var b5 = band_accum[5] * inv_w;
+    var b6 = band_accum[6] * inv_w;
+    var b7 = band_accum[7] * inv_w;
+    var b8 = band_accum[8] * inv_w;
+
+    // Precompute final normalized corner weights once (tri * vis / weight_sum)
+    // — hoists the per-band division the earlier animated-helper did inside
+    // its band loop.
+    var final_weights: array<f32, 8>;
+    for (var s: u32 = 0u; s < 8u; s = s + 1u) {
+        final_weights[s] = tri_w_arr[s] * corner_vis[s] * inv_w;
+    }
+
+    // Animated-light contributions. SH is linear in its coefficients, so a
+    // single reconstruction pass suffices regardless of light count. Reuse
+    // the per-corner visibilities — no new SDF traces per animated light.
+    let anim_count = sh_grid.animated_light_count;
+    if anim_count != 0u {
+        for (var i: u32 = 0u; i < anim_count; i = i + 1u) {
+            let desc = anim_descriptors[i];
+            let cycle_t = fract(uniforms.time / max(desc.period, 1.0e-6) + desc.phase);
+            let brightness = eval_animated_brightness(desc, cycle_t);
+            let color = eval_animated_color(desc, cycle_t);
+            let modulate = color * brightness;
+
+            var accum: array<f32, 9>;
+            for (var band: u32 = 0u; band < 9u; band = band + 1u) {
+                accum[band] = 0.0;
+            }
+            accumulate_anim_all_bands(i, gi, final_weights, &accum);
+            b0 = b0 + accum[0] * modulate;
+            b1 = b1 + accum[1] * modulate;
+            b2 = b2 + accum[2] * modulate;
+            b3 = b3 + accum[3] * modulate;
+            b4 = b4 + accum[4] * modulate;
+            b5 = b5 + accum[5] * modulate;
+            b6 = b6 + accum[6] * modulate;
+            b7 = b7 + accum[7] * modulate;
+            b8 = b8 + accum[8] * modulate;
         }
     }
 

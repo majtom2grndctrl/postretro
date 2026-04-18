@@ -46,16 +46,55 @@ const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 /// starts a new slot and is padded out to a full vec4 slot for alignment.
 ///
 /// Offsets (bytes):
-///   0..64    view_proj        (mat4x4<f32>)
-///   64..76   camera_position  (vec3<f32>)
-///   76..80   ambient_floor    (f32)
-///   80..84   light_count      (u32)
-///   84..88   time             (f32, elapsed seconds for SH animation)
-///   88..92   sdf_sign_viz     (u32, 0 = off, 1 = on; diagnostic chord Alt+Shift+2)
-///   92..96   sdf_distance_viz (u32, 0 = off, 1 = on; diagnostic chord Alt+Shift+3)
-///   96..112  csm_splits       (vec4<f32>)
-///   112..176 view_matrix      (mat4x4<f32>)
-const UNIFORM_SIZE: usize = 176;
+///   0..64    view_proj           (mat4x4<f32>)
+///   64..76   camera_position     (vec3<f32>)
+///   76..80   ambient_floor       (f32)
+///   80..84   light_count         (u32)
+///   84..88   time                (f32, elapsed seconds for SH animation)
+///   88..92   sdf_sign_viz        (u32, 0 = off, 1 = on; chord Alt+Shift+2)
+///   92..96   sdf_distance_viz    (u32, 0 = off, 1 = on; chord Alt+Shift+3)
+///   96..112  csm_splits          (vec4<f32>)
+///   112..176 view_matrix         (mat4x4<f32>)
+///   176..180 lighting_isolation  (u32, cycles 0..4; chord Alt+Shift+4)
+///   180..192 _pad_lighting       (3 × u32, keeps the struct 16-byte aligned)
+const UNIFORM_SIZE: usize = 192;
+
+/// Lighting-term isolation mode for leak/bleed debugging.
+///
+/// Cycled by the `Alt+Shift+4` diagnostic chord. The fragment shader branches
+/// on this value to zero out either the SH indirect term or the direct-light
+/// sum, so an A/B compare inside a leaky room pins the bug to exactly one
+/// lighting path. `Normal` is the default and matches production shading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum LightingIsolation {
+    Normal = 0,
+    DirectOnly = 1,
+    IndirectOnly = 2,
+    AmbientOnly = 3,
+}
+
+impl LightingIsolation {
+    /// Advance to the next mode in the cycle, wrapping back to `Normal`.
+    pub fn cycle(self) -> Self {
+        match self {
+            LightingIsolation::Normal => LightingIsolation::DirectOnly,
+            LightingIsolation::DirectOnly => LightingIsolation::IndirectOnly,
+            LightingIsolation::IndirectOnly => LightingIsolation::AmbientOnly,
+            LightingIsolation::AmbientOnly => LightingIsolation::Normal,
+        }
+    }
+
+    /// Human-readable label for diagnostics logging.
+    pub fn label(self) -> &'static str {
+        match self {
+            LightingIsolation::Normal => "Normal (direct + indirect)",
+            LightingIsolation::DirectOnly => "DirectOnly (SH indirect = 0)",
+            LightingIsolation::IndirectOnly => "IndirectOnly (direct = 0)",
+            LightingIsolation::AmbientOnly => "AmbientOnly (both = 0)",
+        }
+    }
+}
 
 fn build_uniform_data(
     view_proj: &Mat4,
@@ -65,6 +104,7 @@ fn build_uniform_data(
     time: f32,
     sdf_sign_viz: bool,
     sdf_distance_viz: bool,
+    lighting_isolation: LightingIsolation,
     csm_splits: [f32; 4],
     view_matrix: &Mat4,
 ) -> [u8; UNIFORM_SIZE] {
@@ -97,6 +137,11 @@ fn build_uniform_data(
         let off = 112 + i * 4;
         bytes[off..off + 4].copy_from_slice(&val.to_ne_bytes());
     }
+
+    // Lighting isolation mode at bytes 176..180 (12 trailing bytes are
+    // padding — already zero-initialized above).
+    let isolation: u32 = lighting_isolation as u32;
+    bytes[176..180].copy_from_slice(&isolation.to_ne_bytes());
 
     bytes
 }
@@ -333,6 +378,13 @@ pub struct Renderer {
     sdf_sign_viz_enabled: bool,
     sdf_distance_viz_enabled: bool,
 
+    /// Lighting-term isolation mode for leak/bleed debugging. Cycled by the
+    /// `Alt+Shift+4` diagnostic chord. When not `Normal`, the fragment
+    /// shader zeroes out one or both lighting terms so an A/B compare
+    /// isolates which path (direct sphere-trace shadows vs baked SH
+    /// indirect) is carrying a bad contribution.
+    lighting_isolation: LightingIsolation,
+
     /// Whether the surface is currently configured with vsync on
     /// (`AutoVsync`) or off (`AutoNoVsync`). Toggled by the
     /// `Alt+Shift+V` diagnostic chord so the frametime meter can be
@@ -521,6 +573,7 @@ impl Renderer {
             0.0,
             false,
             false,
+            LightingIsolation::Normal,
             initial_csm_splits,
             &Mat4::IDENTITY,
         );
@@ -1038,6 +1091,7 @@ impl Renderer {
             wireframe_cull_status_bgl: wireframe_cull_status_layout,
             wireframe_enabled: false,
             sdf_sign_viz_enabled: false,
+            lighting_isolation: LightingIsolation::Normal,
             sdf_distance_viz_enabled: false,
             vsync_enabled: true,
             has_geometry,
@@ -1091,6 +1145,23 @@ impl Renderer {
             if self.sdf_distance_viz_enabled { "on" } else { "off" },
         );
         self.sdf_distance_viz_enabled
+    }
+
+    /// Advance the lighting-term isolation mode through its four-step
+    /// cycle (Normal → DirectOnly → IndirectOnly → AmbientOnly → Normal).
+    /// Takes effect on the next `update_per_frame_uniforms` upload.
+    ///
+    /// Used to A/B compare direct vs indirect contributions when diagnosing
+    /// light leaks: flipping from DirectOnly to IndirectOnly inside a
+    /// leaky room reveals whether the bad light is coming from the runtime
+    /// sphere-trace shadow path or from the baked SH volume.
+    pub fn cycle_lighting_isolation(&mut self) -> LightingIsolation {
+        self.lighting_isolation = self.lighting_isolation.cycle();
+        log::info!(
+            "[Renderer] Lighting isolation: {}",
+            self.lighting_isolation.label(),
+        );
+        self.lighting_isolation
     }
 
     /// Flip between `AutoVsync` and `AutoNoVsync`. Rebuilds the swapchain
@@ -1151,6 +1222,7 @@ impl Renderer {
             time,
             self.sdf_sign_viz_enabled,
             self.sdf_distance_viz_enabled,
+            self.lighting_isolation,
             csm_splits,
             view_matrix,
         );
@@ -1610,7 +1682,18 @@ mod tests {
     #[test]
     fn uniform_data_has_correct_size() {
         let vp = Mat4::IDENTITY;
-        let data = build_uniform_data(&vp, Vec3::ZERO, 0.05, 0, 0.0, false, false, [0.0; 4], &Mat4::IDENTITY);
+        let data = build_uniform_data(
+            &vp,
+            Vec3::ZERO,
+            0.05,
+            0,
+            0.0,
+            false,
+            false,
+            LightingIsolation::Normal,
+            [0.0; 4],
+            &Mat4::IDENTITY,
+        );
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
 
@@ -1864,7 +1947,18 @@ mod tests {
         let camera = Vec3::new(10.0, 20.0, 30.0);
         let ambient_floor = 0.125_f32;
         let light_count = 7_u32;
-        let data = build_uniform_data(&vp, camera, ambient_floor, light_count, 0.0, false, false, [0.0; 4], &Mat4::IDENTITY);
+        let data = build_uniform_data(
+            &vp,
+            camera,
+            ambient_floor,
+            light_count,
+            0.0,
+            false,
+            false,
+            LightingIsolation::Normal,
+            [0.0; 4],
+            &Mat4::IDENTITY,
+        );
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
         let mut floats = Vec::new();

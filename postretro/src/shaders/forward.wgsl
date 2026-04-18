@@ -27,6 +27,16 @@ struct Uniforms {
     csm_splits: vec4<f32>,
     // View matrix for computing fragment view-space depth for cascade selection.
     view_matrix: mat4x4<f32>,
+    // Lighting-term isolation for leak/bleed debugging. Cycled by the
+    // Alt+Shift+4 diagnostic chord. Values:
+    //   0 = Normal       (direct + indirect + ambient floor — production shading)
+    //   1 = DirectOnly   (SH indirect forced to 0)
+    //   2 = IndirectOnly (direct-light loop skipped)
+    //   3 = AmbientOnly  (both terms skipped; only ambient floor contributes)
+    lighting_isolation: u32,
+    _pad_lighting_0: u32,
+    _pad_lighting_1: u32,
+    _pad_lighting_2: u32,
 };
 
 // Five vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
@@ -683,13 +693,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(g, g, g, 1.0);
     }
 
-    // Indirect term: baked SH irradiance. Zero when no SH volume is loaded.
-    let indirect = sample_sh_indirect(in.world_position, N);
+    // Lighting isolation mode: split direct from indirect for leak debugging.
+    //   0 = Normal        — direct + indirect (production shading)
+    //   1 = DirectOnly    — zero the SH indirect term
+    //   2 = IndirectOnly  — zero direct contributions (short-circuit the loop)
+    //   3 = AmbientOnly   — zero both; only ambient floor survives
+    // See `LightingIsolation` in postretro/src/render/mod.rs. The ambient
+    // floor always contributes so interior geometry is never pitch black.
+    let iso = uniforms.lighting_isolation;
+    let use_indirect = (iso == 0u) || (iso == 2u);
+    let use_direct = (iso == 0u) || (iso == 1u);
+
+    // Indirect term: baked SH irradiance. Zero when no SH volume is loaded
+    // or when the isolation mode suppresses indirect.
+    var indirect = vec3<f32>(0.0);
+    if use_indirect {
+        indirect = sample_sh_indirect(in.world_position, N);
+    }
 
     // Total light = ambient floor (minimum) + indirect + direct sum.
     var total_light = vec3<f32>(uniforms.ambient_floor) + indirect;
 
-    for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u) {
+    // DirectOnly / AmbientOnly modes skip the direct-light loop entirely —
+    // cheaper than zeroing contributions inside the loop.
+    let light_count = select(0u, uniforms.light_count, use_direct);
+    for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         // Influence-volume early-out: skip lights whose sphere bound does
         // not contain this fragment. Pure optimization — no pixel change.
         let influence = light_influence[i];

@@ -69,6 +69,20 @@ pub enum DiagnosticAction {
     /// tracer — a muddy/noisy grayscale means the bake is the bug,
     /// not the trace.
     ToggleSdfDistanceViz,
+    /// Cycle the lighting-term isolation mode used to split direct from
+    /// indirect contributions during leak/bleed debugging.
+    ///
+    /// Cycles through four modes:
+    ///   0 — Normal      (direct + indirect + ambient floor)
+    ///   1 — DirectOnly  (direct sum + ambient floor; SH indirect = 0)
+    ///   2 — IndirectOnly (SH indirect + ambient floor; direct sum skipped)
+    ///   3 — AmbientOnly (ambient floor only; both terms skipped)
+    ///
+    /// When diagnosing "light leaks through a wall," toggling to DirectOnly
+    /// vs IndirectOnly tells you which lighting path is carrying the bad
+    /// contribution — bake-time SH bleed vs runtime shadow-trace tunneling
+    /// require different fixes.
+    CycleLightingIsolation,
 }
 
 /// Per-press step size for the ambient-floor diagnostic chords. 0.025
@@ -197,6 +211,11 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
             key: KeyCode::Digit3,
             action: DiagnosticAction::ToggleSdfDistanceViz,
         },
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::Digit4,
+            action: DiagnosticAction::CycleLightingIsolation,
+        },
     ]
 }
 
@@ -304,6 +323,15 @@ mod tests {
         d.handle_key(KeyCode::AltLeft, true, false);
         let action = d.handle_key(KeyCode::Digit3, true, false);
         assert_eq!(action, Some(DiagnosticAction::ToggleSdfDistanceViz));
+    }
+
+    #[test]
+    fn alt_shift_digit4_fires_cycle_lighting_isolation() {
+        let mut d = fresh();
+        d.handle_key(KeyCode::ShiftLeft, true, false);
+        d.handle_key(KeyCode::AltLeft, true, false);
+        let action = d.handle_key(KeyCode::Digit4, true, false);
+        assert_eq!(action, Some(DiagnosticAction::CycleLightingIsolation));
     }
 
     #[test]

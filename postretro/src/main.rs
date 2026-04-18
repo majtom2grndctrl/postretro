@@ -647,6 +647,11 @@ impl App {
                     renderer.toggle_sdf_distance_viz();
                 }
             }
+            DiagnosticAction::CycleLightingIsolation => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.cycle_lighting_isolation();
+                }
+            }
         }
     }
 }

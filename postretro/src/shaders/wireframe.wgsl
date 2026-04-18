@@ -20,6 +20,10 @@ struct Uniforms {
     _pad_c: u32,
     csm_splits: vec4<f32>,
     view_matrix: mat4x4<f32>,
+    lighting_isolation: u32,
+    _pad_lighting_0: u32,
+    _pad_lighting_1: u32,
+    _pad_lighting_2: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;

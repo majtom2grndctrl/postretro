@@ -9,6 +9,7 @@ pub mod leaf_pvs;
 pub mod light_influence;
 pub mod octahedral;
 pub mod portals;
+pub mod sdf_atlas;
 pub mod sh_volume;
 pub mod texture_names;
 pub mod visibility;
@@ -95,6 +96,10 @@ pub enum SectionId {
     /// culling in the fragment shader and CPU-side shadow-slot allocation.
     /// See `light_influence::LightInfluenceSection`.
     LightInfluence = 21,
+
+    /// Brick-indexed sparse SDF atlas for soft-shadow sphere tracing.
+    /// See `sdf_atlas::SdfAtlasSection`.
+    SdfAtlas = 22,
 }
 
 impl SectionId {
@@ -110,6 +115,7 @@ impl SectionId {
             19 => Some(Self::Bvh),
             20 => Some(Self::ShVolume),
             21 => Some(Self::LightInfluence),
+            22 => Some(Self::SdfAtlas),
             _ => None,
         }
     }

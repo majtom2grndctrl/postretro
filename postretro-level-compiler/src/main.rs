@@ -11,12 +11,14 @@ pub mod pack;
 pub mod parse;
 pub mod partition;
 pub mod portals;
+pub mod sdf_bake;
 pub mod sh_bake;
 pub mod visibility;
 
 use std::path::PathBuf;
 use std::time::Instant;
 
+use glam::Vec3;
 use indicatif::{ProgressBar, ProgressStyle};
 use map_format::{DEFAULT_MAP_FORMAT, MapFormat};
 
@@ -176,6 +178,46 @@ fn main() -> anyhow::Result<()> {
         sh_bake::log_stats(&sh_volume_section);
     }
 
+    progress.start_stage("SDF bake...");
+    let stage_start = Instant::now();
+    // Find the player-start origin for the SDF flood-fill seed. The flood
+    // marks bricks reachable from this point as EMPTY (open air); unreachable
+    // bricks become INTERIOR (inside solid or exterior margin band).
+    let player_start_world: Vec3 = map_data
+        .entities
+        .iter()
+        .find(|e| e.classname == "info_player_start")
+        .and_then(|e| e.origin)
+        .map(|o| Vec3::new(o.x as f32, o.y as f32, o.z as f32))
+        .unwrap_or_else(|| {
+            let (raw_min, raw_max) = sdf_bake::world_aabb_pub(&geo_result.geometry);
+            let cx = (raw_min[0] + raw_max[0]) * 0.5;
+            let cy = (raw_min[1] + raw_max[1]) * 0.5;
+            let cz = (raw_min[2] + raw_max[2]) * 0.5;
+            log::warn!(
+                "[SdfBake] No info_player_start entity found — using geometry centroid \
+                 ({cx:.1}, {cy:.1}, {cz:.1}) as flood-fill seed. Add an \
+                 info_player_start entity for reliable SDF classification."
+            );
+            Vec3::new(cx, cy, cz)
+        });
+    let sdf_inputs = sdf_bake::SdfBakeInputs {
+        bvh: &bvh,
+        primitives: &bvh_primitives,
+        geometry: &geo_result,
+        player_start_world,
+    };
+    let sdf_section = sdf_bake::bake_sdf_atlas(
+        &sdf_inputs,
+        args.sdf_voxel_size,
+        args.sdf_brick_size,
+        sdf_bake::DEFAULT_MARGIN_M,
+    );
+    timings.push(("SDF Bake", stage_start.elapsed()));
+    if args.verbose {
+        sdf_bake::log_stats(&sdf_section);
+    }
+
     progress.start_stage("Packing and writing...");
     let stage_start = Instant::now();
     let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
@@ -195,6 +237,7 @@ fn main() -> anyhow::Result<()> {
             &alpha_lights_section,
             &light_influence_section,
             &sh_volume_section,
+            &sdf_section,
         )?;
     } else {
         if args.verbose {
@@ -211,6 +254,7 @@ fn main() -> anyhow::Result<()> {
             &alpha_lights_section,
             &light_influence_section,
             &sh_volume_section,
+            &sdf_section,
         )?;
     }
     timings.push(("Packing", stage_start.elapsed()));
@@ -239,6 +283,10 @@ struct Args {
     format: MapFormat,
     /// SH probe grid spacing in meters.
     probe_spacing: f32,
+    /// SDF voxel edge length in meters (overrides default).
+    sdf_voxel_size: f32,
+    /// SDF brick size in voxels per edge (overrides default).
+    sdf_brick_size: u32,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -255,6 +303,8 @@ where
     let mut verbose = false;
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
+    let mut sdf_voxel_size = sdf_bake::DEFAULT_VOXEL_SIZE_M;
+    let mut sdf_brick_size = sdf_bake::DEFAULT_BRICK_SIZE_VOXELS;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -290,6 +340,30 @@ where
                 }
                 probe_spacing = parsed;
             }
+            "--sdf-voxel-size" => {
+                let val_str = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--sdf-voxel-size requires a value"))?;
+                let parsed: f32 = val_str.parse().map_err(|_| {
+                    anyhow::anyhow!("--sdf-voxel-size must be a positive number of meters")
+                })?;
+                if !parsed.is_finite() || parsed <= 0.0 {
+                    anyhow::bail!("--sdf-voxel-size must be a positive number of meters");
+                }
+                sdf_voxel_size = parsed;
+            }
+            "--sdf-brick-size" => {
+                let val_str = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--sdf-brick-size requires a value"))?;
+                let parsed: u32 = val_str
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--sdf-brick-size must be a positive integer"))?;
+                if parsed == 0 {
+                    anyhow::bail!("--sdf-brick-size must be a positive integer");
+                }
+                sdf_brick_size = parsed;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -302,7 +376,8 @@ where
     let input = input.ok_or_else(|| {
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [--pvs] [-v|--verbose] \
-             [--format <FORMAT>] [--probe-spacing <METERS>]"
+             [--format <FORMAT>] [--probe-spacing <METERS>] \
+             [--sdf-voxel-size <METERS>] [--sdf-brick-size <VOXELS>]"
         )
     })?;
 
@@ -315,6 +390,8 @@ where
         verbose,
         format,
         probe_spacing,
+        sdf_voxel_size,
+        sdf_brick_size,
     })
 }
 

@@ -12,9 +12,17 @@ struct Uniforms {
     // Elapsed seconds since renderer start. Consumed by SH animated-layer
     // evaluation (sub-plan 7); wrapping is handled per-light via fract().
     time: f32,
-    // pad out to 16-byte alignment for the UBO std140 rules.
-    _pad_b: u32,
-    _pad_c: u32,
+    // 0 = off, 1 = on. Toggled by the Alt+Shift+2 diagnostic chord.
+    // When on, fs_main replaces shading with a color derived from the
+    // sign of the SDF sampled just inside the fragment surface —
+    // diagnoses SDF-bake parity bugs.
+    sdf_sign_viz: u32,
+    // 0 = off, 1 = on. Toggled by Alt+Shift+3. When on, fs_main renders
+    // `sample_sdf(world_pos)` as a grayscale distance ramp (0 m → black,
+    // ≥1 m → white), with negative distances tinted red. Used to verify
+    // the baked atlas is returning sane values before trusting the sphere
+    // tracer that consumes it.
+    sdf_distance_viz: u32,
     // CSM cascade split distances (view-space Z far for cascades 0/1/2, w reserved).
     csm_splits: vec4<f32>,
     // View matrix for computing fragment view-space depth for cascade selection.
@@ -41,8 +49,44 @@ struct GpuLight {
 @group(2) @binding(2) var shadow_sampler: sampler_comparison;
 @group(2) @binding(3) var csm_depth_array: texture_depth_2d_array;
 @group(2) @binding(4) var<storage, read> csm_view_proj: array<mat4x4<f32>>;
-// Bindings 5+ reserved for sub-plan 9 (SDF atlas, sampler, top-level index,
-// meta uniform). Do not claim them for anything else.
+
+// --- SDF atlas (sub-plan 8) ---
+//
+// SdfMeta uniform: must match `sdf::SDF_META_SIZE` (64 bytes) and
+// `sdf::build_sdf_meta_bytes` field order in postretro/src/render/sdf.rs.
+//
+// Layout (std140-friendly — all vec3 fields are followed by a same-slot scalar):
+//   0..12   world_min            (vec3<f32>)
+//   12..16  voxel_size_m         (f32)
+//   16..28  world_max            (vec3<f32>)
+//   28..32  brick_size_voxels    (u32)
+//   32..44  grid_dims            (vec3<u32>)
+//   44..48  has_sdf_atlas        (u32, 0 or 1)
+//   48..60  atlas_bricks         (vec3<u32>) — bricks-per-axis packed in atlas
+//   60..64  _pad                 (u32)
+struct SdfMeta {
+    world_min: vec3<f32>,
+    voxel_size_m: f32,
+    world_max: vec3<f32>,
+    brick_size_voxels: u32,
+    grid_dims: vec3<u32>,
+    has_sdf_atlas: u32,
+    atlas_bricks: vec3<u32>,
+    _pad: u32,
+};
+
+@group(2) @binding(5) var sdf_atlas_tex: texture_3d<f32>;
+@group(2) @binding(6) var sdf_atlas_sampler: sampler;
+@group(2) @binding(7) var<storage, read> sdf_top_level: array<u32>;
+@group(2) @binding(8) var<uniform> sdf_meta: SdfMeta;
+// Coarse SDF: one texel per brick, trilinearly sampled. Provides a valid
+// signed-distance field everywhere in the grid — not just inside SURFACE
+// bricks. The sphere tracer falls back to this when the brick at the
+// sample position is EMPTY or INTERIOR. Without it the tracer sees
+// SDF_LARGE_POS in open-air bricks and jumps the entire light distance in
+// one step, missing every occluder it hasn't already entered a SURFACE
+// brick of.
+@group(2) @binding(9) var sdf_coarse_tex: texture_3d<f32>;
 
 // Group 3 — SH irradiance volume. 9 3D textures (one per SH L2 band) carry
 // RGB coefficients in their .rgb channels (.a unused). When `grid.has_sh_volume`
@@ -177,6 +221,172 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
     let cos_inner = cos(inner_angle);
     let cos_outer = cos(outer_angle);
     return smoothstep(cos_outer, cos_inner, cos_angle);
+}
+
+// --- SDF atlas sampling ---
+
+// Sentinel values matching BRICK_SLOT_EMPTY / BRICK_SLOT_INTERIOR in
+// postretro-level-format/src/sdf_atlas.rs. u32::MAX and u32::MAX-1.
+const SDF_SLOT_EMPTY: u32 = 0xFFFFFFFFu;
+const SDF_SLOT_INTERIOR: u32 = 0xFFFFFFFEu;
+
+// Large positive / negative distance for sentinel bricks (meters).
+const SDF_LARGE_POS: f32 = 1.0e6;
+const SDF_LARGE_NEG: f32 = -1.0e6;
+
+// Sphere-trace march cap. Starting constant per sub-plan 8 spec (32);
+// tune on real levels once visible-light count + budget are measured.
+const SDF_MAX_STEPS: i32 = 32;
+
+// Sample the coarse per-brick SDF texture at a world-space position using
+// trilinear interpolation. The texture has one texel per brick, with texel
+// centers at brick centers (world_min + (i + 0.5) * brick_m on each axis).
+// Returns a signed distance in meters, or SDF_LARGE_POS when the SDF atlas
+// isn't loaded or `world_pos` lies outside the brick grid.
+//
+// Out-of-grid guard: ClampToEdge would return the nearest boundary texel's
+// value, which can be negative if that brick is INTERIOR — the sphere tracer
+// would interpret that as a surface hit and fully occlude the light. Callers
+// like the distance-viz probe that offset along the normal can easily land
+// outside the grid, so we check here rather than trusting every caller.
+//
+// Known trade-off: across a SURFACE/EMPTY brick boundary the trilinear
+// interpolation can over-estimate step distance (mixing a SURFACE brick
+// center's small distance with an EMPTY neighbor's larger one). In practice
+// the tracer catches the occluder on the next step once it lands in the
+// SURFACE brick — worth profiling if shadow quality regresses.
+fn sample_coarse_sdf(world_pos: vec3<f32>) -> f32 {
+    if sdf_meta.has_sdf_atlas == 0u {
+        return SDF_LARGE_POS;
+    }
+    let brick_m = sdf_meta.voxel_size_m * f32(sdf_meta.brick_size_voxels);
+    let grid_extent = vec3<f32>(sdf_meta.grid_dims) * brick_m;
+    let rel = world_pos - sdf_meta.world_min;
+    if any(rel < vec3<f32>(0.0)) || any(rel > grid_extent) {
+        return SDF_LARGE_POS;
+    }
+    let uv = rel / grid_extent;
+    return textureSample(sdf_coarse_tex, sdf_atlas_sampler, uv).r;
+}
+
+// Sample the SDF atlas at a world-space position. Returns a signed distance
+// in meters. Positive = outside geometry, negative = inside.
+//
+// Two-tier sampling:
+//   - SURFACE brick → fine trilinear sample of the per-voxel atlas.
+//   - EMPTY / INTERIOR brick → trilinear sample of the coarse per-brick
+//     distance texture. This gives a valid SDF everywhere in the grid so the
+//     sphere tracer can detect and step toward distant surfaces; without it
+//     open-air bricks would return a huge-positive sentinel and the tracer
+//     would jump past every occluder in a single step.
+//
+// Returns SDF_LARGE_POS when the SDF atlas is absent or the position is
+// outside the world AABB (atlas samples outside the grid are meaningless).
+fn sample_sdf(world_pos: vec3<f32>) -> f32 {
+    if sdf_meta.has_sdf_atlas == 0u {
+        return SDF_LARGE_POS;
+    }
+    // Check if position is inside the world AABB.
+    if any(world_pos < sdf_meta.world_min) || any(world_pos > sdf_meta.world_max) {
+        return SDF_LARGE_POS;
+    }
+
+    let brick_m = sdf_meta.voxel_size_m * f32(sdf_meta.brick_size_voxels);
+    let rel = world_pos - sdf_meta.world_min;
+    let brick_coord = vec3<i32>(floor(rel / brick_m));
+    let gd = vec3<i32>(sdf_meta.grid_dims);
+
+    // Clamp to valid brick grid.
+    if any(brick_coord < vec3<i32>(0)) || any(brick_coord >= gd) {
+        return SDF_LARGE_POS;
+    }
+
+    let bx = u32(brick_coord.x);
+    let by = u32(brick_coord.y);
+    let bz = u32(brick_coord.z);
+    let gx = sdf_meta.grid_dims.x;
+    let gy = sdf_meta.grid_dims.y;
+    let flat_idx = bz * gy * gx + by * gx + bx;
+    let slot = sdf_top_level[flat_idx];
+
+    if slot == SDF_SLOT_EMPTY || slot == SDF_SLOT_INTERIOR {
+        return sample_coarse_sdf(world_pos);
+    }
+
+    // Surface brick: trilinear sample from the atlas.
+    // Atlas layout: bricks are packed in a 3D grid `sdf_meta.atlas_bricks`
+    // within the texture. Slot `s` maps to brick coords
+    //   (s % ax, (s / ax) % ay, s / (ax*ay))
+    // and occupies voxel range [brick_coord*brick_size, (+1)*brick_size) on
+    // each axis. Must match the CPU packing in `sdf::SdfResources::build`.
+    let bsv = sdf_meta.brick_size_voxels;
+    let bsv_f = f32(bsv);
+    let ax = sdf_meta.atlas_bricks.x;
+    let ay = sdf_meta.atlas_bricks.y;
+    let bxa = slot % ax;
+    let bya = (slot / ax) % ay;
+    let bza = slot / (ax * ay);
+
+    let brick_origin = sdf_meta.world_min + vec3<f32>(vec3<u32>(bx, by, bz)) * brick_m;
+    let local = world_pos - brick_origin;
+    // Half-texel clamp on ALL axes: with 3D packing every axis has brick
+    // neighbors, so without the clamp trilinear interpolation would bleed
+    // into a neighbor brick's voxel (unrelated memory).
+    let local_n = local / brick_m; // [0,1] within the brick along each axis
+    let voxel_pos = clamp(
+        local_n * bsv_f,
+        vec3<f32>(0.5),
+        vec3<f32>(bsv_f - 0.5),
+    );
+    let brick_atlas = vec3<f32>(f32(bxa), f32(bya), f32(bza));
+    let tex_dims = vec3<f32>(textureDimensions(sdf_atlas_tex));
+    let tex_uv = (brick_atlas * bsv_f + voxel_pos) / tex_dims;
+
+    return textureSample(sdf_atlas_tex, sdf_atlas_sampler, tex_uv).r;
+}
+
+// Inigo Quilez sphere-tracing soft shadow (sub-plan 8 spec).
+// Traces from `frag_pos` toward `light_pos`. Returns a [0..1] shadow factor
+// (0 = fully occluded, 1 = fully lit). `cone_half_angle` controls softness.
+fn sample_sdf_shadow(
+    frag_pos: vec3<f32>,
+    light_pos: vec3<f32>,
+    cone_half_angle: f32,
+) -> f32 {
+    if sdf_meta.has_sdf_atlas == 0u {
+        return 1.0;
+    }
+
+    let to_light = light_pos - frag_pos;
+    let light_dist = length(to_light);
+    if light_dist < 0.001 {
+        return 1.0;
+    }
+    let ray_dir = to_light / light_dist;
+
+    let k = 1.0 / max(tan(cone_half_angle), 0.001);
+    let self_shadow_bias = sdf_meta.voxel_size_m * 2.0;
+    let self_shadow_epsilon = sdf_meta.voxel_size_m * 0.25;
+    let min_step = sdf_meta.voxel_size_m * 0.5;
+
+    var t: f32 = self_shadow_bias;
+    var occlusion: f32 = 1.0;
+
+    for (var i: i32 = 0; i < SDF_MAX_STEPS; i = i + 1) {
+        if t >= light_dist {
+            break;
+        }
+        let p = frag_pos + ray_dir * t;
+        let d = sample_sdf(p);
+        if d < self_shadow_epsilon {
+            occlusion = 0.0;
+            break;
+        }
+        occlusion = min(occlusion, k * d / t);
+        t = t + max(d, min_step);
+    }
+
+    return clamp(occlusion, 0.0, 1.0);
 }
 
 // --- Shadow sampling ---
@@ -400,6 +610,79 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let base_color = textureSample(base_texture, base_sampler, in.uv);
     let N = normalize(in.world_normal);
 
+    // SDF-sign debug viz (Alt+Shift+2). Sample a few voxels *inside* the
+    // surface along -N — a correctly-baked atlas should report a negative
+    // SDF there. Red = positive (parity bug, ray would tunnel through);
+    // Green = negative (correct interior); Blue = near-zero surface brick
+    // band. No SDF atlas → magenta so the viz state is still obvious.
+    if uniforms.sdf_sign_viz != 0u {
+        if sdf_meta.has_sdf_atlas == 0u {
+            return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+        }
+        // Probe 0.5 voxels (4 cm at default 8 cm voxels) inside the surface.
+        // Deeper probes pierce thin walls and land in exterior-empty bricks on
+        // the far side, showing up as false red. 0.5 × voxel clears the
+        // boundary voxel while staying inside any wall thicker than ~8 cm.
+        let probe = in.world_position - N * (sdf_meta.voxel_size_m * 0.5);
+        let d = sample_sdf(probe);
+        if d >= 1.0e5 {
+            // SDF_SLOT_EMPTY reached — interior brick misclassified as void.
+            return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+        }
+        if d <= -1.0e5 {
+            // SDF_SLOT_INTERIOR — explicitly marked inside.
+            return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+        }
+        // Surface-brick band: map [-voxel, +voxel] to blue→red gradient.
+        let norm = clamp(d / sdf_meta.voxel_size_m, -1.0, 1.0);
+        if norm < 0.0 {
+            // Negative side: blue→green as we get further inside.
+            return vec4<f32>(0.0, -norm, 1.0 + norm, 1.0);
+        } else {
+            // Positive side: blue→red as we get further outside.
+            return vec4<f32>(norm, 0.0, 1.0 - norm, 1.0);
+        }
+    }
+
+    // SDF distance debug viz (Alt+Shift+3). Probes the SDF 0.5 m outward
+    // from the surface along N — sampling *at* the surface returns d ≈ 0
+    // everywhere (useless) because that's the definition of an SDF. This
+    // offset reveals the gradient in open space, which is what the sphere
+    // tracer actually consumes.
+    //
+    // Expected: distance to the *next* nearby surface. On an open floor
+    // with nothing above, the sample sits 0.5 m above the floor in empty
+    // space — if the ceiling is far, d ≈ 0.5 m (mid-gray). Near a wall,
+    // d drops toward 0 (darker). If every surface reads black regardless
+    // of what's nearby, the atlas has no real gradient and the tracer is
+    // doomed. If outside-offset samples read *negative*, the bake's sign
+    // is inverted.
+    //
+    // Color key:
+    //   magenta   → SDF_SLOT_EMPTY (atlas missing or unreachable)
+    //   dark blue → SDF_SLOT_INTERIOR (probe ended up in a solid brick)
+    //   red ramp  → negative distance (SDF thinks open space is inside solid)
+    //   grayscale → positive distance, [0, 1 m] → [black, white]
+    if uniforms.sdf_distance_viz != 0u {
+        if sdf_meta.has_sdf_atlas == 0u {
+            return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+        }
+        let probe = in.world_position + N * 0.5;
+        let d = sample_sdf(probe);
+        if d >= 1.0e5 {
+            return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+        }
+        if d <= -1.0e5 {
+            return vec4<f32>(0.0, 0.0, 0.25, 1.0);
+        }
+        if d < 0.0 {
+            let r = clamp(-d, 0.0, 1.0);
+            return vec4<f32>(r, 0.0, 0.0, 1.0);
+        }
+        let g = clamp(d, 0.0, 1.0);
+        return vec4<f32>(g, g, g, 1.0);
+    }
+
     // Indirect term: baked SH irradiance. Zero when no SH volume is loaded.
     let indirect = sample_sh_indirect(in.world_position, N);
 
@@ -457,14 +740,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let NdotL = max(dot(N, L), 0.0);
 
         // Shadow modulation: sample shadow map if this light casts shadows.
-        // `shadow_kind == 1` → CSM (directional). `shadow_kind == 2` is
-        // reserved for sub-plan 9's SDF sphere-trace (point + spot); until
-        // that lands, it falls through to unshadowed. Any other value is
-        // also unshadowed.
+        // `shadow_kind == 1` → CSM (directional).
+        // `shadow_kind == 2` → SDF sphere-trace (point + spot).
+        // Any other value is unshadowed.
         let shadow_kind = bitcast<u32>(light.shadow_info.z);
         var shadow_factor = 1.0;
         if shadow_kind == 1u {
             shadow_factor = sample_csm_shadow(in.world_position, bitcast<u32>(light.shadow_info.y));
+        } else if shadow_kind == 2u {
+            // Soft shadow via SDF sphere-trace. Cone half-angle of 1.5°
+            // keeps shadows fairly hard, which matters in dense scenes:
+            // a wider cone is dragged down by every pillar the ray
+            // passes *near*, producing muddy AO-like shadows instead of
+            // crisp directional ones. Retro aesthetic also favors harder
+            // shadows — a wider cone can be exposed per-light later.
+            shadow_factor = sample_sdf_shadow(
+                in.world_position,
+                light.position_and_type.xyz,
+                0.02617994, // 1.5 degrees in radians
+            );
         }
 
         total_light = total_light + light.color_and_falloff_model.xyz * attenuation * NdotL * shadow_factor;

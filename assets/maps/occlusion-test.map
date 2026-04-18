@@ -1205,13 +1205,13 @@
 // entity 1
 {
 "classname" "info_player_start"
-"origin" "128 128 24"
+"origin" "592 912 56"
 "angle" "0"
 }
 // entity 2
 {
 "classname" "light"
-"origin" "180 245 80"
+"origin" "180 229 80"
 "light" "400"
 "_color" "255 170 90"
 "_fade" "1024"
@@ -1220,10 +1220,10 @@
 // entity 3
 {
 "classname" "light"
-"origin" "48 1264 218"
-"light" "300"
+"origin" "272 1440 202"
+"light" "255"
 "_color" "160 200 255"
-"_fade" "1536"
+"_fade" "10000"
 "delay" "0"
 }
 // entity 4
@@ -1238,18 +1238,18 @@
 // entity 5
 {
 "classname" "light"
-"origin" "392 1952 24"
-"light" "150"
-"_color" "0 255 0"
-"_fade" "1536"
+"origin" "472 1984 72"
+"light" "300"
+"_color" "255 0 0"
+"_fade" "800"
 "delay" "0"
 }
 // entity 6
 {
 "classname" "light"
-"origin" "776 1640 56"
-"light" "150"
+"origin" "824 1656 120"
+"light" "300"
 "_color" "0 0 255"
-"_fade" "1536"
+"_fade" "800"
 "delay" "0"
 }

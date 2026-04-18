@@ -31,6 +31,8 @@ pub const CSM_RESOLUTION: u32 = 1024;
 #[allow(dead_code)] // Part of the shadow kind enum; used implicitly as the zero-default.
 pub const SHADOW_KIND_NONE: u32 = 0;
 pub const SHADOW_KIND_CSM: u32 = 1;
+/// SDF sphere-trace soft shadows for point and spot lights. Sub-plan 8.
+pub const SHADOW_KIND_SDF: u32 = 2;
 
 // --- Cascade split calculation ---
 
@@ -312,6 +314,23 @@ impl ShadowSlotPool {
             }
         }
 
+        // Point and spot lights with cast_shadows=true use SDF sphere-trace
+        // (shadow_kind == 2). They don't occupy a shadow map slot — the SDF
+        // atlas is a single shared resource loaded at level init.
+        for (li, l) in lights.iter().enumerate() {
+            if l.cast_shadows
+                && matches!(
+                    l.light_type,
+                    crate::prl::LightType::Point | crate::prl::LightType::Spot
+                )
+            {
+                // Don't overwrite a CSM slot assignment.
+                if per_light_info[li][2] == SHADOW_KIND_NONE {
+                    per_light_info[li] = [1, 0, SHADOW_KIND_SDF, 0];
+                }
+            }
+        }
+
         ShadowAssignment {
             slots,
             per_light_info,
@@ -483,9 +502,19 @@ mod tests {
             [1, 0, SHADOW_KIND_CSM, 0],
             "directional light should get CSM slot 0"
         );
-        // Point/spot lights — no pool-assigned shadow info.
-        assert_eq!(assignment.per_light_info[1], [0, 0, 0, 0]);
-        assert_eq!(assignment.per_light_info[2], [0, 0, 0, 0]);
+        // Point and spot lights with cast_shadows=true get SDF kind (sub-plan 8).
+        // pool_slot is 0 (unused) for SDF lights.
+        assert_eq!(
+            assignment.per_light_info[1],
+            [1, 0, SHADOW_KIND_SDF, 0],
+            "point light (cast_shadows=true) should get SDF shadow kind"
+        );
+        assert_eq!(
+            assignment.per_light_info[2],
+            [1, 0, SHADOW_KIND_SDF, 0],
+            "spot light (cast_shadows=true) should get SDF shadow kind"
+        );
+        // Light 3 has cast_shadows=false — no shadow.
         assert_eq!(assignment.per_light_info[3], [0, 0, 0, 0]);
     }
 

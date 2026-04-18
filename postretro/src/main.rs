@@ -274,6 +274,7 @@ impl ApplicationHandler for App {
             lights: &world.lights,
             light_influences: &world.light_influences,
             sh_volume: world.sh_volume.as_ref(),
+            sdf_atlas: world.sdf_atlas.as_ref(),
         });
 
         let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
@@ -634,6 +635,16 @@ impl App {
                     let next = renderer.ambient_floor() + input::AMBIENT_FLOOR_STEP;
                     renderer.set_ambient_floor(next);
                     log::info!("[Renderer] ambient floor: {:.3}", renderer.ambient_floor());
+                }
+            }
+            DiagnosticAction::ToggleSdfSignViz => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.toggle_sdf_sign_viz();
+                }
+            }
+            DiagnosticAction::ToggleSdfDistanceViz => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.toggle_sdf_distance_viz();
                 }
             }
         }

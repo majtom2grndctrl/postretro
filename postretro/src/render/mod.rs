@@ -1,6 +1,7 @@
 // Textured renderer: GPU init, texture upload, pipeline, and draw.
 // See: context/lib/rendering_pipeline.md
 
+pub mod sdf;
 pub mod shadow_pass;
 pub mod sh_volume;
 
@@ -21,6 +22,7 @@ use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 
+use sdf::SdfResources;
 use shadow_pass::ShadowResources;
 use sh_volume::ShVolumeResources;
 
@@ -49,7 +51,8 @@ const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 ///   76..80   ambient_floor    (f32)
 ///   80..84   light_count      (u32)
 ///   84..88   time             (f32, elapsed seconds for SH animation)
-///   88..96   _padding         (2 × u32)
+///   88..92   sdf_sign_viz     (u32, 0 = off, 1 = on; diagnostic chord Alt+Shift+2)
+///   92..96   sdf_distance_viz (u32, 0 = off, 1 = on; diagnostic chord Alt+Shift+3)
 ///   96..112  csm_splits       (vec4<f32>)
 ///   112..176 view_matrix      (mat4x4<f32>)
 const UNIFORM_SIZE: usize = 176;
@@ -60,6 +63,8 @@ fn build_uniform_data(
     ambient_floor: f32,
     light_count: u32,
     time: f32,
+    sdf_sign_viz: bool,
+    sdf_distance_viz: bool,
     csm_splits: [f32; 4],
     view_matrix: &Mat4,
 ) -> [u8; UNIFORM_SIZE] {
@@ -75,7 +80,10 @@ fn build_uniform_data(
     bytes[76..80].copy_from_slice(&ambient_floor.to_ne_bytes());
     bytes[80..84].copy_from_slice(&light_count.to_ne_bytes());
     bytes[84..88].copy_from_slice(&time.to_ne_bytes());
-    // bytes 88..96 are _padding — left as zero.
+    let viz_flag: u32 = if sdf_sign_viz { 1 } else { 0 };
+    bytes[88..92].copy_from_slice(&viz_flag.to_ne_bytes());
+    let dist_viz_flag: u32 = if sdf_distance_viz { 1 } else { 0 };
+    bytes[92..96].copy_from_slice(&dist_viz_flag.to_ne_bytes());
 
     // CSM cascade splits at bytes 96..112.
     for (i, &split) in csm_splits.iter().enumerate() {
@@ -221,6 +229,9 @@ pub struct LevelGeometry<'a> {
     /// when the section is absent — the renderer binds dummy 1×1×1 textures
     /// and the shader skips SH sampling.
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::ShVolumeSection>,
+    /// Baked SDF atlas from the `SdfAtlas` PRL section. `None` when absent —
+    /// the renderer binds dummy resources and the shader skips sphere-tracing.
+    pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,
 }
 
 // --- Renderer ---
@@ -279,6 +290,14 @@ pub struct Renderer {
     /// skipped. See `sh_volume` module for layout.
     sh_volume_resources: ShVolumeResources,
 
+    /// SDF atlas GPU resources for group 2 bindings 5–8. Always allocated;
+    /// when no SDF section is present, dummy resources are bound and the
+    /// fragment shader's `has_sdf_atlas` flag is 0 so sphere-tracing is
+    /// skipped. See `sdf` module for layout. Held to keep the GPU textures
+    /// and buffers alive behind the bind group.
+    #[allow(dead_code)]
+    sdf_resources: SdfResources,
+
     depth_view: wgpu::TextureView,
 
     /// GPU textures indexed by texture index.
@@ -305,6 +324,14 @@ pub struct Renderer {
     wireframe_cull_status_bgl: wgpu::BindGroupLayout,
     /// Whether the culling-delta wireframe overlay is active.
     wireframe_enabled: bool,
+
+    /// Whether the SDF-sign debug visualization is active. Toggled by the
+    /// `Alt+Shift+2` diagnostic chord. When on, `fs_main` outputs a color
+    /// indicating the sign of the SDF sampled just inside the fragment
+    /// surface, diagnosing SDF-bake parity bugs (interior bricks that
+    /// read as empty void, letting shadow rays tunnel through solids).
+    sdf_sign_viz_enabled: bool,
+    sdf_distance_viz_enabled: bool,
 
     /// Whether the surface is currently configured with vsync on
     /// (`AutoVsync`) or off (`AutoNoVsync`). Toggled by the
@@ -387,7 +414,11 @@ impl Renderer {
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Postretro Device"),
-            required_features: wgpu::Features::empty(),
+            // FLOAT32_FILTERABLE is required by the SDF atlas R32Float sampler
+            // (see postretro/src/render/sdf.rs): without it, the lighting
+            // bind-group layout's `filterable: true` on binding 5 fails
+            // validation. Supported on Metal and any modern Vulkan/DX12.
+            required_features: wgpu::Features::FLOAT32_FILTERABLE,
             required_limits: wgpu::Limits::default(),
             ..Default::default()
         }))
@@ -488,6 +519,8 @@ impl Renderer {
             ambient_floor,
             light_count,
             0.0,
+            false,
+            false,
             initial_csm_splits,
             &Mat4::IDENTITY,
         );
@@ -553,10 +586,19 @@ impl Renderer {
             crate::geometry::WorldVertex::STRIDE as u64,
         );
 
-        // Bind group layout for group 2: lighting + shadow map bindings.
+        // SDF atlas resources for group 2 bindings 5–9. Created before the
+        // lighting bind group layout so entries can be referenced inline.
+        let sdf_resources = SdfResources::build(
+            &device,
+            &queue,
+            geometry.and_then(|g| g.sdf_atlas),
+        );
+
+        // Bind group layout for group 2: lighting + shadow map + SDF bindings.
         // 0 = lights, 1 = influence, 2 = shadow sampler, 3 = CSM depth array,
-        // 4 = CSM VP storage, 5 = point shadow array, 6 = spot shadow array,
-        // 7 = spot VP storage.
+        // 4 = CSM VP storage, 5..=9 = SDF atlas (texture, sampler, top-level,
+        // meta, coarse).
+        let sdf_layout_entries = sdf::sdf_bind_group_layout_entries();
         let lighting_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Lighting Bind Group Layout"),
@@ -612,9 +654,14 @@ impl Renderer {
                         },
                         count: None,
                     },
-                    // Bindings 5+ reserved for sub-plan 9 (SDF atlas, sampler,
-                    // top-level index, meta uniform). See
-                    // context/plans/in-progress/lighting-foundation/8-sdf-shadows.md.
+                    // bindings 5–9: SDF atlas (texture, sampler, top-level,
+                    // meta, coarse). See sub-plan 8 and
+                    // postretro/src/render/sdf.rs::sdf_bind_group_layout_entries.
+                    sdf_layout_entries[0],
+                    sdf_layout_entries[1],
+                    sdf_layout_entries[2],
+                    sdf_layout_entries[3],
+                    sdf_layout_entries[4],
                 ],
             });
 
@@ -646,10 +693,9 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        let lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Lighting Bind Group"),
-            layout: &lighting_bind_group_layout,
-            entries: &[
+        let lighting_bind_group = {
+            let sdf_entries = sdf_resources.bind_group_entries();
+            let mut all_entries: Vec<wgpu::BindGroupEntry<'_>> = vec![
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: lights_buffer.as_entire_binding(),
@@ -664,15 +710,23 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&shadow_resources.csm_array_view),
+                    resource: wgpu::BindingResource::TextureView(
+                        &shadow_resources.csm_array_view,
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: shadow_resources.csm_vp_buffer.as_entire_binding(),
                 },
-                // Bindings 5+ reserved for sub-plan 9 (SDF).
-            ],
-        });
+            ];
+            // bindings 5–9: SDF atlas (atlas texture, sampler, top-level, meta, coarse).
+            all_entries.extend(sdf_entries);
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Lighting Bind Group"),
+                layout: &lighting_bind_group_layout,
+                entries: &all_entries,
+            })
+        };
 
         // Create shared sampler: nearest filtering for retro pixel aesthetic, repeat.
         let base_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -973,6 +1027,7 @@ impl Renderer {
             influence_buffer,
             shadow_resources,
             sh_volume_resources,
+            sdf_resources,
             depth_view,
             gpu_textures,
             bvh_leaves,
@@ -982,6 +1037,8 @@ impl Renderer {
             wireframe_index_count,
             wireframe_cull_status_bgl: wireframe_cull_status_layout,
             wireframe_enabled: false,
+            sdf_sign_viz_enabled: false,
+            sdf_distance_viz_enabled: false,
             vsync_enabled: true,
             has_geometry,
             csm_splits_cache: {
@@ -1010,6 +1067,30 @@ impl Renderer {
             if self.wireframe_enabled { "on" } else { "off" },
         );
         self.wireframe_enabled
+    }
+
+    /// Toggle the SDF-sign debug visualization on/off. The new state
+    /// takes effect on the next `update_per_frame_uniforms` upload.
+    pub fn toggle_sdf_sign_viz(&mut self) -> bool {
+        self.sdf_sign_viz_enabled = !self.sdf_sign_viz_enabled;
+        log::info!(
+            "[Renderer] SDF sign viz: {}",
+            if self.sdf_sign_viz_enabled { "on" } else { "off" },
+        );
+        self.sdf_sign_viz_enabled
+    }
+
+    /// Toggle the SDF distance-field debug visualization on/off. Renders
+    /// `sample_sdf(world_pos)` as a grayscale ramp over [0, 1 m] so the
+    /// atlas's actual output can be inspected before trusting the sphere
+    /// tracer that consumes it.
+    pub fn toggle_sdf_distance_viz(&mut self) -> bool {
+        self.sdf_distance_viz_enabled = !self.sdf_distance_viz_enabled;
+        log::info!(
+            "[Renderer] SDF distance viz: {}",
+            if self.sdf_distance_viz_enabled { "on" } else { "off" },
+        );
+        self.sdf_distance_viz_enabled
     }
 
     /// Flip between `AutoVsync` and `AutoNoVsync`. Rebuilds the swapchain
@@ -1068,6 +1149,8 @@ impl Renderer {
             self.ambient_floor,
             self.light_count,
             time,
+            self.sdf_sign_viz_enabled,
+            self.sdf_distance_viz_enabled,
             csm_splits,
             view_matrix,
         );
@@ -1527,7 +1610,7 @@ mod tests {
     #[test]
     fn uniform_data_has_correct_size() {
         let vp = Mat4::IDENTITY;
-        let data = build_uniform_data(&vp, Vec3::ZERO, 0.05, 0, 0.0, [0.0; 4], &Mat4::IDENTITY);
+        let data = build_uniform_data(&vp, Vec3::ZERO, 0.05, 0, 0.0, false, false, [0.0; 4], &Mat4::IDENTITY);
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
 
@@ -1781,7 +1864,7 @@ mod tests {
         let camera = Vec3::new(10.0, 20.0, 30.0);
         let ambient_floor = 0.125_f32;
         let light_count = 7_u32;
-        let data = build_uniform_data(&vp, camera, ambient_floor, light_count, 0.0, [0.0; 4], &Mat4::IDENTITY);
+        let data = build_uniform_data(&vp, camera, ambient_floor, light_count, 0.0, false, false, [0.0; 4], &Mat4::IDENTITY);
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
         let mut floats = Vec::new();

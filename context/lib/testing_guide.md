@@ -83,7 +83,7 @@ Use `proptest` when the claim is "this always holds for any valid input" rather 
 | Domain | Example invariants |
 |--------|-------------------|
 | Geometric math | Shadow ortho bounds quantized to texel size for any frustum slice. Projection UVs stay in [0, 1] for any valid camera pose. |
-| Numerical monotonicity | Cascade splits strictly increase for any (near, far, λ). Falloff non-increasing with distance. |
+| Numerical monotonicity | Falloff non-increasing with distance. Sort order preserved after filtering. |
 | Algorithmic properties | Sort order preserved after filtering. Assignment always ≤ pool size regardless of candidate count. |
 
 Use a regular `#[test]` when the expected output is a specific value.

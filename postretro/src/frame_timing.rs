@@ -35,8 +35,8 @@ impl InterpolableState {
     /// (not the tick-state) so mouse motion is never lost on zero-tick frames.
     /// We recompute the matrix from scratch rather than interpolating matrices
     /// (which doesn't produce correct results).
-    /// View matrix only — used by shadow cascade selection (the forward
-    /// shader needs view-space depth to pick the right CSM cascade).
+    /// Build the view matrix from position plus view angles. Retained for
+    /// future passes that may need view-space depth.
     pub fn view_matrix(&self, yaw: f32, pitch: f32) -> Mat4 {
         let look_dir = Vec3::new(
             -yaw.sin() * pitch.cos(),

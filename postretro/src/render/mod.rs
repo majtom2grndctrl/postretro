@@ -2,8 +2,6 @@
 // See: context/lib/rendering_pipeline.md
 
 pub mod frame_timing;
-pub mod sdf;
-pub mod shadow_pass;
 pub mod sh_volume;
 
 use std::sync::Arc;
@@ -17,15 +15,12 @@ use winit::window::Window;
 use crate::compute_cull::ComputeCullPipeline;
 use crate::geometry::BvhTree;
 use crate::lighting::influence::{self, LightInfluence};
-use crate::lighting::shadow;
-use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_shadows};
+use crate::lighting::{GPU_LIGHT_SIZE, pack_lights};
 use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 
 use frame_timing::FrameTiming;
-use sdf::SdfResources;
-use shadow_pass::ShadowResources;
 use sh_volume::ShVolumeResources;
 
 // --- WGSL Shaders ---
@@ -56,8 +51,7 @@ const TIMING_PAIR_COUNT: usize = 3;
 // --- Uniform buffer layout ---
 
 /// Per-frame uniform data: view-projection, camera world-space position,
-/// ambient floor, light count, elapsed time, CSM cascade splits, and view
-/// matrix.
+/// ambient floor, light count, elapsed time, and lighting-isolation mode.
 ///
 /// Layout must match the WGSL `Uniforms` struct in `forward.wgsl` and
 /// `wireframe.wgsl` — both shaders bind the same buffer. std140 rules
@@ -71,13 +65,9 @@ const TIMING_PAIR_COUNT: usize = 3;
 ///   76..80   ambient_floor       (f32)
 ///   80..84   light_count         (u32)
 ///   84..88   time                (f32, elapsed seconds for SH animation)
-///   88..92   sdf_sign_viz        (u32, 0 = off, 1 = on; chord Alt+Shift+2)
-///   92..96   sdf_distance_viz    (u32, 0 = off, 1 = on; chord Alt+Shift+3)
-///   96..112  csm_splits          (vec4<f32>)
-///   112..176 view_matrix         (mat4x4<f32>)
-///   176..180 lighting_isolation  (u32, cycles 0..4; chord Alt+Shift+4)
-///   180..192 _pad_lighting       (3 × u32, keeps the struct 16-byte aligned)
-const UNIFORM_SIZE: usize = 192;
+///   88..92   lighting_isolation  (u32, cycles 0..4; chord Alt+Shift+4)
+///   92..96   _pad                (u32, keeps the struct 16-byte aligned)
+const UNIFORM_SIZE: usize = 96;
 
 /// Lighting-term isolation mode for leak/bleed debugging.
 ///
@@ -125,11 +115,7 @@ struct FrameUniforms {
     ambient_floor: f32,
     light_count: u32,
     time: f32,
-    sdf_sign_viz: bool,
-    sdf_distance_viz: bool,
     lighting_isolation: LightingIsolation,
-    csm_splits: [f32; 4],
-    view_matrix: Mat4,
 }
 
 fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -145,29 +131,9 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[76..80].copy_from_slice(&u.ambient_floor.to_ne_bytes());
     bytes[80..84].copy_from_slice(&u.light_count.to_ne_bytes());
     bytes[84..88].copy_from_slice(&u.time.to_ne_bytes());
-    let viz_flag: u32 = if u.sdf_sign_viz { 1 } else { 0 };
-    bytes[88..92].copy_from_slice(&viz_flag.to_ne_bytes());
-    let dist_viz_flag: u32 = if u.sdf_distance_viz { 1 } else { 0 };
-    bytes[92..96].copy_from_slice(&dist_viz_flag.to_ne_bytes());
-
-    // CSM cascade splits at bytes 96..112.
-    for (i, &split) in u.csm_splits.iter().enumerate() {
-        let off = 96 + i * 4;
-        bytes[off..off + 4].copy_from_slice(&split.to_ne_bytes());
-    }
-
-    // View matrix at bytes 112..176.
-    let view_cols = u.view_matrix.to_cols_array();
-    for (i, val) in view_cols.iter().enumerate() {
-        let off = 112 + i * 4;
-        bytes[off..off + 4].copy_from_slice(&val.to_ne_bytes());
-    }
-
-    // Lighting isolation mode at bytes 176..180 (12 trailing bytes are
-    // padding — already zero-initialized above).
     let isolation: u32 = u.lighting_isolation as u32;
-    bytes[176..180].copy_from_slice(&isolation.to_ne_bytes());
-
+    bytes[88..92].copy_from_slice(&isolation.to_ne_bytes());
+    // bytes 92..96 stay zero — pad.
     bytes
 }
 
@@ -299,9 +265,6 @@ pub struct LevelGeometry<'a> {
     /// when the section is absent — the renderer binds dummy 1×1×1 textures
     /// and the shader skips SH sampling.
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::ShVolumeSection>,
-    /// Baked SDF atlas from the `SdfAtlas` PRL section. `None` when absent —
-    /// the renderer binds dummy resources and the shader skips sphere-tracing.
-    pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,
 }
 
 // --- Renderer ---
@@ -342,40 +305,11 @@ pub struct Renderer {
     /// brightness only — no color.
     ambient_floor: f32,
 
-    /// Per-light influence volumes for CPU-side frustum test.
-    light_influences: Vec<LightInfluence>,
-    /// Indices of lights whose influence volumes intersect the camera
-    /// frustum this frame. Populated by `update_visible_lights` and
-    /// consumed by shadow-slot allocation.
-    visible_light_indices: Vec<u32>,
-    /// Map lights stored at load time for shadow pass rendering.
-    map_lights: Vec<MapLight>,
-    /// Lighting bind group layout — needed to rebuild the bind group when
-    /// shadow info changes the lights buffer.
-    #[allow(dead_code)] // Retained for future bind group rebuilds.
-    lighting_bind_group_layout: wgpu::BindGroupLayout,
-    /// Direct lights storage buffer (rewritten per-frame with shadow info).
-    lights_buffer: wgpu::Buffer,
-    /// Influence volume storage buffer (bound at load, immutable).
-    #[allow(dead_code)] // Retained for future bind group rebuilds.
-    influence_buffer: wgpu::Buffer,
-    /// Shadow map GPU resources. Always present — allocated at level load
-    /// even for maps with no shadow-casting lights (dummy textures).
-    shadow_resources: ShadowResources,
-
     /// Group 3 — SH irradiance volume resources. Always allocated; when no
     /// SH section is present the bind group binds dummy 1×1×1 textures and
     /// the fragment shader's `has_sh_volume` flag is 0 so SH sampling is
     /// skipped. See `sh_volume` module for layout.
     sh_volume_resources: ShVolumeResources,
-
-    /// SDF atlas GPU resources for group 2 bindings 5–8. Always allocated;
-    /// when no SDF section is present, dummy resources are bound and the
-    /// fragment shader's `has_sdf_atlas` flag is 0 so sphere-tracing is
-    /// skipped. See `sdf` module for layout. Held to keep the GPU textures
-    /// and buffers alive behind the bind group.
-    #[allow(dead_code)]
-    sdf_resources: SdfResources,
 
     depth_view: wgpu::TextureView,
 
@@ -404,19 +338,11 @@ pub struct Renderer {
     /// Whether the culling-delta wireframe overlay is active.
     wireframe_enabled: bool,
 
-    /// Whether the SDF-sign debug visualization is active. Toggled by the
-    /// `Alt+Shift+2` diagnostic chord. When on, `fs_main` outputs a color
-    /// indicating the sign of the SDF sampled just inside the fragment
-    /// surface, diagnosing SDF-bake parity bugs (interior bricks that
-    /// read as empty void, letting shadow rays tunnel through solids).
-    sdf_sign_viz_enabled: bool,
-    sdf_distance_viz_enabled: bool,
-
     /// Lighting-term isolation mode for leak/bleed debugging. Cycled by the
     /// `Alt+Shift+4` diagnostic chord. When not `Normal`, the fragment
     /// shader zeroes out one or both lighting terms so an A/B compare
-    /// isolates which path (direct sphere-trace shadows vs baked SH
-    /// indirect) is carrying a bad contribution.
+    /// isolates which path (direct vs baked SH indirect) is carrying a bad
+    /// contribution.
     lighting_isolation: LightingIsolation,
 
     /// Whether the surface is currently configured with vsync on
@@ -428,19 +354,8 @@ pub struct Renderer {
 
     has_geometry: bool,
 
-    /// Cached CSM cascade split distances for the current frame. Written
-    /// during shadow assignment in `render_frame_indirect` and read by
-    /// `update_per_frame_uniforms` so the forward shader can select
-    /// the correct cascade. Public so `main.rs` can pass them back
-    /// into `update_per_frame_uniforms`.
-    pub csm_splits_cache: [f32; 4],
-
     /// Monotonic frame counter for debug logging.
     debug_frame: u64,
-    /// Previous frame's slot assignments for delta logging (light_index, kind, pool_slot).
-    debug_prev_slots: Vec<(u32, u32, u32)>,
-    /// Previous frame's CSM w-axis columns for delta logging (per layer).
-    debug_prev_csm_w: Vec<[f32; 4]>,
     /// Previous frame's visible-cell bitmask fingerprint (popcount, xor_hash).
     debug_prev_bitmask: (u32, u32),
     /// Previous frame's view_proj matrix fingerprint (bitwise xor of all 16 f32 bits).
@@ -510,7 +425,7 @@ impl Renderer {
         let gpu_timing_supported =
             adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
         let enable_gpu_timing = gpu_timing_requested && gpu_timing_supported;
-        let mut required_features = wgpu::Features::FLOAT32_FILTERABLE;
+        let mut required_features = wgpu::Features::empty();
         if enable_gpu_timing {
             required_features |= wgpu::Features::TIMESTAMP_QUERY;
         } else if gpu_timing_requested && !gpu_timing_supported {
@@ -522,10 +437,6 @@ impl Renderer {
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Postretro Device"),
-            // FLOAT32_FILTERABLE is required by the SDF atlas R32Float sampler
-            // (see postretro/src/render/sdf.rs): without it, the lighting
-            // bind-group layout's `filterable: true` on binding 5 fails
-            // validation. Supported on Metal and any modern Vulkan/DX12.
             required_features,
             required_limits: wgpu::Limits::default(),
             ..Default::default()
@@ -613,25 +524,13 @@ impl Renderer {
         );
         let light_count = geometry.map(|g| g.lights.len() as u32).unwrap_or(0);
         let ambient_floor = DEFAULT_AMBIENT_FLOOR;
-        let initial_csm_splits = {
-            let s = shadow::compute_cascade_splits(
-                crate::camera::NEAR,
-                crate::camera::FAR,
-                0.5,
-            );
-            [s[0], s[1], s[2], 0.0]
-        };
         let uniform_data = build_uniform_data(&FrameUniforms {
             view_proj,
             camera_position: Vec3::ZERO,
             ambient_floor,
             light_count,
             time: 0.0,
-            sdf_sign_viz: false,
-            sdf_distance_viz: false,
             lighting_isolation: LightingIsolation::Normal,
-            csm_splits: initial_csm_splits,
-            view_matrix: Mat4::IDENTITY,
         });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -689,25 +588,8 @@ impl Renderer {
                 ],
             });
 
-        // Create shadow map resources (textures, pipelines, samplers).
-        let shadow_resources = ShadowResources::new(
-            &device,
-            crate::geometry::WorldVertex::STRIDE as u64,
-        );
-
-        // SDF atlas resources for group 2 bindings 5–9. Created before the
-        // lighting bind group layout so entries can be referenced inline.
-        let sdf_resources = SdfResources::build(
-            &device,
-            &queue,
-            geometry.and_then(|g| g.sdf_atlas),
-        );
-
-        // Bind group layout for group 2: lighting + shadow map + SDF bindings.
-        // 0 = lights, 1 = influence, 2 = shadow sampler, 3 = CSM depth array,
-        // 4 = CSM VP storage, 5..=9 = SDF atlas (texture, sampler, top-level,
-        // meta, coarse).
-        let sdf_layout_entries = sdf::sdf_bind_group_layout_entries();
+        // Bind group layout for group 2: direct-light storage buffers.
+        // 0 = lights, 1 = influence volumes.
         let lighting_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Lighting Bind Group Layout"),
@@ -734,43 +616,6 @@ impl Renderer {
                         },
                         count: None,
                     },
-                    // binding 2: shadow comparison sampler
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                        count: None,
-                    },
-                    // binding 3: CSM depth 2D array
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2Array,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    // binding 4: CSM view-proj storage
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // bindings 5–9: SDF atlas (texture, sampler, top-level,
-                    // meta, coarse). See sub-plan 8 and
-                    // postretro/src/render/sdf.rs::sdf_bind_group_layout_entries.
-                    sdf_layout_entries[0],
-                    sdf_layout_entries[1],
-                    sdf_layout_entries[2],
-                    sdf_layout_entries[3],
-                    sdf_layout_entries[4],
                 ],
             });
 
@@ -802,9 +647,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        let lighting_bind_group = {
-            let sdf_entries = sdf_resources.bind_group_entries();
-            let mut all_entries: Vec<wgpu::BindGroupEntry<'_>> = vec![
+        let lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Lighting Bind Group"),
+            layout: &lighting_bind_group_layout,
+            entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: lights_buffer.as_entire_binding(),
@@ -813,29 +659,8 @@ impl Renderer {
                     binding: 1,
                     resource: influence_buffer.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&shadow_resources.shadow_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(
-                        &shadow_resources.csm_array_view,
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: shadow_resources.csm_vp_buffer.as_entire_binding(),
-                },
-            ];
-            // bindings 5–9: SDF atlas (atlas texture, sampler, top-level, meta, coarse).
-            all_entries.extend(sdf_entries);
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Lighting Bind Group"),
-                layout: &lighting_bind_group_layout,
-                entries: &all_entries,
-            })
-        };
+            ],
+        });
 
         // Create shared sampler: nearest filtering for retro pixel aesthetic, repeat.
         let base_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1202,14 +1027,6 @@ impl Renderer {
             log::info!("[Renderer] Pipeline ready (no geometry loaded)");
         }
 
-        let light_influences: Vec<LightInfluence> = geometry
-            .map(|g| g.light_influences.to_vec())
-            .unwrap_or_default();
-
-        let map_lights: Vec<MapLight> = geometry
-            .map(|g| g.lights.to_vec())
-            .unwrap_or_default();
-
         Ok(Self {
             device,
             queue,
@@ -1227,15 +1044,7 @@ impl Renderer {
             lighting_bind_group,
             light_count,
             ambient_floor,
-            light_influences,
-            visible_light_indices: Vec::new(),
-            map_lights,
-            lighting_bind_group_layout,
-            lights_buffer,
-            influence_buffer,
-            shadow_resources,
             sh_volume_resources,
-            sdf_resources,
             depth_view,
             gpu_textures,
             bvh_leaves,
@@ -1245,22 +1054,10 @@ impl Renderer {
             wireframe_index_count,
             wireframe_cull_status_bgl: wireframe_cull_status_layout,
             wireframe_enabled: false,
-            sdf_sign_viz_enabled: false,
             lighting_isolation: LightingIsolation::Normal,
-            sdf_distance_viz_enabled: false,
             vsync_enabled: true,
             has_geometry,
-            csm_splits_cache: {
-                let s = shadow::compute_cascade_splits(
-                    crate::camera::NEAR,
-                    crate::camera::FAR,
-                    0.5,
-                );
-                [s[0], s[1], s[2], 0.0]
-            },
             debug_frame: 0,
-            debug_prev_slots: Vec::new(),
-            debug_prev_csm_w: Vec::new(),
             debug_prev_bitmask: (u32::MAX, u32::MAX),
             debug_prev_vp_hash: u32::MAX,
             debug_prev_visible: ("init", usize::MAX),
@@ -1278,30 +1075,6 @@ impl Renderer {
         self.wireframe_enabled
     }
 
-    /// Toggle the SDF-sign debug visualization on/off. The new state
-    /// takes effect on the next `update_per_frame_uniforms` upload.
-    pub fn toggle_sdf_sign_viz(&mut self) -> bool {
-        self.sdf_sign_viz_enabled = !self.sdf_sign_viz_enabled;
-        log::info!(
-            "[Renderer] SDF sign viz: {}",
-            if self.sdf_sign_viz_enabled { "on" } else { "off" },
-        );
-        self.sdf_sign_viz_enabled
-    }
-
-    /// Toggle the SDF distance-field debug visualization on/off. Renders
-    /// `sample_sdf(world_pos)` as a grayscale ramp over [0, 1 m] so the
-    /// atlas's actual output can be inspected before trusting the sphere
-    /// tracer that consumes it.
-    pub fn toggle_sdf_distance_viz(&mut self) -> bool {
-        self.sdf_distance_viz_enabled = !self.sdf_distance_viz_enabled;
-        log::info!(
-            "[Renderer] SDF distance viz: {}",
-            if self.sdf_distance_viz_enabled { "on" } else { "off" },
-        );
-        self.sdf_distance_viz_enabled
-    }
-
     /// Advance the lighting-term isolation mode through its four-step
     /// cycle (Normal → DirectOnly → IndirectOnly → AmbientOnly → Normal).
     /// Takes effect on the next `update_per_frame_uniforms` upload.
@@ -1309,7 +1082,7 @@ impl Renderer {
     /// Used to A/B compare direct vs indirect contributions when diagnosing
     /// light leaks: flipping from DirectOnly to IndirectOnly inside a
     /// leaky room reveals whether the bad light is coming from the runtime
-    /// sphere-trace shadow path or from the baked SH volume.
+    /// direct path or from the baked SH volume.
     pub fn cycle_lighting_isolation(&mut self) -> LightingIsolation {
         self.lighting_isolation = self.lighting_isolation.cycle();
         log::info!(
@@ -1357,17 +1130,10 @@ impl Renderer {
     }
 
     /// Upload the per-frame uniform buffer (view-projection, camera position,
-    /// ambient floor, light count, elapsed time, CSM splits, and view
-    /// matrix). The view matrix and CSM splits are needed by the fragment
-    /// shader for shadow cascade selection; the time is used by the SH
-    /// animated-light layers (sub-plan 7) to evaluate curves per frame.
-    pub fn update_per_frame_uniforms(
-        &self,
-        view_proj: Mat4,
-        camera_position: Vec3,
-        csm_splits: [f32; 4],
-        view_matrix: &Mat4,
-    ) {
+    /// ambient floor, light count, elapsed time, lighting-isolation mode).
+    /// The elapsed time is used by the SH animated-light layers to evaluate
+    /// curves per frame.
+    pub fn update_per_frame_uniforms(&self, view_proj: Mat4, camera_position: Vec3) {
         let time = self.app_start.elapsed().as_secs_f32();
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
@@ -1375,11 +1141,7 @@ impl Renderer {
             ambient_floor: self.ambient_floor,
             light_count: self.light_count,
             time,
-            sdf_sign_viz: self.sdf_sign_viz_enabled,
-            sdf_distance_viz: self.sdf_distance_viz_enabled,
             lighting_isolation: self.lighting_isolation,
-            csm_splits,
-            view_matrix: *view_matrix,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
     }
@@ -1398,20 +1160,6 @@ impl Renderer {
     /// chords; will move to the settings menu when one exists.
     pub fn set_ambient_floor(&mut self, value: f32) {
         self.ambient_floor = value.clamp(0.0, 1.0);
-    }
-
-    /// Run the per-frame sphere-vs-frustum test on all light influence
-    /// volumes. Stashes the result for sub-plan 5 (shadow-slot allocation).
-    /// Call once per frame, passing the same `Frustum` already produced by
-    /// `extract_frustum_planes` for portal traversal.
-    pub fn update_visible_lights(&mut self, frustum: &crate::visibility::Frustum) {
-        self.visible_light_indices =
-            influence::visible_lights(&self.light_influences, frustum);
-        log::debug!(
-            "[Renderer] visible_lights: {}/{}",
-            self.visible_light_indices.len(),
-            self.light_influences.len(),
-        );
     }
 
     pub fn is_ready(&self) -> bool {
@@ -1522,72 +1270,6 @@ impl Renderer {
                         cur_vis.0, cur_vis.1, self.debug_prev_visible.0, self.debug_prev_visible.1,
                     );
                     self.debug_prev_visible = cur_vis;
-                }
-            }
-        }
-
-        // Shadow map passes: assign slots and render depth-only passes for
-        // each active shadow-casting light. Runs after BVH cull and before
-        // the opaque forward pass. See sub-plan 5 §Shadow pass structure.
-        if self.has_geometry && self.index_count > 0 && !self.map_lights.is_empty() {
-            let assignment = self.shadow_resources.slot_pool.assign(
-                &self.map_lights,
-                &self.visible_light_indices,
-                // Camera position: extract from view-proj inverse. This is an
-                // approximation — precise enough for distance-based slot sorting.
-                view_proj.inverse().transform_point3(Vec3::ZERO),
-            );
-
-            // Re-upload lights buffer with shadow info for this frame.
-            let lights_data = pack_lights_with_shadows(&self.map_lights, &assignment.per_light_info);
-            self.queue.write_buffer(&self.lights_buffer, 0, &lights_data);
-
-            let camera_near = crate::camera::NEAR;
-            let camera_far = crate::camera::FAR;
-
-            // Compute CSM splits for the uniform buffer.
-            let csm_splits_arr = shadow::compute_cascade_splits(camera_near, camera_far, 0.5);
-            self.csm_splits_cache = [csm_splits_arr[0], csm_splits_arr[1], csm_splits_arr[2], 0.0];
-
-            let csm_matrices = self.shadow_resources.render_shadow_passes(
-                &mut encoder,
-                &self.queue,
-                &assignment,
-                &self.map_lights,
-                &self.vertex_buffer,
-                &self.index_buffer,
-                self.index_count,
-                view_proj,
-                camera_near,
-                camera_far,
-            );
-
-            // Delta logging: emit only when slot assignments or CSM matrices change.
-            if log::log_enabled!(log::Level::Debug) {
-                let f = self.debug_frame;
-
-                let cur_slots: Vec<(u32, u32, u32)> = assignment.slots.iter()
-                    .map(|s| (s.light_index, s.shadow_kind, s.pool_slot))
-                    .collect();
-                if cur_slots != self.debug_prev_slots {
-                    log::debug!(
-                        "[shadow f={f}] slot assignment changed: visible_lights={} slots={:?}",
-                        self.visible_light_indices.len(), cur_slots,
-                    );
-                    self.debug_prev_slots = cur_slots;
-                }
-
-                let cur_csm_w: Vec<[f32; 4]> = csm_matrices.iter()
-                    .map(|m| [m.w_axis.x, m.w_axis.y, m.w_axis.z, m.w_axis.w])
-                    .collect();
-                if cur_csm_w != self.debug_prev_csm_w {
-                    for (i, w) in cur_csm_w.iter().enumerate() {
-                        log::debug!(
-                            "[shadow f={f}] csm[{i}] w_axis changed: ({:.3},{:.3},{:.3},{:.3})",
-                            w[0], w[1], w[2], w[3],
-                        );
-                    }
-                    self.debug_prev_csm_w = cur_csm_w;
                 }
             }
         }
@@ -1916,11 +1598,7 @@ mod tests {
             ambient_floor: 0.05,
             light_count: 0,
             time: 0.0,
-            sdf_sign_viz: false,
-            sdf_distance_viz: false,
             lighting_isolation: LightingIsolation::Normal,
-            csm_splits: [0.0; 4],
-            view_matrix: Mat4::IDENTITY,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -2197,11 +1875,7 @@ mod tests {
             ambient_floor,
             light_count,
             time: 0.0,
-            sdf_sign_viz: false,
-            sdf_distance_viz: false,
             lighting_isolation: LightingIsolation::Normal,
-            csm_splits: [0.0; 4],
-            view_matrix: Mat4::IDENTITY,
         });
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
@@ -2240,8 +1914,12 @@ mod tests {
         let t = f32::from_ne_bytes(data[84..88].try_into().unwrap());
         assert_eq!(t, 0.0);
 
-        // Trailing pad (88..96) zero.
-        for &b in &data[88..96] {
+        // lighting_isolation at bytes 88..92 (passed Normal = 0).
+        let iso = u32::from_ne_bytes(data[88..92].try_into().unwrap());
+        assert_eq!(iso, 0);
+
+        // Trailing pad (92..96) zero.
+        for &b in &data[92..96] {
             assert_eq!(b, 0);
         }
     }

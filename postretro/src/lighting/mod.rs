@@ -5,26 +5,21 @@
 //      context/plans/in-progress/lighting-foundation/3-direct-lighting.md
 
 pub mod influence;
-pub mod shadow;
 
 use crate::prl::{FalloffModel, LightType, MapLight};
 
 /// On-disk size of a single `GpuLight` record in the storage buffer.
 ///
-/// Layout matches the WGSL `GpuLight` struct in `forward.wgsl` — five
+/// Layout matches the WGSL `GpuLight` struct in `forward.wgsl` — four
 /// `vec4<f32>` slots in order:
 ///   0: position_and_type        (xyz = world position, w = bitcast<f32>(light_type))
 ///   1: color_and_falloff_model  (xyz = linear RGB × intensity, w = bitcast<f32>(falloff_model))
 ///   2: direction_and_range      (xyz = aim direction, w = falloff_range meters)
 ///   3: cone_angles_and_pad      (x = inner angle rad, y = outer angle rad, zw = pad)
-///   4: shadow_info              (reserved for sub-plan 5 — zero-initialized)
 ///
 /// Each vec4<f32> is 16 bytes; the struct has only vec4 members so its
-/// alignment is 16 and the array stride is an exact multiple of 16. The
-/// sub-plan spec says "96 bytes" in a comment but the actual field layout
-/// above totals 5 * 16 = 80 bytes and that's what we pack here — the
-/// comment was the ghost of an earlier revision.
-pub const GPU_LIGHT_SIZE: usize = 80;
+/// alignment is 16 and the array stride is an exact multiple of 16.
+pub const GPU_LIGHT_SIZE: usize = 64;
 
 /// Encode the `LightType` discriminant the way the shader expects it:
 /// a `u32` bit-cast into the `w` slot of the `position_and_type` vec4.
@@ -89,25 +84,6 @@ pub fn pack_light(light: &MapLight) -> [u8; GPU_LIGHT_SIZE] {
     write_f32(&mut bytes, 52, light.cone_angle_outer);
     // bytes 56..64 stay zero — reserved pad.
 
-    // slot 4: shadow_info — written by shadow::write_shadow_info when
-    // shadow assignment is active; stays zero for unshadowed lights.
-    // bytes 64..80 stay zero here; caller patches via write_shadow_info.
-
-    bytes
-}
-
-/// Pack the light list with per-light shadow info. `shadow_info[i]` is
-/// the 4-u32 shadow assignment for light `i` (from `ShadowAssignment`).
-/// Lights beyond `shadow_info.len()` get zeroed shadow slots.
-pub fn pack_lights_with_shadows(lights: &[MapLight], shadow_info: &[[u32; 4]]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(lights.len() * GPU_LIGHT_SIZE);
-    for (i, light) in lights.iter().enumerate() {
-        let mut record = pack_light(light);
-        if let Some(info) = shadow_info.get(i) {
-            shadow::write_shadow_info(&mut record, *info);
-        }
-        bytes.extend_from_slice(&record);
-    }
     bytes
 }
 
@@ -196,8 +172,8 @@ mod tests {
 
     #[test]
     fn gpu_light_size_matches_expected_stride() {
-        // 5 vec4<f32> slots × 16 bytes each.
-        assert_eq!(GPU_LIGHT_SIZE, 80);
+        // 4 vec4<f32> slots × 16 bytes each.
+        assert_eq!(GPU_LIGHT_SIZE, 64);
     }
 
     #[test]
@@ -268,15 +244,6 @@ mod tests {
         assert_eq!(read_u32(&bytes, GPU_LIGHT_SIZE + 12), 1);
         // Third record's type should be Directional.
         assert_eq!(read_u32(&bytes, 2 * GPU_LIGHT_SIZE + 12), 2);
-    }
-
-    #[test]
-    fn shadow_info_slot_is_zeroed() {
-        let bytes = pack_light(&sample_point());
-        // slot 4 = bytes 64..80
-        for &b in &bytes[64..80] {
-            assert_eq!(b, 0);
-        }
     }
 
     #[test]

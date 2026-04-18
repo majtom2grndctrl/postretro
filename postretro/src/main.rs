@@ -274,7 +274,6 @@ impl ApplicationHandler for App {
             lights: &world.lights,
             light_influences: &world.light_influences,
             sh_volume: world.sh_volume.as_ref(),
-            sdf_atlas: world.sdf_atlas.as_ref(),
         });
 
         let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
@@ -444,7 +443,7 @@ impl ApplicationHandler for App {
                 // GPU-driven path: portal DFS produces visible cell IDs; the
                 // BVH traversal compute shader consumes them via the
                 // visible-cell bitmask and writes the indirect draw buffer.
-                let (visible_cells, stats, frustum) = match self.level.as_ref() {
+                let (visible_cells, stats, _frustum) = match self.level.as_ref() {
                     Some(world) => visibility::determine_visible_cells(
                         interp.position,
                         view_proj,
@@ -466,14 +465,7 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(renderer) = self.renderer.as_mut() {
-                    let view_matrix = interp.view_matrix(self.camera.yaw, self.camera.pitch);
-                    renderer.update_per_frame_uniforms(
-                        view_proj,
-                        interp.position,
-                        renderer.csm_splits_cache,
-                        &view_matrix,
-                    );
-                    renderer.update_visible_lights(&frustum);
+                    renderer.update_per_frame_uniforms(view_proj, interp.position);
 
                     if renderer.is_ready() {
                         if let Err(err) = renderer.render_frame_indirect(&visible_cells, view_proj)
@@ -635,16 +627,6 @@ impl App {
                     let next = renderer.ambient_floor() + input::AMBIENT_FLOOR_STEP;
                     renderer.set_ambient_floor(next);
                     log::info!("[Renderer] ambient floor: {:.3}", renderer.ambient_floor());
-                }
-            }
-            DiagnosticAction::ToggleSdfSignViz => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.toggle_sdf_sign_viz();
-                }
-            }
-            DiagnosticAction::ToggleSdfDistanceViz => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.toggle_sdf_distance_viz();
                 }
             }
             DiagnosticAction::CycleLightingIsolation => {

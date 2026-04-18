@@ -13,7 +13,6 @@ use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
-use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::{
     SectionBlob, SectionId, read_container, read_section_data, write_prl,
@@ -117,7 +116,7 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
 }
 
 /// Write geometry, texture names, BSP nodes, BSP leaves, leaf PVS, BVH,
-/// alpha lights, light influence, SH volume, and SDF atlas sections to a .prl file (--pvs mode).
+/// alpha lights, light influence, and SH volume sections to a .prl file (--pvs mode).
 #[allow(clippy::too_many_arguments)]
 pub fn pack_and_write_pvs(
     output: &Path,
@@ -129,7 +128,6 @@ pub fn pack_and_write_pvs(
     alpha_lights: &AlphaLightsSection,
     light_influence: &LightInfluenceSection,
     sh_volume: &ShVolumeSection,
-    sdf_atlas: &SdfAtlasSection,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -140,7 +138,6 @@ pub fn pack_and_write_pvs(
     let alpha_lights_bytes = alpha_lights.to_bytes();
     let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
-    let sdf_atlas_bytes = sdf_atlas.to_bytes();
 
     let sections = vec![
         SectionBlob {
@@ -188,11 +185,6 @@ pub fn pack_and_write_pvs(
             version: 1,
             data: sh_volume_bytes.clone(),
         },
-        SectionBlob {
-            section_id: SectionId::SdfAtlas as u32,
-            version: 1,
-            data: sdf_atlas_bytes.clone(),
-        },
     ];
 
     write_and_validate_sections(output, &sections)?;
@@ -222,17 +214,12 @@ pub fn pack_and_write_pvs(
         sh_volume_bytes.len(),
         sh_volume.probes.len()
     );
-    log::info!(
-        "  SdfAtlas: {} bytes ({} surface bricks)",
-        sdf_atlas_bytes.len(),
-        sdf_atlas.surface_brick_count()
-    );
 
     Ok(())
 }
 
 /// Write geometry, texture names, BSP nodes, BSP leaves, portals, BVH,
-/// alpha lights, light influence, SH volume, and SDF atlas sections to a .prl file (default mode).
+/// alpha lights, light influence, and SH volume sections to a .prl file (default mode).
 ///
 /// Clears pvs_offset and pvs_size in leaf records since no PVS section is written.
 #[allow(clippy::too_many_arguments)]
@@ -246,7 +233,6 @@ pub fn pack_and_write_portals(
     alpha_lights: &AlphaLightsSection,
     light_influence: &LightInfluenceSection,
     sh_volume: &ShVolumeSection,
-    sdf_atlas: &SdfAtlasSection,
 ) -> anyhow::Result<()> {
     // Zero out PVS references in leaves since no LeafPvs section is written.
     let portal_leaves = BspLeavesSection {
@@ -273,7 +259,6 @@ pub fn pack_and_write_portals(
     let alpha_lights_bytes = alpha_lights.to_bytes();
     let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
-    let sdf_atlas_bytes = sdf_atlas.to_bytes();
 
     let sections = vec![
         SectionBlob {
@@ -321,11 +306,6 @@ pub fn pack_and_write_portals(
             version: 1,
             data: sh_volume_bytes.clone(),
         },
-        SectionBlob {
-            section_id: SectionId::SdfAtlas as u32,
-            version: 1,
-            data: sdf_atlas_bytes.clone(),
-        },
     ];
 
     write_and_validate_sections(output, &sections)?;
@@ -354,11 +334,6 @@ pub fn pack_and_write_portals(
         "  ShVolume: {} bytes ({} probes)",
         sh_volume_bytes.len(),
         sh_volume.probes.len()
-    );
-    log::info!(
-        "  SdfAtlas: {} bytes ({} surface bricks)",
-        sdf_atlas_bytes.len(),
-        sdf_atlas.surface_brick_count()
     );
 
     Ok(())
@@ -436,7 +411,6 @@ mod tests {
     use postretro_level_format::bsp::{BspLeafRecord, BspNodeRecord};
     use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode as FlatBvhNode};
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
-    use postretro_level_format::sdf_atlas::{BRICK_SLOT_EMPTY, SdfAtlasSection};
     use postretro_level_format::texture_names::TextureNamesSection;
 
     fn sample_geo_result() -> GeometryResult {
@@ -553,19 +527,6 @@ mod tests {
         LightInfluenceSection::default()
     }
 
-    fn empty_sdf_atlas() -> SdfAtlasSection {
-        SdfAtlasSection {
-            world_min: [0.0; 3],
-            world_max: [1.0; 3],
-            voxel_size_m: 0.08,
-            brick_size_voxels: 8,
-            grid_dims: [1, 1, 1],
-            top_level: vec![BRICK_SLOT_EMPTY],
-            atlas: Vec::new(),
-            coarse_distances: vec![1.0],
-        }
-    }
-
     fn empty_sh_volume() -> ShVolumeSection {
         ShVolumeSection {
             grid_origin: [0.0, 0.0, 0.0],
@@ -601,7 +562,6 @@ mod tests {
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
-            &empty_sdf_atlas(),
         )
         .expect("pack_and_write_pvs should succeed");
 
@@ -610,7 +570,7 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 10);
+        assert_eq!(meta.header.section_count, 9);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -621,7 +581,6 @@ mod tests {
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
         assert!(meta.find_section(SectionId::LightInfluence as u32).is_some());
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
-        assert!(meta.find_section(SectionId::SdfAtlas as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -658,7 +617,6 @@ mod tests {
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
-            &empty_sdf_atlas(),
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -667,7 +625,7 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 10);
+        assert_eq!(meta.header.section_count, 9);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -678,7 +636,6 @@ mod tests {
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
         assert!(meta.find_section(SectionId::LightInfluence as u32).is_some());
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
-        assert!(meta.find_section(SectionId::SdfAtlas as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
@@ -704,7 +661,6 @@ mod tests {
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
-            &empty_sdf_atlas(),
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -751,7 +707,6 @@ mod tests {
 
         let alpha_lights = encode_alpha_lights(&map_data.lights);
         let light_influence = encode_light_influence(&map_data.lights);
-        let sdf_atlas = empty_sdf_atlas();
         pack_and_write_pvs(
             &output,
             &geo_result,
@@ -762,7 +717,6 @@ mod tests {
             &alpha_lights,
             &light_influence,
             &sh_volume,
-            &sdf_atlas,
         )
         .expect("full pipeline pvs pack should succeed");
 
@@ -770,7 +724,7 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 10);
+        assert_eq!(meta.header.section_count, 9);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
@@ -822,7 +776,6 @@ mod tests {
 
         let alpha_lights = encode_alpha_lights(&map_data.lights);
         let light_influence = encode_light_influence(&map_data.lights);
-        let sdf_atlas = empty_sdf_atlas();
         pack_and_write_portals(
             &output,
             &geo_result,
@@ -833,7 +786,6 @@ mod tests {
             &alpha_lights,
             &light_influence,
             &sh_volume,
-            &sdf_atlas,
         )
         .expect("full pipeline portal pack should succeed");
 
@@ -841,7 +793,7 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 10);
+        assert_eq!(meta.header.section_count, 9);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());

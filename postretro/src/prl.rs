@@ -13,7 +13,6 @@ use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::portals::PortalsSection;
-use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::visibility::decompress_pvs;
@@ -175,10 +174,6 @@ pub struct LevelWorld {
     /// (ID 20). `None` for maps without baked indirect — the renderer
     /// degrades to `ambient_floor + direct_sum`.
     pub sh_volume: Option<ShVolumeSection>,
-    /// Baked SDF atlas loaded from the SdfAtlas section (ID 22). `None` for
-    /// maps compiled before sub-plan 8. When absent, sphere-traced shadows
-    /// degrade to unshadowed (shadow_kind 2 lights act as shadow_kind 0).
-    pub sdf_atlas: Option<SdfAtlasSection>,
 }
 
 impl LevelWorld {
@@ -543,34 +538,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
     };
 
-    // SdfAtlas section (optional). Missing for maps compiled before sub-plan 8
-    // — sphere-traced shadows degrade gracefully to unshadowed.
-    let sdf_atlas: Option<SdfAtlasSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::SdfAtlas as u32,
-    )? {
-        Some(data) => {
-            let section = SdfAtlasSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] SdfAtlas: {}×{}×{} grid, {} surface bricks, voxel={:.3}m, brick={}",
-                section.grid_dims[0],
-                section.grid_dims[1],
-                section.grid_dims[2],
-                section.surface_brick_count(),
-                section.voxel_size_m,
-                section.brick_size_voxels,
-            );
-            Some(section)
-        }
-        None => {
-            log::warn!(
-                "[PRL] SdfAtlas section missing — SDF sphere-traced shadows disabled for this map"
-            );
-            None
-        }
-    };
-
     let has_pvs = pvs_section.is_some();
     let has_portals = portals_section.is_some();
 
@@ -746,7 +713,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         lights,
         light_influences,
         sh_volume,
-        sdf_atlas,
     })
 }
 
@@ -838,7 +804,6 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
-            sdf_atlas: None,
         }
     }
 
@@ -885,7 +850,6 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
-            sdf_atlas: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -924,7 +888,6 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
-            sdf_atlas: None,
         };
 
         let spawn = world.spawn_position();
@@ -952,7 +915,6 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
-            sdf_atlas: None,
         };
 
         let indices = face_leaf_indices(&world);

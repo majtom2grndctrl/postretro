@@ -853,7 +853,6 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
-            sdf_atlas: None,
         }
     }
 
@@ -892,7 +891,6 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
-            sdf_atlas: None,
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();

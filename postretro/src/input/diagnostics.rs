@@ -52,23 +52,6 @@ pub enum DiagnosticAction {
     /// 1.0. Interim diagnostic chord — ambient floor will move to the
     /// settings menu when one exists. Sub-plan 3 acceptance criterion.
     RaiseAmbientFloor,
-    /// Toggle the SDF-sign debug visualization. When on, fragments are
-    /// shaded by the sign of the SDF sampled just inside the surface
-    /// (along -N): green where the inside reads as negative (correct),
-    /// red where it reads as positive (parity bug — interior brick
-    /// misclassified as empty void), blue near zero (surface brick).
-    /// Diagnoses bake-time parity failures that cause shadow rays to
-    /// tunnel through solid geometry.
-    ToggleSdfSignViz,
-    /// Toggle the SDF distance-field debug visualization. When on,
-    /// fragments are shaded by the raw distance `sample_sdf(world_pos)`
-    /// returns, as a grayscale ramp over [0, 1 m]. Negative distances
-    /// (inside solid) tint red; empty-sentinel bricks render magenta;
-    /// interior-sentinel bricks render dark blue. Used to verify the
-    /// atlas is sampling sane distances before trusting the sphere
-    /// tracer — a muddy/noisy grayscale means the bake is the bug,
-    /// not the trace.
-    ToggleSdfDistanceViz,
     /// Cycle the lighting-term isolation mode used to split direct from
     /// indirect contributions during leak/bleed debugging.
     ///
@@ -80,8 +63,8 @@ pub enum DiagnosticAction {
     ///
     /// When diagnosing "light leaks through a wall," toggling to DirectOnly
     /// vs IndirectOnly tells you which lighting path is carrying the bad
-    /// contribution — bake-time SH bleed vs runtime shadow-trace tunneling
-    /// require different fixes.
+    /// contribution — bake-time bleed vs runtime bleed require different
+    /// fixes.
     CycleLightingIsolation,
 }
 
@@ -203,16 +186,6 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
         },
         DiagnosticChord {
             modifiers: Modifiers::ALT_SHIFT,
-            key: KeyCode::Digit2,
-            action: DiagnosticAction::ToggleSdfSignViz,
-        },
-        DiagnosticChord {
-            modifiers: Modifiers::ALT_SHIFT,
-            key: KeyCode::Digit3,
-            action: DiagnosticAction::ToggleSdfDistanceViz,
-        },
-        DiagnosticChord {
-            modifiers: Modifiers::ALT_SHIFT,
             key: KeyCode::Digit4,
             action: DiagnosticAction::CycleLightingIsolation,
         },
@@ -305,24 +278,6 @@ mod tests {
         d.handle_key(KeyCode::AltLeft, true, false);
         let action = d.handle_key(KeyCode::BracketRight, true, false);
         assert_eq!(action, Some(DiagnosticAction::RaiseAmbientFloor));
-    }
-
-    #[test]
-    fn alt_shift_digit2_fires_toggle_sdf_sign_viz() {
-        let mut d = fresh();
-        d.handle_key(KeyCode::ShiftLeft, true, false);
-        d.handle_key(KeyCode::AltLeft, true, false);
-        let action = d.handle_key(KeyCode::Digit2, true, false);
-        assert_eq!(action, Some(DiagnosticAction::ToggleSdfSignViz));
-    }
-
-    #[test]
-    fn alt_shift_digit3_fires_toggle_sdf_distance_viz() {
-        let mut d = fresh();
-        d.handle_key(KeyCode::ShiftLeft, true, false);
-        d.handle_key(KeyCode::AltLeft, true, false);
-        let action = d.handle_key(KeyCode::Digit3, true, false);
-        assert_eq!(action, Some(DiagnosticAction::ToggleSdfDistanceViz));
     }
 
     #[test]

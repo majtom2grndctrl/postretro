@@ -1216,6 +1216,7 @@
 "_color" "255 170 90"
 "_fade" "1024"
 "delay" "2"
+"_bake_only" "1"
 }
 // entity 3
 {
@@ -1225,6 +1226,7 @@
 "_color" "160 200 255"
 "_fade" "10000"
 "delay" "0"
+"_bake_only" "0"
 }
 // entity 4
 {
@@ -1234,6 +1236,7 @@
 "_color" "220 230 255"
 "delay" "0"
 "mangle" "0 0 -160"
+"_bake_only" "1"
 }
 // entity 5
 {
@@ -1243,6 +1246,7 @@
 "_color" "255 0 0"
 "_fade" "800"
 "delay" "0"
+"_bake_only" "1"
 }
 // entity 6
 {
@@ -1252,4 +1256,5 @@
 "_color" "0 0 255"
 "_fade" "800"
 "delay" "0"
+"_bake_only" "1"
 }

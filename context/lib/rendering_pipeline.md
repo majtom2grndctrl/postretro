@@ -45,9 +45,11 @@ Loader parses PRL via the `postretro-level-format` crate. Uploads the global ver
 
 ## 4. Lighting
 
-Two components: **dynamic direct illumination** and **baked indirect illumination**. Both evaluated per fragment in the world shader — no deferred stages, no lightmap atlas.
+Three components: **static direct** (baked), **dynamic direct** (runtime), and **indirect** (baked). All evaluated per fragment in the world shader — no deferred stages.
 
-**Direct.** Up to 500 authored lights per level. Fragment shader loops over all active lights with an influence-volume early-out. Shadow-casting lights draw from a fixed slot pool; a CPU visibility test each frame assigns slots by distance priority. Light sources: FGD entities (`light`, `light_spot`, `light_sun`) and gameplay effects. Clustered forward+ binning is deferred until profiling shows the flat loop bottlenecks.
+**Static direct.** prl-build UV-unwraps world geometry and ray-casts per-texel irradiance and a dominant incoming light direction from all static lights into a directional lightmap atlas. Runtime samples the atlas per fragment; bumped-Lambert correction preserves normal-map response to baked static lights. Hard shadows from static lights are captured in the bake.
+
+**Dynamic direct.** Dynamic lights run a per-fragment loop with an influence-volume early-out. No runtime shadow maps for dynamic lights in this iteration. Light sources: FGD entities (`light`, `light_spot`, `light_sun`) and gameplay effects. Clustered forward+ binning deferred until profiling shows the flat loop bottlenecks.
 
 **Indirect.** prl-build bakes an SH L2 irradiance volume (3D probe grid) over the level's empty space. Runtime samples via trilinear interpolation per fragment. Missing probe section falls back to the ambient floor.
 
@@ -79,6 +81,7 @@ Custom format for all world geometry. Non-position attributes are quantized wher
 | Base UV | Diffuse and normal-map texture sampling |
 | Normal | Per-fragment shading normal |
 | Tangent | Tangent-space basis for normal-map sampling |
+| Lightmap UV | Static direct lighting atlas sampling |
 
 UVs computed from face projection data at compile time; GPU sampler uses repeat addressing. Normals and tangents use octahedral encoding — half the storage of a full float vector at visually-indistinguishable precision. Both generated in prl-build. No per-vertex lighting channel — direct and indirect both accumulate per fragment (§4).
 
@@ -103,9 +106,10 @@ Both the depth pre-pass and the forward vertex shader declare `@invariant` on `c
 One `multi_draw_indexed_indirect` call per material bucket. Depth loaded from the pre-pass buffer (`LoadOp::Load`); depth compare is `Equal`, depth writes disabled — each fragment is shaded exactly once. Per-fragment:
 
 - Sample albedo and normal map; reconstruct world-space normal from TBN and normal-map sample.
+- Sample lightmap atlas (irradiance + dominant direction); apply bumped-Lambert correction for normal-map response to static lights.
 - Sample SH irradiance volume (trilinear) for indirect lighting.
-- Loop over active lights; evaluate direct contribution and sample shadow map.
-- Output: `albedo × (indirect_sh + Σ direct_lights)`.
+- Loop over dynamic lights; evaluate direct contribution with influence-volume early-out.
+- Output: `albedo × (static_direct + indirect_sh + Σ dynamic_direct)`.
 
 Depth testing and back-face culling are permanent from this pass forward. Shadow maps, billboards, emissive bypass, fog volumes, and post-processing attach in later phases.
 
@@ -153,7 +157,6 @@ Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter sup
 ## 11. Non-Goals
 
 - **Deferred rendering** — forward lighting with influence-volume early-out scales to the 500-light target. Indoor portal-isolated geometry keeps per-fragment light iteration cheap. Deferred adds complexity without benefit.
-- **Baked lightmaps** — indirect lighting lives in the SH irradiance volume. No lightmap atlas.
 - **PBR materials** — albedo + normal map is the full material vocabulary. Metallic/roughness is out of scope.
 - **Hardware ray tracing** — not in baseline wgpu. Shadow maps cover dynamic shadowing; SH volume covers indirect.
 - **Mesh shaders** — not baseline in wgpu. GPU-driven culling uses compute + `draw_indexed_indirect`.

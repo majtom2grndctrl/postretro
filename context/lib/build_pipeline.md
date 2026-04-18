@@ -57,7 +57,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 
 ### Entity resolution
 
-- **`light`, `light_spot`, `light_sun`** — validated at compile time (falloff distance required, spotlight direction verified, intensity bounds checked). Feed the SH irradiance volume baker and the runtime direct lighting path. Compilation fails on validation errors.
+- **`light`, `light_spot`, `light_sun`** — validated at compile time (falloff distance required, spotlight direction verified, intensity bounds checked). Static lights feed the SH irradiance volume baker and the directional lightmap baker. Dynamic lights feed the runtime direct lighting buffer. Compilation fails on validation errors.
 - **`env_fog_volume`** — resolved to BSP leaves at load time. Each leaf in the volume gets per-leaf fog parameters.
 - **`env_cubemap`** — marks a position for offline cubemap baking. Bake tool is out of initial scope.
 - **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf gets spatial reverb parameters for the audio subsystem.
@@ -79,7 +79,7 @@ Unknown prefix falls back to a default material with a warning at load time.
 ### Compiler pipeline
 
 ```
-parse .map → BSP construction → brush-side projection → portal generation → exterior leaf culling → portal vis → geometry → BVH → pack .prl
+parse .map → BSP construction → brush-side projection → portal generation → exterior leaf culling → portal vis → geometry → BVH → lightmap bake → pack .prl
 ```
 
 1. **Parse.** Extracts brush volumes, brush sides, and entities. Applies coordinate transform (Quake Z-up → engine Y-up) and unit scale. Light entities route to FGD translation and validation; they don't participate in BSP construction.
@@ -90,7 +90,8 @@ parse .map → BSP construction → brush-side projection → portal generation 
 6. **Portal vis** (`--pvs` mode only). Computes per-leaf PVS bitsets by flooding through the portal graph. Output: RLE-compressed bitsets.
 7. **Geometry.** Fan-triangulates faces into a global vertex/index buffer. Associates each face with a material bucket and cell ID.
 8. **BVH.** Builds a global SAH BVH over all static geometry organized by `(face, material_bucket)` pair. Flattens to dense arrays; leaves sorted by material bucket for contiguous per-bucket indirect draw slots.
-9. **Pack.** Writes all sections to the `.prl` binary format.
+9. **Lightmap bake.** UV-unwraps world geometry into a lightmap atlas. Ray-casts per-texel irradiance and dominant incoming light direction from all static lights against the global BVH. Skipped when the map has no static lights.
+10. **Pack.** Writes all sections to the `.prl` binary format.
 
 ### PRL section IDs
 

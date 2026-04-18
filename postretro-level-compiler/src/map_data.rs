@@ -225,6 +225,15 @@ pub struct MapLight {
     /// and is excluded from the runtime direct-lighting path (AlphaLights PRL
     /// section and LightInfluence PRL section). Defaults to false.
     pub bake_only: bool,
+
+    /// When true, the light is treated as dynamic — evaluated at runtime via
+    /// the direct lighting path with an optional shadow-map pool slot — and
+    /// contributes nothing to the offline lightmap / SH bake. When false
+    /// (the default), the light is static: it bakes into the lightmap and SH
+    /// irradiance volume and emits no runtime shadow. Authored via the
+    /// `_dynamic` FGD property on `light`, `light_spot`, and `light_sun`.
+    /// See `context/plans/ready/lighting-dynamic-flag/index.md`.
+    pub is_dynamic: bool,
 }
 
 /// Parsed and classified .map data for downstream compiler stages.

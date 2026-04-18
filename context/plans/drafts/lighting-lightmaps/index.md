@@ -1,6 +1,6 @@
 # Lighting — Directional Lightmaps
 
-> **Status:** draft.
+> **Status:** ready.
 > **Depends on:** `lighting-dynamic-flag/` (needs `MapLight.is_dynamic`). `lighting-old-stack-retirement/` should ship first.
 > **Concurrent with:** `lighting-sh-amendments/`, `lighting-chunk-lists/`, `lighting-spot-shadows/`.
 > **Related:** `context/lib/build_pipeline.md` · `context/plans/done/bvh-foundation/` · `context/lib/rendering_pipeline.md` §4.
@@ -38,16 +38,16 @@ Task B (runtime): upload + shader sampling ── stub first ┘
 
 ## Task A — Lightmap baker
 
-**Crate:** `postretro-level-compiler` · **New module** under `src/bake/`.
+**Crates:** `postretro-level-compiler` (new module under `src/bake/`) and `postretro-level-format` (new `Lightmap` section type + extended `Vertex` struct).
 
 1. **UV unwrap.** Integrate `xatlas` for automatic per-chart UV unwrapping. Pack charts into an atlas with configurable texel density (default: 4 cm/texel; per-level overrideable via a map property).
 2. **Per-texel ray-cast.** For each atlas texel, resolve the world-space position on the source face. For each static light (`is_dynamic == false`), cast a shadow ray through the Milestone 4 BVH. If unoccluded, accumulate Lambert × color × falloff into irradiance.
 3. **Dominant direction.** Alongside irradiance, track the irradiance-weighted mean incoming light direction. Normalize after all lights are accumulated.
 4. **Encoding.** Irradiance: RGB half-float or HDR-packed 8-bit (chosen during implementation based on memory budget). Direction: two-channel octahedral encoding or RGB. Final encoding documented in the PRL section definition.
 5. **Edge dilation.** Extend valid texels past chart edges by at least one texel to prevent bilinear bleed across chart seams.
-6. **Lightmap UVs.** Emit per-vertex lightmap UV attributes into the geometry vertex stream. Coordinate with the runtime task's vertex layout expectation. This is an extension of the existing vertex format — all consumers of the geometry section need to handle the extra attribute.
+6. **Lightmap UVs.** Extend the `Vertex` struct in `postretro-level-format/src/geometry.rs` with a lightmap UV attribute (currently 28 bytes — positions, UV, packed normal, packed tangent). Format-breaking change: no compat shim, all consumers of the geometry section update in the same pass (baker writer, runtime vertex buffer layout, shader vertex input in `forward.wgsl`). Coordinate the attribute encoding with Task B.
 
-**`Lightmap` PRL section.** New section ID in `postretro-level-format`. Section header: width, height, encoding enum, texel density. Irradiance texture bytes followed by direction texture bytes (or co-packed if encoding allows). PRL format coordination note: `lighting-chunk-lists/` also adds a new section ID; the two registrations land independently but must not collide — assign IDs at implementation time against the current max.
+**`Lightmap` PRL section.** New section ID in `postretro-level-format`. Section header: width, height, encoding enum, texel density. Irradiance texture bytes followed by direction texture bytes (or co-packed if encoding allows). PRL format coordination note: `lighting-chunk-lists/` also adds a new section ID; the two registrations land independently but must not collide — assign IDs at implementation time against the current max (21 today: `LightInfluence`). Update the section-ID table in `context/lib/build_pipeline.md` §PRL section IDs as part of this task.
 
 ### Task A acceptance gates
 
@@ -60,7 +60,7 @@ Task B (runtime): upload + shader sampling ── stub first ┘
 
 ## Task B — Lightmap runtime sampling
 
-**Crate:** `postretro` · **New module:** `src/lighting/lightmap.rs` · **Also modifies:** `src/render/mod.rs`, `src/shaders/forward.wgsl`.
+**Crate:** `postretro` · **New module:** `src/lighting/lightmap.rs` · **Also modifies:** `src/render/mod.rs` (bind group, pipeline `VertexBufferLayout` extended for the new lightmap UV attribute), `src/shaders/forward.wgsl` (vertex input `@location` for the new attribute, plus fragment sampling).
 
 1. **Load + upload.** Parse the `Lightmap` PRL section at level load. Upload atlas as GPU textures. Two separate textures or one RGBA-packed texture depending on encoding choice in Task A. Sampler: linear filtering (lightmaps are continuous-signal data, not nearest-shadow-sample data).
 2. **Bind group.** Add entries to group 2 (the lighting group). Coordinate with `lighting-chunk-lists/` and `lighting-spot-shadows/` to avoid binding slot collisions.
@@ -94,7 +94,7 @@ let static_direct = lm_irr * (bumped_ndotl / mesh_ndotl);
 3. No new `unsafe`.
 4. Task A and Task B acceptance gates above.
 5. Toggling a light's `_dynamic` flag: a static light bakes its shadow into the lightmap; marking it dynamic removes it from the bake (lightmap shows no shadow from that light), confirming the `is_dynamic` filter in the baker.
-6. Frame time on the dense-light test map does not regress materially (`POSTRETRO_GPU_TIMING=1` before/after).
+6. Frame time on a multi-light test map does not regress materially (`POSTRETRO_GPU_TIMING=1` before/after) — the forward pass gains two texture samples + a small ALU block, no new passes.
 
 ---
 

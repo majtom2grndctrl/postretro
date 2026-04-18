@@ -272,6 +272,22 @@ pub fn translate_light(
         );
     }
 
+    // -- Dynamic flag --
+    // Static (0) is the default: the light bakes into the lightmap + SH and
+    // has no runtime presence. Dynamic (1) opts into the runtime direct path
+    // with no bake contribution. Missing / non-integer values parse as static.
+    let is_dynamic = match parse_optional_int(props, "_dynamic")? {
+        None | Some(0) => false,
+        Some(1) => true,
+        Some(other) => {
+            return Err(TranslateError::InvalidProperty {
+                key: "_dynamic",
+                value: other.to_string(),
+                reason: "expected 0 (Static) or 1 (Dynamic)",
+            });
+        }
+    };
+
     Ok(MapLight {
         origin,
         light_type,
@@ -285,6 +301,7 @@ pub fn translate_light(
         animation,
         cast_shadows: true,
         bake_only,
+        is_dynamic,
     })
 }
 
@@ -795,6 +812,61 @@ mod tests {
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!(light.bake_only);
+    }
+
+    // -- _dynamic property --
+
+    #[test]
+    fn is_dynamic_default_is_false() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(!light.is_dynamic);
+    }
+
+    #[test]
+    fn is_dynamic_zero_is_false() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_dynamic", "0"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(!light.is_dynamic);
+    }
+
+    #[test]
+    fn is_dynamic_one_is_true() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_dynamic", "1"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(light.is_dynamic);
+    }
+
+    #[test]
+    fn is_dynamic_invalid_errors() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_dynamic", "2"),
+        ]);
+        let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
+        assert!(matches!(
+            err,
+            TranslateError::InvalidProperty {
+                key: "_dynamic",
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -20,6 +20,11 @@
         0 : "Runtime dynamic (direct loop + probe bake)"
         1 : "Bake only (probe bake, no runtime presence)"
     ]
+    _dynamic(choices) : "Dynamic (runtime pool)" : 0 =
+    [
+        0 : "Static (baked)"
+        1 : "Dynamic"
+    ]
 ]
 
 @PointClass base(Light)

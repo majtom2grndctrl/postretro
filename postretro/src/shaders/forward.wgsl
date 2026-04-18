@@ -465,9 +465,9 @@ const SH_NORMAL_OFFSET_CELLS: f32 = 0.1;
 const SH_VIS_MAX_STEPS: u32 = 12u;               // segments are at most one cell diagonal
 const SH_VIS_SELF_BIAS_VOXELS: f32 = 0.5;
 const SH_VIS_MIN_STEP_VOXELS: f32 = 0.5;
-const SH_VIS_HIT_EPSILON_VOXELS: f32 = 0.25;     // matches sample_sdf_shadow
+const SH_VIS_HIT_EPSILON_VOXELS: f32 = 0.75;
 const SH_VIS_MIN_DIST: f32 = 0.01;                // skip degenerate same-point case
-const SH_VIS_SOFTNESS: f32 = 16.0;                // harder edge than direct shadows
+const SH_VIS_SOFTNESS: f32 = 4.0;
 const SH_VIS_WEIGHT_EPS: f32 = 1.0e-4;
 
 // If the SDF reports the offset sample point is farther from any surface

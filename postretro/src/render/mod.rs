@@ -1,6 +1,7 @@
-// Textured renderer: GPU init, texture upload, pipeline, and draw.
+// Renderer: GPU init, texture upload, depth pre-pass + forward pipelines, and draw.
 // See: context/lib/rendering_pipeline.md
 
+pub mod frame_timing;
 pub mod sdf;
 pub mod shadow_pass;
 pub mod sh_volume;
@@ -22,6 +23,7 @@ use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 
+use frame_timing::FrameTiming;
 use sdf::SdfResources;
 use shadow_pass::ShadowResources;
 use sh_volume::ShVolumeResources;
@@ -32,6 +34,24 @@ const SHADER_SOURCE: &str = include_str!("../shaders/forward.wgsl");
 
 // Wireframe overlay: culling-delta debug visualization. See shader header.
 const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
+
+// Depth pre-pass: vertex-only shader used to populate the shared depth
+// buffer before the forward pass, so the forward pass can run with a
+// `depth_compare: Equal` test and zero shading overdraw.
+const DEPTH_PREPASS_SHADER_SOURCE: &str = include_str!("../shaders/depth_prepass.wgsl");
+
+// --- GPU-timing pair indices ---
+//
+// Pair index `i` maps to query slots `[2i, 2i+1]` in the `FrameTiming`
+// query set (see `frame_timing::FrameTiming`). The labels vector passed
+// to `FrameTiming::new` is indexed by these constants so the label
+// ordering and the callsite indices can't drift: add an entry here,
+// bump the label-vec length below, and the per-pass `*_pass_writes(...)`
+// callsites read the right label.
+const TIMING_PAIR_CULL: usize = 0;
+const TIMING_PAIR_DEPTH_PREPASS: usize = 1;
+const TIMING_PAIR_FORWARD: usize = 2;
+const TIMING_PAIR_COUNT: usize = 3;
 
 // --- Uniform buffer layout ---
 
@@ -289,6 +309,15 @@ pub struct Renderer {
     is_surface_configured: bool,
 
     pipeline: wgpu::RenderPipeline,
+    /// Depth-only pipeline used for the pre-pass that populates the
+    /// shared depth buffer before the forward pass. The forward pass
+    /// then runs with `depth_compare: Equal` and shades each pixel once.
+    depth_prepass_pipeline: wgpu::RenderPipeline,
+    /// GPU timestamp-query recorder. `Some` when
+    /// `POSTRETRO_GPU_TIMING=1` is set AND the adapter advertises the
+    /// `TIMESTAMP_QUERY` feature; `None` otherwise so no
+    /// `timestamp_writes` fields are attached to any pass.
+    frame_timing: Option<FrameTiming>,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -464,13 +493,35 @@ impl Renderer {
             );
         }
 
+        // Probe for TIMESTAMP_QUERY: only enable GPU timing when both the
+        // adapter supports it AND the user opted in via env var. On
+        // fallback `FrameTiming` is `None` and no timestamp_writes are
+        // attached anywhere — zero runtime cost when disabled.
+        let adapter_features = adapter.features();
+        let gpu_timing_requested = std::env::var("POSTRETRO_GPU_TIMING")
+            .ok()
+            .as_deref()
+            == Some("1");
+        let gpu_timing_supported =
+            adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
+        let enable_gpu_timing = gpu_timing_requested && gpu_timing_supported;
+        let mut required_features = wgpu::Features::FLOAT32_FILTERABLE;
+        if enable_gpu_timing {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY;
+        } else if gpu_timing_requested && !gpu_timing_supported {
+            log::warn!(
+                "[Renderer] POSTRETRO_GPU_TIMING=1 requested but adapter \
+                 lacks TIMESTAMP_QUERY support — running without GPU timing"
+            );
+        }
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Postretro Device"),
             // FLOAT32_FILTERABLE is required by the SDF atlas R32Float sampler
             // (see postretro/src/render/sdf.rs): without it, the lighting
             // bind-group layout's `filterable: true` on binding 5 fails
             // validation. Supported on Metal and any modern Vulkan/DX12.
-            required_features: wgpu::Features::FLOAT32_FILTERABLE,
+            required_features,
             required_limits: wgpu::Limits::default(),
             ..Default::default()
         }))
@@ -919,8 +970,13 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
+                // Depth pre-pass populates the depth buffer; the forward
+                // pass only needs an `Equal` pass-through test so it
+                // shades each screen pixel exactly once. Disabling
+                // `depth_write_enabled` avoids a redundant rewrite of
+                // values the pre-pass already stored.
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Equal),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -1012,6 +1068,9 @@ impl Renderer {
                 cull_mode: None,
                 ..Default::default()
             },
+            // Depth buffer is populated by the depth pre-pass; the forward
+            // pass no longer writes depth. `CompareFunction::Always` means
+            // wireframe overdraw is intentional — no behavior change needed.
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: Some(false),
@@ -1033,6 +1092,95 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+
+        // --- Depth pre-pass pipeline ---
+        // Group 0 = uniforms only (view_proj). No fragment stage —
+        // wgpu permits `fragment: None` for depth-only pipelines.
+        // Depth state writes depth with the standard `Less` test; the
+        // forward pipeline then loads this buffer with an `Equal` test.
+        let depth_prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Depth Pre-Pass Pipeline Layout"),
+            bind_group_layouts: &[Some(&uniform_bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let depth_prepass_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Depth Pre-Pass Shader"),
+            source: wgpu::ShaderSource::Wgsl(DEPTH_PREPASS_SHADER_SOURCE.into()),
+        });
+
+        let depth_prepass_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Depth Pre-Pass Pipeline"),
+                layout: Some(&depth_prepass_layout),
+                vertex: wgpu::VertexState {
+                    module: &depth_prepass_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: crate::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            // Mirrors the forward pipeline's vertex layout so
+                            // we can share the same vertex buffer binding.
+                            // Only position is used; the remaining attributes
+                            // are declared to match the shared layout.
+                            wgpu::VertexAttribute {
+                                offset: 0,
+                                shader_location: 0,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 12,
+                                shader_location: 1,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 20,
+                                shader_location: 2,
+                                format: wgpu::VertexFormat::Uint16x2,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 24,
+                                shader_location: 3,
+                                format: wgpu::VertexFormat::Uint16x2,
+                            },
+                        ],
+                    }],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: None,
+                multiview_mask: None,
+                cache: None,
+            });
+
+        // --- GPU frame timing (optional) ---
+        // Labels are indexed by the `TIMING_PAIR_*` constants so the
+        // query-slot assignment is mechanical — no "keep in sync" comment
+        // needed at the `*_pass_writes(...)` callsites.
+        let frame_timing = if enable_gpu_timing {
+            log::info!("[Renderer] GPU timing enabled (POSTRETRO_GPU_TIMING=1)");
+            let mut pass_labels = vec![""; TIMING_PAIR_COUNT];
+            pass_labels[TIMING_PAIR_CULL] = "cull";
+            pass_labels[TIMING_PAIR_DEPTH_PREPASS] = "depth_prepass";
+            pass_labels[TIMING_PAIR_FORWARD] = "forward";
+            Some(FrameTiming::new(&device, &queue, pass_labels))
+        } else {
+            None
+        };
 
         if has_geometry {
             log::info!(
@@ -1064,6 +1212,8 @@ impl Renderer {
             surface_config,
             is_surface_configured: true,
             pipeline,
+            depth_prepass_pipeline,
+            frame_timing,
             vertex_buffer,
             index_buffer,
             index_count,
@@ -1316,7 +1466,18 @@ impl Renderer {
         // per-leaf `DrawIndexedIndirect` commands into the indirect buffer
         // in the same command submission — no readback or GPU sync needed.
         if let Some(cull) = &mut self.compute_cull {
-            cull.dispatch(&self.device, &self.queue, &mut encoder, visible, &view_proj);
+            let cull_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.compute_pass_writes(TIMING_PAIR_CULL));
+            cull.dispatch(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                visible,
+                &view_proj,
+                cull_ts,
+            );
 
             if log::log_enabled!(log::Level::Debug) {
                 let f = self.debug_frame;
@@ -1426,7 +1587,53 @@ impl Renderer {
             }
         }
 
+        // --- Depth pre-pass ---
+        // Populates the shared depth buffer so the forward pass can run
+        // with `depth_compare: Equal` and shade each pixel exactly once
+        // (zero shading overdraw). No color attachments, fragment stage
+        // is `None`. Uses the same vertex/index buffers + indirect draws
+        // as the forward pass but with a layout that only binds group 0.
         {
+            let depth_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.render_pass_writes(TIMING_PAIR_DEPTH_PREPASS));
+            let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Depth Pre-Pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: depth_ts,
+                ..Default::default()
+            });
+
+            if self.has_geometry && self.index_count > 0 {
+                depth_pass.set_pipeline(&self.depth_prepass_pipeline);
+                depth_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                depth_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                depth_pass
+                    .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
+                if let Some(cull) = &self.compute_cull {
+                    // `None` texture callback — the depth pre-pass
+                    // pipeline layout binds only group 0, so no
+                    // per-bucket texture bind is wanted or legal here.
+                    cull.draw_indirect(&mut depth_pass, None);
+                }
+            }
+        }
+
+        {
+            let forward_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.render_pass_writes(TIMING_PAIR_FORWARD));
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Textured Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1446,11 +1653,17 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        // Depth was fully populated by the pre-pass; we
+                        // load it unchanged and rely on `depth_compare:
+                        // Equal` in the forward pipeline. `StoreOp::Store`
+                        // keeps the values around for the wireframe
+                        // overlay below.
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
                 }),
+                timestamp_writes: forward_ts,
                 ..Default::default()
             });
 
@@ -1466,14 +1679,17 @@ impl Renderer {
                 if let Some(cull) = &self.compute_cull {
                     // GPU-driven indirect draw path — the only path.
                     let gpu_textures = &self.gpu_textures;
-                    cull.draw_indirect(&mut render_pass, &|pass, bucket| {
-                        let bind_group = if (bucket as usize) < gpu_textures.len() {
-                            &gpu_textures[bucket as usize].bind_group
-                        } else {
-                            &gpu_textures[0].bind_group
-                        };
-                        pass.set_bind_group(1, bind_group, &[]);
-                    });
+                    cull.draw_indirect(
+                        &mut render_pass,
+                        Some(&|pass, bucket| {
+                            let bind_group = if (bucket as usize) < gpu_textures.len() {
+                                &gpu_textures[bucket as usize].bind_group
+                            } else {
+                                &gpu_textures[0].bind_group
+                            };
+                            pass.set_bind_group(1, bind_group, &[]);
+                        }),
+                    );
                 }
             }
         }
@@ -1537,8 +1753,16 @@ impl Renderer {
             }
         }
 
+        if let Some(timing) = &self.frame_timing {
+            timing.encode_resolve(&mut encoder);
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
+        if let Some(timing) = self.frame_timing.as_mut() {
+            timing.post_submit(&self.device);
+        }
 
         Ok(())
     }
@@ -1913,6 +2137,23 @@ mod tests {
             panic!("forward.wgsl has no uniform at group=3 binding={sh_grid_binding}; \
                     check SH_BAND_COUNT matches shader @binding decorators");
         }
+    }
+
+    /// The depth pre-pass shader must parse as valid WGSL and declare
+    /// the same `Uniforms` struct binding as `forward.wgsl` (only the
+    /// leading `view_proj` field is referenced, but the shader still
+    /// needs to compile cleanly).
+    #[test]
+    fn depth_prepass_wgsl_parses() {
+        let module = naga::front::wgsl::parse_str(DEPTH_PREPASS_SHADER_SOURCE)
+            .expect("depth_prepass.wgsl should parse as WGSL");
+        // Sanity: the vertex entry point must be named `vs_main` so the
+        // pipeline's `entry_point: Some("vs_main")` resolves.
+        let has_vs_main = module
+            .entry_points
+            .iter()
+            .any(|ep| ep.name == "vs_main" && ep.stage == naga::ShaderStage::Vertex);
+        assert!(has_vs_main, "depth_prepass.wgsl must export @vertex vs_main");
     }
 
     /// Ensure the wireframe shader's `Uniforms` struct stays in sync with

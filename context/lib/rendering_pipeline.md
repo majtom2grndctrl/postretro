@@ -92,9 +92,15 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
 2. **BVH traversal** (compute) — walks the global BVH; tests each leaf AABB against the frustum and the leaf's cell bit; writes or zeros the leaf's indirect buffer slot.
 3. **Light list upload** — uploads the active dynamic light array and per-light influence volumes to GPU storage buffers.
 
-### 7.2 World Geometry
+### 7.2 Depth Pre-Pass
 
-Single opaque pass. One `multi_draw_indexed_indirect` call per material bucket. Per-fragment:
+Vertex-only pass over the same indirect draw list as the forward pass. Runs the same view-projection transform and writes depth only — no fragment stage. Populates the shared depth buffer so the forward pass can eliminate overdraw.
+
+Both the depth pre-pass and the forward vertex shader declare `@invariant` on `clip_position`. Without it, some GPUs reassociate the `mat4 × vec4` multiply differently across pipelines, producing Z-fighting dropout when the forward pass tests `Equal`.
+
+### 7.3 World Geometry
+
+One `multi_draw_indexed_indirect` call per material bucket. Depth loaded from the pre-pass buffer (`LoadOp::Load`); depth compare is `Equal`, depth writes disabled — each fragment is shaded exactly once. Per-fragment:
 
 - Sample albedo and normal map; reconstruct world-space normal from TBN and normal-map sample.
 - Sample SH irradiance volume (trilinear) for indirect lighting.
@@ -136,7 +142,15 @@ Camera position and orientation produce a view matrix each frame, feeding:
 
 ---
 
-## 10. Non-Goals
+## 10. Diagnostics
+
+### GPU Pass Timing
+
+Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter support for `TIMESTAMP_QUERY`; silently disabled if the feature is absent. Passes measured: `cull`, `depth_prepass`, `forward`. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. Use with `RUST_LOG=info` to see output.
+
+---
+
+## 11. Non-Goals
 
 - **Deferred rendering** — forward lighting with influence-volume early-out scales to the 500-light target. Indoor portal-isolated geometry keeps per-fragment light iteration cheap. Deferred adds complexity without benefit.
 - **Baked lightmaps** — indirect lighting lives in the SH irradiance volume. No lightmap atlas.

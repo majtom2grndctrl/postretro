@@ -322,6 +322,7 @@ impl ComputeCullPipeline {
         encoder: &mut wgpu::CommandEncoder,
         visible: &crate::visibility::VisibleCells,
         view_proj: &Mat4,
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
         // Build the visible-cell bitmask on CPU and upload to the fixed
         // 512-byte storage buffer. This is the per-frame portal DFS
@@ -392,7 +393,7 @@ impl ComputeCullPipeline {
 
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("BVH Cull Pass"),
-            timestamp_writes: None,
+            timestamp_writes,
         });
 
         compute_pass.set_pipeline(&self.pipeline);
@@ -400,20 +401,31 @@ impl ComputeCullPipeline {
         compute_pass.dispatch_workgroups(1, 1, 1);
     }
 
-    /// Issue indirect draw calls for the render pass. One call per material
-    /// bucket via `multi_draw_indexed_indirect` (or the singular fallback).
-    /// `set_texture_fn` binds the correct texture before each bucket's draws.
+    /// Issue indirect draw calls for the render pass. One call per
+    /// material bucket via `multi_draw_indexed_indirect` (or the
+    /// singular fallback).
+    ///
+    /// `set_texture_fn` binds the correct texture before each bucket's
+    /// draws. Pass `None` when the caller's pipeline layout has no
+    /// texture bind group (e.g. the depth pre-pass, whose layout binds
+    /// only group 0); calling `set_bind_group(1, …)` against a pipeline
+    /// without a group 1 slot would fail wgpu validation. Bucket
+    /// ordering is irrelevant for depth-only output so this still walks
+    /// `bucket_ranges` as a contiguous partition of the indirect
+    /// buffer.
     pub fn draw_indirect<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
-        set_texture_fn: &dyn Fn(&mut wgpu::RenderPass<'a>, u32),
+        set_texture_fn: Option<&dyn Fn(&mut wgpu::RenderPass<'a>, u32)>,
     ) {
         for range in &self.bucket_ranges {
             if range.leaf_count == 0 {
                 continue;
             }
 
-            set_texture_fn(render_pass, range.material_bucket_id);
+            if let Some(f) = set_texture_fn {
+                f(render_pass, range.material_bucket_id);
+            }
             let byte_offset = (range.first_leaf as u64) * DRAW_INDIRECT_SIZE;
 
             if self.has_multi_draw_indirect {

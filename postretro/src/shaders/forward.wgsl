@@ -155,7 +155,10 @@ struct VertexInput {
 };
 
 struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
+    // `@invariant` keeps clip-space Z bit-exact with depth_prepass.wgsl so
+    // the `depth_compare: Equal` test doesn't miss fragments due to FMA
+    // reassociation drift on some GPUs. See rendering_pipeline.md §7.2.
+    @invariant @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) world_tangent: vec3<f32>,

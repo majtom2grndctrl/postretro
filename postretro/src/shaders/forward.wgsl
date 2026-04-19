@@ -437,15 +437,15 @@ fn accumulate_anim_all_bands(
 
 // Hardware-trilinear fetch of all 9 SH bands, plus the animated layers with
 // plain trilinear weights. One sample per band in lieu of eight manual
-// fetches.
+// fetches. `gi` and `gfrac` are derived from the (already-offset) world
+// position in the caller; this function only needs the grid indices.
 fn sample_sh_indirect_fast(
-    offset_world: vec3<f32>,
     normal: vec3<f32>,
     gi: vec3<u32>,
     gfrac: vec3<f32>,
 ) -> vec3<f32> {
-    // Hardware trilinear on the base SH textures. UVW computed from the
-    // offset world position in [0, 1] texture space.
+    // Hardware trilinear on the base SH textures. UVW derives from gi/gfrac,
+    // which the caller computed from the offset world position.
     let gdims_f = max(vec3<f32>(sh_grid.grid_dimensions), vec3<f32>(1.0));
     let cell_center_uvw = (vec3<f32>(gi) + vec3<f32>(0.5) + gfrac) / gdims_f;
     // `cell_center_uvw` lands between the 8 texel centers, so hardware
@@ -515,7 +515,8 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 
     // Bias the lookup toward the lit side by offsetting along the surface
     // normal by a fraction of the probe grid spacing. Reduces SH bleed across
-    // thin walls.
+    // thin walls. Uses the mesh normal today; switch to the normal-mapped N
+    // when the TBN/normal-map path lands in fs_main.
     const SH_NORMAL_OFFSET_M: f32 = 0.1;
     let offset_world = world_pos + normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
     let gdims_u = sh_grid.grid_dimensions;
@@ -526,7 +527,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     let gi = vec3<u32>(floor(gf));
     let gfrac = fract(gf);
 
-    return sample_sh_indirect_fast(world_pos, normal, gi, gfrac);
+    return sample_sh_indirect_fast(normal, gi, gfrac);
 }
 
 @fragment

@@ -54,8 +54,8 @@ impl LightmapResources {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
@@ -104,12 +104,18 @@ impl LightmapResources {
 }
 
 fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
+    // `filterable: false` + `NonFiltering` sampler: the lightmap sampler uses
+    // Nearest for both mag and min (see `LightmapResources::new`), so no
+    // filtering is ever requested. Declaring it here matches reality and
+    // lets wgpu pick the cheaper code path. Nearest is also arguably more
+    // correct on the direction texture — linear interpolation of
+    // octahedral-encoded unit vectors does not commute with slerp.
     [
         wgpu::BindGroupLayoutEntry {
             binding: BIND_IRRADIANCE,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
                 view_dimension: wgpu::TextureViewDimension::D2,
                 multisampled: false,
             },
@@ -119,7 +125,7 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
             binding: BIND_DIRECTION,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
                 view_dimension: wgpu::TextureViewDimension::D2,
                 multisampled: false,
             },
@@ -128,7 +134,7 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
         wgpu::BindGroupLayoutEntry {
             binding: BIND_SAMPLER,
             visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
             count: None,
         },
     ]

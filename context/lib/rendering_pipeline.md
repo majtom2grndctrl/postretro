@@ -47,7 +47,7 @@ Loader parses PRL via the `postretro-level-format` crate. Uploads the global ver
 
 Three components: **static direct** (baked), **dynamic direct** (runtime), and **indirect** (baked). All evaluated per fragment in the world shader — no deferred stages.
 
-**Static direct.** prl-build UV-unwraps world geometry and ray-casts per-texel irradiance and a dominant incoming light direction from all static lights into a directional lightmap atlas. Runtime samples the atlas per fragment; bumped-Lambert correction preserves normal-map response to baked static lights. Hard shadows from static lights are captured in the bake.
+**Static direct.** prl-build UV-unwraps world geometry and ray-casts per-texel irradiance and a dominant incoming light direction from all static lights into a directional lightmap atlas. Runtime samples the atlas per fragment with nearest-neighbor filtering on both irradiance and direction textures — hard-edged pixelated shadows match the retro aesthetic, and nearest is arguably more correct on octahedral-encoded directions (linear interpolation doesn't commute with slerp). Bumped-Lambert correction preserves normal-map response to baked static lights. Hard shadows from static lights are captured in the bake.
 
 **Dynamic direct.** Dynamic lights run a per-fragment loop with an influence-volume early-out. No runtime shadow maps for dynamic lights in this iteration. Light sources: FGD entities (`light`, `light_spot`, `light_sun`) and gameplay effects. Clustered forward+ binning deferred until profiling shows the flat loop bottlenecks.
 
@@ -118,6 +118,8 @@ Depth testing and back-face culling are permanent from this pass forward. Shadow
 ## 8. Boundary Rule
 
 All wgpu calls live in the renderer module. Map loader, game logic, audio, and input never import wgpu types. Data crosses the boundary as engine-defined types; the renderer translates to GPU operations. Per-subsystem contracts: vertex format §6, cells and BVH §5, lighting §4.
+
+**Device limits.** Renderer requests `max_bind_groups = 8` — the WebGPU spec maximum and the ceiling for any future pass. Current slots: camera, material, lights, SH volume, lightmap. Remaining slots are budget for in-flight lighting work (spot shadows, per-chunk light lists). New passes that need a sixth resource group fit within this budget; a pass needing a ninth must consolidate, not raise the limit.
 
 ---
 

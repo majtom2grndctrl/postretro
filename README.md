@@ -145,6 +145,27 @@ cargo run --release -p postretro                               # optimized build
 RUST_LOG=info cargo run -p postretro                           # with logging
 ```
 
+## Compiling Levels
+
+Levels are authored in TrenchBroom and compiled into Postretro's binary `.prl` format by `prl-build` (the binary in the `postretro-level-compiler` crate). A typical invocation:
+
+```bash
+cargo run -p postretro-level-compiler -- input.map -o output.prl
+```
+
+The compiler accepts the following flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-o <PATH>` | input path with `.prl` extension | Output `.prl` path. |
+| `--pvs` | off | Emit a precomputed PVS (LeafPvs section) instead of the default portal graph. |
+| `-v`, `--verbose` | off | Detailed per-stage logging. |
+| `--format <FORMAT>` | `idtech2` | Map dialect to parse (e.g. `idtech2`, `idtech3`). |
+| `--probe-spacing <METERS>` | `1.0` | SH irradiance probe grid spacing, in meters. |
+| `--lightmap-density <METERS>` | `0.04` | Starting lightmap texel size, in meters. The baker automatically retries at coarser densities if the atlas overflows, so this is the *starting* value. |
+
+`--lightmap-density` is the knob to play with if you're chasing the look. Crank the number up for chunkier, more pixelated lighting that leans hard into the retro aesthetic, or dial it down for finer, smoother shading on closer surfaces.
+
 ## Architecture
 
 Five architectural invariants govern the engine:

@@ -446,10 +446,20 @@ impl Renderer {
             );
         }
 
+        // Raise `max_bind_groups` above the WebGPU downlevel default of 4.
+        // The forward pipeline binds groups 0–4 today (camera, material,
+        // lights, SH volume, lightmap) and the `lighting-spot-shadows` /
+        // `lighting-chunk-lists` plans will add more. 8 is the WebGPU
+        // maximum and is supported on every desktop backend we target.
+        let required_limits = wgpu::Limits {
+            max_bind_groups: 8,
+            ..wgpu::Limits::default()
+        };
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Postretro Device"),
             required_features,
-            required_limits: wgpu::Limits::default(),
+            required_limits,
             ..Default::default()
         }))
         .context("failed to create GPU device")?;

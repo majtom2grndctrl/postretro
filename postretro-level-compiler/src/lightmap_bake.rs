@@ -39,11 +39,13 @@ pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 /// so future GPU-side BC6H compression lands on a valid block size.
 const MIN_ATLAS_DIMENSION: u32 = 64;
 
-/// Maximum atlas dimension. Beyond this the baker returns an error; at 4 cm/texel
-/// that's ~82 m on one axis, larger than any reasonable indoor test map. A map
-/// that legitimately exceeds this should raise the texel density rather than
-/// silently overflow the atlas.
-const MAX_ATLAS_DIMENSION: u32 = 2048;
+/// Maximum atlas dimension. Beyond this the baker returns an error so the
+/// caller can retry at a coarser texel density. 4096 sits well under the
+/// 8192 `max_texture_dimension_2d` floor of `wgpu::Limits::default()` (the
+/// runtime's required limits) and fits a ~164 m axis at 4 cm/texel — enough
+/// headroom for realistic indoor maps while leaving the retry path available
+/// for anything larger.
+const MAX_ATLAS_DIMENSION: u32 = 4096;
 
 /// Padding inserted around each chart in atlas texels. One texel of padding
 /// plus the post-bake edge-dilation pass keeps bilinear sampling from
@@ -1276,7 +1278,7 @@ mod tests {
         // Regression: the old path clamped atlas_h via `.min(MAX_ATLAS_DIMENSION)`
         // but left chart placements at their pre-clamp y-coordinates, writing
         // out of bounds during bake and dilation.
-        let size = 200.0; // metres — well beyond 2048 texels at 0.04 m/texel
+        let size = 200.0; // metres — 5000 texels at 0.04 m/texel, beyond MAX_ATLAS_DIMENSION
         let v0 = Vertex::new(
             [0.0, 0.0, 0.0], [0.0, 0.0],
             [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],

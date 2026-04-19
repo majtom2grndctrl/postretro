@@ -90,7 +90,7 @@ parse .map → BSP construction → brush-side projection → portal generation 
 6. **Portal vis** (`--pvs` mode only). Computes per-leaf PVS bitsets by flooding through the portal graph. Output: RLE-compressed bitsets.
 7. **Geometry.** Fan-triangulates faces into a global vertex/index buffer. Associates each face with a material bucket and cell ID.
 8. **BVH.** Builds a global SAH BVH over all static geometry organized by `(face, material_bucket)` pair. Flattens to dense arrays; leaves sorted by material bucket for contiguous per-bucket indirect draw slots.
-9. **Lightmap bake.** UV-unwraps world geometry into a lightmap atlas. Ray-casts per-texel irradiance and dominant incoming light direction from all static lights against the global BVH. Skipped when the map has no static lights.
+9. **Lightmap bake.** UV-unwraps world geometry into a lightmap atlas. Ray-casts per-texel irradiance and dominant incoming light direction from all static lights against the global BVH. Atlas dimensions are bounded; on overflow the baker retries at a coarser texel density (halving resolution) a bounded number of times before failing the build. Each retry emits a warning — the fallback is visible in logs, not silent. Skipped when the map has no static lights.
 10. **Pack.** Writes all sections to the `.prl` binary format.
 
 ### PRL section IDs

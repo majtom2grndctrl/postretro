@@ -166,17 +166,43 @@ fn main() -> anyhow::Result<()> {
     let static_light_count =
         map_data.lights.iter().filter(|l| !l.is_dynamic).count();
     let lightmap_section = {
-        let mut lm_inputs = lightmap_bake::LightmapInputs {
-            bvh: &bvh,
-            primitives: &bvh_primitives,
-            geometry: &mut geo_result,
-            lights: &map_data.lights,
-        };
-        lightmap_bake::bake_lightmap(
-            &mut lm_inputs,
-            lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
-        )
-        .map_err(|e| anyhow::anyhow!("Lightmap bake failed: {e}"))?
+        // Retry on atlas overflow: double the texel size (halve resolution)
+        // up to `MAX_RETRIES` times. Degrades quality instead of failing the
+        // build on maps too large to fit at the default density. Per-face
+        // planar unwrap wastes atlas area vs. a chart-merging unwrapper, so
+        // large maps hit this regularly; a warning records the fallback so
+        // it's not silent.
+        const MAX_RETRIES: u32 = 3;
+        let mut density = args.lightmap_density;
+        let mut attempt = 0;
+        loop {
+            let mut lm_inputs = lightmap_bake::LightmapInputs {
+                bvh: &bvh,
+                primitives: &bvh_primitives,
+                geometry: &mut geo_result,
+                lights: &map_data.lights,
+            };
+            match lightmap_bake::bake_lightmap(&mut lm_inputs, density) {
+                Ok(section) => break section,
+                Err(lightmap_bake::LightmapBakeError::AtlasOverflow {
+                    max,
+                    needed_w,
+                    needed_h,
+                    ..
+                }) if attempt < MAX_RETRIES => {
+                    let next = density * 2.0;
+                    log::warn!(
+                        "Lightmap atlas overflow at {density} m/texel (needed {needed_w}x{needed_h}, \
+                         max {max}x{max}); retrying at {next} m/texel"
+                    );
+                    density = next;
+                    attempt += 1;
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("Lightmap bake failed: {e}"));
+                }
+            }
+        }
     };
     timings.push(("Lightmap Bake", stage_start.elapsed()));
     if args.verbose {
@@ -268,6 +294,9 @@ struct Args {
     format: MapFormat,
     /// SH probe grid spacing in meters.
     probe_spacing: f32,
+    /// Starting lightmap texel density in meters. The baker retries at
+    /// progressively coarser densities on atlas overflow.
+    lightmap_density: f32,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -284,6 +313,7 @@ where
     let mut verbose = false;
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
+    let mut lightmap_density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -319,6 +349,18 @@ where
                 }
                 probe_spacing = parsed;
             }
+            "--lightmap-density" => {
+                let density_str = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--lightmap-density requires a value"))?;
+                let parsed: f32 = density_str.parse().map_err(|_| {
+                    anyhow::anyhow!("--lightmap-density must be a positive number of meters")
+                })?;
+                if !parsed.is_finite() || parsed <= 0.0 {
+                    anyhow::bail!("--lightmap-density must be a positive number of meters");
+                }
+                lightmap_density = parsed;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -331,7 +373,7 @@ where
     let input = input.ok_or_else(|| {
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [--pvs] [-v|--verbose] \
-             [--format <FORMAT>] [--probe-spacing <METERS>]"
+             [--format <FORMAT>] [--probe-spacing <METERS>] [--lightmap-density <METERS>]"
         )
     })?;
 
@@ -344,6 +386,7 @@ where
         verbose,
         format,
         probe_spacing,
+        lightmap_density,
     })
 }
 

@@ -3,6 +3,7 @@
 
 pub mod frame_timing;
 pub mod sh_volume;
+pub mod smoke;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,6 +28,9 @@ use crate::visibility::VisibleCells;
 
 use frame_timing::FrameTiming;
 use sh_volume::ShVolumeResources;
+use smoke::SmokePass;
+
+use crate::fx::smoke::{SmokeEmitter, SpriteFrame};
 
 // --- WGSL Shaders ---
 
@@ -438,6 +442,16 @@ pub struct Renderer {
     /// `time` field is `app_start.elapsed()`; the fragment shader wraps it
     /// per-light via `fract(time / period + phase)` for SH animation.
     app_start: Instant,
+
+    /// Billboard sprite pass. Always allocated; idle (no draw) on maps with
+    /// no registered collections. Collections are registered at level load
+    /// via `register_smoke_collection`. Draw ordering: after opaque forward
+    /// pass, before wireframe overlay. See §7.4.
+    smoke_pass: SmokePass,
+
+    /// Scratch buffer reused each frame when packing sprite instance bytes
+    /// for the GPU upload. Owns its capacity across frames.
+    smoke_pack_scratch: Vec<u8>,
 }
 
 impl Renderer {
@@ -1436,6 +1450,17 @@ impl Renderer {
             None
         };
 
+        // --- Billboard sprite pipeline (env_smoke_emitter pass) ---
+        // See: context/lib/rendering_pipeline.md §7.4
+        let smoke_pass = SmokePass::new(
+            &device,
+            surface_format,
+            DEPTH_FORMAT,
+            &uniform_bind_group_layout,
+            &lighting_bind_group_layout,
+            &sh_volume_resources.bind_group_layout,
+        );
+
         if has_geometry {
             log::info!(
                 "[Renderer] Textured pipeline ready: {} indices, {} textures, bvh_leaves={}",
@@ -1495,7 +1520,33 @@ impl Renderer {
             debug_prev_vp_hash: u32::MAX,
             debug_prev_visible: ("init", usize::MAX),
             app_start: Instant::now(),
+            smoke_pass,
+            smoke_pack_scratch: Vec::new(),
         })
+    }
+
+    /// Register a smoke sprite sheet collection. Called once per unique
+    /// `env_smoke_emitter.collection` at level load. `frames` is the list of
+    /// `smoke_NN.png` animation frames in order. `spec_intensity` and
+    /// `lifetime` are the emitter's per-collection lighting and timing
+    /// parameters — when multiple emitters share a collection the first
+    /// caller's parameters win (the animation frame timing is a
+    /// per-collection property, not per-emitter).
+    pub fn register_smoke_collection(
+        &mut self,
+        collection: &str,
+        frames: &[SpriteFrame],
+        spec_intensity: f32,
+        lifetime: f32,
+    ) {
+        self.smoke_pass.register_collection(
+            &self.device,
+            &self.queue,
+            collection,
+            frames,
+            spec_intensity,
+            lifetime,
+        );
     }
 
     /// Toggle the culling-delta wireframe debug overlay on/off.
@@ -1685,7 +1736,12 @@ impl Renderer {
     /// checks its cell id against the visible-cell bitmask, and writes one
     /// `DrawIndexedIndirect` per surviving leaf. The render pass consumes
     /// them via `multi_draw_indexed_indirect` (or the singular fallback).
-    pub fn render_frame_indirect(&mut self, visible: &VisibleCells, view_proj: Mat4) -> Result<()> {
+    pub fn render_frame_indirect(
+        &mut self,
+        visible: &VisibleCells,
+        view_proj: Mat4,
+        emitters: &[&SmokeEmitter],
+    ) -> Result<()> {
         self.debug_frame = self.debug_frame.wrapping_add(1);
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
@@ -1933,6 +1989,60 @@ impl Renderer {
                         }),
                     );
                 }
+            }
+        }
+
+        // --- Billboard sprite pass (env_smoke_emitter) ---
+        // After the opaque forward pass, before the wireframe overlay. Alpha
+        // additive; depth test enabled, depth write disabled. Batched by
+        // sprite-sheet collection: one draw per collection. See §7.4.
+        if self.smoke_pass.has_any_sheet() && !emitters.is_empty() {
+            let mut collections: Vec<String> = emitters
+                .iter()
+                .map(|e| e.collection().to_string())
+                .collect();
+            collections.sort();
+            collections.dedup();
+
+            let mut smoke_pass_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Billboard Sprite Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            smoke_pass_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
+            smoke_pass_enc.set_bind_group(2, &self.lighting_bind_group, &[]);
+            smoke_pass_enc.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
+            for collection in &collections {
+                let scratch = &mut self.smoke_pack_scratch;
+                scratch.clear();
+                for e in emitters.iter().filter(|e| e.collection() == collection) {
+                    e.pack_instances(scratch);
+                }
+                if scratch.is_empty() {
+                    continue;
+                }
+                self.smoke_pass.record_draw(
+                    &self.queue,
+                    &mut smoke_pass_enc,
+                    collection,
+                    scratch,
+                );
             }
         }
 

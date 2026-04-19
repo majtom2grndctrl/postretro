@@ -4,6 +4,7 @@
 mod camera;
 mod compute_cull;
 mod frame_timing;
+mod fx;
 mod geometry;
 mod input;
 mod lighting;
@@ -94,6 +95,7 @@ fn main() -> Result<()> {
 
     let map_path = resolve_map_path(&args);
     let mut level = load_level(&map_path)?;
+    let spawn_demo_smoke = args.iter().any(|a| a == "--demo-smoke");
 
     // Load textures for PRL levels.
     let texture_set = match &level {
@@ -144,6 +146,7 @@ fn main() -> Result<()> {
         frame_rate_meter: FrameRateMeter::new(),
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
+        smoke_emitters: build_demo_emitters(spawn_demo_smoke, initial_camera_pos),
     };
 
     event_loop
@@ -197,6 +200,31 @@ fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
     }
 }
 
+/// Build the initial smoke-emitter list. When `spawn_demo` is true (enabled
+/// via the `--demo-smoke` CLI flag), a single emitter is placed a few units
+/// in front of the camera spawn so the billboard pipeline has something to
+/// render without requiring a map with `env_smoke_emitter` entities yet.
+///
+/// Once the PRL entity-flow wire format carries `env_smoke_emitter`
+/// instances, this helper also folds in the level-derived emitters. Until
+/// then the `--demo-smoke` path is the only way to exercise the pass end
+/// to end.
+fn build_demo_emitters(spawn_demo: bool, camera_pos: Vec3) -> Vec<fx::smoke::SmokeEmitter> {
+    if !spawn_demo {
+        return Vec::new();
+    }
+    let origin = camera_pos + Vec3::new(0.0, 0.0, -3.0);
+    vec![fx::smoke::SmokeEmitter::new(fx::smoke::SmokeEmitterParams {
+        origin,
+        rate: 4.0,
+        lifetime: 3.0,
+        size: 0.5,
+        speed: 0.3,
+        collection: "smoke".to_string(),
+        spec_intensity: 0.3,
+    })]
+}
+
 fn window_attributes() -> WindowAttributes {
     Window::default_attributes()
         .with_title("Postretro")
@@ -247,6 +275,13 @@ struct App {
     /// to ~4Hz — at 60fps the title would otherwise flicker unreadably and
     /// the OS may throttle rapid `set_title` calls.
     last_title_update: Instant,
+
+    /// Live smoke emitters, resolved at level load from `env_smoke_emitter`
+    /// point entities. Updated each game-logic tick; the packed instance
+    /// buffer is uploaded by the renderer in `render_frame_indirect`.
+    ///
+    /// See: context/lib/rendering_pipeline.md §7.4
+    smoke_emitters: Vec<fx::smoke::SmokeEmitter>,
 }
 
 struct WindowState {
@@ -294,7 +329,7 @@ impl ApplicationHandler for App {
             texture_materials: &texture_materials,
         });
 
-        let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
+        let mut renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
             Ok(r) => r,
             Err(err) => {
                 self.exit_result = Err(err);
@@ -302,6 +337,44 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+
+        // Load and register smoke sprite sheets for every collection
+        // referenced by this level's emitters. Collections missing frames
+        // on disk register a single-frame checkerboard placeholder so the
+        // pipeline path is exercised regardless.
+        //
+        // Entity-resolution note: `env_smoke_emitter` entities do not yet
+        // flow through the PRL section wire format; the `smoke_emitters`
+        // Vec is populated by developer hook or future PRL section. This
+        // keeps the renderer + emitter update pipeline exercised while the
+        // cross-crate plumbing is staged. See the task deliverable notes.
+        let texture_root = resolve_texture_root(&resolve_map_path(
+            &std::env::args().collect::<Vec<_>>(),
+        ));
+        let mut registered: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for emitter in &self.smoke_emitters {
+            let collection = emitter.collection().to_string();
+            if collection.is_empty() || !registered.insert(collection.clone()) {
+                continue;
+            }
+            let frames = fx::smoke::load_collection_frames(&texture_root, &collection)
+                .unwrap_or_else(|| {
+                    // Single-frame 1x1 white fallback — the pipeline stays
+                    // wired even when the collection has no PNG frames yet.
+                    vec![fx::smoke::SpriteFrame {
+                        data: vec![255, 255, 255, 255],
+                        width: 1,
+                        height: 1,
+                    }]
+                });
+            renderer.register_smoke_collection(
+                &collection,
+                &frames,
+                emitter.params.spec_intensity,
+                emitter.params.lifetime,
+            );
+        }
 
         let size = window.inner_size();
         self.camera.update_aspect(size.width, size.height);
@@ -443,6 +516,12 @@ impl ApplicationHandler for App {
                     // Push updated camera state for interpolation.
                     self.frame_timing
                         .push_state(InterpolableState::new(self.camera.position));
+
+                    // Advance smoke emitters on the fixed-timestep tick.
+                    // See: context/lib/rendering_pipeline.md §7.4
+                    for emitter in &mut self.smoke_emitters {
+                        emitter.tick(tick_dt);
+                    }
                 }
 
                 // Interpolate between previous and current state for rendering.
@@ -486,8 +565,13 @@ impl ApplicationHandler for App {
                     renderer.update_per_frame_uniforms(view_proj, interp.position);
 
                     if renderer.is_ready() {
-                        if let Err(err) = renderer.render_frame_indirect(&visible_cells, view_proj)
-                        {
+                        let emitter_refs: Vec<&fx::smoke::SmokeEmitter> =
+                            self.smoke_emitters.iter().collect();
+                        if let Err(err) = renderer.render_frame_indirect(
+                            &visible_cells,
+                            view_proj,
+                            &emitter_refs,
+                        ) {
                             self.exit_result = Err(err);
                             event_loop.exit();
                         }

@@ -55,3 +55,17 @@
     origin(origin)
     mangle(string) : "Direction (pitch yaw roll, degrees)" : "-90 0 0"
 ]
+
+@PointClass
+    color(180 180 220)
+    size(-8 -8 -8, 8 8 8)
+    = env_smoke_emitter : "Smoke / Particle Emitter"
+[
+    origin(origin)
+    rate(float) : "Sprites per second" : "4.0"
+    lifetime(float) : "Sprite lifetime (seconds)" : "3.0"
+    size(float) : "Sprite size (world units)" : "0.5"
+    speed(float) : "Drift velocity (m/s, upward)" : "0.3"
+    collection(string) : "Sprite sheet collection name" : "smoke"
+    spec_intensity(float) : "Blinn-Phong specular scale (0.0-1.0)" : "0.3"
+]

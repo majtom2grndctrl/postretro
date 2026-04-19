@@ -5,6 +5,7 @@
 //      context/plans/in-progress/lighting-foundation/3-direct-lighting.md
 
 pub mod influence;
+pub mod lightmap;
 
 use crate::prl::{FalloffModel, LightType, MapLight};
 

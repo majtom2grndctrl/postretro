@@ -63,7 +63,7 @@ Task B (runtime): upload + shader sampling ── stub first ┘
 **Crate:** `postretro` · **New module:** `src/lighting/lightmap.rs` · **Also modifies:** `src/render/mod.rs` (bind group, pipeline `VertexBufferLayout` extended for the new lightmap UV attribute), `src/shaders/forward.wgsl` (vertex input `@location` for the new attribute, plus fragment sampling).
 
 1. **Load + upload.** Parse the `Lightmap` PRL section at level load. Upload atlas as GPU textures. Two separate textures or one RGBA-packed texture depending on encoding choice in Task A. Sampler: linear filtering (lightmaps are continuous-signal data, not nearest-shadow-sample data).
-2. **Bind group.** Add entries to group 2 (the lighting group). Coordinate with `lighting-chunk-lists/` and `lighting-spot-shadows/` to avoid binding slot collisions.
+2. **Bind group.** Add entries to group 2 (bindings 0–1). The full group-2 layout is defined in `context/plans/ready/lighting-spot-shadows/index.md` Task B step 3. Whichever of the three concurrent plans lands first wires the complete layout with placeholder entries for the others.
 3. **Missing-section fallback.** If `Lightmap` is absent, bind a 1×1 white irradiance placeholder and neutral direction. Degraded but functional — compiles run against work-in-progress bakes.
 4. **Shader sampling.** Per fragment in `forward.wgsl`, using the lightmap UV vertex attribute from Task A:
 

@@ -274,6 +274,7 @@ impl ApplicationHandler for App {
             lights: &world.lights,
             light_influences: &world.light_influences,
             sh_volume: world.sh_volume.as_ref(),
+            lightmap: world.lightmap.as_ref(),
         });
 
         let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {

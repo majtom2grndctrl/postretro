@@ -86,11 +86,18 @@ struct AnimationDescriptor {
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
 @group(3) @binding(13) var<storage, read> anim_sh_data: array<f32>;
 
+// Group 4 — baked directional lightmap (static direct lighting).
+// See context/plans/ready/lighting-lightmaps/index.md.
+@group(4) @binding(0) var lightmap_irradiance: texture_2d<f32>;
+@group(4) @binding(1) var lightmap_direction: texture_2d<f32>;
+@group(4) @binding(2) var lightmap_sampler: sampler;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) base_uv: vec2<f32>,
     @location(2) normal_oct: vec2<u32>,
     @location(3) tangent_packed: vec2<u32>,
+    @location(4) lightmap_uv_packed: vec2<u32>,
 };
 
 struct VertexOutput {
@@ -103,6 +110,7 @@ struct VertexOutput {
     @location(2) world_tangent: vec3<f32>,
     @location(3) bitangent_sign: f32,
     @location(4) world_position: vec3<f32>,
+    @location(5) lightmap_uv: vec2<f32>,
 };
 
 // Decode octahedral-encoded u16x2 to unit direction vector.
@@ -139,7 +147,33 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.world_tangent = oct_decode(vec2<u32>(in.tangent_packed.x, v_16bit));
     out.bitangent_sign = select(-1.0, 1.0, sign_bit != 0u);
 
+    // Dequantize lightmap UV from 0..65535 → 0..1.
+    out.lightmap_uv = vec2<f32>(
+        f32(in.lightmap_uv_packed.x) / 65535.0,
+        f32(in.lightmap_uv_packed.y) / 65535.0,
+    );
+
     return out;
+}
+
+// Decode the stored dominant-direction texel back to a unit world-space
+// vector. The baker stores octahedral-encoded directions in the rg channels
+// of an Rgba8Unorm texture; sampling returns 0..1, we remap to -1..1 and
+// invert the octahedral projection.
+fn decode_lightmap_direction(enc: vec4<f32>) -> vec3<f32> {
+    let ox = enc.r * 2.0 - 1.0;
+    let oy = enc.g * 2.0 - 1.0;
+    let z = 1.0 - abs(ox) - abs(oy);
+    var x: f32;
+    var y: f32;
+    if z < 0.0 {
+        x = (1.0 - abs(oy)) * select(-1.0, 1.0, ox >= 0.0);
+        y = (1.0 - abs(ox)) * select(-1.0, 1.0, oy >= 0.0);
+    } else {
+        x = ox;
+        y = oy;
+    }
+    return normalize(vec3<f32>(x, y, z));
 }
 
 // --- Falloff models ---
@@ -415,8 +449,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         indirect = sample_sh_indirect(in.world_position, N);
     }
 
-    // Total light = ambient floor (minimum) + indirect + direct sum.
-    var total_light = vec3<f32>(uniforms.ambient_floor) + indirect;
+    // Static direct term: baked directional lightmap. The atlas stores
+    // per-texel irradiance (illuminance received by the surface with the
+    // mesh normal) — NdotL is already folded in by the baker. Sampling the
+    // atlas directly gives the correct static direct contribution for a
+    // mesh-normal surface.
+    //
+    // The bumped-Lambert correction (divide out the baked mesh-normal
+    // response, multiply in the normal-mapped response using the stored
+    // dominant direction) will be reintroduced when the TBN / normal-map
+    // path lands. Until then `N` is the interpolated mesh normal and the
+    // baker's pre-multiplied NdotL is the right answer; reapplying NdotL
+    // here would double-count the Lambert term.
+    var static_direct = vec3<f32>(0.0);
+    if use_direct {
+        let lm_irr = textureSample(lightmap_irradiance, lightmap_sampler, in.lightmap_uv).rgb;
+        static_direct = lm_irr;
+    }
+
+    // Total light = ambient floor (minimum) + indirect + static direct + dynamic sum.
+    var total_light = vec3<f32>(uniforms.ambient_floor) + indirect + static_direct;
 
     // DirectOnly / AmbientOnly modes skip the direct-light loop entirely —
     // cheaper than zeroing contributions inside the loop.

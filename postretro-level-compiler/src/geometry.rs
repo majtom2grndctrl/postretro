@@ -122,6 +122,10 @@ pub fn extract_geometry(
                 normal_f32,
                 tangent_f32,
                 bitangent_sign,
+                // Lightmap UVs default to (0, 0); the lightmap bake stage
+                // overwrites per-vertex UVs after it places each face's
+                // chart in the atlas.
+                [0.0, 0.0],
             ));
         }
 

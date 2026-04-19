@@ -12,6 +12,7 @@ use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::leaf_pvs::LeafPvsSection;
+use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -174,6 +175,10 @@ pub struct LevelWorld {
     /// (ID 20). `None` for maps without baked indirect — the renderer
     /// degrades to `ambient_floor + direct_sum`.
     pub sh_volume: Option<ShVolumeSection>,
+    /// Baked directional lightmap atlas loaded from the Lightmap section
+    /// (ID 22). `None` for maps without baked direct — the renderer binds a
+    /// 1×1 white placeholder and bumped-Lambert degrades to flat white.
+    pub lightmap: Option<LightmapSection>,
 }
 
 impl LevelWorld {
@@ -346,6 +351,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             base_uv: v.uv,
             normal_oct: v.normal_oct,
             tangent_packed: v.tangent_packed,
+            lightmap_uv: v.lightmap_uv,
         })
         .collect();
 
@@ -538,6 +544,33 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
     };
 
+    // Lightmap section (optional). Missing for maps compiled before the
+    // directional-lightmap plan shipped — the renderer falls back to a 1×1
+    // white placeholder and bumped-Lambert degrades to flat white.
+    let lightmap: Option<LightmapSection> = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::Lightmap as u32,
+    )? {
+        Some(data) => {
+            let section = LightmapSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] Lightmap: {}x{} atlas ({} B irradiance, {} B direction)",
+                section.width,
+                section.height,
+                section.irradiance.len(),
+                section.direction.len(),
+            );
+            Some(section)
+        }
+        None => {
+            log::warn!(
+                "[PRL] Lightmap section missing — static direct lighting disabled for this map"
+            );
+            None
+        }
+    };
+
     let has_pvs = pvs_section.is_some();
     let has_portals = portals_section.is_some();
 
@@ -713,6 +746,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         lights,
         light_influences,
         sh_volume,
+        lightmap,
     })
 }
 
@@ -804,6 +838,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            lightmap: None,
         }
     }
 
@@ -850,6 +885,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            lightmap: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -888,6 +924,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            lightmap: None,
         };
 
         let spawn = world.spawn_position();
@@ -915,6 +952,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            lightmap: None,
         };
 
         let indices = face_leaf_indices(&world);
@@ -936,6 +974,7 @@ mod tests {
             [0.0, 1.0, 0.0],
             [1.0, 0.0, 0.0],
             true,
+            [0.0, 0.0],
         )
     }
 

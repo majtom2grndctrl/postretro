@@ -5,6 +5,7 @@ pub mod bvh_build;
 pub mod format;
 pub mod geometry;
 pub mod geometry_utils;
+pub mod lightmap_bake;
 pub mod map_data;
 pub mod map_format;
 pub mod pack;
@@ -132,7 +133,7 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("Geometry extraction...");
     let stage_start = Instant::now();
-    let geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
+    let mut geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
     timings.push(("Geometry", stage_start.elapsed()));
     if args.verbose {
         let empty_leaf_count = result
@@ -155,6 +156,31 @@ fn main() -> anyhow::Result<()> {
     timings.push(("BVH Build", stage_start.elapsed()));
     if args.verbose {
         bvh_build::log_stats(&bvh_section);
+    }
+
+    progress.start_stage("Lightmap bake...");
+    let stage_start = Instant::now();
+    // Bake the directional lightmap. Writes per-vertex lightmap UVs back
+    // into `geo_result.geometry` and returns the atlas section for packing.
+    // Same BVH as the SH bake — one acceleration structure, two consumers.
+    let static_light_count =
+        map_data.lights.iter().filter(|l| !l.is_dynamic).count();
+    let lightmap_section = {
+        let mut lm_inputs = lightmap_bake::LightmapInputs {
+            bvh: &bvh,
+            primitives: &bvh_primitives,
+            geometry: &mut geo_result,
+            lights: &map_data.lights,
+        };
+        lightmap_bake::bake_lightmap(
+            &mut lm_inputs,
+            lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
+        )
+        .map_err(|e| anyhow::anyhow!("Lightmap bake failed: {e}"))?
+    };
+    timings.push(("Lightmap Bake", stage_start.elapsed()));
+    if args.verbose {
+        lightmap_bake::log_stats(&lightmap_section, static_light_count);
     }
 
     progress.start_stage("SH volume bake...");
@@ -196,6 +222,7 @@ fn main() -> anyhow::Result<()> {
             &alpha_lights_section,
             &light_influence_section,
             &sh_volume_section,
+            &lightmap_section,
         )?;
     } else {
         if args.verbose {
@@ -212,6 +239,7 @@ fn main() -> anyhow::Result<()> {
             &alpha_lights_section,
             &light_influence_section,
             &sh_volume_section,
+            &lightmap_section,
         )?;
     }
     timings.push(("Packing", stage_start.elapsed()));

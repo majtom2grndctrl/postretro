@@ -2,10 +2,10 @@
 // See: context/lib/rendering_pipeline.md §5, §6
 // See: context/plans/in-progress/bvh-foundation/2-runtime-bvh.md
 
-/// World-geometry vertex: position + UV + octahedral normal + octahedral tangent.
-/// Matches the `Geometry` on-disk layout. Normal and tangent are decoded in the
-/// vertex shader; the fragment shader receives them as interpolants but does not
-/// use them until lighting work lands in Milestone 5.
+/// World-geometry vertex: position + base UV + octahedral normal + octahedral
+/// tangent + lightmap UV. Matches the `Geometry` on-disk layout. Normal and
+/// tangent decode in the vertex shader; lightmap UV is passed through to the
+/// fragment shader for atlas sampling.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldVertex {
@@ -16,11 +16,16 @@ pub struct WorldVertex {
     /// Packed tangent: u16 octahedral u-component, u16 v-component with
     /// bitangent sign in bit 15.
     pub tangent_packed: [u16; 2],
+    /// Lightmap atlas UV, quantized 0..65535 → 0..1. Zero on vertices that
+    /// did not receive a lightmap chart (runtime renders against the
+    /// placeholder atlas in that case).
+    pub lightmap_uv: [u16; 2],
 }
 
 impl WorldVertex {
-    /// Stride in bytes: 12 (pos) + 8 (uv) + 4 (normal) + 4 (tangent) = 28 bytes.
-    pub const STRIDE: usize = 28;
+    /// Stride in bytes: 12 (pos) + 8 (base uv) + 4 (normal) + 4 (tangent) + 4
+    /// (lightmap uv) = 32 bytes.
+    pub const STRIDE: usize = 32;
 }
 
 /// One flat BVH node, matching the WGSL `BvhNode` struct byte-for-byte.

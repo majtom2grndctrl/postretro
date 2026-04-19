@@ -773,6 +773,7 @@ mod tests {
             base_uv: [0.0; 2],
             normal_oct: [32768, 32768],
             tangent_packed: [65535, 0x8000],
+            lightmap_uv: [0, 0],
         }
     }
 
@@ -853,6 +854,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            lightmap: None,
         }
     }
 
@@ -891,6 +893,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            lightmap: None,
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();

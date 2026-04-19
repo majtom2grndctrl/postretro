@@ -15,6 +15,7 @@ use winit::window::Window;
 use crate::compute_cull::ComputeCullPipeline;
 use crate::geometry::BvhTree;
 use crate::lighting::influence::{self, LightInfluence};
+use crate::lighting::lightmap::LightmapResources;
 use crate::lighting::{GPU_LIGHT_SIZE, pack_lights};
 use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
@@ -265,6 +266,10 @@ pub struct LevelGeometry<'a> {
     /// when the section is absent — the renderer binds dummy 1×1×1 textures
     /// and the shader skips SH sampling.
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::ShVolumeSection>,
+    /// Baked directional lightmap atlas from the `Lightmap` PRL section.
+    /// `None` when the section is absent — the renderer binds a 1×1 white
+    /// placeholder and bumped-Lambert falls back to flat white.
+    pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapSection>,
 }
 
 // --- Renderer ---
@@ -310,6 +315,12 @@ pub struct Renderer {
     /// the fragment shader's `has_sh_volume` flag is 0 so SH sampling is
     /// skipped. See `sh_volume` module for layout.
     sh_volume_resources: ShVolumeResources,
+
+    /// Group 4 — directional lightmap atlas resources. Always allocated;
+    /// when no Lightmap section is present the bind group binds a 1×1
+    /// white/neutral placeholder so the shader path never branches.
+    /// See `lighting::lightmap`.
+    lightmap_resources: LightmapResources,
 
     depth_view: wgpu::TextureView,
 
@@ -735,9 +746,24 @@ impl Renderer {
             geometry.and_then(|g| g.sh_volume),
         );
 
+        // Group 4: directional lightmap atlas (baked static direct lighting).
+        // Always created — placeholder 1×1 white/neutral bindings are used
+        // when the level has no Lightmap section. See `lighting::lightmap`.
+        // Layout is built up front so the pipeline layout can reference it
+        // before the bind group is populated.
+        let lightmap_bind_group_layout =
+            crate::lighting::lightmap::bind_group_layout(&device);
+        let lightmap_resources = LightmapResources::new(
+            &device,
+            &queue,
+            geometry.and_then(|g| g.lightmap),
+            &lightmap_bind_group_layout,
+        );
+
         // Pipeline layout. Group 2 is the direct-lighting storage buffer
         // introduced in sub-plan 3 of the lighting foundation; group 3 is
-        // the SH irradiance volume introduced in sub-plan 6.
+        // the SH irradiance volume introduced in sub-plan 6; group 4 is the
+        // baked directional lightmap atlas (`lighting-lightmaps`).
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Textured Pipeline Layout"),
             bind_group_layouts: &[
@@ -745,6 +771,7 @@ impl Renderer {
                 Some(&texture_bind_group_layout),
                 Some(&lighting_bind_group_layout),
                 Some(&sh_volume_resources.bind_group_layout),
+                Some(&lightmap_bind_group_layout),
             ],
             immediate_size: 0,
         });
@@ -786,6 +813,12 @@ impl Renderer {
                         wgpu::VertexAttribute {
                             offset: 24,
                             shader_location: 3,
+                            format: wgpu::VertexFormat::Uint16x2,
+                        },
+                        // lightmap_uv: u16x2 at offset 28 (quantized 0..1 UV)
+                        wgpu::VertexAttribute {
+                            offset: 28,
+                            shader_location: 4,
                             format: wgpu::VertexFormat::Uint16x2,
                         },
                     ],
@@ -1045,6 +1078,7 @@ impl Renderer {
             light_count,
             ambient_floor,
             sh_volume_resources,
+            lightmap_resources,
             depth_view,
             gpu_textures,
             bvh_leaves,
@@ -1359,6 +1393,7 @@ impl Renderer {
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.lighting_bind_group, &[]);
                 render_pass.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
+                render_pass.set_bind_group(4, &self.lightmap_resources.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 render_pass
                     .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -1492,6 +1527,9 @@ fn cast_world_vertices_to_bytes(data: &[crate::geometry::WorldVertex]) -> Vec<u8
         for &c in &vertex.tangent_packed {
             bytes.extend_from_slice(&c.to_ne_bytes());
         }
+        for &c in &vertex.lightmap_uv {
+            bytes.extend_from_slice(&c.to_ne_bytes());
+        }
     }
     bytes
 }
@@ -1548,19 +1586,20 @@ mod tests {
                 base_uv: [0.5, 0.75],
                 normal_oct: [32768, 32768],
                 tangent_packed: [65535, 32768],
+                lightmap_uv: [100, 200],
             },
             crate::geometry::WorldVertex {
                 position: [4.0, 5.0, 6.0],
                 base_uv: [0.25, 0.125],
                 normal_oct: [0, 32768],
                 tangent_packed: [32768, 0],
+                lightmap_uv: [0, 0],
             },
         ];
         let bytes = cast_world_vertices_to_bytes(&input);
-        // 2 vertices * 28 bytes = 56 bytes
-        assert_eq!(bytes.len(), 56);
+        // 2 vertices * 32 bytes = 64 bytes
+        assert_eq!(bytes.len(), 64);
 
-        // Read back first vertex: 3 f32 pos + 2 f32 uv + 2 u16 normal + 2 u16 tangent = 28 bytes
         let pos_x = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
         let pos_y = f32::from_ne_bytes(bytes[4..8].try_into().unwrap());
         let pos_z = f32::from_ne_bytes(bytes[8..12].try_into().unwrap());
@@ -1570,11 +1609,14 @@ mod tests {
         let n_v = u16::from_ne_bytes(bytes[22..24].try_into().unwrap());
         let t_u = u16::from_ne_bytes(bytes[24..26].try_into().unwrap());
         let t_v = u16::from_ne_bytes(bytes[26..28].try_into().unwrap());
+        let lm_u = u16::from_ne_bytes(bytes[28..30].try_into().unwrap());
+        let lm_v = u16::from_ne_bytes(bytes[30..32].try_into().unwrap());
 
         assert_eq!([pos_x, pos_y, pos_z], [1.0, 2.0, 3.0]);
         assert_eq!([uv_u, uv_v], [0.5, 0.75]);
         assert_eq!([n_u, n_v], [32768, 32768]);
         assert_eq!([t_u, t_v], [65535, 32768]);
+        assert_eq!([lm_u, lm_v], [100, 200]);
     }
 
     #[test]

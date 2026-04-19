@@ -7,6 +7,7 @@ pub mod bvh;
 pub mod geometry;
 pub mod leaf_pvs;
 pub mod light_influence;
+pub mod lightmap;
 pub mod octahedral;
 pub mod portals;
 pub mod sh_volume;
@@ -95,6 +96,12 @@ pub enum SectionId {
     /// culling in the fragment shader and CPU-side shadow-slot allocation.
     /// See `light_influence::LightInfluenceSection`.
     LightInfluence = 21,
+
+    /// Directional lightmap atlas: per-texel irradiance + dominant incoming
+    /// direction from static (non-dynamic) lights. Sampled at runtime via
+    /// per-vertex lightmap UVs; bumped-Lambert correction applies normal-map
+    /// response to the baked direction. See `lightmap::LightmapSection`.
+    Lightmap = 22,
 }
 
 impl SectionId {
@@ -110,6 +117,7 @@ impl SectionId {
             19 => Some(Self::Bvh),
             20 => Some(Self::ShVolume),
             21 => Some(Self::LightInfluence),
+            22 => Some(Self::Lightmap),
             _ => None,
         }
     }

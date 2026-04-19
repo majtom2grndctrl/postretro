@@ -79,7 +79,7 @@ Unknown prefix falls back to a default material with a warning at load time.
 ### Compiler pipeline
 
 ```
-parse .map → BSP construction → brush-side projection → portal generation → exterior leaf culling → portal vis → geometry → BVH → lightmap bake → pack .prl
+parse .map → BSP construction → brush-side projection → portal generation → exterior leaf culling → portal vis → geometry → BVH → lightmap bake → SH volume bake → pack .prl
 ```
 
 1. **Parse.** Extracts brush volumes, brush sides, and entities. Applies coordinate transform (Quake Z-up → engine Y-up) and unit scale. Light entities route to FGD translation and validation; they don't participate in BSP construction.
@@ -107,6 +107,7 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | Bvh | 19 | Always |
 | ShVolume | 20 | When compiled with lighting |
 | LightInfluence | 21 | When compiled with lighting |
+| Lightmap | 22 | Always (placeholder atlas when a map has no static lights) |
 
 ### Runtime visibility
 

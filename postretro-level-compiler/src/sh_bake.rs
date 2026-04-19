@@ -832,7 +832,7 @@ mod tests {
     }
 
     fn tri_vertex(pos: [f32; 3]) -> Vertex {
-        Vertex::new(pos, [0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true)
+        Vertex::new(pos, [0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0])
     }
 
     fn one_triangle_geometry(positions: [[f32; 3]; 3]) -> GeometryResult {

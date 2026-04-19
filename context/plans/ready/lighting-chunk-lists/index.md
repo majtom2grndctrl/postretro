@@ -1,8 +1,8 @@
 # Lighting — Per-Chunk Light Lists + Specular
 
-> **Status:** draft. Supersedes `context/plans/drafts/perf-per-chunk-light-lists/` — that plan is absorbed here and can be deleted when this plan moves to `ready/`. Also absorbs `context/plans/in-progress/lighting-foundation/9-specular-maps.md` — the specular shading model, `_s.png` texture convention, and per-material shininess from that sub-plan are implemented here; the CSM/SDF shadow integration from sub-plan 9 is superseded by the lightmap and spot-shadow plans.
+> **Status:** ready. Supersedes `context/plans/drafts/perf-per-chunk-light-lists/` — that plan is absorbed here and deleted at promotion. Also absorbs `context/plans/in-progress/lighting-foundation/9-specular-maps.md` — the specular shading model, `_s.png` texture convention, and per-material shininess from that sub-plan are implemented here; the CSM/SDF shadow integration from sub-plan 9 is superseded by the lightmap and spot-shadow plans.
 > **Depends on:** `lighting-dynamic-flag/` (compiler task needs `MapLight.is_dynamic`). `lighting-old-stack-retirement/` should ship first.
-> **Concurrent with:** `lighting-lightmaps/`, `lighting-sh-amendments/`, `lighting-spot-shadows/`.
+> **Concurrent with:** `lighting-sh-amendments/`, `lighting-spot-shadows/`. (`lighting-lightmaps/` has shipped — see `context/plans/done/lighting-lightmaps/`.)
 > **Related:** `context/lib/rendering_pipeline.md` §4 · `context/plans/in-progress/lighting-foundation/4-light-influence-volumes.md` (existing per-frustum culling, unchanged).
 
 ---
@@ -43,11 +43,11 @@ Task B (runtime): spec buffer + chunk lookup + Blinn-Phong ───────
 
 1. **Grid definition.** Derive world AABB from `MapData` extents. Subdivide into uniform cubic chunks (default: 8 m side, retunable per-level). Linearize with `z * dims.x * dims.y + y * dims.x + x`.
 2. **Per-chunk bucketing.** For each chunk, test each static light's influence sphere against the chunk AABB (closest-point-on-box vs. sphere center, compare against radius). Directional lights (infinite range) are added to every chunk. Dynamic lights are excluded.
-3. **Visibility mask filter.** For each `(light, chunk)` pair that passes the sphere-AABB test, cast a small number of shadow rays (default: 4) from the light position to representative sample points inside the chunk. If at least one ray is unoccluded through the Milestone 4 BVH, retain the light in the chunk's list. If all rays are blocked, drop it. The filter runs offline; the resulting list is already visibility-filtered.
+3. **Visibility mask filter.** For each `(light, chunk)` pair that passes the sphere-AABB test, cast 4 shadow rays from the light position to fixed sample points inside the chunk: the chunk centroid plus the 3 face midpoints whose face normals are most aligned with the light→centroid direction (i.e. the faces facing the light). If at least one ray is unoccluded through the Milestone 4 BVH, retain the light in the chunk's list. If all rays are blocked, drop it. The filter runs offline; the resulting list is already visibility-filtered.
 4. **Per-chunk count cap.** Clamp each chunk's list to a maximum count (default: 64). Log any overflow at bake time with chunk coordinates and the count of dropped lights.
 5. **Output.** Flat index buffer + offset table (`[offset: u32, count: u32]` per chunk).
 
-**`ChunkLightList` PRL section.** New section ID in `postretro-level-format`. Section payload: grid metadata (origin, cell size, dims, has_grid sentinel) + offset table + flat index list. PRL format coordination note: `lighting-lightmaps/` also adds a new section ID; assign IDs at implementation time against the current max, ensuring no collision.
+**`ChunkLightList` PRL section.** New section ID in `postretro-level-format`. Section payload: grid metadata (origin, cell size, dims, has_grid sentinel) + offset table + flat index list. PRL format coordination note: assign a new section ID at implementation time against the current max, ensuring no collision.
 
 ### Task A acceptance gates
 
@@ -62,7 +62,16 @@ Task B (runtime): spec buffer + chunk lookup + Blinn-Phong ───────
 
 **Crate:** `postretro` · **New module:** `src/lighting/spec_buffer.rs` · **Also modifies:** `src/lighting/chunk_list.rs` *(new)*, `src/render/mod.rs`, `src/render/resource.rs` (resource loader), `src/shaders/forward.wgsl`.
 
-1. **Spec-only light buffer.** At level load, populate a storage buffer with one entry per static light: `(position: vec3<f32>, color: vec3<f32>, range: f32)` — ~32 bytes per light. Upload once, read-only at runtime. Dynamic lights excluded.
+1. **Spec-only light buffer.** At level load, populate a storage buffer with one entry per static light. WGSL layout — two packed `vec4<f32>` slots so the struct alignment is 16 and the array stride is an exact 32 bytes (a naive `vec3 + vec3 + f32` lays out as 48 under WGSL alignment rules):
+
+   ```wgsl
+   struct SpecLight {
+       position_and_range: vec4<f32>, // xyz = position, w = falloff_range
+       color_and_pad:      vec4<f32>, // xyz = color × intensity, w = pad (0)
+   }
+   ```
+
+   Upload once, read-only at runtime. Dynamic lights excluded.
 2. **Chunk list upload.** Parse the `ChunkLightList` PRL section. Upload grid metadata as a uniform; offset table and flat indices as storage buffers. Missing-section fallback: `has_chunk_grid = 0`, shader iterates the full spec buffer.
 3. **Bind group.** Extend group 2 with bindings 2–5 (spec buffer, chunk grid uniform, offset table, index list). The bind group layout must declare all of group 2 bindings 0–5 (the existing 0–1 plus the new 2–5) so wgpu sees a consistent layout. See the full cross-plan group layout in `context/plans/ready/lighting-spot-shadows/index.md` Task B step 3.
 4. **Per-chunk iteration in shader.** Per fragment, compute chunk cell from `world_position`, look up `(offset, count)`, iterate only those lights for specular. Fallback to full buffer if `has_chunk_grid == 0`.
@@ -78,6 +87,8 @@ fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
 ```
 
 `spec_int` is the R channel of the per-material specular texture (step 7); `spec_exp` is `MaterialUniform.shininess` (steps 8–9). Hoist `V = normalize(camera_pos - world_pos)` outside the per-light loop. Specular is **added** to diffuse with no `(1 − ks)` attenuation and no Fresnel — the retro aesthetic demands punchy highlights, not energy-conserving ones. Applied in both the per-chunk static iteration and the dynamic-pool direct loop (used by `lighting-spot-shadows/`).
+
+**`blinn_phong` utility cleanup obligation.** If `lighting-spot-shadows/` lands before this plan, it will have inlined a local copy of `blinn_phong` in `forward.wgsl` as a placeholder. This plan is responsible, at landing time, for deleting that inline copy and rewiring its call sites to the shared utility introduced here. Verified by grepping `forward.wgsl` for duplicate definitions before merge.
 
 6. **Distance falloff + influence range.** Attenuate the specular contribution by the same falloff model as the stored light type. Reject lights outside their influence range entirely (the chunk list is a conservative spatial index; the influence range provides the tight per-light rejection).
 
@@ -112,7 +123,7 @@ fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
 
 ## Out of scope
 
-- Diffuse from static lights at runtime — covered by `lighting-lightmaps/`.
+- Diffuse from static lights at runtime — covered by `lighting-lightmaps/` (shipped).
 - Dynamic light specular — the `blinn_phong` utility function introduced here is used by `lighting-spot-shadows/`; no further specular work in this plan.
 - PBR shading.
 - Clustered forward+ (screen-space tile/cluster binning) — the per-chunk world-space grid is the chosen approach.

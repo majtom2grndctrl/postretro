@@ -201,11 +201,13 @@ fn upload_texture_data(
     texture
 }
 
-/// Byte layout of `MaterialUniform` — padded to 16 for uniform-buffer
-/// alignment. Layout mirrors the WGSL struct in `forward.wgsl`:
-///   0..4   shininess (f32)
-///   4..16  pad (0)
-const MATERIAL_UNIFORM_SIZE: usize = 16;
+/// Byte layout of `MaterialUniform`. Layout mirrors the WGSL struct in
+/// `forward.wgsl`:
+///   0..4    shininess (f32)
+///   4..16   pad
+///   16..32  pad (vec3<f32> _pad lands here with align-16, rounding the
+///           struct size up to 32 in the uniform address space)
+const MATERIAL_UNIFORM_SIZE: usize = 32;
 
 fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
     let mut bytes = [0u8; MATERIAL_UNIFORM_SIZE];

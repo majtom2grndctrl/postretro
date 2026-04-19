@@ -1,6 +1,6 @@
 # Lighting — Per-Chunk Light Lists + Specular
 
-> **Status:** ready. Supersedes `context/plans/drafts/perf-per-chunk-light-lists/` — that plan is absorbed here and deleted at promotion. Also absorbs `context/plans/in-progress/lighting-foundation/9-specular-maps.md` — the specular shading model, `_s.png` texture convention, and per-material shininess from that sub-plan are implemented here; the CSM/SDF shadow integration from sub-plan 9 is superseded by the lightmap and spot-shadow plans.
+> **Status:** ready.
 > **Depends on:** `lighting-dynamic-flag/` (compiler task needs `MapLight.is_dynamic`). `lighting-old-stack-retirement/` should ship first.
 > **Concurrent with:** `lighting-sh-amendments/`, `lighting-spot-shadows/`. (`lighting-lightmaps/` has shipped — see `context/plans/done/lighting-lightmaps/`.)
 > **Related:** `context/lib/rendering_pipeline.md` §4 · `context/plans/in-progress/lighting-foundation/4-light-influence-volumes.md` (existing per-frustum culling, unchanged).

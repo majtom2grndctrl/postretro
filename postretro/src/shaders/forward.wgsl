@@ -524,7 +524,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // loop. Specular intensity modulates per material (from `_s.png`,
     // R channel) and per variant (`material.shininess` exponent). Added
     // to diffuse — no energy conservation. See
-    // context/plans/ready/lighting-chunk-lists/index.md Task B.
+    // lighting-chunk-lists/ Task B.
     var specular_sum = vec3<f32>(0.0);
     if use_direct {
         let V = normalize(uniforms.camera_position - in.world_position);

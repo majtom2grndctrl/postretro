@@ -196,27 +196,34 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
 
         // Probe for `{name}_s.png` sibling. Absent → None → shader binds the
         // shared 1×1 black fallback (zero specular). Size mismatch → warn +
-        // None. See context/lib/resource_management.md §4.1.
+        // None. When the diffuse is itself a placeholder (load failed), skip
+        // the sibling probe — specular without a real diffuse is meaningless
+        // and could spuriously match a placeholder-sized sibling.
+        // See context/lib/resource_management.md §4.1.
         let spec_key = format!("{lookup_key}_s");
-        let spec = match name_to_path.get(&spec_key) {
-            Some(path) => {
-                let loaded = load_png(path, &spec_key);
-                if loaded.is_placeholder {
-                    None
-                } else if loaded.width != diffuse.width || loaded.height != diffuse.height {
-                    log::warn!(
-                        "[Texture] Specular '{spec_key}' dimensions {}x{} do not match diffuse '{name}' {}x{} - ignoring",
-                        loaded.width,
-                        loaded.height,
-                        diffuse.width,
-                        diffuse.height,
-                    );
-                    None
-                } else {
-                    Some(loaded)
+        let spec = if diffuse.is_placeholder {
+            None
+        } else {
+            match name_to_path.get(&spec_key) {
+                Some(path) => {
+                    let loaded = load_png(path, &spec_key);
+                    if loaded.is_placeholder {
+                        None
+                    } else if loaded.width != diffuse.width || loaded.height != diffuse.height {
+                        log::warn!(
+                            "[Texture] Specular '{spec_key}' dimensions {}x{} do not match diffuse '{name}' {}x{} - ignoring",
+                            loaded.width,
+                            loaded.height,
+                            diffuse.width,
+                            diffuse.height,
+                        );
+                        None
+                    } else {
+                        Some(loaded)
+                    }
                 }
+                None => None,
             }
-            None => None,
         };
 
         textures.push(diffuse);

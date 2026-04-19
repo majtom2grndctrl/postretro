@@ -209,7 +209,7 @@ const MATERIAL_UNIFORM_SIZE: usize = 16;
 
 fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
     let mut bytes = [0u8; MATERIAL_UNIFORM_SIZE];
-    bytes[0..4].copy_from_slice(&shininess.to_ne_bytes());
+    bytes[0..4].copy_from_slice(&shininess.to_le_bytes());
     bytes
 }
 
@@ -454,9 +454,9 @@ impl Renderer {
 
         // Raise `max_bind_groups` above the WebGPU downlevel default of 4.
         // The forward pipeline binds groups 0–4 today (camera, material,
-        // lights, SH volume, lightmap) and the `lighting-spot-shadows` /
-        // `lighting-chunk-lists` plans will add more. 8 is the WebGPU
-        // maximum and is supported on every desktop backend we target.
+        // lights + spec stack, SH volume, lightmap); `lighting-spot-shadows`
+        // will add a shadow-pool group. 8 is the WebGPU maximum and is
+        // supported on every desktop backend we target.
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
             ..wgpu::Limits::default()

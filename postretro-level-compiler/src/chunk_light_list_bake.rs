@@ -6,7 +6,7 @@
 // clamps each chunk to a fixed cap. Output packs into the `ChunkLightList`
 // PRL section for the runtime specular path.
 //
-// See: context/plans/in-progress/lighting-chunk-lists/index.md
+// See: lighting-chunk-lists/
 
 use bvh::bvh::Bvh;
 use bvh::ray::Ray;

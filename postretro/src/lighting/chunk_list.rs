@@ -3,7 +3,7 @@
 // section; missing-section fallback is a zeroed grid with
 // `has_chunk_grid = 0` so the shader iterates the full spec buffer.
 //
-// See: context/plans/ready/lighting-chunk-lists/index.md Task B step 2
+// See: lighting-chunk-lists/ Task B step 2
 
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 
@@ -61,8 +61,8 @@ impl ChunkGrid {
 
         let mut offset_table = Vec::with_capacity(sec.offsets.len() * 8);
         for entry in &sec.offsets {
-            offset_table.extend_from_slice(&entry.offset.to_ne_bytes());
-            offset_table.extend_from_slice(&entry.count.to_ne_bytes());
+            offset_table.extend_from_slice(&entry.offset.to_le_bytes());
+            offset_table.extend_from_slice(&entry.count.to_le_bytes());
         }
         if offset_table.is_empty() {
             offset_table.extend_from_slice(&[0u8; 8]);
@@ -70,7 +70,7 @@ impl ChunkGrid {
 
         let mut index_list = Vec::with_capacity(sec.light_indices.len() * 4);
         for &idx in &sec.light_indices {
-            index_list.extend_from_slice(&idx.to_ne_bytes());
+            index_list.extend_from_slice(&idx.to_le_bytes());
         }
         if index_list.is_empty() {
             index_list.extend_from_slice(&[0u8; 4]);
@@ -87,12 +87,12 @@ impl ChunkGrid {
 
 #[inline]
 fn write_f32(dst: &mut [u8], off: usize, v: f32) {
-    dst[off..off + 4].copy_from_slice(&v.to_ne_bytes());
+    dst[off..off + 4].copy_from_slice(&v.to_le_bytes());
 }
 
 #[inline]
 fn write_u32(dst: &mut [u8], off: usize, v: u32) {
-    dst[off..off + 4].copy_from_slice(&v.to_ne_bytes());
+    dst[off..off + 4].copy_from_slice(&v.to_le_bytes());
 }
 
 #[cfg(test)]
@@ -104,7 +104,7 @@ mod tests {
     fn fallback_has_chunk_grid_zero() {
         let g = ChunkGrid::fallback();
         assert!(!g.present);
-        let has = u32::from_ne_bytes(g.grid_info[28..32].try_into().unwrap());
+        let has = u32::from_le_bytes(g.grid_info[28..32].try_into().unwrap());
         assert_eq!(has, 0);
         // Non-empty dummy payloads so the storage bindings are never zero-sized.
         assert!(!g.offset_table.is_empty());
@@ -135,9 +135,9 @@ mod tests {
         assert!(g.present);
 
         let read_f32 =
-            |off: usize| f32::from_ne_bytes(g.grid_info[off..off + 4].try_into().unwrap());
+            |off: usize| f32::from_le_bytes(g.grid_info[off..off + 4].try_into().unwrap());
         let read_u32 =
-            |off: usize| u32::from_ne_bytes(g.grid_info[off..off + 4].try_into().unwrap());
+            |off: usize| u32::from_le_bytes(g.grid_info[off..off + 4].try_into().unwrap());
         assert_eq!(read_f32(0), -1.0);
         assert_eq!(read_f32(4), 0.5);
         assert_eq!(read_f32(8), 2.0);

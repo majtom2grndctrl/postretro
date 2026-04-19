@@ -4,7 +4,7 @@
 // it. Consumed by the runtime forward pass for bounded per-fragment specular
 // iteration.
 //
-// See: context/plans/in-progress/lighting-chunk-lists/index.md
+// See: lighting-chunk-lists/
 
 use crate::FormatError;
 
@@ -14,8 +14,9 @@ pub const CHUNK_LIGHT_LIST_VERSION: u32 = 1;
 /// Maximum light indices per chunk (default cap; matches the baker's clamp).
 pub const DEFAULT_PER_CHUNK_CAP: u32 = 64;
 
-/// One entry in the offset table: byte-free `(offset, count)` into the flat
-/// `light_indices` array, one per chunk in linearized `z*ny*nx + y*nx + x` order.
+/// One entry in the offset table: `(offset, count)` as u32 indices into the
+/// flat `light_indices` array, one per chunk in linearized
+/// `z*ny*nx + y*nx + x` order.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChunkEntry {
     pub offset: u32,

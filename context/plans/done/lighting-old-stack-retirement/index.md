@@ -1,6 +1,6 @@
 # Lighting Old-Stack Retirement — Remove SDF and CSM
 
-> **Status:** ready — standalone plan, ships first.
+> **Status:** done
 > **Part of:** the lighting stack rework. Sibling plans: `lighting-dynamic-flag/`, `lighting-compiler-rework/`, `lighting-runtime-rework/`.
 > **Supersedes:** `context/plans/in-progress/lighting-foundation/` sub-plans 5 (CSM) and 8 (SDF shadows) — both complete but retired by this plan.
 > **Related:** `context/lib/rendering_pipeline.md` §4.

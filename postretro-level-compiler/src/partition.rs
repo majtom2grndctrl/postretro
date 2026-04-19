@@ -70,10 +70,7 @@ pub fn log_stats(tree: &BspTree, faces: &[Face]) {
     log::info!("BSP nodes: {}", tree.nodes.len());
     log::info!("BSP leaves: {}", tree.leaves.len());
     log::info!("BSP max depth: {max_depth}");
-    log::info!(
-        "Total faces (after brush-side extraction): {}",
-        faces.len()
-    );
+    log::info!("Total faces (after brush-side extraction): {}", faces.len());
     log::info!("Average faces per leaf: {avg_faces:.1}");
 }
 

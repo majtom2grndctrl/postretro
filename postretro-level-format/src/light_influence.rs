@@ -80,10 +80,8 @@ impl LightInfluenceSection {
             )));
         }
 
-        let record_count =
-            u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-        let record_stride =
-            u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+        let record_count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let record_stride = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
 
         if record_stride < INFLUENCE_RECORD_SIZE as usize {
             return Err(FormatError::Io(std::io::Error::new(

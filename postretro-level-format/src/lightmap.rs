@@ -91,7 +91,8 @@ impl LightmapSection {
     pub fn to_bytes(&self) -> Vec<u8> {
         let irr_len = self.irradiance.len() as u32;
         let dir_len = self.direction.len() as u32;
-        let mut buf = Vec::with_capacity(HEADER_SIZE + self.irradiance.len() + self.direction.len());
+        let mut buf =
+            Vec::with_capacity(HEADER_SIZE + self.irradiance.len() + self.direction.len());
         buf.extend_from_slice(&self.width.to_le_bytes());
         buf.extend_from_slice(&self.height.to_le_bytes());
         buf.extend_from_slice(&self.texel_density.to_le_bytes());
@@ -184,13 +185,21 @@ pub fn f32_to_f16_bits(v: f32) -> u16 {
         let rounded = mant >> shift;
         let rem = mant & ((1 << shift) - 1);
         let half = 1 << (shift - 1);
-        let add = if rem > half || (rem == half && (rounded & 1) != 0) { 1 } else { 0 };
+        let add = if rem > half || (rem == half && (rounded & 1) != 0) {
+            1
+        } else {
+            0
+        };
         return (sign << 15) | ((rounded + add) as u16);
     }
     let mant16 = mant32 >> 13;
     let rem = mant32 & 0x1fff;
     let half = 0x1000;
-    let add = if rem > half || (rem == half && (mant16 & 1) != 0) { 1 } else { 0 };
+    let add = if rem > half || (rem == half && (mant16 & 1) != 0) {
+        1
+    } else {
+        0
+    };
     let mut mant16 = mant16 + add;
     let mut exp16 = exp16;
     if mant16 >= 0x400 {

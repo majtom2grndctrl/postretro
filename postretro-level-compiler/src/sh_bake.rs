@@ -832,7 +832,14 @@ mod tests {
     }
 
     fn tri_vertex(pos: [f32; 3]) -> Vertex {
-        Vertex::new(pos, [0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0])
+        Vertex::new(
+            pos,
+            [0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
+        )
     }
 
     fn one_triangle_geometry(positions: [[f32; 3]; 3]) -> GeometryResult {
@@ -1183,7 +1190,11 @@ mod tests {
             nodes: Vec::new(),
             leaves: vec![solid_leaf],
         };
-        assert!(!probe_is_valid(&tree_solid, &exterior_set_empty, DVec3::ZERO));
+        assert!(!probe_is_valid(
+            &tree_solid,
+            &exterior_set_empty,
+            DVec3::ZERO
+        ));
 
         // Exterior-leaf tree: leaf 0 is empty, but listed as exterior.
         // Must reject.

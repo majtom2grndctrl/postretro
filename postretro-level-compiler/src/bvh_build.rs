@@ -400,7 +400,16 @@ mod tests {
     ) -> GeometryResult {
         let vertices: Vec<Vertex> = positions
             .iter()
-            .map(|&pos| Vertex::new(pos, [0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0]))
+            .map(|&pos| {
+                Vertex::new(
+                    pos,
+                    [0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    true,
+                    [0.0, 0.0],
+                )
+            })
             .collect();
         let face_metas: Vec<FaceMeta> = faces
             .iter()

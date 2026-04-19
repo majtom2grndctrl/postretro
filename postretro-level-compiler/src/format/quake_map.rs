@@ -155,18 +155,14 @@ pub fn translate_light(
             let inner_deg = match parse_optional_int(props, "_cone")? {
                 Some(v) => v as f32,
                 None => {
-                    log::warn!(
-                        "light_spot missing '_cone'; defaulting to 30 degrees inner"
-                    );
+                    log::warn!("light_spot missing '_cone'; defaulting to 30 degrees inner");
                     30.0
                 }
             };
             let outer_deg = match parse_optional_int(props, "_cone2")? {
                 Some(v) => v as f32,
                 None => {
-                    log::warn!(
-                        "light_spot missing '_cone2'; defaulting to 45 degrees outer"
-                    );
+                    log::warn!("light_spot missing '_cone2'; defaulting to 45 degrees outer");
                     45.0
                 }
             };
@@ -202,9 +198,7 @@ pub fn translate_light(
                     }
                 })?
             } else {
-                log::warn!(
-                    "light_sun missing 'mangle'; defaulting to straight down (-90 0 0)"
-                );
+                log::warn!("light_sun missing 'mangle'; defaulting to straight down (-90 0 0)");
                 // "-90 0 0" → engine (0, -1, 0), matching sub-plan 1.
                 parse_mangle_direction("-90 0 0").expect("built-in default mangle must parse")
             };
@@ -236,18 +230,14 @@ pub fn translate_light(
 
     let animation = if style == 0 {
         if props.contains_key("_phase") && phase_raw != 0.0 {
-            log::warn!(
-                "light _phase set but style=0 (no animation); phase has no effect"
-            );
+            log::warn!("light _phase set but style=0 (no animation); phase has no effect");
         }
         None
     } else {
         match quake_style_animation(style, phase) {
             Some(anim) => Some(anim),
             None => {
-                log::warn!(
-                    "light style {style} has no preset defined; treating as constant"
-                );
+                log::warn!("light style {style} has no preset defined; treating as constant");
                 None
             }
         }

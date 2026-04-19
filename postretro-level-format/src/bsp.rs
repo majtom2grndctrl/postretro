@@ -238,7 +238,7 @@ mod tests {
                 BspNodeRecord {
                     plane_normal: [1.0, 0.0, 0.0],
                     plane_distance: 32.0,
-                    front: 1,     // node index 1
+                    front: 1, // node index 1
                     back: -1, // leaf index 0
                 },
                 BspNodeRecord {

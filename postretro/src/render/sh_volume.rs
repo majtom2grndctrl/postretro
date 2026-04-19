@@ -269,17 +269,12 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
 /// hardware trilinear filter blends them towards darkness near walls — this
 /// matches the baker's contract and removes the need for a shader-side
 /// validity branch.
-fn pack_probes_to_band_slices(
-    probes: &[ShProbe],
-    grid: [u32; 3],
-) -> Vec<Vec<u16>> {
+fn pack_probes_to_band_slices(probes: &[ShProbe], grid: [u32; 3]) -> Vec<Vec<u16>> {
     let total = (grid[0] as usize) * (grid[1] as usize) * (grid[2] as usize);
     debug_assert_eq!(probes.len(), total);
 
     // Each band's buffer holds 4 u16 halves per probe (R, G, B, pad=0).
-    let mut bands: Vec<Vec<u16>> = (0..SH_BAND_COUNT)
-        .map(|_| vec![0u16; total * 4])
-        .collect();
+    let mut bands: Vec<Vec<u16>> = (0..SH_BAND_COUNT).map(|_| vec![0u16; total * 4]).collect();
 
     for (probe_idx, probe) in probes.iter().enumerate() {
         let off = probe_idx * 4;
@@ -362,11 +357,21 @@ pub(crate) fn build_animation_buffers(
     section: Option<&ShVolumeSection>,
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>, u32) {
     let Some(sec) = section else {
-        return (dummy_descriptor_buffer(), dummy_storage_buffer(), dummy_storage_buffer(), 0);
+        return (
+            dummy_descriptor_buffer(),
+            dummy_storage_buffer(),
+            dummy_storage_buffer(),
+            0,
+        );
     };
     let animated_light_count = sec.animation_descriptors.len();
     if animated_light_count == 0 {
-        return (dummy_descriptor_buffer(), dummy_storage_buffer(), dummy_storage_buffer(), 0);
+        return (
+            dummy_descriptor_buffer(),
+            dummy_storage_buffer(),
+            dummy_storage_buffer(),
+            0,
+        );
     }
 
     // Pack sample arrays contiguously: one brightness block per light, then
@@ -706,10 +711,8 @@ mod tests {
             u32::from_ne_bytes(descriptors[48 + 8..48 + 12].try_into().unwrap());
         let brightness_count_1 =
             u32::from_ne_bytes(descriptors[48 + 12..48 + 16].try_into().unwrap());
-        let color_offset_1 =
-            u32::from_ne_bytes(descriptors[48 + 28..48 + 32].try_into().unwrap());
-        let color_count_1 =
-            u32::from_ne_bytes(descriptors[48 + 32..48 + 36].try_into().unwrap());
+        let color_offset_1 = u32::from_ne_bytes(descriptors[48 + 28..48 + 32].try_into().unwrap());
+        let color_count_1 = u32::from_ne_bytes(descriptors[48 + 32..48 + 36].try_into().unwrap());
         // Brightness for light 1 is empty; color samples sit after light 0's
         // brightness block (4 floats) + light 1's (empty) brightness block.
         assert_eq!(brightness_offset_1, 4);
@@ -919,6 +922,9 @@ mod tests {
              for a radiance lobe pointing in +y",
         );
         // Sanity: +y should be meaningfully brighter, not just marginally so.
-        assert!((up - down).abs() > 0.1, "directional contrast too weak: up={up}, down={down}");
+        assert!(
+            (up - down).abs() > 0.1,
+            "directional contrast too weak: up={up}, down={down}"
+        );
     }
 }

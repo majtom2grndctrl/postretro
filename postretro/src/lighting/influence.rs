@@ -13,6 +13,20 @@ pub struct LightInfluence {
     pub radius: f32,
 }
 
+impl LightInfluence {
+    /// Check if a point (e.g., camera) is within the influence volume.
+    /// For directional lights (radius == f32::MAX), always returns true.
+    #[allow(dead_code)]
+    pub fn is_in_frustum_approx(&self, point: Vec3) -> bool {
+        if self.radius >= f32::MAX / 2.0 {
+            // Directional light: always in scope.
+            return true;
+        }
+        let dist_sq = (self.center - point).length_squared();
+        dist_sq <= self.radius * self.radius
+    }
+}
+
 /// Pack influence records into a contiguous `[f32; 4]` array suitable for
 /// GPU upload as `array<vec4<f32>>`.
 pub fn pack_influence(records: &[LightInfluence]) -> Vec<u8> {

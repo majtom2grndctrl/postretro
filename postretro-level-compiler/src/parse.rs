@@ -345,10 +345,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Entity brushes: {entity_brush_count}");
     log::info!("Brush sides: {total_side_count}");
     log::info!("Total vertices: {total_vertex_count}");
-    log::info!(
-        "Entity classnames: {}",
-        entity_classnames.join(", ")
-    );
+    log::info!("Entity classnames: {}", entity_classnames.join(", "));
     log::info!("Lights: {}", lights.len());
 
     Ok(MapData {

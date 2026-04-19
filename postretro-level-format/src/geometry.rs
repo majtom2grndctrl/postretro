@@ -207,19 +207,34 @@ impl GeometrySection {
         let mut vertices = Vec::with_capacity(vertex_count);
         for _ in 0..vertex_count {
             let x = f32::from_le_bytes([
-                data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
             ]);
             let y = f32::from_le_bytes([
-                data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
             ]);
             let z = f32::from_le_bytes([
-                data[offset + 8], data[offset + 9], data[offset + 10], data[offset + 11],
+                data[offset + 8],
+                data[offset + 9],
+                data[offset + 10],
+                data[offset + 11],
             ]);
             let u = f32::from_le_bytes([
-                data[offset + 12], data[offset + 13], data[offset + 14], data[offset + 15],
+                data[offset + 12],
+                data[offset + 13],
+                data[offset + 14],
+                data[offset + 15],
             ]);
             let v = f32::from_le_bytes([
-                data[offset + 16], data[offset + 17], data[offset + 18], data[offset + 19],
+                data[offset + 16],
+                data[offset + 17],
+                data[offset + 18],
+                data[offset + 19],
             ]);
             let normal_u = u16::from_le_bytes([data[offset + 20], data[offset + 21]]);
             let normal_v = u16::from_le_bytes([data[offset + 22], data[offset + 23]]);
@@ -241,7 +256,10 @@ impl GeometrySection {
         let mut indices = Vec::with_capacity(index_count);
         for _ in 0..index_count {
             let idx = u32::from_le_bytes([
-                data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
             ]);
             indices.push(idx);
             offset += 4;
@@ -250,10 +268,16 @@ impl GeometrySection {
         let mut faces = Vec::with_capacity(face_count);
         for _ in 0..face_count {
             let leaf_index = u32::from_le_bytes([
-                data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
             ]);
             let texture_index = u32::from_le_bytes([
-                data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
             ]);
             faces.push(FaceMeta {
                 leaf_index,
@@ -371,7 +395,10 @@ mod tests {
         assert!((n[1] - 1.0).abs() < 0.001, "expected ~+Y normal, got {n:?}");
 
         let t = restored.vertices[0].decode_tangent();
-        assert!((t[0] - 1.0).abs() < 0.001, "expected ~+X tangent, got {t:?}");
+        assert!(
+            (t[0] - 1.0).abs() < 0.001,
+            "expected ~+X tangent, got {t:?}"
+        );
     }
 
     #[test]

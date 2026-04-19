@@ -8,6 +8,7 @@ pub mod chunk_list;
 pub mod influence;
 pub mod lightmap;
 pub mod spec_buffer;
+pub mod spot_shadow;
 
 use crate::prl::{FalloffModel, LightType, MapLight};
 
@@ -50,7 +51,10 @@ fn falloff_model_u32(fm: FalloffModel) -> u32 {
 /// `Point` lights the unused fields (direction for Point, cone angles for
 /// non-Spot, position for Directional in the shader's logic) still need
 /// to be zeroed to keep the record deterministic.
-pub fn pack_light(light: &MapLight) -> [u8; GPU_LIGHT_SIZE] {
+///
+/// The `slot_index` is written to bytes 56–59 (cone_angles_and_pad z component).
+/// Sentinel `0xFFFFFFFF` = no shadow slot allocated.
+pub fn pack_light_with_slot(light: &MapLight, slot_index: u32) -> [u8; GPU_LIGHT_SIZE] {
     let mut bytes = [0u8; GPU_LIGHT_SIZE];
 
     // slot 0: position_and_type — world position (f32x3) + bitcast<f32>(u32 light_type)
@@ -82,20 +86,44 @@ pub fn pack_light(light: &MapLight) -> [u8; GPU_LIGHT_SIZE] {
     write_f32(&mut bytes, 40, light.cone_direction[2]);
     write_f32(&mut bytes, 44, light.falloff_range);
 
-    // slot 3: cone_angles_and_pad — inner + outer cone angles (radians)
+    // slot 3: cone_angles_and_pad — inner + outer cone angles (radians) + shadow slot index
     write_f32(&mut bytes, 48, light.cone_angle_inner);
     write_f32(&mut bytes, 52, light.cone_angle_outer);
-    // bytes 56..64 stay zero — reserved pad.
+    // bytes 56..60 hold the shadow slot index (0..8 or 0xFFFFFFFF for no slot).
+    // Shader reads as f32 then bitcasts back to u32; round-trip preserves bit patterns.
+    write_u32_as_f32(&mut bytes, 56, slot_index);
+    // bytes 60..64 stay zero — reserved pad.
 
     bytes
 }
 
+/// Legacy wrapper for backward compatibility. Calls `pack_light_with_slot` with `NO_SHADOW_SLOT`.
+pub fn pack_light(light: &MapLight) -> [u8; GPU_LIGHT_SIZE] {
+    pack_light_with_slot(light, crate::lighting::spot_shadow::NO_SHADOW_SLOT)
+}
+
 /// Pack the full light list into a contiguous byte buffer suitable for
 /// `queue.write_buffer` into the shader's `array<GpuLight>` binding.
+///
+/// Each light's shadow slot index is set to `NO_SHADOW_SLOT` (no shadow).
+/// For runtime slot allocation, use `pack_lights_with_slots` instead.
 pub fn pack_lights(lights: &[MapLight]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(lights.len() * GPU_LIGHT_SIZE);
     for light in lights {
         bytes.extend_from_slice(&pack_light(light));
+    }
+    bytes
+}
+
+/// Pack the full light list with per-light shadow slot assignments.
+///
+/// `slot_indices` must have the same length as `lights`.
+/// Each entry is a slot index (0..8) or `NO_SHADOW_SLOT` for unshadowed.
+#[allow(dead_code)]
+pub fn pack_lights_with_slots(lights: &[MapLight], slot_indices: &[u32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(lights.len() * GPU_LIGHT_SIZE);
+    for (light, &slot) in lights.iter().zip(slot_indices.iter()) {
+        bytes.extend_from_slice(&pack_light_with_slot(light, slot));
     }
     bytes
 }
@@ -200,6 +228,12 @@ mod tests {
 
         // range lives in slot 2 w.
         assert_eq!(read_f32(&bytes, 44), 12.5);
+
+        // slot index should be NO_SHADOW_SLOT.
+        assert_eq!(
+            read_u32(&bytes, 56),
+            crate::lighting::spot_shadow::NO_SHADOW_SLOT
+        );
     }
 
     #[test]
@@ -255,9 +289,40 @@ mod tests {
     #[test]
     fn cone_pad_is_zeroed_for_point_light() {
         let bytes = pack_light(&sample_point());
-        // cone_angles_and_pad slot, z/w pad = bytes 56..64
-        for &b in &bytes[56..64] {
+        // cone_angles_and_pad slot, z = shadow slot index, w = pad = bytes 60..64
+        assert_eq!(
+            read_u32(&bytes, 56),
+            crate::lighting::spot_shadow::NO_SHADOW_SLOT
+        );
+        for &b in &bytes[60..64] {
             assert_eq!(b, 0);
         }
+    }
+
+    #[test]
+    fn pack_lights_with_slots_encodes_slot_indices() {
+        let lights = vec![sample_point(), sample_spot()];
+        let slots = vec![0u32, 1u32];
+        let bytes = pack_lights_with_slots(&lights, &slots);
+
+        // First light at slot 0.
+        assert_eq!(read_u32(&bytes, 56), 0);
+        // Second light at slot 1.
+        assert_eq!(read_u32(&bytes, GPU_LIGHT_SIZE + 56), 1);
+    }
+
+    #[test]
+    fn pack_lights_with_slots_no_slot_sentinel() {
+        let lights = vec![sample_point(), sample_spot()];
+        let slots = vec![crate::lighting::spot_shadow::NO_SHADOW_SLOT, 2u32];
+        let bytes = pack_lights_with_slots(&lights, &slots);
+
+        // First light unshadowed.
+        assert_eq!(
+            read_u32(&bytes, 56),
+            crate::lighting::spot_shadow::NO_SHADOW_SLOT
+        );
+        // Second light at slot 2.
+        assert_eq!(read_u32(&bytes, GPU_LIGHT_SIZE + 56), 2);
     }
 }

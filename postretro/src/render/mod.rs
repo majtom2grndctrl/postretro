@@ -18,7 +18,8 @@ use crate::lighting::chunk_list::ChunkGrid;
 use crate::lighting::influence::{self, LightInfluence};
 use crate::lighting::lightmap::LightmapResources;
 use crate::lighting::spec_buffer::{SPEC_LIGHT_SIZE, pack_spec_lights};
-use crate::lighting::{GPU_LIGHT_SIZE, pack_lights};
+use crate::lighting::spot_shadow::SpotShadowPool;
+use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots};
 use crate::material::Material;
 use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
@@ -332,6 +333,18 @@ pub struct Renderer {
     /// white/neutral placeholder so the shader path never branches.
     /// See `lighting::lightmap`.
     lightmap_resources: LightmapResources,
+
+    /// Group 2 — dynamic lights buffer. Holds the packed GpuLight array
+    /// (updated per frame for slot assignment).
+    #[allow(dead_code)]
+    lights_buffer: wgpu::Buffer,
+    /// Per-frame light list cached from the level (for slot assignment).
+    #[allow(dead_code)]
+    level_lights: Vec<MapLight>,
+    /// Spot shadow pool: 8 depth textures with per-frame slot assignment.
+    /// `None` when no geometry is loaded.
+    #[allow(dead_code)]
+    spot_shadow_pool: Option<SpotShadowPool>,
 
     depth_view: wgpu::TextureView,
 
@@ -680,20 +693,47 @@ impl Renderer {
                 ],
             });
 
+        // Cache the level's light list for per-frame slot assignment.
+        let level_lights = geometry.map(|g| g.lights.to_vec()).unwrap_or_default();
+
+        // Check for dynamic directional lights and warn (not supported).
+        for (idx, light) in level_lights.iter().enumerate() {
+            if light.is_dynamic && light.light_type == crate::prl::LightType::Directional {
+                log::warn!(
+                    "[Renderer] Dynamic directional light (light_sun) at index {} found — not supported. \
+                     Will render unshadowed (diffuse + specular only).",
+                    idx
+                );
+            }
+        }
+
         // Pack the map's lights into GPU bytes and create the storage
         // buffer. wgpu rejects a zero-size storage buffer, so we pad to a
         // single dummy record when there are no lights at all; the
         // shader's `light_count` loop bound stays at 0 so the dummy is
         // never read.
-        let lights_data = match geometry {
-            Some(g) if !g.lights.is_empty() => pack_lights(g.lights),
-            _ => vec![0u8; GPU_LIGHT_SIZE],
+        let lights_data = if !level_lights.is_empty() {
+            pack_lights(&level_lights)
+        } else {
+            vec![0u8; GPU_LIGHT_SIZE]
         };
         let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Direct Lights Storage Buffer"),
             contents: &lights_data,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
+
+        // Initialize the spot shadow pool.
+        let spot_shadow_pool = if has_geometry {
+            Some(SpotShadowPool::new(&device))
+        } else {
+            None
+        };
+        if spot_shadow_pool.is_some() {
+            log::info!(
+                "[Renderer] Spot shadow pool initialized (8 × 1024×1024 Depth32Float = 32 MiB VRAM)"
+            );
+        }
 
         // Influence volume buffer (binding 1). Same dummy strategy as lights.
         let influence_data = match geometry {
@@ -1285,6 +1325,9 @@ impl Renderer {
             ambient_floor,
             sh_volume_resources,
             lightmap_resources,
+            lights_buffer,
+            level_lights,
+            spot_shadow_pool,
             depth_view,
             gpu_textures,
             bvh_leaves,
@@ -1384,6 +1427,47 @@ impl Renderer {
             lighting_isolation: self.lighting_isolation,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
+    }
+
+    /// Update the dynamic lights buffer with per-frame shadow slot assignments.
+    ///
+    /// Ranks visible dynamic spot lights by influence area and assigns slots.
+    /// Rewrites the lights buffer with slot indices. Called once per frame
+    /// before rendering.
+    #[allow(dead_code)]
+    pub fn update_dynamic_light_slots(
+        &mut self,
+        camera_position: Vec3,
+        camera_near_clip: f32,
+        light_influences: &[LightInfluence],
+    ) {
+        if self.level_lights.is_empty() {
+            return;
+        }
+
+        // For now, we don't have per-frame visibility (visible_cell_bitmask).
+        // Use a dummy bitmask that considers all lights visible.
+        // This will be replaced with actual visibility data in Task B.
+        let dummy_visible = vec![true; self.level_lights.len()];
+
+        // Rank lights and get slot assignments.
+        let slot_assignment = SpotShadowPool::rank_lights(
+            &self.level_lights,
+            camera_position,
+            camera_near_clip,
+            &dummy_visible,
+            light_influences,
+        );
+
+        // Repack lights with slot assignments.
+        let lights_data = pack_lights_with_slots(&self.level_lights, &slot_assignment);
+        self.queue
+            .write_buffer(&self.lights_buffer, 0, &lights_data);
+
+        // Store the slot assignment for later use in rendering.
+        if let Some(pool) = &mut self.spot_shadow_pool {
+            pool.slot_assignment = slot_assignment;
+        }
     }
 
     /// Current ambient floor value (0.0–1.0). Read by the diagnostic

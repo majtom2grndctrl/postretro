@@ -192,10 +192,7 @@ fn upload_direction_texture(
     )
 }
 
-fn upload_placeholder_irradiance(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> wgpu::Texture {
+fn upload_placeholder_irradiance(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
     // 1×1 white RGBA16Float texel (1.0, 1.0, 1.0, 1.0). f16(1.0) = 0x3c00.
     let white = 0x3c00u16;
     let mut bytes = Vec::with_capacity(8);
@@ -206,7 +203,11 @@ fn upload_placeholder_irradiance(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("Lightmap Irradiance Placeholder"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -219,10 +220,7 @@ fn upload_placeholder_irradiance(
     )
 }
 
-fn upload_placeholder_direction(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> wgpu::Texture {
+fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
     // Neutral direction: +Y encoded octahedral (0, 1) maps to (0.5, 1.0) →
     // 8-bit quantization (128, 255). Alpha 0xFF.
     let bytes = [128u8, 255, 128, 255];
@@ -230,7 +228,11 @@ fn upload_placeholder_direction(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("Lightmap Direction Placeholder"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,

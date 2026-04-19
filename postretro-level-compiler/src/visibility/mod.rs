@@ -73,9 +73,7 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
     let seed = partition::find_leaf_for_point(tree, probe);
 
     if tree.leaves[seed].is_solid {
-        log::warn!(
-            "Void probe landed in a solid leaf — exterior leaf culling skipped"
-        );
+        log::warn!("Void probe landed in a solid leaf — exterior leaf culling skipped");
         return HashSet::new();
     }
 
@@ -336,9 +334,7 @@ pub fn log_stats(result: &VisibilityResult, portal_count: usize) {
         portal_count,
         result.compressed_pvs_bytes,
     );
-    log::info!(
-        "Visible leaves per leaf: min={min_vis}, max={max_vis}, avg={avg_vis:.1}",
-    );
+    log::info!("Visible leaves per leaf: min={min_vis}, max={max_vis}, avg={avg_vis:.1}",);
 }
 
 #[cfg(test)]

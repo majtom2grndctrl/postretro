@@ -128,6 +128,12 @@ struct AnimationDescriptor {
 @group(4) @binding(1) var lightmap_direction: texture_2d<f32>;
 @group(4) @binding(2) var lightmap_sampler: sampler;
 
+// Group 5 — dynamic spot light shadow maps.
+// See context/plans/in-progress/lighting-spot-shadows/index.md § Task B.
+@group(5) @binding(0) var spot_shadow_depth: texture_depth_2d_array;
+@group(5) @binding(1) var spot_shadow_compare: sampler_comparison;
+@group(5) @binding(2) var<storage, read> light_space_matrices: array<mat4x4<f32>, 8>;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) base_uv: vec2<f32>,
@@ -256,6 +262,39 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
     let cos_inner = cos(inner_angle);
     let cos_outer = cos(outer_angle);
     return smoothstep(cos_outer, cos_inner, cos_angle);
+}
+
+// --- Spot shadow sampling ---
+// Sample the shadow map for a dynamic spot light. Returns 0.0 (fully shadowed)
+// to 1.0 (fully lit). Fragments outside the shadow map's projection are treated
+// as unshadowed (1.0).
+//
+// `slot_index`: shadow-map slot (0..7) from GpuLight.cone_angles_and_pad.z.
+// `world_pos`: fragment position in world space.
+// `light_proj`: light-space projection matrix.
+fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<f32>) -> f32 {
+    // Transform fragment position into light space.
+    let light_clip = light_proj * vec4<f32>(world_pos, 1.0);
+    let light_ndc = light_clip.xyz / light_clip.w;
+
+    // Reject fragments outside the shadow map's projection bounds [0,1]³.
+    // light_ndc.z is depth in [0,1] (Vulkan / glam conventions).
+    if light_ndc.x < 0.0 || light_ndc.x > 1.0 ||
+       light_ndc.y < 0.0 || light_ndc.y > 1.0 ||
+       light_ndc.z < 0.0 || light_ndc.z > 1.0 {
+        return 1.0; // Unshadowed — outside cone.
+    }
+
+    // Sample the shadow map at (uv, slot) with comparison.
+    // textureSampleCompare returns 1.0 if depth < stored_depth (lit), 0.0 otherwise (shadowed).
+    let shadow_factor = textureSampleCompare(
+        spot_shadow_depth,
+        spot_shadow_compare,
+        light_ndc.xy,
+        i32(slot_index),
+        light_ndc.z
+    );
+    return shadow_factor;
 }
 
 // --- SH irradiance volume sampling ---
@@ -632,6 +671,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                     light.cone_angles_and_pad.y,
                 );
                 attenuation = dist_falloff * cone;
+
+                // Apply shadow mapping if this light has an allocated shadow slot.
+                let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
+                if slot_index != 0xFFFFFFFFu {
+                    // Light has a shadow map allocated.
+                    let light_proj = light_space_matrices[slot_index];
+                    let shadow = sample_spot_shadow(slot_index, in.world_position, light_proj);
+                    attenuation = attenuation * shadow;
+                }
             }
             default: {
                 // Directional light (case 2u and any unknown discriminant)

@@ -87,11 +87,7 @@ impl FrameTiming {
     /// Create a new timing helper. `pass_labels.len()` pairs of query
     /// slots will be allocated (plus padding to 16 slots minimum), and
     /// `encode_resolve` copies all of them out each frame.
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pass_labels: Vec<&'static str>,
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, pass_labels: Vec<&'static str>) -> Self {
         let pair_count = pass_labels.len() as u32;
         // 16 slots = 8 pairs, per the calling convention — pad up so
         // callers can slot in future passes without resizing.
@@ -312,7 +308,13 @@ impl FrameTiming {
                 .pass_labels
                 .iter()
                 .zip(self.accum_skipped.iter())
-                .filter_map(|(label, &n)| if n > 0 { Some(format!("{label} {n}")) } else { None })
+                .filter_map(|(label, &n)| {
+                    if n > 0 {
+                        Some(format!("{label} {n}"))
+                    } else {
+                        None
+                    }
+                })
                 .collect();
             if skip_parts.is_empty() {
                 log::info!(

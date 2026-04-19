@@ -22,9 +22,7 @@ use bvh::bvh::Bvh;
 use bvh::ray::Ray;
 use glam::Vec3;
 use nalgebra::{Point3, Vector3};
-use postretro_level_format::lightmap::{
-    LightmapSection, encode_direction_oct, f32_to_f16_bits,
-};
+use postretro_level_format::lightmap::{LightmapSection, encode_direction_oct, f32_to_f16_bits};
 use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
@@ -111,20 +109,14 @@ pub fn bake_lightmap(
     inputs: &mut LightmapInputs<'_>,
     texel_density: f32,
 ) -> Result<LightmapSection, LightmapBakeError> {
-    if inputs.geometry.geometry.vertices.is_empty()
-        || inputs.geometry.geometry.faces.is_empty()
-    {
+    if inputs.geometry.geometry.vertices.is_empty() || inputs.geometry.geometry.faces.is_empty() {
         return Ok(LightmapSection::placeholder());
     }
 
     // Filter lights: static only. `is_dynamic` lights contribute at runtime,
     // and `bake_only` is already ignored by the direct path — it still bakes
     // here because the static lightmap is its only contribution.
-    let static_lights: Vec<&MapLight> = inputs
-        .lights
-        .iter()
-        .filter(|l| !l.is_dynamic)
-        .collect();
+    let static_lights: Vec<&MapLight> = inputs.lights.iter().filter(|l| !l.is_dynamic).collect();
     if static_lights.is_empty() {
         return Ok(LightmapSection::placeholder());
     }
@@ -145,9 +137,7 @@ pub fn bake_lightmap(
 
     // --- Validate individual charts against the atlas dimension limit. ---
     for (face_index, chart) in charts.iter().enumerate() {
-        if chart.width_texels > MAX_ATLAS_DIMENSION
-            || chart.height_texels > MAX_ATLAS_DIMENSION
-        {
+        if chart.width_texels > MAX_ATLAS_DIMENSION || chart.height_texels > MAX_ATLAS_DIMENSION {
             return Err(LightmapBakeError::ChartTooLarge {
                 face_index,
                 width_texels: chart.width_texels,
@@ -191,7 +181,13 @@ pub fn bake_lightmap(
     }
 
     // --- Edge dilation: extend coverage one texel outward ---
-    dilate_edges(&mut irradiance, &mut direction, &mut coverage, atlas_w, atlas_h);
+    dilate_edges(
+        &mut irradiance,
+        &mut direction,
+        &mut coverage,
+        atlas_w,
+        atlas_h,
+    );
 
     // --- Encode to on-disk byte layout ---
     let irr_bytes = encode_irradiance_rgba16f(&irradiance);
@@ -222,8 +218,7 @@ fn split_shared_vertices(geom: &mut GeometryResult) {
     // Remap table reused per-face: original_vertex_index -> duplicated_index.
     // We key on original indices only — once a face is remapping, it never
     // writes the original index back into its range.
-    let mut face_remap: std::collections::HashMap<u32, u32> =
-        std::collections::HashMap::new();
+    let mut face_remap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
 
     for (face_idx, range) in ranges.iter().enumerate() {
         let face_idx_u32 = face_idx as u32;
@@ -329,8 +324,11 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
         // the winding doesn't match the stored normal, which would invert the
         // Lambert term and produce an all-zero chart.
         let stored_normal_raw = section.vertices[i0].decode_normal();
-        let stored_normal =
-            Vec3::new(stored_normal_raw[0], stored_normal_raw[1], stored_normal_raw[2]);
+        let stored_normal = Vec3::new(
+            stored_normal_raw[0],
+            stored_normal_raw[1],
+            stored_normal_raw[2],
+        );
         let normal = if stored_normal.length_squared() > 0.5 {
             stored_normal.normalize()
         } else {
@@ -377,19 +375,25 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
             let rel = p - p0;
             let u = rel.dot(u_axis);
             let v = rel.dot(v_axis);
-            if u < u_min { u_min = u; }
-            if u > u_max { u_max = u; }
-            if v < v_min { v_min = v; }
-            if v > v_max { v_max = v; }
+            if u < u_min {
+                u_min = u;
+            }
+            if u > u_max {
+                u_max = u;
+            }
+            if v < v_min {
+                v_min = v;
+            }
+            if v > v_max {
+                v_max = v;
+            }
         }
 
         let u_extent = (u_max - u_min).max(density);
         let v_extent = (v_max - v_min).max(density);
 
-        let width_texels =
-            ((u_extent / density).ceil() as u32 + 2 * CHART_PADDING_TEXELS).max(1);
-        let height_texels =
-            ((v_extent / density).ceil() as u32 + 2 * CHART_PADDING_TEXELS).max(1);
+        let width_texels = ((u_extent / density).ceil() as u32 + 2 * CHART_PADDING_TEXELS).max(1);
+        let height_texels = ((v_extent / density).ceil() as u32 + 2 * CHART_PADDING_TEXELS).max(1);
 
         charts.push(Chart {
             origin: p0,
@@ -473,9 +477,7 @@ fn shelf_pack(
     loop {
         match try_shelf_pack(charts, &order, atlas_w) {
             Ok((atlas_h_raw, placements)) => {
-                let atlas_h = atlas_h_raw
-                    .max(MIN_ATLAS_DIMENSION)
-                    .next_power_of_two();
+                let atlas_h = atlas_h_raw.max(MIN_ATLAS_DIMENSION).next_power_of_two();
                 if atlas_h > MAX_ATLAS_DIMENSION {
                     if atlas_w >= MAX_ATLAS_DIMENSION {
                         return Err(LightmapBakeError::AtlasOverflow {
@@ -532,7 +534,10 @@ fn try_shelf_pack(
             shelf_x = 0;
             shelf_h = 0;
         }
-        placements[idx] = ChartPlacement { x: shelf_x, y: shelf_y };
+        placements[idx] = ChartPlacement {
+            x: shelf_x,
+            y: shelf_y,
+        };
         shelf_x += w;
         if h > shelf_h {
             shelf_h = h;
@@ -701,7 +706,10 @@ fn light_contribution_and_direction(
                 return (Vec3::ZERO, l);
             }
             let atten = falloff(light, dist);
-            (Vec3::from(light.color) * (light.intensity * ndotl * atten), l)
+            (
+                Vec3::from(light.color) * (light.intensity * ndotl * atten),
+                l,
+            )
         }
         LightType::Spot => {
             let to_light = Vec3::new(
@@ -720,7 +728,10 @@ fn light_contribution_and_direction(
             }
             let atten = falloff(light, dist);
             let cone = spot_cone(light, -l);
-            (Vec3::from(light.color) * (light.intensity * ndotl * atten * cone), l)
+            (
+                Vec3::from(light.color) * (light.intensity * ndotl * atten * cone),
+                l,
+            )
         }
         LightType::Directional => {
             let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
@@ -739,10 +750,16 @@ fn falloff(light: &MapLight, distance: f32) -> f32 {
     match light.falloff_model {
         FalloffModel::Linear => (1.0 - distance / range).clamp(0.0, 1.0),
         FalloffModel::InverseDistance => {
-            if distance > range { 0.0 } else { 1.0 / distance.max(1.0e-4) }
+            if distance > range {
+                0.0
+            } else {
+                1.0 / distance.max(1.0e-4)
+            }
         }
         FalloffModel::InverseSquared => {
-            if distance > range { 0.0 } else {
+            if distance > range {
+                0.0
+            } else {
                 let d2 = (distance * distance).max(1.0e-4);
                 1.0 / d2
             }
@@ -979,29 +996,51 @@ mod tests {
     fn unit_quad_geometry() -> GeometryResult {
         // A 1m × 1m quad on the XZ plane at y=0, facing +Y.
         let v0 = Vertex::new(
-            [0.0, 0.0, 0.0], [0.0, 0.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let v1 = Vertex::new(
-            [1.0, 0.0, 0.0], [1.0, 0.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let v2 = Vertex::new(
-            [1.0, 0.0, 1.0], [1.0, 1.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let v3 = Vertex::new(
-            [0.0, 0.0, 1.0], [0.0, 1.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         GeometryResult {
             geometry: GeometrySection {
                 vertices: vec![v0, v1, v2, v3],
                 indices: vec![0, 1, 2, 0, 2, 3],
-                faces: vec![FaceMeta { leaf_index: 0, texture_index: 0 }],
+                faces: vec![FaceMeta {
+                    leaf_index: 0,
+                    texture_index: 0,
+                }],
             },
             texture_names: TextureNamesSection { names: Vec::new() },
-            face_index_ranges: vec![FaceIndexRange { index_offset: 0, index_count: 6 }],
+            face_index_ranges: vec![FaceIndexRange {
+                index_offset: 0,
+                index_count: 6,
+            }],
         }
     }
 
@@ -1081,7 +1120,10 @@ mod tests {
         // irradiance texel.
         assert!(section.width >= MIN_ATLAS_DIMENSION);
         assert!(section.height >= MIN_ATLAS_DIMENSION);
-        assert_eq!(section.irradiance.len(), (section.width * section.height * 8) as usize);
+        assert_eq!(
+            section.irradiance.len(),
+            (section.width * section.height * 8) as usize
+        );
         let mut has_nonzero = false;
         for chunk in section.irradiance.chunks_exact(2).step_by(4) {
             let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
@@ -1090,7 +1132,10 @@ mod tests {
                 break;
             }
         }
-        assert!(has_nonzero, "expected at least one non-zero irradiance texel");
+        assert!(
+            has_nonzero,
+            "expected at least one non-zero irradiance texel"
+        );
     }
 
     #[test]
@@ -1182,8 +1227,16 @@ mod tests {
         let _ = bake_lightmap(&mut inputs, 0.25).unwrap();
         for v in &geo.geometry.vertices {
             let uv = v.decode_lightmap_uv();
-            assert!(uv[0] >= 0.0 && uv[0] <= 1.0, "lightmap u out of range: {}", uv[0]);
-            assert!(uv[1] >= 0.0 && uv[1] <= 1.0, "lightmap v out of range: {}", uv[1]);
+            assert!(
+                uv[0] >= 0.0 && uv[0] <= 1.0,
+                "lightmap u out of range: {}",
+                uv[0]
+            );
+            assert!(
+                uv[1] >= 0.0 && uv[1] <= 1.0,
+                "lightmap v out of range: {}",
+                uv[1]
+            );
         }
     }
 
@@ -1192,33 +1245,105 @@ mod tests {
         // Build two parallel quads: a floor and a ceiling blocker.
         // Light is above the ceiling, so the floor should see zero irradiance.
         let floor = vec![
-            Vertex::new([0.0, 0.0, 0.0], [0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0]),
-            Vertex::new([2.0, 0.0, 0.0], [1.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0]),
-            Vertex::new([2.0, 0.0, 2.0], [1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0]),
-            Vertex::new([0.0, 0.0, 2.0], [0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0]),
+            Vertex::new(
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
+            Vertex::new(
+                [2.0, 0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
+            Vertex::new(
+                [2.0, 0.0, 2.0],
+                [1.0, 1.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
+            Vertex::new(
+                [0.0, 0.0, 2.0],
+                [0.0, 1.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
         ];
         let ceiling = vec![
-            Vertex::new([-2.0, 1.0, -2.0], [0.0, 0.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0]),
-            Vertex::new([4.0, 1.0, -2.0], [1.0, 0.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0]),
-            Vertex::new([4.0, 1.0, 4.0], [1.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0]),
-            Vertex::new([-2.0, 1.0, 4.0], [0.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0]),
+            Vertex::new(
+                [-2.0, 1.0, -2.0],
+                [0.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
+            Vertex::new(
+                [4.0, 1.0, -2.0],
+                [1.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
+            Vertex::new(
+                [4.0, 1.0, 4.0],
+                [1.0, 1.0],
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
+            Vertex::new(
+                [-2.0, 1.0, 4.0],
+                [0.0, 1.0],
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
         ];
         let mut vertices = floor;
         vertices.extend(ceiling);
         let indices = vec![
-            0, 1, 2, 0, 2, 3,          // floor
-            4, 5, 6, 4, 6, 7,          // ceiling
+            0, 1, 2, 0, 2, 3, // floor
+            4, 5, 6, 4, 6, 7, // ceiling
         ];
         let faces = vec![
-            FaceMeta { leaf_index: 0, texture_index: 0 },
-            FaceMeta { leaf_index: 0, texture_index: 0 },
+            FaceMeta {
+                leaf_index: 0,
+                texture_index: 0,
+            },
+            FaceMeta {
+                leaf_index: 0,
+                texture_index: 0,
+            },
         ];
         let face_index_ranges = vec![
-            FaceIndexRange { index_offset: 0, index_count: 6 },
-            FaceIndexRange { index_offset: 6, index_count: 6 },
+            FaceIndexRange {
+                index_offset: 0,
+                index_count: 6,
+            },
+            FaceIndexRange {
+                index_offset: 6,
+                index_count: 6,
+            },
         ];
         let mut geo = GeometryResult {
-            geometry: GeometrySection { vertices, indices, faces },
+            geometry: GeometrySection {
+                vertices,
+                indices,
+                faces,
+            },
             texture_names: TextureNamesSection { names: Vec::new() },
             face_index_ranges,
         };
@@ -1254,10 +1379,8 @@ mod tests {
         // region, not a uniformly-lit atlas.
         let mut zero_count = 0;
         for t in 0..(section.width * section.height) as usize {
-            let r_bits = u16::from_le_bytes([
-                section.irradiance[t * 8],
-                section.irradiance[t * 8 + 1],
-            ]);
+            let r_bits =
+                u16::from_le_bytes([section.irradiance[t * 8], section.irradiance[t * 8 + 1]]);
             if r_bits == 0 {
                 zero_count += 1;
             }
@@ -1280,29 +1403,51 @@ mod tests {
         // out of bounds during bake and dilation.
         let size = 200.0; // metres — 5000 texels at 0.04 m/texel, beyond MAX_ATLAS_DIMENSION
         let v0 = Vertex::new(
-            [0.0, 0.0, 0.0], [0.0, 0.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let v1 = Vertex::new(
-            [size, 0.0, 0.0], [1.0, 0.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [size, 0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let v2 = Vertex::new(
-            [size, 0.0, size], [1.0, 1.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [size, 0.0, size],
+            [1.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let v3 = Vertex::new(
-            [0.0, 0.0, size], [0.0, 1.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [0.0, 0.0, size],
+            [0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let mut geo = GeometryResult {
             geometry: GeometrySection {
                 vertices: vec![v0, v1, v2, v3],
                 indices: vec![0, 1, 2, 0, 2, 3],
-                faces: vec![FaceMeta { leaf_index: 0, texture_index: 0 }],
+                faces: vec![FaceMeta {
+                    leaf_index: 0,
+                    texture_index: 0,
+                }],
             },
             texture_names: TextureNamesSection { names: Vec::new() },
-            face_index_ranges: vec![FaceIndexRange { index_offset: 0, index_count: 6 }],
+            face_index_ranges: vec![FaceIndexRange {
+                index_offset: 0,
+                index_count: 6,
+            }],
         };
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights = vec![point_light_above()];
@@ -1327,24 +1472,44 @@ mod tests {
         // vertex record so it can carry its own lightmap UV — otherwise one
         // face's UV overwrites the other at the seam.
         let shared = Vertex::new(
-            [0.0, 0.0, 0.0], [0.0, 0.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let a1 = Vertex::new(
-            [1.0, 0.0, 0.0], [1.0, 0.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let a2 = Vertex::new(
-            [1.0, 0.0, 1.0], [1.0, 1.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let b1 = Vertex::new(
-            [0.0, 0.0, 1.0], [0.0, 1.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         let b2 = Vertex::new(
-            [-1.0, 0.0, 1.0], [-1.0, 1.0],
-            [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0],
+            [-1.0, 0.0, 1.0],
+            [-1.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
         );
         // Face A: (shared=0, a1=1, a2=2) — triangle in +X,+Z quadrant.
         // Face B: (shared=0, b1=3, b2=4) — triangle sharing vertex 0.
@@ -1353,14 +1518,26 @@ mod tests {
                 vertices: vec![shared, a1, a2, b1, b2],
                 indices: vec![0, 1, 2, 0, 3, 4],
                 faces: vec![
-                    FaceMeta { leaf_index: 0, texture_index: 0 },
-                    FaceMeta { leaf_index: 0, texture_index: 0 },
+                    FaceMeta {
+                        leaf_index: 0,
+                        texture_index: 0,
+                    },
+                    FaceMeta {
+                        leaf_index: 0,
+                        texture_index: 0,
+                    },
                 ],
             },
             texture_names: TextureNamesSection { names: Vec::new() },
             face_index_ranges: vec![
-                FaceIndexRange { index_offset: 0, index_count: 3 },
-                FaceIndexRange { index_offset: 3, index_count: 3 },
+                FaceIndexRange {
+                    index_offset: 0,
+                    index_count: 3,
+                },
+                FaceIndexRange {
+                    index_offset: 3,
+                    index_count: 3,
+                },
             ],
         };
         let original_vertex_count = geo.geometry.vertices.len();

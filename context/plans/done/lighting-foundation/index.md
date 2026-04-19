@@ -1,6 +1,6 @@
 # Lighting Foundation
 
-> **Status:** in progress — sub-plans 1–7 complete; sub-plan 8 (SDF shadows) is next. Durable decisions migrate to `context/lib/` when the full plan ships.
+> **Status:** in progress — sub-plans 1–6, 7 (animated SH — code shipped, validation pending), 9, 10 complete; sub-plan 8 (SDF shadows) retired. Durable decisions migrate to `context/lib/` when the full plan ships.
 > **Milestone:** 5 (Lighting Foundation) — see `context/plans/roadmap.md`.
 > **Related:** `context/lib/rendering_pipeline.md` §4 · `context/lib/build_pipeline.md` §Custom FGD · `context/lib/entity_model.md` · `context/reference/light-entities-across-engines.md`
 > **Prerequisite:** Milestone 4 (BVH Foundation) — must ship and pass its check-in gate before any work in this plan begins. The SH baker traverses the BVH built in Milestone 4. See `context/plans/done/bvh-foundation/`.
@@ -76,7 +76,7 @@ This plan has eight sub-files. Sub-plans 1–2 and 8's baker half are compiler/d
 - Sub-plans 2 (compiler-side SH baker) and 3 (engine-side direct lighting) can proceed **in parallel** once sub-plan 1 is done — they are independent work streams.
 - Sub-plan 4 (light influence volumes) depends on sub-plan 3. Sub-plan 5 (CSM) depends on sub-plan 3 and **benefits from** sub-plan 4. Sub-plans 4 and 5 are otherwise independent of each other.
 - Sub-plan 6 (SH volume runtime) depends on sub-plans 2 and 3, but is independent of sub-plans 5 and 8.
-- Sub-plan 7 (animated SH) is deprioritized to Future (see Out of scope); it can ship as a follow-up once the rest of Milestone 5 is complete.
+- Sub-plan 7 (animated SH) code is shipped; end-to-end validation against a test map with authored `style > 0` lights is the remaining step.
 - Sub-plan 8 (SDF + sphere-traced shadows) depends on sub-plan 3 and the Milestone 4 BVH; **benefits from** sub-plan 4. Independent of sub-plans 5 and 6.
 - Sub-plan 9 (specular maps) depends on sub-plan 8 and a shading model decision recorded in the sub-plan file before implementation starts.
 
@@ -96,7 +96,7 @@ This plan has eight sub-files. Sub-plans 1–2 and 8's baker half are compiler/d
 
 6. **[6-sh-volume.md](./6-sh-volume.md)** — SH irradiance volume sampling (indirect lighting). Loads the SH PRL section from sub-plan 2, uploads to 3D textures, trilinear samples in the fragment shader, reconstructs SH L2 irradiance. Replaces flat ambient as the indirect term for static surfaces and provides indirect lighting for dynamic entities via probe sampling at the entity's position. **Depends on:** sub-plans 2 and 3. **Independent of:** sub-plans 5 and 8.
 
-7. **[7-animated-sh.md](./7-animated-sh.md)** — Animated SH layers. Loads per-light monochrome SH layers and animation descriptors, evaluates brightness/color curves per frame, modulates and adds to base SH. **Deprioritized to Future** — ships as a follow-up once the rest of Milestone 5 is complete. **Depends on:** sub-plan 6.
+7. **[7-animated-sh.md](./7-animated-sh.md)** — Animated SH layers. Loads per-light monochrome SH layers and animation descriptors, evaluates brightness/color curves per frame, modulates and adds to base SH. **Code shipped** (commit `e75cc19`); end-to-end validation against a test map with authored `style > 0` lights is pending. **Depends on:** sub-plan 6.
 
 8. **[8-sdf-shadows.md](./8-sdf-shadows.md)** — SDF atlas baker + sphere-traced soft shadows for point and spot lights. Replaces cube shadow maps entirely. Bake-time: brick-indexed sparse distance field over all static geometry, written as a new PRL section. Runtime: single fragment-shader trace per visible shadow-casting light, gated by `shadow_kind == 2`. Chunk-friendly brick addressing so Milestone 8's chunk primitive migration is additive. **Depends on:** sub-plan 3, Milestone 4 BVH. **Benefits from:** sub-plan 4.
 
@@ -131,7 +131,7 @@ This plan has eight sub-files. Sub-plans 1–2 and 8's baker half are compiler/d
 - Area lights (rectangle, disk). Point / spot / directional cover the target feature set.
 - Second-bounce indirect. The SH volume captures direct-to-static bounces; multi-bounce is a follow-up if visuals demand it.
 - Runtime dynamic probe updates (DDGI-style). The SH volume is baked, read-only at runtime.
-- Animated SH layers (sub-plan 7). Deprioritized to Future — ships as a follow-up once the rest of Milestone 5 is complete.
+- Animated SH layers (sub-plan 7). Code shipped — see sub-plan 7 doc. End-to-end test-map validation is the remaining step.
 - Dynamic SDF rebake. The sub-plan 9 SDF is baked once per level; kinematic clusters and destruction-driven SDF invalidation are addressed in Milestones 9 and 10.
 - Runtime evaluation of light animation curves. The baker bakes animation into probe sample curves at compile time; runtime evaluation of dynamic light animations is a Milestone 6+ follow-up.
 - Hardware ray tracing. Pre-RTX target locked in Milestone 4.

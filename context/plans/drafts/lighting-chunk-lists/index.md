@@ -1,6 +1,6 @@
 # Lighting — Per-Chunk Light Lists + Specular
 
-> **Status:** draft. Supersedes `context/plans/drafts/perf-per-chunk-light-lists/` — that plan is absorbed here and can be deleted when this plan moves to `ready/`.
+> **Status:** draft. Supersedes `context/plans/drafts/perf-per-chunk-light-lists/` — that plan is absorbed here and can be deleted when this plan moves to `ready/`. Also absorbs `context/plans/in-progress/lighting-foundation/9-specular-maps.md` — the specular shading model, `_s.png` texture convention, and per-material shininess from that sub-plan are implemented here; the CSM/SDF shadow integration from sub-plan 9 is superseded by the lightmap and spot-shadow plans.
 > **Depends on:** `lighting-dynamic-flag/` (compiler task needs `MapLight.is_dynamic`). `lighting-old-stack-retirement/` should ship first.
 > **Concurrent with:** `lighting-lightmaps/`, `lighting-sh-amendments/`, `lighting-spot-shadows/`.
 > **Related:** `context/lib/rendering_pipeline.md` §4 · `context/plans/in-progress/lighting-foundation/4-light-influence-volumes.md` (existing per-frustum culling, unchanged).
@@ -60,7 +60,7 @@ Task B (runtime): spec buffer + chunk lookup + Blinn-Phong ───────
 
 ## Task B — Spec-only buffer, chunk lookup, Blinn-Phong
 
-**Crate:** `postretro` · **New module:** `src/lighting/spec_buffer.rs` · **Also modifies:** `src/lighting/chunk_list.rs` *(new)*, `src/render/mod.rs`, `src/shaders/forward.wgsl`.
+**Crate:** `postretro` · **New module:** `src/lighting/spec_buffer.rs` · **Also modifies:** `src/lighting/chunk_list.rs` *(new)*, `src/render/mod.rs`, `src/render/resource.rs` (resource loader), `src/shaders/forward.wgsl`.
 
 1. **Spec-only light buffer.** At level load, populate a storage buffer with one entry per static light: `(position: vec3<f32>, color: vec3<f32>, range: f32)` — ~32 bytes per light. Upload once, read-only at runtime. Dynamic lights excluded.
 2. **Chunk list upload.** Parse the `ChunkLightList` PRL section. Upload grid metadata as a uniform; offset table and flat indices as storage buffers. Missing-section fallback: `has_chunk_grid = 0`, shader iterates the full spec buffer.
@@ -77,14 +77,23 @@ fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
 }
 ```
 
-Specular exponent and intensity sourced from a per-material specular map (texture convention; authoring tooling is out of scope). Applied in both the per-chunk static iteration and the dynamic-pool direct loop (used by `lighting-spot-shadows/`).
+`spec_int` is the R channel of the per-material specular texture (step 7); `spec_exp` is `MaterialUniform.shininess` (steps 8–9). Hoist `V = normalize(camera_pos - world_pos)` outside the per-light loop. Specular is **added** to diffuse with no `(1 − ks)` attenuation and no Fresnel — the retro aesthetic demands punchy highlights, not energy-conserving ones. Applied in both the per-chunk static iteration and the dynamic-pool direct loop (used by `lighting-spot-shadows/`).
 
 6. **Distance falloff + influence range.** Attenuate the specular contribution by the same falloff model as the stored light type. Reject lights outside their influence range entirely (the chunk list is a conservative spatial index; the influence range provides the tight per-light rejection).
+
+7. **Specular map convention.** For each diffuse texture `foo.png`, the resource loader probes for a sibling `foo_s.png` in the same collection directory at load time. Format: R8Unorm, linear color space (not sRGB). If the sibling is absent, bind a shared 1×1 R8 black texture — this zeros `spec_int` in the shader without any branching. If the sibling exists but dimensions do not match the diffuse, log a `warn!` and fall back to the 1×1 black texture. Mirrors the existing `_n` normal-map convention documented in `context/lib/resource_management.md` §4. Update that section when this plan ships.
+
+8. **Per-material shininess.** Add a `shininess: f32` field to the material enum variant property table. Compile-time constants — no runtime clamp needed. Defaults: Default = 32.0; matte variants (concrete, plaster) ≈ 4.0; glossy variants (metal) ≈ 64.0. Range [1.0, 256.0]. If per-texture override via sidecar file is ever added, enforce the clamp at that boundary.
+
+9. **Group 1 bind-group changes (per-material).** Extend the existing per-material group 1 with two new entries: binding 2 = specular texture (`texture_2d<f32>`, R8, sampled as `.r` via the existing `base_sampler` at binding 1 — no new sampler); binding 3 = `MaterialUniform` uniform buffer (`shininess: f32` padded to 16 bytes). Populate `MaterialUniform.shininess` from the variant table at bind-group creation time. One buffer per unique material bind group. No changes to group 0 or group 2.
 
 ### Task B acceptance gates
 
 - Specular highlights appear on test geometry under static lights.
 - Disabling the spec buffer (swap for a 1-element all-zero stub) makes specular highlights vanish, confirming the path.
+- A surface with no `_s.png` sibling shows no specular highlight; confirms the 1×1 black fallback zeroes `spec_int` without shader branching.
+- A glossy metal surface shows a tighter highlight than a matte concrete surface under the same light; confirms per-material shininess sourced from the variant table.
+- Specular highlight tracks view direction (moves as the camera moves relative to the light); confirms the half-vector `H` is computed per-fragment with the correct `V`.
 - On a map with ≥50 static lights: `POSTRETRO_GPU_TIMING=1` forward-pass GPU time is lower with the chunk list active than with the full-buffer fallback. If not measurably lower, log the avg/max per-chunk count and confirm the list was populated correctly before investigating.
 - On a sparse map (<10 lights): no regression versus the full-buffer fallback.
 

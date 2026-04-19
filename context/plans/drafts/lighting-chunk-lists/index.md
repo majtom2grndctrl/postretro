@@ -64,7 +64,7 @@ Task B (runtime): spec buffer + chunk lookup + Blinn-Phong ───────
 
 1. **Spec-only light buffer.** At level load, populate a storage buffer with one entry per static light: `(position: vec3<f32>, color: vec3<f32>, range: f32)` — ~32 bytes per light. Upload once, read-only at runtime. Dynamic lights excluded.
 2. **Chunk list upload.** Parse the `ChunkLightList` PRL section. Upload grid metadata as a uniform; offset table and flat indices as storage buffers. Missing-section fallback: `has_chunk_grid = 0`, shader iterates the full spec buffer.
-3. **Bind group.** Add storage buffer entries to group 2 (bindings 2–5). The full group-2 layout is defined in `context/plans/ready/lighting-spot-shadows/index.md` Task B step 3. Whichever of the three concurrent plans lands first wires the complete layout with placeholder entries for the others.
+3. **Bind group.** Extend group 2 with bindings 2–5 (spec buffer, chunk grid uniform, offset table, index list). The bind group layout must declare all of group 2 bindings 0–5 (the existing 0–1 plus the new 2–5) so wgpu sees a consistent layout. See the full cross-plan group layout in `context/plans/ready/lighting-spot-shadows/index.md` Task B step 3.
 4. **Per-chunk iteration in shader.** Per fragment, compute chunk cell from `world_position`, look up `(offset, count)`, iterate only those lights for specular. Fallback to full buffer if `has_chunk_grid == 0`.
 5. **Blinn-Phong specular.** Normalized Blinn-Phong, implemented as a shared utility function in `forward.wgsl`:
 

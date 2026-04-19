@@ -73,21 +73,19 @@ Runtime-only plan. No compiler or PRL changes. Single workstream, but the shadow
 
    These values are starting points lifted from common shadow-map defaults; retune at landing if acne or peter-panning is visible on the test scene.
 2. **Light-space matrices.** Upload per-frame as a storage buffer of 8 `mat4x4<f32>` entries (one per slot), indexed by the slot ID published in the `GpuLight` record (Task A step 4). Unallocated slots hold identity — never sampled because the fragment-side branch keys on the `0xFFFFFFFF` sentinel.
-3. **Bind group (group 2) — cross-plan layout.** This plan, `lighting-lightmaps/`, and `lighting-chunk-lists/` all extend group 2. To prevent collisions, pre-assign binding ranges here; the three plans adopt this table as they land (first-lander wires the full layout with placeholder entries for the other two, so later landers only fill in content):
+3. **Bind group layout — cross-plan coordination.** The three concurrent plans each own a separate group. The existing shader already establishes groups 0–4; this plan adds group 5. Pre-assigned layout:
 
-   | Binding | Owner plan | Resource |
-   |---------|------------|----------|
-   | 0 | `lighting-lightmaps/` | Lightmap atlas texture |
-   | 1 | `lighting-lightmaps/` | Lightmap sampler |
-   | 2 | `lighting-chunk-lists/` | Spec-only light buffer |
-   | 3 | `lighting-chunk-lists/` | Chunk grid metadata uniform |
-   | 4 | `lighting-chunk-lists/` | Chunk offset table storage buffer |
-   | 5 | `lighting-chunk-lists/` | Chunk light-index list storage buffer |
-   | 6 | **this plan** | Spot shadow depth texture array (8 × 2D) |
-   | 7 | **this plan** | Comparison sampler (nearest, `Less`) |
-   | 8 | **this plan** | Light-space matrix storage buffer (8 × mat4) |
+   | Group | Bindings | Owner plan | Resources |
+   |-------|----------|------------|-----------|
+   | 0 | 0 | (existing) | Camera uniforms |
+   | 1 | 0–1 | (existing) | Per-material base texture + sampler |
+   | 2 | 0–1 | (existing) | `lights` array + `light_influence` array |
+   | 2 | 2–5 | `lighting-chunk-lists/` | Spec buffer, chunk grid uniform, offset table, index list (extends existing group 2) |
+   | 3 | 0–13 | (existing) | SH irradiance volume + animation SH data |
+   | 4 | 0–2 | `lighting-lightmaps/` | `lightmap_irradiance`, `lightmap_direction`, `lightmap_sampler` (already wired in `forward.wgsl`) |
+   | **5** | **0–2** | **this plan** | Spot shadow depth texture array (8 × 2D), comparison sampler (`Less`), light-space matrix buffer (8 × mat4) |
 
-   Whichever plan lands first creates the bind group layout with all nine entries; the other two replace their placeholder bindings with real resources on landing. This avoids the re-layout churn that forced the SDF/CSM retirement coordination.
+   `lighting-chunk-lists/` extends the existing group-2 layout (its bind group layout must include all of bindings 0–5 to match the shader declaration). `lighting-lightmaps/` group 4 is already present in `forward.wgsl` — its plan wires real textures on landing. This plan creates group 5 from scratch.
 4. **Fragment sampling.** In `forward.wgsl`, for each dynamic spot light in the direct loop:
    - Read the slot index from the `GpuLight` pad field. If it equals `0xFFFFFFFF`, emit unshadowed and continue.
    - Otherwise, transform `world_position` through `light_space_matrices[slot]` into the slot's clip space; reject fragments outside `[0,1]² × [0,1]` (behind/outside the cone's projection) as unshadowed.

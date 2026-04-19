@@ -132,7 +132,13 @@ struct AnimationDescriptor {
 // See context/plans/in-progress/lighting-spot-shadows/index.md § Task B.
 @group(5) @binding(0) var spot_shadow_depth: texture_depth_2d_array;
 @group(5) @binding(1) var spot_shadow_compare: sampler_comparison;
-@group(5) @binding(2) var<storage, read> light_space_matrices: array<mat4x4<f32>, 8>;
+// Uniform (not storage) so we stay under `max_storage_buffers_per_shader_stage`
+// (default limit 8 on some adapters — wgpu refuses the pipeline if we add
+// a 9th). 8 × mat4x4<f32> is 512 bytes, well under the 16 KiB uniform cap.
+struct LightSpaceMatrices {
+    m: array<mat4x4<f32>, 8>,
+};
+@group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -273,28 +279,35 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
 // `world_pos`: fragment position in world space.
 // `light_proj`: light-space projection matrix.
 fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<f32>) -> f32 {
-    // Transform fragment position into light space.
+    // Transform fragment position into light clip space, then NDC.
+    // Clip-space w must be positive (fragment in front of the light);
+    // points behind the light produce a negative w and would fold the
+    // perspective divide onto the near plane, so reject them.
     let light_clip = light_proj * vec4<f32>(world_pos, 1.0);
+    if light_clip.w <= 0.0 {
+        return 1.0;
+    }
     let light_ndc = light_clip.xyz / light_clip.w;
 
-    // Reject fragments outside the shadow map's projection bounds [0,1]³.
-    // light_ndc.z is depth in [0,1] (Vulkan / glam conventions).
-    if light_ndc.x < 0.0 || light_ndc.x > 1.0 ||
-       light_ndc.y < 0.0 || light_ndc.y > 1.0 ||
+    // NDC x,y are in [-1, 1] (wgpu convention). Depth is in [0, 1].
+    // Convert xy to UV (flipping y because texture origin is top-left).
+    let uv = vec2<f32>(light_ndc.x * 0.5 + 0.5, light_ndc.y * -0.5 + 0.5);
+    if uv.x < 0.0 || uv.x > 1.0 ||
+       uv.y < 0.0 || uv.y > 1.0 ||
        light_ndc.z < 0.0 || light_ndc.z > 1.0 {
         return 1.0; // Unshadowed — outside cone.
     }
 
-    // Sample the shadow map at (uv, slot) with comparison.
-    // textureSampleCompare returns 1.0 if depth < stored_depth (lit), 0.0 otherwise (shadowed).
-    let shadow_factor = textureSampleCompare(
+    // textureSampleCompare with CompareFunction::Less returns 1.0 when the
+    // fragment's depth is less than the stored depth (fragment is closer
+    // to the light than the first caster, i.e. lit), else 0.0 (in shadow).
+    return textureSampleCompare(
         spot_shadow_depth,
         spot_shadow_compare,
-        light_ndc.xy,
+        uv,
         i32(slot_index),
         light_ndc.z
     );
-    return shadow_factor;
 }
 
 // --- SH irradiance volume sampling ---
@@ -676,7 +689,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
                 if slot_index != 0xFFFFFFFFu {
                     // Light has a shadow map allocated.
-                    let light_proj = light_space_matrices[slot_index];
+                    let light_proj = light_space_matrices.m[slot_index];
                     let shadow = sample_spot_shadow(slot_index, in.world_position, light_proj);
                     attenuation = attenuation * shadow;
                 }

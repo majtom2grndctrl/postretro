@@ -40,6 +40,11 @@ const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 // `depth_compare: Equal` test and zero shading overdraw.
 const DEPTH_PREPASS_SHADER_SOURCE: &str = include_str!("../shaders/depth_prepass.wgsl");
 
+// Spot light shadow depth pass: vertex-only shader that transforms world
+// geometry by a per-slot light-space matrix uniform, writing Depth32Float
+// into one layer of the shadow-map array per draw.
+const SPOT_SHADOW_SHADER_SOURCE: &str = include_str!("../shaders/spot_shadow.wgsl");
+
 // --- GPU-timing pair indices ---
 //
 // Pair index `i` maps to query slots `[2i, 2i+1]` in the `FrameTiming`
@@ -341,10 +346,26 @@ pub struct Renderer {
     /// Per-frame light list cached from the level (for slot assignment).
     #[allow(dead_code)]
     level_lights: Vec<MapLight>,
-    /// Spot shadow pool: 8 depth textures with per-frame slot assignment.
-    /// `None` when no geometry is loaded.
-    #[allow(dead_code)]
-    spot_shadow_pool: Option<SpotShadowPool>,
+    /// Last camera position uploaded via `update_per_frame_uniforms`,
+    /// cached so the shadow pass can re-rank lights on its own clock.
+    last_camera_position: Vec3,
+    /// Spot shadow pool: 8 depth textures with per-frame slot assignment,
+    /// plus the sampler, matrix buffer, and bind group consumed by group 5
+    /// of the forward shader.
+    spot_shadow_pool: SpotShadowPool,
+    /// Vertex-stage uniform buffer holding the light-space matrix for the
+    /// currently-rendering shadow slot. Rebound per slot via a dynamic
+    /// offset into a single buffer sized for `SHADOW_POOL_SIZE` slots.
+    shadow_vs_uniform_buffer: wgpu::Buffer,
+    /// Bind group for group 0 of the shadow depth pipeline. Uses dynamic
+    /// offset so the slot index selects the matrix for each depth pass.
+    shadow_vs_bind_group: wgpu::BindGroup,
+    /// Depth-only pipeline that renders static geometry into a shadow map
+    /// slot using `spot_shadow.wgsl`.
+    shadow_depth_pipeline: wgpu::RenderPipeline,
+    /// Stride between per-slot entries in `shadow_vs_uniform_buffer`,
+    /// rounded up to `min_uniform_buffer_offset_alignment`.
+    shadow_vs_stride: u32,
 
     depth_view: wgpu::TextureView,
 
@@ -723,17 +744,14 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Initialize the spot shadow pool.
-        let spot_shadow_pool = if has_geometry {
-            Some(SpotShadowPool::new(&device))
-        } else {
-            None
-        };
-        if spot_shadow_pool.is_some() {
-            log::info!(
-                "[Renderer] Spot shadow pool initialized (8 × 1024×1024 Depth32Float = 32 MiB VRAM)"
-            );
-        }
+        // Initialize the spot shadow pool. The group 5 bind group layout
+        // is owned here and passed into the pool so the forward pipeline
+        // layout and the pool's bind group share a single definition.
+        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&device);
+        let spot_shadow_pool = SpotShadowPool::new(&device, &spot_shadow_bgl);
+        log::info!(
+            "[Renderer] Spot shadow pool initialized (8 × 1024×1024 Depth32Float = 32 MiB VRAM)"
+        );
 
         // Influence volume buffer (binding 1). Same dummy strategy as lights.
         let influence_data = match geometry {
@@ -1009,7 +1027,8 @@ impl Renderer {
         // Pipeline layout. Group 2 is the direct-lighting storage buffer
         // introduced in sub-plan 3 of the lighting foundation; group 3 is
         // the SH irradiance volume introduced in sub-plan 6; group 4 is the
-        // baked directional lightmap atlas (`lighting-lightmaps`).
+        // baked directional lightmap atlas (`lighting-lightmaps`); group 5
+        // is the dynamic spot-shadow pool (`lighting-spot-shadows`).
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Textured Pipeline Layout"),
             bind_group_layouts: &[
@@ -1018,6 +1037,7 @@ impl Renderer {
                 Some(&lighting_bind_group_layout),
                 Some(&sh_volume_resources.bind_group_layout),
                 Some(&lightmap_bind_group_layout),
+                Some(&spot_shadow_bgl),
             ],
             immediate_size: 0,
         });
@@ -1276,6 +1296,106 @@ impl Renderer {
                 cache: None,
             });
 
+        // --- Spot shadow depth pipeline ---
+        // One depth-only pipeline shared across all 8 slots. The slot's
+        // light-space matrix is selected per-draw via a dynamic offset
+        // into `shadow_vs_uniform_buffer`. Depth bias matches the plan's
+        // tuning (constant=2, slope=1.5) to suppress self-shadow acne
+        // without introducing Peter-Panning for the hard-edged look.
+        let shadow_vs_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Shadow VS BGL"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: std::num::NonZeroU64::new(64),
+                },
+                count: None,
+            }],
+        });
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Spot Shadow Pipeline Layout"),
+                bind_group_layouts: &[Some(&shadow_vs_bgl)],
+                immediate_size: 0,
+            });
+        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Spot Shadow Shader"),
+            source: wgpu::ShaderSource::Wgsl(SPOT_SHADOW_SHADER_SOURCE.into()),
+        });
+        let shadow_depth_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Spot Shadow Depth Pipeline"),
+                layout: Some(&shadow_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shadow_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: crate::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x3,
+                        }],
+                    }],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    // Match the depth pre-pass: back-face cull on single-sided
+                    // brushes, with a conservative depth bias to keep acne
+                    // off the lit side. Front-face culling is the typical
+                    // "trade acne for Peter Panning" swap but we want the
+                    // hard-edged retro look without Peter Panning.
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: crate::lighting::spot_shadow::SHADOW_DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 1.5,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: None,
+                multiview_mask: None,
+                cache: None,
+            });
+
+        // Per-slot uniform buffer. Each slot gets its own `mat4x4<f32>`
+        // aligned to the device's min-uniform-offset so dynamic-offset
+        // binds are legal across adapters.
+        let min_ubo_align = device.limits().min_uniform_buffer_offset_alignment.max(64);
+        let shadow_vs_stride = min_ubo_align; // one 64-byte mat4 rounded up.
+        let shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Spot Shadow VS Uniforms"),
+            size: (shadow_vs_stride as u64)
+                * (crate::lighting::spot_shadow::SHADOW_POOL_SIZE as u64),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shadow_vs_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Spot Shadow VS Bind Group"),
+            layout: &shadow_vs_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &shadow_vs_uniform_buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(64),
+                }),
+            }],
+        });
+
         // --- GPU frame timing (optional) ---
         // Labels are indexed by the `TIMING_PAIR_*` constants so the
         // query-slot assignment is mechanical — no "keep in sync" comment
@@ -1327,7 +1447,12 @@ impl Renderer {
             lightmap_resources,
             lights_buffer,
             level_lights,
+            last_camera_position: Vec3::ZERO,
             spot_shadow_pool,
+            shadow_vs_uniform_buffer,
+            shadow_vs_bind_group,
+            shadow_depth_pipeline,
+            shadow_vs_stride,
             depth_view,
             gpu_textures,
             bvh_leaves,
@@ -1416,7 +1541,7 @@ impl Renderer {
     /// ambient floor, light count, elapsed time, lighting-isolation mode).
     /// The elapsed time is used by the SH animated-light layers to evaluate
     /// curves per frame.
-    pub fn update_per_frame_uniforms(&self, view_proj: Mat4, camera_position: Vec3) {
+    pub fn update_per_frame_uniforms(&mut self, view_proj: Mat4, camera_position: Vec3) {
         let time = self.app_start.elapsed().as_secs_f32();
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
@@ -1427,6 +1552,7 @@ impl Renderer {
             lighting_isolation: self.lighting_isolation,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
+        self.last_camera_position = camera_position;
     }
 
     /// Update the dynamic lights buffer with per-frame shadow slot assignments.
@@ -1434,7 +1560,6 @@ impl Renderer {
     /// Ranks visible dynamic spot lights by influence area and assigns slots.
     /// Rewrites the lights buffer with slot indices. Called once per frame
     /// before rendering.
-    #[allow(dead_code)]
     pub fn update_dynamic_light_slots(
         &mut self,
         camera_position: Vec3,
@@ -1464,10 +1589,40 @@ impl Renderer {
         self.queue
             .write_buffer(&self.lights_buffer, 0, &lights_data);
 
-        // Store the slot assignment for later use in rendering.
-        if let Some(pool) = &mut self.spot_shadow_pool {
-            pool.slot_assignment = slot_assignment;
+        // Compute the light-space matrix for each assigned slot and upload
+        // to both the fragment-side storage buffer (group 5 binding 2) and
+        // the vertex-side per-slot uniform buffer (shadow pipeline).
+        const MAT_BYTES: usize = 64;
+        let stride = self.shadow_vs_stride as usize;
+        let mut fragment_matrices =
+            vec![0u8; MAT_BYTES * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
+        let mut vertex_uniforms =
+            vec![0u8; stride * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
+        for (light_idx, &slot) in slot_assignment.iter().enumerate() {
+            if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
+                continue;
+            }
+            let m = crate::lighting::spot_shadow::light_space_matrix(&self.level_lights[light_idx]);
+            let cols = m.to_cols_array();
+            let mut bytes = [0u8; MAT_BYTES];
+            for (i, v) in cols.iter().enumerate() {
+                bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+            }
+            let slot_usize = slot as usize;
+            fragment_matrices[slot_usize * MAT_BYTES..(slot_usize + 1) * MAT_BYTES]
+                .copy_from_slice(&bytes);
+            vertex_uniforms[slot_usize * stride..slot_usize * stride + MAT_BYTES]
+                .copy_from_slice(&bytes);
         }
+        self.queue.write_buffer(
+            &self.spot_shadow_pool.matrices_buffer,
+            0,
+            &fragment_matrices,
+        );
+        self.queue
+            .write_buffer(&self.shadow_vs_uniform_buffer, 0, &vertex_uniforms);
+
+        self.spot_shadow_pool.slot_assignment = slot_assignment;
     }
 
     /// Current ambient floor value (0.0–1.0). Read by the diagnostic
@@ -1604,6 +1759,50 @@ impl Renderer {
             }
         }
 
+        // --- Dynamic spot shadow slot update + depth pass ---
+        // Rank dynamic spot lights, upload slot indices + light-space
+        // matrices, then render a depth-only pass per allocated slot.
+        // The pass draws all static geometry into the slot's depth layer;
+        // per-light BVH culling would be a future optimization.
+        self.update_dynamic_light_slots(
+            self.last_camera_position,
+            crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
+            &[],
+        );
+        if self.has_geometry && self.index_count > 0 {
+            let stride = self.shadow_vs_stride;
+            let slot_assignment = self.spot_shadow_pool.slot_assignment.clone();
+            let mut used_slots: Vec<u32> = slot_assignment
+                .iter()
+                .copied()
+                .filter(|&s| s != crate::lighting::spot_shadow::NO_SHADOW_SLOT)
+                .collect();
+            used_slots.sort_unstable();
+            used_slots.dedup();
+            for slot in used_slots {
+                let view = &self.spot_shadow_pool.views[slot as usize];
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Spot Shadow Depth Pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
+                pass.set_pipeline(&self.shadow_depth_pipeline);
+                pass.set_bind_group(0, &self.shadow_vs_bind_group, &[slot * stride]);
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.index_count, 0, 0..1);
+            }
+        }
+
         // --- Depth pre-pass ---
         // Populates the shared depth buffer so the forward pass can run
         // with `depth_compare: Equal` and shade each pixel exactly once
@@ -1689,6 +1888,7 @@ impl Renderer {
                 render_pass.set_bind_group(2, &self.lighting_bind_group, &[]);
                 render_pass.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
                 render_pass.set_bind_group(4, &self.lightmap_resources.bind_group, &[]);
+                render_pass.set_bind_group(5, &self.spot_shadow_pool.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 render_pass
                     .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);

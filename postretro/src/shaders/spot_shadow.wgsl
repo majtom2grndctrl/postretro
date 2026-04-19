@@ -10,18 +10,10 @@ struct LightSpaceUniforms {
 
 @group(0) @binding(0) var<uniform> light_space: LightSpaceUniforms;
 
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) base_uv: vec2<f32>,
-    @location(2) normal_oct: vec2<u32>,
-    @location(3) tangent_packed: vec2<u32>,
-    @location(4) lightmap_uv_packed: vec2<u32>,
-};
-
-// `@invariant` on position matches the forward pass convention to ensure
-// bit-exact depth computation on all GPUs. Not strictly necessary since
-// shadow-map depth doesn't participate in Equal tests, but kept for consistency.
+// Only position is needed for shadow-map depth. The vertex buffer binds
+// WorldVertex so the pipeline layout declares the other attributes to
+// match the stride, but this shader ignores them.
 @vertex
-fn vs_main(in: VertexInput) -> @invariant @builtin(position) vec4<f32> {
-    return light_space.light_proj * vec4<f32>(in.position, 1.0);
+fn vs_main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
+    return light_space.light_proj * vec4<f32>(position, 1.0);
 }

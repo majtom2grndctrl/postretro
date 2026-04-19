@@ -49,7 +49,7 @@ Three components: **static direct** (baked), **dynamic direct** (runtime), and *
 
 **Static direct.** prl-build UV-unwraps world geometry and ray-casts per-texel irradiance and a dominant incoming light direction from all static lights into a directional lightmap atlas. Runtime samples the atlas per fragment with nearest-neighbor filtering on both irradiance and direction textures — hard-edged pixelated shadows match the retro aesthetic, and nearest is arguably more correct on octahedral-encoded directions (linear interpolation doesn't commute with slerp). Bumped-Lambert correction preserves normal-map response to baked static lights. Hard shadows from static lights are captured in the bake.
 
-**Dynamic direct.** Dynamic lights run a per-fragment loop with an influence-volume early-out. No runtime shadow maps for dynamic lights in this iteration. Light sources: FGD entities (`light`, `light_spot`, `light_sun`) and gameplay effects. Clustered forward+ binning deferred until profiling shows the flat loop bottlenecks.
+**Dynamic direct.** Dynamic lights run a per-fragment loop with an influence-volume early-out. Dynamic spot lights support shadow maps (depth texture array, comparison sampler); omnidirectional and sun lights cast no dynamic shadows. Light sources: FGD entities (`light`, `light_spot`, `light_sun`) and gameplay effects. Clustered forward+ binning deferred until profiling shows the flat loop bottlenecks.
 
 **Indirect.** prl-build bakes an SH L2 irradiance volume (3D probe grid) over the level's empty space. Runtime samples via trilinear interpolation per fragment. Missing probe section falls back to the ambient floor.
 

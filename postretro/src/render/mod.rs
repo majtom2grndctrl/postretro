@@ -167,13 +167,20 @@ struct GpuTexture {
 fn upload_texture_data(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    loaded: &LoadedTexture,
+    width: u32,
+    height: u32,
+    data: &[u8],
     format: wgpu::TextureFormat,
     label: &str,
 ) -> wgpu::Texture {
+    let bytes_per_pixel: u32 = match format {
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => 4,
+        wgpu::TextureFormat::R8Unorm => 1,
+        other => panic!("upload_texture_data: unsupported format {other:?}"),
+    };
     let size = wgpu::Extent3d {
-        width: loaded.width,
-        height: loaded.height,
+        width,
+        height,
         depth_or_array_layers: 1,
     };
 
@@ -195,16 +202,24 @@ fn upload_texture_data(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        &loaded.data,
+        data,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(4 * loaded.width),
-            rows_per_image: Some(loaded.height),
+            bytes_per_row: Some(bytes_per_pixel * width),
+            rows_per_image: Some(height),
         },
         size,
     );
 
     texture
+}
+
+/// Extract the R channel from RGBA8 pixel data. Used when uploading the
+/// grayscale `_s.png` sidecars as single-channel `R8Unorm` — the diffuse
+/// loader expands grayscale PNGs to RGBA8, but only the R channel carries
+/// specular data, so the G/B/A bytes are dropped to save 4× VRAM.
+fn extract_r_channel(rgba: &[u8]) -> Vec<u8> {
+    rgba.iter().step_by(4).copied().collect()
 }
 
 /// Byte layout of `MaterialUniform`. Layout mirrors the WGSL struct in
@@ -767,12 +782,19 @@ impl Renderer {
         });
 
         // Spec-only light buffer (group 2 binding 2). Populated from the
-        // same static light list; dynamic lights are filtered out upstream
-        // (today all AlphaLights are effectively static — see
-        // `lighting-dynamic-flag/`). Dummy 1-record payload for empty maps.
-        let spec_lights_data = match geometry {
-            Some(g) if !g.lights.is_empty() => pack_spec_lights(g.lights),
-            _ => vec![0u8; SPEC_LIGHT_SIZE],
+        // same static light list; dynamic lights are filtered out by
+        // `pack_spec_lights`. Dummy 1-record payload when no static lights
+        // remain (empty map, or every light flagged dynamic) so the storage
+        // binding is never zero-sized.
+        let spec_lights_data = {
+            let packed = geometry
+                .map(|g| pack_spec_lights(g.lights))
+                .unwrap_or_default();
+            if packed.is_empty() {
+                vec![0u8; SPEC_LIGHT_SIZE]
+            } else {
+                packed
+            }
         };
         let spec_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Spec-Only Lights Storage Buffer"),
@@ -861,17 +883,13 @@ impl Renderer {
         // convention: absent specular → zeros in the R channel → no
         // highlight without any shader branching. See
         // context/lib/resource_management.md §4.1.
-        let black_specular = LoadedTexture {
-            data: vec![0u8, 0, 0, 255],
-            width: 1,
-            height: 1,
-            is_placeholder: true,
-        };
         let black_specular_texture = upload_texture_data(
             &device,
             &queue,
-            &black_specular,
-            wgpu::TextureFormat::Rgba8Unorm,
+            1,
+            1,
+            &[0u8],
+            wgpu::TextureFormat::R8Unorm,
             "Specular Black 1x1",
         );
         let black_specular_view =
@@ -888,7 +906,9 @@ impl Renderer {
                 let diffuse_tex = upload_texture_data(
                     &device,
                     &queue,
-                    loaded,
+                    loaded.width,
+                    loaded.height,
+                    &loaded.data,
                     wgpu::TextureFormat::Rgba8UnormSrgb,
                     &format!("Texture {idx} Diffuse"),
                 );
@@ -899,11 +919,14 @@ impl Renderer {
                     .and_then(|o| o.as_ref())
                 {
                     Some(spec_loaded) => {
+                        let r_only = extract_r_channel(&spec_loaded.data);
                         let tex = upload_texture_data(
                             &device,
                             &queue,
-                            spec_loaded,
-                            wgpu::TextureFormat::Rgba8Unorm,
+                            spec_loaded.width,
+                            spec_loaded.height,
+                            &r_only,
+                            wgpu::TextureFormat::R8Unorm,
                             &format!("Texture {idx} Specular"),
                         );
                         tex.create_view(&wgpu::TextureViewDescriptor::default())
@@ -955,7 +978,9 @@ impl Renderer {
             let diffuse_tex = upload_texture_data(
                 &device,
                 &queue,
-                &placeholder,
+                placeholder.width,
+                placeholder.height,
+                &placeholder.data,
                 wgpu::TextureFormat::Rgba8UnormSrgb,
                 "Placeholder Texture Diffuse",
             );

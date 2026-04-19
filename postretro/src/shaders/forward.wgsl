@@ -32,10 +32,46 @@ struct GpuLight {
 
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
 @group(1) @binding(1) var base_sampler: sampler;
+// Per-material specular texture (R8Unorm sampled as .r). 1×1 black when the
+// diffuse's `_s.png` sibling is absent — zeros `spec_int` without any
+// shader branching. See context/lib/resource_management.md §4.1.
+@group(1) @binding(2) var spec_texture: texture_2d<f32>;
+
+struct MaterialUniform {
+    // Blinn-Phong specular exponent; constant per-material variant.
+    // Compile-time from the Rust-side material enum. Padded to 16 B for
+    // uniform-buffer alignment.
+    shininess: f32,
+    _pad: vec3<f32>,
+};
+@group(1) @binding(3) var<uniform> material: MaterialUniform;
 
 @group(2) @binding(0) var<storage, read> lights: array<GpuLight>;
 // Per-light influence volume: xyz = sphere center, w = radius.
 @group(2) @binding(1) var<storage, read> light_influence: array<vec4<f32>>;
+
+// Spec-only static light buffer. Two vec4 slots (32 B stride); see
+// postretro/src/lighting/spec_buffer.rs for the CPU-side layout.
+struct SpecLight {
+    position_and_range: vec4<f32>, // xyz = position, w = falloff_range
+    color_and_pad:      vec4<f32>, // xyz = color × intensity, w = 0
+};
+@group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
+
+// Chunk grid metadata — uniform buffer with `has_chunk_grid` sentinel.
+// 0 = no chunk list present (fallback: iterate full spec buffer).
+struct ChunkGridInfo {
+    grid_origin: vec3<f32>,
+    cell_size: f32,
+    dims: vec3<u32>,
+    has_chunk_grid: u32,
+};
+@group(2) @binding(3) var<uniform> chunk_grid: ChunkGridInfo;
+// Per-chunk offset table: (offset, count) pair per chunk, linearised by
+// `z * dims.x * dims.y + y * dims.x + x`.
+@group(2) @binding(4) var<storage, read> chunk_offsets: array<vec2<u32>>;
+// Flat index list (u32 indices into spec_lights).
+@group(2) @binding(5) var<storage, read> chunk_indices: array<u32>;
 
 // Group 3 — SH irradiance volume. 9 3D textures (one per SH L2 band) carry
 // RGB coefficients in their .rgb channels (.a unused). When `grid.has_sh_volume`
@@ -199,6 +235,19 @@ fn falloff(distance: f32, range: f32, model: u32) -> f32 {
             return 0.0;
         }
     }
+}
+
+// Blinn-Phong specular utility. Used by the static spec-only chunk loop
+// below and by the dynamic-pool direct loop (shared with
+// lighting-spot-shadows/). No `(1-ks)` attenuation, no Fresnel — the
+// retro aesthetic wants punchy additive highlights, not energy
+// conservation. `spec_int` is the R channel of the per-material specular
+// texture; `spec_exp` is `material.shininess`.
+fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
+               color: vec3<f32>, spec_exp: f32, spec_int: f32) -> vec3<f32> {
+    let H = normalize(L + V);
+    let NdH = max(dot(N, H), 0.0);
+    return color * pow(NdH, spec_exp) * spec_int;
 }
 
 // --- Spot cone attenuation ---
@@ -469,6 +518,76 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Total light = ambient floor (minimum) + indirect + static direct + dynamic sum.
     var total_light = vec3<f32>(uniforms.ambient_floor) + indirect + static_direct;
+
+    // Per-fragment specular accumulation from static lights via the
+    // spec-only buffer. View direction is hoisted outside the per-light
+    // loop. Specular intensity modulates per material (from `_s.png`,
+    // R channel) and per variant (`material.shininess` exponent). Added
+    // to diffuse — no energy conservation. See
+    // context/plans/ready/lighting-chunk-lists/index.md Task B.
+    var specular_sum = vec3<f32>(0.0);
+    if use_direct {
+        let V = normalize(uniforms.camera_position - in.world_position);
+        let spec_int = textureSample(spec_texture, base_sampler, in.uv).r;
+        let spec_exp = max(material.shininess, 1.0);
+
+        // Chunk lookup when the offline index is populated; otherwise walk
+        // the full spec buffer. Either way, each light is evaluated at most
+        // once per fragment.
+        var chunk_offset: u32 = 0u;
+        var chunk_count: u32 = arrayLength(&spec_lights);
+        if chunk_grid.has_chunk_grid != 0u {
+            let local = in.world_position - chunk_grid.grid_origin;
+            let cell = vec3<i32>(floor(local / chunk_grid.cell_size));
+            let dims = vec3<i32>(chunk_grid.dims);
+            // Fragments outside the authored grid fall back to zero specular
+            // (they are outside any authored volume — no static lights reach
+            // them by construction).
+            if all(cell >= vec3<i32>(0)) && all(cell < dims) {
+                let ci = u32(cell.z) * chunk_grid.dims.x * chunk_grid.dims.y
+                       + u32(cell.y) * chunk_grid.dims.x
+                       + u32(cell.x);
+                let pair = chunk_offsets[ci];
+                chunk_offset = pair.x;
+                chunk_count = pair.y;
+            } else {
+                chunk_count = 0u;
+            }
+        }
+
+        for (var j: u32 = 0u; j < chunk_count; j = j + 1u) {
+            // In fallback mode (has_chunk_grid == 0), iterate the spec
+            // buffer directly with `j` as the light index; otherwise look
+            // up through the per-chunk index list.
+            var light_idx: u32 = j;
+            if chunk_grid.has_chunk_grid != 0u {
+                light_idx = chunk_indices[chunk_offset + j];
+            }
+            let sl = spec_lights[light_idx];
+            let to_light = sl.position_and_range.xyz - in.world_position;
+            let dist = length(to_light);
+            let range = sl.position_and_range.w;
+            // Reject lights outside influence range outright — the chunk
+            // list is a conservative spatial index; the range is the tight
+            // per-light cutoff.
+            if range > 0.0 && dist > range {
+                continue;
+            }
+            let L = to_light / max(dist, 0.0001);
+            // Match the diffuse falloff model applied in the GpuLight loop:
+            // spec lights come from the same static set and share range
+            // semantics. We use a simple linear falloff here — the
+            // per-type model discriminant isn't stored in the compact
+            // SpecLight record (the chunk visibility filter already
+            // eliminates out-of-reach lights).
+            let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+            let contribution = blinn_phong(
+                L, V, N, sl.color_and_pad.xyz, spec_exp, spec_int
+            ) * atten;
+            specular_sum = specular_sum + contribution;
+        }
+    }
+    total_light = total_light + specular_sum;
 
     // DirectOnly / AmbientOnly modes skip the direct-light loop entirely —
     // cheaper than zeroing contributions inside the loop.

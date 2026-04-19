@@ -266,6 +266,21 @@ impl ApplicationHandler for App {
             }
         };
 
+        // Derive per-texture material from texture names so the renderer can
+        // populate per-material uniforms (shininess) without re-parsing.
+        let texture_materials: Vec<crate::material::Material> = self
+            .level
+            .as_ref()
+            .map(|world| {
+                let mut warned = std::collections::HashSet::new();
+                world
+                    .texture_names
+                    .iter()
+                    .map(|n| crate::material::derive_material(n, &mut warned))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         // Build geometry for the renderer.
         let geometry = self.level.as_ref().map(|world| render::LevelGeometry {
             vertices: &world.vertices,
@@ -275,6 +290,8 @@ impl ApplicationHandler for App {
             light_influences: &world.light_influences,
             sh_volume: world.sh_volume.as_ref(),
             lightmap: world.lightmap.as_ref(),
+            chunk_light_list: world.chunk_light_list.as_ref(),
+            texture_materials: &texture_materials,
         });
 
         let renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {

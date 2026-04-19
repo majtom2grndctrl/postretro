@@ -14,9 +14,12 @@ use winit::window::Window;
 
 use crate::compute_cull::ComputeCullPipeline;
 use crate::geometry::BvhTree;
+use crate::lighting::chunk_list::ChunkGrid;
 use crate::lighting::influence::{self, LightInfluence};
 use crate::lighting::lightmap::LightmapResources;
+use crate::lighting::spec_buffer::{SPEC_LIGHT_SIZE, pack_spec_lights};
 use crate::lighting::{GPU_LIGHT_SIZE, pack_lights};
+use crate::material::Material;
 use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
@@ -146,20 +149,22 @@ pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.05;
 
 // --- GPU texture ---
 
-/// A GPU-uploaded texture with its bind group for per-texture binding.
+/// A GPU-uploaded material with per-texture bind group (group 1): diffuse
+/// texture + sampler + specular texture + material uniform.
 struct GpuTexture {
     bind_group: wgpu::BindGroup,
 }
 
-/// Upload a single LoadedTexture to the GPU and create a bind group.
-fn upload_texture(
+/// Upload a texture's pixel data to the GPU and return the texture handle.
+/// Callers wrap the returned texture in a bind group via
+/// `create_material_bind_group`.
+fn upload_texture_data(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     loaded: &LoadedTexture,
-    sampler: &wgpu::Sampler,
-    texture_bind_group_layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
     label: &str,
-) -> GpuTexture {
+) -> wgpu::Texture {
     let size = wgpu::Extent3d {
         width: loaded.width,
         height: loaded.height,
@@ -172,7 +177,7 @@ fn upload_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -193,24 +198,19 @@ fn upload_texture(
         size,
     );
 
-    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    texture
+}
 
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(&format!("{label} Bind Group")),
-        layout: texture_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&texture_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-        ],
-    });
+/// Byte layout of `MaterialUniform` — padded to 16 for uniform-buffer
+/// alignment. Layout mirrors the WGSL struct in `forward.wgsl`:
+///   0..4   shininess (f32)
+///   4..16  pad (0)
+const MATERIAL_UNIFORM_SIZE: usize = 16;
 
-    GpuTexture { bind_group }
+fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
+    let mut bytes = [0u8; MATERIAL_UNIFORM_SIZE];
+    bytes[0..4].copy_from_slice(&shininess.to_ne_bytes());
+    bytes
 }
 
 // --- Depth buffer ---
@@ -270,6 +270,15 @@ pub struct LevelGeometry<'a> {
     /// `None` when the section is absent — the renderer binds a 1×1 white
     /// placeholder and bumped-Lambert falls back to flat white.
     pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapSection>,
+    /// Chunk-light-list section from the `ChunkLightList` PRL section.
+    /// `None` when the section is absent — the runtime binds a dummy
+    /// payload and the fragment shader's `has_chunk_grid == 0` guard
+    /// iterates the full spec buffer. See `lighting::chunk_list`.
+    pub chunk_light_list:
+        Option<&'a postretro_level_format::chunk_light_list::ChunkLightListSection>,
+    /// Per-texture material, indexed by texture (bucket) index. Drives
+    /// per-material shininess uploaded to group 1 binding 3.
+    pub texture_materials: &'a [crate::material::Material],
 }
 
 // --- Renderer ---
@@ -429,12 +438,9 @@ impl Renderer {
         // fallback `FrameTiming` is `None` and no timestamp_writes are
         // attached anywhere — zero runtime cost when disabled.
         let adapter_features = adapter.features();
-        let gpu_timing_requested = std::env::var("POSTRETRO_GPU_TIMING")
-            .ok()
-            .as_deref()
-            == Some("1");
-        let gpu_timing_supported =
-            adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
+        let gpu_timing_requested =
+            std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1");
+        let gpu_timing_supported = adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
         let enable_gpu_timing = gpu_timing_requested && gpu_timing_supported;
         let mut required_features = wgpu::Features::empty();
         if enable_gpu_timing {
@@ -585,10 +591,14 @@ impl Renderer {
             }],
         });
 
-        // Bind group layout for group 1: per-texture.
+        // Bind group layout for group 1: per-material.
+        //   0 = diffuse texture
+        //   1 = base sampler (shared across diffuse + specular)
+        //   2 = specular texture (R8 in .r channel; 1×1 black fallback)
+        //   3 = MaterialUniform (shininess)
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Texture Bind Group Layout"),
+                label: Some("Material Bind Group Layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -606,37 +616,65 @@ impl Renderer {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
 
-        // Bind group layout for group 2: direct-light storage buffers.
-        // 0 = lights, 1 = influence volumes.
+        // Bind group layout for group 2: direct-light + specular/chunk buffers.
+        //   0 = dynamic GpuLight array (diffuse direct path)
+        //   1 = per-light influence volumes
+        //   2 = spec-only static light buffer (lighting-chunk-lists/ Task B)
+        //   3 = ChunkGridInfo uniform (has_chunk_grid = 0 → full-buffer fallback)
+        //   4 = per-chunk offset table (u32, u32) pairs
+        //   5 = flat chunk index list (u32 into spec buffer)
+        let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let lighting_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Lighting Bind Group Layout"),
                 entries: &[
-                    // binding 0: GpuLight array
+                    storage_entry(0),
+                    storage_entry(1),
+                    storage_entry(2),
                     wgpu::BindGroupLayoutEntry {
-                        binding: 0,
+                        binding: 3,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
                             min_binding_size: None,
                         },
                         count: None,
                     },
-                    // binding 1: influence volumes
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
+                    storage_entry(4),
+                    storage_entry(5),
                 ],
             });
 
@@ -668,6 +706,54 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        // Spec-only light buffer (group 2 binding 2). Populated from the
+        // same static light list; dynamic lights are filtered out upstream
+        // (today all AlphaLights are effectively static — see
+        // `lighting-dynamic-flag/`). Dummy 1-record payload for empty maps.
+        let spec_lights_data = match geometry {
+            Some(g) if !g.lights.is_empty() => pack_spec_lights(g.lights),
+            _ => vec![0u8; SPEC_LIGHT_SIZE],
+        };
+        let spec_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Spec-Only Lights Storage Buffer"),
+            contents: &spec_lights_data,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // Chunk grid (group 2 bindings 3, 4, 5). Uses the PRL section when
+        // present; otherwise binds a fallback payload with `has_chunk_grid = 0`
+        // so the shader iterates the full spec buffer.
+        let chunk_grid = match geometry.and_then(|g| g.chunk_light_list) {
+            Some(sec) => ChunkGrid::from_section(sec),
+            None => ChunkGrid::fallback(),
+        };
+        if chunk_grid.present {
+            log::info!(
+                "[Renderer] ChunkLightList active (spec-only path is spatially partitioned)"
+            );
+        } else {
+            log::info!(
+                "[Renderer] ChunkLightList absent — specular path iterates the full spec buffer"
+            );
+        }
+        let chunk_grid_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Chunk Grid Info Uniform"),
+            contents: &chunk_grid.grid_info,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let chunk_grid_offsets_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Chunk Grid Offset Table"),
+                contents: &chunk_grid.offset_table,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+        let chunk_grid_indices_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Chunk Grid Index List"),
+                contents: &chunk_grid.index_list,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+
         let lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Lighting Bind Group"),
             layout: &lighting_bind_group_layout,
@@ -679,6 +765,22 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: influence_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: spec_lights_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: chunk_grid_info_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: chunk_grid_offsets_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: chunk_grid_indices_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -695,43 +797,139 @@ impl Renderer {
             ..Default::default()
         });
 
-        // Upload textures to GPU.
-        let gpu_textures = if let Some(tex_set) = texture_set {
-            tex_set
-                .textures
-                .iter()
-                .enumerate()
-                .map(|(idx, loaded)| {
-                    let label = format!("Texture {idx}");
-                    upload_texture(
-                        &device,
-                        &queue,
-                        loaded,
-                        &base_sampler,
-                        &texture_bind_group_layout,
-                        &label,
-                    )
-                })
-                .collect()
-        } else {
-            Vec::new()
+        // Shared 1×1 black specular fallback. Mirrors the `_n` normal-map
+        // convention: absent specular → zeros in the R channel → no
+        // highlight without any shader branching. See
+        // context/lib/resource_management.md §4.1.
+        let black_specular = LoadedTexture {
+            data: vec![0u8, 0, 0, 255],
+            width: 1,
+            height: 1,
+            is_placeholder: true,
         };
+        let black_specular_texture = upload_texture_data(
+            &device,
+            &queue,
+            &black_specular,
+            wgpu::TextureFormat::Rgba8Unorm,
+            "Specular Black 1x1",
+        );
+        let black_specular_view =
+            black_specular_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Upload textures to GPU and build per-material bind groups.
+        let texture_materials: &[Material] = geometry.map(|g| g.texture_materials).unwrap_or(&[]);
+        let specular_set: Option<&[Option<LoadedTexture>]> =
+            texture_set.map(|s| s.specular.as_slice());
+
+        let mut gpu_textures: Vec<GpuTexture> = Vec::new();
+        if let Some(tex_set) = texture_set {
+            for (idx, loaded) in tex_set.textures.iter().enumerate() {
+                let diffuse_tex = upload_texture_data(
+                    &device,
+                    &queue,
+                    loaded,
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    &format!("Texture {idx} Diffuse"),
+                );
+                let diffuse_view = diffuse_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+                let spec_view = match specular_set
+                    .and_then(|s| s.get(idx))
+                    .and_then(|o| o.as_ref())
+                {
+                    Some(spec_loaded) => {
+                        let tex = upload_texture_data(
+                            &device,
+                            &queue,
+                            spec_loaded,
+                            wgpu::TextureFormat::Rgba8Unorm,
+                            &format!("Texture {idx} Specular"),
+                        );
+                        tex.create_view(&wgpu::TextureViewDescriptor::default())
+                    }
+                    None => black_specular_view.clone(),
+                };
+
+                let material = texture_materials
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(Material::Default);
+                let uniform_bytes = build_material_uniform(material.shininess());
+                let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("Material Uniform {idx}")),
+                    contents: &uniform_bytes,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!("Material Bind Group {idx}")),
+                    layout: &texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&diffuse_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&base_sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&spec_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: uniform_buf.as_entire_binding(),
+                        },
+                    ],
+                });
+                gpu_textures.push(GpuTexture { bind_group });
+            }
+        }
 
         // If we have no textures at all, create a single placeholder so we always
         // have something to bind.
-        let gpu_textures = if gpu_textures.is_empty() {
+        if gpu_textures.is_empty() {
             let placeholder = crate::texture::generate_placeholder();
-            vec![upload_texture(
+            let diffuse_tex = upload_texture_data(
                 &device,
                 &queue,
                 &placeholder,
-                &base_sampler,
-                &texture_bind_group_layout,
-                "Placeholder Texture",
-            )]
-        } else {
-            gpu_textures
-        };
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                "Placeholder Texture Diffuse",
+            );
+            let diffuse_view = diffuse_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let uniform_bytes = build_material_uniform(Material::Default.shininess());
+            let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Material Uniform Placeholder"),
+                contents: &uniform_bytes,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Placeholder Material Bind Group"),
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&diffuse_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&base_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&black_specular_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: uniform_buf.as_entire_binding(),
+                    },
+                ],
+            });
+            gpu_textures.push(GpuTexture { bind_group });
+        }
 
         // Store the BVH leaves (for the wireframe overlay) and create the
         // compute cull pipeline off the loaded BVH. Empty-BVH levels skip
@@ -750,19 +948,15 @@ impl Renderer {
         // when the level has no SH section, dummies are bound and the shader
         // skips SH sampling via the `has_sh_volume` flag in the grid-info
         // uniform. See sub-plan 6.
-        let sh_volume_resources = ShVolumeResources::new(
-            &device,
-            &queue,
-            geometry.and_then(|g| g.sh_volume),
-        );
+        let sh_volume_resources =
+            ShVolumeResources::new(&device, &queue, geometry.and_then(|g| g.sh_volume));
 
         // Group 4: directional lightmap atlas (baked static direct lighting).
         // Always created — placeholder 1×1 white/neutral bindings are used
         // when the level has no Lightmap section. See `lighting::lightmap`.
         // Layout is built up front so the pipeline layout can reference it
         // before the bind group is populated.
-        let lightmap_bind_group_layout =
-            crate::lighting::lightmap::bind_group_layout(&device);
+        let lightmap_bind_group_layout = crate::lighting::lightmap::bind_group_layout(&device);
         let lightmap_resources = LightmapResources::new(
             &device,
             &queue,
@@ -1284,7 +1478,10 @@ impl Renderer {
                 if bm != self.debug_prev_bitmask {
                     log::debug!(
                         "[cull f={f}] visible-cell bitmask changed: pop={} hash={:#010x} (was pop={} hash={:#010x})",
-                        bm.0, bm.1, self.debug_prev_bitmask.0, self.debug_prev_bitmask.1,
+                        bm.0,
+                        bm.1,
+                        self.debug_prev_bitmask.0,
+                        self.debug_prev_bitmask.1,
                     );
                     self.debug_prev_bitmask = bm;
                 }
@@ -1311,7 +1508,10 @@ impl Renderer {
                 if cur_vis != self.debug_prev_visible {
                     log::debug!(
                         "[cull f={f}] VisibleCells changed: {}(n={}) (was {}(n={}))",
-                        cur_vis.0, cur_vis.1, self.debug_prev_visible.0, self.debug_prev_visible.1,
+                        cur_vis.0,
+                        cur_vis.1,
+                        self.debug_prev_visible.0,
+                        self.debug_prev_visible.1,
                     );
                     self.debug_prev_visible = cur_vis;
                 }
@@ -1348,8 +1548,7 @@ impl Renderer {
                 depth_pass.set_pipeline(&self.depth_prepass_pipeline);
                 depth_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 depth_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                depth_pass
-                    .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                depth_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
                 if let Some(cull) = &self.compute_cull {
                     // `None` texture callback — the depth pre-pass
@@ -1822,8 +2021,7 @@ mod tests {
         // binding 11: array<AnimationDescriptor> — stride = ANIMATION_DESCRIPTOR_SIZE
         // binding 12: array<f32>                 — stride = 4
         // binding 13: array<f32>                 — stride = 4
-        let (anim_desc, anim_samples, anim_sh, _count) =
-            sh_volume::build_animation_buffers(None);
+        let (anim_desc, anim_samples, anim_sh, _count) = sh_volume::build_animation_buffers(None);
 
         for (label, binding, buf) in [
             (
@@ -1851,15 +2049,16 @@ mod tests {
                     buf.len(),
                 );
             } else {
-                panic!("forward.wgsl has no buffer at group=3 binding={binding}; \
-                        check BIND_* constants match shader @binding decorators");
+                panic!(
+                    "forward.wgsl has no buffer at group=3 binding={binding}; \
+                        check BIND_* constants match shader @binding decorators"
+                );
             }
         }
 
         // Verify the ShGridInfo uniform payload size.
         let sh_grid_binding = (1 + sh_volume::SH_BAND_COUNT) as u32; // = 10
-        let grid_info =
-            sh_volume::build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false, 0);
+        let grid_info = sh_volume::build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false, 0);
         if let Some(&min) = min_sizes.get(&(3, sh_grid_binding)) {
             assert!(
                 grid_info.len() as u64 >= min,
@@ -1868,8 +2067,10 @@ mod tests {
                 grid_info.len(),
             );
         } else {
-            panic!("forward.wgsl has no uniform at group=3 binding={sh_grid_binding}; \
-                    check SH_BAND_COUNT matches shader @binding decorators");
+            panic!(
+                "forward.wgsl has no uniform at group=3 binding={sh_grid_binding}; \
+                    check SH_BAND_COUNT matches shader @binding decorators"
+            );
         }
     }
 
@@ -1887,7 +2088,10 @@ mod tests {
             .entry_points
             .iter()
             .any(|ep| ep.name == "vs_main" && ep.stage == naga::ShaderStage::Vertex);
-        assert!(has_vs_main, "depth_prepass.wgsl must export @vertex vs_main");
+        assert!(
+            has_vs_main,
+            "depth_prepass.wgsl must export @vertex vs_main"
+        );
     }
 
     /// Ensure the wireframe shader's `Uniforms` struct stays in sync with

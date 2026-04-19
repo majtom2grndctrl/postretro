@@ -4,6 +4,7 @@
 pub mod alpha_lights;
 pub mod bsp;
 pub mod bvh;
+pub mod chunk_light_list;
 pub mod geometry;
 pub mod leaf_pvs;
 pub mod light_influence;
@@ -102,6 +103,12 @@ pub enum SectionId {
     /// per-vertex lightmap UVs; bumped-Lambert correction applies normal-map
     /// response to the baked direction. See `lightmap::LightmapSection`.
     Lightmap = 22,
+
+    /// World-space uniform chunk grid with per-chunk static-light index lists.
+    /// Runtime consumes it to bound per-fragment specular iteration to the
+    /// lights a chunk can actually be reached by. See
+    /// `chunk_light_list::ChunkLightListSection`.
+    ChunkLightList = 23,
 }
 
 impl SectionId {
@@ -118,6 +125,7 @@ impl SectionId {
             20 => Some(Self::ShVolume),
             21 => Some(Self::LightInfluence),
             22 => Some(Self::Lightmap),
+            23 => Some(Self::ChunkLightList),
             _ => None,
         }
     }

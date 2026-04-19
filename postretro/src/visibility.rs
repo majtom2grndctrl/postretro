@@ -549,7 +549,11 @@ pub fn determine_visible_cells(
     }
 
     let stats = build_visibility_stats(&result, visible_leaves, world);
-    (VisibleCells::Culled(std::mem::take(scratch)), stats, result.frustum)
+    (
+        VisibleCells::Culled(std::mem::take(scratch)),
+        stats,
+        result.frustum,
+    )
 }
 
 // --- Tests ---
@@ -855,6 +859,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         }
     }
 
@@ -894,10 +899,12 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();
-        let (result, stats, _frustum) = determine_visible_cells(Vec3::ZERO, vp, &world, false, &mut scratch);
+        let (result, stats, _frustum) =
+            determine_visible_cells(Vec3::ZERO, vp, &world, false, &mut scratch);
         assert!(matches!(result, VisibleCells::DrawAll));
         assert_eq!(stats.total_faces, 0);
         assert!(matches!(stats.path, VisibilityPath::EmptyWorldFallback));
@@ -913,7 +920,8 @@ mod tests {
         let vp = proj * view;
 
         let mut scratch = Vec::new();
-        let (result, stats, _frustum) = determine_visible_cells(position, vp, &world, false, &mut scratch);
+        let (result, stats, _frustum) =
+            determine_visible_cells(position, vp, &world, false, &mut scratch);
         match result {
             VisibleCells::Culled(cells) => {
                 assert_eq!(cells.len(), 1, "should cull leaf behind camera");

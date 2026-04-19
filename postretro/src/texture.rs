@@ -24,6 +24,12 @@ pub struct LoadedTexture {
 pub struct TextureSet {
     /// One entry per BSP miptexture index. The Vec index matches the BSP texture index.
     pub textures: Vec<LoadedTexture>,
+    /// Optional per-texel specular intensity, sibling-loaded as `{name}_s.png`.
+    /// R8-equivalent data unpacked into the R channel of RGBA8 (G/B/A unused
+    /// by the shader). `None` when no `_s` sibling was present or when the
+    /// sibling's dimensions did not match the diffuse. Same indexing as
+    /// `textures`. See `context/lib/resource_management.md` §4.1.
+    pub specular: Vec<Option<LoadedTexture>>,
 }
 
 // --- Checkerboard placeholder ---
@@ -160,35 +166,64 @@ fn load_png(path: &Path, texture_name: &str) -> LoadedTexture {
 pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> TextureSet {
     let name_to_path = build_name_to_path_map(texture_root);
 
-    let textures: Vec<LoadedTexture> = texture_names
-        .iter()
-        .enumerate()
-        .map(|(idx, name_opt)| {
-            let name = match name_opt {
-                Some(n) => n,
-                None => {
-                    log::warn!(
-                        "[Texture] BSP texture index {idx} has no texture entry - using checkerboard placeholder"
-                    );
-                    return generate_checkerboard();
-                }
-            };
+    let mut textures: Vec<LoadedTexture> = Vec::with_capacity(texture_names.len());
+    let mut specular: Vec<Option<LoadedTexture>> = Vec::with_capacity(texture_names.len());
 
-            let lookup_key = name.to_lowercase();
-            match name_to_path.get(&lookup_key) {
-                Some(path) => load_png(path, name),
-                None => {
+    for (idx, name_opt) in texture_names.iter().enumerate() {
+        let name = match name_opt {
+            Some(n) => n,
+            None => {
+                log::warn!(
+                    "[Texture] BSP texture index {idx} has no texture entry - using checkerboard placeholder"
+                );
+                textures.push(generate_checkerboard());
+                specular.push(None);
+                continue;
+            }
+        };
+
+        let lookup_key = name.to_lowercase();
+        let diffuse = match name_to_path.get(&lookup_key) {
+            Some(path) => load_png(path, name),
+            None => {
+                log::warn!(
+                    "[Texture] Texture '{name}' not found in {} - using checkerboard placeholder",
+                    texture_root.display(),
+                );
+                generate_checkerboard()
+            }
+        };
+
+        // Probe for `{name}_s.png` sibling. Absent → None → shader binds the
+        // shared 1×1 black fallback (zero specular). Size mismatch → warn +
+        // None. See context/lib/resource_management.md §4.1.
+        let spec_key = format!("{lookup_key}_s");
+        let spec = match name_to_path.get(&spec_key) {
+            Some(path) => {
+                let loaded = load_png(path, &spec_key);
+                if loaded.is_placeholder {
+                    None
+                } else if loaded.width != diffuse.width || loaded.height != diffuse.height {
                     log::warn!(
-                        "[Texture] Texture '{name}' not found in {} - using checkerboard placeholder",
-                        texture_root.display(),
+                        "[Texture] Specular '{spec_key}' dimensions {}x{} do not match diffuse '{name}' {}x{} - ignoring",
+                        loaded.width,
+                        loaded.height,
+                        diffuse.width,
+                        diffuse.height,
                     );
-                    generate_checkerboard()
+                    None
+                } else {
+                    Some(loaded)
                 }
             }
-        })
-        .collect();
+            None => None,
+        };
 
-    TextureSet { textures }
+        textures.push(diffuse);
+        specular.push(spec);
+    }
+
+    TextureSet { textures, specular }
 }
 
 // --- Tests ---

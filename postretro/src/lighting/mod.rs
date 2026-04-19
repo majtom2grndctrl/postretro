@@ -4,8 +4,10 @@
 // See: context/lib/rendering_pipeline.md §4
 //      context/plans/in-progress/lighting-foundation/3-direct-lighting.md
 
+pub mod chunk_list;
 pub mod influence;
 pub mod lightmap;
+pub mod spec_buffer;
 
 use crate::prl::{FalloffModel, LightType, MapLight};
 

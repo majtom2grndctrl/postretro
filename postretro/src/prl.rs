@@ -7,11 +7,12 @@ use std::path::Path;
 
 use glam::Vec3;
 use postretro_level_format::alpha_lights::{AlphaFalloffModel, AlphaLightType, AlphaLightsSection};
-use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
+use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::leaf_pvs::LeafPvsSection;
+use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sh_volume::ShVolumeSection;
@@ -179,6 +180,10 @@ pub struct LevelWorld {
     /// (ID 22). `None` for maps without baked direct — the renderer binds a
     /// 1×1 white placeholder and bumped-Lambert degrades to flat white.
     pub lightmap: Option<LightmapSection>,
+    /// Chunk light list (ID 23). `None` for maps compiled before Task A of
+    /// `lighting-chunk-lists/` — the runtime falls back to iterating the
+    /// full spec buffer. See `chunk_light_list::ChunkGrid::fallback`.
+    pub chunk_light_list: Option<ChunkLightListSection>,
 }
 
 impl LevelWorld {
@@ -476,11 +481,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     // LightInfluence section (optional). Missing for maps compiled before
     // sub-plan 4 — fall back to empty (all lights treated as infinite-bound).
     let light_influences: Vec<crate::lighting::influence::LightInfluence> =
-        match prl_format::read_section_data(
-            &mut cursor,
-            &meta,
-            SectionId::LightInfluence as u32,
-        )? {
+        match prl_format::read_section_data(&mut cursor, &meta, SectionId::LightInfluence as u32)? {
             Some(data) => {
                 let section = LightInfluenceSection::from_bytes(&data)?;
                 if section.records.len() != lights.len() {
@@ -503,69 +504,85 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                         radius: r.radius,
                     })
                     .collect();
-                log::info!(
-                    "[PRL] LightInfluence: {} records loaded",
-                    converted.len()
-                );
+                log::info!("[PRL] LightInfluence: {} records loaded", converted.len());
                 converted
             }
             None => {
-                log::warn!(
-                    "[Loader] LightInfluence section missing, no spatial culling this map"
-                );
+                log::warn!("[Loader] LightInfluence section missing, no spatial culling this map");
                 Vec::new()
             }
         };
 
     // ShVolume section (optional). Missing for maps compiled before sub-plan 2
     // — the renderer falls back to `ambient_floor + direct_sum`.
-    let sh_volume: Option<ShVolumeSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::ShVolume as u32,
-    )? {
-        Some(data) => {
-            let section = ShVolumeSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] ShVolume: {}×{}×{} grid ({} probes, {} animated layers)",
-                section.grid_dimensions[0],
-                section.grid_dimensions[1],
-                section.grid_dimensions[2],
-                section.probes.len(),
-                section.animation_descriptors.len(),
-            );
-            Some(section)
-        }
-        None => {
-            log::warn!(
-                "[PRL] ShVolume section missing — indirect lighting disabled for this map"
-            );
-            None
-        }
-    };
+    let sh_volume: Option<ShVolumeSection> =
+        match prl_format::read_section_data(&mut cursor, &meta, SectionId::ShVolume as u32)? {
+            Some(data) => {
+                let section = ShVolumeSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] ShVolume: {}×{}×{} grid ({} probes, {} animated layers)",
+                    section.grid_dimensions[0],
+                    section.grid_dimensions[1],
+                    section.grid_dimensions[2],
+                    section.probes.len(),
+                    section.animation_descriptors.len(),
+                );
+                Some(section)
+            }
+            None => {
+                log::warn!(
+                    "[PRL] ShVolume section missing — indirect lighting disabled for this map"
+                );
+                None
+            }
+        };
 
     // Lightmap section (optional). Missing for maps compiled before the
     // directional-lightmap plan shipped — the renderer falls back to a 1×1
     // white placeholder and bumped-Lambert degrades to flat white.
-    let lightmap: Option<LightmapSection> = match prl_format::read_section_data(
+    let lightmap: Option<LightmapSection> =
+        match prl_format::read_section_data(&mut cursor, &meta, SectionId::Lightmap as u32)? {
+            Some(data) => {
+                let section = LightmapSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] Lightmap: {}x{} atlas ({} B irradiance, {} B direction)",
+                    section.width,
+                    section.height,
+                    section.irradiance.len(),
+                    section.direction.len(),
+                );
+                Some(section)
+            }
+            None => {
+                log::warn!(
+                    "[PRL] Lightmap section missing — static direct lighting disabled for this map"
+                );
+                None
+            }
+        };
+
+    // ChunkLightList section (optional). Missing for maps compiled before
+    // Task A of `lighting-chunk-lists/` — the runtime falls back to iterating
+    // the full spec-only light buffer.
+    let chunk_light_list: Option<ChunkLightListSection> = match prl_format::read_section_data(
         &mut cursor,
         &meta,
-        SectionId::Lightmap as u32,
+        SectionId::ChunkLightList as u32,
     )? {
         Some(data) => {
-            let section = LightmapSection::from_bytes(&data)?;
+            let section = ChunkLightListSection::from_bytes(&data)?;
             log::info!(
-                "[PRL] Lightmap: {}x{} atlas ({} B irradiance, {} B direction)",
-                section.width,
-                section.height,
-                section.irradiance.len(),
-                section.direction.len(),
+                "[PRL] ChunkLightList: {}×{}×{} grid, {} indices",
+                section.grid_dimensions[0],
+                section.grid_dimensions[1],
+                section.grid_dimensions[2],
+                section.light_indices.len(),
             );
             Some(section)
         }
         None => {
-            log::warn!(
-                "[PRL] Lightmap section missing — static direct lighting disabled for this map"
+            log::info!(
+                "[PRL] ChunkLightList section missing — specular path uses full-buffer fallback"
             );
             None
         }
@@ -747,6 +764,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         light_influences,
         sh_volume,
         lightmap,
+        chunk_light_list,
     })
 }
 
@@ -839,6 +857,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         }
     }
 
@@ -886,6 +905,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -925,6 +945,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
 
         let spawn = world.spawn_position();
@@ -953,6 +974,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
 
         let indices = face_leaf_indices(&world);

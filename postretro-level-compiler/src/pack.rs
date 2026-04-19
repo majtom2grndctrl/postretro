@@ -10,6 +10,7 @@ use postretro_level_format::alpha_lights::{
 };
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::BvhSection;
+use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::lightmap::LightmapSection;
@@ -130,6 +131,7 @@ pub fn pack_and_write_pvs(
     light_influence: &LightInfluenceSection,
     sh_volume: &ShVolumeSection,
     lightmap: &LightmapSection,
+    chunk_light_list: &ChunkLightListSection,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -141,6 +143,7 @@ pub fn pack_and_write_pvs(
     let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
     let lightmap_bytes = lightmap.to_bytes();
+    let chunk_light_list_bytes = chunk_light_list.to_bytes();
 
     let sections = vec![
         SectionBlob {
@@ -193,16 +196,18 @@ pub fn pack_and_write_pvs(
             version: 1,
             data: lightmap_bytes.clone(),
         },
+        SectionBlob {
+            section_id: SectionId::ChunkLightList as u32,
+            version: 1,
+            data: chunk_light_list_bytes.clone(),
+        },
     ];
 
     write_and_validate_sections(output, &sections)?;
 
     log::info!("Sections: {}", sections.len());
     log::info!("  Geometry: {} bytes", geometry_bytes.len());
-    log::info!(
-        "  TextureNames: {} bytes",
-        texture_names_bytes.len()
-    );
+    log::info!("  TextureNames: {} bytes", texture_names_bytes.len());
     log::info!("  BspNodes: {} bytes", nodes_bytes.len());
     log::info!("  BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("  LeafPvs: {} bytes", leaf_pvs_bytes.len());
@@ -228,6 +233,13 @@ pub fn pack_and_write_pvs(
         lightmap.width,
         lightmap.height,
     );
+    log::info!(
+        "  ChunkLightList: {} bytes (has_grid={}, {} chunks, {} indices)",
+        chunk_light_list_bytes.len(),
+        chunk_light_list.has_grid,
+        chunk_light_list.chunk_count(),
+        chunk_light_list.light_indices.len(),
+    );
 
     Ok(())
 }
@@ -248,6 +260,7 @@ pub fn pack_and_write_portals(
     light_influence: &LightInfluenceSection,
     sh_volume: &ShVolumeSection,
     lightmap: &LightmapSection,
+    chunk_light_list: &ChunkLightListSection,
 ) -> anyhow::Result<()> {
     // Zero out PVS references in leaves since no LeafPvs section is written.
     let portal_leaves = BspLeavesSection {
@@ -275,6 +288,7 @@ pub fn pack_and_write_portals(
     let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
     let lightmap_bytes = lightmap.to_bytes();
+    let chunk_light_list_bytes = chunk_light_list.to_bytes();
 
     let sections = vec![
         SectionBlob {
@@ -301,6 +315,11 @@ pub fn pack_and_write_portals(
             section_id: SectionId::Portals as u32,
             version: 1,
             data: portals_bytes.clone(),
+        },
+        SectionBlob {
+            section_id: SectionId::ChunkLightList as u32,
+            version: 1,
+            data: chunk_light_list_bytes.clone(),
         },
         SectionBlob {
             section_id: SectionId::Bvh as u32,
@@ -333,10 +352,7 @@ pub fn pack_and_write_portals(
 
     log::info!("Sections: {}", sections.len());
     log::info!("  Geometry: {} bytes", geometry_bytes.len());
-    log::info!(
-        "  TextureNames: {} bytes",
-        texture_names_bytes.len()
-    );
+    log::info!("  TextureNames: {} bytes", texture_names_bytes.len());
     log::info!("  BspNodes: {} bytes", nodes_bytes.len());
     log::info!("  BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("  Portals: {} bytes", portals_bytes.len());
@@ -362,6 +378,13 @@ pub fn pack_and_write_portals(
         lightmap.width,
         lightmap.height,
     );
+    log::info!(
+        "  ChunkLightList: {} bytes (has_grid={}, {} chunks, {} indices)",
+        chunk_light_list_bytes.len(),
+        chunk_light_list.has_grid,
+        chunk_light_list.chunk_count(),
+        chunk_light_list.light_indices.len(),
+    );
 
     Ok(())
 }
@@ -380,11 +403,7 @@ fn write_and_validate_sections(output: &Path, sections: &[SectionBlob]) -> anyho
     fs::write(output, &file_buf)?;
 
     let total_size = file_buf.len();
-    log::info!(
-        "Wrote {} ({} bytes)",
-        output.display(),
-        total_size
-    );
+    log::info!("Wrote {} ({} bytes)", output.display(), total_size);
 
     // Read-back validation: verify all sections round-trip.
     validate_readback(&file_buf, sections)?;
@@ -490,8 +509,8 @@ mod tests {
             nodes: vec![BspNodeRecord {
                 plane_normal: [1.0, 0.0, 0.0],
                 plane_distance: 32.0,
-                front: -1, // leaf 0
-                back: -1 - 1,  // leaf 1
+                front: -1,    // leaf 0
+                back: -1 - 1, // leaf 1
             }],
         }
     }
@@ -573,6 +592,10 @@ mod tests {
         LightmapSection::placeholder()
     }
 
+    fn placeholder_chunk_light_list() -> ChunkLightListSection {
+        ChunkLightListSection::placeholder()
+    }
+
     #[test]
     fn pack_write_pvs_produces_valid_prl_file() {
         let dir = std::env::temp_dir().join("postretro_test_pack");
@@ -597,6 +620,7 @@ mod tests {
             &empty_light_influence(),
             &empty_sh_volume(),
             &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
         )
         .expect("pack_and_write_pvs should succeed");
 
@@ -605,7 +629,7 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 10);
+        assert_eq!(meta.header.section_count, 11);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -614,7 +638,10 @@ mod tests {
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
-        assert!(meta.find_section(SectionId::LightInfluence as u32).is_some());
+        assert!(
+            meta.find_section(SectionId::LightInfluence as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
@@ -654,6 +681,7 @@ mod tests {
             &empty_light_influence(),
             &empty_sh_volume(),
             &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -662,7 +690,7 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 10);
+        assert_eq!(meta.header.section_count, 11);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -671,7 +699,10 @@ mod tests {
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
-        assert!(meta.find_section(SectionId::LightInfluence as u32).is_some());
+        assert!(
+            meta.find_section(SectionId::LightInfluence as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
@@ -700,6 +731,7 @@ mod tests {
             &empty_light_influence(),
             &empty_sh_volume(),
             &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -757,6 +789,7 @@ mod tests {
             &light_influence,
             &sh_volume,
             &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
         )
         .expect("full pipeline pvs pack should succeed");
 
@@ -764,13 +797,16 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 10);
+        assert_eq!(meta.header.section_count, 11);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
-        assert!(meta.find_section(SectionId::LightInfluence as u32).is_some());
+        assert!(
+            meta.find_section(SectionId::LightInfluence as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_none());
@@ -828,6 +864,7 @@ mod tests {
             &light_influence,
             &sh_volume,
             &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
         )
         .expect("full pipeline portal pack should succeed");
 
@@ -835,13 +872,16 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 10);
+        assert_eq!(meta.header.section_count, 11);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
-        assert!(meta.find_section(SectionId::LightInfluence as u32).is_some());
+        assert!(
+            meta.find_section(SectionId::LightInfluence as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
         assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());

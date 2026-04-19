@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL
 
 pub mod bvh_build;
+pub mod chunk_light_list_bake;
 pub mod format;
 pub mod geometry;
 pub mod geometry_utils;
@@ -53,11 +54,11 @@ impl BuildProgress {
             // We can't easily set the "start time" of an indicatif ProgressBar to the past
             // but we can use a custom formatter or just accept that it shows time-in-stage.
             // Actually, the user liked the "time since start" feel.
-            
-            // To show total elapsed time in the spinner line, we can use a template that 
+
+            // To show total elapsed time in the spinner line, we can use a template that
             // doesn't rely on the PB's internal clock if we want to be exact,
             // but indicatif's {elapsed} is fine for showing active progress.
-            
+
             pb.set_message(msg.to_string());
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             self.pb = Some(pb);
@@ -163,8 +164,7 @@ fn main() -> anyhow::Result<()> {
     // Bake the directional lightmap. Writes per-vertex lightmap UVs back
     // into `geo_result.geometry` and returns the atlas section for packing.
     // Same BVH as the SH bake — one acceleration structure, two consumers.
-    let static_light_count =
-        map_data.lights.iter().filter(|l| !l.is_dynamic).count();
+    let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
     let lightmap_section = {
         // Retry on atlas overflow: double the texel size (halve resolution)
         // up to `MAX_RETRIES` times. Degrades quality instead of failing the
@@ -229,6 +229,24 @@ fn main() -> anyhow::Result<()> {
         sh_bake::log_stats(&sh_volume_section);
     }
 
+    progress.start_stage("Chunk light list bake...");
+    let stage_start = Instant::now();
+    let chunk_light_list_section = {
+        let inputs = chunk_light_list_bake::ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &bvh_primitives,
+            geometry: &geo_result,
+            lights: &map_data.lights,
+        };
+        chunk_light_list_bake::bake_chunk_light_list(
+            &inputs,
+            chunk_light_list_bake::DEFAULT_CELL_SIZE_METERS,
+            chunk_light_list_bake::DEFAULT_PER_CHUNK_LIGHT_CAP,
+        )
+        .map_err(|e| anyhow::anyhow!("Chunk light list bake failed: {e}"))?
+    };
+    timings.push(("ChunkLightList", stage_start.elapsed()));
+
     progress.start_stage("Packing and writing...");
     let stage_start = Instant::now();
     let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
@@ -249,6 +267,7 @@ fn main() -> anyhow::Result<()> {
             &light_influence_section,
             &sh_volume_section,
             &lightmap_section,
+            &chunk_light_list_section,
         )?;
     } else {
         if args.verbose {
@@ -266,6 +285,7 @@ fn main() -> anyhow::Result<()> {
             &light_influence_section,
             &sh_volume_section,
             &lightmap_section,
+            &chunk_light_list_section,
         )?;
     }
     timings.push(("Packing", stage_start.elapsed()));
@@ -276,11 +296,14 @@ fn main() -> anyhow::Result<()> {
     for (name, duration) in &timings {
         println!("  {: <15} {:>6.2}s", name, duration.as_secs_f32());
     }
-    println!("  {: <15} {:>6.2}s", "Total", started.elapsed().as_secs_f32());
+    println!(
+        "  {: <15} {:>6.2}s",
+        "Total",
+        started.elapsed().as_secs_f32()
+    );
 
     Ok(())
 }
-
 
 #[derive(Debug)]
 struct Args {

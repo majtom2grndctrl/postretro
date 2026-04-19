@@ -382,8 +382,7 @@ fn flood(
             let apex_on_portal_plane =
                 camera_on_polygon_plane(state.camera_position, &portal.polygon);
             if apex_on_portal_plane {
-                let narrowed =
-                    narrow_frustum(state.camera_position, &portal.polygon, frustum);
+                let narrowed = narrow_frustum(state.camera_position, &portal.polygon, frustum);
                 (narrowed, portal.polygon.len())
             } else {
                 let clipped = clip_polygon_to_frustum(
@@ -930,6 +929,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         }
     }
 
@@ -1010,6 +1010,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
 
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::NEG_Z);
@@ -1092,6 +1093,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
 
         // Camera in leaf A, looking straight along +X toward portal 0.
@@ -1416,6 +1418,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
 
         // Camera looking through the LEFT passage (Z=63, center of Z=62..64 gap).
@@ -1829,6 +1832,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
 
         let camera_pos = Vec3::new(1.0, 0.0, 0.0);
@@ -1998,6 +2002,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
 
         // Camera at origin looking +X. The camera frustum is wide enough that
@@ -2099,6 +2104,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
 
         // Camera pose from the captured blank-frame trace. The live trace
@@ -2231,6 +2237,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            chunk_light_list: None,
         };
 
         // Camera pose from the captured blank-frame trace. z = -13.00

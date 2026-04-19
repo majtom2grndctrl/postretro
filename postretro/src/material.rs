@@ -30,6 +30,24 @@ pub struct MaterialProperties {
 }
 
 impl Material {
+    /// Blinn-Phong specular exponent for this material.
+    ///
+    /// Compile-time constant per variant; defaults chosen for the retro
+    /// aesthetic (punchy highlights, not physically-based). Range
+    /// [1.0, 256.0]. Matte surfaces get a low exponent (broad highlight);
+    /// glossy metals get a high exponent (tight highlight).
+    pub fn shininess(self) -> f32 {
+        match self {
+            Material::Metal => 64.0,
+            Material::Glass => 96.0,
+            Material::Neon => 32.0,
+            Material::Wood => 16.0,
+            Material::Concrete => 4.0,
+            Material::Grate => 8.0,
+            Material::Default => 32.0,
+        }
+    }
+
     /// Property flags for this material variant.
     #[allow(dead_code)]
     pub fn properties(self) -> MaterialProperties {

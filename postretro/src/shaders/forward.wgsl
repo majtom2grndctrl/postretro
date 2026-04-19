@@ -513,12 +513,14 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
         return vec3<f32>(0.0);
     }
 
-    // Hardware trilinear through the 8-corner cell cube. Wall-bleed mitigation
-    // is deferred to the forthcoming lightmap-based compiler rework, which
-    // will address bleed at bake time.
+    // Bias the lookup toward the lit side by offsetting along the surface
+    // normal by a fraction of the probe grid spacing. Reduces SH bleed across
+    // thin walls.
+    const SH_NORMAL_OFFSET_M: f32 = 0.1;
+    let offset_world = world_pos + normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
     let gdims_u = sh_grid.grid_dimensions;
     let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
-    let cell_coord = (world_pos - sh_grid.grid_origin) /
+    let cell_coord = (offset_world - sh_grid.grid_origin) /
         max(sh_grid.cell_size, vec3<f32>(1.0e-6));
     let gf = clamp(cell_coord, vec3<f32>(0.0), gdims_f);
     let gi = vec3<u32>(floor(gf));

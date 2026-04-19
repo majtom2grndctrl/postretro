@@ -90,9 +90,14 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
     let total = dims[0] as usize * dims[1] as usize * dims[2] as usize;
 
     // Decompose lights into static (folded into the base coefficients) and
-    // animated (one per-light mono layer each).
-    let (static_lights, animated_lights): (Vec<&MapLight>, Vec<&MapLight>) =
-        inputs.lights.iter().partition(|l| l.animation.is_none());
+    // animated (one per-light mono layer each). `is_dynamic` lights are
+    // excluded from both — they are evaluated at runtime by the direct
+    // lighting loop, so baking them would double-count their contribution.
+    let (static_lights, animated_lights): (Vec<&MapLight>, Vec<&MapLight>) = inputs
+        .lights
+        .iter()
+        .filter(|l| !l.is_dynamic)
+        .partition(|l| l.animation.is_none());
 
     // Build probe list and flag validity against the BSP tree.
     let probe_positions: Vec<DVec3> = (0..total)
@@ -1242,6 +1247,72 @@ mod tests {
                 probe.validity, 0,
                 "probes in an exterior-flagged leaf must be invalid after bake",
             );
+        }
+    }
+
+    #[test]
+    fn is_dynamic_lights_skipped_by_bake() {
+        // Regression: a light flagged `is_dynamic` must be excluded from the
+        // SH bake so the runtime direct-lighting loop doesn't double-count it.
+        // Baking a scene with one dynamic light must match the no-light
+        // baseline within numerical noise.
+        let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+
+        let baseline = {
+            let inputs = BakeInputs {
+                bvh: &bvh,
+                primitives: &prims,
+                geometry: &geo,
+                tree: &tree,
+                exterior_leaves: &exterior,
+                lights: &[],
+            };
+            bake_sh_volume(&inputs, 1.0)
+        };
+
+        let mut dyn_light = MapLight {
+            origin: DVec3::new(0.3, 1.0, 0.3),
+            light_type: LightType::Point,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 5.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            animation: None,
+            cast_shadows: true,
+            bake_only: false,
+            is_dynamic: false,
+        };
+        dyn_light.is_dynamic = true;
+
+        let with_dynamic = {
+            let inputs = BakeInputs {
+                bvh: &bvh,
+                primitives: &prims,
+                geometry: &geo,
+                tree: &tree,
+                exterior_leaves: &exterior,
+                lights: std::slice::from_ref(&dyn_light),
+            };
+            bake_sh_volume(&inputs, 1.0)
+        };
+
+        assert_eq!(with_dynamic.probes.len(), baseline.probes.len());
+        assert!(with_dynamic.animation_descriptors.is_empty());
+        assert!(with_dynamic.per_light_sh.is_empty());
+        for (a, b) in with_dynamic.probes.iter().zip(baseline.probes.iter()) {
+            assert_eq!(a.validity, b.validity);
+            for (ca, cb) in a.sh_coefficients.iter().zip(b.sh_coefficients.iter()) {
+                assert!(
+                    (ca - cb).abs() < 1.0e-5,
+                    "dynamic-light bake diverged from baseline: {ca} vs {cb}",
+                );
+            }
         }
     }
 

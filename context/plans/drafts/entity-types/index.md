@@ -1,8 +1,8 @@
 # Entity Types
 
-> **Status:** pre-draft — depends on features not yet implemented. Depth and sub-tasks will be refined as dependencies land.
-> **Blocked by:** Phase 7 (grounded movement), Phase 5 (sprites), Phase 4 (audio) — see `context/plans/roadmap.md`
-> **Related:** `context/lib/entity_model.md`, `context/lib/rendering_pipeline.md`, `context/lib/audio.md`
+> **Status:** future brainstorm — blocked until post-Milestone 11 (scripting layer). Concrete entity types (door, enemy, pickup, etc.) are implemented as scripts, not Rust engine types. Do not refine or implement until the scripting runtime and entity API bindings from M11 exist.
+> **Blocked by:** Milestone 7 (entity model foundation), Milestone 11 (scripting layer), Milestone 12 (player movement), Milestone 13 (weapons), Milestone 14 (NPCs) — see `context/plans/roadmap.md`.
+> **Related:** `context/lib/entity_model.md`, `context/lib/rendering_pipeline.md`, `context/lib/audio.md`, `context/plans/drafts/entity-model-foundation/index.md`
 
 ---
 

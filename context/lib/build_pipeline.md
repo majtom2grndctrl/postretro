@@ -51,14 +51,17 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | `light` | point | Omnidirectional light | `light` (intensity), `_color` (RGB), `_fade` (falloff distance, required), `delay` (falloff model), `style` (animation), `_phase` (style cycle offset), `_dynamic` (static-baked vs. runtime dynamic; default 0 = static) |
 | `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles), `mangle` (direction) |
 | `light_sun` | point | Directional sun light | + `mangle` (direction vector) |
-| `env_fog_volume` | brush | Per-region fog | `color`, `density`, `falloff` |
+| `env_fog_volume` | brush | Per-region fog | `color`, `density`, `falloff`, `scatter` (scatter fraction toward camera; default 0.6) |
+| `env_smoke_emitter` | point | Smoke/particle emitter | `rate` (sprites/sec; default 4), `lifetime` (seconds; default 3.0), `size` (world units; default 0.5), `speed` (drift velocity; default 0.3), `collection` (sprite sheet collection name), `spec_intensity` (Blinn-Phong specular scale; default 0.3) |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
+| `worldspawn` | special | Scene-wide render settings | `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8) |
 
 ### Entity resolution
 
 - **`light`, `light_spot`, `light_sun`** — validated at compile time (falloff distance required, spotlight direction verified, intensity bounds checked). Static lights feed the SH irradiance volume baker and the directional lightmap baker. Dynamic lights feed the runtime direct lighting buffer. Compilation fails on validation errors.
-- **`env_fog_volume`** — resolved to BSP leaves at load time. Each leaf in the volume gets per-leaf fog parameters.
+- **`env_fog_volume`** — resolved at load time to world-space AABBs and fog parameters. Uploaded as a compact storage buffer (up to 16 entries). Runtime uses point-in-AABB membership test per raymarch sample; no BSP traversal at runtime.
+- **`env_smoke_emitter`** — resolved at level load to emitter parameters. CPU maintains a ring-buffer of live sprites per emitter (max 512); sprite instances uploaded to GPU each frame.
 - **`env_cubemap`** — marks a position for offline cubemap baking. Bake tool is out of initial scope.
 - **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf gets spatial reverb parameters for the audio subsystem.
 

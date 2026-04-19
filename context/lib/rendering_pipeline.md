@@ -111,7 +111,15 @@ One `multi_draw_indexed_indirect` call per material bucket. Depth loaded from th
 - Loop over dynamic lights; evaluate direct contribution with influence-volume early-out.
 - Output: `albedo × (static_direct + indirect_sh + Σ dynamic_direct)`.
 
-Depth testing and back-face culling are permanent from this pass forward. Shadow maps, billboards, emissive bypass, fog volumes, and post-processing attach in later phases.
+Depth testing and back-face culling are permanent from this pass forward.
+
+### 7.4 Billboard Sprite Pass
+
+Camera-facing quads emitted from `env_smoke_emitter` point entities. Alpha-blended additive pass; depth write disabled, depth test enabled. Quads are expanded in the vertex shader using the view-space right and up vectors — no geometry shader. Lit by the full stack: SH ambient, multi-source static specular via the chunk light list, and dynamic direct (diffuse only). Batched by sprite-sheet collection — all emitters sharing a collection issue one draw call per frame. Bind group 6 carries the sprite instance storage buffer.
+
+### 7.5 Fog Volume Composite
+
+Low-resolution raymarched pass over `env_fog_volume` brush regions. Resolution governed by `fog_pixel_scale` worldspawn property (default 4 — quarter resolution). Per sample: point-in-AABB membership test against the fog volume buffer; accumulates SH ambient scatter and dynamic spot beam scatter (with shadow map occlusion for visible shafts and shadow wedges). Composited over the scene additively via nearest-neighbor upscale. The pixelated blocks are intentional, not a compromise.
 
 ---
 
@@ -119,7 +127,19 @@ Depth testing and back-face culling are permanent from this pass forward. Shadow
 
 All wgpu calls live in the renderer module. Map loader, game logic, audio, and input never import wgpu types. Data crosses the boundary as engine-defined types; the renderer translates to GPU operations. Per-subsystem contracts: vertex format §6, cells and BVH §5, lighting §4.
 
-**Device limits.** Renderer requests `max_bind_groups = 8` — the WebGPU spec maximum and the ceiling for any future pass. Current slots: camera, material, lights, SH volume, lightmap. Remaining slots are budget for in-flight lighting work (spot shadows, per-chunk light lists). New passes that need a sixth resource group fit within this budget; a pass needing a ninth must consolidate, not raise the limit.
+**Device limits.** Renderer requests `max_bind_groups = 8` — the WebGPU spec maximum and the ceiling for any future pass. Allocated bind-group slots:
+
+| Group | Contents |
+|-------|---------|
+| 0 | Camera uniforms |
+| 1 | Material (albedo texture, normal map, per-material uniforms) |
+| 2 | Dynamic lights, influence volumes, per-chunk static light lists |
+| 3 | SH irradiance volume (sampler, 9 coefficient band textures, grid uniform) |
+| 4 | Lightmap atlas (irradiance + dominant direction textures) |
+| 5 | Spot shadow maps (depth texture array, comparison sampler, light-space matrices) |
+| 6 | FX resources (sprite instance storage buffer; fog depth buffer, AABB buffer, scatter target) |
+
+Groups 0, 2, 3, and 5 are shared across the forward, billboard, and fog pipelines — the same bind-group objects are reused, not re-uploaded. One budget slot remains; a pass needing a ninth group must consolidate, not raise the limit.
 
 ---
 

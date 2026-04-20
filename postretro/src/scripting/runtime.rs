@@ -50,6 +50,11 @@ pub(crate) struct ScriptRuntimeConfig {
 pub(crate) struct ScriptRuntime {
     quickjs: QuickJsSubsystem,
     luau: LuauSubsystem,
+    /// Dev-mode hot-reload watcher. Present only in debug builds; release
+    /// builds omit the field entirely so the watcher module doesn't compile
+    /// in and `drain_reload_requests` becomes a cheap no-op.
+    #[cfg(debug_assertions)]
+    watcher: Option<super::watcher::ScriptWatcher>,
 }
 
 impl ScriptRuntime {
@@ -67,7 +72,55 @@ impl ScriptRuntime {
         #[cfg(debug_assertions)]
         typedef::emit_sdk_types_in_debug(registry);
 
-        Ok(Self { quickjs, luau })
+        Ok(Self {
+            quickjs,
+            luau,
+            #[cfg(debug_assertions)]
+            watcher: None,
+        })
+    }
+
+    /// Start the dev-mode file watcher. No-op in release builds (the method
+    /// still exists so the frame-loop caller doesn't need a `cfg` gate).
+    /// Calling twice replaces the previous watcher.
+    pub(crate) fn start_watcher(&mut self, script_root: &Path) -> Result<(), ScriptError> {
+        #[cfg(debug_assertions)]
+        {
+            let ts_compiler = super::watcher::TsCompilerPath::detect();
+            let w = super::watcher::ScriptWatcher::spawn(script_root, ts_compiler)?;
+            self.watcher = Some(w);
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            // In release builds, hot reload is intentionally unavailable;
+            // silently ignore so the caller can unconditionally invoke this.
+            let _ = script_root;
+        }
+        Ok(())
+    }
+
+    /// Drain any pending reload requests produced by the watcher and apply
+    /// them. Call at the top of each frame. No-op in release builds.
+    ///
+    /// Errors during a reload are logged (inside the watcher) and swallowed —
+    /// one failed hot reload must not kill the engine. The prior archetype
+    /// set stays active.
+    pub(crate) fn drain_reload_requests(&mut self) -> Result<(), ScriptError> {
+        #[cfg(debug_assertions)]
+        {
+            // Temporarily take the watcher to satisfy the borrow checker:
+            // `drain_reload_requests` needs `&mut self` on both the watcher
+            // and the runtime, and they can't both be borrowed from `self`
+            // at once. We put it back unconditionally via `Option::replace`
+            // equivalent; panics inside `drain_reload_requests` propagate but
+            // don't leak the watcher because the field is simply re-set here.
+            if let Some(mut w) = self.watcher.take() {
+                let result = w.drain_reload_requests(self);
+                self.watcher = Some(w);
+                return result;
+            }
+        }
+        Ok(())
     }
 
     /// Access the QuickJS subsystem. Lifecycle-heavy operations (entering a

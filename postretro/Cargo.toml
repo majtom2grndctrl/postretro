@@ -36,6 +36,13 @@ serde_json.workspace = true
 rquickjs.workspace = true
 mlua.workspace = true
 
+# Filesystem watcher — dev-mode hot reload (sub-plan 7). The runtime activation
+# of the watcher is gated on `cfg(debug_assertions)`; compiling the deps in
+# release builds is cheap and lets the scripting module share one dependency
+# set across profiles.
+notify.workspace = true
+notify-debouncer-full.workspace = true
+
 # Logging
 log.workspace = true
 env_logger.workspace = true

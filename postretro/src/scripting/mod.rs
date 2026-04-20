@@ -26,3 +26,9 @@ pub(crate) mod quickjs;
 pub(crate) mod registry;
 pub(crate) mod runtime;
 pub(crate) mod typedef;
+
+// Dev-mode hot reload. Compiled in debug builds only; the module itself has a
+// `#![cfg(debug_assertions)]` gate, but we also gate the `mod` declaration so
+// nothing downstream can accidentally reference its types in a release build.
+#[cfg(debug_assertions)]
+pub(crate) mod watcher;

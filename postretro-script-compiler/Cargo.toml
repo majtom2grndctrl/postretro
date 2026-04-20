@@ -1,0 +1,33 @@
+[package]
+name = "postretro-script-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "TypeScript → JavaScript transpiler sidecar for Postretro (isolates swc from the engine binary)"
+license.workspace = true
+
+# Binary name follows the `prl-build` naming established by
+# `postretro-level-compiler`. The engine detects this binary via the cascade
+# documented in
+# context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md
+# §Sub-plan 7.
+[[bin]]
+name = "scripts-build"
+path = "src/main.rs"
+
+[dependencies]
+# Narrow swc dep set: parser + TS strip transform + codegen + common + base
+# (for `resolver`). Nothing else. This sidecar exists so the main `postretro`
+# crate never pulls in any `swc_*` crate — keep the surface area here tight so
+# engine build times and final binary size stay bounded.
+#
+# Individual swc_* sub-crates version independently; pins below reflect the
+# versions currently published by swc-project that compose cleanly with
+# swc_ecma_transforms_typescript 46.
+swc_common = "21"
+swc_ecma_ast = "23"
+swc_ecma_parser = { version = "39", default-features = false, features = ["typescript"] }
+swc_ecma_codegen = "26"
+swc_ecma_transforms_base = "42"
+swc_ecma_transforms_typescript = "46"
+anyhow.workspace = true

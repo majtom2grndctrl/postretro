@@ -33,3 +33,7 @@ assets/maps/*
 /tools
 .claude/worktrees/
 .venv/
+
+# Generated script SDK type declarations (rebuilt by `gen-script-types`).
+sdk/types/postretro.d.ts
+sdk/types/postretro.d.luau

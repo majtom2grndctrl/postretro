@@ -51,3 +51,15 @@ naga = { version = "29", features = ["wgsl-in"] }
 
 # Property-based testing for shadow math invariants.
 proptest = { workspace = true }
+
+# Adding any explicit `[[bin]]` entry disables Cargo's implicit detection of
+# `src/main.rs`, so the engine binary must also be declared explicitly — see
+# context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md
+# §Sub-plan 5 "Implementation note — Cargo auto-detection".
+[[bin]]
+name = "postretro"
+path = "src/main.rs"
+
+[[bin]]
+name = "gen-script-types"
+path = "src/bin/gen_script_types.rs"

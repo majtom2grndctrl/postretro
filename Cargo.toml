@@ -42,6 +42,14 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Serialization (scripting FFI transit)
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Scripting runtimes (embedded). Default features; `parallel` OFF — scripting
+# is single-threaded, `Runtime: Send` is not required. See
+# context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 2.
+rquickjs = { version = "0.11", default-features = true }
+# `luau` auto-enables vendored mode; do NOT list `vendored` redundantly.
+mlua = { version = "0.11", features = ["luau", "serde"] }
 
 # Logging
 log = "0.4"

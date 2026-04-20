@@ -279,6 +279,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -667,6 +677,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "erased-serde"
+version = "0.4.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2add8a07dd6a8d93ff627029c51de145e12686fbc36ecb298ac22e74cf02dec"
+dependencies = [
+ "serde",
+ "serde_core",
+ "typeid",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1027,6 +1048,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
+name = "itoa"
+version = "1.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
 name = "jiff"
 version = "0.2.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1264,6 +1291,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "luau0-src"
+version = "0.18.3+luau709"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e73f7d752fe2ef0a41f132b83d0be154c6ae0ed84967b4df80a16901866be075"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "mach2"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1320,6 +1356,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
 
 [[package]]
+name = "mlua"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ccd36acfa49ce6ee56d1307a061dd302c564eee757e6e4cd67eb4f7204846fab"
+dependencies = [
+ "bstr",
+ "either",
+ "erased-serde",
+ "libc",
+ "mlua-sys",
+ "num-traits",
+ "parking_lot",
+ "rustc-hash 2.1.2",
+ "rustversion",
+ "serde",
+ "serde-value",
+]
+
+[[package]]
+name = "mlua-sys"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f1c3a7fc7580227ece249fd90aa2fa3b39eb2b49d3aec5e103b3e85f2c3dfc8"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "luau0-src",
+ "pkg-config",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1349,7 +1417,7 @@ dependencies = [
  "log",
  "num-traits",
  "once_cell",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "spirv",
  "thiserror 2.0.18",
  "unicode-ident",
@@ -1911,6 +1979,15 @@ dependencies = [
 
 [[package]]
 name = "ordered-float"
+version = "2.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "ordered-float"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7d950ca161dc355eaf28f82b11345ed76c6e1f6eb1f4f4479e0323b9e2fbd0e"
@@ -2065,11 +2142,14 @@ dependencies = [
  "image",
  "kira",
  "log",
+ "mlua",
  "naga",
  "pollster",
  "postretro-level-format",
  "proptest",
+ "rquickjs",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "wgpu",
  "winit",
@@ -2339,10 +2419,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "relative-path"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bca40a312222d8ba74837cb474edef44b37f561da5f773981007a10bbaa992b0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "rquickjs"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c50dc6d6c587c339edb4769cf705867497a2baf0eca8b4645fa6ecd22f02c77a"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8bf7840285c321c3ab20e752a9afb95548c75cd7f4632a0627cea3507e310c1"
+dependencies = [
+ "hashbrown 0.16.1",
+ "relative-path",
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27344601ef27460e82d6a4e1ecb9e7e99f518122095f3c51296da8e9be2b9d83"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "rtrb"
@@ -2355,6 +2473,12 @@ name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
 
 [[package]]
 name = "rustc_version"
@@ -2475,6 +2599,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-value"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
+dependencies = [
+ "ordered-float 2.10.1",
+ "serde",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2492,6 +2626,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.149"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+dependencies = [
+ "itoa",
+ "memchr",
+ "serde",
+ "serde_core",
+ "zmij",
 ]
 
 [[package]]
@@ -2927,6 +3074,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
+
+[[package]]
 name = "typenum"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3257,7 +3410,7 @@ dependencies = [
  "portable-atomic",
  "profiling",
  "raw-window-handle",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "smallvec",
  "thiserror 2.0.18",
  "wgpu-core-deps-apple",
@@ -3328,7 +3481,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "once_cell",
- "ordered-float",
+ "ordered-float 5.3.0",
  "parking_lot",
  "portable-atomic",
  "portable-atomic-util",
@@ -3807,3 +3960,9 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "zmij"
+version = "1.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"

@@ -30,6 +30,11 @@ anyhow.workspace = true
 
 # Serialization (scripting FFI transit)
 serde.workspace = true
+serde_json.workspace = true
+
+# Scripting runtimes (embedded)
+rquickjs.workspace = true
+mlua.workspace = true
 
 # Logging
 log.workspace = true

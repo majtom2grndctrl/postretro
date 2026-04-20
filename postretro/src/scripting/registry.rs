@@ -36,6 +36,20 @@ impl EntityId {
     fn generation(self) -> u16 {
         (self.0 >> Self::INDEX_BITS) as u16
     }
+
+    /// Raw packed `u32` representation. The scripting FFI layer crosses the
+    /// language boundary as a JS number / Lua integer — both of which can
+    /// losslessly carry a 32-bit integer.
+    pub(crate) fn to_raw(self) -> u32 {
+        self.0
+    }
+
+    /// Inverse of [`EntityId::to_raw`]. The binding layer reconstructs an
+    /// `EntityId` from a script-supplied number; validation happens when the
+    /// registry dereferences it.
+    pub(crate) fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
 }
 
 impl fmt::Debug for EntityId {

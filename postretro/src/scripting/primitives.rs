@@ -1,0 +1,198 @@
+// Day-one primitives: the initial set Sub-plan 2 requires.
+//
+// Every primitive here captures the engine-owned `ScriptCtx` by Rc at
+// registration time. Adding a subsystem to the scripting surface means adding
+// one field to `ScriptCtx` and a few `.register(...)` lines here — no
+// primitive needs to know about global state.
+//
+// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 2
+
+use super::ctx::{ScriptCtx, ScriptEvent};
+use super::error::ScriptError;
+use super::primitives_registry::{ContextScope, PrimitiveRegistry};
+use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
+
+/// Register the seven day-one primitives. Called at engine startup, before
+/// any script runtime is created.
+pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
+    // entity_exists --------------------------------------------------------
+    registry
+        .register("entity_exists", {
+            let ctx = ctx.clone();
+            move |id: EntityId| -> Result<bool, ScriptError> {
+                Ok(ctx.registry.borrow().exists(id))
+            }
+        })
+        .scope(ContextScope::Both)
+        .doc("Returns true if the entity id refers to a live entity.")
+        .finish();
+
+    // spawn_entity ---------------------------------------------------------
+    registry
+        .register("spawn_entity", {
+            let ctx = ctx.clone();
+            move |transform: Transform| -> Result<EntityId, ScriptError> {
+                Ok(ctx.registry.borrow_mut().spawn(transform))
+            }
+        })
+        .scope(ContextScope::BehaviorOnly)
+        .doc("Spawns a new entity with the given transform and returns its id.")
+        .finish();
+
+    // despawn_entity -------------------------------------------------------
+    registry
+        .register("despawn_entity", {
+            let ctx = ctx.clone();
+            move |id: EntityId| -> Result<(), ScriptError> {
+                ctx.registry.borrow_mut().despawn(id)?;
+                Ok(())
+            }
+        })
+        .scope(ContextScope::BehaviorOnly)
+        .doc("Despawns a previously-spawned entity. Errors if the id is stale.")
+        .finish();
+
+    // get_component --------------------------------------------------------
+    registry
+        .register("get_component", {
+            let ctx = ctx.clone();
+            move |id: EntityId, kind: ComponentKind| -> Result<ComponentValue, ScriptError> {
+                let reg = ctx.registry.borrow();
+                match kind {
+                    ComponentKind::Transform => {
+                        let t = reg.get_component::<Transform>(id)?;
+                        Ok(ComponentValue::Transform(*t))
+                    }
+                }
+            }
+        })
+        .scope(ContextScope::BehaviorOnly)
+        .doc("Reads a component of the given kind from an entity.")
+        .finish();
+
+    // set_component --------------------------------------------------------
+    registry
+        .register("set_component", {
+            let ctx = ctx.clone();
+            move |id: EntityId,
+                  kind: ComponentKind,
+                  value: ComponentValue|
+                  -> Result<(), ScriptError> {
+                // Enforce the `kind` and `value` discriminants agree. Mismatches
+                // are a script-side bug; we fail with a clear message rather
+                // than silently using one of the two.
+                match (kind, &value) {
+                    (ComponentKind::Transform, ComponentValue::Transform(_)) => {}
+                }
+                let mut reg = ctx.registry.borrow_mut();
+                match value {
+                    ComponentValue::Transform(t) => reg.set_component(id, t)?,
+                }
+                Ok(())
+            }
+        })
+        .scope(ContextScope::BehaviorOnly)
+        .doc("Writes a component of the given kind onto an entity.")
+        .finish();
+
+    // emit_event (broadcast) ----------------------------------------------
+    registry
+        .register("emit_event", {
+            let ctx = ctx.clone();
+            move |event: ScriptEvent| -> Result<(), ScriptError> {
+                ctx.events.borrow_mut().broadcast.push_back(event);
+                Ok(())
+            }
+        })
+        .scope(ContextScope::BehaviorOnly)
+        .doc("Broadcasts an event to all listeners; drains at end of game logic.")
+        .finish();
+
+    // send_event (targeted) -----------------------------------------------
+    registry
+        .register("send_event", {
+            let ctx = ctx.clone();
+            move |target: EntityId, event: ScriptEvent| -> Result<(), ScriptError> {
+                ctx.events
+                    .borrow_mut()
+                    .targeted
+                    .push_back((target, event));
+                Ok(())
+            }
+        })
+        .scope(ContextScope::BehaviorOnly)
+        .doc("Sends an event to a single entity; drains at end of game logic.")
+        .finish();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scripting::ctx::ScriptCtx;
+
+    fn registry_with_day_one() -> (PrimitiveRegistry, ScriptCtx) {
+        let ctx = ScriptCtx::new();
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ctx.clone());
+        (r, ctx)
+    }
+
+    #[test]
+    fn register_all_installs_seven_primitives() {
+        let (r, _ctx) = registry_with_day_one();
+        assert_eq!(r.len(), 7);
+        let names: Vec<_> = r.iter().map(|p| p.name).collect();
+        for expected in [
+            "entity_exists",
+            "spawn_entity",
+            "despawn_entity",
+            "get_component",
+            "set_component",
+            "emit_event",
+            "send_event",
+        ] {
+            assert!(names.contains(&expected), "missing primitive {expected}");
+        }
+    }
+
+    #[test]
+    fn entity_exists_callable_from_quickjs_and_matches_registry() {
+        let (r, ctx) = registry_with_day_one();
+        // Seed a live entity from Rust so we have a known-valid id.
+        let id = ctx.registry.borrow_mut().spawn(Transform::default());
+        let raw = id.to_raw();
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|jsctx| {
+            for p in r.iter() {
+                (p.quickjs_installer)(&jsctx).unwrap();
+            }
+            let got_live: bool = jsctx.eval(format!("entity_exists({raw})")).unwrap();
+            assert!(got_live);
+
+            let got_bogus: bool = jsctx
+                .eval(format!("entity_exists({})", raw.wrapping_add(1)))
+                .unwrap();
+            // raw+1 changes the low-16 index bits — a different, unallocated slot.
+            assert!(!got_bogus);
+        });
+    }
+
+    #[test]
+    fn entity_exists_callable_from_luau_and_matches_registry() {
+        let (r, ctx) = registry_with_day_one();
+        let id = ctx.registry.borrow_mut().spawn(Transform::default());
+        let raw = id.to_raw();
+
+        let lua = mlua::Lua::new();
+        for p in r.iter() {
+            (p.luau_installer)(&lua).unwrap();
+        }
+        let got_live: bool = lua
+            .load(format!("return entity_exists({raw})"))
+            .eval()
+            .unwrap();
+        assert!(got_live);
+    }
+}

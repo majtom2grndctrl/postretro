@@ -55,8 +55,7 @@ These are not up for renegotiation inside this plan. Recording them here so an i
 
 | Crate | Role |
 |-------|------|
-| `postretro` | Hosts the entity/component registry, the primitive binding layer, both script runtimes, and the hot-reload file watcher. Must **not** depend on `swc` (binary-size guardrail). |
-| `postretro-scripting` | **New.** Extracted if the binding layer grows beyond ~600 lines. Start in `postretro` under `src/scripting/`; promote to a workspace crate only when its API surface stabilizes and a second consumer appears (e.g., the level compiler running definition scripts for validation). Default assumption for this plan: stays in `postretro`. |
+| `postretro` | Hosts the entity/component registry, the primitive binding layer, both script runtimes, and the hot-reload file watcher. Must **not** depend on `swc` (binary-size guardrail). Scripting lives permanently in `postretro::scripting` — no separate crate planned. |
 | `postretro-script-compiler` | **New.** Sibling to `postretro-level-compiler`. Binary-only crate that transpiles `.ts` → `.js` via `swc` for dev-mode hot reload. Isolates the `swc` dependency away from the engine binary. Invoked by the engine as a subprocess fallback when neither `tsc` nor `npx` is available on PATH. See sub-plan 7. |
 
 No changes to `postretro-level-format` or `postretro-level-compiler`.

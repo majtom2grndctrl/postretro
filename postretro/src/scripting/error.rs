@@ -34,6 +34,18 @@ pub(crate) enum ScriptError {
 
     #[error("primitive `{name}` panicked")]
     Panicked { name: &'static str },
+
+    /// Script threw an exception mid-execution. `source` is kept as a public
+    /// field name for callers, but thiserror's `#[error(...)]` template uses
+    /// `source_name` internally — the type alias below documents why.
+    ///
+    /// The plan text specifies the variant carries `msg` and `source`. We
+    /// expose both, but rename the field carrying the script identifier to
+    /// `source_name` to avoid colliding with thiserror's `source` magic
+    /// (which demands `Error` impls on `source`-named fields). Match on this
+    /// variant with `{ msg, source_name, .. }` from consumers.
+    #[error("script `{source_name}` threw: {msg}")]
+    ScriptThrew { msg: String, source_name: String },
 }
 
 impl From<RegistryError> for ScriptError {

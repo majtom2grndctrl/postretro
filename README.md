@@ -112,13 +112,10 @@ The engine is being built in phases, each of which produces something you can ac
 - **Milestone 3** ✅ — Textured world with solid rendering, depth buffer, material system
 - **Milestone 3.5** ✅ — Rendering foundation: vertex format upgrade (packed normals and tangents), GPU-driven indirect draw dispatch. Same visuals as Milestone 3, new architecture underneath.
 - **Milestone 4** ✅ — BVH foundation: global SAH BVH over all static geometry, GPU compute frustum culling via skip-index DFS traversal, fixed-slot indirect buffer. Per-cell chunking from Milestone 3.5 retired in favor of the global BVH.
-- **Milestone 5** — Lighting foundation: SH irradiance volume (baked indirect), clustered forward+ dynamic lights, normal maps, shadow maps
-- **Milestone 6** — Embedded scripting and entity foundation: scripted entity model, FGD entity parsing, hot reload, modder-facing API
-- **Milestone 7** — Player movement: collision, gravity, step-up, jump — engine floor exposed as a script API so modders can craft their own feel
-- **Milestone 8** — Weapons as scripted entities: hitscan, projectiles, pickups, viewmodel hooks
-- **Milestone 9** — NPC entities: scripted AI with engine-provided navigation and line-of-sight primitives
-- **Milestone 10** — World entities: doors, triggers, brush movers, scripted set pieces
-- **Future** — Visual polish (sprites, emissives, fog), post-processing (bloom, CRT filter, cubemap reflections), audio, HUD, and whatever else a boomer shooter needs
+- **Milestone 5** ✅ — Lighting foundation: SH irradiance volume (baked indirect), lightmapped static surfaces, direct light loop, CSM sun shadows, animated light layers
+- **Milestone 6** — Scripting + entity foundation: entity model and scripting runtime co-designed; scripted behaviors, FGD entity parsing, hot reload, modder-facing API
+- **Milestone 7** — Grounded movement: collision, gravity, step-up, jump — movement behavior written as a script using engine-provided collision primitives
+- **Future** — Weapons, NPCs, world entities (doors, triggers, brush movers), visual polish (billboard sprites, emissives, fog, specular maps), post-processing (bloom, CRT filter, cubemap reflections), audio, HUD, destructible geometry, and whatever else a boomer shooter needs
 
 The full phased plan with acceptance criteria lives in `context/plans/roadmap.md`.
 

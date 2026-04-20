@@ -1,6 +1,6 @@
 # Dynamic Light PVS Culling
 
-> **Status:** draft
+> **Status:** ready
 > **Depends on:** `lighting-spot-shadows/` (shipped — `SpotShadowPool::rank_lights` already accepts a `_visible_cell_bitmask: &[bool]` slot). `lighting-dynamic-flag/` (shipped — `MapLight.is_dynamic` available).
 > **Related:** `context/lib/build_pipeline.md` §Runtime visibility · `context/lib/rendering_pipeline.md` §4 · `context/plans/done/lighting-spot-shadows/index.md` Task A · `context/plans/drafts/perf-anti-penumbra-pvs/index.md` (compile-time PVS tightening — independent and complementary).
 

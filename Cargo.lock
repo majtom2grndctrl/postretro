@@ -856,6 +856,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
 dependencies = [
  "mint",
+ "serde_core",
 ]
 
 [[package]]
@@ -2068,6 +2069,7 @@ dependencies = [
  "pollster",
  "postretro-level-format",
  "proptest",
+ "serde",
  "thiserror 2.0.18",
  "wgpu",
  "winit",

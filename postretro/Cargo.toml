@@ -28,6 +28,9 @@ image.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 
+# Serialization (scripting FFI transit)
+serde.workspace = true
+
 # Logging
 log.workspace = true
 env_logger.workspace = true

@@ -13,6 +13,7 @@ mod material;
 mod portal_vis;
 mod prl;
 mod render;
+mod scripting;
 mod texture;
 mod visibility;
 

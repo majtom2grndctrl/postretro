@@ -19,7 +19,7 @@ wgpu = "29"
 pollster = "0.4"
 
 # Math
-glam = "0.32"
+glam = { version = "0.32", features = ["serde"] }
 
 # Map parsing (level compiler)
 shambler = "0.2"
@@ -39,6 +39,9 @@ rayon = "1"
 
 # Image loading
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Serialization (scripting FFI transit)
+serde = { version = "1", features = ["derive"] }
 
 # Logging
 log = "0.4"

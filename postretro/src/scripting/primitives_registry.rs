@@ -102,7 +102,9 @@ pub(crate) struct PrimitiveRegistry {
 
 impl PrimitiveRegistry {
     pub(crate) fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     /// Start a builder for a new primitive. The builder's `.finish()` pushes

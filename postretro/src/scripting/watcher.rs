@@ -258,10 +258,7 @@ impl ScriptWatcher {
         debouncer
             .watch(&script_root, RecursiveMode::Recursive)
             .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!(
-                    "failed to watch `{}`: {e}",
-                    script_root.display(),
-                ),
+                reason: format!("failed to watch `{}`: {e}", script_root.display(),),
             })?;
 
         // Spawn the compile-worker. This thread runs the slow path.
@@ -471,10 +468,7 @@ mod tests {
     /// Poll `rx` for up to `deadline`, returning true if any request arrived.
     /// The watcher is not plumbed through `ScriptRuntime` in these tests —
     /// we're verifying the request-production pipeline end-to-end.
-    fn wait_for_reload(
-        watcher: &ScriptWatcher,
-        deadline: Duration,
-    ) -> bool {
+    fn wait_for_reload(watcher: &ScriptWatcher, deadline: Duration) -> bool {
         let start = Instant::now();
         while start.elapsed() < deadline {
             if watcher.reload_rx.try_recv().is_ok() {
@@ -638,9 +632,9 @@ mod tests {
             Some(TsCompilerPath::ScriptsBuildNextToEngine(p)) => {
                 assert_eq!(p.parent().unwrap(), dir);
             }
-            other => panic!(
-                "expected detect_with() to return ScriptsBuildNextToEngine; got {other:?}"
-            ),
+            other => {
+                panic!("expected detect_with() to return ScriptsBuildNextToEngine; got {other:?}")
+            }
         }
     }
 
@@ -655,15 +649,12 @@ mod tests {
         // sidecar. Use a temp dir (guaranteed to not contain `scripts-build`).
         let empty_dir = temp_dir("no_sidecar");
 
-        let detected =
-            TsCompilerPath::detect_with(Some(&empty_dir), Some(dir.as_os_str()));
+        let detected = TsCompilerPath::detect_with(Some(&empty_dir), Some(dir.as_os_str()));
         match detected {
             Some(TsCompilerPath::ScriptsBuildOnPath(p)) => {
                 assert_eq!(p.parent().unwrap(), dir);
             }
-            other => panic!(
-                "expected detect_with() to return ScriptsBuildOnPath; got {other:?}"
-            ),
+            other => panic!("expected detect_with() to return ScriptsBuildOnPath; got {other:?}"),
         }
     }
 }

@@ -175,7 +175,10 @@ impl<'js> IntoJs<'js> for Transform {
     fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         let o = Object::new(ctx.clone())?;
         o.set("position", vec3_to_js(ctx, self.position)?)?;
-        o.set("rotation", euler_to_js(ctx, EulerDegrees::from_quat(self.rotation))?)?;
+        o.set(
+            "rotation",
+            euler_to_js(ctx, EulerDegrees::from_quat(self.rotation))?,
+        )?;
         o.set("scale", vec3_to_js(ctx, self.scale)?)?;
         Ok(o.into_value())
     }
@@ -250,9 +253,8 @@ impl<'js> IntoJs<'js> for ComponentKind {
 impl FromLua for ComponentKind {
     fn from_lua(value: LuaValue, lua: &Lua) -> mlua::Result<Self> {
         let s = String::from_lua(value, lua)?;
-        component_kind_from_name(&s).ok_or_else(|| {
-            mlua::Error::RuntimeError(format!("unknown ComponentKind `{s}`"))
-        })
+        component_kind_from_name(&s)
+            .ok_or_else(|| mlua::Error::RuntimeError(format!("unknown ComponentKind `{s}`")))
     }
 }
 
@@ -348,10 +350,7 @@ impl IntoLua for ComponentValue {
 // walking the value recursively — there is no JSON string on the wire, scripts
 // see a native object/table.
 
-fn json_to_js<'js>(
-    ctx: &Ctx<'js>,
-    v: &serde_json::Value,
-) -> rquickjs::Result<JsValue<'js>> {
+fn json_to_js<'js>(ctx: &Ctx<'js>, v: &serde_json::Value) -> rquickjs::Result<JsValue<'js>> {
     match v {
         serde_json::Value::Null => Ok(JsValue::new_null(ctx.clone())),
         serde_json::Value::Bool(b) => b.into_js(ctx),
@@ -557,7 +556,11 @@ mod tests {
 
     #[test]
     fn euler_to_quat_round_trips() {
-        let e = EulerDegrees { pitch: 15.0, yaw: 45.0, roll: -30.0 };
+        let e = EulerDegrees {
+            pitch: 15.0,
+            yaw: 45.0,
+            roll: -30.0,
+        };
         let q = e.to_quat();
         let back = EulerDegrees::from_quat(q);
         assert!((back.pitch - e.pitch).abs() < 1e-3, "pitch: {back:?}");
@@ -567,7 +570,11 @@ mod tests {
 
     #[test]
     fn euler_identity_round_trips() {
-        let e = EulerDegrees { pitch: 0.0, yaw: 0.0, roll: 0.0 };
+        let e = EulerDegrees {
+            pitch: 0.0,
+            yaw: 0.0,
+            roll: 0.0,
+        };
         let q = e.to_quat();
         assert!((q.w - 1.0).abs() < 1e-6);
         let back = EulerDegrees::from_quat(q);

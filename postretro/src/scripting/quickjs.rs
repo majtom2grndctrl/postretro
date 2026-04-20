@@ -96,18 +96,16 @@ impl QuickJsSubsystem {
         registry: &PrimitiveRegistry,
         cfg: &QuickJsConfig,
     ) -> Result<Self, ScriptError> {
-        let runtime =
-            Runtime::new().map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        let runtime = Runtime::new().map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
         runtime.set_memory_limit(cfg.memory_limit_bytes);
 
         let archetypes: ArchetypeAccumulator = Rc::new(RefCell::new(Vec::new()));
 
         let primitives_snapshot: Vec<ScriptPrimitive> = registry.iter().cloned().collect();
-        let definition_ctx = build_definition_context_from_snapshot(
-            &runtime,
-            &primitives_snapshot,
-            &archetypes,
-        )?;
+        let definition_ctx =
+            build_definition_context_from_snapshot(&runtime, &primitives_snapshot, &archetypes)?;
         let behavior_ctx = build_behavior_context_from_snapshot(&runtime, &primitives_snapshot)?;
 
         Ok(Self {
@@ -170,11 +168,7 @@ impl QuickJsSubsystem {
 ///
 /// A thrown script exception is **not** treated as a poisoned-context
 /// condition: subsequent calls in the same context continue to work.
-pub(crate) fn run_script<'js, T>(
-    ctx: &Ctx<'js>,
-    source: &str,
-    name: &str,
-) -> Result<T, ScriptError>
+pub(crate) fn run_script<'js, T>(ctx: &Ctx<'js>, source: &str, name: &str) -> Result<T, ScriptError>
 where
     T: FromJs<'js>,
 {
@@ -204,8 +198,9 @@ fn build_definition_context_from_snapshot(
     primitives: &[ScriptPrimitive],
     archetypes: &ArchetypeAccumulator,
 ) -> Result<Context, ScriptError> {
-    let ctx = Context::full(runtime)
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+    let ctx = Context::full(runtime).map_err(|e| ScriptError::InvalidArgument {
+        reason: e.to_string(),
+    })?;
     let archetypes = archetypes.clone();
     ctx.with(|ctx| -> Result<(), ScriptError> {
         install_primitives(&ctx, primitives, ContextScope::DefinitionOnly)?;
@@ -219,8 +214,9 @@ fn build_behavior_context_from_snapshot(
     runtime: &Runtime,
     primitives: &[ScriptPrimitive],
 ) -> Result<Context, ScriptError> {
-    let ctx = Context::full(runtime)
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+    let ctx = Context::full(runtime).map_err(|e| ScriptError::InvalidArgument {
+        reason: e.to_string(),
+    })?;
     ctx.with(|ctx| -> Result<(), ScriptError> {
         install_primitives(&ctx, primitives, ContextScope::BehaviorOnly)?;
         Ok(())
@@ -241,7 +237,10 @@ fn install_primitives(
     target: ContextScope,
 ) -> Result<(), ScriptError> {
     debug_assert!(
-        matches!(target, ContextScope::DefinitionOnly | ContextScope::BehaviorOnly),
+        matches!(
+            target,
+            ContextScope::DefinitionOnly | ContextScope::BehaviorOnly
+        ),
         "install_primitives target must name a concrete context, not `Both`",
     );
     for p in primitives {
@@ -256,7 +255,9 @@ fn install_primitives(
         } else {
             &p.quickjs_stub_installer
         };
-        installer(ctx).map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        installer(ctx).map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     }
     Ok(())
 }
@@ -276,15 +277,18 @@ fn install_collect_definitions(
     let f = Function::new(
         ctx.clone(),
         move || -> rquickjs::Result<Vec<DescriptorJs>> {
-            let drained: Vec<ArchetypeDescriptor> =
-                archetypes.borrow_mut().drain(..).collect();
+            let drained: Vec<ArchetypeDescriptor> = archetypes.borrow_mut().drain(..).collect();
             Ok(drained.into_iter().map(DescriptorJs::from).collect())
         },
     )
-    .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+    .map_err(|e| ScriptError::InvalidArgument {
+        reason: e.to_string(),
+    })?;
     globals
         .set(COLLECT_FN_NAME, f)
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     Ok(())
 }
 
@@ -351,13 +355,10 @@ mod tests {
             // Install test-only defineEntity stub. It closes over the same
             // accumulator as __collect_definitions.
             let accum = archetypes.clone();
-            let define = Function::new(
-                ctx.clone(),
-                move |name: String| -> rquickjs::Result<()> {
-                    accum.borrow_mut().push(ArchetypeDescriptor { name });
-                    Ok(())
-                },
-            )
+            let define = Function::new(ctx.clone(), move |name: String| -> rquickjs::Result<()> {
+                accum.borrow_mut().push(ArchetypeDescriptor { name });
+                Ok(())
+            })
             .unwrap();
             ctx.globals().set("defineEntity", define).unwrap();
 
@@ -572,13 +573,16 @@ mod tests {
 
         // Seed the accumulator directly — simulates a definition pass that
         // registered some archetypes.
-        archetypes
-            .borrow_mut()
-            .push(ArchetypeDescriptor { name: "stale".into() });
+        archetypes.borrow_mut().push(ArchetypeDescriptor {
+            name: "stale".into(),
+        });
         assert_eq!(archetypes.borrow().len(), 1);
 
         subsys.reload_definition_context().unwrap();
-        assert!(archetypes.borrow().is_empty(), "reload must drain accumulator");
+        assert!(
+            archetypes.borrow().is_empty(),
+            "reload must drain accumulator"
+        );
 
         // The fresh context must still have primitives and the sink.
         subsys.definition_ctx().with(|ctx| {
@@ -586,5 +590,4 @@ mod tests {
             assert_eq!(len, 0);
         });
     }
-
 }

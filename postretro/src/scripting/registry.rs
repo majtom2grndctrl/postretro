@@ -148,10 +148,7 @@ pub(crate) enum RegistryError {
     #[error("entity {0} does not exist")]
     EntityNotFound(EntityId),
     #[error("entity {id} has no component of kind {kind:?}")]
-    ComponentNotFound {
-        id: EntityId,
-        kind: ComponentKind,
-    },
+    ComponentNotFound { id: EntityId, kind: ComponentKind },
     #[error("entity id {0} is stale (generation mismatch)")]
     GenerationMismatch(EntityId),
 }
@@ -261,10 +258,7 @@ impl EntityRegistry {
         Ok(index)
     }
 
-    pub(crate) fn get_component<T: Component>(
-        &self,
-        id: EntityId,
-    ) -> Result<&T, RegistryError> {
+    pub(crate) fn get_component<T: Component>(&self, id: EntityId) -> Result<&T, RegistryError> {
         let index = self.validate(id)?;
         let column = &self.components[T::KIND as usize];
         let value = column

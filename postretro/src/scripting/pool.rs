@@ -206,8 +206,9 @@ fn build_pool_context(
     runtime: &Runtime,
     primitives: &[ScriptPrimitive],
 ) -> Result<Context, ScriptError> {
-    let ctx = Context::full(runtime)
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+    let ctx = Context::full(runtime).map_err(|e| ScriptError::InvalidArgument {
+        reason: e.to_string(),
+    })?;
     ctx.with(|ctx| -> Result<(), ScriptError> {
         install_pool_primitives(&ctx, primitives)?;
         Ok(())
@@ -232,8 +233,9 @@ fn install_pool_primitives(
         } else {
             &p.quickjs_stub_installer
         };
-        installer(ctx)
-            .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        installer(ctx).map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     }
     Ok(())
 }
@@ -285,10 +287,7 @@ impl LuauContextPool {
     /// Pre-create `size` behavior-scope Lua states. Each state runs the same
     /// deny-list scrub, `print` redirect, behavior-scope primitive install,
     /// and `sandbox(true)` finalization as `LuauSubsystem::behavior_lua`.
-    pub(crate) fn new(
-        primitives: &[ScriptPrimitive],
-        size: usize,
-    ) -> Result<Self, ScriptError> {
+    pub(crate) fn new(primitives: &[ScriptPrimitive], size: usize) -> Result<Self, ScriptError> {
         let mut idle = VecDeque::with_capacity(size);
         for _ in 0..size {
             idle.push_back(build_pool_lua(primitives)?);
@@ -380,7 +379,9 @@ fn build_pool_lua(primitives: &[ScriptPrimitive]) -> Result<mlua::Lua, ScriptErr
     install_print_redirect(&lua)?;
     install_behavior_primitives(&lua, primitives)?;
     lua.sandbox(true)
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     Ok(lua)
 }
 
@@ -388,21 +389,24 @@ fn build_pool_lua(primitives: &[ScriptPrimitive]) -> Result<mlua::Lua, ScriptErr
 /// private to `luau.rs`; a one-line duplication here is cheaper than a cross-
 /// module visibility change. Keep the two lists in sync when either grows.
 fn apply_denylist(lua: &mlua::Lua) -> Result<(), ScriptError> {
-    const DENIED_GLOBALS: &[&str] =
-        &["io", "package", "require", "dofile", "loadfile", "load"];
+    const DENIED_GLOBALS: &[&str] = &["io", "package", "require", "dofile", "loadfile", "load"];
     const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv"];
 
     let globals = lua.globals();
     for name in DENIED_GLOBALS {
         globals
             .set(*name, mlua::Value::Nil)
-            .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: e.to_string(),
+            })?;
     }
     if let Ok(os_table) = globals.get::<mlua::Table>("os") {
         for field in DENIED_OS_FIELDS {
             os_table
                 .set(*field, mlua::Value::Nil)
-                .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: e.to_string(),
+                })?;
         }
     }
     Ok(())
@@ -424,10 +428,14 @@ fn install_print_redirect(lua: &mlua::Lua) -> Result<(), ScriptError> {
             log::info!(target: "script/luau", "[Script/Luau] {out}");
             Ok(())
         })
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     lua.globals()
         .set("print", f)
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     Ok(())
 }
 
@@ -445,8 +453,9 @@ fn install_behavior_primitives(
         } else {
             &p.luau_stub_installer
         };
-        installer(lua)
-            .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        installer(lua).map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     }
     Ok(())
 }
@@ -593,11 +602,7 @@ mod tests {
         assert_eq!(pool.idle_len(), 3);
         assert_eq!(pool.in_flight(), 1);
 
-        let v: bool = handle
-            .lua()
-            .load("return entity_exists(0)")
-            .eval()
-            .unwrap();
+        let v: bool = handle.lua().load("return entity_exists(0)").eval().unwrap();
         assert!(!v);
     }
 

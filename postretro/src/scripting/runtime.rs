@@ -184,11 +184,7 @@ impl ScriptRuntime {
     /// parse the file as JS; the upstream layer is responsible for stripping
     /// types before handing a `.ts` file to the runtime. Unknown extensions
     /// return `ScriptError::InvalidArgument`.
-    pub(crate) fn run_script_file(
-        &self,
-        which: Which,
-        path: &Path,
-    ) -> Result<(), ScriptError> {
+    pub(crate) fn run_script_file(&self, which: Which, path: &Path) -> Result<(), ScriptError> {
         let ext = path
             .extension()
             .and_then(|s| s.to_str())
@@ -390,9 +386,7 @@ mod tests {
                 "shared-context install took {elapsed:?}, budget 20ms",
             );
         } else {
-            eprintln!(
-                "shared-context install (debug build, not asserting): {elapsed:?}",
-            );
+            eprintln!("shared-context install (debug build, not asserting): {elapsed:?}",);
         }
     }
 
@@ -420,9 +414,7 @@ mod tests {
                 "1000 primitive calls took {elapsed:?}, budget 5ms",
             );
         } else {
-            eprintln!(
-                "1000 primitive calls (debug build, not asserting): {elapsed:?}",
-            );
+            eprintln!("1000 primitive calls (debug build, not asserting): {elapsed:?}",);
         }
     }
 }

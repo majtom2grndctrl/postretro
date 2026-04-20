@@ -113,10 +113,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .register("send_event", {
             let ctx = ctx.clone();
             move |target: EntityId, event: ScriptEvent| -> Result<(), ScriptError> {
-                ctx.events
-                    .borrow_mut()
-                    .targeted
-                    .push_back((target, event));
+                ctx.events.borrow_mut().targeted.push_back((target, event));
                 Ok(())
             }
         })

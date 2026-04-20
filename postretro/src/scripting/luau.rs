@@ -27,14 +27,7 @@ const COLLECT_FN_NAME: &str = "__collect_definitions";
 /// Deny-list: global names (and `os.<sub>` fields) we clear on both Lua states
 /// before any script runs. `sandbox(true)` makes `_G` read-only but does NOT
 /// remove these entries — the sandbox is about immutability, not capabilities.
-const DENIED_GLOBALS: &[&str] = &[
-    "io",
-    "package",
-    "require",
-    "dofile",
-    "loadfile",
-    "load",
-];
+const DENIED_GLOBALS: &[&str] = &["io", "package", "require", "dofile", "loadfile", "load"];
 /// Sub-fields of the `os` table we nil out. We keep `os` itself (`os.time`,
 /// `os.date`, `os.clock` are harmless and occasionally useful in scripts).
 const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv"];
@@ -109,10 +102,12 @@ impl LuauSubsystem {
         let archetypes: ArchetypeAccumulator = Rc::new(RefCell::new(Vec::new()));
         let primitives_snapshot: Vec<ScriptPrimitive> = registry.iter().cloned().collect();
 
-        let definition_lua =
-            build_lua_state(&primitives_snapshot, ContextScope::DefinitionOnly, Some(&archetypes))?;
-        let behavior_lua =
-            build_lua_state(&primitives_snapshot, ContextScope::BehaviorOnly, None)?;
+        let definition_lua = build_lua_state(
+            &primitives_snapshot,
+            ContextScope::DefinitionOnly,
+            Some(&archetypes),
+        )?;
+        let behavior_lua = build_lua_state(&primitives_snapshot, ContextScope::BehaviorOnly, None)?;
 
         Ok(Self {
             definition_lua,
@@ -241,7 +236,9 @@ fn build_lua_state(
 
     // 5. Freeze `_G`.
     lua.sandbox(true)
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
 
     Ok(lua)
 }
@@ -251,7 +248,9 @@ fn apply_denylist(lua: &Lua) -> Result<(), ScriptError> {
     for name in DENIED_GLOBALS {
         globals
             .set(*name, mlua::Value::Nil)
-            .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: e.to_string(),
+            })?;
     }
     // `os` stays, but unsafe sub-fields go. If the `os` table is somehow
     // missing (custom builds), that's fine — there's nothing to clear.
@@ -259,7 +258,9 @@ fn apply_denylist(lua: &Lua) -> Result<(), ScriptError> {
         for field in DENIED_OS_FIELDS {
             os_table
                 .set(*field, mlua::Value::Nil)
-                .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: e.to_string(),
+                })?;
         }
     }
     Ok(())
@@ -283,10 +284,14 @@ fn install_print_redirect(lua: &Lua) -> Result<(), ScriptError> {
             log::info!(target: "script/luau", "[Script/Luau] {out}");
             Ok(())
         })
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     lua.globals()
         .set("print", f)
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     Ok(())
 }
 
@@ -296,7 +301,10 @@ fn install_primitives(
     target: ContextScope,
 ) -> Result<(), ScriptError> {
     debug_assert!(
-        matches!(target, ContextScope::DefinitionOnly | ContextScope::BehaviorOnly),
+        matches!(
+            target,
+            ContextScope::DefinitionOnly | ContextScope::BehaviorOnly
+        ),
         "install_primitives target must name a concrete context, not `Both`",
     );
     for p in primitives {
@@ -311,7 +319,9 @@ fn install_primitives(
         } else {
             &p.luau_stub_installer
         };
-        installer(lua).map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        installer(lua).map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     }
     Ok(())
 }
@@ -322,8 +332,7 @@ fn install_collect_definitions(
 ) -> Result<(), ScriptError> {
     let f: Function = lua
         .create_function(move |lua, ()| {
-            let drained: Vec<ArchetypeDescriptor> =
-                archetypes.borrow_mut().drain(..).collect();
+            let drained: Vec<ArchetypeDescriptor> = archetypes.borrow_mut().drain(..).collect();
             let t = lua.create_table()?;
             for (i, d) in drained.into_iter().enumerate() {
                 let row = lua.create_table()?;
@@ -333,10 +342,14 @@ fn install_collect_definitions(
             }
             Ok(t)
         })
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     lua.globals()
         .set(COLLECT_FN_NAME, f)
-        .map_err(|e| ScriptError::InvalidArgument { reason: e.to_string() })?;
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
     Ok(())
 }
 
@@ -485,11 +498,7 @@ mod tests {
     fn run_source_returns_script_threw_on_runtime_error() {
         let (subsys, _ctx) = setup();
         let err = subsys
-            .run_source::<()>(
-                Which::Behavior,
-                "error('boom')",
-                "test.luau",
-            )
+            .run_source::<()>(Which::Behavior, "error('boom')", "test.luau")
             .expect_err("script should error");
         match err {
             ScriptError::ScriptThrew { msg, source_name } => {
@@ -509,11 +518,7 @@ mod tests {
     fn run_source_returns_script_threw_on_compile_error() {
         let (subsys, _ctx) = setup();
         let err = subsys
-            .run_source::<()>(
-                Which::Behavior,
-                "this is not valid luau ===",
-                "bad.luau",
-            )
+            .run_source::<()>(Which::Behavior, "this is not valid luau ===", "bad.luau")
             .expect_err("compile should fail");
         match err {
             ScriptError::ScriptThrew { source_name, .. } => {
@@ -554,7 +559,16 @@ mod tests {
         // top-level `kind = "Transform"` plus the Transform fields.
         let (subsys, ctx_handle) = setup();
         let (px, py, pz, pitch, yaw, roll, sx, sy, sz, kind): (
-            f32, f32, f32, f32, f32, f32, f32, f32, f32, String,
+            f32,
+            f32,
+            f32,
+            f32,
+            f32,
+            f32,
+            f32,
+            f32,
+            f32,
+            String,
         ) = subsys
             .run_source(
                 Which::Behavior,
@@ -649,13 +663,16 @@ mod tests {
         let (mut subsys, _ctx) = setup();
         let archetypes = subsys.archetypes().clone();
 
-        archetypes
-            .borrow_mut()
-            .push(ArchetypeDescriptor { name: "stale".into() });
+        archetypes.borrow_mut().push(ArchetypeDescriptor {
+            name: "stale".into(),
+        });
         assert_eq!(archetypes.borrow().len(), 1);
 
         subsys.reload_definition_context().unwrap();
-        assert!(archetypes.borrow().is_empty(), "reload must drain accumulator");
+        assert!(
+            archetypes.borrow().is_empty(),
+            "reload must drain accumulator"
+        );
 
         // Fresh state must still have the sink.
         let len: usize = subsys

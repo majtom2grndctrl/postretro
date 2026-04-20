@@ -46,7 +46,10 @@ fn main() -> ExitCode {
     register_all(&mut registry, ctx);
 
     if let Err(e) = write_type_definitions(&registry, &out) {
-        eprintln!("gen-script-types: failed to write to {}: {e}", out.display());
+        eprintln!(
+            "gen-script-types: failed to write to {}: {e}",
+            out.display()
+        );
         return ExitCode::from(1);
     }
 

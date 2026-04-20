@@ -67,8 +67,8 @@ fn rust_to_ts(ty_name: &str) -> String {
     }
 
     match short.as_str() {
-        "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize"
-        | "f32" | "f64" => "number".to_string(),
+        "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize" | "f32"
+        | "f64" => "number".to_string(),
         "bool" => "boolean".to_string(),
         "String" | "str" | "&str" => "string".to_string(),
         "()" => "void".to_string(),
@@ -107,8 +107,8 @@ fn rust_to_luau(ty_name: &str) -> String {
     }
 
     match short.as_str() {
-        "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize"
-        | "f32" | "f64" => "number".to_string(),
+        "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize" | "f32"
+        | "f64" => "number".to_string(),
         "bool" => "boolean".to_string(),
         "String" | "str" | "&str" => "string".to_string(),
         "()" => "()".to_string(),
@@ -148,8 +148,10 @@ fn strip_generic<'a>(ty: &'a str, outer: &str) -> Option<&'a str> {
 /// is reserved for magic functions like `__collect_definitions` and must not
 /// appear in the generated SDK.
 fn visible_primitives(registry: &PrimitiveRegistry) -> Vec<&ScriptPrimitive> {
-    let mut v: Vec<&ScriptPrimitive> =
-        registry.iter().filter(|p| !p.name.starts_with('_')).collect();
+    let mut v: Vec<&ScriptPrimitive> = registry
+        .iter()
+        .filter(|p| !p.name.starts_with('_'))
+        .collect();
     v.sort_by_key(|p| p.name);
     v
 }
@@ -245,12 +247,7 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         let ret = rust_to_luau(p.signature.return_ty_name);
-        writeln!(
-            &mut out,
-            "declare function {}({}): {}",
-            p.name, params, ret
-        )
-        .unwrap();
+        writeln!(&mut out, "declare function {}({}): {}", p.name, params, ret).unwrap();
     }
 
     out
@@ -299,9 +296,10 @@ mod tests {
     /// one with an underscore-prefixed name (must be omitted).
     fn mini_registry() -> PrimitiveRegistry {
         let mut r = PrimitiveRegistry::new();
-        r.register("entity_exists", |_id: EntityId| -> Result<bool, ScriptError> {
-            Ok(true)
-        })
+        r.register(
+            "entity_exists",
+            |_id: EntityId| -> Result<bool, ScriptError> { Ok(true) },
+        )
         .scope(ContextScope::Both)
         .doc("Returns true if the entity id refers to a live entity.")
         .finish();
@@ -413,16 +411,17 @@ declare function spawn_entity(a: Transform): EntityId
             "send_event",
         ] {
             assert!(ts.contains(name), "ts missing primitive {name}:\n{ts}");
-            assert!(luau.contains(name), "luau missing primitive {name}:\n{luau}");
+            assert!(
+                luau.contains(name),
+                "luau missing primitive {name}:\n{luau}"
+            );
         }
     }
 
     #[test]
     fn write_type_definitions_creates_both_files() {
-        let tmp = std::env::temp_dir().join(format!(
-            "postretro-typedef-test-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("postretro-typedef-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         write_type_definitions(&mini_registry(), &tmp).unwrap();
         assert!(tmp.join("postretro.d.ts").exists());

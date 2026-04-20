@@ -22,9 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, anyhow, bail};
-use swc_common::{
-    FileName, GLOBALS, Globals, Mark, SourceMap, errors::Handler, sync::Lrc,
-};
+use swc_common::{FileName, GLOBALS, Globals, Mark, SourceMap, errors::Handler, sync::Lrc};
 use swc_ecma_ast::{Pass, Program};
 use swc_ecma_codegen::{Emitter, text_writer::JsWriter};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
@@ -110,8 +108,7 @@ fn transpile(path: &Path, src: &str) -> Result<String> {
     let cm: Lrc<SourceMap> = Default::default();
     // Route diagnostics to stderr. `with_emitter_writer` avoids depending on
     // swc_common's optional `tty-emitter` feature.
-    let handler =
-        Handler::with_emitter_writer(Box::new(std::io::stderr()), Some(cm.clone()));
+    let handler = Handler::with_emitter_writer(Box::new(std::io::stderr()), Some(cm.clone()));
 
     let fm = cm.new_source_file(
         Lrc::new(FileName::Real(path.to_path_buf())),

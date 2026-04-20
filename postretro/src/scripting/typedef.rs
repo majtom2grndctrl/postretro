@@ -1,5 +1,5 @@
 // TypeScript / Luau type-definition generator for the primitive registry.
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 5
+// See: context/lib/scripting.md
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;

@@ -1,21 +1,19 @@
 // Value conversion adapters at the scripting FFI boundary.
 //
-// Design choices (non-negotiable — see acceptance criteria):
+// Wire shapes:
 //   - `glam::Vec3` ↔ `{ x, y, z }` object/table.
-//   - Rotation crosses the boundary as `EulerDegrees { pitch, yaw, roll }`
-//     (degrees). Internally it is always `glam::Quat`. Conversion uses
-//     `glam::Quat::from_euler(EulerRot::YXZ, yaw_rad, pitch_rad, roll_rad)`,
-//     which matches the common FPS yaw-pitch-roll authoring convention
-//     (yaw around world-up first, then pitch, then roll).
-//   - `Transform { position, rotation: Quat, scale }` crosses as an object
-//     with `position`, `rotation` (Euler degrees), and `scale`.
+//   - Rotation crosses as `EulerDegrees { pitch, yaw, roll }` (degrees).
+//     Internally always `glam::Quat`. Conversion uses
+//     `Quat::from_euler(EulerRot::YXZ, yaw_rad, pitch_rad, roll_rad)` —
+//     yaw around world-up first, matching the common FPS authoring convention.
+//   - `Transform` crosses as `{ position, rotation: EulerDegrees, scale }`.
 //   - `ComponentKind` crosses as its variant name string (`"Transform"`).
-//   - `ComponentValue` mirrors the serde `#[serde(tag = "kind")]` shape on
-//     the wire: `{ kind: "Transform", position, rotation, scale }`.
-//   - `ScriptEvent { kind, payload }` crosses as `{ kind, payload }` with
-//     `payload` roundtripping via `serde_json::Value` mirroring.
+//   - `ComponentValue` mirrors `#[serde(tag = "kind")]`:
+//     `{ kind: "Transform", position, rotation, scale }`.
+//   - `ScriptEvent { kind, payload }` crosses as `{ kind, payload }`;
+//     `payload` roundtrips via `serde_json::Value`.
 //
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 2
+// See: context/lib/scripting.md
 
 use glam::{EulerRot, Quat, Vec3};
 use mlua::{FromLua, IntoLua, Lua, Table, Value as LuaValue};

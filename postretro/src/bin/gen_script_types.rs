@@ -1,5 +1,5 @@
 // Standalone generator for `postretro.d.ts` / `postretro.d.luau`.
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 5
+// See: context/lib/scripting.md
 //
 // `postretro` has no library target, so sibling modules in `src/scripting/`
 // aren't reachable through `crate::...` from a `src/bin/` entry. The `#[path]`

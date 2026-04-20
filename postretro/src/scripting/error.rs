@@ -1,7 +1,7 @@
 // Scripting subsystem boundary error. Every primitive body returns
-// `Result<_, ScriptError>`; the FFI wrappers in the binding layer translate
-// these into JS exceptions and Lua errors.
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 2
+// `Result<_, ScriptError>`; FFI wrappers translate these into JS exceptions
+// and Lua errors.
+// See: context/lib/scripting.md
 
 use thiserror::Error;
 
@@ -35,15 +35,10 @@ pub(crate) enum ScriptError {
     #[error("primitive `{name}` panicked")]
     Panicked { name: &'static str },
 
-    /// Script threw an exception mid-execution. `source` is kept as a public
-    /// field name for callers, but thiserror's `#[error(...)]` template uses
-    /// `source_name` internally — the type alias below documents why.
-    ///
-    /// The plan text specifies the variant carries `msg` and `source`. We
-    /// expose both, but rename the field carrying the script identifier to
-    /// `source_name` to avoid colliding with thiserror's `source` magic
-    /// (which demands `Error` impls on `source`-named fields). Match on this
-    /// variant with `{ msg, source_name, .. }` from consumers.
+    /// Script threw an exception mid-execution. The `source_name` field
+    /// carries the script identifier rather than `source` to avoid colliding
+    /// with thiserror's `source` magic, which demands an `Error` impl on any
+    /// field named `source`. Match on `{ msg, source_name, .. }`.
     #[error("script `{source_name}` threw: {msg}")]
     ScriptThrew { msg: String, source_name: String },
 }

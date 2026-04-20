@@ -1,42 +1,39 @@
-// Ephemeral script context pools. Sub-plan 6 of the scripting foundation plan.
+// Ephemeral script context pools, one per language.
+// See: context/lib/scripting.md
 //
-// One pool per language (`QuickJsContextPool`, `LuauContextPool`). Each pool
-// pre-warms `size` contexts at construction time — primitives installed once
-// per context, not per acquire — and hands them out via RAII `PooledContext`
-// handles that return to the pool on drop.
+// Each pool pre-warms `size` contexts at construction — primitives installed
+// once per context, not per acquire — and hands them out via RAII handles that
+// return to the pool on drop.
 //
-// # Scope clarification
+// # Scope
 //
-// **The shared behavior context (see `QuickJsSubsystem::behavior_ctx` /
-// `LuauSubsystem::behavior_lua`) is NEVER pooled and NEVER reset.** That
-// context carries event-handler globals installed for the level's lifetime;
-// recycling it would erase them. This pool exists as infrastructure for
-// *future* per-entity ephemeral contexts — one-shot scripts and per-instance
-// behaviors that do not need persistent handler state. The day-one default is
-// still the shared behavior context via `ScriptRuntime::run_script_file`.
+// **The shared behavior context is NEVER pooled and NEVER reset.** It carries
+// event-handler globals for the level's lifetime; recycling it would erase
+// them. This pool is infrastructure for future per-entity ephemeral contexts.
+// The default path is still the shared behavior context via
+// `ScriptRuntime::run_script_file`.
 //
 // # Thread model
 //
-// Deliberately `!Send`. `rquickjs::Context` is `!Send`; `mlua::Lua` is `!Send`
-// without the `send` feature (which we do not enable). The frame loop is
-// single-threaded and all scripting work stays on it. The pool's interior
-// mutability uses `Rc<RefCell<_>>` — same rationale as `ScriptCtx` in
-// `scripting::ctx`: `RefCell` does not poison, `std::sync::RwLock` does, and
-// every FFI crossing is `catch_unwind`-wrapped so a poisoned lock would wedge
-// the whole scripting surface after the first caught panic.
+// Deliberately `!Send`. Both runtimes are `!Send` without the `send` feature.
+// Interior mutability uses `Rc<RefCell<_>>` — same rationale as `ScriptCtx`:
+// `RefCell` does not poison, `RwLock` does, and every FFI crossing is
+// `catch_unwind`-wrapped.
 //
 // # Reset-on-release policy
 //
-// Plan 1 has no per-entity globals yet — only the primitives installed at
-// construction and nothing else. The reset routine is therefore a GC pass
-// plus a no-op "clear per-entity globals" step. Both parts are documented so
-// the next plan (which introduces per-entity globals) has one obvious place
-// to extend.
+// No per-entity globals exist yet — the reset routine is a GC pass plus a
+// placeholder wipe step. Both parts are present so a future plan has one
+// obvious place to extend.
 //
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 6
+// Pooled contexts are NOT isolation boundaries. Scripts writing to `globalThis`
+// (QuickJS) can leave state for the next acquirer. All persistent entity state
+// must flow through Rust via `set_component`/`get_component`. Luau's
+// `sandbox(true)` already blocks new global writes at the VM level.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use rquickjs::{Context, Runtime};
@@ -56,31 +53,23 @@ pub(crate) const DEFAULT_POOL_SIZE: usize = 32;
 /// handle, the idle queue, the in-flight counter, and the primitive snapshot
 /// used to build any fallback contexts.
 ///
-/// The `Runtime` is shared with `QuickJsSubsystem::runtime` *by convention of
-/// ownership*, not by `Rc`: the subsystem constructs its own runtime for the
-/// shared behavior/definition contexts, and this pool owns a separate handle
-/// to the *same* `Runtime` by cloning the `rquickjs::Runtime` (which is a
-/// cheap ref-counted handle internally). However, sub-plan 6's scope treats
-/// the pool as owning its own runtime to keep lifetimes trivial — the
-/// memory-limit cost is shared with the shared contexts only when a caller
-/// explicitly hands in the same `Runtime`. For now the pool takes a
-/// `&Runtime` at construction and holds a *clone* of it, matching rquickjs's
-/// ref-counted-handle semantics.
+/// The pool takes a `&Runtime` at construction and holds a clone of it.
+/// `rquickjs::Runtime` is ref-counted internally; the memory-limit cost is
+/// shared with the subsystem only when the caller passes the same `Runtime`.
 struct QuickJsPoolInner {
-    /// Cloned handle to the subsystem's runtime; rquickjs' `Runtime` is
-    /// reference-counted internally so contexts built against it stay valid
-    /// as long as any handle lives.
+    /// Cloned runtime handle; contexts built against it stay valid as long as
+    /// any handle to the runtime lives.
     runtime: Runtime,
     idle: VecDeque<Context>,
     in_flight: usize,
     primitives: Vec<ScriptPrimitive>,
 }
 
-/// Pre-warmed pool of QuickJS behavior-scope contexts for future per-entity
-/// ephemeral use. See module docs for what this is and is NOT for.
+/// Pre-warmed pool of QuickJS behavior-scope contexts. See module docs for
+/// scope and thread-model constraints.
 ///
-/// `!Send` by construction: `rquickjs::Context` is `!Send`, and we wrap state
-/// in `Rc<RefCell<_>>`. Callers on any other thread would not compile.
+/// `!Send` by construction: `rquickjs::Context` is `!Send`, wrapped in
+/// `Rc<RefCell<_>>`. Callers on any other thread would not compile.
 pub(crate) struct QuickJsContextPool {
     inner: Rc<RefCell<QuickJsPoolInner>>,
 }
@@ -109,12 +98,10 @@ impl QuickJsContextPool {
         })
     }
 
-    /// Pop an idle context if any. Returns `None` when the pool is fully
-    /// occupied — callers wanting fallback use `acquire_or_create`.
+    /// Pop an idle context if any. Returns `None` when fully occupied.
     ///
-    /// Takes `&self` (not `&mut self`) because the pool hands out `Drop`-
-    /// returning handles; those handles must borrow the inner state when they
-    /// drop, which requires interior mutability. See the module header.
+    /// Takes `&self` because `Drop`-returning handles must borrow inner state
+    /// on release, which requires interior mutability.
     pub(crate) fn acquire(&self) -> Option<PooledQuickJsContext> {
         let mut inner = self.inner.borrow_mut();
         let ctx = inner.idle.pop_front()?;
@@ -126,9 +113,8 @@ impl QuickJsContextPool {
     }
 
     /// Acquire a context, falling back to synchronous creation if the pool is
-    /// exhausted. The fallback context is still returned to the pool on drop,
-    /// growing the pool rather than leaking. Logs a warning on the fallback
-    /// path so exhaustion is observable.
+    /// exhausted. The fallback context returns to the pool on drop, growing
+    /// the pool. Logs a warning on the fallback path.
     pub(crate) fn acquire_or_create(&self) -> Result<PooledQuickJsContext, ScriptError> {
         if let Some(h) = self.acquire() {
             return Ok(h);
@@ -137,8 +123,8 @@ impl QuickJsContextPool {
             target: "script/pool",
             "QuickJsContextPool exhausted; creating a fallback context synchronously",
         );
-        // Pull what we need out of the borrow before building a context, which
-        // itself borrows `&Runtime` and executes user primitives.
+        // Extract what we need before building a context: `build_pool_context`
+        // borrows `&Runtime` and executes user primitives.
         let (runtime, primitives) = {
             let inner = self.inner.borrow();
             (inner.runtime.clone(), inner.primitives.clone())
@@ -211,6 +197,10 @@ fn build_pool_context(
     })?;
     ctx.with(|ctx| -> Result<(), ScriptError> {
         install_pool_primitives(&ctx, primitives)?;
+        ctx.eval::<(), _>("Object.freeze(globalThis);")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: e.to_string(),
+            })?;
         Ok(())
     })?;
     Ok(ctx)
@@ -242,30 +232,19 @@ fn install_pool_primitives(
 
 /// Reset a QuickJS context before returning it to the pool.
 ///
-/// Plan 1 has no per-entity globals, so the reset is currently a GC-only
-/// pass. When per-entity globals land (later plan), extend this to wipe them
-/// — the globals-wipe step is the one place a future plan needs to touch.
+/// No per-entity globals exist yet, so the reset is a GC-only pass. Extend
+/// this function when per-entity globals land.
 fn reset_quickjs_context(ctx: &Context) {
     ctx.with(|ctx| {
-        // Placeholder for per-entity globals wipe. Plan 1 has no per-entity
-        // globals yet; the future plan that introduces them extends here.
-        // NOTE: script-level globals set by the *current* acquirer (e.g.
-        // `ctx.globals().set("x", 1)` from tests) are NOT cleared here. The
-        // acceptance criterion "no residual script state" refers to per-entity
-        // engine-set globals; stray script-level writes are tolerated in Plan
-        // 1. When per-entity globals land, the wipe-policy expands to include
-        // them.
-        let _ = ctx; // silence unused-binding warnings if future wipe is conditional
+        // Placeholder for per-entity globals wipe. Stray script-level globals
+        // set by the current acquirer are NOT cleared here; that is the
+        // tolerated behavior until per-entity globals land. Extend here when
+        // they do.
+        let _ = ctx; // suppress unused-binding warning if future wipe is conditional
     });
-    // Explicit GC. rquickjs `Runtime::run_gc` cycles the entire runtime;
-    // because the pool owns its own runtime handle (clone of the subsystem's),
-    // running GC here does not disturb the shared behavior/definition
-    // contexts in any way other than reclaiming unreachable values.
-    //
-    // We intentionally do NOT call `Runtime::run_gc` on every release: in a
-    // spawn-burst scenario that would serialize a full-heap pass into the
-    // frame. The per-release cost is kept to zero; scheduled GC is a
-    // frame-loop concern handled by a later plan.
+    // No `Runtime::run_gc` on every release — in a spawn-burst scenario that
+    // serializes a full-heap pass into the frame. GC scheduling is a
+    // frame-loop concern left to a future plan.
 }
 
 // ---------------------------------------------------------------------------
@@ -370,10 +349,8 @@ impl Drop for PooledLuau {
 }
 
 fn build_pool_lua(primitives: &[ScriptPrimitive]) -> Result<mlua::Lua, ScriptError> {
-    // Match `LuauSubsystem::build_lua_state` step-for-step for the behavior
-    // scope. We intentionally inline the sequence rather than re-exporting
-    // `luau::build_lua_state` to keep the pool self-contained and the two
-    // call sites each readable in isolation.
+    // Matches `LuauSubsystem::build_lua_state` for the behavior scope. Inlined
+    // rather than re-exported to keep the pool self-contained.
     let lua = mlua::Lua::new();
     apply_denylist(&lua)?;
     install_print_redirect(&lua)?;
@@ -386,8 +363,8 @@ fn build_pool_lua(primitives: &[ScriptPrimitive]) -> Result<mlua::Lua, ScriptErr
 }
 
 /// Duplicates `luau::DENIED_GLOBALS` / `DENIED_OS_FIELDS`. Those constants are
-/// private to `luau.rs`; a one-line duplication here is cheaper than a cross-
-/// module visibility change. Keep the two lists in sync when either grows.
+/// private to `luau.rs`; duplication here is cheaper than a visibility change.
+/// Keep the two lists in sync when either grows.
 fn apply_denylist(lua: &mlua::Lua) -> Result<(), ScriptError> {
     const DENIED_GLOBALS: &[&str] = &["io", "package", "require", "dofile", "loadfile", "load"];
     const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv"];
@@ -415,18 +392,27 @@ fn apply_denylist(lua: &mlua::Lua) -> Result<(), ScriptError> {
 fn install_print_redirect(lua: &mlua::Lua) -> Result<(), ScriptError> {
     let f = lua
         .create_function(|_lua, args: mlua::MultiValue| {
-            let mut out = String::new();
-            for (i, v) in args.iter().enumerate() {
-                if i > 0 {
-                    out.push('\t');
+            const NAME: &str = "print";
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let mut out = String::new();
+                for (i, v) in args.iter().enumerate() {
+                    if i > 0 {
+                        out.push('\t');
+                    }
+                    match v.to_string() {
+                        Ok(s) => out.push_str(&s),
+                        Err(_) => out.push_str("<unprintable>"),
+                    }
                 }
-                match v.to_string() {
-                    Ok(s) => out.push_str(&s),
-                    Err(_) => out.push_str("<unprintable>"),
+                log::info!(target: "script/luau", "[Script/Luau] {out}");
+            }));
+            match result {
+                Ok(()) => Ok(()),
+                Err(_) => {
+                    log::error!(target: "script/luau", "[Scripting] print closure panicked: {NAME}");
+                    Err(mlua::Error::RuntimeError(format!("panic in print: {NAME}")))
                 }
             }
-            log::info!(target: "script/luau", "[Script/Luau] {out}");
-            Ok(())
         })
         .map_err(|e| ScriptError::InvalidArgument {
             reason: e.to_string(),
@@ -462,8 +448,7 @@ fn install_behavior_primitives(
 
 fn reset_lua(lua: &mlua::Lua) {
     // Placeholder for per-entity globals wipe — see `reset_quickjs_context`
-    // for the rationale. Plan 1 does not introduce per-entity globals;
-    // extend this function when a later plan does.
+    // for rationale. Extend here when per-entity globals land.
     let _ = lua;
     lua.gc_collect().ok();
 }
@@ -514,22 +499,16 @@ mod tests {
         let rt = runtime();
         let pool = QuickJsContextPool::new(&rt, &primitives(), 1).unwrap();
 
-        // Acquire, stash identity via a script-visible global, drop to release.
+        // Acquire and immediately release. globalThis is frozen so no stray
+        // globals can be written — isolation is enforced at the VM level.
         {
-            let h = pool.acquire().unwrap();
-            h.context().with(|ctx| {
-                ctx.globals().set("marker", 7u32).unwrap();
-            });
+            let _h = pool.acquire().unwrap();
         }
         assert_eq!(pool.in_flight(), 0);
         assert_eq!(pool.idle_len(), 1);
 
-        // Re-acquire. Whether the same context comes back is a VecDeque FIFO
-        // guarantee. Verify the "no residual state" contract: per-entity
-        // globals are reset. Plan 1 does not wipe stray script globals, so
-        // the `marker` assignment above may or may not persist — that is the
-        // tolerated behavior documented in `reset_quickjs_context`. What we
-        // DO verify is that the context is usable and primitives still work.
+        // Re-acquire and verify the context is usable: FIFO recycle works and
+        // primitives still execute correctly after the reset-on-release pass.
         let h2 = pool.acquire().unwrap();
         h2.context().with(|ctx| {
             let v: bool = ctx.eval("entity_exists(0)").unwrap();
@@ -681,12 +660,7 @@ mod tests {
 
     // --- Thread model -------------------------------------------------------
     //
-    // Compile-time assertion that the pools are NOT `Send`. We cannot write a
-    // positive `assert_not_send` in stable Rust; instead we rely on the
-    // transitively `!Send` fields (`Rc`, `rquickjs::Context`, `mlua::Lua`).
-    // If someone adds a `Send` wrapper around the pool, this test will start
-    // passing when the real constraint is that it shouldn't compile — so we
-    // express the invariant as a `compile_fail` doctest on the pool types
-    // (see the module-level doc on `QuickJsContextPool`). The runtime side
-    // of the invariant is a visual check: `Rc<RefCell<_>>` is `!Send`.
+    // The `!Send` invariant is structural: `Rc<RefCell<_>>`, `rquickjs::Context`,
+    // and `mlua::Lua` are all `!Send`. No runtime assertion is needed; a
+    // `Send` wrapper would fail to compile at the use site.
 }

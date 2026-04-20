@@ -1,11 +1,9 @@
-// Day-one primitives: the initial set Sub-plan 2 requires.
+// Day-one primitives registered at engine startup.
+// See: context/lib/scripting.md
 //
-// Every primitive here captures the engine-owned `ScriptCtx` by Rc at
-// registration time. Adding a subsystem to the scripting surface means adding
-// one field to `ScriptCtx` and a few `.register(...)` lines here — no
-// primitive needs to know about global state.
-//
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 2
+// Every primitive captures `ScriptCtx` by `Rc` at registration time. To add a
+// new subsystem to the scripting surface: add one field to `ScriptCtx` and a
+// few `.register(...)` lines here.
 
 use super::ctx::{ScriptCtx, ScriptEvent};
 use super::error::ScriptError;
@@ -32,7 +30,12 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .register("spawn_entity", {
             let ctx = ctx.clone();
             move |transform: Transform| -> Result<EntityId, ScriptError> {
-                Ok(ctx.registry.borrow_mut().spawn(transform))
+                ctx.registry
+                    .borrow_mut()
+                    .try_spawn(transform)
+                    .ok_or_else(|| ScriptError::InvalidArgument {
+                        reason: "entity slots exhausted".into(),
+                    })
             }
         })
         .scope(ContextScope::BehaviorOnly)

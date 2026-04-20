@@ -74,7 +74,11 @@ pub struct SpriteSheet {
 }
 
 /// Pack `SpriteDrawParams` bytes for a (frame_count, spec_intensity, lifetime) tuple.
-fn build_draw_params(frame_count: u32, spec_intensity: f32, lifetime: f32) -> [u8; SPRITE_DRAW_PARAMS_SIZE] {
+fn build_draw_params(
+    frame_count: u32,
+    spec_intensity: f32,
+    lifetime: f32,
+) -> [u8; SPRITE_DRAW_PARAMS_SIZE] {
     let mut bytes = [0u8; SPRITE_DRAW_PARAMS_SIZE];
     // params.x = bitcast<f32>(frame_count)
     bytes[0..4].copy_from_slice(&frame_count.to_ne_bytes());
@@ -432,8 +436,8 @@ mod tests {
     #[test]
     fn billboard_wgsl_parses() {
         let src = include_str!("../shaders/billboard.wgsl");
-        let module = naga::front::wgsl::parse_str(src)
-            .expect("billboard.wgsl should parse as WGSL");
+        let module =
+            naga::front::wgsl::parse_str(src).expect("billboard.wgsl should parse as WGSL");
         let has_vs = module
             .entry_points
             .iter()
@@ -456,9 +460,7 @@ mod tests {
             .types
             .iter()
             .find_map(|(_, ty)| match (&ty.name, &ty.inner) {
-                (Some(name), naga::TypeInner::Struct { span, .. })
-                    if name == "SpriteInstance" =>
-                {
+                (Some(name), naga::TypeInner::Struct { span, .. }) if name == "SpriteInstance" => {
                     Some(*span)
                 }
                 _ => None,
@@ -504,12 +506,16 @@ mod tests {
     #[test]
     fn stitch_two_frames() {
         let red = SpriteFrame {
-            data: vec![255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255],
+            data: vec![
+                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+            ],
             width: 2,
             height: 2,
         };
         let blue = SpriteFrame {
-            data: vec![0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255],
+            data: vec![
+                0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+            ],
             width: 2,
             height: 2,
         };
@@ -521,5 +527,4 @@ mod tests {
         assert_eq!(data[0..4], [255, 0, 0, 255]);
         assert_eq!(data[8..12], [0, 0, 255, 255]);
     }
-
 }

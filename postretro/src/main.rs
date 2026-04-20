@@ -215,15 +215,17 @@ fn build_demo_emitters(spawn_demo: bool, camera_pos: Vec3) -> Vec<fx::smoke::Smo
         return Vec::new();
     }
     let origin = camera_pos + Vec3::new(0.0, 0.0, -3.0);
-    vec![fx::smoke::SmokeEmitter::new(fx::smoke::SmokeEmitterParams {
-        origin,
-        rate: 4.0,
-        lifetime: 3.0,
-        size: 0.5,
-        speed: 0.3,
-        collection: "smoke".to_string(),
-        spec_intensity: 0.3,
-    })]
+    vec![fx::smoke::SmokeEmitter::new(
+        fx::smoke::SmokeEmitterParams {
+            origin,
+            rate: 4.0,
+            lifetime: 3.0,
+            size: 0.5,
+            speed: 0.3,
+            collection: "smoke".to_string(),
+            spec_intensity: 0.3,
+        },
+    )]
 }
 
 fn window_attributes() -> WindowAttributes {
@@ -330,14 +332,15 @@ impl ApplicationHandler for App {
             texture_materials: &texture_materials,
         });
 
-        let mut renderer = match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
-            Ok(r) => r,
-            Err(err) => {
-                self.exit_result = Err(err);
-                event_loop.exit();
-                return;
-            }
-        };
+        let mut renderer =
+            match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
+                Ok(r) => r,
+                Err(err) => {
+                    self.exit_result = Err(err);
+                    event_loop.exit();
+                    return;
+                }
+            };
 
         // Load and register smoke sprite sheets for every collection
         // referenced by this level's emitters. Collections missing frames
@@ -349,11 +352,9 @@ impl ApplicationHandler for App {
         // Vec is populated by developer hook or future PRL section. This
         // keeps the renderer + emitter update pipeline exercised while the
         // cross-crate plumbing is staged. See the task deliverable notes.
-        let texture_root = resolve_texture_root(&resolve_map_path(
-            &std::env::args().collect::<Vec<_>>(),
-        ));
-        let mut registered: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let texture_root =
+            resolve_texture_root(&resolve_map_path(&std::env::args().collect::<Vec<_>>()));
+        let mut registered: std::collections::HashSet<String> = std::collections::HashSet::new();
         for emitter in &self.smoke_emitters {
             let collection = emitter.collection().to_string();
             if collection.is_empty() || !registered.insert(collection.clone()) {
@@ -568,11 +569,9 @@ impl ApplicationHandler for App {
                     if renderer.is_ready() {
                         let emitter_refs: Vec<&fx::smoke::SmokeEmitter> =
                             self.smoke_emitters.iter().collect();
-                        if let Err(err) = renderer.render_frame_indirect(
-                            &visible_cells,
-                            view_proj,
-                            &emitter_refs,
-                        ) {
+                        if let Err(err) =
+                            renderer.render_frame_indirect(&visible_cells, view_proj, &emitter_refs)
+                        {
                             self.exit_result = Err(err);
                             event_loop.exit();
                         }

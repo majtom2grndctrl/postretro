@@ -1,14 +1,9 @@
-// Top-level scripting runtime: owns both `QuickJsSubsystem` and
-// `LuauSubsystem` and dispatches by file extension. Per the sub-plan 4
-// "unification" decision: one construction path, one reload path, one place
-// to fan script-file inputs out to.
+// Top-level scripting runtime: owns both subsystems and dispatches by file
+// extension. One construction path, one reload path, one fan-out point.
+// See: context/lib/scripting.md
 //
-// This type is deliberately shallow. It owns two subsystem handles, forwards
-// lifecycle calls to both, and routes by extension. No abstraction over
-// "script engine" — that would be gold-plating given there are exactly two
-// and they aren't pluggable.
-//
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 4
+// Deliberately shallow — no abstraction over "script engine" since there are
+// exactly two runtimes and they aren't pluggable.
 
 use std::fs;
 use std::path::Path;
@@ -52,25 +47,20 @@ pub(crate) struct ScriptRuntime {
     quickjs: QuickJsSubsystem,
     luau: LuauSubsystem,
     /// Ephemeral-context pool for future per-entity QuickJS scripting. The
-    /// shared behavior context on `quickjs` is *not* part of this pool (see
-    /// `scripting::pool` module docs).
+    /// shared behavior context is NOT part of this pool (see `scripting::pool`).
     quickjs_pool: QuickJsContextPool,
-    /// Ephemeral-context pool for future per-entity Luau scripting. Mirrors
-    /// `quickjs_pool`.
+    /// Ephemeral-context pool for future per-entity Luau scripting.
     luau_pool: LuauContextPool,
-    /// Dev-mode hot-reload watcher. Present only in debug builds; release
-    /// builds omit the field entirely so the watcher module doesn't compile
-    /// in and `drain_reload_requests` becomes a cheap no-op.
+    /// Dev-mode hot-reload watcher. Debug builds only; release builds omit
+    /// the field so `drain_reload_requests` is a no-op with no extra code.
     #[cfg(debug_assertions)]
     watcher: Option<super::watcher::ScriptWatcher>,
 }
 
 impl ScriptRuntime {
-    /// Construct both subsystems against the same primitive registry, pre-
-    /// warm per-language context pools at the sizes named in `cfg`, and
-    /// emit the SDK type-definition files in debug builds (logs and
-    /// continues on IO failure — missing `sdk/types` directory must not
-    /// prevent engine startup).
+    /// Construct both subsystems, pre-warm context pools, and emit SDK
+    /// type-definition files in debug builds. IO failure is logged and
+    /// swallowed — a missing `sdk/types` directory must not prevent startup.
     pub(crate) fn new(
         registry: &PrimitiveRegistry,
         cfg: &ScriptRuntimeConfig,
@@ -98,14 +88,12 @@ impl ScriptRuntime {
         })
     }
 
-    /// Access the QuickJS ephemeral-context pool. Test-facing; the real
-    /// consumer is a later per-entity scripting plan.
+    /// Access the QuickJS ephemeral-context pool.
     pub(crate) fn quickjs_pool(&self) -> &QuickJsContextPool {
         &self.quickjs_pool
     }
 
-    /// Access the Luau ephemeral-context pool. Test-facing; the real
-    /// consumer is a later per-entity scripting plan.
+    /// Access the Luau ephemeral-context pool.
     pub(crate) fn luau_pool(&self) -> &LuauContextPool {
         &self.luau_pool
     }
@@ -129,21 +117,16 @@ impl ScriptRuntime {
         Ok(())
     }
 
-    /// Drain any pending reload requests produced by the watcher and apply
-    /// them. Call at the top of each frame. No-op in release builds.
-    ///
-    /// Errors during a reload are logged (inside the watcher) and swallowed —
-    /// one failed hot reload must not kill the engine. The prior archetype
-    /// set stays active.
+    /// Drain any pending reload requests produced by the watcher. Call at the
+    /// top of each frame. No-op in release builds. Reload errors are logged
+    /// and swallowed — one failed reload must not kill the engine.
     pub(crate) fn drain_reload_requests(&mut self) -> Result<(), ScriptError> {
         #[cfg(debug_assertions)]
         {
             // Temporarily take the watcher to satisfy the borrow checker:
             // `drain_reload_requests` needs `&mut self` on both the watcher
-            // and the runtime, and they can't both be borrowed from `self`
-            // at once. We put it back unconditionally via `Option::replace`
-            // equivalent; panics inside `drain_reload_requests` propagate but
-            // don't leak the watcher because the field is simply re-set here.
+            // and the runtime simultaneously. The field is always re-set;
+            // panics inside propagate but do not leak the watcher.
             if let Some(mut w) = self.watcher.take() {
                 let result = w.drain_reload_requests(self);
                 self.watcher = Some(w);
@@ -153,9 +136,7 @@ impl ScriptRuntime {
         Ok(())
     }
 
-    /// Access the QuickJS subsystem. Lifecycle-heavy operations (entering a
-    /// context, draining archetypes) still live on the subsystem; this just
-    /// exposes the handle.
+    /// Access the QuickJS subsystem.
     pub(crate) fn quickjs(&self) -> &QuickJsSubsystem {
         &self.quickjs
     }
@@ -165,8 +146,7 @@ impl ScriptRuntime {
         &self.luau
     }
 
-    /// Reload both definition contexts. Called from the dev-mode hot-reload
-    /// path in a later sub-plan.
+    /// Reload both definition contexts. Called from the dev-mode hot-reload path.
     pub(crate) fn reload_definition_context(&mut self) -> Result<(), ScriptError> {
         self.quickjs.reload_definition_context()?;
         self.luau.reload_definition_context()?;
@@ -179,11 +159,9 @@ impl ScriptRuntime {
     ///   * `.ts`, `.js`  → QuickJS
     ///   * `.luau`       → Luau
     ///
-    /// `.ts` is accepted here as a convenience for the later sub-plan that
-    /// feeds TS straight through the transpile step. For now QuickJS will
-    /// parse the file as JS; the upstream layer is responsible for stripping
-    /// types before handing a `.ts` file to the runtime. Unknown extensions
-    /// return `ScriptError::InvalidArgument`.
+    /// `.ts` is accepted as a convenience for upstream layers that strip types
+    /// before passing the file in; QuickJS parses it as plain JS. Unknown
+    /// extensions return `ScriptError::InvalidArgument`.
     pub(crate) fn run_script_file(&self, which: Which, path: &Path) -> Result<(), ScriptError> {
         let ext = path
             .extension()
@@ -353,11 +331,9 @@ mod tests {
         assert!(!v);
     }
 
-    // Perf criteria from sub-plan 6. These are measurable numbers, but the
-    // plan's 20 ms / 5 ms budgets are release-build targets — debug builds
-    // will blow past them. We gate the assertion on `!cfg!(debug_assertions)`
-    // so the test still runs (and prints timing) in debug without failing
-    // CI on sanity-check `cargo test` runs.
+    // Perf budgets (20 ms / 5 ms) are release-build targets — debug builds
+    // will exceed them. Assertions gate on `!cfg!(debug_assertions)` so the
+    // tests still run and print timing in debug without failing CI.
 
     #[test]
     fn shared_behavior_context_primitive_install_under_20ms_release() {

@@ -2037,12 +2037,8 @@ impl Renderer {
                 if scratch.is_empty() {
                     continue;
                 }
-                self.smoke_pass.record_draw(
-                    &self.queue,
-                    &mut smoke_pass_enc,
-                    collection,
-                    scratch,
-                );
+                self.smoke_pass
+                    .record_draw(&self.queue, &mut smoke_pass_enc, collection, scratch);
             }
         }
 

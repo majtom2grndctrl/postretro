@@ -1,11 +1,9 @@
 //! Dev-mode hot-reload plumbing for the scripting subsystem.
 //!
-//! This entire module is compiled only in debug builds (see `cfg` gate at the
-//! top of the file and at the `mod` declaration in `scripting::mod`). In
-//! release builds, no watcher exists and `ScriptRuntime::drain_reload_requests`
-//! is a no-op. See
-//! `context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md`
-//! §Sub-plan 7 for the full architecture.
+//! Compiled only in debug builds (see `cfg` gate below and the `mod`
+//! declaration in `scripting::mod`). In release builds, no watcher exists and
+//! `ScriptRuntime::drain_reload_requests` is a no-op.
+//! See: `context/lib/scripting.md`
 //!
 //! # Three-thread design
 //!
@@ -34,16 +32,15 @@
 //!                                            └──────────────────────────────┘
 //! ```
 //!
-//! The separation matters: a `tsc` or `scripts-build` subprocess can take
-//! hundreds of milliseconds, and blocking the debouncer's delivery thread on
-//! that subprocess risks dropping events while a compile is in flight. So
-//! the watcher thread forwards immediately and the compile-worker thread owns
-//! the slow path.
+//! Separation matters: a `tsc` or `scripts-build` subprocess can take
+//! hundreds of milliseconds; blocking the debouncer's delivery thread would
+//! drop events during a compile. The watcher thread forwards immediately;
+//! the compile-worker owns the slow path.
 
-// Defence-in-depth: the `mod watcher;` registration in `scripting::mod` is
-// already `#[cfg(debug_assertions)]`, but gating the module itself belt-and-
-// braces means a release build can't accidentally pull this file in via some
-// future path. Clippy flags the pair as duplicated — silenced deliberately.
+// Belt-and-braces: the `mod watcher;` in `scripting::mod` is already
+// `#[cfg(debug_assertions)]`, but gating the module itself ensures a release
+// build can't pull this file in via any future path. Clippy flags the pair
+// as duplicated attributes — silenced deliberately.
 #![cfg(debug_assertions)]
 #![allow(clippy::duplicated_attributes)]
 
@@ -58,17 +55,15 @@ use notify_debouncer_full::{DebouncedEvent, new_debouncer};
 use super::error::ScriptError;
 use super::runtime::ScriptRuntime;
 
-/// ~200 ms debounce matches the plan and is well below the one-second
-/// acceptance-criteria budget even with a compile step on the critical path.
+/// ~200 ms debounce — well below a one-second reload budget even with a
+/// compile step on the critical path.
 const DEBOUNCE_MS: u64 = 200;
 
-/// One reload request that the compile-worker enqueues for the frame loop.
+/// One reload request enqueued by the compile-worker for the frame loop.
 ///
-/// `compiled_output_path` is the path the frame loop should re-evaluate: for
-/// `.luau` it's the source file; for `.ts` it's the already-compiled `.js`
-/// artifact. The frame loop's reload step doesn't distinguish — it just swaps
-/// the definition context; re-evaluation is the caller's concern (sub-plan 7
-/// deliberately stops at the context swap).
+/// `compiled_output_path` is the path to re-evaluate: for `.luau`, the source
+/// file; for `.ts`, the compiled `.js` artifact. The frame loop swaps the
+/// definition context; re-evaluation is the caller's concern.
 #[derive(Debug, Clone)]
 pub(crate) struct ReloadRequest {
     #[allow(dead_code)]
@@ -77,9 +72,6 @@ pub(crate) struct ReloadRequest {
 
 /// Where to find the TypeScript compiler, chosen once at startup via the
 /// detection cascade in [`TsCompilerPath::detect`].
-///
-/// The cascade is the single source of truth (see sub-plan 7). Do not add
-/// new discovery steps without updating the plan.
 #[derive(Debug, Clone)]
 pub(crate) enum TsCompilerPath {
     /// `scripts-build` sitting next to the engine executable. This is how a
@@ -96,10 +88,9 @@ pub(crate) enum TsCompilerPath {
 
 impl TsCompilerPath {
     /// Run the detection cascade. Returns `None` if nothing was found; the
-    /// watcher still starts in that case but `.ts` files fail to reload with
-    /// a clear message.
+    /// watcher still starts but `.ts` files fail to reload with a clear message.
     ///
-    /// **Order (authoritative — matches sub-plan 7 exactly):**
+    /// **Order:**
     ///
     /// 1. `scripts-build` next to `std::env::current_exe()`.
     /// 2. `tsc` on `PATH`.
@@ -113,10 +104,9 @@ impl TsCompilerPath {
         Self::detect_with(exe_dir.as_deref(), path_var.as_deref())
     }
 
-    /// Test-visible core of [`detect`]. Kept separate from process-global env
-    /// state so tests can drive the cascade with arbitrary inputs without
-    /// mutating the shared `PATH` variable (mutating env is `unsafe` in Rust
-    /// 2024 and disallowed by the project).
+    /// Test-visible core of [`detect`]. Separate from process-global env so
+    /// tests can drive the cascade with arbitrary inputs without mutating
+    /// `PATH` (mutating env is `unsafe` in Rust 2024).
     pub(crate) fn detect_with(
         exe_dir: Option<&Path>,
         path_var: Option<&std::ffi::OsStr>,
@@ -165,9 +155,8 @@ fn scripts_build_in_dir(dir: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Tiny manual `PATH` probe. Avoids pulling in the `which` crate — this is
-/// the only place we need lookup, and the logic is three lines. Takes the
-/// PATH value explicitly so tests don't have to mutate process env.
+/// Tiny manual `PATH` probe. Avoids the `which` crate — this is the only
+/// lookup site. Takes PATH explicitly so tests don't mutate process env.
 fn which_in(path_var: Option<&std::ffi::OsStr>, name: &str) -> Option<PathBuf> {
     let path_var = path_var?;
     let exe_name = if cfg!(windows) {
@@ -205,9 +194,8 @@ pub(crate) struct ScriptWatcher {
 }
 
 impl ScriptWatcher {
-    /// Start the watcher against `script_root`, using `ts_compiler` for `.ts`
-    /// files. `ts_compiler = None` is valid — `.ts` files will fail to reload
-    /// with a logged message, but `.luau` files still work.
+    /// Start the watcher against `script_root`. `ts_compiler = None` is valid
+    /// — `.ts` files fail to reload with a logged message, `.luau` still works.
     pub(crate) fn spawn(
         script_root: &Path,
         ts_compiler: Option<TsCompilerPath>,
@@ -229,10 +217,9 @@ impl ScriptWatcher {
         // Channel 2: compile-worker → frame loop.
         let (reload_tx, reload_rx) = mpsc::channel::<ReloadRequest>();
 
-        // Spin up the debouncer. The closure supplied to `new_debouncer` runs
-        // on the debouncer's internal thread — that IS our "watcher thread".
-        // Its only job is to forward each `DebouncedEvent` to the
-        // compile-worker. It never blocks on compilation.
+        // The closure passed to `new_debouncer` runs on the debouncer's
+        // internal thread. Its only job: forward each `DebouncedEvent` to the
+        // compile-worker. Never blocks on compilation.
         let mut debouncer = new_debouncer(
             Duration::from_millis(DEBOUNCE_MS),
             None,
@@ -276,9 +263,8 @@ impl ScriptWatcher {
         })
     }
 
-    /// Drain any pending reload requests non-blockingly. Called at the top of
-    /// each frame. For each request, call `reload_definition_context` on the
-    /// runtime. Errors are logged; the prior archetype set stays active.
+    /// Drain pending reload requests non-blockingly. Call at the top of each
+    /// frame. Reload errors are logged; the prior archetype set stays active.
     pub(crate) fn drain_reload_requests(
         &mut self,
         runtime: &mut ScriptRuntime,
@@ -296,7 +282,7 @@ impl ScriptWatcher {
                 }
                 Err(TryRecvError::Empty) => return Ok(()),
                 Err(TryRecvError::Disconnected) => {
-                    // Compile-worker exited; nothing more will arrive.
+                    // Compile-worker exited; channel is closed.
                     return Ok(());
                 }
             }
@@ -305,9 +291,7 @@ impl ScriptWatcher {
 }
 
 /// Body of the compile-worker thread. Loops until the event channel closes
-/// (i.e. the debouncer dropped, which happens when `ScriptWatcher` is
-/// dropped). Each event targeting a definition file gets compiled (if `.ts`)
-/// or forwarded as-is (if `.luau`).
+/// (debouncer dropped). Compiles `.ts` files and forwards `.luau` files as-is.
 fn compile_worker_loop(
     event_rx: Receiver<DebouncedEvent>,
     reload_tx: Sender<ReloadRequest>,
@@ -377,22 +361,20 @@ fn handle_path(
             }
         }
         _ => {
-            // Not a definition file. Ignore. (Behavior-script hot reload is a
-            // later plan — see sub-plan 7 scope limits.)
+            // Not a definition file — ignore. Behavior-script hot reload is
+            // out of scope for this module.
         }
     }
 }
 
-/// The `.js` artifact path that corresponds to a given `.ts` source. Siblings
-/// in the same directory, sharing the stem. Keeping the output next to the
-/// input avoids another config knob.
+/// The `.js` artifact path for a given `.ts` source: same directory, same stem.
+/// Sibling placement avoids an extra config knob.
 fn compiled_output_for(ts_source: &Path) -> PathBuf {
     ts_source.with_extension("js")
 }
 
-/// Spawn the configured TS compiler and wait for it. Logs stderr on failure.
-/// Returns a short `Err` describing the exit status so the caller can emit a
-/// summary log line.
+/// Spawn the configured TS compiler and wait for it. Logs stderr on failure;
+/// returns a short `Err` with the exit status.
 fn run_ts_compiler(
     compiler: &TsCompilerPath,
     input: &Path,
@@ -408,10 +390,9 @@ fn run_ts_compiler(
             c
         }
         TsCompilerPath::Tsc(p) => {
-            // `tsc` is project-oriented; `--project <root>/tsconfig.json`
-            // produces a whole-project build, matching the single-source-of-
-            // truth in sub-plan 7. Per-file `--out` via tsc is awkward, so we
-            // trust the project config to place artifacts where the engine
+            // `tsc` is project-oriented: `--project <root>/tsconfig.json`
+            // produces a whole-project build. Per-file `--out` via tsc is
+            // awkward; the project config places artifacts where the engine
             // expects them.
             let mut c = Command::new(p);
             c.arg("--project").arg(script_root.join("tsconfig.json"));
@@ -430,8 +411,8 @@ fn run_ts_compiler(
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
-        // Log the compiler's own output at `error` level so the modder sees
-        // exactly what `tsc`/`scripts-build` said. Acceptance criterion.
+        // Log compiler output at `error` level so the modder sees exactly
+        // what `tsc`/`scripts-build` said.
         if !stderr.trim().is_empty() {
             error!("scripts: TS compiler stderr:\n{stderr}");
         }
@@ -519,12 +500,9 @@ mod tests {
         );
     }
 
-    /// Locate the freshly-built `scripts-build` binary for tests. The harness
-    /// places it in `target/debug` (or wherever `CARGO_BIN_EXE_*` points for
-    /// workspace sidecar binaries). `env!` exposes that at compile time — but
-    /// only for binaries declared as a dep of the *current* crate, which we
-    /// can't do without a circular dep. So fall back to walking relative to
-    /// this crate's `target` dir.
+    /// Locate the freshly-built `scripts-build` binary. `env!` only works
+    /// for binaries declared as a dep of the current crate; falls back to
+    /// walking relative to `CARGO_MANIFEST_DIR`.
     fn scripts_build_binary() -> Option<PathBuf> {
         // `CARGO_MANIFEST_DIR` is always set under `cargo test`.
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -543,10 +521,8 @@ mod tests {
         None
     }
 
-    /// Build `scripts-build` on demand if it's not already present in the
-    /// target dir. Keeps the test hermetic without slowing down cargo-test
-    /// when the binary is already there (the common case when the dev has
-    /// already built the workspace).
+    /// Build `scripts-build` on demand if not already present. No-op when the
+    /// workspace has already been built.
     fn ensure_scripts_build() -> PathBuf {
         if let Some(p) = scripts_build_binary() {
             return p;

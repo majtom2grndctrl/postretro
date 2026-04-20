@@ -1,9 +1,8 @@
 // Entity/component registry: the scripting surface that scripts address.
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 1
+// See: context/lib/scripting.md
 
-// Sub-plan 1 delivers the registry substrate with no call sites yet; the
-// primitive binding layer in sub-plan 2 is the first consumer. Silence
-// dead-code lints here rather than sprinkling `#[allow]` on every item.
+// No call sites yet; silence dead-code lints here rather than sprinkling
+// `#[allow]` on every item.
 #![allow(dead_code)]
 
 use std::fmt;
@@ -73,9 +72,7 @@ impl fmt::Display for EntityId {
 ///
 /// `#[repr(u16)]` makes the discriminant a zero-cost index into the
 /// component-storage vector array. Not `#[non_exhaustive]`: the enum is
-/// `pub(crate)`, and `non_exhaustive` is a no-op on non-`pub` items — new
-/// variants are added by extending the enum and letting the compiler flag
-/// non-exhaustive matches. Revisit if this is ever promoted to `pub`.
+/// `pub(crate)`, and `non_exhaustive` is a no-op on non-`pub` items.
 #[repr(u16)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub(crate) enum ComponentKind {
@@ -83,15 +80,21 @@ pub(crate) enum ComponentKind {
 }
 
 impl ComponentKind {
-    /// Count of variants. Keep in sync with the enum.
-    const COUNT: usize = 1;
+    /// Count of variants, derived from an exhaustive const array.
+    /// `std::mem::variant_count` is not yet const-stable on this toolchain,
+    /// so we list every variant once; the compiler enforces exhaustiveness in
+    /// match arms that touch `ComponentKind` elsewhere.
+    pub(crate) const COUNT: usize = {
+        const VARIANTS: &[ComponentKind] = &[ComponentKind::Transform];
+        VARIANTS.len()
+    };
 }
 
 /// Position / rotation / scale in world space.
 ///
-/// `rotation` is stored internally as a quaternion. The script-facing Euler-
-/// degree representation (`pitch`, `yaw`, `roll`) is converted at the FFI
-/// boundary in a later sub-plan — scripts never see a raw quaternion.
+/// `rotation` is stored as a quaternion. Scripts receive Euler degrees
+/// (`pitch`, `yaw`, `roll`) converted at the FFI boundary; never a raw
+/// quaternion.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub(crate) struct Transform {
     pub(crate) position: Vec3,
@@ -179,6 +182,17 @@ impl EntityRegistry {
         }
     }
 
+    /// Returns `None` when all 65,536 entity slots are exhausted (free list
+    /// empty and slot vector at `u16::MAX`). Callers that must not panic
+    /// (e.g. script primitives crossing the FFI boundary) should prefer this
+    /// over [`EntityRegistry::spawn`].
+    pub(crate) fn try_spawn(&mut self, transform: Transform) -> Option<EntityId> {
+        if self.free_list.is_empty() && self.slots.len() >= u16::MAX as usize {
+            return None;
+        }
+        Some(self.spawn(transform))
+    }
+
     pub(crate) fn spawn(&mut self, transform: Transform) -> EntityId {
         let index = if let Some(i) = self.free_list.pop() {
             i
@@ -223,12 +237,10 @@ impl EntityRegistry {
         }
         slot.live = false;
 
-        // Generation-wrap retirement: clearing-and-reusing would break
-        // `EntityId` uniqueness — an EntityId held elsewhere with the
-        // wrapped-back-to-same-value generation would compare equal to a
-        // freshly allocated one. Retire the slot instead: tiny long-tail
-        // memory cost (one Slot struct) in exchange for a sound uniqueness
-        // invariant. See plan §Sub-plan 1 "Wrap behavior is a hard retirement".
+        // Generation-wrap retirement: reusing the slot after wrap would let a
+        // stale `EntityId` compare equal to a freshly allocated one. Retiring
+        // the slot is a tiny long-tail memory cost for a sound uniqueness
+        // invariant.
         if slot.generation == u16::MAX {
             slot.retired = true;
             // NOT pushed back onto the free list — permanent retirement.

@@ -1,16 +1,13 @@
 // mlua/Luau subsystem: two sandboxed `mlua::Lua` states (definition and
-// behavior), with the one primitive registry driving installation into both.
-// Sub-plan 4 of the scripting foundation plan.
+// behavior), driven by the shared primitive registry.
+// See: context/lib/scripting.md
 //
-// This mirrors `QuickJsSubsystem` so the top-level `ScriptRuntime` (see
-// `runtime.rs`) can fan out symmetrically by file extension. Two `Lua` states
-// rather than one give us the same definition/behavior split the QuickJS side
-// enforces via two `Context`s — scripts cannot accidentally step across the
-// boundary because the real installers only land in the correct state.
-//
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 4
+// Mirrors `QuickJsSubsystem` so `ScriptRuntime` can fan out symmetrically by
+// file extension. Two `Lua` states enforce the definition/behavior split; real
+// installers only land in the correct state.
 
 use std::cell::RefCell;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use mlua::{Compiler, Function, Lua, Table};
@@ -20,8 +17,7 @@ use super::primitives_registry::{ContextScope, PrimitiveRegistry, ScriptPrimitiv
 use super::quickjs::{ArchetypeAccumulator, ArchetypeDescriptor};
 
 /// Engine-internal sink function installed into the definition Lua state.
-/// Same leading-underscore convention as the QuickJS side — the type-def
-/// generator skips names that start with `_`.
+/// Leading underscore: the type-def generator skips names starting with `_`.
 const COLLECT_FN_NAME: &str = "__collect_definitions";
 
 /// Deny-list: global names (and `os.<sub>` fields) we clear on both Lua states
@@ -33,8 +29,8 @@ const DENIED_GLOBALS: &[&str] = &["io", "package", "require", "dofile", "loadfil
 const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv"];
 
 /// Configuration for a [`LuauSubsystem`]. `pool_size` tunes the ephemeral-
-/// context pool used for future per-entity scripting (sub-plan 6); it does
-/// NOT affect the shared behavior `Lua` state, which is never pooled.
+/// context pool. Does NOT affect the shared behavior `Lua` state, which is
+/// never pooled.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LuauConfig {
     pub(crate) pool_size: usize,
@@ -58,8 +54,8 @@ pub(crate) struct LuauSubsystem {
 }
 
 /// Scope selector passed to `run_source` and to the top-level dispatcher.
-/// Kept here rather than in `runtime.rs` so either subsystem can be exercised
-/// in isolation from tests without depending on the unification layer.
+/// Lives here rather than in `runtime.rs` so the subsystem can be exercised
+/// in isolation from tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Which {
     Definition,
@@ -90,11 +86,10 @@ impl LuauSubsystem {
     /// * Deny-list removal is what actually prevents filesystem / process
     ///   access. `sandbox(true)` alone would still leave `io.open`
     ///   available.
-    /// * Coroutines (`coroutine.create`, `coroutine.resume`, `coroutine.yield`)
-    ///   are permitted. Cross-frame suspension is UNDEFINED in Plan 1 — there
-    ///   is no Rust-side scheduler to resume a yielded coroutine on a later
-    ///   frame. Handlers that create / resume / finish a coroutine within one
-    ///   primitive call are safe.
+    /// * Coroutines are permitted. Cross-frame suspension is UNDEFINED —
+    ///   there is no Rust-side scheduler to resume a yielded coroutine on a
+    ///   later frame. Coroutines that start and finish within one primitive
+    ///   call are safe.
     pub(crate) fn new(
         registry: &PrimitiveRegistry,
         _cfg: &LuauConfig,
@@ -128,21 +123,20 @@ impl LuauSubsystem {
     }
 
     /// Borrow the primitive snapshot. Used by the context pool to pre-warm
-    /// Lua states with the same primitive set the subsystem was built
-    /// against.
+    /// Lua states with the same primitive set.
     pub(crate) fn primitives(&self) -> &[ScriptPrimitive] {
         &self.primitives
     }
 
     /// Shared handle to the archetype accumulator. Exposed for tests and for
-    /// the sub-plan that drains it after evaluating definition scripts.
+    /// the caller that drains it after evaluating definition scripts.
     pub(crate) fn archetypes(&self) -> &ArchetypeAccumulator {
         &self.archetypes
     }
 
     /// Drop the current definition state and rebuild it. Dev-mode hot-reload
-    /// path (sub-plan 7). The archetype `Rc` is cleared in place rather than
-    /// replaced so any outside handles stay valid.
+    /// path. The archetype `Rc` is cleared in place so outside handles remain
+    /// valid.
     pub(crate) fn reload_definition_context(&mut self) -> Result<(), ScriptError> {
         self.archetypes.borrow_mut().clear();
         self.definition_lua = build_lua_state(
@@ -154,10 +148,9 @@ impl LuauSubsystem {
     }
 
     /// Compile and evaluate `source` inside the chosen state. Compile errors
-    /// surface as `ScriptError::ScriptThrew` (same variant as runtime errors —
-    /// the plan explicitly prefers reuse over enum churn). Runtime errors
-    /// include mlua's source-line traceback in the logged and returned
-    /// message, since `mlua::Error`'s `Display` impl embeds it.
+    /// surface as `ScriptError::ScriptThrew` (same variant as runtime errors).
+    /// Runtime errors include mlua's source-line traceback because
+    /// `mlua::Error`'s `Display` impl embeds it.
     pub(crate) fn run_source<T>(
         &self,
         which: Which,
@@ -269,20 +262,29 @@ fn apply_denylist(lua: &Lua) -> Result<(), ScriptError> {
 fn install_print_redirect(lua: &Lua) -> Result<(), ScriptError> {
     let f = lua
         .create_function(|_lua, args: mlua::MultiValue| {
-            // Lua's `print` separates values with tabs. Mirror that here so
-            // existing debug habits transfer cleanly to the log line.
-            let mut out = String::new();
-            for (i, v) in args.iter().enumerate() {
-                if i > 0 {
-                    out.push('\t');
+            const NAME: &str = "print";
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                // Lua's `print` separates values with tabs. Mirror that here so
+                // existing debug habits transfer cleanly to the log line.
+                let mut out = String::new();
+                for (i, v) in args.iter().enumerate() {
+                    if i > 0 {
+                        out.push('\t');
+                    }
+                    match v.to_string() {
+                        Ok(s) => out.push_str(&s),
+                        Err(_) => out.push_str("<unprintable>"),
+                    }
                 }
-                match v.to_string() {
-                    Ok(s) => out.push_str(&s),
-                    Err(_) => out.push_str("<unprintable>"),
+                log::info!(target: "script/luau", "[Script/Luau] {out}");
+            }));
+            match result {
+                Ok(()) => Ok(()),
+                Err(_) => {
+                    log::error!(target: "script/luau", "[Scripting] print closure panicked: {NAME}");
+                    Err(mlua::Error::RuntimeError(format!("panic in print: {NAME}")))
                 }
             }
-            log::info!(target: "script/luau", "[Script/Luau] {out}");
-            Ok(())
         })
         .map_err(|e| ScriptError::InvalidArgument {
             reason: e.to_string(),
@@ -332,15 +334,30 @@ fn install_collect_definitions(
 ) -> Result<(), ScriptError> {
     let f: Function = lua
         .create_function(move |lua, ()| {
-            let drained: Vec<ArchetypeDescriptor> = archetypes.borrow_mut().drain(..).collect();
-            let t = lua.create_table()?;
-            for (i, d) in drained.into_iter().enumerate() {
-                let row = lua.create_table()?;
-                row.set("name", d.name)?;
-                // Lua is 1-indexed.
-                t.set(i + 1, row)?;
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                archetypes
+                    .borrow_mut()
+                    .drain(..)
+                    .collect::<Vec<ArchetypeDescriptor>>()
+            }));
+            match result {
+                Ok(drained) => {
+                    let t = lua.create_table()?;
+                    for (i, d) in drained.into_iter().enumerate() {
+                        let row = lua.create_table()?;
+                        row.set("name", d.name)?;
+                        // Lua is 1-indexed.
+                        t.set(i + 1, row)?;
+                    }
+                    Ok(t)
+                }
+                Err(_) => {
+                    let err = ScriptError::Panicked {
+                        name: COLLECT_FN_NAME,
+                    };
+                    Err(mlua::Error::RuntimeError(err.to_string()))
+                }
             }
-            Ok(t)
         })
         .map_err(|e| ScriptError::InvalidArgument {
             reason: e.to_string(),
@@ -554,7 +571,7 @@ mod tests {
 
     #[test]
     fn end_to_end_transform_component_round_trip() {
-        // Mirrors the QuickJs end-to-end test. `ComponentKind` is a bare
+        // Mirrors the QuickJS end-to-end test. `ComponentKind` is a bare
         // string (`"Transform"`); the returned `ComponentValue` table has a
         // top-level `kind = "Transform"` plus the Transform fields.
         let (subsys, ctx_handle) = setup();

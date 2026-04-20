@@ -1,24 +1,18 @@
-// QuickJS subsystem: the rquickjs `Runtime` plus the two contexts (definition
-// and behavior) scripts run inside. Sub-plan 3 of the scripting foundation.
-//
-// This type is deliberately standalone. Sub-plan 4 lands a symmetric
-// `LuauSubsystem` and a later sub-plan unifies both under a single
-// `ScriptRuntime` — that unification does not happen here. `QuickJsSubsystem`
-// should be importable by sub-plan 4's author without conflict.
+// QuickJS subsystem: one `rquickjs::Runtime` plus definition and behavior contexts.
+// See: context/lib/scripting.md
 //
 // Lifecycle:
 //   * One `rquickjs::Runtime` per subsystem (owns GC, memory limit).
 //   * Two `Context`s: `definition_ctx` runs definition scripts once per level
-//     load, `behavior_ctx` runs behavior scripts for the level's lifetime.
-//   * Definition context has DefinitionOnly/Both primitives installed as real
-//     functions; BehaviorOnly primitives install as stubs that throw
-//     `ScriptError::WrongContext`. The behavior context flips the scopes.
+//     load; `behavior_ctx` runs behavior scripts for the level's lifetime.
+//   * Definition context has DefinitionOnly/Both primitives as real functions;
+//     BehaviorOnly primitives install as stubs that throw `ScriptError::WrongContext`.
+//     The behavior context flips the scopes.
 //   * `__collect_definitions` is a magic sink injected into the definition
-//     context only. It is **not** a registered primitive — see the plan text.
-//
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 3
+//     context only. It is NOT a registered primitive.
 
 use std::cell::RefCell;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use rquickjs::{CatchResultExt, CaughtError, Context, Ctx, FromJs, Function, IntoJs, Runtime};
@@ -32,14 +26,14 @@ use super::primitives_registry::{ContextScope, PrimitiveRegistry, ScriptPrimitiv
 const DEFAULT_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
 
 /// Engine-internal name for the accumulator sink installed into the definition
-/// context. Leading underscore flags it as "not part of the public scripting
-/// API" — the type-definition generator (sub-plan 5) skips it.
+/// context. Leading underscore is the convention the type-definition generator
+/// uses to skip engine-internal functions.
 const COLLECT_FN_NAME: &str = "__collect_definitions";
 
 /// Configuration for a [`QuickJsSubsystem`]. `memory_limit_bytes` defaults to
 /// 100 MB; override for measured workloads. `pool_size` tunes the ephemeral-
-/// context pool used for future per-entity scripting (sub-plan 6); it does
-/// NOT affect the shared behavior context, which is never pooled.
+/// context pool; it does NOT affect the shared behavior context, which is never
+/// pooled.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QuickJsConfig {
     pub(crate) memory_limit_bytes: usize,
@@ -55,20 +49,19 @@ impl Default for QuickJsConfig {
     }
 }
 
-/// Placeholder archetype record. Plan 1 needs just enough structure to prove
-/// the Rust/JS round-trip for definition-time accumulation; the archetype plan
-/// that follows Plan 3 replaces this with the real descriptor shape.
+/// Placeholder archetype record. Sufficient to prove the Rust/JS round-trip
+/// for definition-time accumulation; a future archetype plan replaces this
+/// with the real descriptor shape.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ArchetypeDescriptor {
     pub(crate) name: String,
 }
 
-/// Shared accumulator feeding `__collect_definitions`. `defineEntity` (and
-/// whatever helpers the archetype plan adds later) push into this `Vec`; the
-/// magic sink drains and returns it.
+/// Shared accumulator feeding `__collect_definitions`. Definition helpers push
+/// into this `Vec`; the sink drains and returns it.
 ///
-/// `Rc<RefCell<_>>` rather than `Arc<Mutex<_>>`: scripting is single-threaded
-/// by construction (see `scripting::ctx`), and a `RefCell` does not poison.
+/// `Rc<RefCell<_>>` over `Arc<Mutex<_>>`: scripting is single-threaded (see
+/// `scripting::ctx`) and `RefCell` does not poison.
 pub(crate) type ArchetypeAccumulator = Rc<RefCell<Vec<ArchetypeDescriptor>>>;
 
 /// rquickjs subsystem: one `Runtime`, one definition context, one behavior
@@ -79,9 +72,8 @@ pub(crate) struct QuickJsSubsystem {
     definition_ctx: Context,
     behavior_ctx: Context,
     /// Kept so `reload_definition_context` can reinstall primitives without
-    /// requiring the caller to thread the registry back in. Every
-    /// `ScriptPrimitive` is `Clone` with `Arc`-backed closures, so this is
-    /// a cheap shallow copy of the registry snapshot taken at construction.
+    /// requiring the caller to pass the registry back in. Each `ScriptPrimitive`
+    /// is `Clone` with `Arc`-backed closures — cheap shallow copy.
     primitives: Vec<ScriptPrimitive>,
     /// Shared with the `__collect_definitions` function installed into
     /// `definition_ctx`. Kept here so reloads can swap in a fresh accumulator
@@ -142,15 +134,14 @@ impl QuickJsSubsystem {
     }
 
     /// Shared handle to the archetype accumulator. Exposed for tests and for
-    /// the sub-plan that drains it after evaluating definition scripts.
+    /// the caller that drains it after evaluating definition scripts.
     pub(crate) fn archetypes(&self) -> &ArchetypeAccumulator {
         &self.archetypes
     }
 
     /// Drop the current definition context and build a fresh one. Used by the
-    /// dev-mode hot reload path (sub-plan 7). Primitives are reinstalled from
-    /// the subsystem's snapshot; the archetype accumulator is cleared and the
-    /// same `Rc` is reused so outside handles remain valid.
+    /// dev-mode hot-reload path. Primitives are reinstalled from the snapshot;
+    /// the accumulator is cleared in place so outside handles remain valid.
     pub(crate) fn reload_definition_context(&mut self) -> Result<(), ScriptError> {
         self.archetypes.borrow_mut().clear();
         self.definition_ctx = build_definition_context_from_snapshot(
@@ -163,11 +154,9 @@ impl QuickJsSubsystem {
 }
 
 /// Evaluate `source` inside `ctx`, converting JS exceptions into
-/// `ScriptError::ScriptThrew` and logging at `error` level. The caller must
-/// already be inside a `ctx.with(...)` closure — `Ctx<'js>` is short-lived.
-///
-/// A thrown script exception is **not** treated as a poisoned-context
-/// condition: subsequent calls in the same context continue to work.
+/// `ScriptError::ScriptThrew` and logging at `error` level. Must be called
+/// inside a `ctx.with(...)` closure. A thrown exception does not poison the
+/// context — subsequent calls continue to work.
 pub(crate) fn run_script<'js, T>(ctx: &Ctx<'js>, source: &str, name: &str) -> Result<T, ScriptError>
 where
     T: FromJs<'js>,
@@ -178,9 +167,8 @@ where
     }
 }
 
-/// Convert a `CaughtError` to a `ScriptError::ScriptThrew` and log it.
-/// Factored out so both `run_script` and any future "call this global"
-/// helpers share one error path.
+/// Convert a `CaughtError` to `ScriptError::ScriptThrew` and log it.
+/// Shared by `run_script` and future helpers that call into the context.
 fn caught_error_to_script_error(caught: CaughtError<'_>, source: &str) -> ScriptError {
     let msg = caught.to_string();
     log::error!(target: "script/quickjs", "script `{source}` threw: {msg}");
@@ -270,15 +258,28 @@ fn install_collect_definitions(
     archetypes: ArchetypeAccumulator,
 ) -> Result<(), ScriptError> {
     let globals = ctx.globals();
-    // Return `Vec<DescriptorJs>` — rquickjs' `IntoJs` for `Vec` encodes it
-    // as a JS array and the blanket closure impl handles the `'js` lifetime
-    // threading without us naming it explicitly (which isn't possible for
-    // closures in stable Rust).
+    // `Vec<DescriptorJs>`: rquickjs' `IntoJs` for `Vec` encodes as a JS array;
+    // the closure blanket impl handles `'js` lifetime threading without explicit
+    // naming (not possible for closures in stable Rust).
     let f = Function::new(
         ctx.clone(),
-        move || -> rquickjs::Result<Vec<DescriptorJs>> {
-            let drained: Vec<ArchetypeDescriptor> = archetypes.borrow_mut().drain(..).collect();
-            Ok(drained.into_iter().map(DescriptorJs::from).collect())
+        move |ctx: rquickjs::Ctx<'_>| -> rquickjs::Result<Vec<DescriptorJs>> {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let drained: Vec<ArchetypeDescriptor> = archetypes.borrow_mut().drain(..).collect();
+                drained
+                    .into_iter()
+                    .map(DescriptorJs::from)
+                    .collect::<Vec<_>>()
+            }));
+            match result {
+                Ok(v) => Ok(v),
+                Err(_) => {
+                    let err = ScriptError::Panicked {
+                        name: COLLECT_FN_NAME,
+                    };
+                    Err(rquickjs::Exception::from_message(ctx.clone(), &err.to_string())?.throw())
+                }
+            }
         },
     )
     .map_err(|e| ScriptError::InvalidArgument {
@@ -292,10 +293,9 @@ fn install_collect_definitions(
     Ok(())
 }
 
-/// JS-facing shape for an `ArchetypeDescriptor`. Kept separate from the
+/// JS-facing shape for an `ArchetypeDescriptor`. Separate from the
 /// serde-serializable record so the wire encoding stays decoupled from the
-/// Rust-side representation — the archetype plan can evolve the Rust struct
-/// without breaking JS call sites.
+/// Rust-side representation.
 struct DescriptorJs {
     name: String,
 }
@@ -468,10 +468,9 @@ mod tests {
 
     #[test]
     fn panicking_primitive_does_not_unwind_past_ffi_boundary() {
-        // End-to-end check that a Rust-side panic in a primitive reaches the
-        // script as a catchable exception (the FFI wrapper already handles
-        // this; we're verifying through the full subsystem stack). `boom`
-        // captures no `ScriptCtx`, so this test skips the usual setup().
+        // Verify through the full subsystem stack that a Rust-side panic
+        // reaches the script as a catchable exception. `boom` captures no
+        // `ScriptCtx`, so this test skips the usual setup().
         let mut registry = PrimitiveRegistry::new();
         registry
             .register("boom", || -> Result<u32, ScriptError> {
@@ -495,14 +494,12 @@ mod tests {
 
     #[test]
     fn end_to_end_transform_component_round_trip() {
-        // This is the canonical sub-plan 2/3 test: a behavior script spawns
-        // an entity, writes a fully-populated Transform via set_component,
-        // reads it back via get_component, and asserts the round-trip holds
-        // within float tolerance.
+        // Behavior script spawns an entity, writes a fully-populated Transform
+        // via set_component, reads it back via get_component, and asserts the
+        // round-trip holds within float tolerance.
         //
         // `ComponentKind` crosses as a bare string (`"Transform"`) per
-        // `scripting::conv` — this test documents that encoding for the
-        // Luau mirror test in sub-plan 4.
+        // `scripting::conv`.
         let (subsys, ctx_handle) = setup();
         subsys.behavior_ctx().with(|ctx| {
             let out: rquickjs::Object = ctx

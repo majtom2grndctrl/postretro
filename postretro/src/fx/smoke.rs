@@ -126,7 +126,10 @@ impl SmokeEmitter {
     /// Advance the LCG and return the next pseudo-random u32.
     fn rand_u32(&mut self) -> u32 {
         // Park-Miller style multiply, good enough for visual noise.
-        self.rand_state = self.rand_state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        self.rand_state = self
+            .rand_state
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
         self.rand_state
     }
 
@@ -335,21 +338,19 @@ pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<V
 
     let frames: Vec<SpriteFrame> = frame_paths
         .iter()
-        .filter_map(|(_, path)| {
-            match image::open(path) {
-                Ok(img) => {
-                    let rgba = img.to_rgba8();
-                    let (w, h) = rgba.dimensions();
-                    Some(SpriteFrame {
-                        data: rgba.into_raw(),
-                        width: w,
-                        height: h,
-                    })
-                }
-                Err(err) => {
-                    log::warn!("[Smoke] Failed to load '{}': {err}", path.display());
-                    None
-                }
+        .filter_map(|(_, path)| match image::open(path) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                Some(SpriteFrame {
+                    data: rgba.into_raw(),
+                    width: w,
+                    height: h,
+                })
+            }
+            Err(err) => {
+                log::warn!("[Smoke] Failed to load '{}': {err}", path.display());
+                None
             }
         })
         .collect();
@@ -412,8 +413,8 @@ mod tests {
     #[test]
     fn max_capacity_not_exceeded() {
         let mut emitter = SmokeEmitter::new(SmokeEmitterParams {
-            rate: 10_000.0, // extreme rate
-            lifetime: 100.0,    // long lifetime so sprites don't expire
+            rate: 10_000.0,  // extreme rate
+            lifetime: 100.0, // long lifetime so sprites don't expire
             ..Default::default()
         });
         emitter.tick(10.0); // tick a long time

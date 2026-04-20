@@ -1,13 +1,12 @@
 // Script context handle and the engine-side event queue.
-// See: context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 2
+// See: context/lib/scripting.md
 //
 // `ScriptCtx` captures-by-Rc into every primitive closure at registration time.
-// It is deliberately `!Send + !Sync`: `rquickjs::Context` is `!Send`,
-// `mlua::Lua` is `!Send` (the `send` feature is off), and the engine frame
-// loop is single-threaded. `Rc<RefCell<_>>` over `Arc<RwLock<_>>` because
-// `std::sync::RwLock` poisons on panic and every primitive body runs inside
-// `catch_unwind` — a poisoned lock would wedge the entire scripting surface
-// after the first caught panic. `RefCell` has no poisoning.
+// `!Send + !Sync` by design: the frame loop is single-threaded and both
+// runtimes are `!Send`. `Rc<RefCell<_>>` over `Arc<RwLock<_>>` because
+// `RwLock` poisons on panic — every primitive runs inside `catch_unwind`,
+// so a poisoned lock would wedge the scripting surface after the first caught
+// panic. `RefCell` has no poisoning.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;

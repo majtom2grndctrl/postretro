@@ -22,3 +22,4 @@ pub(crate) mod error;
 pub(crate) mod primitives;
 pub(crate) mod primitives_registry;
 pub(crate) mod registry;
+pub(crate) mod typedef;

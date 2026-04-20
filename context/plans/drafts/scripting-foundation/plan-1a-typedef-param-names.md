@@ -9,13 +9,14 @@ The type-definition generator emits synthetic parameter names (`a`, `b`, `c`) be
 ### In scope
 
 - Add `.param(name, type_name)` builder method to `PrimitiveBuilder`
-- Store param names in `PrimitiveSignature` (already carries `Vec<ParamInfo>`)
+- Override the macro-synthesized `ParamInfo.name` entries with caller-supplied names at `finish()` time
 - Update all 7 `register_all` call sites in `primitives.rs` to supply names
+- Update `mini_registry` in `typedef.rs` (used by snapshot tests) to supply names
 - Verify generated type definitions use the real names
 
 ### Out of scope
 
-- Changing how types are inferred or validated — names are strings, no type system involvement
+- Changing how `ty_name` is derived — types continue to come from the arity macro via `type_name::<$ty>()`
 - Adding param names to Luau or TypeScript type-checking beyond what the generator already emits
 - Changing the arity macro or `RegisterablePrimitive` trait
 
@@ -24,18 +25,21 @@ The type-definition generator emits synthetic parameter names (`a`, `b`, `c`) be
 - [ ] Generated `sdk/types/postretro.d.ts` contains `entity_exists(id: EntityId)`, not `entity_exists(a: EntityId)`
 - [ ] Generated `sdk/types/postretro.d.luau` contains real param names for all 7 day-one primitives
 - [ ] `PrimitiveBuilder` accepts `.param("name", "TypeName")` calls before `.finish()`
-- [ ] `cargo test -p postretro scripting::typedef` passes, including snapshot tests updated to reflect real names
+- [ ] Supplying the wrong number of `.param()` calls (non-zero arity mismatch) triggers a `debug_assert` in `finish()` with a clear message; zero-arity primitives require zero `.param()` calls
+- [ ] `cargo test -p postretro scripting::typedef` passes with snapshot tests updated to real names
 - [ ] `cargo check -p postretro` clean
 
 ## Tasks
 
 ### Task 1: Extend PrimitiveBuilder with `.param()`
 
-Add `.param(name: &'static str, ty_name: &'static str) -> Self` to `PrimitiveBuilder` in `primitives_registry.rs`. Params accumulate in order; `finish()` moves them into `PrimitiveSignature`. The existing `ParamInfo { name, ty_name }` struct already has the right shape — no new types needed.
+Add `.param(name: &'static str, ty_name: &'static str) -> Self` to `PrimitiveBuilder` in `primitives_registry.rs`. Params accumulate in a `Vec<ParamInfo>` on the builder.
 
-### Task 2: Update register_all call sites
+In `finish()`, after `into_primitive` produces the `ScriptPrimitive` (which has macro-synthesized `a`/`b`/`c` names), replace `signature.params[i].name` with the builder-accumulated names. Add a `debug_assert_eq!(builder_params.len(), signature.params.len(), ...)` to catch arity mismatches at registration time. If builder params are empty (zero-arity or caller omitted `.param()`), leave the macro-synthesized names untouched.
 
-Update all 7 primitives in `primitives.rs` to chain `.param()` calls. Reference:
+### Task 2: Update register_all call sites and mini_registry
+
+Update all 7 primitives in `primitives.rs` to chain `.param()` calls:
 
 | Primitive | Params |
 |---|---|
@@ -43,18 +47,20 @@ Update all 7 primitives in `primitives.rs` to chain `.param()` calls. Reference:
 | `spawn_entity` | `transform: Transform` |
 | `despawn_entity` | `id: EntityId` |
 | `get_component` | `id: EntityId`, `kind: ComponentKind` |
-| `set_component` | `id: EntityId`, `value: ComponentValue` |
+| `set_component` | `id: EntityId`, `kind: ComponentKind`, `value: ComponentValue` |
 | `emit_event` | `event: ScriptEvent` |
-| `send_event` | `id: EntityId`, `event: ScriptEvent` |
+| `send_event` | `target: EntityId`, `event: ScriptEvent` |
+
+Also update `mini_registry` in `typedef.rs` (the test helper) to supply param names for its test primitives.
 
 ### Task 3: Update typedef snapshot tests
 
-`typedef.rs` has snapshot tests for the generated output. Update expected strings to use real param names. No generator logic changes needed — it already reads `ParamInfo.name`.
+`typedef.rs` snapshot tests (`EXPECTED_TS`, `EXPECTED_LUAU`) compare against hardcoded strings. Update expected strings to use the real names supplied by `mini_registry`. Tasks 2 and 3 must land together — the snapshot tests break as soon as `mini_registry` is updated.
 
 ## Sequencing
 
-**Phase 1 (sequential):** Task 1 — builder API change blocks Task 2 and 3.  
-**Phase 2 (concurrent):** Task 2, Task 3 — independent once Task 1 lands.
+**Phase 1 (sequential):** Task 1 — builder API change blocks Tasks 2 and 3.  
+**Phase 2 (sequential):** Tasks 2 and 3 together — must land in the same commit to keep `cargo test` green.
 
 ## Open questions
 

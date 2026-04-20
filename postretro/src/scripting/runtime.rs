@@ -15,6 +15,7 @@ use std::path::Path;
 
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
+use super::pool::{LuauContextPool, QuickJsContextPool};
 use super::primitives_registry::PrimitiveRegistry;
 use super::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 #[cfg(debug_assertions)]
@@ -50,11 +51,19 @@ pub(crate) struct ScriptRuntimeConfig {
 pub(crate) struct ScriptRuntime {
     quickjs: QuickJsSubsystem,
     luau: LuauSubsystem,
+    /// Ephemeral-context pool for future per-entity QuickJS scripting. The
+    /// shared behavior context on `quickjs` is *not* part of this pool (see
+    /// `scripting::pool` module docs).
+    quickjs_pool: QuickJsContextPool,
+    /// Ephemeral-context pool for future per-entity Luau scripting. Mirrors
+    /// `quickjs_pool`.
+    luau_pool: LuauContextPool,
 }
 
 impl ScriptRuntime {
-    /// Construct both subsystems against the same primitive registry. Also
-    /// emits the SDK type-definition files in debug builds (logs and
+    /// Construct both subsystems against the same primitive registry, pre-
+    /// warm per-language context pools at the sizes named in `cfg`, and
+    /// emit the SDK type-definition files in debug builds (logs and
     /// continues on IO failure — missing `sdk/types` directory must not
     /// prevent engine startup).
     pub(crate) fn new(
@@ -64,10 +73,34 @@ impl ScriptRuntime {
         let quickjs = QuickJsSubsystem::new(registry, &cfg.quickjs)?;
         let luau = LuauSubsystem::new(registry, &cfg.luau)?;
 
+        let quickjs_pool = QuickJsContextPool::new(
+            quickjs.runtime(),
+            quickjs.primitives(),
+            cfg.quickjs.pool_size,
+        )?;
+        let luau_pool = LuauContextPool::new(luau.primitives(), cfg.luau.pool_size)?;
+
         #[cfg(debug_assertions)]
         typedef::emit_sdk_types_in_debug(registry);
 
-        Ok(Self { quickjs, luau })
+        Ok(Self {
+            quickjs,
+            luau,
+            quickjs_pool,
+            luau_pool,
+        })
+    }
+
+    /// Access the QuickJS ephemeral-context pool. Test-facing; the real
+    /// consumer is a later per-entity scripting plan.
+    pub(crate) fn quickjs_pool(&self) -> &QuickJsContextPool {
+        &self.quickjs_pool
+    }
+
+    /// Access the Luau ephemeral-context pool. Test-facing; the real
+    /// consumer is a later per-entity scripting plan.
+    pub(crate) fn luau_pool(&self) -> &LuauContextPool {
+        &self.luau_pool
     }
 
     /// Access the QuickJS subsystem. Lifecycle-heavy operations (entering a
@@ -239,5 +272,107 @@ mod tests {
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn new_prewarms_pools_with_default_size() {
+        let (rt, _ctx) = runtime();
+        assert_eq!(
+            rt.quickjs_pool().idle_len(),
+            crate::scripting::pool::DEFAULT_POOL_SIZE,
+        );
+        assert_eq!(
+            rt.luau_pool().idle_len(),
+            crate::scripting::pool::DEFAULT_POOL_SIZE,
+        );
+        assert_eq!(rt.quickjs_pool().in_flight(), 0);
+        assert_eq!(rt.luau_pool().in_flight(), 0);
+    }
+
+    #[test]
+    fn pooled_quickjs_context_calls_entity_exists() {
+        let (rt, _ctx) = runtime();
+        let handle = rt.quickjs_pool().acquire().unwrap();
+        handle.context().with(|ctx| {
+            let v: bool = ctx.eval("entity_exists(0)").unwrap();
+            assert!(!v);
+        });
+    }
+
+    #[test]
+    fn pooled_luau_context_calls_entity_exists() {
+        let (rt, _ctx) = runtime();
+        let handle = rt.luau_pool().acquire().unwrap();
+        let v: bool = handle.lua().load("return entity_exists(0)").eval().unwrap();
+        assert!(!v);
+    }
+
+    // Perf criteria from sub-plan 6. These are measurable numbers, but the
+    // plan's 20 ms / 5 ms budgets are release-build targets — debug builds
+    // will blow past them. We gate the assertion on `!cfg!(debug_assertions)`
+    // so the test still runs (and prints timing) in debug without failing
+    // CI on sanity-check `cargo test` runs.
+
+    #[test]
+    fn shared_behavior_context_primitive_install_under_20ms_release() {
+        use std::time::Instant;
+        let ctx = ScriptCtx::new();
+        let mut registry = PrimitiveRegistry::new();
+        register_all(&mut registry, ctx.clone());
+
+        // Build subsystems with pool_size = 0 so we're only timing the
+        // shared-context install cost, not the pool pre-warm.
+        let cfg = ScriptRuntimeConfig {
+            quickjs: crate::scripting::quickjs::QuickJsConfig {
+                memory_limit_bytes: 100 * 1024 * 1024,
+                pool_size: 0,
+            },
+            luau: crate::scripting::luau::LuauConfig { pool_size: 0 },
+        };
+
+        let start = Instant::now();
+        let _rt = ScriptRuntime::new(&registry, &cfg).unwrap();
+        let elapsed = start.elapsed();
+
+        if !cfg!(debug_assertions) {
+            assert!(
+                elapsed.as_millis() < 20,
+                "shared-context install took {elapsed:?}, budget 20ms",
+            );
+        } else {
+            eprintln!(
+                "shared-context install (debug build, not asserting): {elapsed:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn thousand_primitive_calls_under_5ms_release() {
+        use std::time::Instant;
+        let (rt, _ctx) = runtime();
+
+        let start = Instant::now();
+        rt.quickjs().behavior_ctx().with(|ctx| {
+            ctx.eval::<(), _>(
+                r#"
+                for (let i = 0; i < 1000; i++) {
+                    entity_exists(i);
+                }
+                "#,
+            )
+            .unwrap();
+        });
+        let elapsed = start.elapsed();
+
+        if !cfg!(debug_assertions) {
+            assert!(
+                elapsed.as_millis() < 5,
+                "1000 primitive calls took {elapsed:?}, budget 5ms",
+            );
+        } else {
+            eprintln!(
+                "1000 primitive calls (debug build, not asserting): {elapsed:?}",
+            );
+        }
     }
 }

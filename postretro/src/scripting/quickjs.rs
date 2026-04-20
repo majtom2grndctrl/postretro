@@ -37,16 +37,20 @@ const DEFAULT_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
 const COLLECT_FN_NAME: &str = "__collect_definitions";
 
 /// Configuration for a [`QuickJsSubsystem`]. `memory_limit_bytes` defaults to
-/// 100 MB; override for measured workloads.
+/// 100 MB; override for measured workloads. `pool_size` tunes the ephemeral-
+/// context pool used for future per-entity scripting (sub-plan 6); it does
+/// NOT affect the shared behavior context, which is never pooled.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QuickJsConfig {
     pub(crate) memory_limit_bytes: usize,
+    pub(crate) pool_size: usize,
 }
 
 impl Default for QuickJsConfig {
     fn default() -> Self {
         Self {
             memory_limit_bytes: DEFAULT_MEMORY_LIMIT,
+            pool_size: super::pool::DEFAULT_POOL_SIZE,
         }
     }
 }
@@ -123,6 +127,20 @@ impl QuickJsSubsystem {
     /// Borrow the behavior context so callers can enter it via `ctx.with`.
     pub(crate) fn behavior_ctx(&self) -> &Context {
         &self.behavior_ctx
+    }
+
+    /// Borrow the underlying `rquickjs::Runtime`. Used by the context pool
+    /// so pooled contexts share the runtime (GC heap, memory limit) with the
+    /// shared behavior/definition contexts.
+    pub(crate) fn runtime(&self) -> &Runtime {
+        &self.runtime
+    }
+
+    /// Borrow the primitive snapshot. Used by the context pool to pre-warm
+    /// its contexts with the same primitive set the subsystem was built
+    /// against.
+    pub(crate) fn primitives(&self) -> &[ScriptPrimitive] {
+        &self.primitives
     }
 
     /// Shared handle to the archetype accumulator. Exposed for tests and for

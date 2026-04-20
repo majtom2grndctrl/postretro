@@ -1,6 +1,6 @@
 # Plan 1 — Scripting Runtime Foundation
 
-> **Status:** draft — infrastructure-only plan. No game vocabulary, no entity-type bridges.
+> **Status:** ready — infrastructure-only plan. No game vocabulary, no entity-type bridges.
 > **Parent:** Scripting Foundation initiative. See `./postretro-scripting-spec-draft.md` for the full system vision. This plan is the first of three — Plans 2 and 3 layer light and emitter/particle scripting on top of the infrastructure built here.
 > **Related (read for architectural context):** `context/lib/development_guide.md` §3 (Rust conventions) · `context/lib/context_style_guide.md` · `context/plans/done/lighting-foundation/3-direct-lighting.md` (example sub-plan shape).
 > **Lifecycle:** Per `development_guide.md` §1.5, this plan *is* the scripting-runtime spec while it remains a draft. Durable architectural decisions migrate to `context/lib/` when the plan ships.
@@ -66,7 +66,7 @@ No changes to `postretro-level-format` or `postretro-level-compiler`.
 | Dep | Version | Feature flags |
 |-----|---------|---------------|
 | `rquickjs` | 0.10 | `full-async` off; default features only. We do not need the async executor for the foundation. |
-| `mlua` | 0.11 (latest) | `luau`, `vendored`. `luau-jit` deferred — stick to the interpreter until a profile justifies the JIT build cost. |
+| `mlua` | 0.11 (latest) | `luau`, `vendored` (**verify at implementation time**: the `luau` feature may auto-enable vendored mode, in which case `vendored` is redundant and should be removed — do not silently drop it, confirm against `mlua` 0.11 docs before deciding). `luau-jit` deferred — stick to the interpreter until a profile justifies the JIT build cost. |
 | `notify` | 8 | Filesystem watcher for dev-mode hot reload. Debounced via `notify-debouncer-full`. |
 | `serde` + `serde_json` | existing patterns | Component values and event payloads serialize through `serde` at the FFI boundary. rquickjs has first-class serde support; mlua supports it under the `serde` feature flag — enable it. |
 
@@ -112,7 +112,7 @@ An ECS-inspired registry owned by Rust. Entities are opaque IDs; components are 
 
 ### Day-one component kinds
 
-The registry ships with **`Transform`** (position + rotation + scale) and nothing else. Every entity has a transform. Other components land as their feature plans land. A stub `ComponentKind` enum with a `Transform` variant and an `#[non_exhaustive]` annotation is the right starting shape.
+The registry ships with **`Transform`** (position: `glam::Vec3`, rotation: `glam::Quat` (internal), scale: `glam::Vec3`) and nothing else. Every entity has a transform. The `rotation` field is stored internally as `glam::Quat`; the script-facing representation is Euler angles in degrees (`pitch`, `yaw`, `roll`). Conversion between `EulerDegrees` and `glam::Quat` happens at the FFI boundary — scripts never see a quaternion directly. Other components land as their feature plans land. A stub `ComponentKind` enum with a `Transform` variant and an `#[non_exhaustive]` annotation is the right starting shape.
 
 ### Public API (`pub(crate)`, lives in `postretro::scripting::registry`)
 
@@ -170,8 +170,10 @@ A `ScriptPrimitive` is a small record:
 - `context_scope: ContextScope` — enum: `DefinitionOnly`, `BehaviorOnly`, `Both`.
 - `quickjs_installer: fn(&rquickjs::Ctx) -> rquickjs::Result<()>` — given a QuickJS context, installs the primitive as a global.
 - `luau_installer: fn(&mlua::Lua) -> mlua::Result<()>` — given a Lua state, installs the primitive as a global.
+- `quickjs_stub_installer: fn(&rquickjs::Ctx) -> rquickjs::Result<()>` — installs a stub global under the same name that unconditionally throws `ScriptError::WrongContext` when called. Used for contexts where this primitive is prohibited.
+- `luau_stub_installer: fn(&mlua::Lua) -> mlua::Result<()>` — same, for Luau.
 
-A builder on `PrimitiveRegistry` accepts a Rust function plus metadata and produces both installers and the signature record. Example shape (final syntax decided during implementation):
+A builder on `PrimitiveRegistry` accepts a Rust function plus metadata and produces both the real installer and the stub installer (for each language) plus the signature record. Runtime init uses `quickjs_installer`/`luau_installer` for contexts where the primitive is permitted, and `quickjs_stub_installer`/`luau_stub_installer` for contexts where it is prohibited — so every registered name is bound in every context, but calling a prohibited one returns `WrongContext` instead of "undefined function". Example shape (final syntax decided during implementation):
 
 ```rust
 // Proposed design — final form decided in implementation.
@@ -193,7 +195,36 @@ The builder internally:
 - Constructs a `luau_installer` closure that wraps it in `lua.create_function(...)` and sets it on `lua.globals()`.
 - Pushes a `ScriptPrimitive` record into the registry at `register_all` time.
 
+**Enforcement of the `Result<_, ScriptError>` return shape.** `.register()` is bounded by a sealed `RegisterablePrimitive` trait:
+
+```rust
+// Proposed — sealed so downstream crates can't add impls.
+mod sealed { pub trait Sealed {} }
+pub trait RegisterablePrimitive<Args>: sealed::Sealed { /* ... */ }
+
+// Blanket impl ONLY for functions returning Result<_, ScriptError>.
+impl<F, Args, T> RegisterablePrimitive<Args> for F
+where F: Fn(Args) -> Result<T, ScriptError> { /* ... */ }
+```
+
+A function returning a bare `T` (or `Result<_, OtherError>`) fails to satisfy the bound and produces a compile error at the `.register(...)` call site, not inside the builder internals.
+
 See the Decision note at the end of this sub-plan on why this is a builder and not a macro.
+
+### ScriptCtx — how primitives access engine state
+
+Primitives access engine state via a `ScriptCtx` handle — a cheap-to-clone struct holding `Arc`-wrapped references to every engine subsystem scripts can touch:
+
+```rust
+#[derive(Clone)]
+struct ScriptCtx {
+    registry: Arc<RwLock<EntityRegistry>>,
+    events: Arc<Mutex<EventQueue>>,
+    // future subsystems (physics, audio) added here
+}
+```
+
+At registration time the builder captures `ScriptCtx::clone(&engine.script_ctx)` into each primitive's installer closure. Adding a new subsystem to the scripting surface means adding one field to `ScriptCtx`, not updating every primitive individually. This is not a global static — `ScriptCtx` is owned by the engine; `Arc::clone` at registration time is standard Rust ownership.
 
 ### Value conversion
 
@@ -205,6 +236,8 @@ Primitive argument and return types must be serde-serializable. Concrete mapping
 | `bool` | Boolean | Boolean |
 | `String` | String | String |
 | `Vec3` (glam) | `{ x, y, z }` object | table with `x`, `y`, `z` fields |
+| `glam::Quat` (internal) | Not exposed directly — converted to/from `{ pitch, yaw, roll }` (degrees) at the FFI boundary | Same |
+| `EulerDegrees` (script-facing rotation) | `{ pitch: number; yaw: number; roll: number }` | `{ pitch: number, yaw: number, roll: number }` |
 | `EntityId` | Opaque number (bitcast from `u32`) | Opaque number |
 | `ComponentValue` | JSON object via `rquickjs::Object`/serde | Lua table via `mlua::Value`/serde |
 | `Result<T, ScriptError>` | On `Err`, converted to a thrown JS `Error` | On `Err`, converted to a Lua error |
@@ -214,6 +247,7 @@ rquickjs has built-in serde support; mlua gains it with the `serde` feature. Ena
 ### FFI hygiene
 
 - Every registered primitive is wrapped in `std::panic::catch_unwind` before it reaches the runtime. A caught panic converts to `ScriptError::Panicked { name }` and the runtime throws a catchable exception. The engine logs the panic at `error` level with the primitive name and the script call site. Execution continues for other entities.
+- Every primitive closure is wrapped with `std::panic::AssertUnwindSafe` before being passed to `catch_unwind`. Closures that capture engine state — typically `Arc<Mutex<_>>` over the registry or similar — do not implement `UnwindSafe`, so `AssertUnwindSafe` is required to satisfy the bound. After a caught panic, broken invariants are the caller's responsibility: the scripting subsystem logs and continues, it does not attempt state repair. Primitives that mutate shared state must uphold their own invariants before any panic point.
 - `ScriptError` is a `thiserror` enum at the scripting subsystem boundary. It carries: `EntityNotFound`, `ComponentNotFound`, `GenerationMismatch`, `InvalidArgument { reason }`, `WrongContext { primitive, current }`, `Panicked { name }`.
 - `WrongContext` is the error returned when a definition-context script calls a behavior primitive or vice versa. The installer for a `DefinitionOnly` primitive installs a stub in the behavior context that unconditionally errors, and vice versa — so the call does not silently succeed with the wrong data.
 
@@ -232,6 +266,8 @@ Register these as the initial set. They exercise every code path in the binding 
 | `send_event` | BehaviorOnly | `(target: EntityId, event: ScriptEvent) -> Result<()>` — targeted event |
 
 `ScriptEvent` is a `{ type: String, payload: serde_json::Value }` struct for now. A richer event schema lands in the plan that adds real lifecycle hooks.
+
+**Behavior event queue drain placement.** The behavior event queue drains at the end of Game logic, after all Rust systems have run for the frame. Scripts react to world state Rust just computed; emitted events are not processed until the next frame. Frame order: `Input → Game logic (Rust systems → script event queue drain) → Audio → Render → Present`.
 
 **Not in day-one set** (planned primitives — mentioned to clarify that the binding layer accommodates them): `apply_impulse`, `set_gravity_scale`, `is_grounded`, `raycast`, `entities_in_radius`, `set_light_intensity`, `set_light_color`. These depend on infrastructure that doesn't exist. They slot into the same registration builder when their feature plans ship.
 
@@ -328,11 +364,12 @@ Contract for this plan:
 
 ### Initialization sequence
 
-1. Create `definition_lua = Lua::new()` with the `luau` feature active.
-2. Call `definition_lua.sandbox(true)` to enable Luau sandboxing (globals become read-only for scripts, but Rust can still install them before sandboxing is enabled).
-3. Install every `DefinitionOnly` and `Both` primitive via its `luau_installer`; install erroring stubs for `BehaviorOnly`.
-4. Call `.sandbox(true)` **after** primitive install so the primitives are part of the frozen global set.
-5. Repeat for `behavior_lua` with `BehaviorOnly`/`Both` primitives.
+1. Create `definition_lua = Lua::new()` (with the `luau` feature active).
+2. Nil out the deny-list entries (`io`, `os.execute`, `os.exit`, `os.getenv`, `package`, `require`, `dofile`, `loadfile`, `load`) — see "Sandboxing caveats" below. This must happen before sandboxing freezes globals.
+3. Install every `DefinitionOnly` and `Both` primitive via its `luau_installer`; install stubs (`luau_stub_installer`) for every `BehaviorOnly` primitive so prohibited names resolve to `WrongContext` errors rather than nil lookups.
+4. Call `definition_lua.sandbox(true)?` — returns `Result`, use `?`. (Verify return type at implementation time — infallible or not, the `?` is harmless if it is.) Globals are now frozen.
+5. Globals are frozen; scripts cannot add new globals. Any attempt to assign to a new global raises a Luau error.
+6. Repeat steps 1–5 for `behavior_lua` with `BehaviorOnly`/`Both` real primitives and `DefinitionOnly` stubs.
 
 ### Luau-specific considerations
 
@@ -366,6 +403,8 @@ Contract for this plan:
 
 Sub-plans 3 and 4 each produce a runtime type. Should the engine's top-level `ScriptRuntime` own *both*, exposing a single call interface that fans out to whichever language a given script was authored in? Recommendation: yes. `ScriptRuntime` holds both, dispatches by source-file extension. Scripts don't need to know which runtime they're in, and the bridge systems call `ScriptRuntime::invoke_handler(entity, hook, ctx)` without branching.
 
+**Settled:** Language dispatch is by source-file extension (`.ts` → QuickJS, `.luau` → Luau). Inline behavior scripts are not in scope for Plan 1 — behavior scripts are always loaded from files in this plan. The archetype/entity-definition plan will specify how language is determined for any inlined handlers it introduces.
+
 ---
 
 ## Sub-plan 5 — Type Definition Generator
@@ -384,7 +423,7 @@ After sub-plan 2 lands, the primitive registry carries enough metadata (name, pa
 The generator runs two ways:
 
 - **Inline at engine startup** (dev builds): called once per process, reads the registry, writes the files. Cost is negligible (<10 ms for hundreds of primitives). This keeps the SDK files in sync with the running engine.
-- **Standalone binary** (`cargo run --bin gen-script-types`): produces the files without launching the engine. Useful for CI / SDK packaging.
+- **Standalone binary** (`cargo run --bin gen-script-types`): produces the files without launching the engine. Useful for CI / SDK packaging. The binary is a `[[bin]]` entry in the `postretro` crate (same crate that owns the primitive registry — no new crate needed). Its `main` parses `--out <path>`, calls the generator function with that output path, and exits; it does not start the full engine.
 
 ### Type mapping
 
@@ -397,6 +436,7 @@ The generator is the central place where Rust types map to TypeScript and Luau t
 | `bool` | `boolean` | `boolean` |
 | `String` | `string` | `string` |
 | `Vec3` | `{ readonly x: number; readonly y: number; readonly z: number }` | `{ x: number, y: number, z: number }` |
+| `EulerDegrees` | `{ readonly pitch: number; readonly yaw: number; readonly roll: number }` | `{ pitch: number, yaw: number, roll: number }` |
 | `EntityId` | `EntityId` (branded number type) | `EntityId` (type alias over number) |
 | `ComponentValue` | discriminated union (see below) | discriminated union (see below) |
 | `Result<T, ScriptError>` | `T` (the error is a thrown exception on the script side) | `T` |
@@ -418,7 +458,8 @@ Doc strings on primitives become TSDoc / Moonwave-compatible comments preceding 
 declare module "postretro" {
   export type EntityId = number & { readonly __brand: "EntityId" };
 
-  export type Transform = { position: Vec3; rotation: Quat; scale: Vec3 };
+  export type EulerDegrees = { readonly pitch: number; readonly yaw: number; readonly roll: number };
+  export type Transform = { position: Vec3; rotation: EulerDegrees; scale: Vec3 };
   export type Vec3 = { readonly x: number; readonly y: number; readonly z: number };
   export type ComponentValue = { kind: "transform"; value: Transform } /* | ... */;
   export type ScriptEvent = { type: string; payload: unknown };
@@ -439,7 +480,8 @@ declare module "postretro" {
 -- Generated, do not edit.
 export type EntityId = number
 export type Vec3 = { x: number, y: number, z: number }
-export type Transform = { position: Vec3, rotation: Quat, scale: Vec3 }
+export type EulerDegrees = { pitch: number, yaw: number, roll: number }
+export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 export type ComponentValue = { kind: "transform", value: Transform } -- | ...
 export type ScriptEvent = { type: string, payload: any }
 
@@ -483,7 +525,11 @@ Neither rquickjs nor mlua ships a built-in type-definition generator. This is ha
 
 Creating a QuickJS `Context` or mlua `Lua` is cheap but not free. In a scene where hundreds of entities spawn mid-frame (particle burst, wave of NPCs), serializing context creation into the frame produces a frame spike. The pool keeps N pre-warmed contexts ready.
 
-This is a narrow scope: the pool only holds contexts, not full `ScriptRuntime` instances. Primitives are installed once per context at pool construction.
+**Scope clarification — the pool is for *future* per-entity ephemeral contexts**, not for the shared behavior context from sub-plan 3.
+
+- The **current default** is a **single shared behavior context** per runtime (established in sub-plan 3). Event handlers are installed as globals once at context creation and must persist for the level's lifetime. This shared context is **never pooled and never reset** — pooling it would erase the installed handlers.
+- The pool exists as infrastructure for **future per-entity ephemeral contexts** (e.g., one-shot scripts or per-instance behaviors that don't need persistent handler state). When those are introduced, the pool bounds their allocation cost.
+- The **"reset on release" policy described below applies only to these future per-entity contexts**, not to the shared persistent behavior context. Primitives are installed once per pooled context at pool construction.
 
 ### Design
 
@@ -525,21 +571,28 @@ Development iteration: a modder edits a `.ts` or `.luau` definition file and exp
 
 ### Design
 
-1. `notify` + `notify-debouncer-full` watches the configured script root (default: `assets/scripts/`).
-2. On a debounced change event, if the changed file is in the definition directory, enqueue a reload. The reload runs at the top of the next frame, not immediately — don't tear down contexts mid-frame.
-3. **If the changed file is `.ts`**, the reload handler first invokes whichever compilation path was detected at startup (`tsc`, `npx tsc`, or `scripts-build`), waits for the subprocess to exit, and checks the exit code. On success, proceed to step 4. On failure, log the compiler's stderr (type errors from `tsc`, transpilation errors from `scripts-build` / `swc`) at `error` level and abort the reload — the prior archetype set stays active. `.luau` files skip this step.
-4. Reload flow: drop the current definition context, construct a new one (identical init sequence from sub-plan 3), re-evaluate all definition files, collect archetypes, swap the archetype registry atomically.
-5. Errors during reload are logged; the prior archetype set remains active. Hot reload never corrupts a working level.
+1. `notify` + `notify-debouncer-full` watches the configured script root (default: `assets/scripts/`) on a dedicated watcher thread.
+2. On a debounced change event, if the changed file is in the definition directory, the watcher thread decides whether to compile. **Compilation runs on the watcher thread (or a dedicated worker thread), never on the frame loop** — a `tsc` / `scripts-build` invocation can take hundreds of milliseconds and must not block rendering.
+3. **If the changed file is `.ts`**, the watcher thread runs the compile subprocess synchronously on that thread (using whichever path was detected at startup — see cascade below), waits for it to exit, and checks the exit code.
+    - **On success:** the watcher thread enqueues a `ReloadRequest { compiled_output_path }` onto an `mpsc` channel drained by the frame loop.
+    - **On failure:** the watcher thread logs the compiler's stderr at `error` level (type errors from `tsc`, transpilation errors from `scripts-build` / `swc`) and does **not** enqueue a `ReloadRequest`. The prior archetype set stays active.
+    - `.luau` files skip compilation and go straight to enqueuing a `ReloadRequest` pointing at the source file.
+4. At the top of each frame, the frame loop drains the `ReloadRequest` queue and calls `ScriptRuntime::reload_definition_context()` with the already-compiled output. The frame-loop work is the cheap context-swap only: drop the current definition context, construct a new one (identical init sequence from sub-plan 3), re-evaluate all definition files, collect archetypes, swap the archetype registry atomically.
+5. Errors during the frame-loop reload step are logged; the prior archetype set remains active. Hot reload never corrupts a working level.
 
 ### TypeScript compilation in dev mode
 
-The engine drives TypeScript transpilation via a three-step detection cascade, chosen once at startup. When a `.ts` file changes, the engine spawns whichever path was detected:
+The engine drives TypeScript transpilation via a detection cascade, chosen once at startup and used for the lifetime of the process. When a `.ts` file changes, the watcher thread spawns whichever path was detected.
 
-1. **`tsc` on PATH** → spawn `tsc --project <script-root>/tsconfig.json`.
-2. **`npx` on PATH** → spawn `npx tsc --project <script-root>/tsconfig.json`.
-3. **Neither found** → spawn `postretro-script-compiler`, the sidecar binary that ships alongside the engine.
+**Detection order (single source of truth — the only ordering in this document):**
 
-At startup the engine logs which path was selected, once, at `info` level (e.g., `scripts: TS compiler = tsc (found on PATH)`), so modders can see what they're running against. If all three fail, log a clear error that names what needs installing (`tsc`, `npx`, or a corrupted install missing `postretro-script-compiler`).
+1. **`scripts-build` next to the engine executable** — check the directory of `std::env::current_exe()` for a `scripts-build` binary. This is how released / self-contained installs ship the sidecar alongside the engine, so a distribution works without PATH configuration.
+2. **`tsc` on PATH** → spawn `tsc --project <script-root>/tsconfig.json`.
+3. **`npx` on PATH** → spawn `npx tsc --project <script-root>/tsconfig.json` (proxy to `npx tsc`).
+4. **`scripts-build` on PATH** — for `cargo install`-style developer setups where the sidecar is installed globally.
+5. **All fail** → log a clear `error`-level message naming what needs installing: "no TypeScript compiler found — install `tsc` or `npx`, or ensure `scripts-build` ships next to the engine binary."
+
+At startup the engine logs the chosen path once at `info` level (e.g., `scripts: TS compiler = scripts-build (from current_exe dir)`), so modders can see what they're running against.
 
 Luau loads `.luau` source directly via `mlua::Compiler` — no pre-compilation step.
 
@@ -553,7 +606,7 @@ Crate constraints:
 - **Transpile only, not type-check.** `swc` provides type stripping and syntax transformation. It does not type-check. Type safety remains the editor's responsibility (tsserver, VS Code, Zed) — or the modder's CI running `tsc --noEmit`. Document this at the top of the crate's `main.rs` and in the SDK README: *"this tool transpiles, it does not type-check. Run `tsc --noEmit` in your editor or CI for type safety."*
 - **Minimal `swc` footprint.** We need TS → JS only: strip types, preserve ES-module imports/exports for QuickJS compatibility. The full `swc` bundler is out of scope. Candidate dependency set (verify at implementation time): `swc_ecma_parser` + `swc_ecma_transforms_typescript` (the `strip` transform) + `swc_ecma_codegen` + `swc_common`. `swc_core` with the ecma feature set is a heavier but more batteries-included alternative — pick the lighter path unless a concrete reason emerges. Reference: [`swc_ecma_transforms_typescript` docs](https://rustdoc.swc.rs/swc_ecma_transforms_typescript/).
 - **Binary name: `scripts-build`**, matching the `prl-build` naming convention already established by `postretro-level-compiler`. The crate is `postretro-script-compiler`; the binary it produces is `scripts-build`.
-- **Lookup order** (document in the engine's detection code and in the SDK README): the engine first checks the directory containing `std::env::current_exe()` for a `scripts-build` binary (ships alongside the engine in released builds), then falls back to PATH. This keeps a distributed engine self-contained while still letting a `cargo install`-style setup work.
+- **Engine lookup:** the engine's detection cascade for `scripts-build` is documented in the "TypeScript compilation in dev mode" section above. Do not duplicate the ordering here — that section is the single source of truth.
 
 Luau loads `.luau` source directly via `mlua::Compiler` — no pre-compilation step and no sidecar.
 

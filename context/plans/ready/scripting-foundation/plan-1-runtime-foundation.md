@@ -41,7 +41,7 @@ What this plan **does not** deliver:
 
 These are not up for renegotiation inside this plan. Recording them here so an implementation agent working a sub-plan in isolation sees them.
 
-- **TypeScript runtime:** `rquickjs` 0.10.x (QuickJS embedded in Rust). `Runtime` manages GC; `Context::full(&rt)` creates an isolated execution environment. Functions are registered via `Function::new(ctx.clone(), |args| ...)` and set as globals on `ctx.globals()`.
+- **TypeScript runtime:** `rquickjs` 0.11.x (QuickJS embedded in Rust). `Runtime` manages GC; `Context::full(&rt)` creates an isolated execution environment. Functions are registered via `Function::new(ctx.clone(), |args| ...)` and set as globals on `ctx.globals()`.
 - **Luau runtime:** `mlua` with the `luau` feature. **Not** the Lune CLI — Lune is a standalone runtime (Node-for-Lua), wrong for embedding. `mlua + luau` gives sandboxable Luau with gradual typing, compatible with `luau-lsp` for editor support. `Lua::sandbox(true)` enforces globals-read-only sandboxing. `mlua::Compiler` compiles Luau source to bytecode.
 - **One registry, two runtimes.** A single Rust-side primitive registry drives both. Registering a primitive once emits it to the QuickJS context *and* the Luau state *and* the type-definition generator. This is the central architectural decision that keeps the dual-language story tractable.
 - **Two contexts per runtime, not per language pair.** Definition context (load-time, torn down after definitions collected) and behavior context (persistent per-level). Calling a behavior-only primitive from the definition context is a hard error; calling a definition-only primitive from the behavior context is a hard error.
@@ -64,9 +64,10 @@ No changes to `postretro-level-format` or `postretro-level-compiler`.
 
 | Dep | Version | Feature flags |
 |-----|---------|---------------|
-| `rquickjs` | 0.10 | `full-async` off; default features only. We do not need the async executor for the foundation. |
+| `rquickjs` | 0.11 | `full-async` off; default features only. We do not need the async executor for the foundation. The `parallel` feature (which would make `Runtime: Send`) is also off — scripting is single-threaded, so we do not rely on `Runtime: Send`. |
 | `mlua` | 0.11 (latest) | `luau`, `serde`. The `luau` feature enables vendored mode automatically (confirmed against `mlua` 0.11 README — "`luau`: enable Luau support (auto vendored mode)"), so listing `vendored` alongside `luau` is redundant. `luau-jit` deferred — stick to the interpreter until a profile justifies the JIT build cost. |
 | `notify` | 8 | Filesystem watcher for dev-mode hot reload. Debounced via `notify-debouncer-full`. |
+| `notify-debouncer-full` | 0.7 | Debouncer aligned with `notify` 8 (current latest; 0.7.0 on crates.io). Handles editor save patterns (atomic rename, touch-then-write) without dropping events. |
 | `serde` + `serde_json` | existing patterns | Component values and event payloads serialize through `serde` at the FFI boundary. rquickjs has first-class serde support; mlua supports it under the `serde` feature flag — enable it. |
 
 Bring these in via `[workspace.dependencies]` and inherit in the `postretro` crate manifest.
@@ -106,7 +107,7 @@ An ECS-inspired registry owned by Rust. Entities are opaque IDs; components are 
 
 - `EntityId`: `u32` with a generation counter to detect use-after-despawn. Bit layout: `index: 16 | generation: 16` (65,536 entities, 65,536 generations per slot). The wider generation field effectively retires the ID-space pressure that would otherwise force a wrap: at 16 bits, a slot that cycled every frame at 60 Hz would take ~18 minutes of continuous reuse before wrapping, and in practice most slots never reach double-digit generations. The tradeoff vs. the previous `24 | 8` layout is 16M → 64K max live entities, which is comfortably above our design ceiling for a single level. If a slot does reach generation `u16::MAX`, the slot is **permanently retired** — removed from the free list and never re-allocated. Retirement is represented by not pushing the slot back onto the free list on despawn; no separate bitset is needed. Document this in code.
 - **Wrap behavior is a hard retirement, not a clear-and-reuse.** Clearing the slot and reusing the same generation would break `EntityId` uniqueness: an `EntityId { index: i, generation: N - 65_536 }` held elsewhere would compare equal to a freshly allocated `EntityId { index: i, generation: N }` after wrap. Retirement avoids this at the cost of a tiny long-tail memory leak (one slot struct), which is acceptable given how unlikely wrap is in practice.
-- `ComponentKind`: dense `u16` enum. New component kinds added by updating the enum. The enum value is the key into component storage — no string lookup in hot paths. (`ComponentKind` is the single canonical name used throughout this plan — do not introduce a parallel `ComponentType`.)
+- `ComponentKind`: dense `#[repr(u16)]` enum. New component kinds added by updating the enum. The enum value is the key into component storage — no string lookup in hot paths; the index conversion is `kind as usize`, which compiles to a zero-cost cast under `#[repr(u16)]`. (`ComponentKind` is the single canonical name used throughout this plan — do not introduce a parallel `ComponentType`.)
 - Component storage: one `Vec<Option<ComponentValue>>` per `ComponentKind`, indexed by entity slot index. `ComponentValue` is an enum that wraps the concrete component structs (serde-serializable for FFI transit).
 - Spawn/despawn lifecycle: `spawn() -> EntityId` allocates a slot (reuse free-list preferred over append). `despawn(id)` clears all components, bumps the slot generation, and returns the slot to the free list **unless** the bump reaches `u16::MAX` (retirement — see above), in which case the slot is dropped from circulation.
 
@@ -169,12 +170,12 @@ A `ScriptPrimitive` is a small record:
 - `doc: &'static str`
 - `signature: PrimitiveSignature` — parameter and return type metadata, populated by the registration macro from Rust type names.
 - `context_scope: ContextScope` — enum: `DefinitionOnly`, `BehaviorOnly`, `Both`.
-- `quickjs_installer: Arc<dyn for<'js> Fn(&rquickjs::Ctx<'js>) -> rquickjs::Result<()> + Send + Sync>` — given a QuickJS context, installs the primitive as a global. Must be a `dyn Fn`, not a bare `fn` pointer, because the closure captures a `ScriptCtx` handle (see below) at registration time.
-- `luau_installer: Arc<dyn Fn(&mlua::Lua) -> mlua::Result<()> + Send + Sync>` — given a Lua state, installs the primitive as a global. Same capture requirement as above.
-- `quickjs_stub_installer: Arc<dyn for<'js> Fn(&rquickjs::Ctx<'js>) -> rquickjs::Result<()> + Send + Sync>` — installs a stub global under the same name that unconditionally throws `ScriptError::WrongContext` when called. Used for contexts where this primitive is prohibited.
-- `luau_stub_installer: Arc<dyn Fn(&mlua::Lua) -> mlua::Result<()> + Send + Sync>` — same, for Luau.
+- `quickjs_installer: Arc<dyn for<'js> Fn(&rquickjs::Ctx<'js>) -> rquickjs::Result<()>>` — given a QuickJS context, installs the primitive as a global. Must be a `dyn Fn`, not a bare `fn` pointer, because the closure captures a `ScriptCtx` handle (see below) at registration time.
+- `luau_installer: Arc<dyn Fn(&mlua::Lua) -> mlua::Result<()>>` — given a Lua state, installs the primitive as a global. Same capture requirement as above.
+- `quickjs_stub_installer: Arc<dyn for<'js> Fn(&rquickjs::Ctx<'js>) -> rquickjs::Result<()>>` — installs a stub global under the same name that unconditionally throws `ScriptError::WrongContext` when called. Used for contexts where this primitive is prohibited.
+- `luau_stub_installer: Arc<dyn Fn(&mlua::Lua) -> mlua::Result<()>>` — same, for Luau.
 
-`ScriptPrimitive` is `Clone` (cheap: only `Arc` bumps). `Arc<dyn Fn ...>` is the right choice over `Box<dyn Fn ...>` precisely because cloning the registry entries — e.g., for the type-definition generator in sub-plan 5 — must stay trivial. The `Send + Sync` bounds let the registry sit behind any future `Arc` without forcing installer closures to be recreated; they do not imply cross-thread scripting execution (see sub-plan 6 thread model).
+`ScriptPrimitive` is `Clone` (cheap: only `Arc` bumps). `Arc<dyn Fn ...>` is the right choice over `Box<dyn Fn ...>` precisely because cloning the registry entries — e.g., for the type-definition generator in sub-plan 5 — must stay trivial. The installer closures are deliberately **not** `Send + Sync`: they capture `ScriptCtx`, which holds `Rc<RefCell<…>>` (see below) and is therefore `!Send + !Sync`. Scripting is strictly single-threaded (see sub-plan 6 thread model), so the absence of those bounds is correct — any `Send + Sync` claim here would be un-implementable given the capture shape.
 
 A builder on `PrimitiveRegistry` accepts a Rust function plus metadata and produces both the real installer and the stub installer (for each language) plus the signature record. Runtime init uses `quickjs_installer`/`luau_installer` for contexts where the primitive is permitted, and `quickjs_stub_installer`/`luau_stub_installer` for contexts where it is prohibited — so every registered name is bound in every context, but calling a prohibited one returns `WrongContext` instead of "undefined function". Example shape (final syntax decided during implementation):
 
@@ -216,13 +217,13 @@ pub trait RegisterablePrimitive<Args>: sealed::Sealed {
 macro_rules! impl_registerable {
     ( $( $ty:ident ),* ) => {
         impl<F, T, $( $ty ),*> sealed::Sealed for F
-        where F: Fn( $( $ty ),* ) -> Result<T, ScriptError> + Clone + Send + Sync + 'static {}
+        where F: Fn( $( $ty ),* ) -> Result<T, ScriptError> + Clone + 'static {}
 
         impl<F, T, $( $ty ),*> RegisterablePrimitive<( $( $ty, )* )> for F
         where
-            F: Fn( $( $ty ),* ) -> Result<T, ScriptError> + Clone + Send + Sync + 'static,
-            $( $ty: for<'js> rquickjs::FromJs<'js> + for<'lua> mlua::FromLua + 'static, )*
-            T: for<'js> rquickjs::IntoJs<'js> + for<'lua> mlua::IntoLua + 'static,
+            F: Fn( $( $ty ),* ) -> Result<T, ScriptError> + Clone + 'static,
+            $( $ty: for<'js> rquickjs::FromJs<'js> + mlua::FromLua + 'static, )*
+            T: for<'js> rquickjs::IntoJs<'js> + mlua::IntoLua + 'static,
         {
             fn into_primitive(self, name: &'static str, scope: ContextScope, doc: &'static str)
                 -> ScriptPrimitive
@@ -266,7 +267,7 @@ struct ScriptCtx {
 
 At registration time the builder captures `ScriptCtx::clone(&engine.script_ctx)` into each primitive's installer closure. Adding a new subsystem to the scripting surface means adding one field to `ScriptCtx`, not updating every primitive individually. This is not a global static — `ScriptCtx` is owned by the engine; `Rc::clone` at registration time is standard Rust ownership.
 
-**Why `Rc<RefCell<…>>` and not `Arc<RwLock<…>>`.** Scripting is strictly single-threaded in this engine (see sub-plan 6 thread model): `rquickjs::Runtime` is `Send` but `rquickjs::Context` is `!Send`, and the frame loop runs on one thread. `RwLock` would add synchronization overhead scripts cannot benefit from, and — more importantly — `std::sync::RwLock` **poisons on panic**. Every primitive body runs inside `catch_unwind`; a poisoned lock after a caught panic would wedge every subsequent primitive call even though the engine explicitly tolerates these panics and continues. `RefCell` has no poisoning concept: a panic mid-borrow drops the `RefMut`, releases the borrow, and the next `borrow()` succeeds normally. That matches our FFI-hygiene contract. If future plans introduce threaded scripting, switch to `parking_lot::RwLock` (no poisoning) — but do not switch to `std::sync::RwLock` under any circumstances.
+**Why `Rc<RefCell<…>>` and not `Arc<RwLock<…>>`.** Scripting is strictly single-threaded in this engine (see sub-plan 6 thread model): `rquickjs::Context` is `!Send`, `mlua::Lua` is `!Send` (we do not enable mlua's `send` feature), and the frame loop runs on one thread. `RwLock` would add synchronization overhead scripts cannot benefit from, and — more importantly — `std::sync::RwLock` **poisons on panic**. Every primitive body runs inside `catch_unwind`; a poisoned lock after a caught panic would wedge every subsequent primitive call even though the engine explicitly tolerates these panics and continues. `RefCell` has no poisoning concept: a panic mid-borrow drops the `RefMut`, releases the borrow, and the next `borrow()` succeeds normally. That matches our FFI-hygiene contract. If future plans introduce threaded scripting, switch to `parking_lot::RwLock` (no poisoning) — but do not switch to `std::sync::RwLock` under any circumstances.
 
 ### Value conversion
 
@@ -359,6 +360,8 @@ The `ScriptRuntime` resource stored on the engine holds the `Runtime`, the two `
 - After evaluation, the collected archetype registrations are pulled out via `__collect_definitions` (see note below) and handed to the Rust archetype registry.
 
 **`__collect_definitions` is not a registered primitive.** It is a **magic function injected into the definition context at context-construction time**, alongside the real primitives. Its job is to return the array of archetype descriptors that the TypeScript/Luau definition helpers (e.g., `defineEntity`, which lands in the archetype plan after Plan 3) accumulated during evaluation. The injection mechanism is a plain `Function::new(ctx.clone(), move |/* no args */| -> rquickjs::Result<Value> { ... })` (or `lua.create_function(...)`) set on the context's globals under the leading-underscore name — the underscore prefix is the convention for "engine internal, not part of the public scripting API and not emitted into `.d.ts`/`.d.luau`". Because it is not a `ScriptPrimitive`, it has no `ContextScope` and no entry in the primitive registry; the type-definition generator in sub-plan 5 skips it. Signature: zero args, returns an array of serde-serializable archetype descriptors. The archetype plan that follows Plan 3 will refine the descriptor shape; for Plan 1 the injection mechanism is what matters.
+
+**Accumulator storage.** Both `defineEntity` and `__collect_definitions` close over the same `Rc<RefCell<Vec<ArchetypeDescriptor>>>`, captured at context-construction time. `defineEntity` pushes onto the `Vec`; `__collect_definitions` drains and returns it. `ArchetypeDescriptor` is a serde-serializable placeholder struct in Plan 1 — just enough shape for the sub-plan 3 acceptance test to round-trip a list through the Rust/JS boundary. `defineEntity` itself is **not** part of Plan 1's public primitive set; for the acceptance test only, a stub `defineEntity` that pushes a fixed descriptor is injected into the test's definition context (in addition to the real `__collect_definitions`), using the same `Rc<RefCell<_>>` handle. The full `defineEntity` semantics, and the final `ArchetypeDescriptor` shape, land in the archetype plan after Plan 3.
 - The definition context is then torn down. Dropping the `Context` is sufficient — rquickjs handles cleanup.
 - **Hot reload**: the entire definition-context creation and teardown cycle is wrapped in a single function, callable at any time by the file watcher (sub-plan 7).
 
@@ -376,7 +379,7 @@ rquickjs's error model: most calls return `Result<_, rquickjs::Error>`. JavaScri
 Contract for this plan:
 - Every `eval` or `call` at the Rust/script boundary runs through a helper `fn run_script<T>(...) -> Result<T, ScriptError>` that catches exceptions, logs them with source and line info, and returns a `ScriptError::ScriptThrew { msg, source }`.
 - A script exception in one entity's handler does not poison the context. The context remains usable for the next entity.
-- A primitive returning `Err(ScriptError)` translates to a JavaScript `Error` thrown inside the script — visible to the script as a `try/catch`-able exception. rquickjs 0.10 does **not** silently convert arbitrary `E` to a JS throw just because `E: Into<rquickjs::Error>` — `rquickjs::Error` is a Rust-side error enum and most of its variants don't carry a JS `Value`. The actual mechanism is either of the following; the binding-layer wrapper picks one and uses it consistently:
+- A primitive returning `Err(ScriptError)` translates to a JavaScript `Error` thrown inside the script — visible to the script as a `try/catch`-able exception. rquickjs 0.11 does **not** silently convert arbitrary `E` to a JS throw just because `E: Into<rquickjs::Error>` — `rquickjs::Error` is a Rust-side error enum and most of its variants don't carry a JS `Value`. The actual mechanism is either of the following; the binding-layer wrapper picks one and uses it consistently:
     - **Preferred:** each registered primitive body is wrapped by the builder into a closure returning `rquickjs::Result<T>`. On `Err(ScriptError)`, the wrapper calls `rquickjs::Exception::from_message(&ctx, &script_error.to_string())?.throw()`, which returns `rquickjs::Error::Exception`. The wrapper's signature is `fn(...) -> rquickjs::Result<T>`, so returning that `Error::Exception` tells rquickjs the JS side already has a pending exception and it will surface as a `try/catch`-able throw.
     - Alternatively, the wrapper calls `ctx.throw(value)` directly with a richer `Value` (e.g., a JS object with `{ name, message, kind }` populated from the `ScriptError` variant). `ctx.throw` also returns `rquickjs::Error::Exception`.
   The builder is the single place this conversion lives; individual primitive bodies keep returning `Result<T, ScriptError>`. The rquickjs `IntoJs` impl for `Result` is **not** relied on for this path.
@@ -393,7 +396,7 @@ Contract for this plan:
 
 ### Implementation tasks
 
-1. Add `rquickjs = "0.10"` to workspace dependencies; add to `postretro` with default features.
+1. Add `rquickjs = "0.11"` to workspace dependencies; add to `postretro` with default features.
 2. Implement `ScriptRuntime::new()` that constructs the runtime and both contexts, installing primitives from the registry.
 3. Implement `ScriptRuntime::reload_definition_context(&mut self)` for hot reload.
 4. Implement `run_script<T>` helper with exception catching + logging.
@@ -588,13 +591,12 @@ Creating a QuickJS `Context` or mlua `Lua` is cheap but not free. In a scene whe
 
 ### Thread model
 
-The scripting subsystem is strictly single-threaded on the frame-loop thread. `rquickjs::Runtime` is `Send` (useful for moving it onto the frame thread at init), but `rquickjs::Context` is `!Send` — contexts stay put. `mlua::Lua` is `!Send` without the `send` feature, which we do not enable. The pool is therefore not `Send` and never lives behind an `Arc`. This constraint is why `ScriptCtx` uses `Rc<RefCell<…>>` (see sub-plan 2) rather than `Arc<RwLock<…>>`.
+The scripting subsystem is strictly single-threaded on the frame-loop thread. `rquickjs::Context` is `!Send` — contexts stay put. `mlua::Lua` is `!Send` without the `send` feature, which we do not enable. We do not rely on `rquickjs::Runtime: Send` either (in rquickjs 0.11, `Runtime: Send` is only provided when the `parallel` feature is enabled, which we do not turn on) — the runtime is constructed on and never leaves the frame-loop thread. The pool is therefore not `Send` and never lives behind an `Arc`. This constraint is why `ScriptCtx` uses `Rc<RefCell<…>>` (see sub-plan 2) rather than `Arc<RwLock<…>>`.
 
 ### Acceptance criteria
 
 - [ ] The shared behavior context finishes primitive installation in under 20 ms on a release build (measurable on day one — this is the cost a level load actually pays).
 - [ ] A tight loop of 1,000 primitive calls into the shared behavior context completes in under 5 ms on a release build (day-one measurable; exercises the registered-function call path end-to-end).
-- [ ] **When per-entity contexts are introduced in a future plan**: spawning 100 entities in one frame with per-entity contexts does not cause a frame spike greater than 2 ms attributable to context creation (measure via frame timing). Gated — not verified in Plan 1 because per-entity contexts do not exist in Plan 1.
 - [ ] `acquire`/`release` is thread-safe only to the extent the engine needs — the frame loop is single-threaded; document that the pool is not `Send` (see thread model above).
 - [ ] Pool exhaustion (all contexts in use) falls back to synchronous creation with a warning log, not a panic.
 - [ ] Released contexts have no residual script state from the previous acquirer.

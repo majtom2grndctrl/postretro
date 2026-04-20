@@ -39,11 +39,21 @@ const DENIED_GLOBALS: &[&str] = &[
 /// `os.date`, `os.clock` are harmless and occasionally useful in scripts).
 const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv"];
 
-/// Configuration for a [`LuauSubsystem`]. Empty for now; kept as a dedicated
-/// struct so `ScriptRuntimeConfig` can compose cleanly and future knobs
-/// (memory budget, compiler options) have a home without an API break.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct LuauConfig {}
+/// Configuration for a [`LuauSubsystem`]. `pool_size` tunes the ephemeral-
+/// context pool used for future per-entity scripting (sub-plan 6); it does
+/// NOT affect the shared behavior `Lua` state, which is never pooled.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LuauConfig {
+    pub(crate) pool_size: usize,
+}
+
+impl Default for LuauConfig {
+    fn default() -> Self {
+        Self {
+            pool_size: super::pool::DEFAULT_POOL_SIZE,
+        }
+    }
+}
 
 /// Luau subsystem: one `Lua` per scope, plus the primitive snapshot used on
 /// reload. Fields mirror `QuickJsSubsystem` one-for-one.
@@ -120,6 +130,13 @@ impl LuauSubsystem {
     /// Borrow the behavior Lua state.
     pub(crate) fn behavior_lua(&self) -> &Lua {
         &self.behavior_lua
+    }
+
+    /// Borrow the primitive snapshot. Used by the context pool to pre-warm
+    /// Lua states with the same primitive set the subsystem was built
+    /// against.
+    pub(crate) fn primitives(&self) -> &[ScriptPrimitive] {
+        &self.primitives
     }
 
     /// Shared handle to the archetype accumulator. Exposed for tests and for

@@ -107,15 +107,13 @@
 
 Establish the entity model and scripting layer together. Scripting and entities are co-designed from the start: the entity API is the scripting API, and most entity behaviors are written as scripts rather than Rust. This avoids the two-pass "Rust-only stabilization then bind" approach — the scripting surface constraint shapes the entity model from day one.
 
-**Prerequisite:** language selection research — draft comparison of candidates (Lua via mlua, Rhai, JavaScript via QuickJS, Wren) against scripting-surface requirements before implementation begins. This is a significant decision that gates everything else in this milestone.
-
-- [ ] **Language selection** — research doc comparing candidates; decision gates implementation.
+- [x] **Language selection** — dual-runtime approach: QuickJS (rquickjs) for TypeScript/JavaScript, Luau (mlua) for Luau. Both runtimes run side by side; scripts dispatched by extension.
 - [ ] **Entity model** — typed collections (spawn / query / destroy, stable numeric ID); classname registry for FGD-defined types; lifecycle (spawn, tick, destroy); parent/child relationships with transform inheritance; world-space transforms with interpolation state for the render stage.
 - [ ] **Event system** — typed owned events; classname- or ID-scoped subscriptions. Event types are scripting-bindable by construction (no Rust-specific types in the surface).
-- [ ] **Scripting runtime** — embed chosen language; hook into fixed-step update and event dispatch.
-- [ ] **Entity API bindings** — spawn / query / move / destroy; event subscribe/emit. All bindings use IDs/handles rather than Rust references; no lifetimes in the surface.
+- [x] **Scripting runtime** — both VMs embedded; shared definition + behavior contexts; pre-warmed context pool; primitive registry (one registration installs in both runtimes and all future contexts); pooled-context isolation (QuickJS: `Object.freeze(globalThis)`; Luau: sandbox flag). See `context/lib/scripting.md`.
+- [ ] **Entity API bindings** — spawn / query / move / destroy; event subscribe/emit. All bindings use IDs/handles rather than Rust references; no lifetimes in the surface. (Day-one primitives exist but not yet wired to the full entity model.)
 - [ ] **Map entity parsing** — `.map` entity lump → typed entities at compile time, classname-keyed. Entities spawn from map data at level load.
-- [ ] **Hot reload** — scripts reload during gameplay without restarting.
+- [x] **Hot reload** — file watcher monitors script directory; changed scripts reload on next frame drain. Debug builds only.
 - [ ] **Reference behaviors (script)** — a `RotatorDriver` (sets target transform each tick) and a `DamageSource` (debug keybind → emits damage event), both written as scripts. These validate the API shape.
 - [ ] **Modder-facing API reference** — covers all bound APIs.
 

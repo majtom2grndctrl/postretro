@@ -177,7 +177,7 @@ World collision resolves inline during each entity's movement — the entity sli
 
 - ECS or component system
 - Entity inheritance hierarchies
-- Scripting or modding API for entity behavior
+- Per-entity script lifecycle callbacks (entity types don't have script attachment points; scripts manipulate entities through registered primitives)
 - Networked entity replication
 - Entity serialization (save/load)
 - Spatial partitioning for entity-entity queries (octree, grid)

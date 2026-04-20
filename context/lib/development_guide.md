@@ -31,6 +31,8 @@ Three crates in a Cargo workspace:
 | Errors | thiserror 2 (subsystems), anyhow 1 (top-level) |
 | Async blocking | pollster 0.4 (wgpu adapter/device init only) |
 | Logging | log 0.4 + env_logger 0.11 |
+| Scripting (JS/TS) | rquickjs (QuickJS embed) |
+| Scripting (Luau) | mlua (Luau embed) |
 
 ### Level compiler (`postretro-level-compiler`)
 

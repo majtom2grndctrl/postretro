@@ -113,7 +113,7 @@ An ECS-inspired registry owned by Rust. Entities are opaque IDs; components are 
 
 ### Day-one component kinds
 
-The registry ships with **`Transform`** (position: `glam::Vec3`, rotation: `glam::Quat` (internal), scale: `glam::Vec3`) and nothing else. Every entity has a transform. The `rotation` field is stored internally as `glam::Quat`; the script-facing representation is Euler angles in degrees (`pitch`, `yaw`, `roll`). Conversion between `EulerDegrees` and `glam::Quat` happens at the FFI boundary — scripts never see a quaternion directly. Other components land as their feature plans land. A stub `ComponentKind` enum with a `Transform` variant and an `#[non_exhaustive]` annotation is the right starting shape.
+The registry ships with **`Transform`** (position: `glam::Vec3`, rotation: `glam::Quat` (internal), scale: `glam::Vec3`) and nothing else. Every entity has a transform. The `rotation` field is stored internally as `glam::Quat`; the script-facing representation is Euler angles in degrees (`pitch`, `yaw`, `roll`). Conversion between `EulerDegrees` and `glam::Quat` happens at the FFI boundary — scripts never see a quaternion directly. Other components land as their feature plans land. A stub `ComponentKind` enum with a `Transform` variant is the right starting shape. Do **not** add `#[non_exhaustive]`: the enum is `pub(crate)`, and `#[non_exhaustive]` only affects exhaustive matching in *external* crates — on a `pub(crate)` item it is a no-op. Every match site already lives inside `postretro`, so add variants by adding them and letting the compiler flag the non-exhaustive matches. If this enum is ever promoted to `pub`, revisit and add `#[non_exhaustive]` at that point.
 
 ### Public API (`pub(crate)`, lives in `postretro::scripting::registry`)
 
@@ -222,15 +222,52 @@ macro_rules! impl_registerable {
         impl<F, T, $( $ty ),*> RegisterablePrimitive<( $( $ty, )* )> for F
         where
             F: Fn( $( $ty ),* ) -> Result<T, ScriptError> + Clone + 'static,
-            $( $ty: for<'js> rquickjs::FromJs<'js> + mlua::FromLua + 'static, )*
-            T: for<'js> rquickjs::IntoJs<'js> + mlua::IntoLua + 'static,
+            // Per-argument rquickjs bound — arguments decode one-by-one on the JS side.
+            $( $ty: for<'js> rquickjs::FromJs<'js> + 'static, )*
+            // mlua requires tuple-level bounds, not per-argument bounds:
+            // `Lua::create_function` is bounded as `A: FromLuaMulti`, `R: IntoLuaMulti`,
+            // where `A` is the *tuple* of all arguments, not each argument individually.
+            ( $( $ty, )* ): mlua::FromLuaMulti,
+            T: for<'js> rquickjs::IntoJs<'js> + mlua::IntoLuaMulti + 'static,
         {
             fn into_primitive(self, name: &'static str, scope: ContextScope, doc: &'static str)
                 -> ScriptPrimitive
             {
-                // builder wraps `self` in the two language-specific installers,
-                // each cloning `self` plus the captured ScriptCtx into its closure
-                // and wrapping the call in catch_unwind.
+                // The builder wraps `self` in two language-specific installer closures.
+                // Each installer clones `self` plus the captured ScriptCtx and wraps the
+                // call in `std::panic::catch_unwind(AssertUnwindSafe(...))`. Shapes:
+                //
+                // rquickjs-side wrapper (built inside quickjs_installer):
+                //     let f = self.clone();
+                //     let js_fn = rquickjs::Function::new(
+                //         ctx.clone(),
+                //         move |ctx: rquickjs::Ctx<'_>, a: A, b: B, /* ... */| -> rquickjs::Result<T> {
+                //             // `Ctx<'js>` is available here for ComponentValue serde round-trips
+                //             // and for throwing exceptions via `rquickjs::Exception::from_message`.
+                //             let result = std::panic::catch_unwind(AssertUnwindSafe(|| f(a, b, /* ... */)));
+                //             match result {
+                //                 Ok(Ok(v))  => Ok(v),
+                //                 Ok(Err(e)) => Err(rquickjs::Exception::from_message(&ctx, &e.to_string())?.throw()),
+                //                 Err(_)     => Err(rquickjs::Exception::from_message(&ctx, "primitive panicked")?.throw()),
+                //             }
+                //         },
+                //     )?;
+                //     // (`Ctx<'js>` as the first closure parameter is a supported extractor in
+                //     // rquickjs's `IntoJsFunc` impls — it's not counted as a JS-visible argument.)
+                //
+                // mlua-side wrapper (built inside luau_installer):
+                //     let f = self.clone();
+                //     let lua_fn = lua.create_function(
+                //         move |_lua: &mlua::Lua, (a, b, /* ... */): (A, B, /* ... */)| -> mlua::Result<T> {
+                //             let result = std::panic::catch_unwind(AssertUnwindSafe(|| f(a, b, /* ... */)));
+                //             match result {
+                //                 Ok(Ok(v))  => Ok(v),
+                //                 Ok(Err(e)) => Err(mlua::Error::RuntimeError(e.to_string())),
+                //                 Err(_)     => Err(mlua::Error::RuntimeError(format!("primitive `{}` panicked", name))),
+                //             }
+                //         },
+                //     )?;
+                //
                 // ...
             }
         }
@@ -269,6 +306,20 @@ At registration time the builder captures `ScriptCtx::clone(&engine.script_ctx)`
 
 **Why `Rc<RefCell<…>>` and not `Arc<RwLock<…>>`.** Scripting is strictly single-threaded in this engine (see sub-plan 6 thread model): `rquickjs::Context` is `!Send`, `mlua::Lua` is `!Send` (we do not enable mlua's `send` feature), and the frame loop runs on one thread. `RwLock` would add synchronization overhead scripts cannot benefit from, and — more importantly — `std::sync::RwLock` **poisons on panic**. Every primitive body runs inside `catch_unwind`; a poisoned lock after a caught panic would wedge every subsequent primitive call even though the engine explicitly tolerates these panics and continues. `RefCell` has no poisoning concept: a panic mid-borrow drops the `RefMut`, releases the borrow, and the next `borrow()` succeeds normally. That matches our FFI-hygiene contract. If future plans introduce threaded scripting, switch to `parking_lot::RwLock` (no poisoning) — but do not switch to `std::sync::RwLock` under any circumstances.
 
+### The builder handles `Ctx<'js>`; user closures stay clean
+
+User-facing primitive closures have the shape `move |id: EntityId, ...| -> Result<T, ScriptError>` — no `Ctx<'js>` parameter. This is deliberate: primitives like `get_component`/`set_component` need a `Ctx<'js>` to run the `ComponentValue` serde round-trip through rquickjs, but threading `Ctx` into every primitive body would couple user code to the rquickjs type system.
+
+The builder resolves this by wrapping each user closure in an **outer rquickjs closure that does accept `Ctx<'js>` as its first parameter** (see the wrapper-closure shape in the macro sketch above). That outer closure:
+
+1. Receives `Ctx<'js>` and the decoded JS arguments from rquickjs.
+2. Performs any additional argument conversion (e.g., serde decoding of `ComponentValue` using `Ctx`) if a later plan introduces primitives whose arguments need it.
+3. Invokes the user closure with the clean, decoded arguments.
+4. On `Ok(T)`, converts the return value back to JS — including serde encoding via `Ctx` for `ComponentValue` returns.
+5. On `Err(ScriptError)`, throws a JS exception via `Ctx` (see the error-handling contract in sub-plan 3).
+
+The contract is: **the builder owns `Ctx`; the user sees clean Rust types**. The mlua side is symmetric — the builder's mlua wrapper uses the `serde` feature's `LuaSerdeExt` to encode/decode `ComponentValue` against the ambient `Lua`, and the user closure again sees only the decoded Rust value.
+
 ### Value conversion
 
 Primitive argument and return types must be serde-serializable. Concrete mappings:
@@ -281,7 +332,7 @@ Primitive argument and return types must be serde-serializable. Concrete mapping
 | `Vec3` (glam) | `{ x, y, z }` object | table with `x`, `y`, `z` fields |
 | `glam::Quat` (internal) | Not exposed directly — converted to/from `{ pitch, yaw, roll }` (degrees) at the FFI boundary | Same |
 | `EulerDegrees` (script-facing rotation) | `{ pitch: number; yaw: number; roll: number }` | `{ pitch: number, yaw: number, roll: number }` |
-| `EntityId` | Opaque number (bitcast from `u32`) | Opaque number |
+| `EntityId` | Opaque `u32`, directly representable as a JS number (all 32 bits preserved in f64's 53-bit mantissa) | Opaque number (same — Luau's `number` is f64) |
 | `ComponentValue` | JSON object via `rquickjs::Object`/serde | Lua table via `mlua::Value`/serde |
 | `Result<T, ScriptError>` | On `Err`, converted to a thrown JS `Error` | On `Err`, converted to a Lua error |
 
@@ -308,7 +359,7 @@ Register these as the initial set. They exercise every code path in the binding 
 | `emit_event` | BehaviorOnly | `(event: ScriptEvent) -> Result<()>` — broadcast event |
 | `send_event` | BehaviorOnly | `(target: EntityId, event: ScriptEvent) -> Result<()>` — targeted event |
 
-`ScriptEvent` is a `{ type: String, payload: serde_json::Value }` struct for now. A richer event schema lands in the plan that adds real lifecycle hooks.
+`ScriptEvent` is a `{ kind: String, payload: serde_json::Value }` struct for now — the discriminant field is named `kind` everywhere in this plan (matching `ComponentValue`'s `kind` discriminant and the Rust enum naming convention). A richer event schema lands in the plan that adds real lifecycle hooks.
 
 **Behavior event queue drain placement.** The behavior event queue drains at the end of Game logic, after all Rust systems have run for the frame. Scripts react to world state Rust just computed; emitted events are not processed until the next frame. Frame order: `Input → Game logic (Rust systems → script event queue drain) → Audio → Render → Present`.
 
@@ -392,6 +443,7 @@ Contract for this plan:
 - [ ] A test behavior script that calls `defineEntity` (or any `DefinitionOnly` primitive) fails with `ScriptError::WrongContext`.
 - [ ] A script that throws mid-execution logs the exception at `error` level with the script name. The next script call in the same context succeeds.
 - [ ] A panicking Rust primitive called from script does not unwind past the FFI boundary. (Duplicates sub-plan 2 criterion, verified end-to-end here.)
+- [ ] **End-to-end binding round-trip (shared with sub-plan 4):** a QuickJS behavior script spawns an entity, calls `set_component(id, ComponentKind::Transform, transform_value)` with a fully populated `Transform` (position, Euler-degree rotation, scale), then calls `get_component(id, ComponentKind::Transform)` and asserts the returned value matches the input within float tolerance. This test exercises the full `ComponentValue` serde codec path (JS object → Rust enum → registry → Rust enum → JS object) and is the single canonical test that closes the loop on the sub-plan 2 binding layer for the day-one primitive set. Since `Transform` is the only day-one component, it is the only type available to exercise this path — call the same test out in sub-plan 4 against the Luau side.
 - [ ] `cargo test -p postretro` passes.
 
 ### Implementation tasks
@@ -416,10 +468,11 @@ Contract for this plan:
 
 1. Create `definition_lua = Lua::new()` (with the `luau` feature active).
 2. Nil out the deny-list entries (`io`, `os.execute`, `os.exit`, `os.getenv`, `package`, `require`, `dofile`, `loadfile`, `load`) — see "Sandboxing caveats" below. This must happen before sandboxing freezes globals.
+2b. **Install the `print` redirect** — overwrite `globals.print` with a Rust function that forwards its arguments to the engine logger under the `[Script/Luau]` prefix. This step must run **before** `sandbox(true)`; after sandboxing, `_G` becomes read-only and reassigning `print` silently fails or errors.
 3. Install every `DefinitionOnly` and `Both` primitive via its `luau_installer`; install stubs (`luau_stub_installer`) for every `BehaviorOnly` primitive so prohibited names resolve to `WrongContext` errors rather than nil lookups.
 4. Call `definition_lua.sandbox(true)?` — returns `Result`, use `?`. Globals are now read-only from the script's perspective.
 5. **What `sandbox(true)` actually does** (documented here so the code doesn't over-promise): it puts the main thread into a sandboxed state where the **global table `_G` becomes read-only** — scripts can no longer overwrite built-ins like `print` or `math`, and they cannot **assign to a new key on `_G`** from outside a declared context. It does **not** prevent scripts from creating their own local variables, and it does not stop them from mutating tables they own. Newly spawned coroutines / threads inherit a fresh sub-environment whose writes don't land back on `_G`. So the correct claim is "scripts cannot mutate the shared globals table after sandboxing," not "scripts cannot add new globals" in the broader sense. Removing `require`/`io`/`os` via the deny-list is what actually prevents filesystem and process access — sandboxing alone does not.
-6. Repeat steps 1–5 for `behavior_lua` with `BehaviorOnly`/`Both` real primitives and `DefinitionOnly` stubs.
+6. Repeat steps 1 through 5 (including 2b) for `behavior_lua` with `BehaviorOnly`/`Both` real primitives and `DefinitionOnly` stubs.
 
 ### Luau-specific considerations
 
@@ -431,6 +484,7 @@ Contract for this plan:
 ### Sandboxing caveats to document in code
 
 - Luau `sandbox(true)` makes `_G` read-only from the script's perspective but does **not** by itself remove the standard library, and it does **not** prevent scripts from creating their own locals or mutating tables they own — it's about protecting the shared globals table, not total isolation. Depending on the library subset we want to expose (no `io`, no `os.execute`, no `require` from arbitrary paths), nil out the disallowed entries before calling `sandbox(true)`. Start with a deny-list approach: remove `io`, `os.execute`, `os.exit`, `os.getenv`, `package`, `require`, `dofile`, `loadfile`, `load`. Keep `math`, `string`, `table`, `bit32`, `buffer`, `coroutine` (Luau's built-ins).
+- **Coroutine policy.** `coroutine` stays on the allow-list because several standard-library idioms assume it exists, but cross-frame suspension is **undefined behavior in this plan**. Coroutines are permitted only within a single event-handler invocation — a handler that creates, resumes, and finishes a coroutine before returning is fine. A handler that yields a coroutine across the frame boundary (expecting a later frame to resume it) violates the "scripts are stateless event handlers" invariant declared in the Key decisions section, and no Rust-side scheduler exists in Plan 1 to resume suspended coroutines. Revisit in Plan 2 if a concrete use case appears; until then, treat cross-frame suspension as unsupported.
 - `print` stays exposed but is re-routed to the engine logger (prefix `[Script/Luau]`), so scripts that spam `print` don't hit stdout.
 
 ### Acceptance criteria
@@ -441,6 +495,7 @@ Contract for this plan:
 - [ ] `print` output is captured and emitted via `log::info!` with the `[Script/Luau]` prefix.
 - [ ] Standard-library disallow-list covers `io`, `os.execute/exit/getenv`, `package`, `require`, `dofile`, `loadfile`, `load` — test calling each and expect a Lua error.
 - [ ] A panicking Rust primitive does not unwind past the mlua FFI boundary.
+- [ ] **End-to-end binding round-trip (shared with sub-plan 3):** a Luau behavior script spawns an entity, calls `set_component(id, ComponentKind.Transform, transform_value)` with a fully populated `Transform` (position, Euler-degree rotation, scale), then calls `get_component(id, ComponentKind.Transform)` and asserts the returned value matches the input within float tolerance. This exercises the `ComponentValue` serde codec path through mlua's `serde` feature (Lua table → Rust enum → registry → Rust enum → Lua table). Since `Transform` is the only day-one component, this is the canonical end-to-end test that validates the sub-plan 2 binding layer on the Luau side.
 
 ### Implementation tasks
 
@@ -474,6 +529,8 @@ The generator runs two ways:
 
 - **Inline at engine startup** (dev builds): called once per process, reads the registry, writes the files. Cost is negligible (<10 ms for hundreds of primitives). This keeps the SDK files in sync with the running engine.
 - **Standalone binary** (`cargo run --bin gen-script-types`): produces the files without launching the engine. Useful for CI / SDK packaging. The binary is a `[[bin]]` entry in the `postretro` crate (same crate that owns the primitive registry — no new crate needed). Its `main` parses `--out <path>`, calls the generator function with that output path, and exits; it does not start the full engine.
+
+  **Implementation note — Cargo auto-detection:** if `postretro` currently relies on implicit binary detection of `src/main.rs` (no explicit `[[bin]]` entry in its `Cargo.toml`), adding any `[[bin]]` entry disables that auto-detection and the engine binary will silently stop building. When adding the `gen-script-types` `[[bin]]` entry, also add an explicit `[[bin]]` entry for the engine binary in the same edit (e.g., `[[bin]] name = "postretro" path = "src/main.rs"`) so both continue to build.
 
 ### Type mapping
 
@@ -512,7 +569,7 @@ declare module "postretro" {
   export type Transform = { position: Vec3; rotation: EulerDegrees; scale: Vec3 };
   export type Vec3 = { readonly x: number; readonly y: number; readonly z: number };
   export type ComponentValue = { kind: "transform"; value: Transform } /* | ... */;
-  export type ScriptEvent = { type: string; payload: unknown };
+  export type ScriptEvent = { kind: string; payload: unknown };
 
   /** Returns true if the entity id refers to a live entity. */
   export function entity_exists(id: EntityId): boolean;
@@ -533,7 +590,7 @@ export type Vec3 = { x: number, y: number, z: number }
 export type EulerDegrees = { pitch: number, yaw: number, roll: number }
 export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 export type ComponentValue = { kind: "transform", value: Transform } -- | ...
-export type ScriptEvent = { type: string, payload: any }
+export type ScriptEvent = { kind: string, payload: any }
 
 --- Returns true if the entity id refers to a live entity.
 declare function entity_exists(id: EntityId): boolean
@@ -626,12 +683,37 @@ Development iteration: a modder edits a `.ts` or `.luau` definition file and exp
 
 ### Design
 
-1. `notify` + `notify-debouncer-full` watches the configured script root (default: `assets/scripts/`) on a dedicated watcher thread.
-2. On a debounced change event, if the changed file is in the definition directory, the watcher thread decides whether to compile. **Compilation runs on the watcher thread (or a dedicated worker thread), never on the frame loop** — a `tsc` / `scripts-build` invocation can take hundreds of milliseconds and must not block rendering.
-3. **If the changed file is `.ts`**, the watcher thread runs the compile subprocess synchronously on that thread (using whichever path was detected at startup — see cascade below), waits for it to exit, and checks the exit code.
-    - **On success:** the watcher thread enqueues a `ReloadRequest { compiled_output_path }` onto an `mpsc` channel drained by the frame loop.
-    - **On failure:** the watcher thread logs the compiler's stderr at `error` level (type errors from `tsc`, transpilation errors from `scripts-build` / `swc`) and does **not** enqueue a `ReloadRequest`. The prior archetype set stays active.
-    - `.luau` files skip compilation and go straight to enqueuing a `ReloadRequest` pointing at the source file.
+Three threads are involved in hot reload. The frame loop is one; the watcher/debouncer is the second; a dedicated **compile-worker** thread is the third. The separation matters: a `tsc` or `scripts-build` subprocess can take 500 ms or more, and blocking the debouncer's delivery thread on that subprocess risks dropping or backpressuring events while the compile is in flight (`notify-debouncer-full`'s internal queuing behavior under a stalled consumer is unspecified and must not be relied on).
+
+```
+ ┌──────────────────────────┐    FS events
+ │ notify + debouncer-full  │ ──────────────────► mpsc::Receiver<DebouncedEvent>
+ │ (watcher thread)         │                           │
+ └──────────────────────────┘                           │ drained by:
+                                                        ▼
+                                            ┌────────────────────────────┐
+                                            │ compile-worker thread      │
+                                            │   - runs tsc/scripts-build │
+                                            │   - logs stderr on failure │
+                                            └──────────┬─────────────────┘
+                                                       │ on compile success (or `.luau`):
+                                                       ▼
+                                        mpsc::Sender<ReloadRequest>
+                                                       │
+                                                       ▼
+                                            ┌────────────────────────────┐
+                                            │ frame loop                 │
+                                            │   - drains at frame top    │
+                                            │   - swaps definition ctx   │
+                                            └────────────────────────────┘
+```
+
+1. `notify` + `notify-debouncer-full` watches the configured script root (default: `assets/scripts/`) on a dedicated **watcher thread**. The debouncer forwards `DebouncedEvent`s to a `mpsc::Receiver` consumed by the compile-worker thread — the watcher thread does nothing else and never blocks on compilation.
+2. A dedicated **compile-worker thread** drains the debouncer's `Receiver`. For each event whose changed file lives in the definition directory, it decides whether to compile. **Compilation always runs on the compile-worker thread, never on the watcher thread and never on the frame loop** — a `tsc` / `scripts-build` invocation can take hundreds of milliseconds and must not block either filesystem-event delivery or rendering.
+3. **If the changed file is `.ts`**, the compile-worker runs the compile subprocess synchronously on that thread (using whichever path was detected at startup — see cascade below), waits for it to exit, and checks the exit code.
+    - **On success:** the compile-worker enqueues a `ReloadRequest { compiled_output_path }` onto a second `mpsc` channel drained by the frame loop.
+    - **On failure:** the compile-worker logs the compiler's stderr at `error` level (type errors from `tsc`, transpilation errors from `scripts-build` / `swc`) and does **not** enqueue a `ReloadRequest`. The prior archetype set stays active.
+    - `.luau` files skip compilation and go straight to the compile-worker enqueuing a `ReloadRequest` pointing at the source file. (The compile-worker handles `.luau` too, not the watcher, so there is exactly one producer on the `ReloadRequest` channel.)
 4. At the top of each frame, the frame loop drains the `ReloadRequest` queue and calls `ScriptRuntime::reload_definition_context()` with the already-compiled output. The frame-loop work is the cheap context-swap only: drop the current definition context, construct a new one (identical init sequence from sub-plan 3), re-evaluate all definition files, collect archetypes, swap the archetype registry atomically.
 5. Errors during the frame-loop reload step are logged; the prior archetype set remains active. Hot reload never corrupts a working level.
 
@@ -679,7 +761,7 @@ Luau loads `.luau` source directly via `mlua::Compiler` — no pre-compilation s
 ### Implementation tasks
 
 1. Add `notify = "8"` and `notify-debouncer-full` to workspace deps.
-2. Implement a `ScriptWatcher` that runs on its own thread, forwards debounced events to a `mpsc::Sender<ReloadRequest>`.
+2. Implement a `ScriptWatcher` that owns two threads: a **watcher thread** hosting `notify` + `notify-debouncer-full` (forwarding `DebouncedEvent`s over an internal `mpsc`), and a **compile-worker thread** that drains those events, runs the TS compile subprocess when needed, and forwards `ReloadRequest`s over a second `mpsc::Sender<ReloadRequest>` to the frame loop.
 3. At the top of each frame, drain the reload queue and call `ScriptRuntime::reload_definition_context()`.
 4. Integration test: write a temp definition file, mutate it, assert reload fires and archetype set updates.
 

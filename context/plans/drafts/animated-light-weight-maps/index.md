@@ -146,8 +146,8 @@ for (var i = 0u; i < oc.count; i++) {
     let desc = descriptors[entry.light_index];
     if (desc.active == 0u) { continue; }
     let t = fract((frame_time + desc.phase) / desc.period);
-    let b = sample_curve_catmull_rom(desc.brightness, t);
-    let c = sample_color_catmull_rom(desc.color, t, desc.base_color);
+    let b = sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t);
+    let c = sample_color_catmull_rom(desc.color_offset, desc.color_count, t, desc.base_color);
     accum += c * b * entry.weight;
 }
 textureStore(animated_lm_atlas, vec2<i32>(rect.atlas_x + rect_x, rect.atlas_y + rect_y), vec4(accum, 1.0));

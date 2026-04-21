@@ -53,6 +53,8 @@ Three components: **static direct** (baked), **dynamic direct** (runtime), and *
 
 **Indirect.** prl-build bakes an SH L2 irradiance volume (3D probe grid) over the level's empty space. Runtime samples via trilinear interpolation per fragment. Missing probe section falls back to the ambient floor.
 
+**Animated lights.** Animated lights carry per-light curve data (brightness scalar, RGB color) stored as packed f32 samples in a flat GPU storage buffer. Runtime evaluates Catmull-Rom splines over a `[0, 1)` cycle time with closed-loop wrap — uniform knot spacing, tension 0.5. A shared WGSL helper handles evaluation; it declares no buffers, so both the SH animation path and the future animated-lightmap compose pass can bind their own `anim_samples` buffers at different bind-group slots without conflict.
+
 **Normal maps.** Perturb the per-fragment normal before direct and indirect evaluation. Tangents baked into the vertex format at compile time.
 
 **Light authoring.** Mappers place light entities in TrenchBroom. Compiler translates FGD properties to a canonical internal format with validation (falloff distance, spotlight direction, intensity bounds). Canonical lights feed both the SH baker and the runtime direct path. See `build_pipeline.md` §Custom FGD.
@@ -123,7 +125,13 @@ Low-resolution raymarched pass over `env_fog_volume` brush regions. Resolution g
 
 ---
 
-## 8. Boundary Rule
+## 8. Shader Module Composition
+
+Shared WGSL helpers are appended to consumer shader source via string concatenation at pipeline creation time. No preprocessor, no `#include` directives — consistent with the existing codebase pattern. Binding-agnostic helpers declare no storage buffers; consumers declare the buffers at their preferred `(group, binding)` before the helper source is appended. This lets multiple pipelines share the same helper while binding its inputs at different locations.
+
+---
+
+## 9. Boundary Rule
 
 All wgpu calls live in the renderer module. Map loader, game logic, audio, and input never import wgpu types. Data crosses the boundary as engine-defined types; the renderer translates to GPU operations. Per-subsystem contracts: vertex format §6, cells and BVH §5, lighting §4.
 
@@ -143,7 +151,7 @@ Groups 0, 2, 3, and 5 are shared across the forward, billboard, and fog pipeline
 
 ---
 
-## 9. Camera
+## 10. Camera
 
 ### Coordinate System
 
@@ -168,7 +176,7 @@ Camera position and orientation produce a view matrix each frame, feeding:
 
 ---
 
-## 10. Diagnostics
+## 11. Diagnostics
 
 ### GPU Pass Timing
 
@@ -176,7 +184,7 @@ Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter sup
 
 ---
 
-## 11. Non-Goals
+## 12. Non-Goals
 
 - **Deferred rendering** — forward lighting with influence-volume early-out scales to the 500-light target. Indoor portal-isolated geometry keeps per-fragment light iteration cheap. Deferred adds complexity without benefit.
 - **PBR materials** — albedo + normal map is the full material vocabulary. Metallic/roughness is out of scope.

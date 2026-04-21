@@ -40,6 +40,7 @@ See `research.md` for prior-art survey.
 - [ ] `AnimatedLightWeightMaps` section round-trips via `to_bytes` / `from_bytes` and is emitted by `prl-build` for every map that has at least one animated light.
 - [ ] After compile, the static lightmap atlas shows no contribution from animated lights: on a synthetic one-face map lit only by an animated light, the static atlas byte-matches the baseline produced by compiling the same map with zero lights.
 - [ ] On that same map, the runtime compose pass produces a non-zero animated-contribution atlas whose magnitude tracks the descriptor's brightness curve over time.
+- [ ] Uncovered atlas texels read as zero in the forward pass: verified by a test map where `chunk_rect` covers only a small region and a fragment shader sample at an uncovered texel returns (0, 0, 0).
 - [ ] Summing weight-map byte size across the bundled test-maps stays under 8 MB per map. The compile log reports byte size, covered-texel count, and mean animated lights per covered texel. On the bundled test-maps, mean lights per covered texel stays ≤ 2.5. (Worst-case at cap=4 and full atlas coverage is 40 MB; the mean-lights metric guards against approaching that ceiling.)
 - [ ] Every covered texel's light list has length ≤ `MAX_ANIMATED_LIGHTS_PER_CHUNK` (sourced from the format crate, defined by Spec 1). Every light index in a texel list appears in the parent chunk's light index list, using the same animated-subset ordering.
 - [ ] Every `light_index` value in `texel_lights` is < the animated-light count implied by `AnimatedLightChunks` (equivalently, < the sized length of the runtime `AnimationDescriptor` buffer). The engine's post-load cross-section validator asserts this before the first compose dispatch and refuses to load maps that fail.
@@ -48,8 +49,9 @@ See `research.md` for prior-art survey.
 - [ ] No two entries in `chunk_rects` overlap in atlas coordinate space. The baker asserts this at compile time.
 - [ ] A parallel-plate occlusion test (light above, blocker between light and surface) produces zero weight on shadowed texels and non-zero on lit texels.
 - [ ] Two compiler runs on the same input produce byte-identical `AnimatedLightWeightMaps` sections.
-- [ ] Toggling a descriptor's `active` flag from the CPU side zeros that light's contribution in both the next composed animated atlas and the SH volume animated layer, on the same frame, without recompiling the map.
+- [ ] Toggling a descriptor's `active` flag from the CPU side zeros that light's contribution in both the next composed animated atlas and the SH volume animated layer, on the same frame, without recompiling the map. Integration test: load a one-light fixture map, render frame 1 with `active=1` (assert non-zero animated-atlas texels at the chunk), set `active=0`, render frame 2 (assert those texels return to zero).
 - [ ] Descriptor evaluator (Catmull-Rom) reconstructs authored keyframes exactly at sample points and produces continuous first derivatives between samples. Unit test asserts both.
+- [ ] Both `sh_animation.wgsl` and `animated_lightmap_compose.wgsl` import and call the same `sample_curve_catmull_rom` symbol; no duplicate evaluator remains in the codebase.
 - [ ] Frame ordering unchanged: the compose pass runs inside Render, after the BVH cull pass and before the depth prepass. `POSTRETRO_GPU_TIMING=1` lists it as a distinct pass.
 - [ ] `cargo check -p postretro -p postretro-level-compiler -p postretro-level-format` clean. Existing lightmap / SH tests still pass.
 
@@ -68,14 +70,14 @@ In `lightmap_bake`, filter the `static_lights` pass to `!light.is_dynamic && lig
 New module under `postretro-level-compiler`. Consumes: `AnimatedLightChunks` section, `LightInfluence` records, `MapLight` animation-bearing lights, BVH + primitives for shadow rays, the lightmap atlas geometry (width, height, per-face placements). For every chunk:
 
 1. Resolve the chunk's atlas-texel rectangle from the face's chart placement and the chunk's UV sub-region. Round outward to integer texel boundaries (floor min, ceil max). Assert that no two chunks on the same face produce overlapping atlas rectangles after rounding — guaranteed by Spec 1's non-overlapping UV sub-regions plus any sub-texel gap between adjacent chunks.
-2. For every texel in that rectangle, for every animated light in the chunk's light list: compute unshadowed Lambert contribution (distance falloff × N·L × spotlight cone — same math as `lightmap_bake`), run a shadow ray against the shared BVH, emit `(remapped_light_index, weight)` when visible and non-zero. The remap converts Spec 1's filtered-list index to the animated-subset index matching the `AnimationDescriptor` buffer ordering (see Settled decisions). Emit a zero-count entry for texels where no light contributes so `offset_counts.len()` matches the total rect area invariant.
+2. For every texel in that rectangle, for every animated light in the chunk's light list: resolve the per-texel world position and normal from the static bake's per-texel sample points (reuse the same geometry lookup). Compute unshadowed Lambert contribution (distance falloff × N·L × spotlight cone — identical to `lightmap_bake`). Run a shadow ray against the shared BVH using the same epsilon/bias as `lightmap_bake` to avoid self-intersection. Emit `(remapped_light_index, weight)` when visible and non-zero. The remap converts Spec 1's filtered-list index to the animated-subset index matching the `AnimationDescriptor` buffer ordering (see Settled decisions). Emit a zero-count entry for texels where no light contributes so `offset_counts.len()` matches the total rect area invariant.
 3. Pack into the section's indirect format.
 
 Parallelize chunks with `rayon`. Determinism: iterate chunks in section order, lights in chunk-list order, write output slots at known offsets.
 
 ### Task 4: Descriptor active-flag + buffer plumbing
 
-Extend `AnimationDescriptor` with a `u32 active` flag, fitting it into the existing tail padding so `ANIMATION_DESCRIPTOR_SIZE` stays at 48. Exact field placement is determined by the implementor given the descriptor's state when this task lands — Plan 2 Sub-plan 1's direction channel also uses tail padding, so coordinate placement with that spec before committing the layout. Engine maintains a CPU-side mirror of the descriptor buffer, writes it every frame via `queue.write_buffer` before the compose pass. Scripting sets the flag on light spawn / despawn / toggle. SH animation pass reads the flag too, so an inactive animated light contributes nothing to the SH volume either.
+Extend `AnimationDescriptor` with a `u32 active` flag, fitting it into the existing tail padding so `ANIMATION_DESCRIPTOR_SIZE` stays at 48. Exact field placement is determined by the implementor given the descriptor's state when this task lands — Plan 2 Sub-plan 1's direction channel also uses tail padding, so coordinate placement with that spec before committing the layout. Note: `AnimationDescriptor` already carries `phase`, `period`, `brightness`, `color`, and `base_color` (consumed by compose in Task 5 WGSL pseudocode) — this task only adds `active`. Engine maintains a CPU-side mirror of the descriptor buffer, writes it every frame via `queue.write_buffer` before the compose pass. Scripting sets the flag on light spawn / despawn / toggle. SH animation pass reads the flag too, so an inactive animated light contributes nothing to the SH volume either.
 
 ### Task 5: Compose compute pass
 
@@ -121,8 +123,8 @@ pub struct ChunkAtlasRect {
 
 pub struct AnimatedLightWeightMapsSection {
     pub chunk_rects: Vec<ChunkAtlasRect>,
-    pub texel_offset_counts: Vec<(u32, u32)>, // (offset, count) into texel_lights
-    pub texel_lights: Vec<(u32, f32)>,        // (light_index, weight)
+    pub offset_counts: Vec<(u32, u32)>, // (offset, count) into texel_lights
+    pub texel_lights: Vec<(u32, f32)>,  // (light_index, weight)
 }
 ```
 
@@ -137,11 +139,11 @@ let rect_x = tile.tile_origin_x + local_invocation_id.x;
 let rect_y = tile.tile_origin_y + local_invocation_id.y;
 if (rect_x >= rect.width || rect_y >= rect.height) { return; }
 let texel_idx = rect.texel_offset + rect_y * rect.width + rect_x;
-let oc = texel_offset_counts[texel_idx];
+let oc = offset_counts[texel_idx];
 var accum = vec3<f32>(0.0);
 for (var i = 0u; i < oc.count; i++) {
     let entry = texel_lights[oc.offset + i];
-    let desc = descriptors[entry.light_idx];
+    let desc = descriptors[entry.light_index];
     if (desc.active == 0u) { continue; }
     let t = fract((frame_time + desc.phase) / desc.period);
     let b = sample_curve_catmull_rom(desc.brightness, t);
@@ -188,3 +190,4 @@ Key files touched:
 - **Animated lights are removed from the static bake.** Clean break — no holding-at-neutral. Nothing in the static atlas path consumes animated lights today.
 - **Same `AnimationDescriptor` drives both SH animated layers and the weight-map compose.** One descriptor buffer, two consumers. Adding `active` is a pure extension; stride stays at 48 bytes (fills existing padding).
 - **Spec 1's per-chunk cap `MAX_ANIMATED_LIGHTS_PER_CHUNK` bounds the shader-side texel loop.** Unrolled at the cap (proposed 4). Texel lists never exceed the cap because baked weights only exist for lights in the parent chunk's list.
+- **Weight storage is `f32`, not `f16`.** Monochrome scalar irradiance values benefit from full precision; quantization at bake time would compound with Catmull-Rom interpolation error. `f32` = 8 bytes per entry; at the 4–8 MB memory target, this is tractable.

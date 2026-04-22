@@ -60,6 +60,10 @@ naga = { version = "29", features = ["wgsl-in"] }
 # Property-based testing for shadow math invariants.
 proptest = { workspace = true }
 
+# Reference Catmull-Rom evaluator for WGSL parity tests
+# (see src/render/curve_eval_test.rs).
+splines = "4"
+
 # Adding any explicit `[[bin]]` entry disables Cargo's implicit detection of
 # `src/main.rs`, so the engine binary must also be declared explicitly — see
 # context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md

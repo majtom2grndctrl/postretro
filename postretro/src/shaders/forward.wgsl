@@ -343,49 +343,6 @@ fn sh_irradiance(
     return r;
 }
 
-// Evaluate an animated light's current brightness by linearly interpolating
-// its brightness samples over its period, with wrap-around. Returns 1.0
-// when the light has no brightness animation.
-fn eval_animated_brightness(desc: AnimationDescriptor, cycle_t: f32) -> f32 {
-    if desc.brightness_count == 0u {
-        return 1.0;
-    }
-    let sample_pos = cycle_t * f32(desc.brightness_count);
-    let idx0 = u32(floor(sample_pos)) % desc.brightness_count;
-    let idx1 = (idx0 + 1u) % desc.brightness_count;
-    let frac_t = fract(sample_pos);
-    return mix(
-        anim_samples[desc.brightness_offset + idx0],
-        anim_samples[desc.brightness_offset + idx1],
-        frac_t,
-    );
-}
-
-// Evaluate an animated light's current color. Falls back to `base_color`
-// when `color_count == 0`.
-fn eval_animated_color(desc: AnimationDescriptor, cycle_t: f32) -> vec3<f32> {
-    if desc.color_count == 0u {
-        return desc.base_color;
-    }
-    let sample_pos = cycle_t * f32(desc.color_count);
-    let idx0 = u32(floor(sample_pos)) % desc.color_count;
-    let idx1 = (idx0 + 1u) % desc.color_count;
-    let frac_t = fract(sample_pos);
-    let off0 = desc.color_offset + idx0 * 3u;
-    let off1 = desc.color_offset + idx1 * 3u;
-    let c0 = vec3<f32>(
-        anim_samples[off0],
-        anim_samples[off0 + 1u],
-        anim_samples[off0 + 2u],
-    );
-    let c1 = vec3<f32>(
-        anim_samples[off1],
-        anim_samples[off1 + 1u],
-        anim_samples[off1 + 2u],
-    );
-    return mix(c0, c1, frac_t);
-}
-
 // Accumulate all 9 SH bands of one animated light in a single 8-corner
 // traversal, using precomputed final (tri * visibility / weight_sum) weights.
 //
@@ -481,8 +438,12 @@ fn sample_sh_indirect_fast(
         for (var i: u32 = 0u; i < anim_count; i = i + 1u) {
             let desc = anim_descriptors[i];
             let cycle_t = fract(uniforms.time / max(desc.period, 1.0e-6) + desc.phase);
-            let brightness = eval_animated_brightness(desc, cycle_t);
-            let color = eval_animated_color(desc, cycle_t);
+            let brightness = sample_curve_catmull_rom(
+                desc.brightness_offset, desc.brightness_count, cycle_t,
+            );
+            let color = sample_color_catmull_rom(
+                desc.color_offset, desc.color_count, cycle_t, desc.base_color,
+            );
             let modulate = color * brightness;
 
             var accum: array<f32, 9>;

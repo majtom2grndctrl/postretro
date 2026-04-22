@@ -2612,6 +2612,7 @@ dependencies = [
  "rquickjs",
  "serde",
  "serde_json",
+ "splines",
  "thiserror 2.0.18",
  "wgpu",
  "winit",
@@ -3325,6 +3326,12 @@ checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
 dependencies = [
  "bitflags 2.11.0",
 ]
+
+[[package]]
+name = "splines"
+version = "4.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3278aafb315f972aa58d958e3f6b8ef60ceb7723bfedfbd00399c73ed0570583"
 
 [[package]]
 name = "stable_deref_trait"

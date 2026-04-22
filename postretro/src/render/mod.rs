@@ -5,6 +5,9 @@ pub mod frame_timing;
 pub mod sh_volume;
 pub mod smoke;
 
+#[cfg(test)]
+mod curve_eval_test;
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -34,7 +37,16 @@ use crate::fx::smoke::{SmokeEmitter, SpriteFrame};
 
 // --- WGSL Shaders ---
 
-const SHADER_SOURCE: &str = include_str!("../shaders/forward.wgsl");
+// Forward shader source is `forward.wgsl` concatenated with the binding-
+// agnostic Catmull-Rom helper in `curve_eval.wgsl`. The helper reads
+// `anim_samples` by lexical name — `forward.wgsl` declares that storage
+// buffer, and WGSL resolves function references at module scope
+// independently of textual declaration order, so appending is safe.
+const SHADER_SOURCE: &str = concat!(
+    include_str!("../shaders/forward.wgsl"),
+    "\n",
+    include_str!("../shaders/curve_eval.wgsl"),
+);
 
 // Wireframe overlay: culling-delta debug visualization. See shader header.
 const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");

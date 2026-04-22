@@ -892,7 +892,7 @@ mod tests {
             &mut bvh_a,
             &lights,
             &influence,
-            &[chart.clone()],
+            std::slice::from_ref(&chart),
             &face_ranges,
             0.01,
         );
@@ -902,7 +902,7 @@ mod tests {
             &mut bvh_b,
             &lights,
             &influence,
-            &[chart.clone()],
+            std::slice::from_ref(&chart),
             &face_ranges,
             0.01,
         );

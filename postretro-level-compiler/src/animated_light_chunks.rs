@@ -157,6 +157,11 @@ pub fn build_animated_light_chunks(
         // the face's range doesn't exactly match the leaf's), that's a real
         // change to the BVH contract — see the `face_by_offset` construction
         // above for the generalization note.
+        debug_assert!(
+            face_by_offset.contains_key(&leaf_offset) || leaf.index_count == 0,
+            "non-empty leaf at offset {} has no matching face — BVH/geometry contract violation",
+            leaf_offset,
+        );
         if let Some(&face_index) = face_by_offset.get(&leaf_offset) {
             let face_index_usize = face_index as usize;
             let face_range = &face_index_ranges[face_index_usize];

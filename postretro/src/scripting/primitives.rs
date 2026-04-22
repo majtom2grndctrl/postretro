@@ -23,6 +23,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         })
         .scope(ContextScope::Both)
         .doc("Returns true if the entity id refers to a live entity.")
+        .param("id", "EntityId")
         .finish();
 
     // spawn_entity ---------------------------------------------------------
@@ -40,6 +41,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         })
         .scope(ContextScope::BehaviorOnly)
         .doc("Spawns a new entity with the given transform and returns its id.")
+        .param("transform", "Transform")
         .finish();
 
     // despawn_entity -------------------------------------------------------
@@ -53,6 +55,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         })
         .scope(ContextScope::BehaviorOnly)
         .doc("Despawns a previously-spawned entity. Errors if the id is stale.")
+        .param("id", "EntityId")
         .finish();
 
     // get_component --------------------------------------------------------
@@ -71,6 +74,8 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         })
         .scope(ContextScope::BehaviorOnly)
         .doc("Reads a component of the given kind from an entity.")
+        .param("id", "EntityId")
+        .param("kind", "ComponentKind")
         .finish();
 
     // set_component --------------------------------------------------------
@@ -96,6 +101,9 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         })
         .scope(ContextScope::BehaviorOnly)
         .doc("Writes a component of the given kind onto an entity.")
+        .param("id", "EntityId")
+        .param("kind", "ComponentKind")
+        .param("value", "ComponentValue")
         .finish();
 
     // emit_event (broadcast) ----------------------------------------------
@@ -109,6 +117,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         })
         .scope(ContextScope::BehaviorOnly)
         .doc("Broadcasts an event to all listeners; drains at end of game logic.")
+        .param("event", "ScriptEvent")
         .finish();
 
     // send_event (targeted) -----------------------------------------------
@@ -122,6 +131,8 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         })
         .scope(ContextScope::BehaviorOnly)
         .doc("Sends an event to a single entity; drains at end of game logic.")
+        .param("target", "EntityId")
+        .param("event", "ScriptEvent")
         .finish();
 }
 

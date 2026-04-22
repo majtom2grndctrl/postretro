@@ -302,6 +302,7 @@ mod tests {
         )
         .scope(ContextScope::Both)
         .doc("Returns true if the entity id refers to a live entity.")
+        .param("id", "EntityId")
         .finish();
 
         r.register(
@@ -310,6 +311,7 @@ mod tests {
         )
         .scope(ContextScope::BehaviorOnly)
         .doc("Spawns a new entity with the given transform.")
+        .param("transform", "Transform")
         .finish();
 
         // Engine-internal magic primitive — must NOT appear in output.
@@ -319,6 +321,7 @@ mod tests {
         )
         .scope(ContextScope::DefinitionOnly)
         .doc("Internal: captures registered definitions.")
+        .param("x", "u32")
         .finish();
 
         r
@@ -342,10 +345,10 @@ declare module \"postretro\" {
   export type ScriptEvent = { kind: string; payload: unknown };
 
   /** Returns true if the entity id refers to a live entity. */
-  export function entity_exists(a: EntityId): boolean;
+  export function entity_exists(id: EntityId): boolean;
 
   /** Spawns a new entity with the given transform. */
-  export function spawn_entity(a: Transform): EntityId;
+  export function spawn_entity(transform: Transform): EntityId;
 }
 ";
 
@@ -366,10 +369,10 @@ export type ComponentValue = { kind: \"Transform\", value: Transform }
 export type ScriptEvent = { kind: string, payload: any }
 
 --- Returns true if the entity id refers to a live entity.
-declare function entity_exists(a: EntityId): boolean
+declare function entity_exists(id: EntityId): boolean
 
 --- Spawns a new entity with the given transform.
-declare function spawn_entity(a: Transform): EntityId
+declare function spawn_entity(transform: Transform): EntityId
 ";
 
     #[test]

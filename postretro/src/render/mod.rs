@@ -40,8 +40,8 @@ use crate::fx::smoke::{SmokeEmitter, SpriteFrame};
 // Forward shader source is `forward.wgsl` concatenated with the binding-
 // agnostic Catmull-Rom helper in `curve_eval.wgsl`. The helper reads
 // `anim_samples` by lexical name — `forward.wgsl` declares that storage
-// buffer, and WGSL resolves function references at module scope
-// independently of textual declaration order, so appending is safe.
+// buffer, and WGSL resolves both function and variable references at module scope
+// independently of textual declaration order, so appending the helper after `forward.wgsl` is safe.
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",

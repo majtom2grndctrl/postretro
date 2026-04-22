@@ -1,3 +1,6 @@
+// Shared Catmull-Rom curve evaluation helpers for WGSL shaders (binding-agnostic).
+// See: context/plans/in-progress/animated-curve-eval/index.md
+
 // Uniform Catmull-Rom (tension 0.5) sampling over a closed-loop curve.
 // Samples are uniformly spaced over cycle time [0, 1); the curve wraps
 // continuously at the cycle boundary.

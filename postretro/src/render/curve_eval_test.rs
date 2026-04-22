@@ -69,6 +69,7 @@ fn authored_rgb(count: u32) -> Vec<[f32; 3]> {
     (0..count)
         .map(|k| {
             let t = 2.0 * PI * k as f32 / count as f32;
+            // arbitrary phase offsets to keep the three channels distinguishable
             [
                 t.sin() * 0.4 + 0.6,
                 (t + 2.0).sin() * 0.4 + 0.6,
@@ -172,33 +173,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     )
 }
 
-/// Upload `samples` + `dispatches` (as POD bytes), dispatch N threads, read
-/// back `out_count` f32 results.
-fn run_scalar_compute(ctx: &GpuCtx, samples: &[f32], dispatches: &[(u32, f32)]) -> Vec<f32> {
-    let shader_src = scalar_shader_source();
+/// Shared GPU harness: upload `sample_bytes` + `dispatch_bytes` as storage
+/// buffers, dispatch `n` compute threads running `shader_src`, and read back
+/// `n * out_elem_bytes` of raw output bytes.
+fn run_compute(
+    ctx: &GpuCtx,
+    shader_src: String,
+    sample_bytes: Vec<u8>,
+    dispatch_bytes: Vec<u8>,
+    n: u32,
+    out_elem_bytes: u64,
+) -> Vec<u8> {
     let module = ctx
         .device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("curve_eval_test scalar shader"),
+            label: Some("curve_eval_test shader"),
             source: wgpu::ShaderSource::Wgsl(shader_src.into()),
         });
 
-    // Pack dispatches as [u32, f32] pairs — 8 bytes each, no WGSL padding.
-    let mut dispatch_bytes: Vec<u8> = Vec::with_capacity(dispatches.len() * 8);
-    for (count, cycle_t) in dispatches {
-        dispatch_bytes.extend_from_slice(&count.to_ne_bytes());
-        dispatch_bytes.extend_from_slice(&cycle_t.to_ne_bytes());
-    }
-
     // Storage buffers cannot be zero-sized; pad empty sample arrays.
-    let sample_bytes: Vec<u8> = if samples.is_empty() {
+    let sample_bytes: Vec<u8> = if sample_bytes.is_empty() {
         vec![0u8; 4]
     } else {
-        let mut v = Vec::with_capacity(samples.len() * 4);
-        for s in samples {
-            v.extend_from_slice(&s.to_ne_bytes());
-        }
-        v
+        sample_bytes
     };
 
     let samples_buf = ctx
@@ -216,8 +213,8 @@ fn run_scalar_compute(ctx: &GpuCtx, samples: &[f32], dispatches: &[(u32, f32)]) 
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-    let n = dispatches.len() as u64;
-    let out_size = n * 4;
+    let out_size = (n as u64) * out_elem_bytes;
+    let out_size = out_size.max(4); // wgpu rejects zero-sized buffers
     let out_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("out_values"),
         size: out_size,
@@ -314,7 +311,7 @@ fn run_scalar_compute(ctx: &GpuCtx, samples: &[f32], dispatches: &[(u32, f32)]) 
         });
         cpass.set_pipeline(&pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch_workgroups(n as u32, 1, 1);
+        cpass.dispatch_workgroups(n, 1, 1);
     }
     encoder.copy_buffer_to_buffer(&out_buf, 0, &readback, 0, out_size);
     ctx.queue.submit(std::iter::once(encoder.finish()));
@@ -330,12 +327,41 @@ fn run_scalar_compute(ctx: &GpuCtx, samples: &[f32], dispatches: &[(u32, f32)]) 
     rx.recv().expect("map channel").expect("map ok");
 
     let data = slice.get_mapped_range();
-    let mut out = Vec::with_capacity(dispatches.len());
-    for chunk in data.chunks_exact(4) {
-        out.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-    }
+    let out = data.to_vec();
     drop(data);
     readback.unmap();
+    out
+}
+
+/// Upload `samples` + `dispatches` (as POD bytes), dispatch N threads, read
+/// back `out_count` f32 results.
+fn run_scalar_compute(ctx: &GpuCtx, samples: &[f32], dispatches: &[(u32, f32)]) -> Vec<f32> {
+    // Pack dispatches as [u32, f32] pairs — 8 bytes each, no WGSL padding.
+    let mut dispatch_bytes: Vec<u8> = Vec::with_capacity(dispatches.len() * 8);
+    for (count, cycle_t) in dispatches {
+        dispatch_bytes.extend_from_slice(&count.to_ne_bytes());
+        dispatch_bytes.extend_from_slice(&cycle_t.to_ne_bytes());
+    }
+
+    let mut sample_bytes: Vec<u8> = Vec::with_capacity(samples.len() * 4);
+    for s in samples {
+        sample_bytes.extend_from_slice(&s.to_ne_bytes());
+    }
+
+    let n = dispatches.len() as u32;
+    let raw = run_compute(
+        ctx,
+        scalar_shader_source(),
+        sample_bytes,
+        dispatch_bytes,
+        n,
+        4,
+    );
+
+    let mut out = Vec::with_capacity(dispatches.len());
+    for chunk in raw.chunks_exact(4).take(dispatches.len()) {
+        out.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
+    }
     out
 }
 
@@ -345,14 +371,6 @@ fn run_color_compute(
     samples: &[f32],
     dispatches: &[(u32, f32, [f32; 3])],
 ) -> Vec<[f32; 3]> {
-    let shader_src = color_shader_source();
-    let module = ctx
-        .device
-        .create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("curve_eval_test color shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-        });
-
     // Dispatch struct in WGSL is 32 bytes (8 × f32/u32 with padding for
     // vec3 alignment). We mirror it here: count, cycle_t, base_r, base_g,
     // base_b, then three f32 pad slots.
@@ -368,154 +386,28 @@ fn run_color_compute(
         dispatch_bytes.extend_from_slice(&0f32.to_ne_bytes());
     }
 
-    let sample_bytes: Vec<u8> = if samples.is_empty() {
-        vec![0u8; 4]
-    } else {
-        let mut v = Vec::with_capacity(samples.len() * 4);
-        for s in samples {
-            v.extend_from_slice(&s.to_ne_bytes());
-        }
-        v
-    };
-
-    let samples_buf = ctx
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("anim_samples"),
-            contents: &sample_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-    let dispatch_buf = ctx
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("dispatches"),
-            contents: &dispatch_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-    let n = dispatches.len() as u64;
-    let out_size = n * 16; // vec4<f32>
-    let out_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("out_values"),
-        size: out_size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback"),
-        size: out_size,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let bgl = ctx
-        .device
-        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("curve_eval_test bgl color"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("curve_eval_test bg color"),
-        layout: &bgl,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: samples_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: out_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: dispatch_buf.as_entire_binding(),
-            },
-        ],
-    });
-    let pl_layout = ctx
-        .device
-        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("curve_eval_test pll color"),
-            bind_group_layouts: &[Some(&bgl)],
-            immediate_size: 0,
-        });
-    let pipeline = ctx
-        .device
-        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("curve_eval_test pipeline color"),
-            layout: Some(&pl_layout),
-            module: &module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-    let mut encoder = ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    {
-        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: None,
-            timestamp_writes: None,
-        });
-        cpass.set_pipeline(&pipeline);
-        cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch_workgroups(n as u32, 1, 1);
+    let mut sample_bytes: Vec<u8> = Vec::with_capacity(samples.len() * 4);
+    for s in samples {
+        sample_bytes.extend_from_slice(&s.to_ne_bytes());
     }
-    encoder.copy_buffer_to_buffer(&out_buf, 0, &readback, 0, out_size);
-    ctx.queue.submit(std::iter::once(encoder.finish()));
 
-    let slice = readback.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| {
-        tx.send(r).ok();
-    });
-    ctx.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll");
-    rx.recv().expect("map channel").expect("map ok");
+    let n = dispatches.len() as u32;
+    let raw = run_compute(
+        ctx,
+        color_shader_source(),
+        sample_bytes,
+        dispatch_bytes,
+        n,
+        16,
+    );
 
-    let data = slice.get_mapped_range();
     let mut out = Vec::with_capacity(dispatches.len());
-    for chunk in data.chunks_exact(16) {
+    for chunk in raw.chunks_exact(16).take(dispatches.len()) {
         let r = f32::from_ne_bytes(chunk[0..4].try_into().unwrap());
         let g = f32::from_ne_bytes(chunk[4..8].try_into().unwrap());
         let b = f32::from_ne_bytes(chunk[8..12].try_into().unwrap());
         out.push([r, g, b]);
     }
-    drop(data);
-    readback.unmap();
     out
 }
 
@@ -653,8 +545,8 @@ fn curve_eval_rgb_matches_splines_reference() {
         return;
     };
 
-    let counts = [3u32, 4u32];
-    let grid_ts = [0.0f32, 0.25, 0.5, 0.77];
+    let counts = [2u32, 3, 4, 8];
+    let grid_ts = [0.0f32, 0.17, 0.5, 0.83, 0.99];
     let base = [0.1f32, 0.2, 0.3];
 
     for &count in &counts {
@@ -684,6 +576,48 @@ fn curve_eval_rgb_matches_splines_reference() {
                     (got[c] - expected[c]).abs()
                 );
             }
+        }
+    }
+
+    // count == 0: empty curve returns `base_color` exactly (within EPSILON),
+    // regardless of t. `catmull_rom_reference` is undefined for n < 2 — assert
+    // against the fallback directly.
+    let base0 = [0.42f32, 0.37, 0.91];
+    let dispatches0: Vec<(u32, f32, [f32; 3])> = [0.0f32, 0.5, 0.99]
+        .iter()
+        .map(|&t| (0u32, t, base0))
+        .collect();
+    let gpu0 = run_color_compute(&ctx, &[], &dispatches0);
+    for (i, got) in gpu0.iter().enumerate() {
+        for c in 0..3 {
+            assert!(
+                approx_eq(got[c], base0[c], EPSILON),
+                "count=0 dispatch {i} channel={c}: gpu={} expected base={}",
+                got[c],
+                base0[c]
+            );
+            assert!(got[c].is_finite());
+        }
+    }
+
+    // count == 1: single-sample curve returns the stored RGB triplet (within
+    // EPSILON) for any t, ignoring `base_color`.
+    let single = [0.13f32, 0.57, 0.89];
+    let flat1: Vec<f32> = single.to_vec();
+    let dispatches1: Vec<(u32, f32, [f32; 3])> = [0.0f32, 0.3, 0.999]
+        .iter()
+        .map(|&t| (1u32, t, base0))
+        .collect();
+    let gpu1 = run_color_compute(&ctx, &flat1, &dispatches1);
+    for (i, got) in gpu1.iter().enumerate() {
+        for c in 0..3 {
+            assert!(
+                approx_eq(got[c], single[c], EPSILON),
+                "count=1 dispatch {i} channel={c}: gpu={} expected sample={}",
+                got[c],
+                single[c]
+            );
+            assert!(got[c].is_finite());
         }
     }
 }

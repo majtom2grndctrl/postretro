@@ -57,6 +57,7 @@ impl AnimatedLmDebugConfig {
     /// - unset / empty → off.
     /// - `count` → mode 1.
     /// - `isolate=<u32>` → mode 2 with the given descriptor slot.
+    ///
     /// Anything else logs a warning and falls back to off so a typo doesn't
     /// silently change rendering.
     pub fn from_env() -> Self {
@@ -619,7 +620,7 @@ fn pack_texel_lights(section: &AnimatedLightWeightMapsSection) -> Vec<u8> {
 }
 
 fn pack_dispatch_tiles(tiles: &[DispatchTile]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(tiles.len() * std::mem::size_of::<DispatchTile>());
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(tiles));
     for t in tiles {
         bytes.extend_from_slice(&t.chunk_idx.to_ne_bytes());
         bytes.extend_from_slice(&t.tile_origin_x.to_ne_bytes());

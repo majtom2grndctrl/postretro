@@ -1116,16 +1116,15 @@ mod tests {
             // also asserted via direct byte inspection below, outside the
             // `set_active` path, to keep the invariant covered.
             eprintln!("no wgpu adapter available; CPU-mirror direct-byte check only");
-            let off_0 = 0 * ANIMATION_DESCRIPTOR_SIZE + ANIMATION_DESCRIPTOR_ACTIVE_OFFSET;
+            let off_0 = ANIMATION_DESCRIPTOR_ACTIVE_OFFSET;
             mirror[off_0..off_0 + 4].copy_from_slice(&0u32.to_ne_bytes());
             let read = u32::from_ne_bytes(mirror[off_0..off_0 + 4].try_into().unwrap());
             assert_eq!(read, 0);
             return;
         };
-        let (device, _queue) = pollster::block_on(
-            adapter.request_device(&wgpu::DeviceDescriptor::default()),
-        )
-        .expect("device");
+        let (device, _queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .expect("device");
 
         use wgpu::util::DeviceExt;
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1149,28 +1148,40 @@ mod tests {
 
         // Before: slot 0 is active (1).
         let off_0 = ANIMATION_DESCRIPTOR_ACTIVE_OFFSET;
-        let read_before =
-            u32::from_ne_bytes(buffers.descriptor_mirror[off_0..off_0 + 4].try_into().unwrap());
+        let read_before = u32::from_ne_bytes(
+            buffers.descriptor_mirror[off_0..off_0 + 4]
+                .try_into()
+                .unwrap(),
+        );
         assert_eq!(read_before, 1);
         assert!(!buffers.dirty);
 
         // Toggle slot 0 off — the mirror bytes go to zero, dirty flips true.
         buffers.set_active(0, false);
-        let read_after =
-            u32::from_ne_bytes(buffers.descriptor_mirror[off_0..off_0 + 4].try_into().unwrap());
+        let read_after = u32::from_ne_bytes(
+            buffers.descriptor_mirror[off_0..off_0 + 4]
+                .try_into()
+                .unwrap(),
+        );
         assert_eq!(read_after, 0);
         assert!(buffers.dirty);
 
         // Slot 1 is untouched.
         let off_1 = ANIMATION_DESCRIPTOR_SIZE + ANIMATION_DESCRIPTOR_ACTIVE_OFFSET;
-        let slot1 =
-            u32::from_ne_bytes(buffers.descriptor_mirror[off_1..off_1 + 4].try_into().unwrap());
+        let slot1 = u32::from_ne_bytes(
+            buffers.descriptor_mirror[off_1..off_1 + 4]
+                .try_into()
+                .unwrap(),
+        );
         assert_eq!(slot1, 1);
 
         // Out-of-range slot is a no-op (no panic, no mirror change).
         buffers.set_active(42, false);
-        let slot0_again =
-            u32::from_ne_bytes(buffers.descriptor_mirror[off_0..off_0 + 4].try_into().unwrap());
+        let slot0_again = u32::from_ne_bytes(
+            buffers.descriptor_mirror[off_0..off_0 + 4]
+                .try_into()
+                .unwrap(),
+        );
         assert_eq!(slot0_again, 0);
     }
 }

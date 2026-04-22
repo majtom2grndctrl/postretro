@@ -24,21 +24,14 @@ use postretro_level_format::{read_container, read_section_data};
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR = postretro-level-compiler/. Workspace root is ../.
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .expect("workspace root")
-        .to_path_buf()
+    manifest.parent().expect("workspace root").to_path_buf()
 }
 
 #[test]
 fn single_fixture_compiles_and_carries_weight_map_section() {
     let ws = workspace_root();
     let input = ws.join("assets/maps/test_animated_weight_maps_single.map");
-    assert!(
-        input.exists(),
-        "fixture map missing: {}",
-        input.display(),
-    );
+    assert!(input.exists(), "fixture map missing: {}", input.display(),);
 
     // Use a tempfile under the OS temp dir so the integration test does not
     // depend on or stomp the checked-in `.prl`.
@@ -80,8 +73,7 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
     .expect("read_section_data")
     .expect("AnimatedLightWeightMaps section present");
 
-    let section = AnimatedLightWeightMapsSection::from_bytes(&section_bytes)
-        .expect("from_bytes");
+    let section = AnimatedLightWeightMapsSection::from_bytes(&section_bytes).expect("from_bytes");
 
     assert!(
         !section.chunk_rects.is_empty(),
@@ -100,8 +92,8 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
     // Round-trip via to_bytes/from_bytes and ensure the decoded section is
     // byte-identical.
     let re_bytes = section.to_bytes();
-    let re_section = AnimatedLightWeightMapsSection::from_bytes(&re_bytes)
-        .expect("round-trip from_bytes");
+    let re_section =
+        AnimatedLightWeightMapsSection::from_bytes(&re_bytes).expect("round-trip from_bytes");
     assert_eq!(
         section.chunk_rects, re_section.chunk_rects,
         "chunk_rects drifted during round-trip",
@@ -174,8 +166,7 @@ fn cap_fixture_every_texel_respects_max_lights_per_chunk() {
     .expect("read_section_data")
     .expect("AnimatedLightWeightMaps section present on cap fixture");
 
-    let section = AnimatedLightWeightMapsSection::from_bytes(&section_bytes)
-        .expect("from_bytes");
+    let section = AnimatedLightWeightMapsSection::from_bytes(&section_bytes).expect("from_bytes");
     let cap = MAX_ANIMATED_LIGHTS_PER_CHUNK as u32;
     for (i, entry) in section.offset_counts.iter().enumerate() {
         assert!(

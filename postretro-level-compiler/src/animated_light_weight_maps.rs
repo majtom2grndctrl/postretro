@@ -285,11 +285,12 @@ fn bake_one_chunk(
 /// compose shader re-applies color and intensity from the descriptor's
 /// animated channels.
 ///
-/// `light_contribution_and_direction` emits `color * intensity * ndotl * atten
-/// * cone`. Dividing by `color * intensity` yields `ndotl * atten * cone`
-/// directly. Monochrome scalar — the three channels are equal after the
-/// division and we pick the channel with the largest base color component for
-/// numerical stability (avoids divide-by-near-zero on black color channels).
+/// `light_contribution_and_direction` emits the product
+/// `color × intensity × ndotl × atten × cone`. Dividing by `color × intensity`
+/// yields `ndotl × atten × cone` directly. Monochrome scalar — the three
+/// channels are equal after the division and we pick the channel with the
+/// largest base color component for numerical stability (avoids
+/// divide-by-near-zero on black color channels).
 fn contribution_to_weight(contribution: Vec3, color: [f32; 3], intensity: f32) -> f32 {
     // Pick the dominant channel to invert. On the common case (white light)
     // all three channels are equal and any choice works; on a magenta light
@@ -801,11 +802,7 @@ mod tests {
             vec![animated_point_light_above()],
             |charts| full_face_chunk(charts, 0, vec![0]),
         );
-        let covered: usize = section
-            .offset_counts
-            .iter()
-            .filter(|e| e.count > 0)
-            .count();
+        let covered: usize = section.offset_counts.iter().filter(|e| e.count > 0).count();
         assert!(covered > 0, "expected at least one covered texel");
         let mean = section.texel_lights.len() as f64 / covered as f64;
         assert!(

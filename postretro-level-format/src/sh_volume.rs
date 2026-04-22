@@ -29,6 +29,14 @@ impl Default for ShProbe {
     }
 }
 
+/// Section-internal version written as the first u32 of every ShVolume
+/// section payload. Bumped any time the on-disk layout changes so the loader
+/// can reject stale `.prl` files with a clear error rather than silently
+/// misread them. History: version 1 (pre-animated-flag) — no `start_active`
+/// in the descriptor table; version 2 (current) — `start_active: u32` lives
+/// alongside the brightness/color counts.
+pub const SH_VOLUME_VERSION: u32 = 2;
+
 /// Byte stride of a single serialized base probe record: 27 f32 + 1 u8 +
 /// 3 bytes of padding to land on a 4-byte boundary = 112 bytes.
 ///
@@ -80,7 +88,8 @@ impl Default for AnimationDescriptor {
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   Header (44 bytes):
+///   Header (48 bytes):
+///     u32      version                (= SH_VOLUME_VERSION)
 ///     f32 × 3  grid_origin            (world-space min corner, meters)
 ///     f32 × 3  cell_size              (meters per cell along x/y/z)
 ///     u32 × 3  grid_dimensions        (probe count along x/y/z)
@@ -129,7 +138,7 @@ pub struct ShVolumeSection {
 }
 
 impl ShVolumeSection {
-    pub const HEADER_SIZE: usize = 44;
+    pub const HEADER_SIZE: usize = 48;
 
     /// Number of probes expected from the grid dimensions.
     pub fn total_probes(&self) -> usize {
@@ -146,6 +155,7 @@ impl ShVolumeSection {
         let mut buf = Vec::with_capacity(Self::HEADER_SIZE + total_probes * PROBE_STRIDE as usize);
 
         // Header
+        buf.extend_from_slice(&SH_VOLUME_VERSION.to_le_bytes());
         for v in &self.grid_origin {
             buf.extend_from_slice(&v.to_le_bytes());
         }
@@ -205,6 +215,17 @@ impl ShVolumeSection {
         }
 
         let mut o = 0;
+        let version = read_u32(data, o);
+        o += 4;
+        if version != SH_VOLUME_VERSION {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "sh volume section version {version}, expected {SH_VOLUME_VERSION} — \
+                     recompile the .prl with the current `prl-build`"
+                ),
+            )));
+        }
         let grid_origin = [
             read_f32(data, o),
             read_f32(data, o + 4),
@@ -480,10 +501,27 @@ mod tests {
     fn rejects_invalid_probe_stride() {
         let section = empty_section([1, 1, 1]);
         let mut bytes = section.to_bytes();
-        // probe_stride is at offset 36.
-        bytes[36..40].copy_from_slice(&10u32.to_le_bytes());
+        // Layout (little-endian): [version u32][origin f32×3][cell f32×3]
+        // [dims u32×3][probe_stride u32][animated_light_count u32]
+        // probe_stride lives at byte offset 4 + 12 + 12 + 12 = 40.
+        bytes[40..44].copy_from_slice(&10u32.to_le_bytes());
         let err = ShVolumeSection::from_bytes(&bytes).unwrap_err();
         assert!(matches!(err, FormatError::Io(_)));
+    }
+
+    #[test]
+    fn rejects_mismatched_section_version() {
+        let section = empty_section([1, 1, 1]);
+        let mut bytes = section.to_bytes();
+        // Version is the first u32. Writing an older version must be rejected
+        // so stale `.prl` files do not silently misread.
+        bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+        let err = ShVolumeSection::from_bytes(&bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("version"),
+            "expected version-mismatch error, got: {msg}",
+        );
     }
 
     #[test]
@@ -510,8 +548,10 @@ mod tests {
             bytes.len(),
             ShVolumeSection::HEADER_SIZE + PROBE_STRIDE as usize
         );
-        // animated_light_count bytes at offset 40..44 should be zero.
-        assert_eq!(&bytes[40..44], &0u32.to_le_bytes());
+        // animated_light_count bytes at offset 44..48 should be zero
+        // (header layout: version[0..4], origin[4..16], cell[16..28],
+        // dims[28..40], probe_stride[40..44], animated_light_count[44..48]).
+        assert_eq!(&bytes[44..48], &0u32.to_le_bytes());
     }
 
     /// Loader-side degradation contract: a PRL with the ShVolume section

@@ -1107,9 +1107,10 @@ mod tests {
         assert!(section.animation_descriptors.is_empty());
         assert!(section.per_light_sh.is_empty());
         // Round-trip the static-only layout just to be sure the header flag
-        // is zero.
+        // is zero. `animated_light_count` is the last u32 of the 48-byte
+        // header (bytes 44..48); bytes 0..4 are `SH_VOLUME_VERSION`.
         let bytes = section.to_bytes();
-        assert_eq!(&bytes[40..44], &0u32.to_le_bytes());
+        assert_eq!(&bytes[44..48], &0u32.to_le_bytes());
     }
 
     #[test]

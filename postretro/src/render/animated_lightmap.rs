@@ -30,11 +30,11 @@ pub const ANIMATED_ATLAS_SIZE: u32 = 1024;
 /// count exceeds this; we pick refusal for simplicity.
 const MAX_WORKGROUPS_PER_DIM: u32 = 65535;
 
-/// Matches Spec 1's proposed `MAX_ANIMATED_LIGHTS_PER_CHUNK = 4`. Used as
-/// the heatmap denominator in debug mode 1 — saturating at 1.0 when a
-/// covered texel references the cap. Duplicated here (rather than imported
-/// from the format crate) because Spec 1 has not yet exported the
-/// constant; update this if/when it does.
+/// Matches `postretro_level_format::animated_light_chunks::MAX_ANIMATED_LIGHTS_PER_CHUNK = 4`.
+/// Used as the heatmap denominator in debug mode 1 — saturating at 1.0
+/// when a covered texel references the cap. Kept as a local `u32` constant
+/// because the exported symbol is `usize`; casting at every use site adds
+/// noise without benefit.
 const DEBUG_MAX_LIGHTS_PER_CHUNK: u32 = 4;
 
 /// Env var selecting a compose-side debug visualization. Parsed once at
@@ -436,7 +436,7 @@ impl AnimatedLightmapResources {
         };
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Animated LM Compose"),
+            label: Some("Animated LM Clear+Compose"),
             timestamp_writes,
         });
         pass.set_bind_group(0, uniform_bind_group, &[]);
@@ -639,17 +639,27 @@ fn validate_cross_section(
     animated_light_count: u32,
 ) -> Result<(), String> {
     // Invariant 1: chunk_rects.len() == AnimatedLightChunks.chunks.len().
-    // The AnimatedLightChunks runtime loader is optional today. When the
-    // chunks section is missing we still validate the internal
-    // prefix-sum + light-index invariants; only the cross-section length
-    // check is skipped.
-    if let Some(chunks) = animated_chunks {
-        if section.chunk_rects.len() != chunks.chunks.len() {
-            return Err(format!(
-                "chunk_rects.len() ({}) != AnimatedLightChunks.chunks.len() ({})",
-                section.chunk_rects.len(),
-                chunks.chunks.len(),
-            ));
+    // The compiler emits weight-maps and chunks together (see `main.rs`), so
+    // a present weight-maps section with an absent chunks section is a
+    // malformed PRL — hard-error rather than quietly skipping this check.
+    match animated_chunks {
+        Some(chunks) => {
+            if section.chunk_rects.len() != chunks.chunks.len() {
+                return Err(format!(
+                    "chunk_rects.len() ({}) != AnimatedLightChunks.chunks.len() ({})",
+                    section.chunk_rects.len(),
+                    chunks.chunks.len(),
+                ));
+            }
+        }
+        None => {
+            if !section.chunk_rects.is_empty() {
+                return Err(format!(
+                    "AnimatedLightWeightMaps present ({} chunk_rects) but \
+                     AnimatedLightChunks section is missing — PRL is malformed",
+                    section.chunk_rects.len(),
+                ));
+            }
         }
     }
 
@@ -710,9 +720,32 @@ fn validate_cross_section(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::animated_light_chunks::{
+        AnimatedLightChunk, AnimatedLightChunksSection,
+    };
     use postretro_level_format::animated_light_weight_maps::{
         ChunkAtlasRect, TexelLight, TexelLightEntry,
     };
+
+    /// Build a stub `AnimatedLightChunksSection` with `n` empty chunks, so
+    /// the validator's cross-section length check passes.
+    fn mk_chunks(n: usize) -> AnimatedLightChunksSection {
+        AnimatedLightChunksSection {
+            chunks: (0..n)
+                .map(|_| AnimatedLightChunk {
+                    aabb_min: [0.0, 0.0, 0.0],
+                    face_index: 0,
+                    aabb_max: [1.0, 1.0, 1.0],
+                    index_offset: 0,
+                    uv_min: [0.0, 0.0],
+                    uv_max: [1.0, 1.0],
+                    index_count: 0,
+                    _padding: 0,
+                })
+                .collect(),
+            light_indices: Vec::new(),
+        }
+    }
 
     fn mk_rect(w: u32, h: u32, offset: u32) -> ChunkAtlasRect {
         ChunkAtlasRect {
@@ -851,7 +884,8 @@ mod tests {
                 weight: 0.5,
             }],
         );
-        assert!(validate_cross_section(&section, None, 1).is_ok());
+        let chunks = mk_chunks(1);
+        assert!(validate_cross_section(&section, Some(&chunks), 1).is_ok());
     }
 
     #[test]
@@ -867,7 +901,8 @@ mod tests {
             ],
             vec![],
         );
-        let err = validate_cross_section(&section, None, 0).unwrap_err();
+        let chunks = mk_chunks(2);
+        let err = validate_cross_section(&section, Some(&chunks), 0).unwrap_err();
         assert!(err.contains("prefix sum"), "unexpected error: {err}");
     }
 
@@ -884,7 +919,8 @@ mod tests {
                 weight: 1.0,
             }],
         );
-        let err = validate_cross_section(&section, None, 5).unwrap_err();
+        let chunks = mk_chunks(1);
+        let err = validate_cross_section(&section, Some(&chunks), 5).unwrap_err();
         assert!(err.contains("light_index"), "unexpected error: {err}");
     }
 
@@ -901,7 +937,8 @@ mod tests {
                 weight: 1.0,
             }],
         );
-        let err = validate_cross_section(&section, None, 1).unwrap_err();
+        let chunks = mk_chunks(1);
+        let err = validate_cross_section(&section, Some(&chunks), 1).unwrap_err();
         assert!(err.contains("texel_lights.len"), "unexpected error: {err}");
     }
 
@@ -919,8 +956,39 @@ mod tests {
             ],
             vec![],
         );
-        let err = validate_cross_section(&section, None, 0).unwrap_err();
+        let chunks = mk_chunks(1);
+        let err = validate_cross_section(&section, Some(&chunks), 0).unwrap_err();
         assert!(err.contains("offset_counts.len"), "unexpected error: {err}");
+    }
+
+    /// Regression: a non-empty weight-map section with a missing chunks
+    /// section is a malformed PRL (`main.rs` emits the two together). The
+    /// validator must hard-error rather than quietly skipping the
+    /// cross-section length check.
+    #[test]
+    fn validator_rejects_missing_chunks_when_weight_maps_present() {
+        let section = mk_section(
+            vec![mk_rect(1, 1, 0)],
+            vec![TexelLightEntry {
+                offset: 0,
+                count: 0,
+            }],
+            vec![],
+        );
+        let err = validate_cross_section(&section, None, 0).unwrap_err();
+        assert!(
+            err.contains("AnimatedLightChunks") && err.contains("malformed"),
+            "unexpected error: {err}",
+        );
+    }
+
+    /// An empty weight-map section (no chunk rects) combined with a missing
+    /// chunks section is still valid — the degradation path for maps with
+    /// zero animated lights.
+    #[test]
+    fn validator_accepts_empty_weight_maps_without_chunks() {
+        let section = mk_section(vec![], vec![], vec![]);
+        assert!(validate_cross_section(&section, None, 0).is_ok());
     }
 
     /// Compose-pass output atlas dimensions match the static lightmap atlas.

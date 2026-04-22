@@ -90,6 +90,10 @@ pub struct AnimatedLightBuffers {
     /// Writes are batched across the frame so multiple `set_active` calls
     /// collapse to one `write_buffer`.
     dirty: bool,
+    /// One-shot guard on the out-of-range `set_active` warning. Scripts may
+    /// drive `set_active` every frame for a light that was never baked; we
+    /// want one clear log line, not a per-frame spam.
+    oor_warned: bool,
 }
 
 impl AnimatedLightBuffers {
@@ -102,18 +106,38 @@ impl AnimatedLightBuffers {
     }
 
     /// Toggle the runtime `active` flag for an animated light. `slot` indexes
-    /// into the section's `animation_descriptors`. Marks the mirror dirty;
-    /// the next `upload_descriptors_if_dirty` call flushes to the GPU.
+    /// into the section's `animation_descriptors`. Marks the mirror dirty
+    /// **only when the state actually changes**; the next
+    /// `upload_descriptors_if_dirty` call flushes to the GPU.
     ///
-    /// Out-of-range `slot` is ignored (scripting may fire set_active for a
-    /// light that never made it into the bake). No panic, no log spam.
+    /// Out-of-range `slot` is a no-op that emits one warn-level log line on
+    /// first occurrence and stays silent thereafter (scripts may fire
+    /// `set_active` for a light that never made it into the bake). Kept
+    /// infallible because the scripting wiring isn't in place yet; promoting
+    /// the signature to `Result` is a scripting-era decision.
     pub fn set_active(&mut self, slot: usize, active: bool) {
         if (slot as u32) >= self.animated_light_count {
+            if !self.oor_warned {
+                self.oor_warned = true;
+                log::warn!(
+                    "[AnimatedLightBuffers] set_active called with out-of-range slot {} \
+                     (animated_light_count = {}); call ignored. Further out-of-range \
+                     warnings suppressed.",
+                    slot,
+                    self.animated_light_count,
+                );
+            }
             return;
         }
         let start = slot * ANIMATION_DESCRIPTOR_SIZE + ANIMATION_DESCRIPTOR_ACTIVE_OFFSET;
         let value: u32 = if active { 1 } else { 0 };
-        self.descriptor_mirror[start..start + 4].copy_from_slice(&value.to_ne_bytes());
+        let value_bytes = value.to_ne_bytes();
+        // No-op when the byte is already what we want — avoids a spurious
+        // `queue.write_buffer` on every-frame toggle-to-same-state calls.
+        if self.descriptor_mirror[start..start + 4] == value_bytes {
+            return;
+        }
+        self.descriptor_mirror[start..start + 4].copy_from_slice(&value_bytes);
         self.dirty = true;
     }
 
@@ -274,6 +298,7 @@ impl ShVolumeResources {
             descriptor_mirror: anim_descriptor_bytes,
             animated_light_count,
             dirty: false,
+            oor_warned: false,
         };
         Self {
             bind_group,
@@ -534,8 +559,10 @@ fn f32_slice_to_bytes(data: &[f32]) -> Vec<u8> {
 
 /// Minimum-size storage buffer payload for the `array<f32>` bindings
 /// (`anim_samples`, `anim_sh_data`) when a map has no animated lights.
-/// 16 bytes satisfies wgpu's non-zero-buffer binding requirement and
-/// comfortably exceeds the 4-byte f32 stride. The shader guards on
+/// Returns `ANIMATION_DESCRIPTOR_SIZE` (48) bytes — the same size as
+/// `dummy_descriptor_buffer` — so that both dummies are produced by the
+/// same constant and stay in sync if the stride ever changes. wgpu only
+/// requires non-zero size for `array<f32>` bindings; the shader guards on
 /// `animated_light_count == 0` before reading, so contents are irrelevant.
 fn dummy_storage_buffer() -> Vec<u8> {
     vec![0u8; ANIMATION_DESCRIPTOR_SIZE]
@@ -1144,6 +1171,7 @@ mod tests {
             descriptor_mirror: mirror,
             animated_light_count: 2,
             dirty: false,
+            oor_warned: false,
         };
 
         // Before: slot 0 is active (1).

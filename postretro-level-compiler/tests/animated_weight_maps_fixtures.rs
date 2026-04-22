@@ -18,6 +18,7 @@ use std::process::Command;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::{read_container, read_section_data};
 
 /// Walk from the crate root to the workspace root (for locating `assets/`).
@@ -108,6 +109,91 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
     );
 
     // Cleanup.
+    let _ = std::fs::remove_file(&output);
+    let _ = std::fs::remove_dir(&out_dir);
+}
+
+/// Regression: every `light_index` emitted into `texel_lights` must reference
+/// a slot in the runtime `AnimationDescriptor` buffer — i.e. the animated-
+/// only filter (`!is_dynamic && animation.is_some()`), NOT the broader
+/// `!is_dynamic` namespace that includes non-animated static lights.
+///
+/// Fixture: `test_animated_weight_maps_mixed.map` lists a non-animated static
+/// light FIRST and an animated light SECOND. Under the old (buggy) filter the
+/// animated light's `filtered_index` was 1, but the descriptor buffer only
+/// contained one entry (slot 0), so `light_index = 1` overflowed. This test
+/// asserts `light_index < animation_descriptors.len()` for every entry.
+#[test]
+fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
+    let ws = workspace_root();
+    let input = ws.join("assets/maps/test_animated_weight_maps_mixed.map");
+    assert!(input.exists(), "fixture map missing: {}", input.display(),);
+
+    let out_dir = std::env::temp_dir().join("postretro_fixture_mixed");
+    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let output = out_dir.join("test_animated_weight_maps_mixed.prl");
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = Command::new(cargo)
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "postretro-level-compiler",
+            "--bin",
+            "prl-build",
+            "--",
+        ])
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .current_dir(&ws)
+        .status()
+        .expect("spawn prl-build");
+    assert!(status.success(), "prl-build failed: {status}");
+
+    let bytes = std::fs::read(&output).expect("read compiled .prl");
+    let mut cursor = Cursor::new(&bytes);
+    let meta = read_container(&mut cursor).expect("read_container");
+
+    let weight_map_bytes = read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::AnimatedLightWeightMaps as u32,
+    )
+    .expect("read AnimatedLightWeightMaps")
+    .expect("AnimatedLightWeightMaps section present on mixed fixture");
+    let weight_maps =
+        AnimatedLightWeightMapsSection::from_bytes(&weight_map_bytes).expect("from_bytes");
+
+    let sh_volume_bytes = read_section_data(&mut cursor, &meta, SectionId::ShVolume as u32)
+        .expect("read ShVolume")
+        .expect("ShVolume section present on mixed fixture");
+    let sh_volume = ShVolumeSection::from_bytes(&sh_volume_bytes).expect("sh from_bytes");
+
+    let animated_light_count = sh_volume.animation_descriptors.len() as u32;
+    assert_eq!(
+        animated_light_count, 1,
+        "mixed fixture should produce exactly one animated descriptor (the single animated light); \
+         got {animated_light_count} — static light may have leaked into descriptor namespace",
+    );
+
+    assert!(
+        !weight_maps.texel_lights.is_empty(),
+        "mixed fixture must emit at least one per-texel weight entry",
+    );
+
+    for (i, tl) in weight_maps.texel_lights.iter().enumerate() {
+        assert!(
+            tl.light_index < animated_light_count,
+            "texel_lights[{}].light_index ({}) >= animation_descriptors.len() ({}) \
+             — chunk-list namespace is out of sync with the descriptor buffer",
+            i,
+            tl.light_index,
+            animated_light_count,
+        );
+    }
+
     let _ = std::fs::remove_file(&output);
     let _ = std::fs::remove_dir(&out_dir);
 }

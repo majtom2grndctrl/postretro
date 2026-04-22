@@ -66,6 +66,9 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 | Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity → baked cubemap |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |
+| Animated light weight maps | prl-build (animated-light-weight-maps plan) | SectionId 25 — per-texel light-weight data for the animated-lightmap compose pass; see `build_pipeline.md` for the full PRL section inventory |
+
+`chart_raster.rs` (in `postretro-level-compiler`) is a shared baker helper: both the static lightmap baker and the animated-weight baker use it to derive world positions and normals from chart placements without duplication.
 
 Full detail: `build_pipeline.md`.
 

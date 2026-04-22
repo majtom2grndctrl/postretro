@@ -8,6 +8,12 @@ Outputs:
     light above a parallel-plate blocker brush.
   - test_animated_weight_maps_cap.map: a room with enough overlapping animated
     lights that some texels hit MAX_ANIMATED_LIGHTS_PER_CHUNK (= 4).
+  - test_animated_weight_maps_mixed.map: one non-animated static light FIRST
+    followed by one animated light. Regression fixture for the chunk-list ↔
+    descriptor-buffer namespace alignment: if the compiler emits light_index
+    values in the `!is_dynamic` namespace (buggy) rather than the
+    `!is_dynamic && animation.is_some()` namespace (correct), every texel
+    references slot 0 — which is the static light, not a valid descriptor.
 
 Usage:
   python3 gen_animated_weight_maps_fixtures.py
@@ -160,8 +166,31 @@ def write_cap():
         f.write(map_file(ent))
 
 
+def write_mixed():
+    # One non-animated static light FIRST, one animated light SECOND. In the
+    # `!is_dynamic` namespace the animated light lives at index 1; in the
+    # `!is_dynamic && animation.is_some()` namespace it lives at index 0.
+    # The weight-map baker's emitted `light_index` values MUST land in the
+    # animated-only namespace (the runtime descriptor-buffer namespace) or
+    # the compose shader indexes the wrong descriptor at runtime.
+    brushes = sealed_room(0, 0, 0, 256, 256, 128)
+    ent = [
+        worldspawn(brushes),
+        info_player_start((128, 128, 24), angle=0),
+        # Non-animated static light (style=0 → no animation). Listed first on
+        # purpose: with the old buggy filter, the animated light would emit
+        # light_index=1 and the runtime would read past the descriptor buffer.
+        light_entity((64, 64, 100), intensity=200, style=0),
+        # Animated light, style=2 (slow pulse). Listed second.
+        light_entity((192, 192, 100), intensity=300, style=2),
+    ]
+    with open("test_animated_weight_maps_mixed.map", "w") as f:
+        f.write(map_file(ent))
+
+
 if __name__ == "__main__":
     write_single()
     write_occluded()
     write_cap()
-    print("Wrote test_animated_weight_maps_{single,occluded,cap}.map")
+    write_mixed()
+    print("Wrote test_animated_weight_maps_{single,occluded,cap,mixed}.map")

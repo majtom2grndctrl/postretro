@@ -8,10 +8,11 @@
 // union of contiguous ranges.
 //
 // Light indices in the emitted flat pool index into the **filtered** light
-// list (the `!is_dynamic`-filtered list — same namespace as the
-// animated-light descriptor buffer the runtime compose pass consumes).
-// `bake_only` animated lights participate in weight-map compose, so they are
-// NOT filtered out here.
+// list passed by the caller (the `!is_dynamic && animation.is_some()`
+// filter — same namespace and iteration order as the animated-light
+// `AnimationDescriptor` buffer the runtime compose pass consumes). No
+// per-entry remap is needed downstream. `bake_only` animated lights
+// participate in weight-map compose, so they are NOT filtered out here.
 //
 // See: context/plans/in-progress/animated-light-chunks/index.md
 
@@ -40,10 +41,11 @@ const MAX_OVERFLOW_LOG_LINES: u64 = 8;
 /// - `bvh_section`: mutated — `chunk_range_start` / `chunk_range_count` are
 ///   stamped on each leaf in flat-leaf-array order.
 /// - `filtered_lights` / `filtered_influence`: parallel slices, post
-///   `!is_dynamic` filter (i.e. the same light list the animated-light
-///   descriptor buffer is built from). Indices stored in the chunk light
-///   pool index into these slices. `bake_only` animated lights are retained
-///   here — they participate in weight-map compose at runtime.
+///   `!is_dynamic && animation.is_some()` filter — the same namespace and
+///   iteration order the runtime `AnimationDescriptor` buffer uses, so
+///   emitted indices match descriptor slots directly with no remap.
+///   `bake_only` animated lights are retained here — they participate in
+///   weight-map compose at runtime.
 /// - `face_charts`: per-face chart data from the lightmap baker. Indexed by
 ///   geometry face index; supplies the face-local (origin, u_axis, v_axis)
 ///   basis and world-meter UV bounds.
@@ -81,9 +83,10 @@ pub fn build_animated_light_chunks(
     let min_uv_extent = lightmap_texel_density.max(1.0e-4);
 
     // Build the animated subset, recording each light's *filtered* index so
-    // emitted u32s match the `LightInfluenceSection` namespace. Order matches
-    // the filtered light list so the per-chunk pool is fed in animation-
-    // descriptor order — a determinism precondition for the recursion.
+    // emitted u32s match the animated-descriptor namespace (`!is_dynamic`-
+    // filtered list). Order matches the filtered light list so the per-chunk
+    // pool is fed in animation-descriptor order — a determinism precondition
+    // for the recursion.
     let animated: Vec<AnimatedLight> = filtered_lights
         .iter()
         .zip(filtered_influence.iter())

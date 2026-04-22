@@ -266,19 +266,21 @@ fn main() -> anyhow::Result<()> {
     let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
     let light_influence_section = pack::encode_light_influence(&map_data.lights);
 
-    // The animated-light-chunks builder, by contrast, indexes into the
-    // `!is_dynamic` namespace — the same namespace the runtime's animated-
-    // light descriptor buffer uses (see `sh_bake.rs` line ~99). `bake_only`
-    // animated lights participate in weight-map compose and must appear in
-    // this list. Build a parallel (lights, influence) pair inline so the
-    // iteration order matches the descriptor buffer slot order exactly.
+    // The animated-light-chunks builder indexes into the
+    // `!is_dynamic && animation.is_some()` namespace — the exact same filter
+    // `sh_bake.rs` (~line 99) uses to build `animation_descriptors`. Emitted
+    // `light_index` values thus index the runtime `AnimationDescriptor` buffer
+    // directly, with no per-entry remap. Pre-filtering here (rather than
+    // inside the builder) keeps the namespace contract visible at the call
+    // site. `bake_only` animated lights participate in weight-map compose and
+    // are retained.
     let (animated_chunk_lights, animated_chunk_influence): (
         Vec<map_data::MapLight>,
         Vec<postretro_level_format::light_influence::InfluenceRecord>,
     ) = map_data
         .lights
         .iter()
-        .filter(|l| !l.is_dynamic)
+        .filter(|l| !l.is_dynamic && l.animation.is_some())
         .map(|l| {
             let (center, radius) = match l.light_type {
                 map_data::LightType::Directional => ([0.0f32, 0.0, 0.0], f32::MAX),

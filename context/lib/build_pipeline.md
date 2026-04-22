@@ -111,6 +111,8 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | ShVolume | 20 | When compiled with lighting |
 | LightInfluence | 21 | When compiled with lighting |
 | Lightmap | 22 | Always (placeholder atlas when a map has no static lights) |
+| AnimatedLightChunks | 23 | When compiled with animated lights |
+| AnimatedLightWeightMaps | 25 | When compiled with animated lights; per-texel weight maps for the compose pass |
 
 ### Runtime visibility
 

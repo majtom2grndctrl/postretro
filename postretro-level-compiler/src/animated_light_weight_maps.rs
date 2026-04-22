@@ -42,9 +42,11 @@ pub struct WeightMapInputs<'a> {
     pub geometry: &'a GeometryResult,
     pub chunk_section: &'a AnimatedLightChunksSection,
     /// Parallel to the chunk section's `light_indices` namespace. Chunk-list
-    /// indices are positions into this slice. Today it is the same list
-    /// `main.rs` hands `build_animated_light_chunks` (the `!is_dynamic`
-    /// filter), so the descriptor buffer and this baker agree without remap.
+    /// indices are positions into this slice. `main.rs` hands
+    /// `build_animated_light_chunks` a list filtered by
+    /// `!is_dynamic && animation.is_some()` — the same filter `sh_bake.rs`
+    /// uses for `animation_descriptors`, so the descriptor buffer and this
+    /// baker agree without remap.
     pub lights: &'a [MapLight],
     /// Per-face chart plan from `lightmap_bake`. Indexed by geometry face.
     pub face_charts: &'a [Chart],
@@ -337,15 +339,24 @@ fn chunk_atlas_rect(
     let fy_min = placement.y as f32 + padding + (chunk_uv_min[1] - chart.uv_min[1]) * scale_v;
     let fy_max = placement.y as f32 + padding + (chunk_uv_max[1] - chart.uv_min[1]) * scale_v;
 
-    let ax_min = fx_min.floor().max(0.0) as u32;
-    let ay_min = fy_min.floor().max(0.0) as u32;
+    let ax_min_raw = fx_min.floor().max(0.0) as u32;
+    let ay_min_raw = fy_min.floor().max(0.0) as u32;
     let ax_max_raw = fx_max.ceil().max(fx_min.floor() + 1.0) as u32;
     let ay_max_raw = fy_max.ceil().max(fy_min.floor() + 1.0) as u32;
 
-    let ax_max = ax_max_raw.min(atlas_width);
-    let ay_max = ay_max_raw.min(atlas_height);
-    let width = ax_max.saturating_sub(ax_min).max(1);
-    let height = ay_max.saturating_sub(ay_min).max(1);
+    // Clamp the min corner too so a chart placed past the atlas bound (a
+    // misplaced chart combined with outward rounding) does not underflow the
+    // `max - min` width computation. Without this clamp,
+    // `ax_max.saturating_sub(ax_min)` hit zero → `.max(1)` handed back a
+    // 1-texel rect at a coord beyond the atlas, which the runtime compose
+    // pass writes out-of-bounds with `textureStore`. Anchor any rogue rect to
+    // the last valid texel column/row.
+    let ax_min = ax_min_raw.min(atlas_width.saturating_sub(1));
+    let ay_min = ay_min_raw.min(atlas_height.saturating_sub(1));
+    let ax_max = ax_max_raw.min(atlas_width).max(ax_min + 1);
+    let ay_max = ay_max_raw.min(atlas_height).max(ay_min + 1);
+    let width = ax_max - ax_min;
+    let height = ay_max - ay_min;
 
     (ax_min, ay_min, width, height)
 }
@@ -809,5 +820,82 @@ mod tests {
             mean <= 2.5,
             "mean lights per covered texel {mean} exceeded 2.5 target",
         );
+    }
+
+    /// Regression: `chunk_atlas_rect` previously clamped only `ax_max` /
+    /// `ay_max` to the atlas extent. If a misplaced chart combined with
+    /// outward rounding put `ax_min >= atlas_width`, `ax_max - ax_min`
+    /// underflowed, `.max(1)` handed back a 1-texel rect beyond the atlas,
+    /// and the runtime compose's `textureStore` wrote past the atlas edge.
+    /// The fix clamps both corners; this test locks in the rect that comes
+    /// out of that fix.
+    #[test]
+    fn chunk_atlas_rect_handles_placement_at_and_beyond_atlas_bound() {
+        let chart = Chart {
+            origin: glam::Vec3::ZERO,
+            u_axis: glam::Vec3::X,
+            v_axis: glam::Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent: [1.0, 1.0],
+            normal: glam::Vec3::Y,
+            width_texels: 8,
+            height_texels: 8,
+        };
+        let atlas_size = 64u32;
+
+        // Case 1: placement exactly at the atlas edge — the rect must be
+        // anchored to the last valid texel column and width must be ≥ 1 and
+        // the rect must not extend past the atlas.
+        let placement = ChartPlacement {
+            x: atlas_size - 1,
+            y: atlas_size - 1,
+        };
+        let (ax, ay, w, h) = chunk_atlas_rect(
+            &chart,
+            placement,
+            [0.0, 0.0],
+            [1.0, 1.0],
+            atlas_size,
+            atlas_size,
+        );
+        assert!(ax < atlas_size, "ax_min {ax} overflowed atlas {atlas_size}");
+        assert!(ay < atlas_size, "ay_min {ay} overflowed atlas {atlas_size}");
+        assert!(w >= 1 && h >= 1);
+        assert!(
+            ax + w <= atlas_size,
+            "rect ends at {}; atlas size {atlas_size}",
+            ax + w
+        );
+        assert!(
+            ay + h <= atlas_size,
+            "rect ends at {}; atlas size {atlas_size}",
+            ay + h
+        );
+
+        // Case 2: placement intentionally placed past the atlas bound. The
+        // clamp must pin both corners inside the atlas rather than
+        // underflowing the width/height computation.
+        let placement_past = ChartPlacement {
+            x: atlas_size + 100,
+            y: atlas_size + 100,
+        };
+        let (ax2, ay2, w2, h2) = chunk_atlas_rect(
+            &chart,
+            placement_past,
+            [0.0, 0.0],
+            [1.0, 1.0],
+            atlas_size,
+            atlas_size,
+        );
+        assert!(
+            ax2 < atlas_size,
+            "ax_min {ax2} must be clamped inside atlas (was past-bound)",
+        );
+        assert!(
+            ay2 < atlas_size,
+            "ay_min {ay2} must be clamped inside atlas (was past-bound)",
+        );
+        assert!(ax2 + w2 <= atlas_size);
+        assert!(ay2 + h2 <= atlas_size);
     }
 }

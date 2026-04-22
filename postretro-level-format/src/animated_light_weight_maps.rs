@@ -39,9 +39,12 @@ pub struct TexelLightEntry {
 
 /// One light-weight entry: (light_index, weight).
 ///
-/// light_index: index into the AnimationDescriptor array (same namespace as
-/// AlphaLightsSection). weight: per-texel contribution magnitude (0.0..1.0,
-/// normalized after bake).
+/// `light_index`: direct slot into the GPU `AnimationDescriptor` buffer —
+/// the same namespace as `AnimatedLightChunks.chunks[i].light_indices`,
+/// filtered by `!is_dynamic && animation.is_some()`. No remap is needed at
+/// bake time because the chunk-list builder and the descriptor buffer use
+/// the same filter and iteration order. `weight`: per-texel contribution
+/// magnitude (0.0..1.0, normalized after bake).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TexelLight {
     pub light_index: u32,

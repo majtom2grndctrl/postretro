@@ -96,6 +96,7 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
 1. **Portal traversal** (CPU) — §2 flood-fill produces the visible-cell bitmask.
 2. **BVH traversal** (compute) — walks the global BVH; tests each leaf AABB against the frustum and the leaf's cell bit; writes or zeros the leaf's indirect buffer slot.
 3. **Light list upload** — uploads the active dynamic light array and per-light influence volumes to GPU storage buffers.
+4. **Animated lightmap compose** (compute) — clears the animated-lightmap atlas, then composites per-texel animated-light contributions into it using pre-baked weight maps and runtime-evaluated Catmull-Rom curves. Runs after BVH cull and before the depth prepass. See §4 "Animated lights" and `animated_lightmap.rs`.
 
 ### 7.2 Depth Pre-Pass
 

@@ -26,10 +26,6 @@ use crate::geometry::FaceIndexRange;
 use crate::lightmap_bake::Chart;
 use crate::map_data::MapLight;
 
-/// Min world-extent floor (meters). Below this any further UV split would
-/// project to a degenerate world AABB on tiny or skewed faces.
-pub const MIN_CHUNK_WORLD_EXTENT: f32 = 0.01;
-
 /// How many overflow events to log individually before falling back to a
 /// single summary log line. Keeps the compile log readable on pathological
 /// inputs while preserving the first few diagnostic lines.
@@ -275,11 +271,14 @@ fn recurse(
         return;
     }
 
-    let world_extent = aabb_max - aabb_min;
-    let world_min_extent = world_extent.x.min(world_extent.y).min(world_extent.z);
+    // Termination floor: the face's (u_axis, v_axis) basis is orthonormal
+    // (see lightmap_bake.rs), so `uv_extent` is already the world-meter
+    // extent along the face's own basis. A world-axis min-extent check would
+    // trip on the (always-zero) thickness dimension of any axis-aligned
+    // planar face — walls, floors, ceilings — and defeat subdivision on the
+    // common case. Subdivide until UV extent drops below one lightmap texel.
     let uv_extent_min = uv_extent[0].min(uv_extent[1]);
-    let at_min_extent =
-        uv_extent_min <= min_uv_extent || world_min_extent <= MIN_CHUNK_WORLD_EXTENT;
+    let at_min_extent = uv_extent_min <= min_uv_extent;
 
     if hits.len() <= MAX_ANIMATED_LIGHTS_PER_CHUNK || at_min_extent {
         if hits.len() > MAX_ANIMATED_LIGHTS_PER_CHUNK {
@@ -401,11 +400,6 @@ mod tests {
 
     fn chart_xz_plane() -> Chart {
         // 1m × 1m face on XZ at y=0, +Y normal. uv_extent = (1, 1).
-        //
-        // NOTE: an axis-aligned planar face projects to a world AABB with one
-        // zero-length dimension, which immediately trips the
-        // `MIN_CHUNK_WORLD_EXTENT` floor on the very first recursion. Tests
-        // that need to exercise actual subdivision must use `chart_tilted()`.
         Chart {
             origin: Vec3::ZERO,
             u_axis: Vec3::X,
@@ -418,9 +412,8 @@ mod tests {
         }
     }
 
-    /// Chart with non-axis-aligned (u,v) basis so every world-AABB dimension
-    /// is non-degenerate — required for subdivision tests that must not trip
-    /// the `MIN_CHUNK_WORLD_EXTENT` floor on the first recursion.
+    /// Chart with non-axis-aligned (u,v) basis. Retained from earlier tests
+    /// as a secondary fixture exercising skewed UV→world projection.
     fn chart_tilted(origin: Vec3) -> Chart {
         Chart {
             origin,
@@ -636,9 +629,7 @@ mod tests {
     }
 
     /// Scope case 3: > cap overlapping animated lights → subdivision produces
-    /// multiple chunks, none exceeding the cap. Uses `chart_tilted` so the
-    /// projected world AABB has non-degenerate extent in all three axes —
-    /// otherwise `MIN_CHUNK_WORLD_EXTENT` trips on the first recursion.
+    /// multiple chunks, none exceeding the cap.
     #[test]
     fn over_cap_overlapping_animated_lights_subdivide() {
         // 6 lights, each concentrated in a different (u,v) quadrant so
@@ -692,6 +683,52 @@ mod tests {
             bvh.leaves[0].chunk_range_count as usize,
             section.chunks.len()
         );
+    }
+
+    /// Regression: an axis-aligned planar face (walls/floors/ceilings — the
+    /// common case) must subdivide. Earlier the builder applied a
+    /// world-AABB min-extent floor that tripped on the planar face's
+    /// zero-thickness dimension and defeated subdivision entirely.
+    #[test]
+    fn axis_aligned_planar_face_subdivides() {
+        // 4 lights, one in each quadrant of a 1m × 1m XZ-plane face.
+        let uv_centers = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
+        let lights: Vec<_> = uv_centers.iter().map(|_| mk_animated_light()).collect();
+        let influence: Vec<_> = uv_centers
+            .iter()
+            .map(|&(u, v)| InfluenceRecord {
+                center: [u, 0.0, v],
+                radius: 0.2,
+            })
+            .collect();
+        // Pack two more overlapping lights at the same centers so the root
+        // rect sees > cap and must subdivide.
+        let mut all_lights = lights.clone();
+        let mut all_influence = influence.clone();
+        all_lights.push(mk_animated_light());
+        all_influence.push(InfluenceRecord {
+            center: [0.5, 0.0, 0.5],
+            radius: 1.0,
+        });
+
+        let mut bvh = make_bvh_with_one_leaf();
+        let section = build_animated_light_chunks(
+            &mut bvh,
+            &all_lights,
+            &all_influence,
+            &[chart_xz_plane()],
+            &one_face_range(),
+            0.01,
+        );
+
+        assert!(
+            section.chunks.len() > 1,
+            "planar face must subdivide; got {} chunk(s)",
+            section.chunks.len()
+        );
+        for c in &section.chunks {
+            assert!((c.index_count as usize) <= MAX_ANIMATED_LIGHTS_PER_CHUNK);
+        }
     }
 
     /// Scope case 4: min-extent floor forces a single chunk to exceed the cap

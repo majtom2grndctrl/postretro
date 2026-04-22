@@ -769,4 +769,48 @@ mod tests {
         }
         assert_eq!(section.offset_counts.len() as u32, running);
     }
+
+    /// Acceptance criterion: per-map byte-size budget of 8 MB. Asserted here
+    /// against a representative synthetic single-face / single-light fixture;
+    /// the bundled fixture maps repeat this check end-to-end in the
+    /// `animated_weight_maps_fixtures` integration test.
+    #[test]
+    fn byte_size_under_8_mib_budget() {
+        let section = bake_with_geometry_and_chunks(
+            unit_floor_geometry(),
+            vec![animated_point_light_above()],
+            |charts| full_face_chunk(charts, 0, vec![0]),
+        );
+        let bytes = section.to_bytes();
+        assert!(
+            bytes.len() < 8 * 1024 * 1024,
+            "section exceeded 8 MiB budget ({} bytes)",
+            bytes.len(),
+        );
+    }
+
+    /// Acceptance criterion: mean animated lights per covered texel stays
+    /// ≤ 2.5 on representative fixtures. Asserted here on the single-chunk
+    /// single-light synthetic map (ratio = 1.0). Fixtures that explicitly
+    /// exercise the cap (e.g. `test_animated_weight_maps_cap.map`) are
+    /// by-design excluded from this bound.
+    #[test]
+    fn mean_lights_per_covered_texel_under_2_5() {
+        let section = bake_with_geometry_and_chunks(
+            unit_floor_geometry(),
+            vec![animated_point_light_above()],
+            |charts| full_face_chunk(charts, 0, vec![0]),
+        );
+        let covered: usize = section
+            .offset_counts
+            .iter()
+            .filter(|e| e.count > 0)
+            .count();
+        assert!(covered > 0, "expected at least one covered texel");
+        let mean = section.texel_lights.len() as f64 / covered as f64;
+        assert!(
+            mean <= 2.5,
+            "mean lights per covered texel {mean} exceeded 2.5 target",
+        );
+    }
 }

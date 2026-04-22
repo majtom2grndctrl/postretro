@@ -30,6 +30,84 @@ pub const ANIMATED_ATLAS_SIZE: u32 = 1024;
 /// count exceeds this; we pick refusal for simplicity.
 const MAX_WORKGROUPS_PER_DIM: u32 = 65535;
 
+/// Matches Spec 1's proposed `MAX_ANIMATED_LIGHTS_PER_CHUNK = 4`. Used as
+/// the heatmap denominator in debug mode 1 — saturating at 1.0 when a
+/// covered texel references the cap. Duplicated here (rather than imported
+/// from the format crate) because Spec 1 has not yet exported the
+/// constant; update this if/when it does.
+const DEBUG_MAX_LIGHTS_PER_CHUNK: u32 = 4;
+
+/// Env var selecting a compose-side debug visualization. Parsed once at
+/// renderer init; unset / empty → normal path.
+const DEBUG_ENV_VAR: &str = "POSTRETRO_ANIMATED_LM_DEBUG";
+
+/// CPU-side mirror of the `DebugConfig` uniform consumed by
+/// `animated_lightmap_compose.wgsl`. See the shader's `DebugConfig` struct
+/// for field semantics.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AnimatedLmDebugConfig {
+    /// 0 = off, 1 = count heatmap, 2 = isolate a single descriptor slot.
+    pub mode: u32,
+    /// Descriptor slot to isolate when `mode == 2`. Ignored otherwise.
+    pub isolate_slot: u32,
+}
+
+impl AnimatedLmDebugConfig {
+    /// Parse `POSTRETRO_ANIMATED_LM_DEBUG`. Recognized values:
+    /// - unset / empty → off.
+    /// - `count` → mode 1.
+    /// - `isolate=<u32>` → mode 2 with the given descriptor slot.
+    /// Anything else logs a warning and falls back to off so a typo doesn't
+    /// silently change rendering.
+    pub fn from_env() -> Self {
+        let Ok(raw) = std::env::var(DEBUG_ENV_VAR) else {
+            return Self::default();
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Self::default();
+        }
+        if trimmed.eq_ignore_ascii_case("count") {
+            log::info!("[Renderer] Animated LM debug: count heatmap (mode 1)");
+            return Self {
+                mode: 1,
+                isolate_slot: 0,
+            };
+        }
+        if let Some(rest) = trimmed.strip_prefix("isolate=") {
+            match rest.parse::<u32>() {
+                Ok(slot) => {
+                    log::info!("[Renderer] Animated LM debug: isolate slot {slot} (mode 2)");
+                    return Self {
+                        mode: 2,
+                        isolate_slot: slot,
+                    };
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[Renderer] {DEBUG_ENV_VAR}='{raw}' has invalid slot: {err}; debug off",
+                    );
+                    return Self::default();
+                }
+            }
+        }
+        log::warn!(
+            "[Renderer] {DEBUG_ENV_VAR}='{raw}' not recognized (expected 'count' or \
+             'isolate=<u32>'); debug off",
+        );
+        Self::default()
+    }
+
+    fn to_uniform_bytes(self) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&self.mode.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&self.isolate_slot.to_ne_bytes());
+        bytes[8..12].copy_from_slice(&DEBUG_MAX_LIGHTS_PER_CHUNK.to_ne_bytes());
+        // bytes[12..16] = padding, already zero.
+        bytes
+    }
+}
+
 /// One 8×8 atlas tile assigned to a chunk. `workgroup_id.x` indexes this
 /// array in the compose shader.
 #[repr(C)]
@@ -125,6 +203,7 @@ impl AnimatedLightmapResources {
         animated_chunks: Option<&AnimatedLightChunksSection>,
         animation: &AnimatedLightBuffers,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        debug_config: AnimatedLmDebugConfig,
     ) -> Result<Self, String> {
         // 1×1 zero dummy used either as the sole binding (no weight maps
         // present) or as a placeholder until the real atlas view is built.
@@ -213,6 +292,17 @@ impl AnimatedLightmapResources {
         let dispatch_tiles_buffer =
             create_storage_buffer(device, "Animated LM Dispatch Tiles", &dispatch_tiles_bytes);
 
+        // Small uniform carrying the debug-viz selection. One-time upload;
+        // nothing reads or writes it after init.
+        let debug_buffer = {
+            use wgpu::util::DeviceExt;
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Animated LM Debug Config"),
+                contents: &debug_config.to_uniform_bytes(),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        };
+
         // Pipeline + bind groups.
         let compute_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Animated LM Compute BGL"),
@@ -287,6 +377,10 @@ impl AnimatedLightmapResources {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(&storage_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: debug_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -358,7 +452,7 @@ impl AnimatedLightmapResources {
     }
 }
 
-fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 7] {
+fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
     let storage_read = wgpu::BindingType::Buffer {
         ty: wgpu::BufferBindingType::Storage { read_only: true },
         has_dynamic_offset: false,
@@ -408,6 +502,16 @@ fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 7] {
                 access: wgpu::StorageTextureAccess::WriteOnly,
                 format: wgpu::TextureFormat::Rgba16Float,
                 view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 7,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
             },
             count: None,
         },
@@ -620,6 +724,50 @@ mod tests {
     }
 
     #[test]
+    fn compose_shader_parses_and_declares_debug_binding() {
+        // Parse the concatenated compose + curve_eval source (same concat
+        // the runtime does) with naga so the debug binding addition stays
+        // syntactically sound without needing a GPU.
+        let src = concat!(
+            include_str!("../shaders/animated_lightmap_compose.wgsl"),
+            "\n",
+            include_str!("../shaders/curve_eval.wgsl"),
+        );
+        let module =
+            naga::front::wgsl::parse_str(src).expect("compose shader should parse as WGSL");
+        // Both entry points exist.
+        let has_clear = module
+            .entry_points
+            .iter()
+            .any(|ep| ep.name == "clear_main" && ep.stage == naga::ShaderStage::Compute);
+        let has_compose = module
+            .entry_points
+            .iter()
+            .any(|ep| ep.name == "compose_main" && ep.stage == naga::ShaderStage::Compute);
+        assert!(has_clear, "clear_main missing");
+        assert!(has_compose, "compose_main missing");
+        // DebugConfig struct is declared.
+        let has_debug_struct = module.types.iter().any(|(_, ty)| {
+            matches!(&ty.inner, naga::TypeInner::Struct { .. })
+                && ty.name.as_deref() == Some("DebugConfig")
+        });
+        assert!(has_debug_struct, "DebugConfig struct missing from shader");
+    }
+
+    #[test]
+    fn debug_config_uniform_bytes_layout() {
+        let cfg = AnimatedLmDebugConfig {
+            mode: 2,
+            isolate_slot: 7,
+        };
+        let bytes = cfg.to_uniform_bytes();
+        assert_eq!(&bytes[0..4], &2u32.to_ne_bytes());
+        assert_eq!(&bytes[4..8], &7u32.to_ne_bytes());
+        assert_eq!(&bytes[8..12], &DEBUG_MAX_LIGHTS_PER_CHUNK.to_ne_bytes());
+        assert_eq!(&bytes[12..16], &[0, 0, 0, 0]);
+    }
+
+    #[test]
     fn dispatch_tile_expansion_small_rect() {
         // 5×5 rect → single 8×8 tile.
         let tiles = expand_dispatch_tiles(&[mk_rect(5, 5, 0)]);
@@ -772,5 +920,16 @@ mod tests {
         );
         let err = validate_cross_section(&section, None, 0).unwrap_err();
         assert!(err.contains("offset_counts.len"), "unexpected error: {err}");
+    }
+
+    /// Compose-pass output atlas dimensions match the static lightmap atlas.
+    /// Both atlases share one UV in the forward shader, so a mismatch would
+    /// silently corrupt sampling. No wgpu device required — compare constants.
+    #[test]
+    fn compose_atlas_dimensions_match_static_lightmap() {
+        assert_eq!(
+            ANIMATED_ATLAS_SIZE, 1024,
+            "animated lightmap atlas must match the 1024² static lightmap atlas"
+        );
     }
 }

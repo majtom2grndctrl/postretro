@@ -65,6 +65,20 @@ struct DispatchTile {
     _pad: u32,
 };
 
+// Debug visualization uniform. Written once at init from the
+// `POSTRETRO_ANIMATED_LM_DEBUG` env var (see `animated_lightmap.rs`).
+//   mode = 0: normal path (accumulate shaded irradiance).
+//   mode = 1: per-texel animated-light count as a red heatmap, scaled by
+//             `MAX_ANIMATED_LIGHTS_PER_CHUNK_F`.
+//   mode = 2: isolate a single descriptor slot; only contributions whose
+//             `light_index == isolate_slot` accumulate.
+struct DebugConfig {
+    mode: u32,
+    isolate_slot: u32,
+    max_lights_per_chunk: u32,
+    _pad: u32,
+};
+
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 @group(1) @binding(0) var<storage, read> chunk_rects: array<ChunkAtlasRect>;
@@ -74,6 +88,7 @@ struct DispatchTile {
 @group(1) @binding(4) var<storage, read> descriptors: array<AnimationDescriptor>;
 @group(1) @binding(5) var<storage, read> anim_samples: array<f32>;
 @group(1) @binding(6) var animated_lm_atlas: texture_storage_2d<rgba16float, write>;
+@group(1) @binding(7) var<uniform> debug_config: DebugConfig;
 
 @compute @workgroup_size(8, 8, 1)
 fn clear_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -98,9 +113,27 @@ fn compose_main(
     }
     let texel_idx = rect.texel_offset + rect_y * rect.width + rect_x;
     let oc = offset_counts[texel_idx];
+
+    // Debug mode 1: per-texel light-count heatmap (red channel). Emit
+    // before the accumulation loop and return — nothing else matters.
+    if (debug_config.mode == 1u) {
+        let denom = max(f32(debug_config.max_lights_per_chunk), 1.0);
+        let heat = f32(oc.count) / denom;
+        textureStore(
+            animated_lm_atlas,
+            vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
+            vec4<f32>(heat, 0.0, 0.0, 1.0),
+        );
+        return;
+    }
+
     var accum = vec3<f32>(0.0);
     for (var i: u32 = 0u; i < oc.count; i = i + 1u) {
         let entry = texel_lights[oc.offset + i];
+        // Debug mode 2: isolate a single descriptor slot.
+        if (debug_config.mode == 2u && entry.light_index != debug_config.isolate_slot) {
+            continue;
+        }
         let desc = descriptors[entry.light_index];
         if (desc.is_active == 0u) {
             continue;

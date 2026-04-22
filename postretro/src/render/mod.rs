@@ -1095,12 +1095,16 @@ impl Renderer {
         // The construction runs the cross-section validator and returns
         // an error for an inconsistent section; we surface it as an
         // initialization panic (map loads are not recoverable here).
+        // Env-var-gated debug visualization. Read once at init; no per-frame
+        // string reads. See `AnimatedLmDebugConfig::from_env`.
+        let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
             &device,
             geometry.and_then(|g| g.animated_light_weight_maps),
             geometry.and_then(|g| g.animated_light_chunks),
             &sh_volume_resources.animation,
             &uniform_bind_group_layout,
+            animated_lm_debug,
         )
         .map_err(|msg| anyhow::anyhow!("[Renderer] animated lightmap init failed: {msg}"))?;
 

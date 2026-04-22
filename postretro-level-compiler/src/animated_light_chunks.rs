@@ -8,8 +8,10 @@
 // union of contiguous ranges.
 //
 // Light indices in the emitted flat pool index into the **filtered** light
-// list (the `!bake_only`-filtered list — same namespace as `AlphaLightsSection`
-// and `LightInfluenceSection`).
+// list (the `!is_dynamic`-filtered list — same namespace as the
+// animated-light descriptor buffer the runtime compose pass consumes).
+// `bake_only` animated lights participate in weight-map compose, so they are
+// NOT filtered out here.
 //
 // See: context/plans/in-progress/animated-light-chunks/index.md
 
@@ -38,9 +40,10 @@ const MAX_OVERFLOW_LOG_LINES: u64 = 8;
 /// - `bvh_section`: mutated — `chunk_range_start` / `chunk_range_count` are
 ///   stamped on each leaf in flat-leaf-array order.
 /// - `filtered_lights` / `filtered_influence`: parallel slices, post
-///   `!bake_only` filter (i.e. the same light list `AlphaLightsSection` and
-///   `LightInfluenceSection` are built from). Indices stored in the chunk
-///   light pool index into these slices.
+///   `!is_dynamic` filter (i.e. the same light list the animated-light
+///   descriptor buffer is built from). Indices stored in the chunk light
+///   pool index into these slices. `bake_only` animated lights are retained
+///   here — they participate in weight-map compose at runtime.
 /// - `face_charts`: per-face chart data from the lightmap baker. Indexed by
 ///   geometry face index; supplies the face-local (origin, u_axis, v_axis)
 ///   basis and world-meter UV bounds.
@@ -86,8 +89,10 @@ pub fn build_animated_light_chunks(
         .zip(filtered_influence.iter())
         .enumerate()
         .filter_map(|(i, (light, infl))| {
-            if !light.bake_only
-                && !light.is_dynamic
+            // `bake_only` animated lights participate in weight-map compose
+            // (retroactive Spec 1 change) so they are NOT filtered out here.
+            // `is_dynamic` lights are already excluded by the caller's filter.
+            if !light.is_dynamic
                 && light.animation.is_some()
                 && infl.radius != f32::MAX
                 && infl.radius > 0.0
@@ -519,6 +524,7 @@ mod tests {
                 phase: 0.0,
                 brightness: Some(vec![1.0, 0.5]),
                 color: None,
+                start_active: true,
             }),
             cast_shadows: true,
             bake_only: false,
@@ -771,23 +777,12 @@ mod tests {
         assert_eq!(section.light_indices.len(), n_lights);
     }
 
-    /// Scope case 6: `bake_only` lights are not treated as animated, even if
-    /// they carry an animation and a non-directional influence.
-    ///
-    /// The plan defines an animated light as
-    /// `!bake_only && !is_dynamic && animation.is_some() && radius != MAX`.
-    /// That contract is enforced at two layers: the caller (`main.rs`)
-    /// pre-filters `bake_only` out of `filtered_lights` before constructing
-    /// the `LightInfluenceSection`, AND the builder's own animated-subset
-    /// predicate re-checks `!bake_only` defensively. This test exercises the
-    /// builder layer directly — it passes a bake-only light (with an
-    /// animation and a bounded influence radius) in through `filtered_lights`
-    /// and asserts the builder still emits no chunk for it.
+    /// `bake_only` animated lights participate in weight-map compose at
+    /// runtime (retroactive Spec 1 change, see plan Settled decisions), so
+    /// the builder MUST emit a chunk for them. Only `!is_dynamic &&
+    /// animation.is_some()` with a bounded influence radius gates inclusion.
     #[test]
-    fn bake_only_animated_light_is_filtered_by_builder() {
-        // Feed the builder a bake-only light with an animation and a
-        // non-directional influence. If the builder ever stops checking
-        // `!bake_only`, this test will start emitting a chunk and fail.
+    fn bake_only_animated_light_produces_a_chunk() {
         let lights = vec![mk_bake_only_light()];
         let influence = vec![mk_inf(0.5, 0.5, 5.0)];
         let mut bvh = make_bvh_with_one_leaf();
@@ -799,12 +794,13 @@ mod tests {
             &one_face_range(),
             0.04,
         );
-        assert!(
-            section.chunks.is_empty(),
-            "bake_only light must not produce an animated-light chunk",
+        assert_eq!(
+            section.chunks.len(),
+            1,
+            "bake_only animated light must participate in weight-map compose",
         );
-        assert!(section.light_indices.is_empty());
-        assert_eq!(bvh.leaves[0].chunk_range_count, 0);
+        assert_eq!(section.light_indices, vec![0]);
+        assert_eq!(bvh.leaves[0].chunk_range_count, 1);
     }
 
     /// Scope case 7: animated-flagged `is_dynamic` lights are not treated as
@@ -831,9 +827,9 @@ mod tests {
     /// into the filtered list are skipped by the builder's animated predicate,
     /// so emitted indices must be a subset of the animated positions only.
     ///
-    /// We use `is_dynamic` for the non-animated slots; `bake_only` would also
-    /// work (the builder filters both — see
-    /// `bake_only_animated_light_is_filtered_by_builder`).
+    /// We use `is_dynamic` for the non-animated slots (the builder filters
+    /// those out). `bake_only` animated lights, by contrast, ARE retained —
+    /// see `bake_only_animated_light_produces_a_chunk`.
     #[test]
     fn index_namespace_matches_filtered_list_positions() {
         // Filtered list: [animated, dynamic, animated, dynamic, animated].

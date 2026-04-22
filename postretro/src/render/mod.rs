@@ -1641,6 +1641,23 @@ impl Renderer {
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
+
+        // Flush any pending `active` toggles on animated lights. Scripting
+        // calls `set_active` during game-logic update (frame order: Input →
+        // Game → Audio → Render). The compose pass (Task 5) and this frame's
+        // SH-volume fragment pass both read from the descriptor buffer, so
+        // the upload must land before either runs.
+        self.sh_volume_resources
+            .animation
+            .upload_descriptors_if_dirty(&self.queue);
+    }
+
+    /// Script-facing: toggle an animated light's `active` flag. `slot` is the
+    /// animated-light index from the SH section. The change is flushed to the
+    /// GPU on the next `update_per_frame_uniforms` call.
+    #[allow(dead_code)]
+    pub fn set_animated_light_active(&mut self, slot: usize, active: bool) {
+        self.sh_volume_resources.animation.set_active(slot, active);
     }
 
     /// Update the dynamic lights buffer with per-frame shadow slot assignments.

@@ -47,6 +47,11 @@ pub const PROBE_MONO_BYTES: u32 = 36;
 ///
 /// A `brightness_count` / `color_count` of 0 means the channel holds constant
 /// over the cycle (use `base_color` or unit brightness, respectively).
+///
+/// `start_active` is the initial runtime on/off state. 1 = active at map load
+/// (the default — lights light); 0 = spawned dark, typically because the
+/// entity carried `_start_inactive = 1`. Scripting toggles the GPU mirror of
+/// this flag at runtime; only the initial value lives on disk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimationDescriptor {
     pub period: f32,
@@ -54,6 +59,20 @@ pub struct AnimationDescriptor {
     pub base_color: [f32; 3],
     pub brightness: Vec<f32>,
     pub color: Vec<[f32; 3]>,
+    pub start_active: u32,
+}
+
+impl Default for AnimationDescriptor {
+    fn default() -> Self {
+        Self {
+            period: 0.0,
+            phase: 0.0,
+            base_color: [0.0; 3],
+            brightness: Vec::new(),
+            color: Vec::new(),
+            start_active: 1,
+        }
+    }
 }
 
 /// SH irradiance volume section (ID 20).
@@ -80,6 +99,7 @@ pub struct AnimationDescriptor {
 ///       f32 × 3 base_color
 ///       u32 brightness_count
 ///       u32 color_count
+///       u32 start_active            (1 = lit at map load, 0 = _start_inactive)
 ///       f32 × brightness_count      (brightness samples)
 ///       f32 × 3 × color_count       (RGB color samples)
 ///
@@ -157,6 +177,7 @@ impl ShVolumeSection {
             }
             buf.extend_from_slice(&(desc.brightness.len() as u32).to_le_bytes());
             buf.extend_from_slice(&(desc.color.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&desc.start_active.to_le_bytes());
             for b in &desc.brightness {
                 buf.extend_from_slice(&b.to_le_bytes());
             }
@@ -256,12 +277,13 @@ impl ShVolumeSection {
             ];
             o += 20;
 
-            if data.len() < o + 8 {
+            if data.len() < o + 12 {
                 return Err(truncated("animation descriptor sample counts"));
             }
             let brightness_count = read_u32(data, o) as usize;
             let color_count = read_u32(data, o + 4) as usize;
-            o += 8;
+            let start_active = read_u32(data, o + 8);
+            o += 12;
 
             let brightness_bytes = brightness_count * 4;
             let color_bytes = color_count * 12;
@@ -291,6 +313,7 @@ impl ShVolumeSection {
                 base_color,
                 brightness,
                 color,
+                start_active,
             });
         }
 
@@ -408,6 +431,7 @@ mod tests {
                     base_color: [1.0, 0.9, 0.8],
                     brightness: vec![0.1, 0.5, 1.0, 0.5],
                     color: Vec::new(),
+                    start_active: 1,
                 },
                 AnimationDescriptor {
                     period: 2.0,
@@ -415,6 +439,7 @@ mod tests {
                     base_color: [0.2, 0.4, 1.0],
                     brightness: Vec::new(),
                     color: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    start_active: 0,
                 },
             ],
             per_light_sh: vec![

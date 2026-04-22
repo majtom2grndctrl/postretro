@@ -89,10 +89,15 @@ struct ShGridInfo {
 // Per-light animation descriptor — matches ANIMATION_DESCRIPTOR_SIZE (48 B)
 // in postretro/src/render/sh_volume.rs. Field order diverges from the spec
 // prose to hit exactly 48 bytes: with the spec's original order, color_count
-// ends at byte 44 and _padding: vec2<f32> (AlignOf=8) would be pushed to 48,
-// making the struct 56 B and stride 64. Instead we pack four scalars after
-// base_color so color_count ends at 36; _padding then lands at 40 (4-byte
-// implicit gap at 36..40) and occupies 40..48 for a 48-byte stride.
+// ends at byte 44 and trailing vec2<f32> padding (AlignOf=8) would be pushed
+// to 48, making the struct 56 B and stride 64. Instead we pack four scalars
+// after base_color so color_count ends at 36; `is_active` fills the 4-byte
+// implicit gap at 36..40 and _pad occupies 40..48 for a 48-byte stride. The
+// trailing vec2<f32> is reserved for the animated-direction channel (Plan 2
+// Sub-plan 1). `is_active` is toggled at runtime by the scripting layer —
+// inactive lights contribute nothing to either the SH volume or the compose
+// pass. Named `is_active` rather than `active` because WGSL reserves the
+// latter as a keyword.
 struct AnimationDescriptor {
     period: f32,
     phase: f32,
@@ -101,7 +106,8 @@ struct AnimationDescriptor {
     base_color: vec3<f32>,
     color_offset: u32,
     color_count: u32,
-    _padding: vec2<f32>,
+    is_active: u32,
+    _pad: vec2<f32>,
 };
 
 @group(3) @binding(0) var sh_sampler: sampler;
@@ -444,7 +450,12 @@ fn sample_sh_indirect_fast(
             let color = sample_color_catmull_rom(
                 desc.color_offset, desc.color_count, cycle_t, desc.base_color,
             );
-            let modulate = color * brightness;
+            // Scripts toggle `is_active` at runtime to enable/disable an
+            // animated light without a level reload. Inactive lights must
+            // contribute nothing to the SH volume — the compose pass (Task 5)
+            // applies the same gate on the direct side.
+            let active_f = f32(desc.is_active);
+            let modulate = color * brightness * active_f;
 
             var accum: array<f32, 9>;
             for (var band: u32 = 0u; band < 9u; band = band + 1u) {

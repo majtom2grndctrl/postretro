@@ -26,6 +26,7 @@ use postretro_level_format::lightmap::{LightmapSection, encode_direction_oct, f3
 use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
+use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 use crate::map_data::{FalloffModel, LightType, MapLight};
 
@@ -45,14 +46,12 @@ const MIN_ATLAS_DIMENSION: u32 = 64;
 /// for anything larger.
 const MAX_ATLAS_DIMENSION: u32 = 4096;
 
-/// Padding inserted around each chart in atlas texels. One texel of padding
-/// plus the post-bake edge-dilation pass keeps bilinear sampling from
-/// dragging black into chart interiors.
-const CHART_PADDING_TEXELS: u32 = 2;
-
 /// Tiny offset applied along the surface normal when launching shadow rays to
-/// avoid self-intersection with the face being shaded.
-const RAY_EPSILON: f32 = 1.0e-3;
+/// avoid self-intersection with the face being shaded. `pub(crate)` so the
+/// animated weight-map baker can match the static bake's shadow epsilon
+/// exactly — the two bakers must agree on self-intersection tolerance or chunk
+/// boundaries will show seams.
+pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
 
 /// Length of the shadow ray fired toward the sun for a directional light.
 /// Directional lights have no position, so we need an arbitrary far endpoint;
@@ -100,6 +99,20 @@ pub struct LightmapInputs<'a> {
     pub lights: &'a [MapLight],
 }
 
+/// Output of a lightmap bake pass. The animated weight-map baker consumes
+/// `charts` + `placements` + `atlas_width` to resolve chunk atlas rects from
+/// their face-local UV sub-regions.
+#[derive(Debug)]
+pub struct LightmapBakeOutput {
+    pub section: LightmapSection,
+    pub charts: Vec<Chart>,
+    /// Per-face chart placement, parallel to `charts`. Empty when the bake
+    /// short-circuits (empty geometry, no static lights, or no charts packed).
+    pub placements: Vec<ChartPlacement>,
+    pub atlas_width: u32,
+    pub atlas_height: u32,
+}
+
 /// Bake a directional lightmap.
 ///
 /// Returns the placeholder section when there is no work to do (empty geometry
@@ -108,20 +121,44 @@ pub struct LightmapInputs<'a> {
 pub fn bake_lightmap(
     inputs: &mut LightmapInputs<'_>,
     texel_density: f32,
-) -> Result<(LightmapSection, Vec<Chart>), LightmapBakeError> {
+) -> Result<LightmapBakeOutput, LightmapBakeError> {
     if inputs.geometry.geometry.vertices.is_empty() || inputs.geometry.geometry.faces.is_empty() {
-        return Ok((LightmapSection::placeholder(), Vec::new()));
+        return Ok(LightmapBakeOutput {
+            section: LightmapSection::placeholder(),
+            charts: Vec::new(),
+            placements: Vec::new(),
+            atlas_width: 1,
+            atlas_height: 1,
+        });
     }
 
-    // Filter lights: static only. `is_dynamic` lights contribute at runtime,
-    // and `bake_only` is already ignored by the direct path — it still bakes
-    // here because the static lightmap is its only contribution.
-    let static_lights: Vec<&MapLight> = inputs.lights.iter().filter(|l| !l.is_dynamic).collect();
+    // Filter lights: non-animated static only. `is_dynamic` lights contribute
+    // at runtime via the direct lighting loop. Animated lights (including
+    // `bake_only`) contribute at runtime via the weight-map compose pass — the
+    // static atlas carries only non-animated static lights so the runtime
+    // compose pass can add animated contribution without double-counting.
+    let static_lights: Vec<&MapLight> = inputs
+        .lights
+        .iter()
+        .filter(|l| !l.is_dynamic && l.animation.is_none())
+        .collect();
     if static_lights.is_empty() {
         // Still plan charts — the animated-light-chunks builder needs per-face
-        // UV bounds even when no static lights exist.
+        // UV bounds even when no static lights exist. Placements are likewise
+        // needed by the weight-map baker to resolve chunk atlas rects even in
+        // the all-animated case.
         let charts = plan_charts(inputs.geometry, texel_density);
-        return Ok((LightmapSection::placeholder(), charts));
+        let (atlas_w, atlas_h, placements) = match shelf_pack(&charts, texel_density) {
+            Ok(p) => p,
+            Err(_) => (1, 1, Vec::new()),
+        };
+        return Ok(LightmapBakeOutput {
+            section: LightmapSection::placeholder(),
+            charts,
+            placements,
+            atlas_width: atlas_w,
+            atlas_height: atlas_h,
+        });
     }
 
     // Split vertices shared across faces so each face owns its own per-vertex
@@ -156,7 +193,13 @@ pub fn bake_lightmap(
     // --- Pack charts into an atlas ---
     let (atlas_w, atlas_h, placements) = shelf_pack(&charts, texel_density)?;
     if placements.is_empty() {
-        return Ok((LightmapSection::placeholder(), charts));
+        return Ok(LightmapBakeOutput {
+            section: LightmapSection::placeholder(),
+            charts,
+            placements,
+            atlas_width: atlas_w,
+            atlas_height: atlas_h,
+        });
     }
 
     // --- Write lightmap UVs back into vertices ---
@@ -196,8 +239,8 @@ pub fn bake_lightmap(
     let irr_bytes = encode_irradiance_rgba16f(&irradiance);
     let dir_bytes = encode_direction_rgba8(&direction, &coverage);
 
-    Ok((
-        LightmapSection {
+    Ok(LightmapBakeOutput {
+        section: LightmapSection {
             width: atlas_w,
             height: atlas_h,
             texel_density,
@@ -205,7 +248,10 @@ pub fn bake_lightmap(
             direction: dir_bytes,
         },
         charts,
-    ))
+        placements,
+        atlas_width: atlas_w,
+        atlas_height: atlas_h,
+    })
 }
 
 /// Ensure no vertex index is referenced by more than one face's index range.
@@ -435,13 +481,10 @@ fn empty_chart() -> Chart {
 
 // ---------------------------------------------------------------------------
 // Shelf packing
-
-/// Where a chart landed in the atlas, in texel coordinates.
-#[derive(Debug, Clone, Copy)]
-struct ChartPlacement {
-    x: u32,
-    y: u32,
-}
+//
+// `ChartPlacement` is defined in `chart_raster` and re-used here so the
+// animated weight-map baker can consume the same placements without a
+// parallel type.
 
 /// Shelf-pack charts into an atlas. Charts are sorted by height descending,
 /// then placed row-by-row. Returns `(atlas_width, atlas_height, placements)`
@@ -639,8 +682,7 @@ fn bake_face_chart(
         return;
     }
     let padding = CHART_PADDING_TEXELS as i32;
-    let interior_w = (chart.width_texels as i32 - 2 * padding).max(1);
-    let interior_h = (chart.height_texels as i32 - 2 * padding).max(1);
+    let (interior_w, interior_h) = crate::chart_raster::chart_interior_dims(chart);
 
     for ty in 0..interior_h {
         for tx in 0..interior_w {
@@ -649,12 +691,9 @@ fn bake_face_chart(
             let atlas_y = placement.y as i32 + padding + ty;
             let idx = (atlas_y as u32 * atlas_w + atlas_x as u32) as usize;
 
-            // Texel centre in face-local (u, v) world space.
-            let u_frac = (tx as f32 + 0.5) / interior_w as f32;
-            let v_frac = (ty as f32 + 0.5) / interior_h as f32;
-            let local_u = chart.uv_min[0] + u_frac * chart.uv_extent[0];
-            let local_v = chart.uv_min[1] + v_frac * chart.uv_extent[1];
-            let world_p = chart.origin + chart.u_axis * local_u + chart.v_axis * local_v;
+            // Texel centre in world space (shared helper keeps the static and
+            // animated-weight bakers aligned at chunk boundaries).
+            let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
             let surface_normal = chart.normal;
 
             // Evaluate every static light.
@@ -695,7 +734,11 @@ fn bake_face_chart(
 
 /// Lambert contribution from one light plus the unit vector from surface to light
 /// (for directional lights, the direction toward the light source).
-fn light_contribution_and_direction(
+///
+/// `pub(crate)` so the animated weight-map baker computes identical Lambert
+/// irradiance at texel centres — chunk boundaries must agree with the static
+/// bake or seams appear where animated and static contributions meet.
+pub(crate) fn light_contribution_and_direction(
     light: &MapLight,
     surface_point: Vec3,
     surface_normal: Vec3,
@@ -793,7 +836,10 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn shadow_visible(
+/// `pub(crate)` so the animated weight-map baker shares the static bake's
+/// shadow-ray epsilon and traversal — both bakers must agree on occlusion at
+/// chunk boundaries.
+pub(crate) fn shadow_visible(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
@@ -1093,7 +1139,9 @@ mod tests {
             geometry: &mut geo,
             lights: &lights,
         };
-        let (section, _) = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS).unwrap();
+        let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS)
+            .unwrap()
+            .section;
         // Placeholder is 1x1.
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
@@ -1110,7 +1158,9 @@ mod tests {
             geometry: &mut geo,
             lights: &lights,
         };
-        let (section, _) = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS).unwrap();
+        let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS)
+            .unwrap()
+            .section;
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
     }
@@ -1126,7 +1176,7 @@ mod tests {
             geometry: &mut geo,
             lights: &lights,
         };
-        let (section, _) = bake_lightmap(&mut inputs, 0.25).unwrap();
+        let section = bake_lightmap(&mut inputs, 0.25).unwrap().section;
         // Expect a > 1×1 atlas (real bake path) and at least one non-zero
         // irradiance texel.
         assert!(section.width >= MIN_ATLAS_DIMENSION);
@@ -1162,40 +1212,94 @@ mod tests {
             geometry: &mut geo,
             lights: &lights,
         };
-        let (section, _) = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS).unwrap();
+        let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS)
+            .unwrap()
+            .section;
         // Only a dynamic light → placeholder path.
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
     }
 
     #[test]
-    fn static_flag_bakes_but_dynamic_does_not() {
-        // Regression pin for acceptance gate 5: toggling `_dynamic` on the
-        // same light toggles whether its shadow appears in the bake.
+    fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
+        // The static atlas carries only non-animated static lights. `is_dynamic`
+        // lights contribute at runtime via the direct lighting loop; animated
+        // lights (including `bake_only`) contribute at runtime via the
+        // weight-map compose pass. Baking any of them into the static atlas
+        // would double-count once the runtime compose pass runs.
+        use crate::map_data::LightAnimation;
+
+        // Baseline: plain static non-animated light → real bake.
         let mut geo_static = unit_quad_geometry();
         let (bvh, prims, _) = build_bvh(&geo_static).unwrap();
-        let mut lights = vec![point_light_above()];
+        let base = point_light_above();
         let mut inputs = LightmapInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo_static,
-            lights: &lights,
+            lights: std::slice::from_ref(&base),
         };
-        let (section_static, _) = bake_lightmap(&mut inputs, 0.25).unwrap();
+        let section_static = bake_lightmap(&mut inputs, 0.25).unwrap().section;
+        assert!(
+            section_static.width >= MIN_ATLAS_DIMENSION,
+            "non-animated static light must bake into a real atlas",
+        );
 
-        lights[0].is_dynamic = true;
+        // Case 1: `is_dynamic` light → placeholder (already-known behavior).
+        let mut dyn_light = point_light_above();
+        dyn_light.is_dynamic = true;
         let mut geo_dyn = unit_quad_geometry();
-        let (bvh2, prims2, _) = build_bvh(&geo_dyn).unwrap();
-        let mut inputs2 = LightmapInputs {
-            bvh: &bvh2,
-            primitives: &prims2,
+        let (bvh_d, prims_d, _) = build_bvh(&geo_dyn).unwrap();
+        let mut inputs_d = LightmapInputs {
+            bvh: &bvh_d,
+            primitives: &prims_d,
             geometry: &mut geo_dyn,
-            lights: &lights,
+            lights: std::slice::from_ref(&dyn_light),
         };
-        let (section_dyn, _) = bake_lightmap(&mut inputs2, 0.25).unwrap();
+        let section_dyn = bake_lightmap(&mut inputs_d, 0.25).unwrap().section;
+        assert_eq!(section_dyn.width, 1, "is_dynamic light must not bake");
 
-        assert!(section_static.width >= MIN_ATLAS_DIMENSION);
-        assert_eq!(section_dyn.width, 1); // placeholder
+        // Case 2: animated (non-bake_only, non-dynamic) light → placeholder.
+        // The runtime weight-map compose pass owns this light's contribution.
+        let mut anim_light = point_light_above();
+        anim_light.animation = Some(LightAnimation {
+            period: 1.0,
+            phase: 0.0,
+            brightness: Some(vec![1.0, 0.5]),
+            color: None,
+            start_active: true,
+        });
+        let mut geo_anim = unit_quad_geometry();
+        let (bvh_a, prims_a, _) = build_bvh(&geo_anim).unwrap();
+        let mut inputs_a = LightmapInputs {
+            bvh: &bvh_a,
+            primitives: &prims_a,
+            geometry: &mut geo_anim,
+            lights: std::slice::from_ref(&anim_light),
+        };
+        let section_anim = bake_lightmap(&mut inputs_a, 0.25).unwrap().section;
+        assert_eq!(
+            section_anim.width, 1,
+            "animated light must not contribute to the static atlas",
+        );
+
+        // Case 3: `bake_only` animated light → placeholder. Same reason — the
+        // weight-map compose pass carries it at runtime.
+        let mut bake_only_anim = anim_light.clone();
+        bake_only_anim.bake_only = true;
+        let mut geo_bo = unit_quad_geometry();
+        let (bvh_b, prims_b, _) = build_bvh(&geo_bo).unwrap();
+        let mut inputs_b = LightmapInputs {
+            bvh: &bvh_b,
+            primitives: &prims_b,
+            geometry: &mut geo_bo,
+            lights: std::slice::from_ref(&bake_only_anim),
+        };
+        let section_bo = bake_lightmap(&mut inputs_b, 0.25).unwrap().section;
+        assert_eq!(
+            section_bo.width, 1,
+            "bake_only animated light must not contribute to the static atlas",
+        );
     }
 
     #[test]
@@ -1382,7 +1486,7 @@ mod tests {
             geometry: &mut geo,
             lights: &lights,
         };
-        let (section, _) = bake_lightmap(&mut inputs, 0.25).unwrap();
+        let section = bake_lightmap(&mut inputs, 0.25).unwrap().section;
 
         // Every irradiance texel in the floor's chart should be zero (or have
         // leaked in only via edge-dilation into padding). Verify at least

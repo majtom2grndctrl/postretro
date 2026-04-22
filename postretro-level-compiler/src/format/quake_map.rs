@@ -228,14 +228,38 @@ pub fn translate_light(
         phase_raw
     };
 
+    // `_start_inactive = 1` spawns the light dark. Defaults to 0 (active).
+    // Only meaningful for animated lights — the flag rides on LightAnimation
+    // because static lights have no runtime on/off state. We still parse and
+    // warn on non-animated lights so authoring mistakes are visible.
+    let start_inactive = match parse_optional_int(props, "_start_inactive")? {
+        None | Some(0) => false,
+        Some(1) => true,
+        Some(other) => {
+            return Err(TranslateError::InvalidProperty {
+                key: "_start_inactive",
+                value: other.to_string(),
+                reason: "expected 0 (active at load) or 1 (inactive at load)",
+            });
+        }
+    };
+
     let animation = if style == 0 {
         if props.contains_key("_phase") && phase_raw != 0.0 {
             log::warn!("light _phase set but style=0 (no animation); phase has no effect");
         }
+        if start_inactive {
+            log::warn!(
+                "light _start_inactive set but style=0 (no animation); static lights have no runtime toggle"
+            );
+        }
         None
     } else {
         match quake_style_animation(style, phase) {
-            Some(anim) => Some(anim),
+            Some(mut anim) => {
+                anim.start_active = !start_inactive;
+                Some(anim)
+            }
             None => {
                 log::warn!("light style {style} has no preset defined; treating as constant");
                 None
@@ -439,6 +463,7 @@ fn quake_style_animation(style: i32, phase: f32) -> Option<LightAnimation> {
         phase,
         brightness: Some(brightness),
         color: None,
+        start_active: true,
     })
 }
 

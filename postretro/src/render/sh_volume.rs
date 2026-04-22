@@ -42,11 +42,16 @@ pub const SH_GRID_INFO_SIZE: usize = 48;
 ///   vec3<f32> base_color  (16..28)  // AlignOf=16; scalars before it fill the gap
 ///   u32 color_offset      (28..32)
 ///   u32 color_count       (32..36)
-///   [implicit gap]        (36..40)  // vec2<f32> AlignOf=8; 36%8=4 → 4-byte pad
-///   vec2<f32> _padding    (40..48)  // brings stride to 48; max align=16 → no further rounding
+///   u32 active            (36..40)  // runtime on/off; initialized from start_active
+///   vec2<f32> _pad        (40..48)  // reserved for animated direction (Plan 2 Sub-plan 1)
 ///
-/// The CPU writer zeros 36..48 in one pass — both the implicit gap and _padding are padding.
+/// `active` used to be an implicit 4-byte padding gap. It is now a real field —
+/// scripts toggle it to enable/disable an animated light without a reload.
 pub const ANIMATION_DESCRIPTOR_SIZE: usize = 48;
+
+/// Byte offset of the `active` u32 within one descriptor record. Used by
+/// `AnimatedLightBuffers::set_active` to patch the CPU mirror in place.
+pub const ANIMATION_DESCRIPTOR_ACTIVE_OFFSET: usize = 36;
 
 /// Uploaded SH volume handles + bind group. Always populated — when the level
 /// has no SH section, the bind group binds dummy 1×1×1 textures and the
@@ -58,6 +63,70 @@ pub struct ShVolumeResources {
     /// Read by the diagnostic logging path; kept public for future debug UI.
     #[allow(dead_code)]
     pub present: bool,
+    /// Descriptor + sample buffers are owned here but also borrowed by the
+    /// compose pass (Task 5's `animated_lightmap.rs`). One upload, two bind
+    /// groups. The CPU mirror lives alongside so per-frame edits to `active`
+    /// (from scripting) can patch bytes and upload in one pass.
+    pub animation: AnimatedLightBuffers,
+}
+
+/// Shared handle exposing the animated-light descriptor and sample buffers to
+/// both the SH-volume fragment path (group 3) and the compose pass (Task 5).
+/// Holds a CPU-side mirror of the descriptor bytes so `set_active` is cheap
+/// and the per-frame upload is a single `queue.write_buffer` call.
+pub struct AnimatedLightBuffers {
+    pub descriptors: wgpu::Buffer,
+    // Consumed by the compose pass (Task 5). Kept next to `descriptors` so
+    // one upload serves both bind groups.
+    #[allow(dead_code)]
+    pub anim_samples: wgpu::Buffer,
+    /// CPU-side mirror of `descriptors`. One `ANIMATION_DESCRIPTOR_SIZE`
+    /// record per animated light, in the same order as the section's
+    /// `animation_descriptors`. Empty maps carry a single zeroed dummy record
+    /// (not exposed via `len()`); `animated_light_count` is the real count.
+    descriptor_mirror: Vec<u8>,
+    animated_light_count: u32,
+    /// Dirty bit set by `set_active`; cleared by `upload_descriptors_if_dirty`.
+    /// Writes are batched across the frame so multiple `set_active` calls
+    /// collapse to one `write_buffer`.
+    dirty: bool,
+}
+
+impl AnimatedLightBuffers {
+    /// Number of animated lights in the live section. 0 when the map has none
+    /// (the buffers still hold a single dummy record so wgpu accepts the
+    /// binding — see `dummy_descriptor_buffer`).
+    #[allow(dead_code)]
+    pub fn animated_light_count(&self) -> u32 {
+        self.animated_light_count
+    }
+
+    /// Toggle the runtime `active` flag for an animated light. `slot` indexes
+    /// into the section's `animation_descriptors`. Marks the mirror dirty;
+    /// the next `upload_descriptors_if_dirty` call flushes to the GPU.
+    ///
+    /// Out-of-range `slot` is ignored (scripting may fire set_active for a
+    /// light that never made it into the bake). No panic, no log spam.
+    pub fn set_active(&mut self, slot: usize, active: bool) {
+        if (slot as u32) >= self.animated_light_count {
+            return;
+        }
+        let start = slot * ANIMATION_DESCRIPTOR_SIZE + ANIMATION_DESCRIPTOR_ACTIVE_OFFSET;
+        let value: u32 = if active { 1 } else { 0 };
+        self.descriptor_mirror[start..start + 4].copy_from_slice(&value.to_ne_bytes());
+        self.dirty = true;
+    }
+
+    /// Upload the CPU mirror to the GPU descriptor buffer. No-op when clean.
+    /// Called once per frame before the compose pass (Task 5) and the SH
+    /// sampling in the forward pass.
+    pub fn upload_descriptors_if_dirty(&mut self, queue: &wgpu::Queue) {
+        if !self.dirty {
+            return;
+        }
+        queue.write_buffer(&self.descriptors, 0, &self.descriptor_mirror);
+        self.dirty = false;
+    }
 }
 
 impl ShVolumeResources {
@@ -199,10 +268,18 @@ impl ShVolumeResources {
 
         // The textures/sampler/buffer are held alive via the bind group's
         // internal Arc references (wgpu caches descriptor resources).
+        let animation = AnimatedLightBuffers {
+            descriptors: anim_descriptors_buffer,
+            anim_samples: anim_samples_buffer,
+            descriptor_mirror: anim_descriptor_bytes,
+            animated_light_count,
+            dirty: false,
+        };
         Self {
             bind_group,
             bind_group_layout,
             present,
+            animation,
         }
     }
 }
@@ -441,7 +518,10 @@ fn write_descriptor_bytes(
     s[24..28].copy_from_slice(&desc.base_color[2].to_ne_bytes());
     s[28..32].copy_from_slice(&color_offset.to_ne_bytes());
     s[32..36].copy_from_slice(&color_count.to_ne_bytes());
-    // s[36..48] is trailing padding (already zero).
+    // `active` initializes from the on-disk `start_active`. Scripts mutate
+    // the CPU mirror at runtime via `AnimatedLightBuffers::set_active`.
+    s[36..40].copy_from_slice(&desc.start_active.to_ne_bytes());
+    // s[40..48] is _pad (reserved for animated direction), already zero.
 }
 
 fn f32_slice_to_bytes(data: &[f32]) -> Vec<u8> {
@@ -675,6 +755,7 @@ mod tests {
                     base_color: [1.0, 0.5, 0.25],
                     brightness: vec![0.0, 1.0, 0.5, 1.0],
                     color: vec![],
+                    start_active: 1,
                 },
                 AnimationDescriptor {
                     period: 1.0,
@@ -682,6 +763,7 @@ mod tests {
                     base_color: [0.1, 0.2, 0.3],
                     brightness: vec![],
                     color: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    start_active: 0,
                 },
             ],
             per_light_sh: vec![

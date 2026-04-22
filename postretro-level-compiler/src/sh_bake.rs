@@ -749,6 +749,7 @@ fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
         base_color: light.color,
         brightness: anim.brightness.clone().unwrap_or_default(),
         color: anim.color.clone().unwrap_or_default(),
+        start_active: if anim.start_active { 1 } else { 0 },
     }
 }
 
@@ -1062,6 +1063,7 @@ mod tests {
                 phase: 0.0,
                 brightness: Some(vec![0.0, 1.0, 0.0]),
                 color: None,
+                start_active: true,
             }),
             cast_shadows: true,
             bake_only: false,

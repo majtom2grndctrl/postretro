@@ -2,7 +2,9 @@
 // See: context/lib/build_pipeline.md §PRL
 
 pub mod animated_light_chunks;
+pub mod animated_light_weight_maps;
 pub mod bvh_build;
+pub mod chart_raster;
 pub mod chunk_light_list_bake;
 pub mod format;
 pub mod geometry;
@@ -167,7 +169,7 @@ fn main() -> anyhow::Result<()> {
     // Same BVH as the SH bake — one acceleration structure, two consumers.
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
     let final_lightmap_density;
-    let (lightmap_section, face_charts) = {
+    let lightmap_bake_output = {
         // Retry on atlas overflow: double the texel size (halve resolution)
         // up to `MAX_RETRIES` times. Degrades quality instead of failing the
         // build on maps too large to fit at the default density. Per-face
@@ -210,6 +212,13 @@ fn main() -> anyhow::Result<()> {
         }
     };
     timings.push(("Lightmap Bake", stage_start.elapsed()));
+    let lightmap_bake::LightmapBakeOutput {
+        section: lightmap_section,
+        charts: face_charts,
+        placements: face_placements,
+        atlas_width,
+        atlas_height,
+    } = lightmap_bake_output;
     if args.verbose {
         lightmap_bake::log_stats(&lightmap_section, static_light_count);
     }
@@ -252,18 +261,38 @@ fn main() -> anyhow::Result<()> {
     };
     timings.push(("ChunkLightList", stage_start.elapsed()));
 
-    // Build the `!bake_only`-filtered light list once; the alpha-lights and
-    // light-influence sections are both indexed against it, and the
-    // animated-light-chunks builder emits indices into the same namespace.
+    // AlphaLights and LightInfluence share the `!bake_only` filter — record
+    // `i` in one corresponds to record `i` in the other.
     let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
     let light_influence_section = pack::encode_light_influence(&map_data.lights);
-    let filtered_lights: Vec<map_data::MapLight> = map_data
+
+    // The animated-light-chunks builder, by contrast, indexes into the
+    // `!is_dynamic` namespace — the same namespace the runtime's animated-
+    // light descriptor buffer uses (see `sh_bake.rs` line ~99). `bake_only`
+    // animated lights participate in weight-map compose and must appear in
+    // this list. Build a parallel (lights, influence) pair inline so the
+    // iteration order matches the descriptor buffer slot order exactly.
+    let (animated_chunk_lights, animated_chunk_influence): (
+        Vec<map_data::MapLight>,
+        Vec<postretro_level_format::light_influence::InfluenceRecord>,
+    ) = map_data
         .lights
         .iter()
-        .filter(|l| !l.bake_only)
-        .cloned()
-        .collect();
-    debug_assert_eq!(filtered_lights.len(), light_influence_section.records.len());
+        .filter(|l| !l.is_dynamic)
+        .map(|l| {
+            let (center, radius) = match l.light_type {
+                map_data::LightType::Directional => ([0.0f32, 0.0, 0.0], f32::MAX),
+                map_data::LightType::Point | map_data::LightType::Spot => (
+                    [l.origin.x as f32, l.origin.y as f32, l.origin.z as f32],
+                    l.falloff_range,
+                ),
+            };
+            (
+                l.clone(),
+                postretro_level_format::light_influence::InfluenceRecord { center, radius },
+            )
+        })
+        .unzip();
 
     progress.start_stage("Animated light chunks...");
     let stage_start = Instant::now();
@@ -274,18 +303,45 @@ fn main() -> anyhow::Result<()> {
     // which is the signal to skip emission — no placeholder record needed.
     let animated_light_chunks_section = animated_light_chunks::build_animated_light_chunks(
         &mut bvh_section,
-        &filtered_lights,
-        &light_influence_section.records,
+        &animated_chunk_lights,
+        &animated_chunk_influence,
         &face_charts,
         &geo_result.face_index_ranges,
         final_lightmap_density,
     );
+    timings.push(("AnimLightChunks", stage_start.elapsed()));
+
+    // Weight-map bake: for every chunk, emit per-texel animated-light
+    // contribution weights. Consumes the same `animated_chunk_lights` list the
+    // chunk builder used, so chunk-list indices index directly into the
+    // animated-light descriptor buffer at runtime with no remap.
+    progress.start_stage("Animated light weight maps...");
+    let stage_start = Instant::now();
+    let animated_light_weight_maps_section = if animated_light_chunks_section.chunks.is_empty() {
+        None
+    } else {
+        let wm_inputs = animated_light_weight_maps::WeightMapInputs {
+            bvh: &bvh,
+            primitives: &bvh_primitives,
+            geometry: &geo_result,
+            chunk_section: &animated_light_chunks_section,
+            lights: &animated_chunk_lights,
+            face_charts: &face_charts,
+            face_placements: &face_placements,
+            atlas_width,
+            atlas_height,
+        };
+        Some(animated_light_weight_maps::bake_animated_light_weight_maps(
+            &wm_inputs,
+        ))
+    };
+    timings.push(("AnimWeightMaps", stage_start.elapsed()));
+
     let animated_light_chunks_section = if animated_light_chunks_section.chunks.is_empty() {
         None
     } else {
         Some(animated_light_chunks_section)
     };
-    timings.push(("AnimLightChunks", stage_start.elapsed()));
 
     progress.start_stage("Packing and writing...");
     let stage_start = Instant::now();
@@ -307,6 +363,7 @@ fn main() -> anyhow::Result<()> {
             &lightmap_section,
             &chunk_light_list_section,
             animated_light_chunks_section.as_ref(),
+            animated_light_weight_maps_section.as_ref(),
         )?;
     } else {
         if args.verbose {
@@ -326,6 +383,7 @@ fn main() -> anyhow::Result<()> {
             &lightmap_section,
             &chunk_light_list_section,
             animated_light_chunks_section.as_ref(),
+            animated_light_weight_maps_section.as_ref(),
         )?;
     }
     timings.push(("Packing", stage_start.elapsed()));

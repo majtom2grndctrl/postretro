@@ -170,6 +170,11 @@ pub struct LightAnimation {
     pub brightness: Option<Vec<f32>>,
     /// Linear RGB overrides, uniformly spaced over `period`.
     pub color: Option<Vec<[f32; 3]>>,
+    /// Initial runtime on/off state. `true` (the default) = lit at map load.
+    /// Authored via the `_start_inactive` FGD key: key absent or 0 → `true`,
+    /// key = 1 → `false`. Scripts toggle the GPU mirror at runtime; only the
+    /// initial value is baked.
+    pub start_active: bool,
 }
 
 /// Format-agnostic light record. The SH baker and runtime direct path both

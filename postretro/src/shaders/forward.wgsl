@@ -133,6 +133,14 @@ struct AnimationDescriptor {
 @group(4) @binding(0) var lightmap_irradiance: texture_2d<f32>;
 @group(4) @binding(1) var lightmap_direction: texture_2d<f32>;
 @group(4) @binding(2) var lightmap_sampler: sampler;
+// Animated-light contribution atlas (Rgba16Float). Composed each frame by
+// the compute pre-pass in `animated_lightmap.rs` from per-animated-light
+// baked weight maps + runtime descriptor curves. `.rgb` carries pre-shaded
+// irradiance (Lambert already baked in); `.a` is a coverage flag (1 inside
+// a covered chunk rect, 0 elsewhere) reserved for debug visualization and
+// not used for production shading. When the PRL has no animated weight
+// maps, this slot binds a 1×1 zero texture so the fragment shader reads 0.
+@group(4) @binding(3) var animated_lm_atlas: texture_2d<f32>;
 
 // Group 5 — dynamic spot light shadow maps.
 // See context/plans/in-progress/lighting-spot-shadows/index.md § Task B.
@@ -540,7 +548,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var static_direct = vec3<f32>(0.0);
     if use_direct {
         let lm_irr = textureSample(lightmap_irradiance, lightmap_sampler, in.lightmap_uv).rgb;
-        static_direct = lm_irr;
+        // Animated contribution: pre-shaded Lambert irradiance composed each
+        // frame from weight maps + descriptor curves. Sampled at the same
+        // lightmap UV as the static atlas — both share atlas-space layout
+        // (identical 1024² dimensions). Uncovered atlas texels were cleared
+        // to zero by the compose pre-pass, so this is safe to add
+        // unconditionally. See animated-light-weight-maps/ §Task 5.
+        let lm_anim = textureSample(animated_lm_atlas, lightmap_sampler, in.lightmap_uv).rgb;
+        static_direct = lm_irr + lm_anim;
     }
 
     // Total light = ambient floor (minimum) + indirect + static direct + dynamic sum.

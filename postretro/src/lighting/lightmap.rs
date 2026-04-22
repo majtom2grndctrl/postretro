@@ -12,6 +12,10 @@ use wgpu::util::DeviceExt;
 pub const BIND_IRRADIANCE: u32 = 0;
 pub const BIND_DIRECTION: u32 = 1;
 pub const BIND_SAMPLER: u32 = 2;
+/// Animated-light contribution atlas (Rgba16Float). Composed each frame by
+/// `render::animated_lightmap`; forward pass samples alongside the static
+/// atlas. See animated-light-weight-maps/ §Task 5.
+pub const BIND_ANIMATED_ATLAS: u32 = 3;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
 /// and the bind group that exposes them to the forward shader.
@@ -48,6 +52,7 @@ impl LightmapResources {
         queue: &wgpu::Queue,
         section: Option<&LightmapSection>,
         bind_group_layout: &wgpu::BindGroupLayout,
+        animated_atlas_view: &wgpu::TextureView,
     ) -> Self {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Lightmap Sampler"),
@@ -93,6 +98,10 @@ impl LightmapResources {
                     binding: BIND_SAMPLER,
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: BIND_ANIMATED_ATLAS,
+                    resource: wgpu::BindingResource::TextureView(animated_atlas_view),
+                },
             ],
         });
 
@@ -103,7 +112,7 @@ impl LightmapResources {
     }
 }
 
-fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
+fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
     // `filterable: false` + `NonFiltering` sampler: the lightmap sampler uses
     // Nearest for both mag and min (see `LightmapResources::new`), so no
     // filtering is ever requested. Declaring it here matches reality and
@@ -135,6 +144,19 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
             binding: BIND_SAMPLER,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+            count: None,
+        },
+        // Animated-light contribution atlas. Rgba16Float is non-filterable
+        // at wgpu default limits; the existing `NonFiltering`
+        // `lightmap_sampler` already matches, so no new sampler is added.
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_ANIMATED_ATLAS,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
             count: None,
         },
     ]

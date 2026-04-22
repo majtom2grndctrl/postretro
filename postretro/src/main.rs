@@ -329,6 +329,8 @@ impl ApplicationHandler for App {
             sh_volume: world.sh_volume.as_ref(),
             lightmap: world.lightmap.as_ref(),
             chunk_light_list: world.chunk_light_list.as_ref(),
+            animated_light_chunks: world.animated_light_chunks.as_ref(),
+            animated_light_weight_maps: world.animated_light_weight_maps.as_ref(),
             texture_materials: &texture_materials,
         });
 

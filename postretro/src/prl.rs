@@ -7,6 +7,8 @@ use std::path::Path;
 
 use glam::Vec3;
 use postretro_level_format::alpha_lights::{AlphaFalloffModel, AlphaLightType, AlphaLightsSection};
+use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
+use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
@@ -192,6 +194,15 @@ pub struct LevelWorld {
     /// `lighting-chunk-lists/` — the runtime falls back to iterating the
     /// full spec buffer. See `chunk_light_list::ChunkGrid::fallback`.
     pub chunk_light_list: Option<ChunkLightListSection>,
+    /// Per-face animated-light chunks (ID 24). Produced by the
+    /// `animated-light-chunks/` plan; consumed by the weight-map compose
+    /// pass to cross-check `AnimatedLightWeightMaps.chunk_rects.len()`.
+    pub animated_light_chunks: Option<AnimatedLightChunksSection>,
+    /// Per-chunk atlas rectangles + per-texel weight lists (ID 25). Baked
+    /// by the `animated-light-weight-maps/` plan. `None` when the map has
+    /// no animated lights — the renderer falls back to a 1×1 zero atlas
+    /// for the animated-contribution slot.
+    pub animated_light_weight_maps: Option<AnimatedLightWeightMapsSection>,
 }
 
 impl LevelWorld {
@@ -599,6 +610,49 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
     };
 
+    // AnimatedLightChunks section (optional). Emitted by `prl-build` for maps
+    // that carry animated lights. Used at runtime to cross-check the
+    // weight-maps section count.
+    let animated_light_chunks: Option<AnimatedLightChunksSection> =
+        match prl_format::read_section_data(
+            &mut cursor,
+            &meta,
+            SectionId::AnimatedLightChunks as u32,
+        )? {
+            Some(data) => {
+                let section = AnimatedLightChunksSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] AnimatedLightChunks: {} chunks, {} flat indices",
+                    section.chunks.len(),
+                    section.light_indices.len(),
+                );
+                Some(section)
+            }
+            None => None,
+        };
+
+    // AnimatedLightWeightMaps section (optional). Missing for maps with zero
+    // animated lights — the runtime falls back to a 1×1 zero atlas for the
+    // animated-contribution slot on bind group 4.
+    let animated_light_weight_maps: Option<AnimatedLightWeightMapsSection> =
+        match prl_format::read_section_data(
+            &mut cursor,
+            &meta,
+            SectionId::AnimatedLightWeightMaps as u32,
+        )? {
+            Some(data) => {
+                let section = AnimatedLightWeightMapsSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] AnimatedLightWeightMaps: {} chunks, {} covered texels, {} weight entries",
+                    section.chunk_rects.len(),
+                    section.offset_counts.len(),
+                    section.texel_lights.len(),
+                );
+                Some(section)
+            }
+            None => None,
+        };
+
     let has_pvs = pvs_section.is_some();
     let has_portals = portals_section.is_some();
 
@@ -776,6 +830,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         sh_volume,
         lightmap,
         chunk_light_list,
+        animated_light_chunks,
+        animated_light_weight_maps,
     })
 }
 
@@ -869,6 +925,8 @@ mod tests {
             sh_volume: None,
             lightmap: None,
             chunk_light_list: None,
+            animated_light_chunks: None,
+            animated_light_weight_maps: None,
         }
     }
 
@@ -917,6 +975,8 @@ mod tests {
             sh_volume: None,
             lightmap: None,
             chunk_light_list: None,
+            animated_light_chunks: None,
+            animated_light_weight_maps: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -957,6 +1017,8 @@ mod tests {
             sh_volume: None,
             lightmap: None,
             chunk_light_list: None,
+            animated_light_chunks: None,
+            animated_light_weight_maps: None,
         };
 
         let spawn = world.spawn_position();
@@ -986,6 +1048,8 @@ mod tests {
             sh_volume: None,
             lightmap: None,
             chunk_light_list: None,
+            animated_light_chunks: None,
+            animated_light_weight_maps: None,
         };
 
         let indices = face_leaf_indices(&world);

@@ -1,6 +1,7 @@
 // Renderer: GPU init, texture upload, depth pre-pass + forward pipelines, and draw.
 // See: context/lib/rendering_pipeline.md
 
+pub mod animated_lightmap;
 pub mod frame_timing;
 pub mod sh_volume;
 pub mod smoke;
@@ -70,9 +71,10 @@ const SPOT_SHADOW_SHADER_SOURCE: &str = include_str!("../shaders/spot_shadow.wgs
 // bump the label-vec length below, and the per-pass `*_pass_writes(...)`
 // callsites read the right label.
 const TIMING_PAIR_CULL: usize = 0;
-const TIMING_PAIR_DEPTH_PREPASS: usize = 1;
-const TIMING_PAIR_FORWARD: usize = 2;
-const TIMING_PAIR_COUNT: usize = 3;
+const TIMING_PAIR_ANIMATED_LM_COMPOSE: usize = 1;
+const TIMING_PAIR_DEPTH_PREPASS: usize = 2;
+const TIMING_PAIR_FORWARD: usize = 3;
+const TIMING_PAIR_COUNT: usize = 4;
 
 // --- Uniform buffer layout ---
 
@@ -315,6 +317,17 @@ pub struct LevelGeometry<'a> {
     /// iterates the full spec buffer. See `lighting::chunk_list`.
     pub chunk_light_list:
         Option<&'a postretro_level_format::chunk_light_list::ChunkLightListSection>,
+    /// Per-face animated-light chunk section (ID 24). Consumed by the
+    /// animated-lightmap compose pass's cross-section validator. May be
+    /// `None` alongside `animated_light_weight_maps` on maps with zero
+    /// animated lights.
+    pub animated_light_chunks:
+        Option<&'a postretro_level_format::animated_light_chunks::AnimatedLightChunksSection>,
+    /// Baked per-animated-light weight maps (ID 25). `None` when the map
+    /// has no animated lights — the renderer binds a 1×1 zero atlas.
+    pub animated_light_weight_maps: Option<
+        &'a postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection,
+    >,
     /// Per-texture material, indexed by texture (bucket) index. Drives
     /// per-material shininess uploaded to group 1 binding 3.
     pub texture_materials: &'a [crate::material::Material],
@@ -369,6 +382,13 @@ pub struct Renderer {
     /// white/neutral placeholder so the shader path never branches.
     /// See `lighting::lightmap`.
     lightmap_resources: LightmapResources,
+
+    /// Animated-lightmap compose pass. Owns the compute pipeline, storage
+    /// atlas, per-frame clear + compose dispatch, and (when no weight-map
+    /// section is present) a 1×1 zero atlas bound via
+    /// `lightmap_resources` for the forward pass. See
+    /// `render::animated_lightmap`.
+    animated_lightmap: animated_lightmap::AnimatedLightmapResources,
 
     /// Group 2 — dynamic lights buffer. Holds the packed GpuLight array
     /// (updated per frame for slot assignment).
@@ -649,7 +669,12 @@ impl Renderer {
                 label: Some("Uniform Bind Group Layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    // COMPUTE visibility added so the animated-lightmap
+                    // compose pass can reuse this layout (same uniform
+                    // buffer, `uniforms.time` drives curve sampling).
+                    visibility: wgpu::ShaderStages::VERTEX
+                        | wgpu::ShaderStages::FRAGMENT
+                        | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -1062,17 +1087,37 @@ impl Renderer {
         let sh_volume_resources =
             ShVolumeResources::new(&device, &queue, geometry.and_then(|g| g.sh_volume));
 
+        // Animated-lightmap compose pass. Owns the compute pipeline, the
+        // Rgba16Float storage atlas, and the dispatch-tile buffer. When the
+        // PRL has no weight-map section (zero animated lights), this
+        // returns a module-owned 1×1 zero texture whose view is still
+        // bound on group 4 — the forward shader path never branches.
+        // The construction runs the cross-section validator and returns
+        // an error for an inconsistent section; we surface it as an
+        // initialization panic (map loads are not recoverable here).
+        let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
+            &device,
+            geometry.and_then(|g| g.animated_light_weight_maps),
+            geometry.and_then(|g| g.animated_light_chunks),
+            &sh_volume_resources.animation,
+            &uniform_bind_group_layout,
+        )
+        .map_err(|msg| anyhow::anyhow!("[Renderer] animated lightmap init failed: {msg}"))?;
+
         // Group 4: directional lightmap atlas (baked static direct lighting).
         // Always created — placeholder 1×1 white/neutral bindings are used
         // when the level has no Lightmap section. See `lighting::lightmap`.
         // Layout is built up front so the pipeline layout can reference it
-        // before the bind group is populated.
+        // before the bind group is populated. The animated-contribution
+        // atlas is bound on this same group at binding 3; its view comes
+        // from `animated_lightmap` (real texture or 1×1 zero dummy).
         let lightmap_bind_group_layout = crate::lighting::lightmap::bind_group_layout(&device);
         let lightmap_resources = LightmapResources::new(
             &device,
             &queue,
             geometry.and_then(|g| g.lightmap),
             &lightmap_bind_group_layout,
+            &animated_lightmap.forward_view,
         );
 
         // Pipeline layout. Group 2 is the direct-lighting storage buffer
@@ -1455,6 +1500,7 @@ impl Renderer {
             log::info!("[Renderer] GPU timing enabled (POSTRETRO_GPU_TIMING=1)");
             let mut pass_labels = vec![""; TIMING_PAIR_COUNT];
             pass_labels[TIMING_PAIR_CULL] = "cull";
+            pass_labels[TIMING_PAIR_ANIMATED_LM_COMPOSE] = "animated_lm_compose";
             pass_labels[TIMING_PAIR_DEPTH_PREPASS] = "depth_prepass";
             pass_labels[TIMING_PAIR_FORWARD] = "forward";
             Some(FrameTiming::new(&device, &queue, pass_labels))
@@ -1507,6 +1553,7 @@ impl Renderer {
             ambient_floor,
             sh_volume_resources,
             lightmap_resources,
+            animated_lightmap,
             lights_buffer,
             level_lights,
             last_camera_position: Vec3::ZERO,
@@ -1867,6 +1914,21 @@ impl Renderer {
                     self.debug_prev_visible = cur_vis;
                 }
             }
+        }
+
+        // --- Animated lightmap compose pass ---
+        // Clear + compose the per-frame animated-contribution atlas. Runs
+        // after BVH cull (independent work, no data dep) and before the
+        // depth pre-pass so the compose→sample barrier lands before any
+        // forward fragment samples the atlas. wgpu infers the
+        // storage→sampled transition from the bind-group usage change.
+        if self.animated_lightmap.is_active() {
+            let animated_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.compute_pass_writes(TIMING_PAIR_ANIMATED_LM_COMPOSE));
+            self.animated_lightmap
+                .dispatch(&mut encoder, &self.uniform_bind_group, animated_ts);
         }
 
         // --- Dynamic spot shadow slot update + depth pass ---

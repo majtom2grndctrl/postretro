@@ -116,7 +116,7 @@ impl AnimatedLightBuffers {
     /// infallible because the scripting wiring isn't in place yet; promoting
     /// the signature to `Result` is a scripting-era decision.
     pub fn set_active(&mut self, slot: usize, active: bool) {
-        if (slot as u32) >= self.animated_light_count {
+        if slot >= self.animated_light_count as usize {
             if !self.oor_warned {
                 self.oor_warned = true;
                 log::warn!(

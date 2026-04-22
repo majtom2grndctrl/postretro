@@ -193,8 +193,16 @@ impl AnimatedLightmapResources {
     ///   `weight_maps` is also `None`.
     /// - `animation`: shared animated-light buffers (descriptors +
     ///   anim_samples). Borrowed — this module does not upload its own copy.
-    /// - `uniform_bind_group_layout`: group-0 layout from the renderer. Must
-    ///   have COMPUTE in `visibility` so the same layout works here.
+    /// - `uniform_bind_group_layout`: group-0 layout from the renderer. **Must
+    ///   include `wgpu::ShaderStages::COMPUTE`** in its visibility flags — the
+    ///   clear and compose pipelines below are compute pipelines and will fail
+    ///   wgpu validation at `create_compute_pipeline` time otherwise. The
+    ///   canonical BGL in `render/mod.rs` (search for "Uniform Bind Group
+    ///   Layout") declares `VERTEX | FRAGMENT | COMPUTE` specifically so this
+    ///   pass can reuse it; if a future change drops COMPUTE there, either
+    ///   re-add it or switch this pass to its own BGL. `wgpu::BindGroupLayout`
+    ///   is opaque and does not expose its visibility flags, so this contract
+    ///   cannot be runtime-checked — it must be preserved at the call site.
     ///
     /// Returns an error string when cross-section validation fails; the
     /// caller should log and refuse to load the map.
@@ -548,8 +556,10 @@ fn create_storage_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wg
     use wgpu::util::DeviceExt;
     // wgpu rejects zero-sized storage-buffer bindings. All callers pass
     // at least one packed record (guaranteed by the dispatch-state path
-    // rejecting empty `chunk_rects`), so a debug-assert suffices.
-    debug_assert!(!bytes.is_empty(), "{label} storage buffer would be empty");
+    // rejecting empty `chunk_rects`). Use assert! (not debug_assert!) so a
+    // future regression is caught in release builds before producing an
+    // invalid wgpu buffer.
+    assert!(!bytes.is_empty(), "{label} storage buffer would be empty");
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),
         contents: bytes,

@@ -111,6 +111,10 @@ fn compose_main(
     if (rect_x >= rect.width || rect_y >= rect.height) {
         return;
     }
+    // u32 arithmetic: WGSL wraps silently on overflow, but this is safe
+    // within current atlas and budget constraints — the compiler uses checked
+    // arithmetic when emitting texel_offset, width, and height values, so
+    // any PRL that passes validation cannot produce an overflowing index here.
     let texel_idx = rect.texel_offset + rect_y * rect.width + rect_x;
     let oc = offset_counts[texel_idx];
 

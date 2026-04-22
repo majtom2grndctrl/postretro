@@ -105,7 +105,9 @@ impl AnimatedLightWeightMapsSection {
         }
     }
 
-    /// Verify internal consistency: offset_counts length matches chunk area sum.
+    /// Verify internal consistency: offset_counts length matches chunk area sum,
+    /// chunk texel offsets form a valid partition, and every (offset, count)
+    /// pair falls within `texel_lights`.
     pub fn is_consistent(&self) -> bool {
         let expected_offset_counts_len: u32 =
             self.chunk_rects.iter().map(|r| r.width * r.height).sum();
@@ -121,6 +123,19 @@ impl AnimatedLightWeightMapsSection {
                 return false;
             }
             expected_offset += chunk.width * chunk.height;
+        }
+
+        // Verify every (offset, count) pair is in bounds within texel_lights.
+        // Use checked_add to avoid overflow before casting to usize.
+        let texel_lights_len = self.texel_lights.len();
+        for entry in &self.offset_counts {
+            let end = match entry.offset.checked_add(entry.count) {
+                Some(v) => v as usize,
+                None => return false,
+            };
+            if end > texel_lights_len {
+                return false;
+            }
         }
 
         true

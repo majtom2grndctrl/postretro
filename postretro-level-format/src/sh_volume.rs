@@ -259,10 +259,30 @@ impl ShVolumeSection {
             )));
         }
 
-        let total_probes =
-            grid_dimensions[0] as usize * grid_dimensions[1] as usize * grid_dimensions[2] as usize;
+        let total_probes = (grid_dimensions[0] as usize)
+            .checked_mul(grid_dimensions[1] as usize)
+            .and_then(|n| n.checked_mul(grid_dimensions[2] as usize))
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "sh volume grid_dimensions {:?} overflow: total probe count exceeds usize",
+                        grid_dimensions,
+                    ),
+                ))
+            })?;
 
-        let base_bytes = total_probes * probe_stride as usize;
+        let base_bytes = total_probes
+            .checked_mul(probe_stride as usize)
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "sh volume base_bytes overflow: total_probes ({total_probes}) * \
+                         probe_stride ({probe_stride}) exceeds usize",
+                    ),
+                ))
+            })?;
         if data.len() < Self::HEADER_SIZE + base_bytes {
             return Err(truncated("base probe records"));
         }

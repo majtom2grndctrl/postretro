@@ -8,11 +8,52 @@
 use super::ctx::{ScriptCtx, ScriptEvent};
 use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, PrimitiveRegistry};
+
+/// Register the shared types referenced by day-one primitive signatures. These
+/// feed the typedef generator (see: context/lib/scripting.md §7). No type-level
+/// or field-level doc strings on day-one types — docs land per-plan as field
+/// semantics are pinned down (e.g. plan 2 light types).
+pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
+    registry.register_type("EntityId").brand("number").finish();
+    registry
+        .register_type("Vec3")
+        .field("x", "f32", "")
+        .field("y", "f32", "")
+        .field("z", "f32", "")
+        .finish();
+    registry
+        .register_type("EulerDegrees")
+        .field("pitch", "f32", "")
+        .field("yaw", "f32", "")
+        .field("roll", "f32", "")
+        .finish();
+    registry
+        .register_type("Transform")
+        .field("position", "Vec3", "")
+        .field("rotation", "EulerDegrees", "")
+        .field("scale", "Vec3", "")
+        .finish();
+    registry
+        .register_enum("ComponentKind")
+        .variant("Transform", "")
+        .finish();
+    registry
+        .register_tagged_union("ComponentValue")
+        .variant("Transform", "Transform", "")
+        .finish();
+    registry
+        .register_type("ScriptEvent")
+        .field("kind", "String", "")
+        .field("payload", "Any", "")
+        .finish();
+}
 use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
 
 /// Register the seven day-one primitives. Called at engine startup, before
 /// any script runtime is created.
 pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
+    register_shared_types(registry);
+
     // entity_exists --------------------------------------------------------
     registry
         .register("entity_exists", {

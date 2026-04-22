@@ -80,17 +80,66 @@ pub(crate) trait RegisterablePrimitive<Args> {
     ) -> ScriptPrimitive;
 }
 
+/// A shared type (struct, brand, enum, or tagged union) registered alongside
+/// primitives. Feeds the typedef generator; not installed into script runtimes.
+/// See: context/lib/scripting.md §7.
+#[derive(Clone, Debug)]
+pub(crate) struct RegisteredType {
+    pub(crate) name: &'static str,
+    pub(crate) doc: &'static str,
+    pub(crate) shape: TypeShape,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum TypeShape {
+    /// Alias like `EntityId = number`. Emits as a brand in TS, alias in Luau.
+    Brand { underlying: &'static str },
+    /// Object type with named fields.
+    Struct { fields: Vec<FieldInfo> },
+    /// String-literal union (enum with no data).
+    StringEnum { variants: Vec<VariantInfo> },
+    /// Discriminated union `{ <tag>: "A"; <value>: TyA } | ...`. First-class
+    /// sum-type shape — not narrow to any one registered type.
+    TaggedUnion {
+        tag_field: &'static str,
+        value_field: &'static str,
+        variants: Vec<TaggedVariant>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FieldInfo {
+    pub(crate) name: &'static str,
+    pub(crate) ty_name: &'static str,
+    pub(crate) doc: &'static str,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct VariantInfo {
+    pub(crate) name: &'static str,
+    pub(crate) doc: &'static str,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TaggedVariant {
+    pub(crate) kind: &'static str,
+    pub(crate) value_ty: &'static str,
+    pub(crate) doc: &'static str,
+}
+
 /// The registry. Built at engine startup via `.register(...)` calls; runtime
 /// init iterates with [`PrimitiveRegistry::iter`] to install each primitive.
 #[derive(Default)]
 pub(crate) struct PrimitiveRegistry {
     entries: Vec<ScriptPrimitive>,
+    types: Vec<RegisteredType>,
 }
 
 impl PrimitiveRegistry {
     pub(crate) fn new() -> Self {
         Self {
             entries: Vec::new(),
+            types: Vec::new(),
         }
     }
 
@@ -147,6 +196,215 @@ impl PrimitiveRegistry {
 
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Iterate registered shared types in registration order. Consumed by the
+    /// typedef generator; order is load-bearing for snapshot stability.
+    pub(crate) fn iter_types(&self) -> impl Iterator<Item = &RegisteredType> {
+        self.types.iter()
+    }
+
+    /// Start a builder for a struct or brand alias. Call `.brand(...)` xor
+    /// `.field(...)` one-or-more times, then `.finish()`.
+    pub(crate) fn register_type(&mut self, name: &'static str) -> TypeBuilder<'_> {
+        TypeBuilder {
+            registry: self,
+            name,
+            doc: "",
+            kind: TypeBuilderKind::Unset,
+        }
+    }
+
+    /// Start a builder for a string-literal union (enum with no data).
+    pub(crate) fn register_enum(&mut self, name: &'static str) -> EnumBuilder<'_> {
+        EnumBuilder {
+            registry: self,
+            name,
+            doc: "",
+            variants: Vec::new(),
+        }
+    }
+
+    /// Start a builder for a discriminated union. Defaults to
+    /// `("kind", "value")` tag/value field names; call `.tags(...)` to override.
+    pub(crate) fn register_tagged_union(&mut self, name: &'static str) -> TaggedUnionBuilder<'_> {
+        TaggedUnionBuilder {
+            registry: self,
+            name,
+            doc: "",
+            tag_field: "kind",
+            value_field: "value",
+            variants: Vec::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Type-registration builders.
+
+enum TypeBuilderKind {
+    Unset,
+    Brand { underlying: &'static str },
+    Struct { fields: Vec<FieldInfo> },
+}
+
+pub(crate) struct TypeBuilder<'r> {
+    registry: &'r mut PrimitiveRegistry,
+    name: &'static str,
+    doc: &'static str,
+    kind: TypeBuilderKind,
+}
+
+impl<'r> TypeBuilder<'r> {
+    pub(crate) fn doc(mut self, doc: &'static str) -> Self {
+        self.doc = doc;
+        self
+    }
+
+    /// Set the brand underlying type. Must not be combined with `.field(...)`.
+    pub(crate) fn brand(mut self, underlying: &'static str) -> Self {
+        debug_assert!(
+            matches!(self.kind, TypeBuilderKind::Unset),
+            "type `{}`: `.brand()` conflicts with prior shape selection",
+            self.name
+        );
+        self.kind = TypeBuilderKind::Brand { underlying };
+        self
+    }
+
+    /// Add a struct field. Must not be combined with `.brand(...)`.
+    pub(crate) fn field(
+        mut self,
+        name: &'static str,
+        ty_name: &'static str,
+        doc: &'static str,
+    ) -> Self {
+        match &mut self.kind {
+            TypeBuilderKind::Unset => {
+                self.kind = TypeBuilderKind::Struct {
+                    fields: vec![FieldInfo { name, ty_name, doc }],
+                };
+            }
+            TypeBuilderKind::Struct { fields } => {
+                fields.push(FieldInfo { name, ty_name, doc });
+            }
+            TypeBuilderKind::Brand { .. } => {
+                debug_assert!(
+                    false,
+                    "type `{}`: `.field()` after `.brand()` is not permitted",
+                    self.name
+                );
+            }
+        }
+        self
+    }
+
+    pub(crate) fn finish(self) {
+        let shape = match self.kind {
+            TypeBuilderKind::Unset => {
+                debug_assert!(
+                    false,
+                    "type `{}`: register_type requires one of `.brand()` or `.field()`",
+                    self.name
+                );
+                return;
+            }
+            TypeBuilderKind::Brand { underlying } => TypeShape::Brand { underlying },
+            TypeBuilderKind::Struct { fields } => TypeShape::Struct { fields },
+        };
+        self.registry.types.push(RegisteredType {
+            name: self.name,
+            doc: self.doc,
+            shape,
+        });
+    }
+}
+
+pub(crate) struct EnumBuilder<'r> {
+    registry: &'r mut PrimitiveRegistry,
+    name: &'static str,
+    doc: &'static str,
+    variants: Vec<VariantInfo>,
+}
+
+impl<'r> EnumBuilder<'r> {
+    pub(crate) fn doc(mut self, doc: &'static str) -> Self {
+        self.doc = doc;
+        self
+    }
+
+    pub(crate) fn variant(mut self, name: &'static str, doc: &'static str) -> Self {
+        self.variants.push(VariantInfo { name, doc });
+        self
+    }
+
+    pub(crate) fn finish(self) {
+        debug_assert!(
+            !self.variants.is_empty(),
+            "enum `{}`: at least one variant required",
+            self.name
+        );
+        self.registry.types.push(RegisteredType {
+            name: self.name,
+            doc: self.doc,
+            shape: TypeShape::StringEnum {
+                variants: self.variants,
+            },
+        });
+    }
+}
+
+pub(crate) struct TaggedUnionBuilder<'r> {
+    registry: &'r mut PrimitiveRegistry,
+    name: &'static str,
+    doc: &'static str,
+    tag_field: &'static str,
+    value_field: &'static str,
+    variants: Vec<TaggedVariant>,
+}
+
+impl<'r> TaggedUnionBuilder<'r> {
+    pub(crate) fn doc(mut self, doc: &'static str) -> Self {
+        self.doc = doc;
+        self
+    }
+
+    /// Override the default `("kind", "value")` tag/value field names.
+    pub(crate) fn tags(mut self, tag_field: &'static str, value_field: &'static str) -> Self {
+        self.tag_field = tag_field;
+        self.value_field = value_field;
+        self
+    }
+
+    pub(crate) fn variant(
+        mut self,
+        kind: &'static str,
+        value_ty: &'static str,
+        doc: &'static str,
+    ) -> Self {
+        self.variants.push(TaggedVariant {
+            kind,
+            value_ty,
+            doc,
+        });
+        self
+    }
+
+    pub(crate) fn finish(self) {
+        debug_assert!(
+            !self.variants.is_empty(),
+            "tagged union `{}`: at least one variant required",
+            self.name
+        );
+        self.registry.types.push(RegisteredType {
+            name: self.name,
+            doc: self.doc,
+            shape: TypeShape::TaggedUnion {
+                tag_field: self.tag_field,
+                value_field: self.value_field,
+                variants: self.variants,
+            },
+        });
     }
 }
 

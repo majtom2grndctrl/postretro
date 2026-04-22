@@ -451,6 +451,7 @@ mod tests {
                 index_offset: 0,
                 index_count: 6,
                 cell_id: 0,
+                // Poison values; build_animated_light_chunks must overwrite.
                 chunk_range_start: 999,
                 chunk_range_count: 999,
             }],
@@ -467,6 +468,7 @@ mod tests {
                 index_offset: (i * 6) as u32,
                 index_count: 6,
                 cell_id: 0,
+                // Poison values; build_animated_light_chunks must overwrite.
                 chunk_range_start: 999,
                 chunk_range_count: 999,
             })

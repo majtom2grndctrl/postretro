@@ -672,6 +672,10 @@ impl Renderer {
                     // COMPUTE visibility added so the animated-lightmap
                     // compose pass can reuse this layout (same uniform
                     // buffer, `uniforms.time` drives curve sampling).
+                    // CONTRACT: `render::animated_lightmap::AnimatedLightmapResources::new`
+                    // relies on COMPUTE being set here — dropping it will
+                    // fail wgpu validation at compute pipeline creation.
+                    // See the doc-comment on that function for detail.
                     visibility: wgpu::ShaderStages::VERTEX
                         | wgpu::ShaderStages::FRAGMENT
                         | wgpu::ShaderStages::COMPUTE,

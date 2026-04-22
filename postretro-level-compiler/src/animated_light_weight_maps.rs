@@ -334,15 +334,33 @@ fn chunk_atlas_rect(
     let scale_u = interior_w as f32 / chart.uv_extent[0];
     let scale_v = interior_h as f32 / chart.uv_extent[1];
 
-    let fx_min = placement.x as f32 + padding + (chunk_uv_min[0] - chart.uv_min[0]) * scale_u;
-    let fx_max = placement.x as f32 + padding + (chunk_uv_max[0] - chart.uv_min[0]) * scale_u;
-    let fy_min = placement.y as f32 + padding + (chunk_uv_min[1] - chart.uv_min[1]) * scale_v;
-    let fy_max = placement.y as f32 + padding + (chunk_uv_max[1] - chart.uv_min[1]) * scale_v;
+    let fx_min_unclamped =
+        placement.x as f32 + padding + (chunk_uv_min[0] - chart.uv_min[0]) * scale_u;
+    let fx_max_unclamped =
+        placement.x as f32 + padding + (chunk_uv_max[0] - chart.uv_min[0]) * scale_u;
+    let fy_min_unclamped =
+        placement.y as f32 + padding + (chunk_uv_min[1] - chart.uv_min[1]) * scale_v;
+    let fy_max_unclamped =
+        placement.y as f32 + padding + (chunk_uv_max[1] - chart.uv_min[1]) * scale_v;
 
-    let ax_min_raw = fx_min.floor().max(0.0) as u32;
-    let ay_min_raw = fy_min.floor().max(0.0) as u32;
-    let ax_max_raw = fx_max.ceil().max(fx_min.floor() + 1.0) as u32;
-    let ay_max_raw = fy_max.ceil().max(fy_min.floor() + 1.0) as u32;
+    // Clamp into `[0, atlas_dim]` before any `f32 as u32` cast. A misplaced
+    // chart can put `fx_max` below 0; `(-n as u32)` saturates to 0 (defined
+    // but wrong here), and the `.max(ax_min + 1)` guard below would then hand
+    // back a 1-texel rect at the atlas origin, silently overwriting whatever
+    // chart actually occupies (0, 0). Clamping first pins any rogue rect to
+    // the atlas edge; the interior-check loop in `bake_one_chunk` then skips
+    // every out-of-range texel.
+    let atlas_w_f = atlas_width as f32;
+    let atlas_h_f = atlas_height as f32;
+    let fx_min = fx_min_unclamped.clamp(0.0, atlas_w_f);
+    let fx_max = fx_max_unclamped.clamp(0.0, atlas_w_f);
+    let fy_min = fy_min_unclamped.clamp(0.0, atlas_h_f);
+    let fy_max = fy_max_unclamped.clamp(0.0, atlas_h_f);
+
+    let ax_min_raw = fx_min.floor() as u32;
+    let ay_min_raw = fy_min.floor() as u32;
+    let ax_max_raw = (fx_max.ceil() as u32).max(ax_min_raw + 1);
+    let ay_max_raw = (fy_max.ceil() as u32).max(ay_min_raw + 1);
 
     // Clamp the min corner too so a chart placed past the atlas bound (a
     // misplaced chart combined with outward rounding) does not underflow the

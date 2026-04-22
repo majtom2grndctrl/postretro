@@ -127,8 +127,10 @@ pub(crate) struct TaggedVariant {
     pub(crate) doc: &'static str,
 }
 
-/// The registry. Built at engine startup via `.register(...)` calls; runtime
-/// init iterates with [`PrimitiveRegistry::iter`] to install each primitive.
+/// The registry. Holds primitives added via `.register(...)` and shared types
+/// added via `.register_type()` / `.register_enum()` / `.register_tagged_union()`.
+/// Runtime init installs primitives via [`PrimitiveRegistry::iter`]; the typedef
+/// generator consumes shared types via [`PrimitiveRegistry::iter_types`].
 #[derive(Default)]
 pub(crate) struct PrimitiveRegistry {
     entries: Vec<ScriptPrimitive>,
@@ -289,8 +291,7 @@ impl<'r> TypeBuilder<'r> {
                 fields.push(FieldInfo { name, ty_name, doc });
             }
             TypeBuilderKind::Brand { .. } => {
-                debug_assert!(
-                    false,
+                panic!(
                     "type `{}`: `.field()` after `.brand()` is not permitted",
                     self.name
                 );
@@ -302,12 +303,10 @@ impl<'r> TypeBuilder<'r> {
     pub(crate) fn finish(self) {
         let shape = match self.kind {
             TypeBuilderKind::Unset => {
-                debug_assert!(
-                    false,
+                panic!(
                     "type `{}`: register_type requires one of `.brand()` or `.field()`",
                     self.name
                 );
-                return;
             }
             TypeBuilderKind::Brand { underlying } => TypeShape::Brand { underlying },
             TypeBuilderKind::Struct { fields } => TypeShape::Struct { fields },
@@ -339,11 +338,9 @@ impl<'r> EnumBuilder<'r> {
     }
 
     pub(crate) fn finish(self) {
-        debug_assert!(
-            !self.variants.is_empty(),
-            "enum `{}`: at least one variant required",
-            self.name
-        );
+        if self.variants.is_empty() {
+            panic!("enum `{}`: at least one variant required", self.name);
+        }
         self.registry.types.push(RegisteredType {
             name: self.name,
             doc: self.doc,
@@ -391,11 +388,12 @@ impl<'r> TaggedUnionBuilder<'r> {
     }
 
     pub(crate) fn finish(self) {
-        debug_assert!(
-            !self.variants.is_empty(),
-            "tagged union `{}`: at least one variant required",
-            self.name
-        );
+        if self.variants.is_empty() {
+            panic!(
+                "tagged union `{}`: at least one variant required",
+                self.name
+            );
+        }
         self.registry.types.push(RegisteredType {
             name: self.name,
             doc: self.doc,

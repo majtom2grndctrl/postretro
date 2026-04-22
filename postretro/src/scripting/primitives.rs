@@ -1,4 +1,5 @@
-// Day-one primitives registered at engine startup.
+// Day-one primitives registered at engine startup, and the shared type
+// definitions they reference.
 // See: context/lib/scripting.md
 //
 // Every primitive captures `ScriptCtx` by `Rc` at registration time. To add a
@@ -8,6 +9,7 @@
 use super::ctx::{ScriptCtx, ScriptEvent};
 use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, PrimitiveRegistry};
+use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
 
 /// Register the shared types referenced by day-one primitive signatures. These
 /// feed the typedef generator (see: context/lib/scripting.md §7). No type-level
@@ -47,7 +49,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("payload", "Any", "")
         .finish();
 }
-use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
 
 /// Register the seven day-one primitives. Called at engine startup, before
 /// any script runtime is created.

@@ -4,7 +4,7 @@
 
 Produce a baked spatial partition of surface area where every chunk carries a bounded list of animated lights that influence it. Enables the future per-light weight map pipeline to sample short per-chunk light lists instead of iterating every animated light per texel, so memory and shader cost scale with local overlap density rather than total animated-light count.
 
-Prerequisite for the per-light weight map animated-lightmap pipeline (future spec). This spec ships the partition and per-chunk light lists; nothing else consumes them yet.
+Prerequisite for the per-light weight map animated-lightmap pipeline. This spec ships the partition and per-chunk light lists; nothing else consumes them yet.
 
 ## Scope
 

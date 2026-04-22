@@ -47,9 +47,9 @@ const MAX_OVERFLOW_LOG_LINES: u64 = 8;
 /// - `face_index_ranges`: per-face index range parallel to `face_charts`.
 ///   Used only to pair BVH leaves back to the face they own. Today every
 ///   primitive (and therefore every leaf) covers exactly one face's range,
-///   so the pairing is by `(index_offset, index_count)`. The defensive
-///   multi-face loop below would generalize to leaves covering several
-///   faces by enumerating every face whose range falls inside the leaf's.
+///   so the pairing is a single O(1) `index_offset` lookup. Generalizing
+///   to a leaf spanning multiple consecutive face ranges would require a
+///   different mapping structure (e.g. offset→(face, len) interval tree).
 /// - `lightmap_texel_density`: meters per lightmap texel. The min UV-extent
 ///   floor is the texel size in meters — finer subdivision cannot be
 ///   addressed by the UV-indexed weight-map baker downstream.
@@ -86,7 +86,8 @@ pub fn build_animated_light_chunks(
         .zip(filtered_influence.iter())
         .enumerate()
         .filter_map(|(i, (light, infl))| {
-            if !light.is_dynamic
+            if !light.bake_only
+                && !light.is_dynamic
                 && light.animation.is_some()
                 && infl.radius != f32::MAX
                 && infl.radius > 0.0
@@ -120,13 +121,24 @@ pub fn build_animated_light_chunks(
     // Pair leaves to faces. Today `bvh_build::collect_primitives` emits one
     // primitive per face, and `flatten` propagates each primitive into one
     // leaf — so a leaf's `(index_offset, index_count)` exactly matches one
-    // face's `FaceIndexRange`. Build the lookup once.
+    // face's `FaceIndexRange`. Build the lookup once; each leaf then resolves
+    // to its face in O(1) via `face_by_offset.get(&leaf.index_offset)`.
+    // Generalizing to a leaf spanning multiple consecutive face ranges would
+    // require a different mapping structure (e.g. an offset→(face, len)
+    // interval tree) — do not re-introduce a linear scan here.
     let mut face_by_offset: HashMap<u32, u32> = HashMap::with_capacity(face_index_ranges.len());
     for (face_index, range) in face_index_ranges.iter().enumerate() {
         if range.index_count == 0 {
             continue;
         }
-        face_by_offset.insert(range.index_offset, face_index as u32);
+        let prev = face_by_offset.insert(range.index_offset, face_index as u32);
+        debug_assert!(
+            prev.is_none(),
+            "duplicate FaceIndexRange.index_offset {}: faces {:?} and {} collide",
+            range.index_offset,
+            prev,
+            face_index,
+        );
     }
 
     let mut overflow_chunks: u64 = 0;
@@ -139,27 +151,24 @@ pub fn build_animated_light_chunks(
 
         let leaf = bvh_section.leaves[leaf_idx];
         let leaf_offset = leaf.index_offset;
-        let leaf_end = leaf_offset + leaf.index_count;
 
-        // Defensive multi-face loop. Today each leaf maps to exactly one
-        // face by `(index_offset, index_count)`; the predicate below would
-        // generalize to a leaf covering N consecutive face ranges.
-        for (face_index, range) in face_index_ranges.iter().enumerate() {
-            if range.index_count == 0 {
-                continue;
-            }
-            let face_offset = range.index_offset;
-            let face_end = face_offset + range.index_count;
-            if face_offset < leaf_offset || face_end > leaf_end {
-                continue;
-            }
-            // Sanity: the by-offset map agrees this is the face's offset.
+        // O(1) leaf→face resolution. Today each leaf's `index_offset` is
+        // exactly one face's `index_offset`. If this lookup ever misses (or
+        // the face's range doesn't exactly match the leaf's), that's a real
+        // change to the BVH contract — see the `face_by_offset` construction
+        // above for the generalization note.
+        if let Some(&face_index) = face_by_offset.get(&leaf_offset) {
+            let face_index_usize = face_index as usize;
+            let face_range = &face_index_ranges[face_index_usize];
             debug_assert_eq!(
-                face_by_offset.get(&face_offset).copied(),
-                Some(face_index as u32),
+                face_range.index_count, leaf.index_count,
+                "leaf at offset {} spans {} indices but face {} owns {} — \
+                 leaves spanning multiple faces require a different mapping \
+                 structure (see face_by_offset construction)",
+                leaf_offset, leaf.index_count, face_index, face_range.index_count,
             );
 
-            let chart = &face_charts[face_index];
+            let chart = &face_charts[face_index_usize];
 
             // Cheap reject: any animated light whose sphere overlaps the
             // chart's world-space face AABB is a candidate; pass the survivors
@@ -176,24 +185,22 @@ pub fn build_animated_light_chunks(
                     }
                 })
                 .collect();
-            if candidates.is_empty() {
-                continue;
+            if !candidates.is_empty() {
+                recurse(
+                    face_index,
+                    chart,
+                    chart.uv_min,
+                    chart.uv_extent,
+                    &candidates,
+                    &animated,
+                    min_uv_extent,
+                    &mut chunks,
+                    &mut light_indices,
+                    &mut overflow_chunks,
+                    &mut overflow_drops,
+                    &mut overflow_log_count,
+                );
             }
-
-            recurse(
-                face_index as u32,
-                chart,
-                chart.uv_min,
-                chart.uv_extent,
-                &candidates,
-                &animated,
-                min_uv_extent,
-                &mut chunks,
-                &mut light_indices,
-                &mut overflow_chunks,
-                &mut overflow_drops,
-                &mut overflow_log_count,
-            );
         }
 
         let range_count = chunks.len() as u32 - range_start;
@@ -757,30 +764,25 @@ mod tests {
         assert_eq!(section.light_indices.len(), n_lights);
     }
 
-    /// Scope case 6: animated-flagged `bake_only` lights are not treated as
-    /// animated.
+    /// Scope case 6: `bake_only` lights are not treated as animated, even if
+    /// they carry an animation and a non-directional influence.
     ///
-    /// NOTE (deviation flagged in Task 4 report): the plan's Scope defines an
-    /// animated light as `!bake_only && !is_dynamic && animation.is_some()`,
-    /// and the builder is spec'd to "filter further to the animated subset
-    /// in-place". Today the builder's local filter checks `!is_dynamic` and
-    /// directional-radius, but does NOT check `bake_only`. The plan's contract
-    /// alternative is that the *caller* (pack.rs) pre-filters `bake_only` out
-    /// of `filtered_lights`, in which case the builder never sees a bake-only
-    /// entry at this API boundary. Either reading is internally consistent;
-    /// this test documents the *caller-contract* reading: if `filtered_lights`
-    /// is already post-`!bake_only`, no bake-only light reaches the builder
-    /// and the animated set is empty. A bake-only entry passed in directly
-    /// would currently slip through the builder's filter.
+    /// The plan defines an animated light as
+    /// `!bake_only && !is_dynamic && animation.is_some() && radius != MAX`.
+    /// That contract is enforced at two layers: the caller (`main.rs`)
+    /// pre-filters `bake_only` out of `filtered_lights` before constructing
+    /// the `LightInfluenceSection`, AND the builder's own animated-subset
+    /// predicate re-checks `!bake_only` defensively. This test exercises the
+    /// builder layer directly — it passes a bake-only light (with an
+    /// animation and a bounded influence radius) in through `filtered_lights`
+    /// and asserts the builder still emits no chunk for it.
     #[test]
-    fn bake_only_animated_light_is_skipped_when_pre_filtered() {
-        // Simulate the caller contract: bake_only has already been removed
-        // from `filtered_lights`, so only the animated (non-bake-only) lights
-        // appear here. We still construct a `mk_bake_only_light()` to assert
-        // our helper is shaped correctly — and then pass it nowhere.
-        let _unused_bake_only = mk_bake_only_light();
-        let lights: Vec<MapLight> = vec![];
-        let influence: Vec<InfluenceRecord> = vec![];
+    fn bake_only_animated_light_is_filtered_by_builder() {
+        // Feed the builder a bake-only light with an animation and a
+        // non-directional influence. If the builder ever stops checking
+        // `!bake_only`, this test will start emitting a chunk and fail.
+        let lights = vec![mk_bake_only_light()];
+        let influence = vec![mk_inf(0.5, 0.5, 5.0)];
         let mut bvh = make_bvh_with_one_leaf();
         let section = build_animated_light_chunks(
             &mut bvh,
@@ -790,7 +792,11 @@ mod tests {
             &one_face_range(),
             0.04,
         );
-        assert!(section.chunks.is_empty());
+        assert!(
+            section.chunks.is_empty(),
+            "bake_only light must not produce an animated-light chunk",
+        );
+        assert!(section.light_indices.is_empty());
         assert_eq!(bvh.leaves[0].chunk_range_count, 0);
     }
 
@@ -818,10 +824,9 @@ mod tests {
     /// into the filtered list are skipped by the builder's animated predicate,
     /// so emitted indices must be a subset of the animated positions only.
     ///
-    /// We use `is_dynamic` (not `bake_only`) for the non-animated slots
-    /// because the builder's in-place filter only inspects `is_dynamic`
-    /// (see the `bake_only_animated_light_is_skipped_when_pre_filtered` test
-    /// and its NOTE — the caller is responsible for the `!bake_only` step).
+    /// We use `is_dynamic` for the non-animated slots; `bake_only` would also
+    /// work (the builder filters both — see
+    /// `bake_only_animated_light_is_filtered_by_builder`).
     #[test]
     fn index_namespace_matches_filtered_list_positions() {
         // Filtered list: [animated, dynamic, animated, dynamic, animated].

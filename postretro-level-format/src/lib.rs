@@ -3,6 +3,7 @@
 
 pub mod alpha_lights;
 pub mod animated_light_chunks;
+pub mod animated_light_weight_maps;
 pub mod bsp;
 pub mod bvh;
 pub mod chunk_light_list;
@@ -115,6 +116,12 @@ pub enum SectionId {
     /// lists, used by the future per-light weight-map animated-lightmap
     /// pipeline. See `animated_light_chunks::AnimatedLightChunksSection`.
     AnimatedLightChunks = 24,
+
+    /// Per-chunk atlas rectangles plus per-texel (offset, count) lists into a
+    /// flat (light_index, weight) pool. Baked at compile time; composed at
+    /// runtime into the animated-lightmap contribution atlas. See
+    /// `animated_light_weight_maps::AnimatedLightWeightMapsSection`.
+    AnimatedLightWeightMaps = 25,
 }
 
 impl SectionId {
@@ -133,6 +140,7 @@ impl SectionId {
             22 => Some(Self::Lightmap),
             23 => Some(Self::ChunkLightList),
             24 => Some(Self::AnimatedLightChunks),
+            25 => Some(Self::AnimatedLightWeightMaps),
             _ => None,
         }
     }

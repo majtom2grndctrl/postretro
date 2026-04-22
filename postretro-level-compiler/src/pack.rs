@@ -8,6 +8,7 @@ use std::path::Path;
 use postretro_level_format::alpha_lights::{
     AlphaFalloffModel, AlphaLightRecord, AlphaLightType, AlphaLightsSection,
 };
+use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
@@ -132,6 +133,7 @@ pub fn pack_and_write_pvs(
     sh_volume: &ShVolumeSection,
     lightmap: &LightmapSection,
     chunk_light_list: &ChunkLightListSection,
+    animated_light_chunks: Option<&AnimatedLightChunksSection>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -144,8 +146,9 @@ pub fn pack_and_write_pvs(
     let sh_volume_bytes = sh_volume.to_bytes();
     let lightmap_bytes = lightmap.to_bytes();
     let chunk_light_list_bytes = chunk_light_list.to_bytes();
+    let animated_light_chunks_bytes = animated_light_chunks.map(|s| s.to_bytes());
 
-    let sections = vec![
+    let mut sections = vec![
         SectionBlob {
             section_id: SectionId::Geometry as u32,
             version: 1,
@@ -202,6 +205,13 @@ pub fn pack_and_write_pvs(
             data: chunk_light_list_bytes.clone(),
         },
     ];
+    if let Some(ref bytes) = animated_light_chunks_bytes {
+        sections.push(SectionBlob {
+            section_id: SectionId::AnimatedLightChunks as u32,
+            version: 1,
+            data: bytes.clone(),
+        });
+    }
 
     write_and_validate_sections(output, &sections)?;
 
@@ -240,6 +250,14 @@ pub fn pack_and_write_pvs(
         chunk_light_list.chunk_count(),
         chunk_light_list.light_indices.len(),
     );
+    if let (Some(section), Some(bytes)) = (animated_light_chunks, &animated_light_chunks_bytes) {
+        log::info!(
+            "  AnimatedLightChunks: {} bytes ({} chunks, {} indices)",
+            bytes.len(),
+            section.chunks.len(),
+            section.light_indices.len(),
+        );
+    }
 
     Ok(())
 }
@@ -261,6 +279,7 @@ pub fn pack_and_write_portals(
     sh_volume: &ShVolumeSection,
     lightmap: &LightmapSection,
     chunk_light_list: &ChunkLightListSection,
+    animated_light_chunks: Option<&AnimatedLightChunksSection>,
 ) -> anyhow::Result<()> {
     // Zero out PVS references in leaves since no LeafPvs section is written.
     let portal_leaves = BspLeavesSection {
@@ -289,8 +308,9 @@ pub fn pack_and_write_portals(
     let sh_volume_bytes = sh_volume.to_bytes();
     let lightmap_bytes = lightmap.to_bytes();
     let chunk_light_list_bytes = chunk_light_list.to_bytes();
+    let animated_light_chunks_bytes = animated_light_chunks.map(|s| s.to_bytes());
 
-    let sections = vec![
+    let mut sections = vec![
         SectionBlob {
             section_id: SectionId::Geometry as u32,
             version: 1,
@@ -347,6 +367,13 @@ pub fn pack_and_write_portals(
             data: lightmap_bytes.clone(),
         },
     ];
+    if let Some(ref bytes) = animated_light_chunks_bytes {
+        sections.push(SectionBlob {
+            section_id: SectionId::AnimatedLightChunks as u32,
+            version: 1,
+            data: bytes.clone(),
+        });
+    }
 
     write_and_validate_sections(output, &sections)?;
 
@@ -385,6 +412,14 @@ pub fn pack_and_write_portals(
         chunk_light_list.chunk_count(),
         chunk_light_list.light_indices.len(),
     );
+    if let (Some(section), Some(bytes)) = (animated_light_chunks, &animated_light_chunks_bytes) {
+        log::info!(
+            "  AnimatedLightChunks: {} bytes ({} chunks, {} indices)",
+            bytes.len(),
+            section.chunks.len(),
+            section.light_indices.len(),
+        );
+    }
 
     Ok(())
 }
@@ -623,6 +658,7 @@ mod tests {
             &empty_sh_volume(),
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
         )
         .expect("pack_and_write_pvs should succeed");
 
@@ -684,6 +720,7 @@ mod tests {
             &empty_sh_volume(),
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -734,6 +771,7 @@ mod tests {
             &empty_sh_volume(),
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -792,6 +830,7 @@ mod tests {
             &sh_volume,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
         )
         .expect("full pipeline pvs pack should succeed");
 
@@ -867,6 +906,7 @@ mod tests {
             &sh_volume,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
         )
         .expect("full pipeline portal pack should succeed");
 

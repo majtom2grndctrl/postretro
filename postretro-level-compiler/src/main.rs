@@ -153,7 +153,7 @@ fn main() -> anyhow::Result<()> {
     // Build the global BVH over all static geometry. One acceleration
     // structure feeds both the runtime GPU traversal (via the flattened
     // BvhSection) and Milestone 5's CPU baker (via the live bvh::Bvh).
-    let (bvh, bvh_primitives, bvh_section) =
+    let (bvh, bvh_primitives, mut bvh_section) =
         bvh_build::build_bvh(&geo_result).map_err(|e| anyhow::anyhow!("BVH build failed: {e}"))?;
     timings.push(("BVH Build", stage_start.elapsed()));
     if args.verbose {
@@ -166,7 +166,8 @@ fn main() -> anyhow::Result<()> {
     // into `geo_result.geometry` and returns the atlas section for packing.
     // Same BVH as the SH bake — one acceleration structure, two consumers.
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
-    let (lightmap_section, _face_charts) = {
+    let final_lightmap_density;
+    let (lightmap_section, face_charts) = {
         // Retry on atlas overflow: double the texel size (halve resolution)
         // up to `MAX_RETRIES` times. Degrades quality instead of failing the
         // build on maps too large to fit at the default density. Per-face
@@ -184,7 +185,10 @@ fn main() -> anyhow::Result<()> {
                 lights: &map_data.lights,
             };
             match lightmap_bake::bake_lightmap(&mut lm_inputs, density) {
-                Ok(result) => break result,
+                Ok(result) => {
+                    final_lightmap_density = density;
+                    break result;
+                }
                 Err(lightmap_bake::LightmapBakeError::AtlasOverflow {
                     max,
                     needed_w,
@@ -248,10 +252,43 @@ fn main() -> anyhow::Result<()> {
     };
     timings.push(("ChunkLightList", stage_start.elapsed()));
 
-    progress.start_stage("Packing and writing...");
-    let stage_start = Instant::now();
+    // Build the `!bake_only`-filtered light list once; the alpha-lights and
+    // light-influence sections are both indexed against it, and the
+    // animated-light-chunks builder emits indices into the same namespace.
     let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
     let light_influence_section = pack::encode_light_influence(&map_data.lights);
+    let filtered_lights: Vec<map_data::MapLight> = map_data
+        .lights
+        .iter()
+        .filter(|l| !l.bake_only)
+        .cloned()
+        .collect();
+    debug_assert_eq!(filtered_lights.len(), light_influence_section.records.len());
+
+    progress.start_stage("Animated light chunks...");
+    let stage_start = Instant::now();
+    // Builds the per-face, per-leaf animated-light chunk partition and
+    // stamps `chunk_range_start` / `chunk_range_count` on every `BvhLeaf`.
+    // Must run before `bvh_section` is serialized into the output file.
+    // When the map has no animated lights the returned section is empty,
+    // which is the signal to skip emission — no placeholder record needed.
+    let animated_light_chunks_section = animated_light_chunks::build_animated_light_chunks(
+        &mut bvh_section,
+        &filtered_lights,
+        &light_influence_section.records,
+        &face_charts,
+        &geo_result.face_index_ranges,
+        final_lightmap_density,
+    );
+    let animated_light_chunks_section = if animated_light_chunks_section.chunks.is_empty() {
+        None
+    } else {
+        Some(animated_light_chunks_section)
+    };
+    timings.push(("AnimLightChunks", stage_start.elapsed()));
+
+    progress.start_stage("Packing and writing...");
+    let stage_start = Instant::now();
 
     if args.pvs {
         if args.verbose {
@@ -269,6 +306,7 @@ fn main() -> anyhow::Result<()> {
             &sh_volume_section,
             &lightmap_section,
             &chunk_light_list_section,
+            animated_light_chunks_section.as_ref(),
         )?;
     } else {
         if args.verbose {
@@ -287,6 +325,7 @@ fn main() -> anyhow::Result<()> {
             &sh_volume_section,
             &lightmap_section,
             &chunk_light_list_section,
+            animated_light_chunks_section.as_ref(),
         )?;
     }
     timings.push(("Packing", stage_start.elapsed()));

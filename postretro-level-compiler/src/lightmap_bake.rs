@@ -108,9 +108,9 @@ pub struct LightmapInputs<'a> {
 pub fn bake_lightmap(
     inputs: &mut LightmapInputs<'_>,
     texel_density: f32,
-) -> Result<LightmapSection, LightmapBakeError> {
+) -> Result<(LightmapSection, Vec<Chart>), LightmapBakeError> {
     if inputs.geometry.geometry.vertices.is_empty() || inputs.geometry.geometry.faces.is_empty() {
-        return Ok(LightmapSection::placeholder());
+        return Ok((LightmapSection::placeholder(), Vec::new()));
     }
 
     // Filter lights: static only. `is_dynamic` lights contribute at runtime,
@@ -118,7 +118,10 @@ pub fn bake_lightmap(
     // here because the static lightmap is its only contribution.
     let static_lights: Vec<&MapLight> = inputs.lights.iter().filter(|l| !l.is_dynamic).collect();
     if static_lights.is_empty() {
-        return Ok(LightmapSection::placeholder());
+        // Still plan charts — the animated-light-chunks builder needs per-face
+        // UV bounds even when no static lights exist.
+        let charts = plan_charts(inputs.geometry, texel_density);
+        return Ok((LightmapSection::placeholder(), charts));
     }
 
     // Split vertices shared across faces so each face owns its own per-vertex
@@ -153,7 +156,7 @@ pub fn bake_lightmap(
     // --- Pack charts into an atlas ---
     let (atlas_w, atlas_h, placements) = shelf_pack(&charts, texel_density)?;
     if placements.is_empty() {
-        return Ok(LightmapSection::placeholder());
+        return Ok((LightmapSection::placeholder(), charts));
     }
 
     // --- Write lightmap UVs back into vertices ---
@@ -193,13 +196,16 @@ pub fn bake_lightmap(
     let irr_bytes = encode_irradiance_rgba16f(&irradiance);
     let dir_bytes = encode_direction_rgba8(&direction, &coverage);
 
-    Ok(LightmapSection {
-        width: atlas_w,
-        height: atlas_h,
-        texel_density,
-        irradiance: irr_bytes,
-        direction: dir_bytes,
-    })
+    Ok((
+        LightmapSection {
+            width: atlas_w,
+            height: atlas_h,
+            texel_density,
+            irradiance: irr_bytes,
+            direction: dir_bytes,
+        },
+        charts,
+    ))
 }
 
 /// Ensure no vertex index is referenced by more than one face's index range.
@@ -269,23 +275,28 @@ pub fn log_stats(section: &LightmapSection, static_light_count: usize) {
 
 /// A face's chart plan: face-local 2D basis, origin, extent, and rectangle
 /// size in atlas texels.
+///
+/// Public because the animated-light-chunks builder needs per-face UV bounds
+/// in the same (origin, u_axis, v_axis) basis + world-meter UV extents that
+/// the lightmap bake already computes. Exposing `Chart` avoids duplicating the
+/// per-face projection logic; no new data is introduced.
 #[derive(Debug, Clone)]
-struct Chart {
+pub struct Chart {
     /// Origin of the face-local (u, v) basis in world space.
-    origin: Vec3,
+    pub origin: Vec3,
     /// Face-local u-axis (unit, world space).
-    u_axis: Vec3,
+    pub u_axis: Vec3,
     /// Face-local v-axis (unit, world space).
-    v_axis: Vec3,
+    pub v_axis: Vec3,
     /// World-space min corner of the face's bounding box in the (u, v) basis.
-    uv_min: [f32; 2],
+    pub uv_min: [f32; 2],
     /// World-space extent (meters) along (u, v).
-    uv_extent: [f32; 2],
+    pub uv_extent: [f32; 2],
     /// Surface normal used to offset shadow-ray origins.
-    normal: Vec3,
+    pub normal: Vec3,
     /// Chart size in atlas texels, including padding.
-    width_texels: u32,
-    height_texels: u32,
+    pub width_texels: u32,
+    pub height_texels: u32,
 }
 
 fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
@@ -1082,7 +1093,7 @@ mod tests {
             geometry: &mut geo,
             lights: &lights,
         };
-        let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS).unwrap();
+        let (section, _) = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS).unwrap();
         // Placeholder is 1x1.
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
@@ -1099,7 +1110,7 @@ mod tests {
             geometry: &mut geo,
             lights: &lights,
         };
-        let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS).unwrap();
+        let (section, _) = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS).unwrap();
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
     }
@@ -1115,7 +1126,7 @@ mod tests {
             geometry: &mut geo,
             lights: &lights,
         };
-        let section = bake_lightmap(&mut inputs, 0.25).unwrap();
+        let (section, _) = bake_lightmap(&mut inputs, 0.25).unwrap();
         // Expect a > 1×1 atlas (real bake path) and at least one non-zero
         // irradiance texel.
         assert!(section.width >= MIN_ATLAS_DIMENSION);
@@ -1151,7 +1162,7 @@ mod tests {
             geometry: &mut geo,
             lights: &lights,
         };
-        let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS).unwrap();
+        let (section, _) = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS).unwrap();
         // Only a dynamic light → placeholder path.
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
@@ -1170,7 +1181,7 @@ mod tests {
             geometry: &mut geo_static,
             lights: &lights,
         };
-        let section_static = bake_lightmap(&mut inputs, 0.25).unwrap();
+        let (section_static, _) = bake_lightmap(&mut inputs, 0.25).unwrap();
 
         lights[0].is_dynamic = true;
         let mut geo_dyn = unit_quad_geometry();
@@ -1181,7 +1192,7 @@ mod tests {
             geometry: &mut geo_dyn,
             lights: &lights,
         };
-        let section_dyn = bake_lightmap(&mut inputs2, 0.25).unwrap();
+        let (section_dyn, _) = bake_lightmap(&mut inputs2, 0.25).unwrap();
 
         assert!(section_static.width >= MIN_ATLAS_DIMENSION);
         assert_eq!(section_dyn.width, 1); // placeholder
@@ -1371,7 +1382,7 @@ mod tests {
             geometry: &mut geo,
             lights: &lights,
         };
-        let section = bake_lightmap(&mut inputs, 0.25).unwrap();
+        let (section, _) = bake_lightmap(&mut inputs, 0.25).unwrap();
 
         // Every irradiance texel in the floor's chart should be zero (or have
         // leaked in only via edge-dilation into padding). Verify at least

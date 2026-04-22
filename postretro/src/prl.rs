@@ -317,6 +317,8 @@ fn convert_bvh_section(section: BvhSection) -> BvhTree {
             index_offset: l.index_offset,
             index_count: l.index_count,
             cell_id: l.cell_id,
+            chunk_range_start: l.chunk_range_start,
+            chunk_range_count: l.chunk_range_count,
         })
         .collect();
 
@@ -1070,6 +1072,8 @@ mod tests {
                     index_offset: 0,
                     index_count: 3,
                     cell_id: 0,
+                    chunk_range_start: 0,
+                    chunk_range_count: 0,
                 },
                 FormatBvhLeaf {
                     aabb_min: [9.0, 0.0, 0.0],
@@ -1078,6 +1082,8 @@ mod tests {
                     index_offset: 3,
                     index_count: 3,
                     cell_id: 1,
+                    chunk_range_start: 0,
+                    chunk_range_count: 0,
                 },
             ],
             root_node_index: 0,

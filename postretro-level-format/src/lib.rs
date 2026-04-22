@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL
 
 pub mod alpha_lights;
+pub mod animated_light_chunks;
 pub mod bsp;
 pub mod bvh;
 pub mod chunk_light_list;
@@ -109,6 +110,11 @@ pub enum SectionId {
     /// lights a chunk can actually be reached by. See
     /// `chunk_light_list::ChunkLightListSection`.
     ChunkLightList = 23,
+
+    /// Per-BVH-leaf ranges into a flat array of per-chunk animated-light index
+    /// lists, used by the future per-light weight-map animated-lightmap
+    /// pipeline. See `animated_light_chunks::AnimatedLightChunksSection`.
+    AnimatedLightChunks = 24,
 }
 
 impl SectionId {
@@ -126,6 +132,7 @@ impl SectionId {
             21 => Some(Self::LightInfluence),
             22 => Some(Self::Lightmap),
             23 => Some(Self::ChunkLightList),
+            24 => Some(Self::AnimatedLightChunks),
             _ => None,
         }
     }

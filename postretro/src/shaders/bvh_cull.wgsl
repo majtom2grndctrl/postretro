@@ -16,9 +16,11 @@ struct CullUniforms {
 };
 
 // AABB corners are stored as six scalar f32s, not vec3<f32>: WGSL's
-// AlignOf(vec3<f32>) = 16 would force struct stride to 48. Scalar-only structs
-// have 4-byte alignment, giving a natural 40-byte stride that matches the
-// on-disk layout. `wgsl_struct_strides_are_40_bytes` enforces this with naga.
+// AlignOf(vec3<f32>) = 16 would force the `BvhNode` struct stride from 40 to
+// 48 (and `BvhLeaf` from 48 to 64). Scalar-only structs have 4-byte alignment,
+// giving the natural strides (40 for `BvhNode`, 48 for `BvhLeaf`) that match
+// the on-disk layout. `wgsl_bvh_struct_strides_match_spec` enforces this with
+// naga.
 struct BvhNode {
     min_x: f32,                     // offset  0
     min_y: f32,                     // offset  4
@@ -43,6 +45,8 @@ struct BvhLeaf {
     index_offset: u32,         // offset 28
     index_count: u32,          // offset 32
     cell_id: u32,              // offset 36
+    chunk_range_start: u32,    // offset 40
+    chunk_range_count: u32,    // offset 44
 };
 
 struct DrawIndexedIndirect {

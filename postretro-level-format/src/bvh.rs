@@ -18,9 +18,17 @@ pub const BVH_NODE_FLAG_LEAF: u32 = 1 << 0;
 /// six scalar f32s rather than a pair of `vec3<f32>`s: the matching WGSL
 /// storage-buffer struct must use scalar fields too, because WGSL's
 /// `AlignOf(vec3<f32>) = 16` would round the struct stride up to 48 and
-/// desync the GPU layout from this on-disk one. See the comment at the WGSL
-/// struct definition in `postretro/src/compute_cull.rs` for the full
-/// rationale; the engine has a naga-based regression test guarding this.
+/// desync the GPU layout from this on-disk one. The on-disk layout here is
+/// mirrored by four downstream definitions that must stay byte-identical:
+///   - `postretro/src/shaders/bvh_cull.wgsl` (GPU-side `struct BvhNode` /
+///     `struct BvhLeaf`)
+///   - `postretro/src/geometry.rs` (engine-side `BvhNode` / `BvhLeaf`)
+///   - `postretro/src/prl.rs` (format → engine converter + test fixture)
+///   - `postretro/src/compute_cull.rs` (`serialize_bvh_nodes` /
+///     `serialize_bvh_leaves` + naga-based stride regression test)
+///
+/// Any layout change must update all four sites and the `LEAF_STRIDE` /
+/// `NODE_STRIDE` constants below in the same pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BvhNode {
     pub aabb_min: [f32; 3],
@@ -51,6 +59,11 @@ pub struct BvhLeaf {
     pub index_offset: u32,
     pub index_count: u32,
     pub cell_id: u32,
+    /// First chunk in the `AnimatedLightChunksSection.chunks` array owned by
+    /// this leaf. `chunk_range_count == 0` on leaves whose faces have no
+    /// animated-light overlap (or on maps without animated lights).
+    pub chunk_range_start: u32,
+    pub chunk_range_count: u32,
 }
 
 /// BVH section: flat node + leaf arrays plus a fixed header.
@@ -61,7 +74,7 @@ pub struct BvhLeaf {
 ///   u32 root_node_index
 ///   u32 padding
 ///   BvhNode * node_count   (40 bytes each; see `NODE_STRIDE`)
-///   BvhLeaf * leaf_count   (40 bytes each; see `LEAF_STRIDE`)
+///   BvhLeaf * leaf_count   (48 bytes each; see `LEAF_STRIDE`)
 ///
 /// Nodes are DFS-ordered (root at `root_node_index`). Leaves are sorted by
 /// `material_bucket_id` so each bucket owns a contiguous slot range in the
@@ -77,7 +90,7 @@ pub struct BvhSection {
 }
 
 pub const NODE_STRIDE: usize = 40;
-pub const LEAF_STRIDE: usize = 40;
+pub const LEAF_STRIDE: usize = 48;
 pub const HEADER_SIZE: usize = 16;
 
 /// Contiguous leaf-index range owned by a single material bucket in a
@@ -152,6 +165,8 @@ impl BvhSection {
             buf.extend_from_slice(&leaf.index_offset.to_le_bytes());
             buf.extend_from_slice(&leaf.index_count.to_le_bytes());
             buf.extend_from_slice(&leaf.cell_id.to_le_bytes());
+            buf.extend_from_slice(&leaf.chunk_range_start.to_le_bytes());
+            buf.extend_from_slice(&leaf.chunk_range_count.to_le_bytes());
         }
 
         debug_assert_eq!(buf.len(), size);
@@ -220,6 +235,8 @@ impl BvhSection {
             let index_offset = read_u32(data, offset + 28);
             let index_count = read_u32(data, offset + 32);
             let cell_id = read_u32(data, offset + 36);
+            let chunk_range_start = read_u32(data, offset + 40);
+            let chunk_range_count = read_u32(data, offset + 44);
             leaves.push(BvhLeaf {
                 aabb_min,
                 material_bucket_id,
@@ -227,6 +244,8 @@ impl BvhSection {
                 index_offset,
                 index_count,
                 cell_id,
+                chunk_range_start,
+                chunk_range_count,
             });
             offset += LEAF_STRIDE;
         }
@@ -293,6 +312,8 @@ mod tests {
                     index_offset: 0,
                     index_count: 6,
                     cell_id: 3,
+                    chunk_range_start: 0,
+                    chunk_range_count: 2,
                 },
                 BvhLeaf {
                     aabb_min: [-1.0, -1.0, 0.5],
@@ -301,6 +322,8 @@ mod tests {
                     index_offset: 6,
                     index_count: 3,
                     cell_id: 4,
+                    chunk_range_start: 2,
+                    chunk_range_count: 0,
                 },
             ],
             root_node_index: 0,
@@ -328,7 +351,7 @@ mod tests {
             + (section.leaves.len() * LEAF_STRIDE);
         assert_eq!(bytes.len(), expected_len);
         assert_eq!(NODE_STRIDE, 40);
-        assert_eq!(LEAF_STRIDE, 40);
+        assert_eq!(LEAF_STRIDE, 48);
     }
 
     #[test]

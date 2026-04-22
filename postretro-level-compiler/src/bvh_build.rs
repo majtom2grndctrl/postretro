@@ -244,6 +244,10 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
                     index_offset: prim.index_offset,
                     index_count: prim.index_count,
                     cell_id: prim.cell_id,
+                    // Stamped later by the animated-light-chunks builder.
+                    // Leaves on maps without animated lights keep zeros.
+                    chunk_range_start: 0,
+                    chunk_range_count: 0,
                 });
                 flat_nodes.push(FlatNode {
                     aabb_min: prim.aabb_min,

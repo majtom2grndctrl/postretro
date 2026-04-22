@@ -66,8 +66,8 @@ const MAX_VISIBLE_CELLS: u32 = (VISIBLE_CELLS_WORDS as u32) * 32;
 // rationale for the WGSL struct shape (why scalar f32 fields instead of
 // `vec3<f32>`) lives alongside the struct definition there. The Rust-side
 // serializers below (`serialize_bvh_nodes`/`serialize_bvh_leaves`) write
-// the matching 40-byte stride; the `wgsl_struct_strides_are_40_bytes` test
-// pins the contract against naga.
+// the matching strides — 40 bytes for `BvhNode`, 48 bytes for `BvhLeaf`; the
+// `wgsl_bvh_struct_strides_match_spec` test pins the contract against naga.
 const CULL_SHADER_SOURCE: &str = include_str!("shaders/bvh_cull.wgsl");
 
 /// Cull uniforms: 6 frustum planes.
@@ -131,7 +131,7 @@ impl ComputeCullPipeline {
         let leaf_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BVH Leaf Storage"),
             contents: if leaf_bytes.is_empty() {
-                &[0u8; 40]
+                &[0u8; 48]
             } else {
                 &leaf_bytes
             },
@@ -521,9 +521,9 @@ fn serialize_bvh_nodes(nodes: &[crate::geometry::BvhNode]) -> Vec<u8> {
     buf
 }
 
-/// Serialize BVH leaves to the 40-byte WGSL storage layout.
+/// Serialize BVH leaves to the 48-byte WGSL storage layout.
 fn serialize_bvh_leaves(leaves: &[crate::geometry::BvhLeaf]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(leaves.len() * 40);
+    let mut buf = Vec::with_capacity(leaves.len() * 48);
     for leaf in leaves {
         for &c in &leaf.aabb_min {
             buf.extend_from_slice(&c.to_le_bytes());
@@ -535,6 +535,8 @@ fn serialize_bvh_leaves(leaves: &[crate::geometry::BvhLeaf]) -> Vec<u8> {
         buf.extend_from_slice(&leaf.index_offset.to_le_bytes());
         buf.extend_from_slice(&leaf.index_count.to_le_bytes());
         buf.extend_from_slice(&leaf.cell_id.to_le_bytes());
+        buf.extend_from_slice(&leaf.chunk_range_start.to_le_bytes());
+        buf.extend_from_slice(&leaf.chunk_range_count.to_le_bytes());
     }
     buf
 }
@@ -599,6 +601,8 @@ mod tests {
             index_offset: 0,
             index_count: 3,
             cell_id,
+            chunk_range_start: 0,
+            chunk_range_count: 0,
         }
     }
 
@@ -618,9 +622,9 @@ mod tests {
     }
 
     #[test]
-    fn bvh_leaf_serialization_is_40_bytes() {
+    fn bvh_leaf_serialization_is_48_bytes() {
         let bytes = serialize_bvh_leaves(&[leaf(0, 0)]);
-        assert_eq!(bytes.len(), 40);
+        assert_eq!(bytes.len(), 48);
     }
 
     #[test]
@@ -671,15 +675,16 @@ mod tests {
     }
 
     /// Regression: a WGSL `vec3<f32>` has alignment 16, so any struct that
-    /// contains one gets rounded up to 48-byte stride — silently shifting
-    /// every node/leaf after index 0 in the GPU storage buffers and reading
-    /// garbage. The fix is to store the AABB corners as six scalar `f32`
-    /// fields. This test parses the live shader source with naga and asserts
-    /// both `BvhNode` and `BvhLeaf` end up at 40 bytes. If someone re-vec3s
-    /// either struct, this test fails loudly before the breakage reaches
-    /// a GPU round-trip.
+    /// contains one gets rounded up (e.g. `BvhNode` 40 → 48, `BvhLeaf`
+    /// 48 → 64) — silently shifting every node/leaf after index 0 in the GPU
+    /// storage buffers and reading garbage. The fix is to store the AABB
+    /// corners as six scalar `f32` fields. This test parses the live shader
+    /// source with naga and asserts `BvhNode` is 40 bytes and `BvhLeaf` is
+    /// 48 bytes. If someone re-vec3s either struct, or changes a field count
+    /// without updating serializers, this fails loudly before the breakage
+    /// reaches a GPU round-trip.
     #[test]
-    fn wgsl_struct_strides_are_40_bytes() {
+    fn wgsl_bvh_struct_strides_match_spec() {
         let module = naga::front::wgsl::parse_str(CULL_SHADER_SOURCE)
             .expect("cull shader should parse as WGSL");
 
@@ -707,9 +712,10 @@ mod tests {
              a vec3<f32> field likely crept back in (align 16 → stride 48)"
         );
         assert_eq!(
-            leaf_span, 40,
-            "BvhLeaf WGSL stride is {leaf_span}, expected 40; \
-             a vec3<f32> field likely crept back in (align 16 → stride 48)"
+            leaf_span, 48,
+            "BvhLeaf WGSL stride is {leaf_span}, expected 48; \
+             a vec3<f32> field likely crept back in (align 16 → stride 64), \
+             or the chunk_range_* fields were dropped"
         );
     }
 
@@ -747,6 +753,6 @@ mod tests {
         let bytes = serialize_bvh_nodes(&tree.nodes);
         assert_eq!(bytes.len(), tree.nodes.len() * 40);
         let leaf_bytes = serialize_bvh_leaves(&tree.leaves);
-        assert_eq!(leaf_bytes.len(), tree.leaves.len() * 40);
+        assert_eq!(leaf_bytes.len(), tree.leaves.len() * 48);
     }
 }

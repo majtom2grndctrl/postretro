@@ -58,6 +58,11 @@ pub struct BvhLeaf {
     /// BSP leaf id this leaf's primitives live in — the value checked against
     /// the visible-cell bitmask in the compute shader.
     pub cell_id: u32,
+    /// First chunk in the `AnimatedLightChunksSection.chunks` array owned by
+    /// this leaf. `chunk_range_count == 0` on leaves with no animated-light
+    /// overlap.
+    pub chunk_range_start: u32,
+    pub chunk_range_count: u32,
 }
 
 /// CPU-side view of the BVH section, held alongside the level geometry and
@@ -117,6 +122,8 @@ mod tests {
             index_offset: 0,
             index_count: 3,
             cell_id,
+            chunk_range_start: 0,
+            chunk_range_count: 0,
         }
     }
 

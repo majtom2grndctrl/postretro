@@ -563,6 +563,8 @@ mod tests {
                 index_offset: 0,
                 index_count: 3,
                 cell_id: 0,
+                chunk_range_start: 0,
+                chunk_range_count: 0,
             }],
             root_node_index: 0,
         }

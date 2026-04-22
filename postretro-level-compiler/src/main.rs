@@ -1,6 +1,7 @@
 // postretro-level-compiler: level compiler entry point.
 // See: context/lib/build_pipeline.md §PRL
 
+pub mod animated_light_chunks;
 pub mod bvh_build;
 pub mod chunk_light_list_bake;
 pub mod format;
@@ -165,7 +166,7 @@ fn main() -> anyhow::Result<()> {
     // into `geo_result.geometry` and returns the atlas section for packing.
     // Same BVH as the SH bake — one acceleration structure, two consumers.
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
-    let lightmap_section = {
+    let (lightmap_section, _face_charts) = {
         // Retry on atlas overflow: double the texel size (halve resolution)
         // up to `MAX_RETRIES` times. Degrades quality instead of failing the
         // build on maps too large to fit at the default density. Per-face
@@ -183,7 +184,7 @@ fn main() -> anyhow::Result<()> {
                 lights: &map_data.lights,
             };
             match lightmap_bake::bake_lightmap(&mut lm_inputs, density) {
-                Ok(section) => break section,
+                Ok(result) => break result,
                 Err(lightmap_bake::LightmapBakeError::AtlasOverflow {
                     max,
                     needed_w,

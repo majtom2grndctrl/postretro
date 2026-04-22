@@ -18,7 +18,7 @@ pub const ANIMATED_LIGHT_CHUNKS_VERSION: u32 = 1;
 /// any downstream consumer must agree on this value.
 pub const MAX_ANIMATED_LIGHTS_PER_CHUNK: usize = 4;
 
-/// One chunk record. Fixed 56-byte stride.
+/// One chunk record. Fixed 56-byte stride. Build-time produced by `prl-build`; runtime treats the section as read-only.
 ///
 /// Chunk UV is **face-local in world-meter units** along the parent face's
 /// (u,v) basis — the same units as `Chart.uv_min` / `Chart.uv_extent` in the

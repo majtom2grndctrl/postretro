@@ -5,6 +5,10 @@
 // forward pass samples alongside the static directional lightmap. See
 // context/plans/in-progress/animated-light-weight-maps/index.md §Task 5.
 //
+// Compose-only: the atlas is zero-initialized by wgpu at creation and the
+// compose pass writes every texel the forward pass samples, so no per-frame
+// clear is needed.
+//
 // Dispatch shape: one workgroup per 8×8 atlas tile (a `DispatchTile`
 // record), flattened in `workgroup_id.x`. CPU-side `animated_lightmap.rs`
 // refuses to load a map whose tile count exceeds 65535 — the 2D-dispatch
@@ -89,15 +93,6 @@ struct DebugConfig {
 @group(1) @binding(5) var<storage, read> anim_samples: array<f32>;
 @group(1) @binding(6) var animated_lm_atlas: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(7) var<uniform> debug_config: DebugConfig;
-
-@compute @workgroup_size(8, 8, 1)
-fn clear_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let dims = textureDimensions(animated_lm_atlas);
-    if (gid.x >= dims.x || gid.y >= dims.y) {
-        return;
-    }
-    textureStore(animated_lm_atlas, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(0.0, 0.0, 0.0, 0.0));
-}
 
 @compute @workgroup_size(8, 8, 1)
 fn compose_main(

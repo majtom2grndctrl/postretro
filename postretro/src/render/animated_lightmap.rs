@@ -1,6 +1,8 @@
-// Animated-lightmap compose compute pass: per-frame clear + compose of the
-// animated-light contribution atlas. Samples the same descriptor and
-// `anim_samples` buffers as the SH path (`sh_volume.rs`) via
+// Animated-lightmap compose compute pass: per-frame compose of the
+// animated-light contribution atlas. The atlas texture is zero-initialized
+// by wgpu at creation and the compose pass writes every texel the forward
+// pass samples, so no per-frame clear is needed. Samples the same
+// descriptor and `anim_samples` buffers as the SH path (`sh_volume.rs`) via
 // `AnimatedLightBuffers`, so scripting toggles to `is_active` affect both
 // consumers in one upload.
 //
@@ -171,7 +173,6 @@ pub struct AnimatedLightmapResources {
 }
 
 struct DispatchState {
-    clear_pipeline: wgpu::ComputePipeline,
     compose_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
     /// Number of compose workgroups (one per `DispatchTile` in
@@ -179,8 +180,6 @@ struct DispatchState {
     /// construction so the dispatch call can't trigger a wgpu validation
     /// error at frame time.
     compose_workgroup_count: u32,
-    /// Atlas dimensions, cached for the clear dispatch grid calculation.
-    atlas_size: u32,
 }
 
 impl AnimatedLightmapResources {
@@ -195,7 +194,7 @@ impl AnimatedLightmapResources {
     ///   anim_samples). Borrowed — this module does not upload its own copy.
     /// - `uniform_bind_group_layout`: group-0 layout from the renderer. **Must
     ///   include `wgpu::ShaderStages::COMPUTE`** in its visibility flags — the
-    ///   clear and compose pipelines below are compute pipelines and will fail
+    ///   compose pipeline below is a compute pipeline and will fail
     ///   wgpu validation at `create_compute_pipeline` time otherwise. The
     ///   canonical BGL in `render/mod.rs` (search for "Uniform Bind Group
     ///   Layout") declares `VERTEX | FRAGMENT | COMPUTE` specifically so this
@@ -258,7 +257,8 @@ impl AnimatedLightmapResources {
         let compose_workgroup_count = dispatch_tiles.len() as u32;
 
         // Real 1024² storage texture. `STORAGE_BINDING | TEXTURE_BINDING` —
-        // no `COPY_DST` because the clear is done via compute dispatch.
+        // no `COPY_DST` because wgpu zero-initializes the texture at
+        // creation and the compose pass overwrites every sampled texel.
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Atlas"),
             size: wgpu::Extent3d {
@@ -336,15 +336,6 @@ impl AnimatedLightmapResources {
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
 
-        let clear_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Animated LM Clear Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("clear_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-
         let compose_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Animated LM Compose Pipeline"),
             layout: Some(&pipeline_layout),
@@ -406,26 +397,13 @@ impl AnimatedLightmapResources {
             dummy_texture,
             forward_view,
             dispatch_state: Some(DispatchState {
-                clear_pipeline,
                 compose_pipeline,
                 compute_bind_group,
                 compose_workgroup_count,
-                atlas_size: ANIMATED_ATLAS_SIZE,
             }),
         })
     }
 
-    /// Dispatch the per-frame clear + compose passes. No-op when the map
-    /// carries no animated weight maps (the forward pass reads the dummy
-    /// zero texture in that case).
-    ///
-    /// `uniform_bind_group` must be the renderer's group-0 uniform bind
-    /// group; this pass consumes `uniforms.time` to drive the curves.
-    ///
-    /// `timestamp_writes`: single pair covering clear + compose folded
-    /// together, allocated via `FrameTiming::compute_pass_writes`. Folding
-    /// both passes under one timing pair keeps the telemetry compact and
-    /// still isolates the animated-LM work from the BVH cull.
     /// Whether a real compose dispatch will run. `false` for maps with no
     /// animated weight maps — callers skip allocating a GPU timing pair in
     /// that case so the timestamp slot isn't marked-but-unwritten.
@@ -433,6 +411,17 @@ impl AnimatedLightmapResources {
         self.dispatch_state.is_some()
     }
 
+    /// Dispatch the per-frame compose pass. No-op when the map carries no
+    /// animated weight maps (the forward pass reads the dummy zero texture
+    /// in that case). The atlas is zero-initialized by wgpu at creation and
+    /// the compose pass writes every texel the forward pass samples, so no
+    /// per-frame clear is required.
+    ///
+    /// `uniform_bind_group` must be the renderer's group-0 uniform bind
+    /// group; this pass consumes `uniforms.time` to drive the curves.
+    ///
+    /// `timestamp_writes`: single pair covering the compose dispatch,
+    /// allocated via `FrameTiming::compute_pass_writes`.
     pub fn dispatch(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -444,16 +433,11 @@ impl AnimatedLightmapResources {
         };
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Animated LM Clear+Compose"),
+            label: Some("Animated LM Compose"),
             timestamp_writes,
         });
         pass.set_bind_group(0, uniform_bind_group, &[]);
         pass.set_bind_group(1, &state.compute_bind_group, &[]);
-
-        // Clear: one invocation per atlas texel, 8×8 workgroup.
-        let clear_groups = state.atlas_size.div_ceil(8);
-        pass.set_pipeline(&state.clear_pipeline);
-        pass.dispatch_workgroups(clear_groups, clear_groups, 1);
 
         // Compose: one workgroup per dispatch tile, flat in x.
         pass.set_pipeline(&state.compose_pipeline);
@@ -779,7 +763,9 @@ mod tests {
         );
         let module =
             naga::front::wgsl::parse_str(src).expect("compose shader should parse as WGSL");
-        // Both entry points exist.
+        // Compose entry point exists; clear entry point has been removed
+        // (the atlas is zero-initialized by wgpu and fully overwritten each
+        // frame by the compose pass).
         let has_clear = module
             .entry_points
             .iter()
@@ -788,7 +774,7 @@ mod tests {
             .entry_points
             .iter()
             .any(|ep| ep.name == "compose_main" && ep.stage == naga::ShaderStage::Compute);
-        assert!(has_clear, "clear_main missing");
+        assert!(!has_clear, "clear_main should have been removed");
         assert!(has_compose, "compose_main missing");
         // DebugConfig struct is declared.
         let has_debug_struct = module.types.iter().any(|(_, ty)| {

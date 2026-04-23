@@ -1106,6 +1106,7 @@ impl Renderer {
             &device,
             geometry.and_then(|g| g.animated_light_weight_maps),
             geometry.and_then(|g| g.animated_light_chunks),
+            &bvh_leaves,
             &sh_volume_resources.animation,
             &uniform_bind_group_layout,
             animated_lm_debug,
@@ -1925,18 +1926,26 @@ impl Renderer {
         }
 
         // --- Animated lightmap compose pass ---
-        // Clear + compose the per-frame animated-contribution atlas. Runs
-        // after BVH cull (independent work, no data dep) and before the
-        // depth pre-pass so the compose→sample barrier lands before any
-        // forward fragment samples the atlas. wgpu infers the
-        // storage→sampled transition from the bind-group usage change.
+        // Compose the per-frame animated-contribution atlas. Runs after
+        // BVH cull (independent work, no data dep) and before the depth
+        // pre-pass so the compose→sample barrier lands before any forward
+        // fragment samples the atlas. wgpu infers the storage→sampled
+        // transition from the bind-group usage change. `visible` is
+        // forwarded so the compose dispatch filters tiles against the
+        // current frame's visible-cell set — see
+        // `animated_lightmap::AnimatedLightmapResources::dispatch`.
         if self.animated_lightmap.is_active() {
             let animated_ts = self
                 .frame_timing
                 .as_ref()
                 .map(|t| t.compute_pass_writes(TIMING_PAIR_ANIMATED_LM_COMPOSE));
-            self.animated_lightmap
-                .dispatch(&mut encoder, &self.uniform_bind_group, animated_ts);
+            self.animated_lightmap.dispatch(
+                &self.queue,
+                &mut encoder,
+                &self.uniform_bind_group,
+                visible,
+                animated_ts,
+            );
         }
 
         // --- Dynamic spot shadow slot update + depth pass ---

@@ -55,9 +55,9 @@ const DRAW_INDIRECT_SIZE: u64 = 20;
 /// up to 4096 cell IDs (bit test `bitmask[cell_id >> 5] & (1 << (cell_id & 31))`).
 /// The fixed size matches the contract documented in the BVH foundation plan
 /// and removes any resize path from the hot frame loop.
-const VISIBLE_CELLS_WORDS: usize = 128;
+pub(crate) const VISIBLE_CELLS_WORDS: usize = 128;
 const VISIBLE_CELLS_BYTES: u64 = (VISIBLE_CELLS_WORDS * 4) as u64;
-const MAX_VISIBLE_CELLS: u32 = (VISIBLE_CELLS_WORDS as u32) * 32;
+pub(crate) const MAX_VISIBLE_CELLS: u32 = (VISIBLE_CELLS_WORDS as u32) * 32;
 
 // --- Compute Shader (WGSL) ---
 //

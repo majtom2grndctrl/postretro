@@ -17,9 +17,7 @@
 // atlas contents for cells the current frame's visibility considers
 // invisible.
 //
-// See: context/plans/in-progress/animated-light-weight-maps/index.md §Task 5
-//      context/plans/in-progress/perf-animated-lightmap-cull/index.md
-//      context/lib/rendering_pipeline.md §4, §7.1
+// See: context/lib/rendering_pipeline.md §4, §7.1
 //
 // Dispatch-limit choice: this module asserts at map load that the total
 // 8×8 tile count fits in `max_compute_workgroups_per_dimension` (65535 at
@@ -31,21 +29,11 @@
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 
+use crate::compute_cull::{MAX_VISIBLE_CELLS, VISIBLE_CELLS_WORDS};
 use crate::geometry::BvhLeaf;
 use crate::visibility::VisibleCells;
 
 use super::sh_volume::AnimatedLightBuffers;
-
-/// Width of the visible-cell bitmask, in `u32` words. Mirrors the
-/// `VISIBLE_CELLS_WORDS` constant in `compute_cull.rs` (128 words = 4096
-/// cells). Duplicated here instead of imported to keep this module free of
-/// a cross-module dependency on an internal constant — the bitmask is a
-/// purely local scratch buffer and the value is load-bearing only at the
-/// point it's built from a cell list.
-const VISIBLE_CELLS_WORDS: usize = 128;
-/// Cap on `cell_id` values storable in the local visible-cell bitmask.
-/// Matches `compute_cull::MAX_VISIBLE_CELLS`.
-const MAX_VISIBLE_CELLS: u32 = (VISIBLE_CELLS_WORDS as u32) * 32;
 
 /// Animated-lightmap atlas resolution. Matches the static lightmap atlas
 /// (1024²); same UV drives both samples in the forward pass. A future

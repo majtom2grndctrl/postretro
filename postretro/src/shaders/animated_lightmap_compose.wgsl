@@ -2,8 +2,7 @@
 //
 // Combines per-animated-light baked weight maps with runtime descriptor
 // curves into a screen-resolution-independent `Rgba16Float` atlas that the
-// forward pass samples alongside the static directional lightmap. See
-// context/plans/in-progress/animated-light-weight-maps/index.md §Task 5.
+// forward pass samples alongside the static directional lightmap.
 //
 // Compose-only: the atlas is zero-initialized by wgpu at creation and the
 // compose pass writes every texel the forward pass samples, so no per-frame

@@ -746,7 +746,16 @@ fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
     AnimationDescriptor {
         period: anim.period.max(1.0e-6),
         phase: anim.phase,
-        base_color: light.color,
+        // Bake `color × intensity` into `base_color` so the runtime compose
+        // shader and the SH forward shader see the correct peak irradiance when
+        // the brightness curve reaches 1.0. The per-light SH layers and the
+        // lightmap weight maps are baked at unit intensity / white, so the only
+        // place the authored `_light` value re-enters the pipeline is here.
+        base_color: [
+            light.color[0] * light.intensity,
+            light.color[1] * light.intensity,
+            light.color[2] * light.intensity,
+        ],
         brightness: anim.brightness.clone().unwrap_or_default(),
         color: anim.color.clone().unwrap_or_default(),
         start_active: if anim.start_active { 1 } else { 0 },
@@ -1087,6 +1096,59 @@ mod tests {
             [1.0, 0.5, 0.25]
         );
         assert_eq!(section.per_light_sh[0].len(), section.total_probes() * 9);
+    }
+
+    /// Regression: `base_color` in the animation descriptor must encode
+    /// `color × intensity` so the runtime compose and SH shaders see the
+    /// correct peak irradiance. A light with `intensity = 3.0` and
+    /// `color = [0.5, 1.0, 0.8]` must produce `base_color = [1.5, 3.0, 2.4]`,
+    /// not just `[0.5, 1.0, 0.8]`.
+    #[test]
+    fn animation_descriptor_base_color_includes_intensity() {
+        let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let light = MapLight {
+            origin: DVec3::new(0.5, 2.0, 0.5),
+            light_type: LightType::Point,
+            intensity: 3.0,
+            color: [0.5, 1.0, 0.8],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 5.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            animation: Some(LightAnimation {
+                period: 1.0,
+                phase: 0.0,
+                brightness: Some(vec![0.0, 1.0]),
+                color: None,
+                start_active: true,
+            }),
+            cast_shadows: true,
+            bake_only: false,
+            is_dynamic: false,
+        };
+        let exterior: HashSet<usize> = HashSet::new();
+        let inputs = BakeInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            lights: std::slice::from_ref(&light),
+        };
+        let section = bake_sh_volume(&inputs, 1.0);
+        assert_eq!(section.animation_descriptors.len(), 1);
+        let base_color = section.animation_descriptors[0].base_color;
+        let expected = [0.5 * 3.0, 1.0 * 3.0, 0.8 * 3.0];
+        for (got, exp) in base_color.iter().zip(expected.iter()) {
+            assert!(
+                (got - exp).abs() < 1.0e-5,
+                "base_color channel {got} != expected {exp} — \
+                 intensity was not folded into base_color",
+            );
+        }
     }
 
     #[test]

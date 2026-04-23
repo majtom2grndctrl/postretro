@@ -23,8 +23,8 @@ an axis-aligned box is expressed as six planes with outward normals, using
 three counter-clockwise vertices per plane.
 """
 
-TEX = "001"
-TEX_BLOCKER = "002"
+TEX = "concrete_pavement_036"
+TEX_BLOCKER = "concrete_stone_022"
 
 
 def box_brush(x1, y1, z1, x2, y2, z2, tex=TEX, comment=None):
@@ -116,7 +116,9 @@ def write_single():
         # style=2 = slow strong pulse (period ≈ 5.0 s), exercises Catmull-Rom.
         light_entity((128, 128, 100), intensity=300, style=2),
     ]
-    with open("test_animated_weight_maps_single.map", "w") as f:
+    from pathlib import Path
+    out_dir = Path(__file__).parent
+    with open(out_dir / "test_animated_weight_maps_single.map", "w") as f:
         f.write(map_file(ent))
 
 
@@ -133,7 +135,9 @@ def write_occluded():
         info_player_start((128, 128, 24), angle=0),
         light_entity((128, 128, 112), intensity=300, style=2),
     ]
-    with open("test_animated_weight_maps_occluded.map", "w") as f:
+    from pathlib import Path
+    out_dir = Path(__file__).parent
+    with open(out_dir / "test_animated_weight_maps_occluded.map", "w") as f:
         f.write(map_file(ent))
 
 
@@ -162,7 +166,9 @@ def write_cap():
         info_player_start((64, 64, 24), angle=0),
     ]
     ent.extend(lights)
-    with open("test_animated_weight_maps_cap.map", "w") as f:
+    from pathlib import Path
+    out_dir = Path(__file__).parent
+    with open(out_dir / "test_animated_weight_maps_cap.map", "w") as f:
         f.write(map_file(ent))
 
 
@@ -184,7 +190,9 @@ def write_mixed():
         # Animated light, style=2 (slow pulse). Listed second.
         light_entity((192, 192, 100), intensity=300, style=2),
     ]
-    with open("test_animated_weight_maps_mixed.map", "w") as f:
+    from pathlib import Path
+    out_dir = Path(__file__).parent
+    with open(out_dir / "test_animated_weight_maps_mixed.map", "w") as f:
         f.write(map_file(ent))
 
 

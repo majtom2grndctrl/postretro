@@ -707,11 +707,10 @@
 // entity 2
 {
 "classname" "light"
-"origin" "640 16 136"
+"origin" "656 0 136"
 "light" "300"
 "_color" "255 190 120"
-"_fade" "4096"
-"delay" "2"
+"_fade" "500"
 }
 // entity 3
 {
@@ -757,4 +756,24 @@
 "_cone" "25"
 "_cone2" "40"
 "mangle" "-10 270 0"
+}
+// entity 7
+{
+"classname" "light"
+"origin" "456 296 40"
+"light" "60"
+"_color" "255 170 120"
+"_fade" "200"
+"delay" "2"
+"style" "4"
+}
+// entity 8
+{
+"classname" "light"
+"origin" "712 296 40"
+"light" "150"
+"_color" "255 170 120"
+"_fade" "125"
+"delay" "2"
+"style" "3"
 }

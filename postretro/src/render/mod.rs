@@ -2545,8 +2545,7 @@ mod tests {
         //
         // binding 11: array<AnimationDescriptor> — stride = ANIMATION_DESCRIPTOR_SIZE
         // binding 12: array<f32>                 — stride = 4
-        // binding 13: array<f32>                 — stride = 4
-        let (anim_desc, anim_samples, anim_sh, _count) = sh_volume::build_animation_buffers(None);
+        let (anim_desc, anim_samples, _count) = sh_volume::build_animation_buffers(None);
 
         for (label, binding, buf) in [
             (
@@ -2558,11 +2557,6 @@ mod tests {
                 "anim_samples",
                 sh_volume::BIND_ANIM_SAMPLES,
                 anim_samples.as_slice(),
-            ),
-            (
-                "anim_sh_data",
-                sh_volume::BIND_ANIM_SH_DATA,
-                anim_sh.as_slice(),
             ),
         ] {
             if let Some(&min) = min_sizes.get(&(3, binding)) {
@@ -2583,7 +2577,7 @@ mod tests {
 
         // Verify the ShGridInfo uniform payload size.
         let sh_grid_binding = (1 + sh_volume::SH_BAND_COUNT) as u32; // = 10
-        let grid_info = sh_volume::build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false, 0);
+        let grid_info = sh_volume::build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false);
         if let Some(&min) = min_sizes.get(&(3, sh_grid_binding)) {
             assert!(
                 grid_info.len() as u64 >= min,

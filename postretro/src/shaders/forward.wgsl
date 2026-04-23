@@ -83,7 +83,7 @@ struct ShGridInfo {
     cell_size: vec3<f32>,
     _pad0: u32,
     grid_dimensions: vec3<u32>,
-    animated_light_count: u32,
+    _pad1: u32,
 };
 
 // Per-light animation descriptor — matches ANIMATION_DESCRIPTOR_SIZE (48 B)
@@ -122,11 +122,11 @@ struct AnimationDescriptor {
 @group(3) @binding(9) var sh_band8: texture_3d<f32>;
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 
-// Animation buffers (sub-plan 7). Always bound; the shader guards on
-// `sh_grid.animated_light_count == 0` so dummy bindings are never read.
+// Animation buffers. Always bound; anim_descriptors and anim_samples are
+// consumed by the animated lightmap compose pass (group 4 binding 3) and
+// also exposed here so the bind group layout is stable across passes.
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
-@group(3) @binding(13) var<storage, read> anim_sh_data: array<f32>;
 
 // Group 4 — baked directional lightmap (static direct lighting).
 // See context/plans/ready/lighting-lightmaps/index.md.
@@ -357,59 +357,10 @@ fn sh_irradiance(
     return r;
 }
 
-// Accumulate all 9 SH bands of one animated light in a single 8-corner
-// traversal, using precomputed final (tri * visibility / weight_sum) weights.
-//
-// Replaces the earlier per-band `sample_anim_mono_band` helper. The animated
-// buffer layout stores the 9 bands of one probe contiguously
-// (`anim_sh_data[(base + probe_idx) * 9 + band]`); iterating bands inside the
-// corner loop reads those 9 floats in order, giving a contiguous cache line
-// per corner. The previous outer-band-inner-corner layout strided by 9 floats
-// between reads, wasting cache.
-//
-// `final_weights[slot]` is the per-corner trilinear weight; weights sum
-// to 1.0 across the 8-corner cube.
-//
-// Out-parameter: WGSL can't cleanly return `array<vec3<f32>, 9>` from a
-// function in all targets, and the animated buffer is mono (f32 per band) —
-// the vec3 math happens only when the caller multiplies by the color
-// modulate. We emit scalar accumulators via a ptr<function, _> and let the
-// caller do the modulate multiply and vec3 promotion.
-fn accumulate_anim_all_bands(
-    light_idx: u32,
-    gi: vec3<u32>,
-    final_weights: array<f32, 8>,
-    accum: ptr<function, array<f32, 9>>,
-) {
-    let gx = sh_grid.grid_dimensions.x;
-    let gy = sh_grid.grid_dimensions.y;
-    let gz = sh_grid.grid_dimensions.z;
-    let probe_count = gx * gy * gz;
-    let base_offset = light_idx * probe_count;
-
-    for (var dz: u32 = 0u; dz < 2u; dz = dz + 1u) {
-        for (var dy: u32 = 0u; dy < 2u; dy = dy + 1u) {
-            for (var dx: u32 = 0u; dx < 2u; dx = dx + 1u) {
-                let cx = min(gi.x + dx, gx - 1u);
-                let cy = min(gi.y + dy, gy - 1u);
-                let cz = min(gi.z + dz, gz - 1u);
-                let probe_idx = (cz * gy + cy) * gx + cx;
-                let slot = dz * 4u + dy * 2u + dx;
-                let w = final_weights[slot];
-                let probe_base = (base_offset + probe_idx) * 9u;
-                // Contiguous 9-float read per corner.
-                for (var band: u32 = 0u; band < 9u; band = band + 1u) {
-                    (*accum)[band] = (*accum)[band] + w * anim_sh_data[probe_base + band];
-                }
-            }
-        }
-    }
-}
-
-// Hardware-trilinear fetch of all 9 SH bands, plus the animated layers with
-// plain trilinear weights. One sample per band in lieu of eight manual
-// fetches. `gi` and `gfrac` are derived from the (already-offset) world
-// position in the caller; this function only needs the grid indices.
+// Hardware-trilinear fetch of all 9 SH bands. One sample per band in lieu
+// of eight manual fetches. `gi` and `gfrac` are derived from the
+// (already-offset) world position in the caller; this function only needs
+// the grid indices.
 fn sample_sh_indirect_fast(
     normal: vec3<f32>,
     gi: vec3<u32>,
@@ -422,65 +373,15 @@ fn sample_sh_indirect_fast(
     // `cell_center_uvw` lands between the 8 texel centers, so hardware
     // trilinear reproduces the per-corner weighting exactly — one sample
     // per band in lieu of eight manual fetches.
-    var b0 = textureSampleLevel(sh_band0, sh_sampler, cell_center_uvw, 0.0).rgb;
-    var b1 = textureSampleLevel(sh_band1, sh_sampler, cell_center_uvw, 0.0).rgb;
-    var b2 = textureSampleLevel(sh_band2, sh_sampler, cell_center_uvw, 0.0).rgb;
-    var b3 = textureSampleLevel(sh_band3, sh_sampler, cell_center_uvw, 0.0).rgb;
-    var b4 = textureSampleLevel(sh_band4, sh_sampler, cell_center_uvw, 0.0).rgb;
-    var b5 = textureSampleLevel(sh_band5, sh_sampler, cell_center_uvw, 0.0).rgb;
-    var b6 = textureSampleLevel(sh_band6, sh_sampler, cell_center_uvw, 0.0).rgb;
-    var b7 = textureSampleLevel(sh_band7, sh_sampler, cell_center_uvw, 0.0).rgb;
-    var b8 = textureSampleLevel(sh_band8, sh_sampler, cell_center_uvw, 0.0).rgb;
-
-    // Animated layers: same plain-trilinear weights (all corners fully
-    // visible, weight_sum == 1 by construction, so final_weights = tri_w).
-    let anim_count = sh_grid.animated_light_count;
-    if anim_count != 0u {
-        var tri_w: array<f32, 8>;
-        for (var dz: u32 = 0u; dz < 2u; dz = dz + 1u) {
-            for (var dy: u32 = 0u; dy < 2u; dy = dy + 1u) {
-                for (var dx: u32 = 0u; dx < 2u; dx = dx + 1u) {
-                    let tri = vec3<f32>(
-                        select(1.0 - gfrac.x, gfrac.x, dx == 1u),
-                        select(1.0 - gfrac.y, gfrac.y, dy == 1u),
-                        select(1.0 - gfrac.z, gfrac.z, dz == 1u),
-                    );
-                    tri_w[dz * 4u + dy * 2u + dx] = tri.x * tri.y * tri.z;
-                }
-            }
-        }
-        for (var i: u32 = 0u; i < anim_count; i = i + 1u) {
-            let desc = anim_descriptors[i];
-            let cycle_t = fract(uniforms.time / max(desc.period, 1.0e-6) + desc.phase);
-            let brightness = sample_curve_catmull_rom(
-                desc.brightness_offset, desc.brightness_count, cycle_t,
-            );
-            let color = sample_color_catmull_rom(
-                desc.color_offset, desc.color_count, cycle_t, desc.base_color,
-            );
-            // Scripts toggle `is_active` at runtime to enable/disable an
-            // animated light without a level reload. Inactive lights must
-            // contribute nothing to the SH volume — the compose pass (Task 5)
-            // applies the same gate on the direct side.
-            let active_f = f32(desc.is_active);
-            let modulate = color * brightness * active_f;
-
-            var accum: array<f32, 9>;
-            for (var band: u32 = 0u; band < 9u; band = band + 1u) {
-                accum[band] = 0.0;
-            }
-            accumulate_anim_all_bands(i, gi, tri_w, &accum);
-            b0 = b0 + accum[0] * modulate;
-            b1 = b1 + accum[1] * modulate;
-            b2 = b2 + accum[2] * modulate;
-            b3 = b3 + accum[3] * modulate;
-            b4 = b4 + accum[4] * modulate;
-            b5 = b5 + accum[5] * modulate;
-            b6 = b6 + accum[6] * modulate;
-            b7 = b7 + accum[7] * modulate;
-            b8 = b8 + accum[8] * modulate;
-        }
-    }
+    let b0 = textureSampleLevel(sh_band0, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b1 = textureSampleLevel(sh_band1, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b2 = textureSampleLevel(sh_band2, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b3 = textureSampleLevel(sh_band3, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b4 = textureSampleLevel(sh_band4, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b5 = textureSampleLevel(sh_band5, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b6 = textureSampleLevel(sh_band6, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b7 = textureSampleLevel(sh_band7, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b8 = textureSampleLevel(sh_band8, sh_sampler, cell_center_uvw, 0.0).rgb;
 
     return max(
         sh_irradiance(b0, b1, b2, b3, b4, b5, b6, b7, b8, normal),

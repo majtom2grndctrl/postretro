@@ -45,10 +45,6 @@ pub const SH_VOLUME_VERSION: u32 = 2;
 /// fields) can grow the stride without breaking the loader.
 pub const PROBE_STRIDE: u32 = 112;
 
-/// Monochrome SH L2 coefficients for a single animated light contribution at
-/// one probe. 9 f32 × 4 bytes = 36 bytes on disk.
-pub const PROBE_MONO_BYTES: u32 = 36;
-
 /// Animation curves for one animated light, stored once per light (not per
 /// probe). Brightness and color channels are uniformly-sampled over the
 /// light's period; the runtime linearly interpolates between samples.
@@ -112,15 +108,12 @@ impl Default for AnimationDescriptor {
 ///       f32 × brightness_count      (brightness samples)
 ///       f32 × 3 × color_count       (RGB color samples)
 ///
-///   Per-light SH layers (omitted if animated_light_count == 0):
-///     per animated light:
-///       per probe (total_probes entries, same iteration order as base probes):
-///         f32 × 9  sh_coefficients_mono  (monochrome, 9 bands)
 /// ```
 ///
 /// A section with `animated_light_count == 0` is valid: the loader produces
-/// empty `animation_descriptors` and `per_light_sh` vectors and the runtime
-/// skips animated-layer processing.
+/// an empty `animation_descriptors` vector and the runtime skips
+/// animated-layer processing. Per-light monochrome SH layers were removed;
+/// animated indirect is now handled entirely by the lightmap compose pass.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShVolumeSection {
     pub grid_origin: [f32; 3],
@@ -130,11 +123,8 @@ pub struct ShVolumeSection {
     /// One entry per grid cell in z-major/y/x order. `probes.len()` must equal
     /// `grid_dimensions[0] * grid_dimensions[1] * grid_dimensions[2]`.
     pub probes: Vec<ShProbe>,
-    /// One descriptor per animated light. Length must match `per_light_sh`.
+    /// One descriptor per animated light.
     pub animation_descriptors: Vec<AnimationDescriptor>,
-    /// One layer per animated light. Each layer has `total_probes * 9` f32s
-    /// in the same probe iteration order as `probes`.
-    pub per_light_sh: Vec<Vec<f32>>,
 }
 
 impl ShVolumeSection {
@@ -150,7 +140,6 @@ impl ShVolumeSection {
     pub fn to_bytes(&self) -> Vec<u8> {
         let total_probes = self.total_probes();
         debug_assert_eq!(self.probes.len(), total_probes);
-        debug_assert_eq!(self.animation_descriptors.len(), self.per_light_sh.len());
 
         let mut buf = Vec::with_capacity(Self::HEADER_SIZE + total_probes * PROBE_STRIDE as usize);
 
@@ -195,14 +184,6 @@ impl ShVolumeSection {
                 for ch in c {
                     buf.extend_from_slice(&ch.to_le_bytes());
                 }
-            }
-        }
-
-        // Per-light SH layers.
-        for layer in &self.per_light_sh {
-            debug_assert_eq!(layer.len(), total_probes * 9);
-            for v in layer {
-                buf.extend_from_slice(&v.to_le_bytes());
             }
         }
 
@@ -358,22 +339,6 @@ impl ShVolumeSection {
             });
         }
 
-        // Per-light SH layers.
-        let mono_bytes_per_probe = PROBE_MONO_BYTES as usize;
-        let mut per_light_sh = Vec::with_capacity(animated_light_count);
-        for _ in 0..animated_light_count {
-            let layer_bytes = total_probes * mono_bytes_per_probe;
-            if data.len() < o + layer_bytes {
-                return Err(truncated("per-light SH layer"));
-            }
-            let mut layer = Vec::with_capacity(total_probes * 9);
-            for i in 0..total_probes * 9 {
-                layer.push(read_f32(data, o + i * 4));
-            }
-            o += layer_bytes;
-            per_light_sh.push(layer);
-        }
-
         Ok(Self {
             grid_origin,
             cell_size,
@@ -381,7 +346,6 @@ impl ShVolumeSection {
             probe_stride,
             probes,
             animation_descriptors,
-            per_light_sh,
         })
     }
 }
@@ -425,7 +389,6 @@ mod tests {
             probe_stride: PROBE_STRIDE,
             probes: (0..total).map(|i| sample_probe(i as f32)).collect(),
             animation_descriptors: Vec::new(),
-            per_light_sh: Vec::new(),
         }
     }
 
@@ -438,7 +401,6 @@ mod tests {
             probe_stride: PROBE_STRIDE,
             probes: Vec::new(),
             animation_descriptors: Vec::new(),
-            per_light_sh: Vec::new(),
         };
         let bytes = section.to_bytes();
         assert_eq!(bytes.len(), ShVolumeSection::HEADER_SIZE);
@@ -482,10 +444,6 @@ mod tests {
                     color: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                     start_active: 0,
                 },
-            ],
-            per_light_sh: vec![
-                (0..total * 9).map(|i| i as f32 * 0.1).collect(),
-                (0..total * 9).map(|i| i as f32 * -0.25).collect(),
             ],
         };
         let bytes = section.to_bytes();

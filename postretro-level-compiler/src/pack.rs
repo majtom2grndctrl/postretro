@@ -664,7 +664,6 @@ mod tests {
             probe_stride: postretro_level_format::sh_volume::PROBE_STRIDE,
             probes: Vec::new(),
             animation_descriptors: Vec::new(),
-            per_light_sh: Vec::new(),
         }
     }
 

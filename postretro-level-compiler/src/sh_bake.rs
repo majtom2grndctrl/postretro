@@ -13,9 +13,7 @@ use bvh::bvh::Bvh;
 use bvh::ray::Ray;
 use glam::{DVec3, Vec3};
 use nalgebra::{Point3, Vector3};
-use postretro_level_format::sh_volume::{
-    AnimationDescriptor, PROBE_STRIDE, ShProbe, ShVolumeSection,
-};
+use postretro_level_format::sh_volume::{AnimationDescriptor, PROBE_STRIDE, ShProbe, ShVolumeSection};
 use rayon::prelude::*;
 
 use crate::bvh_build::BvhPrimitive;
@@ -80,7 +78,6 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
             probe_stride: PROBE_STRIDE,
             probes: Vec::new(),
             animation_descriptors: Vec::new(),
-            per_light_sh: Vec::new(),
         };
     }
 
@@ -131,27 +128,13 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
         })
         .collect();
 
-    // One monochrome layer per animated light.
-    let mut animation_descriptors = Vec::with_capacity(animated_lights.len());
-    let mut per_light_sh = Vec::with_capacity(animated_lights.len());
-
-    for light in &animated_lights {
-        animation_descriptors.push(animation_descriptor_for(light));
-
-        let layer: Vec<f32> = (0..total)
-            .into_par_iter()
-            .flat_map_iter(|i| {
-                let bake = if validity[i] == 0 {
-                    [0f32; 9]
-                } else {
-                    let pos = vec3_from(probe_positions[i]);
-                    bake_probe_mono(inputs, pos, light)
-                };
-                bake.into_iter()
-            })
-            .collect();
-        per_light_sh.push(layer);
-    }
+    // Build animation descriptors (one per animated light). The per-light
+    // monochrome SH layers have been removed; animated indirect is handled
+    // entirely by the lightmap compose pass (animated-light-weight-maps plan).
+    let animation_descriptors: Vec<AnimationDescriptor> = animated_lights
+        .iter()
+        .map(|l| animation_descriptor_for(l))
+        .collect();
 
     ShVolumeSection {
         grid_origin: [world_min.x as f32, world_min.y as f32, world_min.z as f32],
@@ -160,7 +143,6 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
         probe_stride: PROBE_STRIDE,
         probes: base_probes,
         animation_descriptors,
-        per_light_sh,
     }
 }
 
@@ -171,12 +153,12 @@ pub fn log_stats(section: &ShVolumeSection) {
     let valid = section.probes.iter().filter(|p| p.validity == 1).count();
     log::info!(
         "ShVolume: grid {}x{}x{} = {total} probes ({valid} valid), \
-         cell {}m, {} animated layer(s)",
+         cell {}m, {} animated light(s)",
         dims[0],
         dims[1],
         dims[2],
         section.cell_size[0],
-        section.per_light_sh.len(),
+        section.animation_descriptors.len(),
     );
 }
 
@@ -574,16 +556,6 @@ fn sh_basis_l2(dir: Vec3) -> [f32; 9] {
     b
 }
 
-/// Collect SH samples into a 9-band accumulator. `weight` scales each sample
-/// by `4π / N` so the Monte Carlo estimator is unbiased for uniform sphere
-/// sampling.
-fn accumulate_sh(acc: &mut [f32; 9], dir: Vec3, value: f32, weight: f32) {
-    let basis = sh_basis_l2(dir);
-    for (a, b) in acc.iter_mut().zip(basis.iter()) {
-        *a += *b * value * weight;
-    }
-}
-
 fn accumulate_sh_rgb(acc: &mut [f32; 27], dir: Vec3, value: Vec3, weight: f32) {
     let basis = sh_basis_l2(dir);
     for (band, b) in basis.iter().enumerate() {
@@ -612,12 +584,6 @@ fn apply_cosine_lobe_rgb(acc: &mut [f32; 27]) {
         acc[base] *= factor;
         acc[base + 1] *= factor;
         acc[base + 2] *= factor;
-    }
-}
-
-fn apply_cosine_lobe_mono(acc: &mut [f32; 9]) {
-    for (band, v) in acc.iter_mut().enumerate() {
-        *v *= cosine_lobe_factor(band);
     }
 }
 
@@ -650,24 +616,6 @@ fn bake_probe_rgb(
     acc
 }
 
-/// Bake a single animated light at unit intensity / white color and project
-/// into monochrome SH L2. The runtime multiplies the 9-coeff layer by the
-/// light's evaluated animation color and brightness per frame.
-fn bake_probe_mono(inputs: &BakeInputs<'_>, probe_pos: Vec3, light: &MapLight) -> [f32; 9] {
-    // Bake at unit intensity / white — the runtime applies base_color and
-    // curves via the animation descriptor.
-    let unit_light = unit_reference_light(light);
-    let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
-    let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
-    let mut acc = [0f32; 9];
-    for dir in &directions {
-        let luminance = sample_radiance_mono(inputs, probe_pos, *dir, &unit_light);
-        accumulate_sh(&mut acc, *dir, luminance, mc_weight);
-    }
-    apply_cosine_lobe_mono(&mut acc);
-    acc
-}
-
 /// Trace a single ray from `origin` along `dir`, evaluate direct lighting at
 /// the closest hit (or sky), and return the RGB radiance heading back toward
 /// `origin`.
@@ -692,22 +640,6 @@ fn sample_radiance_rgb(
     }
 }
 
-/// Same as `sample_radiance_rgb` but returns scalar luminance (average of
-/// RGB) for a single light baked at unit intensity.
-fn sample_radiance_mono(inputs: &BakeInputs<'_>, origin: Vec3, dir: Vec3, light: &MapLight) -> f32 {
-    match closest_hit(inputs, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
-        None => 0.0,
-        Some(hit) => {
-            if !shadow_visible(inputs, hit.point, hit.normal, light) {
-                return 0.0;
-            }
-            let rgb = light_contribution_lambert(light, hit.point, hit.normal);
-            let luminance = (rgb.x + rgb.y + rgb.z) / 3.0;
-            luminance * BOUNCE_ALBEDO / std::f32::consts::PI
-        }
-    }
-}
-
 fn shadow_visible(
     inputs: &BakeInputs<'_>,
     surface_point: Vec3,
@@ -724,17 +656,6 @@ fn shadow_visible(
     segment_clear(inputs, probe_end, shadow_origin)
 }
 
-/// Build an "identity-intensity" copy of a light for animated baking: unit
-/// intensity, white base color, unit cone color, animation stripped.
-fn unit_reference_light(original: &MapLight) -> MapLight {
-    MapLight {
-        color: [1.0, 1.0, 1.0],
-        intensity: 1.0,
-        animation: None,
-        ..original.clone()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Animation descriptor
 
@@ -747,10 +668,10 @@ fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
         period: anim.period.max(1.0e-6),
         phase: anim.phase,
         // Bake `color × intensity` into `base_color` so the runtime compose
-        // shader and the SH forward shader see the correct peak irradiance when
-        // the brightness curve reaches 1.0. The per-light SH layers and the
-        // lightmap weight maps are baked at unit intensity / white, so the only
-        // place the authored `_light` value re-enters the pipeline is here.
+        // shader sees the correct peak irradiance when the brightness curve
+        // reaches 1.0. The lightmap weight maps are baked at unit intensity /
+        // white, so the only place the authored `_light` value re-enters the
+        // pipeline is here.
         base_color: [
             light.color[0] * light.intensity,
             light.color[1] * light.intensity,
@@ -774,6 +695,19 @@ mod tests {
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+
+    fn apply_cosine_lobe_mono(acc: &mut [f32; 9]) {
+        for (band, v) in acc.iter_mut().enumerate() {
+            *v *= cosine_lobe_factor(band);
+        }
+    }
+
+    fn accumulate_sh(acc: &mut [f32; 9], dir: Vec3, value: f32, weight: f32) {
+        let basis = sh_basis_l2(dir);
+        for (a, b) in acc.iter_mut().zip(basis.iter()) {
+            *a += *b * value * weight;
+        }
+    }
 
     fn point_light_with_falloff(model: FalloffModel, range: f32) -> MapLight {
         MapLight {
@@ -1053,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn animated_light_produces_dedicated_layer() {
+    fn animated_light_produces_descriptor() {
         let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
@@ -1089,13 +1023,11 @@ mod tests {
         };
         let section = bake_sh_volume(&inputs, 1.0);
         assert_eq!(section.animation_descriptors.len(), 1);
-        assert_eq!(section.per_light_sh.len(), 1);
         assert_eq!(section.animation_descriptors[0].period, 1.0);
         assert_eq!(
             section.animation_descriptors[0].base_color,
             [1.0, 0.5, 0.25]
         );
-        assert_eq!(section.per_light_sh[0].len(), section.total_probes() * 9);
     }
 
     /// Regression: `base_color` in the animation descriptor must encode
@@ -1167,7 +1099,6 @@ mod tests {
         };
         let section = bake_sh_volume(&inputs, 1.0);
         assert!(section.animation_descriptors.is_empty());
-        assert!(section.per_light_sh.is_empty());
         // Round-trip the static-only layout just to be sure the header flag
         // is zero. `animated_light_count` is the last u32 of the 48-byte
         // header (bytes 44..48); bytes 0..4 are `SH_VOLUME_VERSION`.
@@ -1369,7 +1300,6 @@ mod tests {
 
         assert_eq!(with_dynamic.probes.len(), baseline.probes.len());
         assert!(with_dynamic.animation_descriptors.is_empty());
-        assert!(with_dynamic.per_light_sh.is_empty());
         for (a, b) in with_dynamic.probes.iter().zip(baseline.probes.iter()) {
             assert_eq!(a.validity, b.validity);
             for (ca, cb) in a.sh_coefficients.iter().zip(b.sh_coefficients.iter()) {

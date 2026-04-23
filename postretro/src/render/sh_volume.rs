@@ -10,8 +10,8 @@ use postretro_level_format::sh_volume::{AnimationDescriptor, ShProbe, ShVolumeSe
 /// its RGB coefficients in the `.rgb` channels of an `Rgba16Float` 3D texture
 /// sized to the probe grid. `.a` is unused padding.
 ///
-/// 9 textures + 1 sampler + 1 uniform + 3 animation storage buffers
-/// = 14 bindings in group 3, well under wgpu's default
+/// 9 textures + 1 sampler + 1 uniform + 2 animation storage buffers
+/// = 13 bindings in group 3 (indices 0..=12), well under wgpu's default
 /// `max_sampled_textures_per_shader_stage` limit.
 pub const SH_BAND_COUNT: usize = 9;
 
@@ -20,18 +20,17 @@ pub const SH_BAND_COUNT: usize = 9;
 /// (1 + SH_BAND_COUNT == 10).
 pub const BIND_ANIM_DESCRIPTORS: u32 = 11;
 pub const BIND_ANIM_SAMPLES: u32 = 12;
-pub const BIND_ANIM_SH_DATA: u32 = 13;
 
 /// Byte size of `ShGridInfo` — four `vec4` slots to satisfy std140 alignment
 /// rules (vec3 fields align to 16, followed by a same-slot scalar).
 ///
 /// Layout (must match the WGSL `ShGridInfo` struct in `forward.wgsl`):
-///   0..12   grid_origin           (vec3<f32>)
-///   12..16  has_sh_volume         (u32, 0 or 1)
-///   16..28  cell_size             (vec3<f32>)
-///   28..32  _pad0                 (u32)
-///   32..44  grid_dimensions       (vec3<u32>)
-///   44..48  animated_light_count  (u32)
+///   0..12   grid_origin       (vec3<f32>)
+///   12..16  has_sh_volume     (u32, 0 or 1)
+///   16..28  cell_size         (vec3<f32>)
+///   28..32  _pad0             (u32)
+///   32..44  grid_dimensions   (vec3<u32>)
+///   44..48  _pad1             (u32)
 pub const SH_GRID_INFO_SIZE: usize = 48;
 
 /// Stride of one `AnimationDescriptor` record on the GPU. WGSL layout:
@@ -214,11 +213,10 @@ impl ShVolumeResources {
         }
 
         // Animated-light buffers. Always created — when the SH section has
-        // no animated lights (or no section exists) the three storage buffers
+        // no animated lights (or no section exists) the two storage buffers
         // are single-element dummies so the bind group remains valid (wgpu
-        // rejects zero-sized storage buffer bindings) and the shader's
-        // `animated_light_count` is 0, short-circuiting the loop.
-        let (anim_descriptor_bytes, anim_sample_bytes, anim_sh_bytes, animated_light_count) =
+        // rejects zero-sized storage buffer bindings).
+        let (anim_descriptor_bytes, anim_sample_bytes, animated_light_count) =
             build_animation_buffers(usable);
 
         let anim_descriptors_buffer = device.create_buffer_init_helper(
@@ -231,11 +229,6 @@ impl ShVolumeResources {
             &anim_sample_bytes,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
-        let anim_sh_buffer = device.create_buffer_init_helper(
-            "SH Animation Per-Light Monochrome SH",
-            &anim_sh_bytes,
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        );
 
         // Upload grid-info uniform.
         let grid_info_bytes = build_grid_info_bytes(
@@ -243,7 +236,6 @@ impl ShVolumeResources {
             cell_size,
             grid_dimensions,
             present,
-            animated_light_count,
         );
         let grid_info_buffer = device.create_buffer_init_helper(
             "SH Grid Info Uniform",
@@ -278,10 +270,6 @@ impl ShVolumeResources {
         entries.push(wgpu::BindGroupEntry {
             binding: BIND_ANIM_SAMPLES,
             resource: anim_samples_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_ANIM_SH_DATA,
-            resource: anim_sh_buffer.as_entire_binding(),
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -344,11 +332,10 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         count: None,
     });
-    // Animation storage buffers (sub-plan 7). Always bound — with dummy
-    // single-element buffers when no animated lights exist — so the shader
-    // path is identical in every case and the bind group layout never
+    // Animation storage buffers. Always bound — with dummy single-element
+    // buffers when no animated lights exist — so the bind group layout never
     // changes with map content.
-    for binding in [BIND_ANIM_DESCRIPTORS, BIND_ANIM_SAMPLES, BIND_ANIM_SH_DATA] {
+    for binding in [BIND_ANIM_DESCRIPTORS, BIND_ANIM_SAMPLES] {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -448,20 +435,19 @@ fn upload_band_texture(
     texture
 }
 
-/// Build the three animation storage-buffer payloads from an (optional)
-/// SH volume section. Returns `(descriptors, samples, per_light_sh, count)`.
+/// Build the two animation storage-buffer payloads from an (optional)
+/// SH volume section. Returns `(descriptors, samples, count)`.
 ///
 /// When the section has no animated lights (or no section exists), each
 /// returned buffer is a non-zero-sized dummy so wgpu accepts the binding.
-/// The fragment shader short-circuits via `animated_light_count == 0` before
-/// reading these dummies, so the contents are irrelevant.
+/// The animated-lightmap compose pass guards on `count == 0` before reading
+/// these dummies, so the contents are irrelevant.
 pub(crate) fn build_animation_buffers(
     section: Option<&ShVolumeSection>,
-) -> (Vec<u8>, Vec<u8>, Vec<u8>, u32) {
+) -> (Vec<u8>, Vec<u8>, u32) {
     let Some(sec) = section else {
         return (
             dummy_descriptor_buffer(),
-            dummy_storage_buffer(),
             dummy_storage_buffer(),
             0,
         );
@@ -470,7 +456,6 @@ pub(crate) fn build_animation_buffers(
     if animated_light_count == 0 {
         return (
             dummy_descriptor_buffer(),
-            dummy_storage_buffer(),
             dummy_storage_buffer(),
             0,
         );
@@ -505,18 +490,9 @@ pub(crate) fn build_animation_buffers(
 
     let samples_bytes = f32_slice_to_bytes(&samples);
 
-    // Per-light monochrome SH: animated_light_count * probe_count * 9 floats.
-    // Iterate descriptor order — matches how the shader indexes anim_sh_data.
-    let mut anim_sh: Vec<f32> = Vec::new();
-    for layer in &sec.per_light_sh {
-        anim_sh.extend_from_slice(layer);
-    }
-    let anim_sh_bytes = f32_slice_to_bytes(&anim_sh);
-
     (
         descriptors,
         samples_bytes,
-        anim_sh_bytes,
         animated_light_count as u32,
     )
 }
@@ -557,13 +533,13 @@ fn f32_slice_to_bytes(data: &[f32]) -> Vec<u8> {
     bytes
 }
 
-/// Minimum-size storage buffer payload for the `array<f32>` bindings
-/// (`anim_samples`, `anim_sh_data`) when a map has no animated lights.
-/// Returns `ANIMATION_DESCRIPTOR_SIZE` (48) bytes — the same size as
-/// `dummy_descriptor_buffer` — so that both dummies are produced by the
-/// same constant and stay in sync if the stride ever changes. wgpu only
-/// requires non-zero size for `array<f32>` bindings; the shader guards on
-/// `animated_light_count == 0` before reading, so contents are irrelevant.
+/// Minimum-size storage buffer payload for the `array<f32>` binding
+/// (`anim_samples`) when a map has no animated lights. Returns
+/// `ANIMATION_DESCRIPTOR_SIZE` (48) bytes — the same size as
+/// `dummy_descriptor_buffer` — so both dummies are produced by the same
+/// constant and stay in sync if the stride ever changes. wgpu only requires
+/// non-zero size for `array<f32>` bindings; the compose pass guards on
+/// `count == 0` before reading, so contents are irrelevant.
 fn dummy_storage_buffer() -> Vec<u8> {
     vec![0u8; ANIMATION_DESCRIPTOR_SIZE]
 }
@@ -590,7 +566,6 @@ pub(crate) fn build_grid_info_bytes(
     cell_size: [f32; 3],
     grid_dimensions: [u32; 3],
     present: bool,
-    animated_light_count: u32,
 ) -> [u8; SH_GRID_INFO_SIZE] {
     let mut bytes = [0u8; SH_GRID_INFO_SIZE];
     // grid_origin vec3 at 0..12, has_sh_volume u32 at 12..16.
@@ -603,11 +578,11 @@ pub(crate) fn build_grid_info_bytes(
     bytes[16..20].copy_from_slice(&cell_size[0].to_ne_bytes());
     bytes[20..24].copy_from_slice(&cell_size[1].to_ne_bytes());
     bytes[24..28].copy_from_slice(&cell_size[2].to_ne_bytes());
-    // grid_dimensions vec3<u32> at 32..44, animated_light_count at 44..48.
+    // grid_dimensions vec3<u32> at 32..44, _pad1 at 44..48.
     bytes[32..36].copy_from_slice(&grid_dimensions[0].to_ne_bytes());
     bytes[36..40].copy_from_slice(&grid_dimensions[1].to_ne_bytes());
     bytes[40..44].copy_from_slice(&grid_dimensions[2].to_ne_bytes());
-    bytes[44..48].copy_from_slice(&animated_light_count.to_ne_bytes());
+    // bytes[44..48] is _pad1, already zero.
     bytes
 }
 
@@ -725,7 +700,7 @@ mod tests {
 
     #[test]
     fn grid_info_bytes_encode_origin_and_present_flag() {
-        let bytes = build_grid_info_bytes([1.5, 2.5, 3.5], [0.25, 0.5, 1.0], [4, 5, 6], true, 3);
+        let bytes = build_grid_info_bytes([1.5, 2.5, 3.5], [0.25, 0.5, 1.0], [4, 5, 6], true);
         assert_eq!(bytes.len(), SH_GRID_INFO_SIZE);
 
         let ox = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
@@ -734,33 +709,28 @@ mod tests {
         let flag = u32::from_ne_bytes(bytes[12..16].try_into().unwrap());
         let cx = f32::from_ne_bytes(bytes[16..20].try_into().unwrap());
         let gy = u32::from_ne_bytes(bytes[36..40].try_into().unwrap());
-        let anim_count = u32::from_ne_bytes(bytes[44..48].try_into().unwrap());
 
         assert_eq!([ox, oy, oz], [1.5, 2.5, 3.5]);
         assert_eq!(flag, 1);
         assert_eq!(cx, 0.25);
         assert_eq!(gy, 5);
-        assert_eq!(anim_count, 3);
     }
 
     #[test]
     fn grid_info_flag_zero_when_absent() {
-        let bytes = build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false, 0);
+        let bytes = build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false);
         let flag = u32::from_ne_bytes(bytes[12..16].try_into().unwrap());
-        let anim_count = u32::from_ne_bytes(bytes[44..48].try_into().unwrap());
         assert_eq!(flag, 0);
-        assert_eq!(anim_count, 0);
     }
 
     #[test]
     fn build_animation_buffers_no_section_produces_dummies() {
-        let (d, s, a, count) = build_animation_buffers(None);
+        let (d, s, count) = build_animation_buffers(None);
         assert_eq!(count, 0);
         // Dummy buffers are non-empty (wgpu rejects zero-sized bindings) but
         // need not be any particular shape — just that they exist.
         assert!(!d.is_empty());
         assert!(!s.is_empty());
-        assert!(!a.is_empty());
     }
 
     #[test]
@@ -768,7 +738,6 @@ mod tests {
         use postretro_level_format::sh_volume::{AnimationDescriptor, PROBE_STRIDE};
 
         let grid = [2u32, 1, 1];
-        let total_probes = 2;
         let section = ShVolumeSection {
             grid_origin: [0.0; 3],
             cell_size: [1.0; 3],
@@ -793,13 +762,9 @@ mod tests {
                     start_active: 0,
                 },
             ],
-            per_light_sh: vec![
-                (0..total_probes * 9).map(|i| i as f32).collect(),
-                (0..total_probes * 9).map(|i| -(i as f32)).collect(),
-            ],
         };
 
-        let (descriptors, samples, sh_data, count) = build_animation_buffers(Some(&section));
+        let (descriptors, samples, count) = build_animation_buffers(Some(&section));
         assert_eq!(count, 2);
         assert_eq!(descriptors.len(), 2 * ANIMATION_DESCRIPTOR_SIZE);
 
@@ -831,9 +796,6 @@ mod tests {
 
         // Samples = 4 brightness (light 0) + 0 (light 1) + 2*3 color rgb.
         assert_eq!(samples.len(), (4 + 6) * 4);
-
-        // SH data size: 2 lights * 2 probes * 9 bands * 4 bytes.
-        assert_eq!(sh_data.len(), 2 * 2 * 9 * 4);
     }
 
     #[test]
@@ -1047,7 +1009,6 @@ mod tests {
         use postretro_level_format::sh_volume::{AnimationDescriptor, PROBE_STRIDE};
 
         let grid = [1u32, 1, 1];
-        let total_probes = 1;
         let desc = AnimationDescriptor {
             period: 3.75,
             phase: 0.625,
@@ -1066,10 +1027,9 @@ mod tests {
             probe_stride: PROBE_STRIDE,
             probes: vec![ShProbe::default()],
             animation_descriptors: vec![desc.clone()],
-            per_light_sh: vec![vec![0.0; total_probes * 9]],
         };
 
-        let (descriptors, _samples, _sh, count) = build_animation_buffers(Some(&section));
+        let (descriptors, _samples, count) = build_animation_buffers(Some(&section));
         assert_eq!(count, 1);
         // 48-byte stride invariant.
         assert_eq!(descriptors.len(), ANIMATION_DESCRIPTOR_SIZE);

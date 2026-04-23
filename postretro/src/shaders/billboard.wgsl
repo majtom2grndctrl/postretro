@@ -56,7 +56,7 @@ struct ShGridInfo {
     cell_size: vec3<f32>,
     _pad0: u32,
     grid_dimensions: vec3<u32>,
-    animated_light_count: u32,
+    _pad1: u32,
 };
 
 @group(3) @binding(0) var sh_sampler: sampler;
@@ -84,11 +84,11 @@ struct AnimationDescriptor {
     base_color: vec3<f32>,
     color_offset: u32,
     color_count: u32,
-    _padding: vec2<f32>,
+    is_active: u32,
+    _pad: vec2<f32>,
 };
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
-@group(3) @binding(13) var<storage, read> anim_sh_data: array<f32>;
 
 // --- Group 6: sprite instance storage buffer ---
 struct SpriteInstance {

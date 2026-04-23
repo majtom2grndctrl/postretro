@@ -45,7 +45,7 @@ Omnidirectional light source.
 | `_dynamic` | choices | `0` | `0` = Static (baked into SH volume + lightmap), `1` = Dynamic (runtime direct lighting, not baked) |
 | `_bake_only` | choices | `0` | `0` = Normal (contributes to bake and runtime), `1` = Bake only (contributes to SH/lightmap bake, absent from runtime lighting pool) |
 
-**Static vs. dynamic:** static lights (`_dynamic 0`) are baked into the SH irradiance volume and lightmaps at compile time. They look great and cost nothing at runtime. Dynamic lights (`_dynamic 1`) run through the per-frame direct lighting loop — use these for lights that move, flicker at runtime, or are spawned during gameplay. Up to 500 dynamic lights per level are supported.
+**Static vs. dynamic:** static lights (`_dynamic 0`) are baked into the SH irradiance volume and lightmaps at compile time. They look great and cost nothing at runtime. Dynamic lights (`_dynamic 1`) run through the per-frame direct lighting loop — use these for lights that move, flicker at runtime, or are spawned during gameplay.
 
 ---
 

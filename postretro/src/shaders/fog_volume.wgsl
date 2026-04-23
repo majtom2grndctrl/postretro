@@ -23,7 +23,7 @@ struct ShGridInfo {
     cell_size: vec3<f32>,
     _pad0: u32,
     grid_dimensions: vec3<u32>,
-    animated_light_count: u32,
+    _pad1: u32,
 }
 
 @group(3) @binding(0) var sh_sampler: sampler;
@@ -38,7 +38,7 @@ struct ShGridInfo {
 @group(3) @binding(9) var sh_band8: texture_3d<f32>;
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 
-// Animated buffers (bindings 11..13) are declared to satisfy the shared
+// Animated buffers (bindings 11..12) are declared to satisfy the shared
 // group-3 layout but are not read here; the fog pass uses only the static
 // SH volume for ambient scatter.
 struct AnimationDescriptor {
@@ -49,11 +49,11 @@ struct AnimationDescriptor {
     base_color: vec3<f32>,
     color_offset: u32,
     color_count: u32,
-    _padding: vec2<f32>,
+    is_active: u32,
+    _pad: vec2<f32>,
 }
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
-@group(3) @binding(13) var<storage, read> anim_sh_data: array<f32>;
 
 // --- Group 5: Spot shadow maps ---
 
@@ -320,12 +320,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(scatter_output, vec2<i32>(gid.xy), vec4<f32>(accum, 1.0 - transmittance));
 }
 
-// Silence "unused binding" warnings for the animated SH buffers. The fog
+// Silence "unused binding" warnings for the animated buffers. The fog
 // pass doesn't need them but the group-3 layout is shared with the forward
 // pipeline so the declarations have to exist.
 fn _keep_anim_bindings_live() -> f32 {
     let d = anim_descriptors[0];
     let a = anim_samples[0];
-    let s = anim_sh_data[0];
-    return d.period + a + s;
+    return d.period + a;
 }

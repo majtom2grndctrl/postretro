@@ -8,12 +8,13 @@ Cut animated lightmap compose-pass GPU cost on the target hardware (discrete Rad
 
 ### In scope
 
-- Delete the `clear_main` compute entry point, its pipeline, bind-group layout entry, and per-frame dispatch. The atlas is zero-initialized by wgpu on creation and is never recreated mid-run. Compose writes every texel the forward pass samples; the residual lanes inside partially-covered 8×8 tiles (where `rect_x >= rect.width || rect_y >= rect.height` short-circuits compose) rely on the zero-init and are never sampled via any valid lightmap UV. The clear adds no behavior — it only re-zeroes memory that is either already zero or about to be overwritten.
+- Delete the `clear_main` compute entry point, its pipeline, and its per-frame dispatch. (The compose pass shares the same `group(1)` layout, so no bind-group layout entries go away.) The atlas is zero-initialized by wgpu on creation and is never recreated mid-run. Compose writes every texel the forward pass samples; the residual lanes inside partially-covered 8×8 tiles (where `rect_x >= rect.width || rect_y >= rect.height` short-circuits compose) rely on the zero-init and are never sampled via any valid lightmap UV. The clear adds no behavior — it only re-zeroes memory that is either already zero or about to be overwritten.
 - Per-frame CPU filter of `DispatchTile`s against the current `VisibleCells` bitmask. Re-upload the trimmed tile list and dispatch only the kept count.
 - Build the chunk → cell index required for the filter. Source of truth is `BvhLeaf { cell_id, chunk_range_start, chunk_range_count }`; the animated lightmap load path already consumes `AnimatedLightChunks`, so derive a parallel `chunk_cell_ids: Vec<u32>` at load time.
 - Handle `VisibleCells::DrawAll` (exterior / fallback) by dispatching the full unfiltered tile list — same behavior as today minus the clear.
 - Update doc surfaces that describe the current "clear + compose" shape so they don't drift: `context/lib/rendering_pipeline.md` §7.1 (step 4 mentions the clear), the module header comment in `animated_lightmap.rs`, the `dispatch()` doc comment, and the compute-pass label string.
 - Update the `compose_shader_parses_and_declares_debug_binding` test in `animated_lightmap.rs` — it currently asserts `has_clear` on the concatenated shader source and will fail on Task 1 landing. Invert the assertion (or drop the clear check) as part of Task 1.
+- Guarantee `VisibleCells` remains the single source of truth for every draw that samples the animated lightmap atlas. The forward pass is the only sampler today; any future pass (reflection probes, alternate cameras) that draws animated-lit geometry must either share the same `VisibleCells` or skip animated-lit chunks entirely. Call this out in the module header comment so the invariant is visible where the cull is implemented.
 
 ### Out of scope
 
@@ -21,7 +22,7 @@ Cut animated lightmap compose-pass GPU cost on the target hardware (discrete Rad
 - Indirect dispatch for the compose pass. Direct dispatch with a trimmed count is simpler and sufficient.
 - Per-texel or per-chunk early-out inside the compose shader. Cell-level cull is a coarser and cheaper win.
 - Changes to the weight-map bake, PRL section layout, or forward shader sampling path.
-- Behavior change to debug modes (`POSTRETRO_ANIMATED_LM_DEBUG`). Modes 1 and 2 also short-circuit on the `rect_x >= rect.width` guard and thus also depend on zero-init for uncovered lanes; that is unchanged. The env var is parsed once at init, so no runtime mode-switching path exists.
+- Behavior change to debug modes (`POSTRETRO_ANIMATED_LM_DEBUG`). Modes 1 and 2 also short-circuit on the `rect_x >= rect.width` guard and thus also depend on zero-init for uncovered lanes; that is unchanged. Post-cull, tiles belonging to invisible cells will read zero in the heatmap/isolation output — intentional, the debug views track what the GPU is actually composing this frame, not potential coverage. The env var is parsed once at init, so no runtime mode-switching path exists.
 
 ## Acceptance criteria
 
@@ -43,7 +44,11 @@ Delete `clear_main` from `animated_lightmap_compose.wgsl`. In `animated_lightmap
 
 At load time, build `chunk_cell_ids: Vec<u32>` with one entry per animated chunk, populated by iterating `BvhLeaf.chunk_range_start..start+count` and stamping the leaf's `cell_id`. Store it on `AnimatedLightmapResources` alongside the master (uncut) tile list.
 
-Change `dispatch_tiles_buffer` to `STORAGE | COPY_DST` and size it to the master tile count. Each frame, before encoding the compose dispatch: given `&VisibleCells`, walk the master tile list and emit entries into a scratch `Vec<DispatchTile>` for tiles whose `chunk_cell_ids[tile.chunk_idx]` is set in the visible bitmask (or keep all tiles for `DrawAll`). `queue.write_buffer` the trimmed slice and dispatch `trimmed_len` workgroups. Log `kept/total` at `debug` level, rate-limited.
+Change `dispatch_tiles_buffer` to `STORAGE | COPY_DST` and size it to the master tile count. Add persistent scratch buffers to `DispatchState` (`scratch_tiles: Vec<DispatchTile>` and `scratch_bytes: Vec<u8>`) so nothing allocates per frame — `clear() + extend()` each frame. Each frame, before encoding the compose dispatch: given `&VisibleCells`, walk the master tile list and push tiles whose `chunk_cell_ids[tile.chunk_idx]` is set in the visible bitmask (or push all tiles for `DrawAll`). Repack into `scratch_bytes` (reusing the existing `pack_dispatch_tiles` byte layout), `queue.write_buffer` the trimmed slice, and dispatch `trimmed_len` workgroups.
+
+When `trimmed_len == 0` (e.g., every cell with animated chunks is off-screen), skip `write_buffer` and the entire compute-pass encoding — don't begin a compute pass that does nothing. The atlas keeps its prior-frame contents, which is fine because the forward pass will not sample any tile from an invisible cell.
+
+Log `kept/total` at `debug` level using the prev-value dedup pattern already used in `render/mod.rs` around the cull logger (log on `kept != prev_kept` rather than on a timer — no wall-clock helper exists in this module). Reset `prev_kept` on map load.
 
 Plumb `&VisibleCells` into `animated_lightmap.dispatch()` from the call site in `render/mod.rs` (same place the BVH cull already consumes it).
 
@@ -57,7 +62,7 @@ Plumb `&VisibleCells` into `animated_lightmap.dispatch()` from the call site in 
 - Rust: `postretro/src/render/animated_lightmap.rs` — `DispatchState` loses `clear_pipeline` and `atlas_size`; `dispatch()` collapses to a single compute pass with one pipeline set and one `dispatch_workgroups` call driven by the trimmed count.
 - Load path: wherever `AnimatedLightChunks` + BVH leaves are both in hand (same load step that already builds `ChunkAtlasRect`s), fill `chunk_cell_ids` in one pass over `BvhLeaves`.
 - Caller: `postretro/src/render/mod.rs` around line 1938 — the `visible: &VisibleCells` reference used for BVH cull logging is already in scope; pass it into `dispatch()`.
-- Diagnostic: a `log::debug!("animated_lm tiles: {}/{} visible", kept, total)` once per second (rate-limited) is enough to observe cull ratios without spamming.
+- Diagnostic: `log::debug!("animated_lm tiles: {}/{} visible", kept, total)` gated by `kept != prev_kept` — matches the dedup pattern used by the BVH cull logger in `render/mod.rs` and needs no new rate-limit helper.
 
 ## Open questions
 

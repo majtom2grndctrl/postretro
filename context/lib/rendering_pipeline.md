@@ -53,7 +53,7 @@ Three components: **static direct** (baked), **dynamic direct** (runtime), and *
 
 **Indirect.** prl-build bakes an SH L2 irradiance volume (3D probe grid) over the level's empty space. Runtime samples via trilinear interpolation per fragment. Missing probe section falls back to the ambient floor.
 
-**Animated lights.** Animated lights carry per-light curve data (brightness scalar, RGB color) stored as packed f32 samples in a flat GPU storage buffer. Runtime evaluates Catmull-Rom splines over a `[0, 1)` cycle time with closed-loop wrap — uniform knot spacing, tension 0.5. A shared WGSL helper handles evaluation; it declares no buffers, so both the SH animation path and the future animated-lightmap compose pass can bind their own `anim_samples` buffers at different bind-group slots without conflict.
+**Animated lights.** Animated lights carry per-light curve data (brightness scalar, RGB color) stored as packed f32 samples in a flat GPU storage buffer. Runtime evaluates Catmull-Rom splines over a `[0, 1)` cycle time with closed-loop wrap — uniform knot spacing, tension 0.5. A shared WGSL helper handles evaluation; it declares no buffers, so both the SH animation path and the animated-lightmap compose pass can bind their own `anim_samples` buffers at different bind-group slots without conflict. The animated-lightmap atlas is sampled by the forward pass only when the cell it belongs to passes the portal-traversed `VisibleCells` bitmask — any future pass that draws animated-lit geometry must share the same visibility gate or skip animated-lit chunks entirely.
 
 **Normal maps.** Perturb the per-fragment normal before direct and indirect evaluation. Tangents baked into the vertex format at compile time.
 
@@ -96,7 +96,7 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
 1. **Portal traversal** (CPU) — §2 flood-fill produces the visible-cell bitmask.
 2. **BVH traversal** (compute) — walks the global BVH; tests each leaf AABB against the frustum and the leaf's cell bit; writes or zeros the leaf's indirect buffer slot.
 3. **Light list upload** — uploads the active dynamic light array and per-light influence volumes to GPU storage buffers.
-4. **Animated lightmap compose** (compute) — clears the animated-lightmap atlas, then composites per-texel animated-light contributions into it using pre-baked weight maps and runtime-evaluated Catmull-Rom curves. Runs after BVH cull and before the depth prepass. See §4 "Animated lights" and `animated_lightmap.rs`.
+4. **Animated lightmap compose** (compute) — composites per-texel animated-light contributions into the pre-cleared atlas using pre-baked weight maps and runtime-evaluated Catmull-Rom curves. Culls dispatch tiles against the visible-cell bitmask so invisible rooms' animated lights don't waste GPU cycles. Runs after BVH cull and before the depth prepass. See §4 "Animated lights" and `animated_lightmap.rs`.
 
 ### 7.2 Depth Pre-Pass
 

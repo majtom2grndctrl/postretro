@@ -223,12 +223,14 @@ impl IntoLua for Transform {
 fn component_kind_name(k: ComponentKind) -> &'static str {
     match k {
         ComponentKind::Transform => "Transform",
+        ComponentKind::Light => "Light",
     }
 }
 
 fn component_kind_from_name(name: &str) -> Option<ComponentKind> {
     match name {
         "Transform" => Some(ComponentKind::Transform),
+        "Light" => Some(ComponentKind::Light),
         _ => None,
     }
 }
@@ -280,6 +282,19 @@ impl<'js> FromJs<'js> for ComponentValue {
                 let t = Transform::from_js(ctx, o.into_value())?;
                 Ok(ComponentValue::Transform(t))
             }
+            "Light" => {
+                // LightComponent is not addressable directly from QuickJS in
+                // Plan 2 — scripts mutate lights via the `LightEntity` handle
+                // (`setAnimation`, Sub-plan 6), not through `set_component`.
+                // Exposing the full component struct on the FFI boundary is
+                // deferred until Sub-plan 6 ships.
+                let _ = o;
+                Err(rquickjs::Exception::throw_type(
+                    ctx,
+                    "LightComponent is not writable via set_component in Plan 2; \
+                     use LightEntity.setAnimation instead (Sub-plan 6)",
+                ))
+            }
             other => Err(rquickjs::Exception::throw_type(
                 ctx,
                 &format!("unknown ComponentValue kind `{other}`"),
@@ -298,6 +313,20 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 let o = Object::from_value(v).expect("Transform encodes to an object");
                 o.set("kind", "Transform")?;
                 Ok(o.into_value())
+            }
+            ComponentValue::Light(light) => {
+                // Serialize through serde_json then re-cross into QuickJS —
+                // the shape matches the serde-tagged wire form (`kind: "Light"`
+                // plus every `LightComponent` field). Used by
+                // `get_component({kind: "Light"})` in Plan 2; write-side
+                // lands in Sub-plan 6.
+                let json = serde_json::to_value(ComponentValue::Light(light)).map_err(|e| {
+                    rquickjs::Exception::throw_type(
+                        ctx,
+                        &format!("LightComponent serialization failed: {e}"),
+                    )
+                })?;
+                json_to_js(ctx, &json)
             }
         }
     }
@@ -321,6 +350,17 @@ impl FromLua for ComponentValue {
                 let transform = Transform::from_lua(LuaValue::Table(t), lua)?;
                 Ok(ComponentValue::Transform(transform))
             }
+            "Light" => {
+                // Same contract as the QuickJS side: `LightComponent` is not
+                // writable via `set_component` in Plan 2 — use `LightEntity`
+                // handle methods (Sub-plan 6).
+                let _ = t;
+                Err(mlua::Error::RuntimeError(
+                    "LightComponent is not writable via set_component in Plan 2; \
+                     use LightEntity:setAnimation instead (Sub-plan 6)"
+                        .to_string(),
+                ))
+            }
             other => Err(mlua::Error::RuntimeError(format!(
                 "unknown ComponentValue kind `{other}`"
             ))),
@@ -337,6 +377,15 @@ impl IntoLua for ComponentValue {
                     tbl.set("kind", "Transform")?;
                 }
                 Ok(v)
+            }
+            ComponentValue::Light(light) => {
+                // Serialize via serde_json then walk back into a Lua table —
+                // same approach as the IntoJs side so QuickJS and Luau scripts
+                // see identical structural shapes from `get_component`.
+                let json = serde_json::to_value(ComponentValue::Light(light)).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("LightComponent serialization failed: {e}"))
+                })?;
+                json_to_lua(lua, &json)
             }
         }
     }

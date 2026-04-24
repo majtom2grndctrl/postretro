@@ -20,6 +20,15 @@ pub const SH_BAND_COUNT: usize = 9;
 /// (1 + SH_BAND_COUNT == 10).
 pub const BIND_ANIM_DESCRIPTORS: u32 = 11;
 pub const BIND_ANIM_SAMPLES: u32 = 12;
+/// Per-map-light scripted `AnimationDescriptor` buffer (Plan 2 Sub-plan 4).
+/// Populated by `LightBridge::update → Renderer::upload_bridge_descriptors`.
+/// Indexed in the forward shader's light loop by light index `i`; the
+/// descriptor's `is_active` flag gates whether the per-light curve is
+/// evaluated. Separate from `BIND_ANIM_DESCRIPTORS` (which carries baked
+/// animated-section descriptors for the compose pass) because the two
+/// consumers use different indexing schemes — section-indexed vs
+/// map-light-indexed.
+pub const BIND_SCRIPTED_LIGHT_DESCRIPTORS: u32 = 13;
 
 /// Byte size of `ShGridInfo` — four `vec4` slots to satisfy std140 alignment
 /// rules (vec3 fields align to 16, followed by a same-slot scalar).
@@ -70,6 +79,19 @@ pub struct ShVolumeResources {
     /// groups. The CPU mirror lives alongside so per-frame edits to `active`
     /// (from scripting) can patch bytes and upload in one pass.
     pub animation: AnimatedLightBuffers,
+    /// Per-map-light scripted `AnimationDescriptor` buffer (Plan 2 Sub-plan 4).
+    /// Size is fixed at `max(map_light_count, 1) * ANIMATION_DESCRIPTOR_SIZE`
+    /// and zero-initialized — every light starts with the sentinel descriptor
+    /// (`is_active == 0`) so the forward shader reads the static `GpuLight`
+    /// color until the bridge writes a real animation. Bound at
+    /// `BIND_SCRIPTED_LIGHT_DESCRIPTORS`.
+    pub scripted_light_descriptors: wgpu::Buffer,
+    /// Number of real map lights this buffer was sized for. Retained for
+    /// diagnostic logging and future debug inspection; the upload path
+    /// validates against `Renderer::level_lights.len()` directly so this
+    /// field is not on the hot path.
+    #[allow(dead_code)]
+    pub scripted_light_count: u32,
 }
 
 /// Shared handle exposing the animated-light descriptor and sample buffers to
@@ -164,6 +186,7 @@ impl ShVolumeResources {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         section: Option<&ShVolumeSection>,
+        map_light_count: usize,
     ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SH Volume Bind Group Layout"),
@@ -233,6 +256,21 @@ impl ShVolumeResources {
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
 
+        // Scripted per-map-light descriptor buffer. One 48-byte slot per map
+        // light, initialized to all zeros (sentinel — `is_active == 0`, all
+        // counts 0) so the forward shader's light loop reads the static
+        // `GpuLight` values until the bridge writes a real animation. wgpu
+        // rejects zero-sized storage buffers; pad to one slot for maps with
+        // zero lights (the forward loop bound is 0 so the dummy is never read).
+        let scripted_descriptor_slots = map_light_count.max(1);
+        let scripted_descriptor_bytes =
+            vec![0u8; scripted_descriptor_slots * ANIMATION_DESCRIPTOR_SIZE];
+        let scripted_light_descriptors_buffer = device.create_buffer_init_helper(
+            "Scripted Light Descriptors",
+            &scripted_descriptor_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+
         // Upload grid-info uniform.
         let grid_info_bytes =
             build_grid_info_bytes(grid_origin, cell_size, grid_dimensions, present);
@@ -247,7 +285,7 @@ impl ShVolumeResources {
             .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
             .collect();
 
-        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(SH_BAND_COUNT + 5);
+        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(SH_BAND_COUNT + 6);
         entries.push(wgpu::BindGroupEntry {
             binding: 0,
             resource: wgpu::BindingResource::Sampler(&sampler),
@@ -269,6 +307,10 @@ impl ShVolumeResources {
         entries.push(wgpu::BindGroupEntry {
             binding: BIND_ANIM_SAMPLES,
             resource: anim_samples_buffer.as_entire_binding(),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: BIND_SCRIPTED_LIGHT_DESCRIPTORS,
+            resource: scripted_light_descriptors_buffer.as_entire_binding(),
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -292,6 +334,8 @@ impl ShVolumeResources {
             bind_group_layout,
             present,
             animation,
+            scripted_light_descriptors: scripted_light_descriptors_buffer,
+            scripted_light_count: map_light_count as u32,
         }
     }
 }
@@ -333,8 +377,14 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     });
     // Animation storage buffers. Always bound — with dummy single-element
     // buffers when no animated lights exist — so the bind group layout never
-    // changes with map content.
-    for binding in [BIND_ANIM_DESCRIPTORS, BIND_ANIM_SAMPLES] {
+    // changes with map content. `BIND_SCRIPTED_LIGHT_DESCRIPTORS` carries the
+    // per-map-light scripted descriptor slots (Plan 2 Sub-plan 4), sized at
+    // level load to one slot per map light.
+    for binding in [
+        BIND_ANIM_DESCRIPTORS,
+        BIND_ANIM_SAMPLES,
+        BIND_SCRIPTED_LIGHT_DESCRIPTORS,
+    ] {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -730,6 +780,39 @@ mod tests {
         let bytes = build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false);
         let flag = u32::from_ne_bytes(bytes[12..16].try_into().unwrap());
         assert_eq!(flag, 0);
+    }
+
+    /// Plan 2 Sub-plan 4: the scripted-light descriptor buffer is sized at
+    /// level load to `max(map_light_count, 1) * ANIMATION_DESCRIPTOR_SIZE`
+    /// bytes. This mirrors the formula `LightBridge::update` uses when
+    /// emitting `descriptor_bytes`, so the renderer's defensive length
+    /// check (`expected = level_lights.len() * ANIMATION_DESCRIPTOR_SIZE`)
+    /// matches the buffer capacity exactly for any non-zero map-light
+    /// count. A CPU-only invariant — the buffer itself requires a wgpu
+    /// device we don't have in `cargo test`.
+    #[test]
+    fn scripted_descriptor_buffer_sizing_matches_bridge_payload_size() {
+        // Match the formula in `ShVolumeResources::new` and
+        // `Renderer::upload_bridge_descriptors`. Both must derive the same
+        // byte count from the same `map_light_count` input, or the upload
+        // will fail the length check even on valid bridge output.
+        for map_light_count in [0usize, 1, 4, 17, 256] {
+            let alloc_slots = map_light_count.max(1);
+            let alloc_bytes = alloc_slots * ANIMATION_DESCRIPTOR_SIZE;
+            let expected_upload_bytes = map_light_count * ANIMATION_DESCRIPTOR_SIZE;
+            if map_light_count == 0 {
+                // Zero-light maps pad to a single dummy slot so wgpu accepts
+                // the storage binding. The forward loop bound is 0 so the
+                // dummy is never read, and the bridge emits zero bytes
+                // (nothing to upload). The `upload_bridge_descriptors`
+                // early-return on empty input is what makes this case safe.
+                assert_eq!(alloc_bytes, ANIMATION_DESCRIPTOR_SIZE);
+                assert_eq!(expected_upload_bytes, 0);
+            } else {
+                assert_eq!(alloc_bytes, expected_upload_bytes);
+                assert_eq!(alloc_bytes % ANIMATION_DESCRIPTOR_SIZE, 0);
+            }
+        }
     }
 
     #[test]

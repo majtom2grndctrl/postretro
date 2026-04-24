@@ -1088,8 +1088,12 @@ impl Renderer {
         // when the level has no SH section, dummies are bound and the shader
         // skips SH sampling via the `has_sh_volume` flag in the grid-info
         // uniform. See sub-plan 6.
-        let sh_volume_resources =
-            ShVolumeResources::new(&device, &queue, geometry.and_then(|g| g.sh_volume));
+        let sh_volume_resources = ShVolumeResources::new(
+            &device,
+            &queue,
+            geometry.and_then(|g| g.sh_volume),
+            level_lights.len(),
+        );
 
         // Animated-lightmap compose pass. Owns the compute pipeline, the
         // Rgba16Float storage atlas, and the dispatch-tile buffer. When the
@@ -1742,6 +1746,42 @@ impl Renderer {
         }
         self.queue
             .write_buffer(&self.lights_buffer, 0, lights_bytes);
+    }
+
+    /// Upload a bridge-produced scripted-light `AnimationDescriptor` byte
+    /// buffer into the per-map-light descriptor storage buffer (group 3,
+    /// binding `BIND_SCRIPTED_LIGHT_DESCRIPTORS`). One 48-byte record per
+    /// map light, in map-light-index order. Lights without an active
+    /// animation carry the sentinel descriptor (all zeros); the forward
+    /// shader's light loop keys on `is_active` to decide whether to evaluate
+    /// a curve or pass through the static `GpuLight` color.
+    ///
+    /// Bytes must match the pre-allocated buffer size — `level_lights.len()
+    /// * ANIMATION_DESCRIPTOR_SIZE`. A mismatched length logs a warning and
+    /// returns without uploading (defensive: Plan 2 Sub-plan 4 guarantees
+    /// the bridge emits exactly that count, but we fail soft rather than
+    /// crash the frame if the invariant slips).
+    pub fn upload_bridge_descriptors(&mut self, descriptor_bytes: &[u8]) {
+        let expected = self.level_lights.len() * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+        if descriptor_bytes.len() != expected {
+            log::warn!(
+                "[Renderer] upload_bridge_descriptors: bridge produced {} bytes; \
+                 expected {} × {} = {}. Skipping upload.",
+                descriptor_bytes.len(),
+                self.level_lights.len(),
+                sh_volume::ANIMATION_DESCRIPTOR_SIZE,
+                expected,
+            );
+            return;
+        }
+        if descriptor_bytes.is_empty() {
+            return;
+        }
+        self.queue.write_buffer(
+            &self.sh_volume_resources.scripted_light_descriptors,
+            0,
+            descriptor_bytes,
+        );
     }
 
     /// Access the cached level-light list. Called at level-load time by the

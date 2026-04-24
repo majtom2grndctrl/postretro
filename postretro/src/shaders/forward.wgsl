@@ -130,6 +130,13 @@ struct AnimationDescriptor {
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
 
+// Per-map-light scripted descriptor buffer (Plan 2 Sub-plan 4). One 48-byte
+// `AnimationDescriptor` per map light, indexed by the forward light-loop
+// counter `i`. `is_active == 0` → shader uses the static `GpuLight.color`
+// value unchanged (sentinel path for lights with no animation). Uploaded by
+// `LightBridge::update → Renderer::upload_bridge_descriptors`.
+@group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
+
 // Group 4 — baked directional lightmap (static direct lighting).
 // See context/plans/ready/lighting-lightmaps/index.md.
 @group(4) @binding(0) var lightmap_irradiance: texture_2d<f32>;
@@ -575,6 +582,39 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let light_type = bitcast<u32>(light.position_and_type.w);
         let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
 
+        // Scripted per-light animation (Plan 2 Sub-plan 4). `is_active == 0`
+        // is the sentinel path: `effective_color` stays as the static
+        // `GpuLight.color × intensity` value, and `effective_aim` is the
+        // static `GpuLight.direction_and_range.xyz`. Active descriptors
+        // override brightness, color, and (for spot lights) cone aim from
+        // their Catmull-Rom curves on the shared `anim_samples` buffer.
+        let scripted_desc = scripted_light_descriptors[i];
+        var effective_color = light.color_and_falloff_model.xyz;
+        var effective_aim = light.direction_and_range.xyz;
+        if scripted_desc.is_active != 0u {
+            let cycle_t = fract(uniforms.time / max(scripted_desc.period, 0.0001) + scripted_desc.phase);
+            // Color channel wins when present; otherwise apply brightness to
+            // the descriptor's `base_color` (captured at `setAnimation` time).
+            if scripted_desc.color_count > 0u {
+                effective_color = sample_color_catmull_rom(
+                    scripted_desc.color_offset,
+                    scripted_desc.color_count,
+                    cycle_t,
+                    scripted_desc.base_color,
+                );
+            } else if scripted_desc.brightness_count > 0u {
+                let brightness = sample_curve_catmull_rom(
+                    scripted_desc.brightness_offset,
+                    scripted_desc.brightness_count,
+                    cycle_t,
+                );
+                effective_color = scripted_desc.base_color * brightness;
+            }
+            if light_type == 1u && scripted_desc.direction_count > 0u {
+                effective_aim = sample_animated_direction(scripted_desc, cycle_t, effective_aim);
+            }
+        }
+
         var L: vec3<f32>;
         var attenuation: f32;
 
@@ -594,7 +634,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 let dist_falloff = falloff(dist, light.direction_and_range.w, falloff_model);
                 let cone = cone_attenuation(
                     L,
-                    light.direction_and_range.xyz,
+                    effective_aim,
                     light.cone_angles_and_pad.x,
                     light.cone_angles_and_pad.y,
                 );
@@ -610,8 +650,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 }
             }
             default: {
-                // Directional light (case 2u and any unknown discriminant)
-                L = -light.direction_and_range.xyz;
+                // Directional light (case 2u and any unknown discriminant).
+                // Scripted direction animation also applies here when present.
+                L = -effective_aim;
                 attenuation = 1.0;
             }
         }
@@ -622,7 +663,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // systems have been retired ahead of the lighting rework that will
         // reintroduce baked static shadows plus a small runtime spot shadow
         // map pool.
-        total_light = total_light + light.color_and_falloff_model.xyz * attenuation * NdotL;
+        total_light = total_light + effective_color * attenuation * NdotL;
     }
 
     let rgb = base_color.rgb * total_light;

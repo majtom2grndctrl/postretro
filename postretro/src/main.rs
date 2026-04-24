@@ -715,13 +715,7 @@ impl ApplicationHandler for App {
                             self.light_bridge.update(&mut registry, self.script_time)
                         {
                             renderer.upload_bridge_lights(&update.lights_bytes);
-                            // Animation descriptor uploads are not yet wired:
-                            // the renderer-side descriptor buffer needs to be
-                            // pre-allocated per map light at level load before
-                            // these bytes can be uploaded. The data is produced
-                            // correctly here; intensity/color changes land via
-                            // `lights_bytes` in the meantime.
-                            let _ = update.descriptor_bytes;
+                            renderer.upload_bridge_descriptors(&update.descriptor_bytes);
                         }
                     }
 

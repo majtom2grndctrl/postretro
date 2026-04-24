@@ -79,7 +79,13 @@ Entry point: `drain_reload_requests` on `ScriptRuntime`, called at the top of ea
 
 ---
 
-## 9. Non-Goals
+## 9. External API Shape
+
+External scripting APIs stay close to internal data shapes by default. When internal naming, hardware constraints, or usability concerns diverge, the external API simplifies rather than exposes the constraint. The mapping should be traceable, not required to be identical. Examples: a `[f32; 3]` origin field becomes `transform.position` on an entity handle; a GPU loop-count convention (`0` = infinite) becomes `playCount` where omitting the field means forever.
+
+---
+
+## 10. Non-Goals
 
 - General-purpose scripting host (only explicitly registered Rust functions are callable)
 - Synchronous cross-VM communication (QuickJS and Luau are independent runtimes)

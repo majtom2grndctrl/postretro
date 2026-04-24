@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use super::event_dispatch::{HandlerTable, SharedHandlerTable};
 use super::registry::{EntityId, EntityRegistry};
 
 /// A single event flowing through the engine-owned event queue.
@@ -46,6 +47,9 @@ impl EventQueue {
 pub(crate) struct ScriptCtx {
     pub(crate) registry: Rc<RefCell<EntityRegistry>>,
     pub(crate) events: Rc<RefCell<EventQueue>>,
+    /// Per-level handler table populated by the `registerHandler` primitive
+    /// and drained by level unload. See: `scripting::event_dispatch`.
+    pub(crate) handlers: SharedHandlerTable,
 }
 
 impl ScriptCtx {
@@ -53,6 +57,7 @@ impl ScriptCtx {
         Self {
             registry: Rc::new(RefCell::new(EntityRegistry::new())),
             events: Rc::new(RefCell::new(EventQueue::new())),
+            handlers: Rc::new(RefCell::new(HandlerTable::new())),
         }
     }
 }

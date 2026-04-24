@@ -207,9 +207,27 @@ fn build_behavior_context_from_snapshot(
     })?;
     ctx.with(|ctx| -> Result<(), ScriptError> {
         install_primitives(&ctx, primitives, ContextScope::BehaviorOnly)?;
+        deny_wall_clock(&ctx)?;
         Ok(())
     })?;
     Ok(ctx)
+}
+
+/// Remove wall-clock access from the behavior context globals. Scripts must
+/// take their timing from `ScriptCallContext` only, not from `Date.now()`.
+/// Deleting the global makes `Date` a `ReferenceError` on access.
+/// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 5
+fn deny_wall_clock(ctx: &Ctx<'_>) -> Result<(), ScriptError> {
+    let globals = ctx.globals();
+    // `Object.remove` is the rquickjs API for true delete. Assigning
+    // `undefined` would leave the property present and `typeof Date` would
+    // still evaluate; `remove` causes a `ReferenceError` on bare access.
+    globals
+        .remove("Date")
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to delete `Date` global: {e}"),
+        })?;
+    Ok(())
 }
 
 /// Install each primitive into `ctx`. `target` names the scope this context

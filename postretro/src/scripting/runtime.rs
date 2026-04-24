@@ -8,7 +8,10 @@
 use std::fs;
 use std::path::Path;
 
+use super::call_context::ScriptCallContext;
+use super::ctx::ScriptCtx;
 use super::error::ScriptError;
+use super::event_dispatch::{self, SharedHandlerTable};
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use super::pool::{LuauContextPool, QuickJsContextPool};
 use super::primitives_registry::PrimitiveRegistry;
@@ -51,6 +54,9 @@ pub(crate) struct ScriptRuntime {
     quickjs_pool: QuickJsContextPool,
     /// Ephemeral-context pool for future per-entity Luau scripting.
     luau_pool: LuauContextPool,
+    /// Handler table populated by `registerHandler` and drained on level
+    /// unload. Shared with the `ScriptCtx` the primitive registry captured.
+    handlers: SharedHandlerTable,
     /// Dev-mode hot-reload watcher. Debug builds only; release builds omit
     /// the field so `drain_reload_requests` is a no-op with no extra code.
     #[cfg(debug_assertions)]
@@ -64,6 +70,7 @@ impl ScriptRuntime {
     pub(crate) fn new(
         registry: &PrimitiveRegistry,
         cfg: &ScriptRuntimeConfig,
+        ctx: &ScriptCtx,
     ) -> Result<Self, ScriptError> {
         let quickjs = QuickJsSubsystem::new(registry, &cfg.quickjs)?;
         let luau = LuauSubsystem::new(registry, &cfg.luau)?;
@@ -83,9 +90,38 @@ impl ScriptRuntime {
             luau,
             quickjs_pool,
             luau_pool,
+            handlers: ctx.handlers.clone(),
             #[cfg(debug_assertions)]
             watcher: None,
         })
+    }
+
+    /// Fire the `levelLoad` event. Iterates registered handlers in
+    /// registration order; a throwing handler is logged and swallowed.
+    /// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 5
+    pub(crate) fn fire_level_load(&self) {
+        event_dispatch::fire_level_load(
+            &self.handlers,
+            self.quickjs.behavior_ctx(),
+            self.luau.behavior_lua(),
+        );
+    }
+
+    /// Fire the `tick` event. `ctx` carries `delta` and `time` from the engine
+    /// frame timer. A throwing handler is logged and swallowed.
+    pub(crate) fn fire_tick(&self, ctx: ScriptCallContext) {
+        event_dispatch::fire_tick(
+            &self.handlers,
+            self.quickjs.behavior_ctx(),
+            self.luau.behavior_lua(),
+            ctx,
+        );
+    }
+
+    /// Drop every registered handler. Called on level unload — the handler
+    /// registry is strictly per-level (see `scripting.md` §10 Non-Goals).
+    pub(crate) fn clear_level_handlers(&self) {
+        self.handlers.borrow_mut().clear();
     }
 
     /// Access the QuickJS ephemeral-context pool.
@@ -172,6 +208,17 @@ impl ScriptRuntime {
         })?;
         let name = path.to_string_lossy().into_owned();
 
+        // Publish the current script name so `registerHandler` can stamp it
+        // onto any handlers this script installs. Always cleared at scope exit,
+        // even on failure, so a thrown script cannot leak a stale name onto a
+        // later file's handlers.
+        self.handlers
+            .borrow_mut()
+            .set_current_source(Some(name.clone()));
+        let _source_guard = SourceGuard {
+            handlers: &self.handlers,
+        };
+
         match ext {
             "ts" | "js" => {
                 let ctx = match which {
@@ -195,6 +242,33 @@ impl ScriptRuntime {
     }
 }
 
+impl Drop for ScriptRuntime {
+    /// Clear every registered handler before the QuickJS runtime is freed.
+    /// Each registered handler carries a `Persistent<Function>` that pins a JS
+    /// object in the QuickJS heap — letting it outlive the runtime would trip
+    /// QuickJS's `list_empty(&rt->gc_obj_list)` assertion during
+    /// `JS_FreeRuntime`. We also drop our own handle on the pools and the
+    /// behavior context the handlers live against, but the order of field
+    /// drops in `ScriptRuntime` would still free `quickjs` before the
+    /// `handlers` Rc that outside code may still share with `ScriptCtx`.
+    fn drop(&mut self) {
+        self.handlers.borrow_mut().clear();
+    }
+}
+
+/// RAII guard that clears the handler table's `current_source` when the
+/// currently-loading script exits scope. Ensures a failing script does not
+/// leave a stale file name visible to the next script's handlers.
+struct SourceGuard<'a> {
+    handlers: &'a SharedHandlerTable,
+}
+
+impl<'a> Drop for SourceGuard<'a> {
+    fn drop(&mut self) {
+        self.handlers.borrow_mut().set_current_source(None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,7 +279,7 @@ mod tests {
         let ctx = ScriptCtx::new();
         let mut registry = PrimitiveRegistry::new();
         register_all(&mut registry, ctx.clone());
-        let rt = ScriptRuntime::new(&registry, &ScriptRuntimeConfig::default()).unwrap();
+        let rt = ScriptRuntime::new(&registry, &ScriptRuntimeConfig::default(), &ctx).unwrap();
         (rt, ctx)
     }
 
@@ -353,7 +427,7 @@ mod tests {
         };
 
         let start = Instant::now();
-        let _rt = ScriptRuntime::new(&registry, &cfg).unwrap();
+        let _rt = ScriptRuntime::new(&registry, &cfg, &ctx).unwrap();
         let elapsed = start.elapsed();
 
         if !cfg!(debug_assertions) {

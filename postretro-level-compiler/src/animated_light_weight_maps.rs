@@ -576,6 +576,7 @@ mod tests {
                 phase: 0.0,
                 brightness: Some(vec![1.0, 0.5]),
                 color: None,
+                direction: None,
                 start_active: true,
             }),
             cast_shadows: true,

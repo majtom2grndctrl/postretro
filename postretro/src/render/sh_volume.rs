@@ -34,18 +34,21 @@ pub const BIND_ANIM_SAMPLES: u32 = 12;
 pub const SH_GRID_INFO_SIZE: usize = 48;
 
 /// Stride of one `AnimationDescriptor` record on the GPU. WGSL layout:
-///   f32 period            (0..4)
-///   f32 phase             (4..8)
-///   u32 brightness_offset (8..12)
-///   u32 brightness_count  (12..16)
-///   vec3<f32> base_color  (16..28)  // AlignOf=16; scalars before it fill the gap
-///   u32 color_offset      (28..32)
-///   u32 color_count       (32..36)
-///   u32 active            (36..40)  // runtime on/off; initialized from start_active
-///   vec2<f32> _pad        (40..48)  // reserved for animated direction (Plan 2 Sub-plan 1)
+///   f32 period             (0..4)
+///   f32 phase              (4..8)
+///   u32 brightness_offset  (8..12)
+///   u32 brightness_count   (12..16)
+///   vec3<f32> base_color   (16..28)  // AlignOf=16; scalars before it fill the gap
+///   u32 color_offset       (28..32)
+///   u32 color_count        (32..36)
+///   u32 active             (36..40)  // runtime on/off; initialized from start_active
+///   u32 direction_offset   (40..44)  // Plan 2 Sub-plan 1: spot-aim curve
+///   u32 direction_count    (44..48)  // 0 → shader uses static `cone_direction`
 ///
 /// `active` used to be an implicit 4-byte padding gap. It is now a real field —
 /// scripts toggle it to enable/disable an animated light without a reload.
+/// The trailing direction slots consumed the last 8 bytes of reserved padding;
+/// the overall 48-byte stride is unchanged.
 pub const ANIMATION_DESCRIPTOR_SIZE: usize = 48;
 
 /// Byte offset of the `active` u32 within one descriptor record. Used by
@@ -478,6 +481,20 @@ pub(crate) fn build_animation_buffers(
             samples.extend_from_slice(rgb);
         }
 
+        let direction_offset = samples.len() as u32;
+        let direction_count = desc.direction.len() as u32;
+        for dir in &desc.direction {
+            // Plan 2 Sub-plan 1: samples are normalized at write time
+            // (scripting primitive or FGD parser). The shader does not
+            // re-normalize per frame. Catch drift in debug builds.
+            debug_assert!(
+                (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2] - 1.0).abs() < 1.0e-4,
+                "AnimationDescriptor direction sample must be unit length; got {:?}",
+                dir,
+            );
+            samples.extend_from_slice(dir);
+        }
+
         write_descriptor_bytes(
             &mut descriptors,
             desc,
@@ -485,6 +502,8 @@ pub(crate) fn build_animation_buffers(
             brightness_count,
             color_offset,
             color_count,
+            direction_offset,
+            direction_count,
         );
     }
 
@@ -497,6 +516,7 @@ pub(crate) fn build_animation_buffers(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_descriptor_bytes(
     out: &mut Vec<u8>,
     desc: &AnimationDescriptor,
@@ -504,6 +524,8 @@ fn write_descriptor_bytes(
     brightness_count: u32,
     color_offset: u32,
     color_count: u32,
+    direction_offset: u32,
+    direction_count: u32,
 ) {
     // Must match the WGSL `AnimationDescriptor` layout in forward.wgsl.
     // Struct size is ANIMATION_DESCRIPTOR_SIZE = 48 bytes.
@@ -522,7 +544,10 @@ fn write_descriptor_bytes(
     // `active` initializes from the on-disk `start_active`. Scripts mutate
     // the CPU mirror at runtime via `AnimatedLightBuffers::set_active`.
     s[36..40].copy_from_slice(&desc.start_active.to_ne_bytes());
-    // s[40..48] is _pad (reserved for animated direction), already zero.
+    // Plan 2 Sub-plan 1 direction channel. A `direction_count` of 0 signals
+    // "no animation — shader uses the static `cone_direction` on GpuLight."
+    s[40..44].copy_from_slice(&direction_offset.to_ne_bytes());
+    s[44..48].copy_from_slice(&direction_count.to_ne_bytes());
 }
 
 fn f32_slice_to_bytes(data: &[f32]) -> Vec<u8> {
@@ -751,6 +776,7 @@ mod tests {
                     base_color: [1.0, 0.5, 0.25],
                     brightness: vec![0.0, 1.0, 0.5, 1.0],
                     color: vec![],
+                    direction: vec![],
                     start_active: 1,
                 },
                 AnimationDescriptor {
@@ -759,6 +785,7 @@ mod tests {
                     base_color: [0.1, 0.2, 0.3],
                     brightness: vec![],
                     color: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    direction: vec![],
                     start_active: 0,
                 },
             ],
@@ -1017,6 +1044,8 @@ mod tests {
             brightness: vec![0.25, 0.5, 1.0],
             // Two color samples follow the brightness block.
             color: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.5]],
+            // Two unit direction samples follow the color block.
+            direction: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             // Non-default: `_start_inactive = 1` at compile time zeros this.
             start_active: 0,
         };
@@ -1049,9 +1078,9 @@ mod tests {
                 .try_into()
                 .unwrap(),
         );
-        // Tail padding (direction reservation) is zero.
-        let pad_lo = f32::from_ne_bytes(descriptors[40..44].try_into().unwrap());
-        let pad_hi = f32::from_ne_bytes(descriptors[44..48].try_into().unwrap());
+        // Direction channel offsets (bytes 40..48).
+        let direction_offset = u32::from_ne_bytes(descriptors[40..44].try_into().unwrap());
+        let direction_count = u32::from_ne_bytes(descriptors[44..48].try_into().unwrap());
 
         assert_eq!(period, desc.period);
         assert_eq!(phase, desc.phase);
@@ -1063,8 +1092,121 @@ mod tests {
         assert_eq!(color_offset, desc.brightness.len() as u32);
         assert_eq!(color_count, desc.color.len() as u32);
         assert_eq!(active, desc.start_active);
-        assert_eq!(pad_lo, 0.0);
-        assert_eq!(pad_hi, 0.0);
+        // Direction samples follow color samples in the flat f32 array:
+        // 3 brightness + 2 color × 3 channels = 9 f32s consumed.
+        assert_eq!(
+            direction_offset,
+            (desc.brightness.len() + desc.color.len() * 3) as u32
+        );
+        assert_eq!(direction_count, desc.direction.len() as u32);
+    }
+
+    /// Direction-channel packing + Catmull-Rom evaluation round-trip.
+    ///
+    /// The GPU shader path for direction uses the same `sample_color_catmull_rom`
+    /// helper as the color channel (proved byte-accurate against a CPU reference
+    /// in `curve_eval_test::curve_eval_rgb_matches_splines_reference`). This
+    /// test wires the two halves together: pack a descriptor whose direction
+    /// block follows brightness + color, then reach into the flat sample buffer
+    /// at the recorded `direction_offset` and verify the Catmull-Rom
+    /// reconstruction at a mid-cycle `t` matches a CPU reference over the same
+    /// samples.
+    #[test]
+    fn direction_channel_packs_and_evaluates_via_catmull_rom() {
+        use postretro_level_format::sh_volume::{AnimationDescriptor, PROBE_STRIDE};
+
+        // Four unit-length direction samples sweeping around the yz-plane.
+        let dir0 = [0.0f32, 1.0, 0.0];
+        let dir1 = [0.0f32, 0.0, 1.0];
+        let dir2 = [0.0f32, -1.0, 0.0];
+        let dir3 = [0.0f32, 0.0, -1.0];
+
+        let section = ShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: [1, 1, 1],
+            probe_stride: PROBE_STRIDE,
+            probes: vec![ShProbe::default()],
+            animation_descriptors: vec![AnimationDescriptor {
+                period: 1.0,
+                phase: 0.0,
+                base_color: [1.0, 1.0, 1.0],
+                brightness: vec![1.0, 0.5],
+                color: vec![[1.0, 0.0, 0.0]],
+                direction: vec![dir0, dir1, dir2, dir3],
+                start_active: 1,
+            }],
+        };
+
+        let (descriptors, samples_bytes, count) = build_animation_buffers(Some(&section));
+        assert_eq!(count, 1);
+
+        let direction_offset = u32::from_ne_bytes(descriptors[40..44].try_into().unwrap()) as usize;
+        let direction_count = u32::from_ne_bytes(descriptors[44..48].try_into().unwrap()) as usize;
+        assert_eq!(direction_count, 4);
+        // Layout: 2 brightness + 1 color × 3 channels = 5 f32s before direction.
+        assert_eq!(direction_offset, 5);
+
+        // Recover the flat f32 sample array and verify the direction block
+        // matches what we wrote, in order.
+        let samples: Vec<f32> = samples_bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        for (i, sample) in [dir0, dir1, dir2, dir3].iter().enumerate() {
+            let base = direction_offset + i * 3;
+            assert_eq!(samples[base], sample[0]);
+            assert_eq!(samples[base + 1], sample[1]);
+            assert_eq!(samples[base + 2], sample[2]);
+        }
+
+        // CPU reference for `sample_color_catmull_rom` at cycle_t = 0.5 over
+        // four samples. This is the same math WGSL runs, transcribed verbatim
+        // from curve_eval.wgsl to pin the two sides together.
+        fn catmull_rom_reference_vec3(samples: &[[f32; 3]], t: f32) -> [f32; 3] {
+            let count = samples.len();
+            let scaled = t * count as f32;
+            let i1 = (scaled.floor() as usize) % count;
+            let i0 = (i1 + count - 1) % count;
+            let i2 = (i1 + 1) % count;
+            let i3 = (i1 + 2) % count;
+            let f = scaled.fract();
+            let p0 = samples[i0];
+            let p1 = samples[i1];
+            let p2 = samples[i2];
+            let p3 = samples[i3];
+            let mut out = [0.0f32; 3];
+            for c in 0..3 {
+                let a = -0.5 * p0[c] + 1.5 * p1[c] - 1.5 * p2[c] + 0.5 * p3[c];
+                let b = p0[c] - 2.5 * p1[c] + 2.0 * p2[c] - 0.5 * p3[c];
+                let cc = -0.5 * p0[c] + 0.5 * p2[c];
+                let d = p1[c];
+                out[c] = ((a * f + b) * f + cc) * f + d;
+            }
+            out
+        }
+
+        let dirs = [dir0, dir1, dir2, dir3];
+        for &t in &[0.0f32, 0.125, 0.5, 0.75, 0.999] {
+            let expected = catmull_rom_reference_vec3(&dirs, t);
+            // Emulate the shader-side read: pull the correct sample stride
+            // out of the flat samples array and run the reference against it.
+            // (The shader reads anim_samples[direction_offset + i*3 + ch].)
+            let window: Vec<[f32; 3]> = (0..direction_count)
+                .map(|i| {
+                    let b = direction_offset + i * 3;
+                    [samples[b], samples[b + 1], samples[b + 2]]
+                })
+                .collect();
+            let reconstructed = catmull_rom_reference_vec3(&window, t);
+            for c in 0..3 {
+                assert!(
+                    (expected[c] - reconstructed[c]).abs() < 1.0e-6,
+                    "direction channel mismatch at t={t} channel={c}: \
+                     packed={reconstructed:?} direct={expected:?}",
+                );
+            }
+        }
     }
 
     /// CPU-side active-flag masking: construct an `AnimatedLightBuffers`

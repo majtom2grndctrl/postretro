@@ -1267,6 +1267,7 @@ mod tests {
             phase: 0.0,
             brightness: Some(vec![1.0, 0.5]),
             color: None,
+            direction: None,
             start_active: true,
         });
         let mut geo_anim = unit_quad_geometry();

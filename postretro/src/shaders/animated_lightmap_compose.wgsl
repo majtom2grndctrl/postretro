@@ -40,7 +40,8 @@ struct AnimationDescriptor {
     color_offset: u32,
     color_count: u32,
     is_active: u32,
-    _pad: vec2<f32>,
+    direction_offset: u32,
+    direction_count: u32,
 };
 
 struct ChunkAtlasRect {

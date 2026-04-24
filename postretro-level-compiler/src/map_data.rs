@@ -170,6 +170,12 @@ pub struct LightAnimation {
     pub brightness: Option<Vec<f32>>,
     /// Linear RGB overrides, uniformly spaced over `period`.
     pub color: Option<Vec<[f32; 3]>>,
+    /// Animated spot-light aim vectors, uniformly spaced over `period`.
+    /// Each sample must be unit length — the authoring seam (either the
+    /// `direction_curve` FGD key or the `set_light_animation` scripting
+    /// primitive) normalizes at write time. The GPU evaluator does not
+    /// re-normalize. `None` means the light keeps its static `cone_direction`.
+    pub direction: Option<Vec<[f32; 3]>>,
     /// Initial runtime on/off state. `true` (the default) = lit at map load.
     /// Authored via the `_start_inactive` FGD key: key absent or 0 → `true`,
     /// key = 1 → `false`. Scripts toggle the GPU mirror at runtime; only the

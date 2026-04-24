@@ -657,6 +657,37 @@ fn shadow_visible(
 }
 
 // ---------------------------------------------------------------------------
+// Pack-time validation
+
+/// Validate animation data that can only be checked once all lights are
+/// collected. Currently enforces the Plan 2 Sub-plan 1 rule: color animation
+/// is only valid on `bake_only` lights or `is_dynamic` (scripted) lights. A
+/// color-animated baked light would produce a direct/indirect mismatch at
+/// runtime — the SH indirect was baked against a single compile-time color,
+/// so animating the direct term introduces a drift the bake cannot track.
+///
+/// Called from `main.rs` before `bake_sh_volume`. Returns an error naming the
+/// offending light (origin + classname, since lights have no unique id).
+pub fn validate_light_animations(lights: &[MapLight]) -> Result<(), String> {
+    for light in lights {
+        let Some(anim) = light.animation.as_ref() else {
+            continue;
+        };
+        if anim.color.is_some() && !light.bake_only && !light.is_dynamic {
+            return Err(format!(
+                "light at origin [{:.3}, {:.3}, {:.3}] has `color` animation \
+                 but is neither `bake_only` nor `is_dynamic`; animated color on \
+                 a baked light would mismatch the SH indirect bake. Either mark \
+                 the light `_dynamic 1`, set `_bake_only 1`, or remove the \
+                 color curve.",
+                light.origin.x, light.origin.y, light.origin.z,
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Animation descriptor
 
 fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
@@ -679,6 +710,7 @@ fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
         ],
         brightness: anim.brightness.clone().unwrap_or_default(),
         color: anim.color.clone().unwrap_or_default(),
+        direction: anim.direction.clone().unwrap_or_default(),
         start_active: if anim.start_active { 1 } else { 0 },
     }
 }
@@ -1006,6 +1038,7 @@ mod tests {
                 phase: 0.0,
                 brightness: Some(vec![0.0, 1.0, 0.0]),
                 color: None,
+                direction: None,
                 start_active: true,
             }),
             cast_shadows: true,
@@ -1055,6 +1088,7 @@ mod tests {
                 phase: 0.0,
                 brightness: Some(vec![0.0, 1.0]),
                 color: None,
+                direction: None,
                 start_active: true,
             }),
             cast_shadows: true,

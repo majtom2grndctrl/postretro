@@ -92,9 +92,10 @@ struct ShGridInfo {
 // ends at byte 44 and trailing vec2<f32> padding (AlignOf=8) would be pushed
 // to 48, making the struct 56 B and stride 64. Instead we pack four scalars
 // after base_color so color_count ends at 36; `is_active` fills the 4-byte
-// implicit gap at 36..40 and _pad occupies 40..48 for a 48-byte stride. The
-// trailing vec2<f32> is reserved for the animated-direction channel (Plan 2
-// Sub-plan 1). `is_active` is toggled at runtime by the scripting layer —
+// implicit gap at 36..40 and the direction offsets occupy 40..48 for a 48-byte
+// stride. Plan 2 Sub-plan 1: the trailing two u32s carry the direction-channel
+// offset + count; `direction_count == 0` means the spot light keeps its static
+// `cone_direction`. `is_active` is toggled at runtime by the scripting layer —
 // inactive lights contribute nothing to either the SH volume or the compose
 // pass. Named `is_active` rather than `active` because WGSL reserves the
 // latter as a keyword.
@@ -107,7 +108,8 @@ struct AnimationDescriptor {
     color_offset: u32,
     color_count: u32,
     is_active: u32,
-    _pad: vec2<f32>,
+    direction_offset: u32,
+    direction_count: u32,
 };
 
 @group(3) @binding(0) var sh_sampler: sampler;
@@ -282,6 +284,28 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
     let cos_inner = cos(inner_angle);
     let cos_outer = cos(outer_angle);
     return smoothstep(cos_outer, cos_inner, cos_angle);
+}
+
+// Plan 2 Sub-plan 1 — animated spot-light aim.
+//
+// Sample the direction channel of an `AnimationDescriptor` at `cycle_t`
+// (fract(time / period + phase), matching the compose pass convention) and
+// fall back to the caller-provided `static_aim` when the descriptor carries
+// no direction samples. Returns a unit-length vector: samples are normalized
+// at write time (set_light_animation / FGD parser) and Catmull-Rom between
+// unit vectors drifts only slightly off the sphere at typical authored
+// sample rates. The sub-plan accepts that drift; densify the curve at pack
+// time if visible length error appears.
+//
+// Consumed by spot-light evaluation once Plan 2 Sub-plan 4 wires
+// AnimationDescriptor indices onto GpuLight. Declared now so the binding
+// layout and the helper ship together.
+fn sample_animated_direction(desc: AnimationDescriptor, cycle_t: f32, static_aim: vec3<f32>) -> vec3<f32> {
+    if desc.direction_count == 0u {
+        return static_aim;
+    }
+    let zero_base = vec3<f32>(0.0, 0.0, 0.0);
+    return sample_color_catmull_rom(desc.direction_offset, desc.direction_count, cycle_t, zero_base);
 }
 
 // --- Spot shadow sampling ---

@@ -11,7 +11,10 @@ use std::collections::HashMap;
 use glam::DVec3;
 use thiserror::Error;
 
-use crate::map_data::{FalloffModel, LightAnimation, LightType, MapLight};
+use crate::map_data::{
+    FalloffModel, KEYFRAME_RESAMPLE_RATE_HZ, LightAnimation, LightType, MapLight,
+    resample_keyframes,
+};
 use crate::map_format::MapFormat;
 
 /// Quake-family light classnames recognised by the translator.
@@ -49,6 +52,23 @@ pub enum TranslateError {
         "light_spot has 'target' set but named-entity targeting is not supported until Milestone 6; use 'mangle' for spotlight direction"
     )]
     TargetNotSupported,
+
+    /// Malformed keyframe in a `*_curve` FGD key. `light_ref` names the light
+    /// (classname + origin) so authors can locate it in TrenchBroom.
+    #[error("light {light_ref}: '{key}' — {reason}")]
+    InvalidKeyframeCurve {
+        key: &'static str,
+        light_ref: String,
+        reason: String,
+    },
+
+    /// `color_curve` authored on a light that is neither `_bake_only` nor
+    /// `_dynamic`. Animated direct color on a baked light would drift from the
+    /// SH indirect bake (Plan 2 Sub-plan 1 rule).
+    #[error(
+        "light {light_ref}: 'color_curve' — color animation is only valid on `_bake_only` or `_dynamic` lights. Either mark the light `_dynamic 1`, set `_bake_only 1`, or remove `color_curve`."
+    )]
+    ColorCurveOnBakedLight { light_ref: String },
 }
 
 /// Translate a Quake-family light entity into a canonical `MapLight`.
@@ -244,7 +264,154 @@ pub fn translate_light(
         }
     };
 
-    let animation = if style == 0 {
+    // -- Bake only --
+    let bake_only = match parse_optional_int(props, "_bake_only")? {
+        None | Some(0) => false,
+        Some(1) => true,
+        Some(other) => {
+            return Err(TranslateError::InvalidProperty {
+                key: "_bake_only",
+                value: other.to_string(),
+                reason: "expected 0 (false) or 1 (true)",
+            });
+        }
+    };
+
+    // -- Dynamic flag --
+    // Static (0) is the default: the light bakes into the lightmap + SH and
+    // has no runtime presence. Dynamic (1) opts into the runtime direct path
+    // with no bake contribution. Missing / non-integer values parse as static.
+    let is_dynamic = match parse_optional_int(props, "_dynamic")? {
+        None | Some(0) => false,
+        Some(1) => true,
+        Some(other) => {
+            return Err(TranslateError::InvalidProperty {
+                key: "_dynamic",
+                value: other.to_string(),
+                reason: "expected 0 (Static) or 1 (Dynamic)",
+            });
+        }
+    };
+
+    // -- Animation (curves override legacy style) --
+    //
+    // Curve authoring path: any of `brightness_curve`, `color_curve`, or
+    // `direction_curve` present. These resample to uniform samples over
+    // `period_ms` at compile time. If both `style` and `brightness_curve` are
+    // present, the curve wins and `style` is ignored (warning emitted).
+    let has_any_curve = props.contains_key("brightness_curve")
+        || props.contains_key("color_curve")
+        || props.contains_key("direction_curve");
+
+    let animation = if has_any_curve {
+        let light_ref = format_light_ref(classname, origin);
+
+        // period_ms is required when curves are present.
+        let period_ms_raw = props
+            .get("period_ms")
+            .ok_or(TranslateError::MissingProperty("period_ms"))?
+            .trim();
+        let period_ms: f32 =
+            period_ms_raw
+                .parse()
+                .map_err(|_| TranslateError::InvalidProperty {
+                    key: "period_ms",
+                    value: period_ms_raw.to_string(),
+                    reason: "expected a positive number (milliseconds)",
+                })?;
+        if !(period_ms > 0.0 && period_ms.is_finite()) {
+            return Err(TranslateError::InvalidProperty {
+                key: "period_ms",
+                value: period_ms_raw.to_string(),
+                reason: "expected a positive number (milliseconds)",
+            });
+        }
+
+        // Curve phase (`_curve_phase`) is separate from the legacy `_phase`.
+        let curve_phase = match props.get("_curve_phase") {
+            Some(s) => {
+                let v = parse_f32(s).ok_or_else(|| TranslateError::InvalidProperty {
+                    key: "_curve_phase",
+                    value: s.clone(),
+                    reason: "expected a float in [0.0, 1.0)",
+                })?;
+                if !(0.0..1.0).contains(&v) {
+                    log::warn!(
+                        "light {light_ref}: '_curve_phase' {v} outside [0.0, 1.0); clamping"
+                    );
+                    v.clamp(0.0, 1.0 - f32::EPSILON)
+                } else {
+                    v
+                }
+            }
+            None => 0.0,
+        };
+
+        // Warn + ignore `style` when a brightness curve is authored.
+        if props.contains_key("brightness_curve") && style != 0 {
+            log::warn!(
+                "light {light_ref}: both 'brightness_curve' and 'style' set; \
+                 'style' is ignored in favor of the authored curve"
+            );
+        }
+
+        let brightness = if let Some(raw) = props.get("brightness_curve") {
+            let keyframes = parse_scalar_curve(raw, "brightness_curve", &light_ref)?;
+            Some(resample_keyframes(
+                &keyframes,
+                period_ms,
+                KEYFRAME_RESAMPLE_RATE_HZ,
+            ))
+        } else {
+            None
+        };
+
+        let color = if let Some(raw) = props.get("color_curve") {
+            // Plan 2 Sub-plan 1 rule, surfaced here so the FGD key is named.
+            if !bake_only && !is_dynamic {
+                return Err(TranslateError::ColorCurveOnBakedLight { light_ref });
+            }
+            let keyframes = parse_vec3_curve(raw, "color_curve", &light_ref)?;
+            Some(resample_keyframes(
+                &keyframes,
+                period_ms,
+                KEYFRAME_RESAMPLE_RATE_HZ,
+            ))
+        } else {
+            None
+        };
+
+        let direction = if let Some(raw) = props.get("direction_curve") {
+            let keyframes = parse_vec3_curve(raw, "direction_curve", &light_ref)?;
+            let mut samples = resample_keyframes(
+                &keyframes,
+                period_ms,
+                KEYFRAME_RESAMPLE_RATE_HZ,
+            );
+            // Direction samples are unit vectors at the authoring seam — the
+            // GPU evaluator does not re-normalize.
+            for v in samples.iter_mut() {
+                let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                if len > 1e-6 {
+                    v[0] /= len;
+                    v[1] /= len;
+                    v[2] /= len;
+                }
+            }
+            Some(samples)
+        } else {
+            None
+        };
+
+        Some(LightAnimation {
+            period: period_ms / 1000.0,
+            phase: curve_phase,
+            brightness,
+            color,
+            direction,
+            start_active: !start_inactive,
+        })
+    } else if style == 0 {
         if props.contains_key("_phase") && phase_raw != 0.0 {
             log::warn!("light _phase set but style=0 (no animation); phase has no effect");
         }
@@ -267,40 +434,11 @@ pub fn translate_light(
         }
     };
 
-    // -- Bake only --
-    let bake_only = match parse_optional_int(props, "_bake_only")? {
-        None | Some(0) => false,
-        Some(1) => true,
-        Some(other) => {
-            return Err(TranslateError::InvalidProperty {
-                key: "_bake_only",
-                value: other.to_string(),
-                reason: "expected 0 (false) or 1 (true)",
-            });
-        }
-    };
-
     if bake_only && animation.is_some() {
         log::warn!(
-            "light has _bake_only=1 and an animation style set; animated indirect contribution will bake but the light has no runtime presence"
+            "light has _bake_only=1 and an animation set; animated indirect contribution will bake but the light has no runtime presence"
         );
     }
-
-    // -- Dynamic flag --
-    // Static (0) is the default: the light bakes into the lightmap + SH and
-    // has no runtime presence. Dynamic (1) opts into the runtime direct path
-    // with no bake contribution. Missing / non-integer values parse as static.
-    let is_dynamic = match parse_optional_int(props, "_dynamic")? {
-        None | Some(0) => false,
-        Some(1) => true,
-        Some(other) => {
-            return Err(TranslateError::InvalidProperty {
-                key: "_dynamic",
-                value: other.to_string(),
-                reason: "expected 0 (Static) or 1 (Dynamic)",
-            });
-        }
-    };
 
     Ok(MapLight {
         origin,
@@ -418,6 +556,169 @@ fn parse_mangle_direction(s: &str) -> Option<[f32; 3]> {
         return None;
     }
     Some([ex / len, ey / len, ez / len])
+}
+
+// -- Keyframe curve parsing --
+//
+// Accepted syntax: space-separated bracketed entries, each a comma-separated
+// list of numbers. `brightness_curve` entries are `[t_ms, value]`;
+// `color_curve` and `direction_curve` entries are `[t_ms, a, b, c]`.
+// Timestamps must be strictly monotonically increasing.
+
+/// Format a short "classname @ (x, y, z)" label for error messages.
+fn format_light_ref(classname: &str, origin: DVec3) -> String {
+    format!(
+        "{classname} @ ({:.3}, {:.3}, {:.3})",
+        origin.x, origin.y, origin.z
+    )
+}
+
+/// Split the curve value into individual bracketed entries.
+///
+/// Returns each entry's inner payload (without the brackets) as a `&str`.
+/// Rejects nested brackets, unclosed brackets, and content outside brackets.
+fn split_bracketed_entries<'a>(
+    raw: &'a str,
+    key: &'static str,
+    light_ref: &str,
+) -> Result<Vec<&'a str>, TranslateError> {
+    let mut entries = Vec::new();
+    let mut rest = raw.trim();
+    while !rest.is_empty() {
+        let Some(open_rel) = rest.find('[') else {
+            // Trailing non-whitespace without an opening bracket.
+            if !rest.is_empty() {
+                return Err(TranslateError::InvalidKeyframeCurve {
+                    key,
+                    light_ref: light_ref.to_string(),
+                    reason: format!("unexpected content outside brackets: '{rest}'"),
+                });
+            }
+            break;
+        };
+        // Any non-whitespace before the opening bracket is junk.
+        let before = &rest[..open_rel];
+        if !before.trim().is_empty() {
+            return Err(TranslateError::InvalidKeyframeCurve {
+                key,
+                light_ref: light_ref.to_string(),
+                reason: format!("unexpected content outside brackets: '{}'", before.trim()),
+            });
+        }
+        let after_open = &rest[open_rel + 1..];
+        let Some(close_rel) = after_open.find(']') else {
+            return Err(TranslateError::InvalidKeyframeCurve {
+                key,
+                light_ref: light_ref.to_string(),
+                reason: "unclosed '[' in keyframe list".to_string(),
+            });
+        };
+        let inner = &after_open[..close_rel];
+        if inner.contains('[') {
+            return Err(TranslateError::InvalidKeyframeCurve {
+                key,
+                light_ref: light_ref.to_string(),
+                reason: "nested brackets are not allowed".to_string(),
+            });
+        }
+        entries.push(inner);
+        rest = after_open[close_rel + 1..].trim_start();
+    }
+    if entries.is_empty() {
+        return Err(TranslateError::InvalidKeyframeCurve {
+            key,
+            light_ref: light_ref.to_string(),
+            reason: "curve must contain at least one keyframe entry".to_string(),
+        });
+    }
+    Ok(entries)
+}
+
+/// Parse a comma-separated list of floats from a bracketed entry's inner text.
+fn parse_entry_numbers(inner: &str) -> Option<Vec<f32>> {
+    inner
+        .split(',')
+        .map(|p| p.trim().parse::<f32>().ok())
+        .collect()
+}
+
+/// Verify keyframe timestamps are strictly monotonically increasing.
+fn check_monotonic<T>(
+    keyframes: &[(f32, T)],
+    key: &'static str,
+    light_ref: &str,
+) -> Result<(), TranslateError> {
+    for window in keyframes.windows(2) {
+        if window[1].0 <= window[0].0 {
+            return Err(TranslateError::InvalidKeyframeCurve {
+                key,
+                light_ref: light_ref.to_string(),
+                reason: format!(
+                    "keyframe timestamps must be strictly increasing: {} ms followed by {} ms",
+                    window[0].0, window[1].0
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn parse_scalar_curve(
+    raw: &str,
+    key: &'static str,
+    light_ref: &str,
+) -> Result<Vec<(f32, f32)>, TranslateError> {
+    let entries = split_bracketed_entries(raw, key, light_ref)?;
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let nums = parse_entry_numbers(entry).ok_or_else(|| TranslateError::InvalidKeyframeCurve {
+            key,
+            light_ref: light_ref.to_string(),
+            reason: format!("'[{entry}]' contains a non-numeric value"),
+        })?;
+        if nums.len() != 2 {
+            return Err(TranslateError::InvalidKeyframeCurve {
+                key,
+                light_ref: light_ref.to_string(),
+                reason: format!(
+                    "'[{entry}]' has {} values; expected '[t_ms, value]' (2 values)",
+                    nums.len()
+                ),
+            });
+        }
+        out.push((nums[0], nums[1]));
+    }
+    check_monotonic(&out, key, light_ref)?;
+    Ok(out)
+}
+
+fn parse_vec3_curve(
+    raw: &str,
+    key: &'static str,
+    light_ref: &str,
+) -> Result<Vec<(f32, [f32; 3])>, TranslateError> {
+    let entries = split_bracketed_entries(raw, key, light_ref)?;
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let nums = parse_entry_numbers(entry).ok_or_else(|| TranslateError::InvalidKeyframeCurve {
+            key,
+            light_ref: light_ref.to_string(),
+            reason: format!("'[{entry}]' contains a non-numeric value"),
+        })?;
+        if nums.len() != 4 {
+            return Err(TranslateError::InvalidKeyframeCurve {
+                key,
+                light_ref: light_ref.to_string(),
+                reason: format!(
+                    "'[{entry}]' has {} values; expected '[t_ms, a, b, c]' (4 values)",
+                    nums.len()
+                ),
+            });
+        }
+        out.push((nums[0], [nums[1], nums[2], nums[3]]));
+    }
+    check_monotonic(&out, key, light_ref)?;
+    Ok(out)
 }
 
 // -- Quake style preset table --
@@ -883,6 +1184,189 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // -- *_curve keyframe authoring --
+
+    #[test]
+    fn brightness_curve_produces_animation_samples_in_expected_range() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("brightness_curve", "[0, 0.1] [500, 1.0] [1000, 0.3]"),
+            ("period_ms", "1000"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        let anim = light.animation.expect("animation present");
+        let curve = anim.brightness.expect("brightness samples");
+        // 1000 ms at 32 Hz → 32 samples.
+        assert_eq!(curve.len(), 32);
+        // Period is stored in seconds.
+        assert!((anim.period - 1.0).abs() < 1e-6);
+        // All resampled values must fall inside the authored 0.1..1.0 range
+        // (Catmull-Rom with reflected endpoints on monotone endpoints stays
+        // within the convex hull of these three keyframes).
+        for v in &curve {
+            assert!(*v >= 0.05 && *v <= 1.05, "brightness sample out of range: {v}");
+        }
+    }
+
+    #[test]
+    fn direction_curve_produces_normalized_samples() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_cone", "20"),
+            ("_cone2", "40"),
+            ("mangle", "-90 0 0"),
+            ("direction_curve", "[0, 1, 0, 0] [1000, 0, 0, 1]"),
+            ("period_ms", "1000"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light_spot").expect("should translate");
+        let anim = light.animation.expect("animation present");
+        let dir = anim.direction.expect("direction samples");
+        assert!(!dir.is_empty());
+        for v in &dir {
+            let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            assert!(
+                (len - 1.0).abs() < 1e-4,
+                "direction sample not unit length: {v:?} (len {len})"
+            );
+        }
+    }
+
+    #[test]
+    fn curve_wrong_arity_errors_with_key_named() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            // brightness_curve expects [t, v]; this has 3 values.
+            ("brightness_curve", "[0, 0.5, 9] [500, 1.0]"),
+            ("period_ms", "500"),
+        ]);
+        let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
+        match err {
+            TranslateError::InvalidKeyframeCurve {
+                key, light_ref, ..
+            } => {
+                assert_eq!(key, "brightness_curve");
+                assert!(light_ref.contains("light"));
+            }
+            other => panic!("expected InvalidKeyframeCurve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn curve_non_monotonic_timestamps_error_with_key_named() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("brightness_curve", "[500, 0.5] [200, 1.0]"),
+            ("period_ms", "1000"),
+        ]);
+        let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
+        match err {
+            TranslateError::InvalidKeyframeCurve { key, .. } => {
+                assert_eq!(key, "brightness_curve");
+            }
+            other => panic!("expected InvalidKeyframeCurve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn color_curve_on_baked_light_errors_naming_fgd_key() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("color_curve", "[0, 1, 0, 0] [500, 0, 1, 0]"),
+            ("period_ms", "500"),
+        ]);
+        let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
+        match err {
+            TranslateError::ColorCurveOnBakedLight { light_ref } => {
+                assert!(light_ref.contains("light"));
+            }
+            other => panic!("expected ColorCurveOnBakedLight, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn color_curve_on_bake_only_light_is_accepted() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_bake_only", "1"),
+            ("color_curve", "[0, 1, 0, 0] [500, 0, 1, 0]"),
+            ("period_ms", "500"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        let anim = light.animation.expect("animation present");
+        assert!(anim.color.is_some());
+    }
+
+    #[test]
+    fn color_curve_on_dynamic_light_is_accepted() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_dynamic", "1"),
+            ("color_curve", "[0, 1, 0, 0] [500, 0, 1, 0]"),
+            ("period_ms", "500"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        let anim = light.animation.expect("animation present");
+        assert!(anim.color.is_some());
+    }
+
+    #[test]
+    fn brightness_curve_wins_over_style() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("style", "1"),
+            ("brightness_curve", "[0, 0.2] [1000, 0.8]"),
+            ("period_ms", "1000"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        let anim = light.animation.expect("animation present");
+        // Style 1 would produce a 2.3s period; the curve's 1.0s period means
+        // the curve won.
+        assert!((anim.period - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn curve_missing_period_ms_errors() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("brightness_curve", "[0, 0.5] [500, 1.0]"),
+        ]);
+        let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
+        assert!(matches!(err, TranslateError::MissingProperty("period_ms")));
+    }
+
+    #[test]
+    fn curve_phase_parses_separately_from_legacy_phase() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("brightness_curve", "[0, 0.2] [1000, 0.8]"),
+            ("period_ms", "1000"),
+            ("_curve_phase", "0.25"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        let anim = light.animation.expect("animation present");
+        assert!((anim.phase - 0.25).abs() < 1e-6);
     }
 
     #[test]

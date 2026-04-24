@@ -59,7 +59,7 @@ Bring lights into the scripting surface as first-class entities. After this plan
 | §Sub-plan 2 — Primitive binding layer | `register(...)` builder and `ScriptPrimitive` record used to register new primitives. `catch_unwind` wrapping at the FFI boundary. |
 | §Sub-plan 3 — QuickJS runtime + contexts | Behavior context owning the new primitives. |
 | §Sub-plan 4 — Luau runtime + contexts | Symmetric behavior-context registration. |
-| §Sub-plan 5 — Type definition generator | Emits `LightComponent` / `LightAnimation` / `LightEntity` types and the `light` / `world.query` / `set_light_animation` primitive signatures into `postretro.d.ts` and `postretro.d.luau` automatically once registered. |
+| §Sub-plan 5 — Type definition generator | Emits `LightComponent` / `LightAnimation` / `LightEntity` types and the `world.query` / `set_light_animation` primitive signatures into `postretro.d.ts` and `postretro.d.luau` automatically once registered. |
 
 Sub-plans 6 (context pool) and 7 (hot reload) are not gating, but dev iteration on the reference vocabulary uses hot reload.
 
@@ -69,9 +69,9 @@ Sub-plans 6 (context pool) and 7 (hot reload) are not gating, but dev iteration 
 
 | Crate | Role |
 |---|---|
-| `postretro-level-format` | No on-disk layout change. `AnimationDescriptor` gains direction-channel indices in bytes already reserved by `animated-light-weight-maps` Task 4. |
-| `postretro-level-compiler` | Extend `LightAnimation` in `map_data.rs` with `direction: Option<Vec<[f32; 3]>>` and `phase: f32` (default `0.0`). Parse the three FGD `*_curve` keys on `light_*` point entities and resample to the internal uniform-sample representation. Enforce the no-animated-color-on-baked-lights rule at pack time. |
-| `postretro` | New `LightComponent`, `LightEntity` handle, and scripting primitives (`light`, `registerHandler`, `world.query`, `set_light_animation`). New light bridge system. `AnimationDescriptor` extended in all three shaders for the direction channel. `ScriptCallContext` introduced. |
+| `postretro-level-format` | On-disk format change: format-crate `AnimationDescriptor` gains direction-channel support. No version bump — pre-release API policy; fix all consumers in the same change. |
+| `postretro-level-compiler` | Extend `LightAnimation` in `map_data.rs` with `direction: Option<Vec<[f32; 3]>>`. Parse the three FGD `*_curve` keys on `light_*` point entities and resample to the internal uniform-sample representation. Enforce the no-animated-color-on-baked-lights rule at pack time. |
+| `postretro` | New `LightComponent`, `LightEntity` handle, and scripting primitives (`registerHandler`, `world.query`, `set_light_animation`). New light bridge system. `AnimationDescriptor` extended in all three shaders for the direction channel. `ScriptCallContext` introduced. |
 | `assets/scripts/sdk/` | `light_animation.ts`, `world.ts` (reference vocabulary, ships as readable source). Luau ports are the final sub-plan. |
 
 ### Serialization notes carried forward from research
@@ -123,10 +123,10 @@ Direction samples are normalized at write time. The shader does not re-normalize
 
 - `postretro-level-compiler/src/map_data.rs` — add `pub direction: Option<Vec<[f32; 3]>>` to `LightAnimation`. Fix construction sites.
 - `postretro-level-compiler/src/format/quake_map.rs` — where the Quake style table expands to `LightAnimation`, set `direction: None`.
-- `postretro-level-compiler/src/sh_bake.rs` — extend the packing path. Direction samples serialize into `anim_samples` after color samples, three floats each. Add the pack-time check that errors on `animation.color.is_some() && !bake_only && !is_dynamic`.
-- `postretro-level-format/src/sh_volume.rs` — extend `AnimationDescriptor` with two `u32` direction-channel indices, fitting into the bytes reserved by `animated-light-weight-maps` Task 4. `ANIMATION_DESCRIPTOR_SIZE` stays 48. Extend the round-trip unit test.
+- `postretro-level-compiler/src/sh_bake.rs` — extend the packing path to include the direction channel. Add the pack-time check that errors on `animation.color.is_some() && !bake_only && !is_dynamic`.
+- `postretro-level-format/src/sh_volume.rs` — extend format-crate `AnimationDescriptor` with direction-channel fields. `ANIMATION_DESCRIPTOR_SIZE` (GPU/render side) stays 48. Extend the round-trip unit test.
 - `postretro/src/shaders/forward.wgsl` — extend `struct AnimationDescriptor` to match. Spot-light evaluation samples the direction channel via `sample_color_catmull_rom` when `direction_count > 0`; falls back to static `cone_direction` when zero.
-- `postretro/src/shaders/billboard.wgsl` and `postretro/src/shaders/fog_volume.wgsl` — mirror the struct change for binding compatibility. Neither evaluates direction.
+- `postretro/src/shaders/billboard.wgsl`, `postretro/src/shaders/fog_volume.wgsl`, and `postretro/src/shaders/animated_lightmap_compose.wgsl` — mirror the struct change for binding compatibility. None evaluate direction.
 - `postretro/src/render/sh_volume.rs` — update layout doc comment on `ANIMATION_DESCRIPTOR_SIZE`. Re-verify the WGSL parity assert.
 
 ### Acceptance criteria
@@ -170,9 +170,9 @@ The 32 Hz rate and 256-sample cap are new limits introduced by Plan 2 — not de
 
 ### Files changed
 
-- `postretro-level-compiler/src/format/quake_map.rs` — parse `brightness_curve`, `color_curve`, `direction_curve` on `light_omni`, `light_spot`, `light_sun`. Reject malformed entries (wrong arity, non-monotonic timestamps) with a message naming the light and the offending key.
-- `postretro-level-compiler/src/map_data.rs` — add a `pub phase: Option<f32>` field to `LightAnimation` (`#[serde(default)]`; `None` = 0.0). Authored FGD keyframe animations omit `phase` unless the author sets `_curve_phase`; scripted lights set phase explicitly. Also add the resampler: `resample_keyframes(keyframes: &[(f32, T)], period_ms: f32, samples_per_second: u32) -> Vec<T>`.
-- `postretro/fgd/*.fgd` — add `brightness_curve`, `color_curve`, `direction_curve`, and `_curve_phase` keys to the `light_omni`, `light_spot`, `light_sun` definitions. Document the `[t_ms, …]` keyframe shape in the FGD descriptions. `_curve_phase` is a float key in `[0.0, 1.0)`; document its separation from the legacy `_phase` key (which is tied to `style` and removed in the follow-up plan).
+- `postretro-level-compiler/src/format/quake_map.rs` — parse `brightness_curve`, `color_curve`, `direction_curve` on `light`, `light_spot`, `light_sun`. Reject malformed entries (wrong arity, non-monotonic timestamps) with a message naming the light and the offending key.
+- `postretro-level-compiler/src/map_data.rs` — add the resampler: `resample_keyframes(keyframes: &[(f32, T)], period_ms: f32, samples_per_second: u32) -> Vec<T>`.
+- `assets/postretro.fgd` — add `brightness_curve`, `color_curve`, `direction_curve`, and `_curve_phase` keys to the `light`, `light_spot`, `light_sun` definitions. Document the `[t_ms, …]` keyframe shape in the FGD descriptions. `_curve_phase` is a float key in `[0.0, 1.0)`; document its separation from the legacy `_phase` key (which is tied to `style` and removed in the follow-up plan).
 
 ### Acceptance criteria
 
@@ -219,6 +219,8 @@ pub struct LightAnimation {
     pub phase: Option<f32>,               // None = 0.0; [0.0, 1.0) when set; wraps via `fract`
     #[serde(default)]
     pub play_count: Option<u32>,          // None = loop forever; Some(n) = play n times then hold at last keyframe
+    #[serde(default)]
+    pub start_active: Option<bool>,       // None = true; false = define without starting (activated later by an event)
     pub brightness: Option<Vec<f32>>,
     pub color: Option<Vec<[f32; 3]>>,     // None for non-dynamic lights; set_light_animation rejects color on non-dynamic lights
     pub direction: Option<Vec<[f32; 3]>>,
@@ -283,9 +285,9 @@ Map-authored lights load through `postretro/src/prl.rs` into `LevelWorld.lights:
   }
   ```
 
-  `animation_start_time` is `Some(current_frame_time)` the moment a `play_count`-bounded animation is written, and `None` otherwise. Any `setAnimation` call (including a repeated call with the same animation value) resets it to the current frame time — "last call wins" always restarts the count from zero.
+  `animation_start_time` is `Some(current_frame_time)` the moment a `play_count`-bounded animation becomes active (i.e., `start_active` is `true` or absent), and `None` otherwise. An animation written with `start_active: false` does not set `animation_start_time` — `play_count` counting begins only when the animation is actually active. Any `setAnimation` call (including a repeated call with the same animation value) resets it to the current frame time — "last call wins" always restarts the count from zero.
 - **Dirty tracking.** `HashMap<EntityId, LightSnapshot>` — one entry per map light that has been written at least once by a script.
-- **`play_count` completion tracking.** When a `LightAnimation` has `play_count: Some(n)`, the bridge records the frame timestamp as `animation_start_time: f32` in `LightSnapshot` when the animation is first written. On each subsequent frame, if `current_time_ms − start_time_ms ≥ n × periodMs`, the bridge samples the last brightness/color keyframe value and settles it through the registry:
+- **`play_count` completion tracking.** When a `LightAnimation` has `play_count: Some(n)`, the bridge records the frame timestamp (seconds, from `app_start.elapsed().as_secs_f32()`) as `animation_start_time: f32` in `LightSnapshot` when the animation first becomes active. On each subsequent frame, if `current_time − start_time ≥ n × (period_ms / 1000.0)`, the bridge samples the last brightness/color keyframe value and settles it through the registry:
 
   1. Call `EntityRegistry::set_component` with a `LightComponent` whose `intensity` / `color` are set to the sampled final values and whose `animation` is `None`. The registry is the source of truth for scripts — a subsequent `world.query` or live re-read (see "Snapshot freshness" in Sub-plan 6) observes the settled static state, not an animation that has already finished.
   2. Update the in-memory `LightSnapshot.component` to match and clear `animation_start_time` to `None`.
@@ -400,7 +402,7 @@ The `light_type`, `falloff_model`, `cast_shadows`, and cone fields are read-only
 
 ### `set_light_animation(id, animation)`
 
-The low-level primitive. `LightEntity.setAnimation` wraps it in TS / Luau. Semantics: read the entity's current `LightComponent`, overwrite `animation`, write back. The bridge uploads on the next frame.
+The low-level primitive. `LightEntity.setAnimation` wraps it in TS / Luau. Semantics: read the entity's current `LightComponent`, overwrite `animation`, write back. The bridge uploads on the next frame. The bridge maps `start_active ?? true` to `AnimationDescriptor.is_active` — a script can define an animation without starting it by passing `startActive: false`, leaving the light on its static `intensity`/`color` until a subsequent event activates it.
 
 ### Error cases
 
@@ -568,7 +570,6 @@ Durable knowledge migrates to `context/lib/`:
 - **`context/lib/rendering_pipeline.md`** §4 updates for:
   - `AnimationDescriptor` now carries a direction channel.
   - Direct-lighting buffer merges compile-time and script-time lights.
-  - Map lights are unbounded; scripted lights have a 128-slot runtime cap.
 - **`context/lib/build_pipeline.md`** gets a brief note under the light-entity FGD section covering the `*_curve` authoring convention, with the authoritative detail staying in the FGD file.
 - **`context/lib/entity_model.md`** gets a cross-reference only, not a "Scripted lights" section. One snippet lands verbatim:
   - §8 addition (new bullet): "Scripting entity registry. A separate script-facing entity/component registry holds map lights (and, in future plans, emitters and other scripted objects) as mutable components. It is not ECS and is not the typed collection model described in this document. The light bridge populates map lights into it at level load and syncs script mutations back to the GPU each frame — see [scripting.md](./scripting.md)."

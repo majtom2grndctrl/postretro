@@ -13,8 +13,26 @@
         1 : "Inverse Distance (1/x)"
         2 : "Inverse Squared (1/x^2)"
     ]
-    style(integer) : "Animation Style" : 0
-    _phase(string) : "Animation Phase Offset (0.0-1.0)" : "0.0"
+    style(integer) : "Animation Style (legacy presets; ignored when brightness_curve is set)" : 0
+    _phase(string) : "Style Phase Offset (0.0-1.0; pairs with 'style', NOT with *_curve keys)" : "0.0"
+    // Keyframe curves. Each value is a space-separated list of bracketed entries.
+    //   brightness_curve: [t_ms, value]          — scalar brightness multiplier
+    //   color_curve:      [t_ms, r, g, b]        — linear RGB (0-1 each channel)
+    //   direction_curve:  [t_ms, x, y, z]        — aim vector (engine space, auto-normalized)
+    // t_ms is absolute milliseconds from zero and must be strictly increasing.
+    // period_ms is required when any *_curve key is set; the compiler resamples the
+    // authored keyframes into uniform samples covering [0, period_ms] at 32 Hz.
+    // If both 'style' and 'brightness_curve' are present, the curve wins and 'style'
+    // is ignored (a warning names the light). color_curve is only valid on _bake_only
+    // or _dynamic lights (animated color on a statically-baked light would drift from
+    // the SH indirect bake).
+    brightness_curve(string) : "Brightness Keyframe Curve ([t_ms, v] entries)" : ""
+    color_curve(string) : "Color Keyframe Curve ([t_ms, r, g, b] entries; requires _bake_only or _dynamic)" : ""
+    direction_curve(string) : "Direction Keyframe Curve ([t_ms, x, y, z] entries; spot/sun only)" : ""
+    period_ms(integer) : "Keyframe Curve Period (milliseconds; required when any *_curve is set)" : 0
+    // _curve_phase is a separate [0.0, 1.0) offset for keyframe curves. It does NOT
+    // share state with the legacy '_phase' key used by 'style' presets.
+    _curve_phase(string) : "Keyframe Curve Phase Offset [0.0, 1.0) (separate from legacy _phase)" : "0.0"
     _bake_only(choices) : "Bake Only" : 0 =
     [
         0 : "Runtime dynamic (direct loop + probe bake)"

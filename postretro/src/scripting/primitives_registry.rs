@@ -192,6 +192,13 @@ impl PrimitiveRegistry {
         }
     }
 
+    /// Push a pre-constructed primitive directly. Used for primitives whose
+    /// FFI shape (e.g. accepting a script function) does not fit the
+    /// `RegisterablePrimitive` trait.
+    pub(crate) fn push_manual(&mut self, primitive: ScriptPrimitive) {
+        self.entries.push(primitive);
+    }
+
     pub(crate) fn iter(&self) -> impl Iterator<Item = &ScriptPrimitive> {
         self.entries.iter()
     }

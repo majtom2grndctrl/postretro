@@ -83,6 +83,11 @@ fn rust_to_ts(ty_name: &str) -> String {
         "ComponentKind" => "ComponentKind".to_string(),
         "ComponentValue" => "ComponentValue".to_string(),
         "ScriptEvent" => "ScriptEvent".to_string(),
+        "ScriptCallContext" => "ScriptCallContext".to_string(),
+        // `registerHandler`'s second argument is a script-side callable. The
+        // Rust side uses the placeholder `HandlerFn` type name rather than
+        // trying to spell a generic callable through the trait plumbing.
+        "HandlerFn" => "(ctx?: ScriptCallContext) => void".to_string(),
         other => {
             if warned_once(&format!("ts:{other}")) {
                 log::warn!(
@@ -124,6 +129,8 @@ fn rust_to_luau(ty_name: &str) -> String {
         "ComponentKind" => "ComponentKind".to_string(),
         "ComponentValue" => "ComponentValue".to_string(),
         "ScriptEvent" => "ScriptEvent".to_string(),
+        "ScriptCallContext" => "ScriptCallContext".to_string(),
+        "HandlerFn" => "(ctx: ScriptCallContext?) -> ()".to_string(),
         other => {
             if warned_once(&format!("luau:{other}")) {
                 log::warn!(

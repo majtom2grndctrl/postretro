@@ -11,6 +11,8 @@ use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::components::light::LightComponent;
+
 /// Packed entity identifier: `index: 16 | generation: 16`.
 ///
 /// 16/16 gives 65,536 live slots and 65,536 generations per slot — comfortably
@@ -77,6 +79,7 @@ impl fmt::Display for EntityId {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub(crate) enum ComponentKind {
     Transform = 0,
+    Light = 1,
 }
 
 impl ComponentKind {
@@ -85,7 +88,7 @@ impl ComponentKind {
     /// so we list every variant once; the compiler enforces exhaustiveness in
     /// match arms that touch `ComponentKind` elsewhere.
     pub(crate) const COUNT: usize = {
-        const VARIANTS: &[ComponentKind] = &[ComponentKind::Transform];
+        const VARIANTS: &[ComponentKind] = &[ComponentKind::Transform, ComponentKind::Light];
         VARIANTS.len()
     };
 }
@@ -120,6 +123,7 @@ impl Default for Transform {
 #[serde(tag = "kind")]
 pub(crate) enum ComponentValue {
     Transform(Transform),
+    Light(LightComponent),
 }
 
 /// Trait implemented by concrete component structs so they can be stored
@@ -138,11 +142,27 @@ impl Component for Transform {
     fn from_value(value: &ComponentValue) -> Option<&Self> {
         match value {
             ComponentValue::Transform(t) => Some(t),
+            _ => None,
         }
     }
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::Transform(self)
+    }
+}
+
+impl Component for LightComponent {
+    const KIND: ComponentKind = ComponentKind::Light;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Light(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Light(self)
     }
 }
 
@@ -178,8 +198,34 @@ impl EntityRegistry {
         Self {
             slots: Vec::new(),
             free_list: Vec::new(),
-            components: [Vec::new()],
+            components: [Vec::new(), Vec::new()],
         }
+    }
+
+    /// Iterate every live entity that carries a component of the given kind.
+    /// Yields `(EntityId, &ComponentValue)` pairs in slot-index order.
+    ///
+    /// Used by scripted bridges (e.g. the light bridge) to walk their
+    /// component set each frame without threading a separate index through
+    /// every subsystem.
+    pub(crate) fn iter_with_kind(
+        &self,
+        kind: ComponentKind,
+    ) -> impl Iterator<Item = (EntityId, &ComponentValue)> + '_ {
+        let column = &self.components[kind as usize];
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(move |(idx, slot)| {
+                if !slot.live || slot.retired {
+                    return None;
+                }
+                let cell = column.get(idx).and_then(|c| c.as_ref())?;
+                // SAFETY: index fits in u16 because `slots.len() <= u16::MAX + 1`
+                // and we never allocate past that in `spawn`.
+                let id = EntityId::new(idx as u16, slot.generation);
+                Some((id, cell))
+            })
     }
 
     /// Returns `None` when all 65,536 entity slots are exhausted (free list

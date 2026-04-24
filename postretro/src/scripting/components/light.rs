@@ -75,6 +75,14 @@ pub(crate) struct LightComponent {
     pub(crate) cone_angle_outer: Option<f32>,
     pub(crate) cone_direction: Option<[f32; 3]>,
     pub(crate) cast_shadows: bool,
+    /// Whether the source `MapLight.is_dynamic` flag was set. Script handles
+    /// read this as `_isDynamic` to gate `color` animation: color animation on
+    /// a baked light would produce a direct/indirect mismatch (SH indirect was
+    /// baked at compile-time color). The Rust primitive enforces this at
+    /// `set_light_animation`; SP7 vocabulary layers pre-check the handle's
+    /// snapshot and throw a descriptive error before the primitive call.
+    #[serde(default)]
+    pub(crate) is_dynamic: bool,
     #[serde(default)]
     pub(crate) animation: Option<LightAnimation>,
 }
@@ -96,6 +104,7 @@ mod tests {
             cone_angle_outer: Some(0.5),
             cone_direction: Some([0.0, -1.0, 0.0]),
             cast_shadows: true,
+            is_dynamic: true,
             animation: Some(LightAnimation {
                 period_ms: 1000.0,
                 phase: Some(0.25),

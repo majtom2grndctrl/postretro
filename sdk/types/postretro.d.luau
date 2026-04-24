@@ -7,9 +7,9 @@ export type EulerDegrees = { pitch: number, yaw: number, roll: number }
 
 export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 
-export type ComponentKind = "Transform"
+export type ComponentKind = "Transform" | "Light"
 
-export type ComponentValue = { kind: "Transform", value: Transform }
+export type ComponentValue = { kind: "Transform", value: Transform } | { kind: "Light", value: LightComponent }
 
 export type ScriptEvent = { kind: string, payload: any }
 
@@ -19,6 +19,48 @@ export type ScriptCallContext = {
   --- Seconds since level load; monotonic within a level.
   time: number,
 }
+
+export type LightKind = "Point" | "Spot" | "Directional"
+
+export type FalloffKind = "Linear" | "InverseDistance" | "InverseSquared"
+
+export type LightAnimation = {
+  --- Total period of the loop, in milliseconds.
+  periodMs: number,
+  --- Starting phase in [0.0, 1.0). Values outside this range are normalized via rem_euclid.
+  phase: number?,
+  --- Total full periods to play; null loops forever.
+  playCount: number?,
+  --- Per-sample brightness curve.
+  brightness: {number}?,
+  --- Per-sample color curve. Only valid on dynamic lights.
+  color: {Vec3}?,
+  --- Per-sample direction curve. Non-unit samples are silently normalized.
+  direction: {Vec3}?,
+}
+
+export type LightComponent = { origin: Vec3, lightType: LightKind, intensity: number, color: Vec3, falloffModel: FalloffKind, falloffRange: number, coneAngleInner: number?, coneAngleOuter: number?, coneDirection: Vec3?, castShadows: boolean, isDynamic: boolean, animation: LightAnimation? }
+
+export type WorldQueryFilter = {
+  --- Component name, e.g. "light".
+  component: string,
+  --- Optional tag filter (exact string match).
+  tag: string?,
+}
+
+export type LightEntity = {
+  id: EntityId,
+  --- Read-only handle to origin at query time.
+  transform: LightEntityTransform,
+  --- Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation.
+  _isDynamic: boolean,
+  --- The entity's tag at query time, if any.
+  tag: string?,
+  --- Full component snapshot at query time.
+  component: LightComponent,
+}
+
+export type LightEntityTransform = { position: Vec3 }
 
 --- Despawns a previously-spawned entity. Errors if the id is stale.
 declare function despawn_entity(id: EntityId): ()
@@ -41,5 +83,11 @@ declare function send_event(target: EntityId, event: ScriptEvent): ()
 --- Writes a component of the given kind onto an entity.
 declare function set_component(id: EntityId, kind: ComponentKind, value: ComponentValue): ()
 
+--- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only.
+declare function set_light_animation(id: EntityId, animation: LightAnimation | null): ()
+
 --- Spawns a new entity with the given transform and returns its id.
 declare function spawn_entity(transform: Transform): EntityId
+
+--- Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: "light", tag?: string }. SP7 vocabulary wraps this as `world.query`.
+declare function world_query(filter: WorldQueryFilter): {LightEntity}

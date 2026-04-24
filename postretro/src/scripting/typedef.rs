@@ -88,6 +88,17 @@ fn rust_to_ts(ty_name: &str) -> String {
         // Rust side uses the placeholder `HandlerFn` type name rather than
         // trying to spell a generic callable through the trait plumbing.
         "HandlerFn" => "(ctx?: ScriptCallContext) => void".to_string(),
+        // `world_query` returns a JSON-shaped array of light-entity handles.
+        // The Rust return type is an opaque wrapper; the script surface is an
+        // array of `LightEntity`.
+        "JsonValue" => "ReadonlyArray<LightEntity>".to_string(),
+        "WorldQueryFilter" => "WorldQueryFilter".to_string(),
+        "LightAnimation" => "LightAnimation".to_string(),
+        "LightComponent" => "LightComponent".to_string(),
+        "LightEntity" => "LightEntity".to_string(),
+        "LightEntityTransform" => "LightEntityTransform".to_string(),
+        "LightKind" => "LightKind".to_string(),
+        "FalloffKind" => "FalloffKind".to_string(),
         other => {
             if warned_once(&format!("ts:{other}")) {
                 log::warn!(
@@ -131,6 +142,14 @@ fn rust_to_luau(ty_name: &str) -> String {
         "ScriptEvent" => "ScriptEvent".to_string(),
         "ScriptCallContext" => "ScriptCallContext".to_string(),
         "HandlerFn" => "(ctx: ScriptCallContext?) -> ()".to_string(),
+        "JsonValue" => "{LightEntity}".to_string(),
+        "WorldQueryFilter" => "WorldQueryFilter".to_string(),
+        "LightAnimation" => "LightAnimation".to_string(),
+        "LightComponent" => "LightComponent".to_string(),
+        "LightEntity" => "LightEntity".to_string(),
+        "LightEntityTransform" => "LightEntityTransform".to_string(),
+        "LightKind" => "LightKind".to_string(),
+        "FalloffKind" => "FalloffKind".to_string(),
         other => {
             if warned_once(&format!("luau:{other}")) {
                 log::warn!(
@@ -528,9 +547,9 @@ declare module \"postretro\" {
 
   export type Transform = { position: Vec3; rotation: EulerDegrees; scale: Vec3 };
 
-  export type ComponentKind = \"Transform\";
+  export type ComponentKind = \"Transform\" | \"Light\";
 
-  export type ComponentValue = { kind: \"Transform\"; value: Transform };
+  export type ComponentValue = { kind: \"Transform\"; value: Transform } | { kind: \"Light\"; value: LightComponent };
 
   export type ScriptEvent = { kind: string; payload: unknown };
 
@@ -552,9 +571,9 @@ export type EulerDegrees = { pitch: number, yaw: number, roll: number }
 
 export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 
-export type ComponentKind = \"Transform\"
+export type ComponentKind = \"Transform\" | \"Light\"
 
-export type ComponentValue = { kind: \"Transform\", value: Transform }
+export type ComponentValue = { kind: \"Transform\", value: Transform } | { kind: \"Light\", value: LightComponent }
 
 export type ScriptEvent = { kind: string, payload: any }
 

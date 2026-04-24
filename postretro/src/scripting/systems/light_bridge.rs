@@ -327,6 +327,7 @@ fn map_light_to_component(light: &MapLight) -> LightComponent {
             None
         },
         cast_shadows: light.cast_shadows,
+        is_dynamic: light.is_dynamic,
         animation: None,
     }
 }

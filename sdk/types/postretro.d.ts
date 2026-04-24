@@ -8,9 +8,9 @@ declare module "postretro" {
 
   export type Transform = { position: Vec3; rotation: EulerDegrees; scale: Vec3 };
 
-  export type ComponentKind = "Transform";
+  export type ComponentKind = "Transform" | "Light";
 
-  export type ComponentValue = { kind: "Transform"; value: Transform };
+  export type ComponentValue = { kind: "Transform"; value: Transform } | { kind: "Light"; value: LightComponent };
 
   export type ScriptEvent = { kind: string; payload: unknown };
 
@@ -20,6 +20,48 @@ declare module "postretro" {
     /** Seconds since level load; monotonic within a level. */
     time: number;
   };
+
+  export type LightKind = "Point" | "Spot" | "Directional";
+
+  export type FalloffKind = "Linear" | "InverseDistance" | "InverseSquared";
+
+  export type LightAnimation = {
+    /** Total period of the loop, in milliseconds. */
+    periodMs: number;
+    /** Starting phase in [0.0, 1.0). Values outside this range are normalized via rem_euclid. */
+    phase: number | null;
+    /** Total full periods to play; null loops forever. */
+    playCount: number | null;
+    /** Per-sample brightness curve. */
+    brightness: ReadonlyArray<number> | null;
+    /** Per-sample color curve. Only valid on dynamic lights. */
+    color: ReadonlyArray<Vec3> | null;
+    /** Per-sample direction curve. Non-unit samples are silently normalized. */
+    direction: ReadonlyArray<Vec3> | null;
+  };
+
+  export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner: number | null; coneAngleOuter: number | null; coneDirection: Vec3 | null; castShadows: boolean; isDynamic: boolean; animation: LightAnimation | null };
+
+  export type WorldQueryFilter = {
+    /** Component name, e.g. "light". */
+    component: string;
+    /** Optional tag filter (exact string match). */
+    tag: string | null;
+  };
+
+  export type LightEntity = {
+    id: EntityId;
+    /** Read-only handle to origin at query time. */
+    transform: LightEntityTransform;
+    /** Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation. */
+    _isDynamic: boolean;
+    /** The entity's tag at query time, if any. */
+    tag: string | null;
+    /** Full component snapshot at query time. */
+    component: LightComponent;
+  };
+
+  export type LightEntityTransform = { position: Vec3 };
 
   /** Despawns a previously-spawned entity. Errors if the id is stale. */
   export function despawn_entity(id: EntityId): void;
@@ -42,6 +84,12 @@ declare module "postretro" {
   /** Writes a component of the given kind onto an entity. */
   export function set_component(id: EntityId, kind: ComponentKind, value: ComponentValue): void;
 
+  /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only. */
+  export function set_light_animation(id: EntityId, animation: LightAnimation | null): void;
+
   /** Spawns a new entity with the given transform and returns its id. */
   export function spawn_entity(transform: Transform): EntityId;
+
+  /** Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: "light", tag?: string }. SP7 vocabulary wraps this as `world.query`. */
+  export function world_query(filter: WorldQueryFilter): ReadonlyArray<LightEntity>;
 }

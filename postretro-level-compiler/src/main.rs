@@ -225,6 +225,11 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("SH volume bake...");
     let stage_start = Instant::now();
+    // Pack-time validation: the baked lighting paths cannot absorb color
+    // animation on a non-dynamic, non-bake_only light (Plan 2 Sub-plan 1).
+    if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
+        anyhow::bail!("light animation validation failed: {msg}");
+    }
     // Bake the SH irradiance volume. Same BVH, different traversal: the
     // baker walks the tree on the CPU via the `bvh` crate, so the runtime
     // compute shader and the compile-time probe bake share one acceleration

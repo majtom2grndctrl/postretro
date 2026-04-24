@@ -33,9 +33,11 @@ impl Default for ShProbe {
 /// section payload. Bumped any time the on-disk layout changes so the loader
 /// can reject stale `.prl` files with a clear error rather than silently
 /// misread them. History: version 1 (pre-animated-flag) — no `start_active`
-/// in the descriptor table; version 2 (current) — `start_active: u32` lives
-/// alongside the brightness/color counts.
-pub const SH_VOLUME_VERSION: u32 = 2;
+/// in the descriptor table; version 2 — `start_active: u32` lives
+/// alongside the brightness/color counts; version 3 (current) — direction
+/// channel samples serialized after color samples, with a `direction_count`
+/// field in the descriptor header.
+pub const SH_VOLUME_VERSION: u32 = 3;
 
 /// Byte stride of a single serialized base probe record: 27 f32 + 1 u8 +
 /// 3 bytes of padding to land on a 4-byte boundary = 112 bytes.
@@ -63,6 +65,12 @@ pub struct AnimationDescriptor {
     pub base_color: [f32; 3],
     pub brightness: Vec<f32>,
     pub color: Vec<[f32; 3]>,
+    /// Animated cone-direction samples for spot lights (Plan 2 Sub-plan 1).
+    /// Samples must be unit-length — enforced by the scripting primitive
+    /// `set_light_animation` and the FGD `direction_curve` parser. The GPU
+    /// evaluator does not re-normalize per frame; a `debug_assert` in the
+    /// GPU writer checks the invariant in debug builds.
+    pub direction: Vec<[f32; 3]>,
     pub start_active: u32,
 }
 
@@ -74,6 +82,7 @@ impl Default for AnimationDescriptor {
             base_color: [0.0; 3],
             brightness: Vec::new(),
             color: Vec::new(),
+            direction: Vec::new(),
             start_active: 1,
         }
     }
@@ -105,8 +114,10 @@ impl Default for AnimationDescriptor {
 ///       u32 brightness_count
 ///       u32 color_count
 ///       u32 start_active            (1 = lit at map load, 0 = _start_inactive)
+///       u32 direction_count         (Plan 2 Sub-plan 1: spotlight aim curve)
 ///       f32 × brightness_count      (brightness samples)
 ///       f32 × 3 × color_count       (RGB color samples)
+///       f32 × 3 × direction_count   (unit aim-vector samples)
 ///
 /// ```
 ///
@@ -177,11 +188,17 @@ impl ShVolumeSection {
             buf.extend_from_slice(&(desc.brightness.len() as u32).to_le_bytes());
             buf.extend_from_slice(&(desc.color.len() as u32).to_le_bytes());
             buf.extend_from_slice(&desc.start_active.to_le_bytes());
+            buf.extend_from_slice(&(desc.direction.len() as u32).to_le_bytes());
             for b in &desc.brightness {
                 buf.extend_from_slice(&b.to_le_bytes());
             }
             for c in &desc.color {
                 for ch in c {
+                    buf.extend_from_slice(&ch.to_le_bytes());
+                }
+            }
+            for d in &desc.direction {
+                for ch in d {
                     buf.extend_from_slice(&ch.to_le_bytes());
                 }
             }
@@ -299,17 +316,19 @@ impl ShVolumeSection {
             ];
             o += 20;
 
-            if data.len() < o + 12 {
+            if data.len() < o + 16 {
                 return Err(truncated("animation descriptor sample counts"));
             }
             let brightness_count = read_u32(data, o) as usize;
             let color_count = read_u32(data, o + 4) as usize;
             let start_active = read_u32(data, o + 8);
-            o += 12;
+            let direction_count = read_u32(data, o + 12) as usize;
+            o += 16;
 
             let brightness_bytes = brightness_count * 4;
             let color_bytes = color_count * 12;
-            if data.len() < o + brightness_bytes + color_bytes {
+            let direction_bytes = direction_count * 12;
+            if data.len() < o + brightness_bytes + color_bytes + direction_bytes {
                 return Err(truncated("animation descriptor samples"));
             }
 
@@ -329,12 +348,23 @@ impl ShVolumeSection {
             }
             o += color_bytes;
 
+            let mut direction = Vec::with_capacity(direction_count);
+            for i in 0..direction_count {
+                direction.push([
+                    read_f32(data, o + i * 12),
+                    read_f32(data, o + i * 12 + 4),
+                    read_f32(data, o + i * 12 + 8),
+                ]);
+            }
+            o += direction_bytes;
+
             animation_descriptors.push(AnimationDescriptor {
                 period,
                 phase,
                 base_color,
                 brightness,
                 color,
+                direction,
                 start_active,
             });
         }
@@ -434,6 +464,7 @@ mod tests {
                     base_color: [1.0, 0.9, 0.8],
                     brightness: vec![0.1, 0.5, 1.0, 0.5],
                     color: Vec::new(),
+                    direction: Vec::new(),
                     start_active: 1,
                 },
                 AnimationDescriptor {
@@ -442,6 +473,8 @@ mod tests {
                     base_color: [0.2, 0.4, 1.0],
                     brightness: Vec::new(),
                     color: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    // Two unit-length direction samples: +x and +z.
+                    direction: vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
                     start_active: 0,
                 },
             ],

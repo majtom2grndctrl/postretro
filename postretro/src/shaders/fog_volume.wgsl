@@ -50,7 +50,8 @@ struct AnimationDescriptor {
     color_offset: u32,
     color_count: u32,
     is_active: u32,
-    _pad: vec2<f32>,
+    direction_offset: u32,
+    direction_count: u32,
 }
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;

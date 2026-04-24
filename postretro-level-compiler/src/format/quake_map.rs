@@ -463,6 +463,7 @@ fn quake_style_animation(style: i32, phase: f32) -> Option<LightAnimation> {
         phase,
         brightness: Some(brightness),
         color: None,
+        direction: None,
         start_active: true,
     })
 }

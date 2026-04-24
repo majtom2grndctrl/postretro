@@ -10,6 +10,8 @@ use crate::render::sh_volume::ANIMATION_DESCRIPTOR_SIZE;
 #[cfg(test)]
 use crate::scripting::components::light::LightAnimation;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
+#[cfg(test)]
+use crate::scripting::conv::Vec3Lit;
 use crate::scripting::registry::{EntityId, EntityRegistry};
 
 /// Snapshot of a map light's component state as last observed by the bridge.
@@ -420,9 +422,10 @@ fn pack_animation_descriptor(component: &LightComponent) -> [u8; ANIMATION_DESCR
     bytes[28..32].copy_from_slice(&color_offset.to_le_bytes());
     bytes[32..36].copy_from_slice(&color_count.to_le_bytes());
 
-    // `active` — 1 while an animation is live. Sentinel descriptor above
-    // keeps this 0.
-    let active: u32 = 1;
+    // `active` — 1 while an animation is playing, 0 when the author opts it
+    // out via `start_active: false`. `None` defaults to active.
+    // Sentinel descriptor above keeps this 0.
+    let active: u32 = u32::from(anim.start_active.unwrap_or(true));
     bytes[36..40].copy_from_slice(&active.to_le_bytes());
 
     // bytes[40..48] reserved for the direction channel (Sub-plan 1).
@@ -462,14 +465,14 @@ fn check_play_count_completion(
         settled.intensity = final_brightness;
     }
     if let Some(color) = &anim.color
-        && let Some(&final_color) = color.last()
+        && let Some(final_color) = color.last()
     {
-        settled.color = final_color;
+        settled.color = final_color.as_f32_3();
     }
     if let Some(direction) = &anim.direction
-        && let Some(&final_direction) = direction.last()
+        && let Some(final_direction) = direction.last()
     {
-        settled.cone_direction = Some(final_direction);
+        settled.cone_direction = Some(final_direction.as_f32_3());
     }
     settled.animation = None;
     Some(settled)
@@ -599,6 +602,7 @@ mod tests {
             period_ms: 1000.0,
             phase: Some(0.0),
             play_count: None,
+            start_active: None,
             brightness: Some(vec![0.1, 1.0, 0.1]),
             color: None,
             direction: None,
@@ -649,8 +653,9 @@ mod tests {
             period_ms: 500.0,
             phase: None,
             play_count: Some(2),
+            start_active: None,
             brightness: Some(vec![1.0, 0.5, 0.25]),
-            color: Some(vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+            color: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 0.0, 1.0])]),
             direction: None,
         });
         registry.set_component(id, component).unwrap();
@@ -696,6 +701,7 @@ mod tests {
             period_ms: 500.0,
             phase: None,
             play_count: Some(2),
+            start_active: None,
             brightness: Some(vec![1.0, 0.25]),
             color: None,
             direction: None,
@@ -749,6 +755,38 @@ mod tests {
     }
 
     #[test]
+    fn pack_animation_descriptor_honors_start_active_false() {
+        // start_active: Some(false) → descriptor's `active` field at byte offset
+        // 36..40 must be 0. Mirrors the FGD `_start_inactive` flag. Absent
+        // / Some(true) defaults to 1 (covered by the sibling sentinel test).
+        let component = LightComponent {
+            origin: [0.0, 0.0, 0.0],
+            light_type: LightKind::Point,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffKind::InverseSquared,
+            falloff_range: 10.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            cast_shadows: false,
+            is_dynamic: true,
+            animation: Some(LightAnimation {
+                period_ms: 500.0,
+                phase: None,
+                play_count: None,
+                start_active: Some(false),
+                brightness: Some(vec![0.1, 1.0]),
+                color: None,
+                direction: None,
+            }),
+        };
+        let bytes = pack_animation_descriptor(&component);
+        let active = u32::from_le_bytes(bytes[36..40].try_into().unwrap());
+        assert_eq!(active, 0, "start_active: Some(false) must pack as inactive");
+    }
+
+    #[test]
     fn phase_outside_unit_interval_is_wrapped_via_rem_euclid_in_descriptor() {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
@@ -764,6 +802,7 @@ mod tests {
             period_ms: 1000.0,
             phase: Some(2.75),
             play_count: None,
+            start_active: None,
             brightness: Some(vec![0.1, 1.0]),
             color: None,
             direction: None,
@@ -797,6 +836,7 @@ mod tests {
             period_ms: 100.0,
             phase: None,
             play_count: Some(1),
+            start_active: None,
             brightness: Some(vec![1.0, 0.0]),
             color: None,
             direction: None,

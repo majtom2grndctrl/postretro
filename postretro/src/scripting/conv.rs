@@ -18,10 +18,98 @@
 use glam::{EulerRot, Quat, Vec3};
 use mlua::{FromLua, IntoLua, Lua, Table, Value as LuaValue};
 use rquickjs::{Array, Ctx, FromJs, IntoJs, Object, Value as JsValue};
+use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Serialize, Serializer};
+use std::fmt;
 
 use super::components::light::{LightAnimation, LightComponent};
 use super::ctx::ScriptEvent;
 use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
+
+// --- Vec3Lit ----------------------------------------------------------------
+//
+// Cross-runtime wire shape for a 3-component vector inside `LightAnimation`
+// sample arrays. Accepts both `[x, y, z]` arrays (serde default for
+// `[f32; 3]`) and `{ x, y, z }` objects — the SDK vocabulary constructs
+// `Vec3` objects, while internal tests and some callers emit raw arrays.
+
+/// Three-component float vector with a permissive Deserialize accepting
+/// either a JSON array of 3 numbers or an object with `x`/`y`/`z` keys.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Vec3Lit(pub [f32; 3]);
+
+impl Vec3Lit {
+    pub(crate) fn as_f32_3(&self) -> [f32; 3] {
+        self.0
+    }
+}
+
+impl Serialize for Vec3Lit {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Serialize as `{x, y, z}` so cross-FFI output matches the script-facing
+        // `Vec3` shape. Deserialize accepts both array and object forms.
+        use serde::ser::SerializeStruct;
+        let [x, y, z] = self.0;
+        let mut st = serializer.serialize_struct("Vec3", 3)?;
+        st.serialize_field("x", &x)?;
+        st.serialize_field("y", &y)?;
+        st.serialize_field("z", &z)?;
+        st.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Vec3Lit {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Vec3LitVisitor;
+
+        impl<'de> Visitor<'de> for Vec3LitVisitor {
+            type Value = Vec3Lit;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an array [x, y, z] or object { x, y, z }")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec3Lit, A::Error> {
+                let x: f32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &"3 elements"))?;
+                let y: f32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &"3 elements"))?;
+                let z: f32 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &"3 elements"))?;
+                if seq.next_element::<f32>()?.is_some() {
+                    return Err(de::Error::invalid_length(4, &"3 elements"));
+                }
+                Ok(Vec3Lit([x, y, z]))
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Vec3Lit, A::Error> {
+                let mut x: Option<f32> = None;
+                let mut y: Option<f32> = None;
+                let mut z: Option<f32> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "x" => x = Some(map.next_value()?),
+                        "y" => y = Some(map.next_value()?),
+                        "z" => z = Some(map.next_value()?),
+                        _ => {
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(Vec3Lit([
+                    x.ok_or_else(|| de::Error::missing_field("x"))?,
+                    y.ok_or_else(|| de::Error::missing_field("y"))?,
+                    z.ok_or_else(|| de::Error::missing_field("z"))?,
+                ]))
+            }
+        }
+
+        deserializer.deserialize_any(Vec3LitVisitor)
+    }
+}
 
 /// Script-facing rotation representation. Angles are in degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -617,6 +705,7 @@ fn camel_to_snake(key: &str) -> &str {
     match key {
         "periodMs" => "period_ms",
         "playCount" => "play_count",
+        "startActive" => "start_active",
         other => other,
     }
 }
@@ -625,6 +714,7 @@ fn snake_to_camel(key: &str) -> &str {
     match key {
         "period_ms" => "periodMs",
         "play_count" => "playCount",
+        "start_active" => "startActive",
         other => other,
     }
 }
@@ -719,6 +809,25 @@ mod tests {
         assert!((back.pitch - e.pitch).abs() < 1e-3, "pitch: {back:?}");
         assert!((back.yaw - e.yaw).abs() < 1e-3, "yaw: {back:?}");
         assert!((back.roll - e.roll).abs() < 1e-3, "roll: {back:?}");
+    }
+
+    #[test]
+    fn vec3lit_accepts_array_and_object_forms_with_same_value() {
+        // Regression: LightAnimation.color/direction were declared as
+        // `Vec<[f32;3]>`, which forced JSON arrays — but the SDK vocabulary
+        // emits `{x,y,z}` objects matching the `Vec3` type declaration.
+        let from_arr: Vec3Lit = serde_json::from_str("[1.0, 0.0, 0.0]").unwrap();
+        let from_obj: Vec3Lit = serde_json::from_str(r#"{"x":1.0,"y":0.0,"z":0.0}"#).unwrap();
+        assert_eq!(from_arr, Vec3Lit([1.0, 0.0, 0.0]));
+        assert_eq!(from_obj, Vec3Lit([1.0, 0.0, 0.0]));
+        assert_eq!(from_arr, from_obj);
+    }
+
+    #[test]
+    fn vec3lit_deserialize_rejects_malformed_shape() {
+        assert!(serde_json::from_str::<Vec3Lit>("[1.0, 0.0]").is_err());
+        assert!(serde_json::from_str::<Vec3Lit>(r#"{"x":1.0,"y":0.0}"#).is_err());
+        assert!(serde_json::from_str::<Vec3Lit>("\"not a vec\"").is_err());
     }
 
     #[test]

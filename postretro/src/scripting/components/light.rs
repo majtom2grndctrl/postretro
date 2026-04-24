@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::scripting::conv::Vec3Lit;
+
 /// Shape discriminant. Parallels `crate::prl::LightType` at the FFI boundary so
 /// the scripting module stays independent of the runtime-level data types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,12 +49,17 @@ pub(crate) struct LightAnimation {
     /// `None` = loop forever.
     #[serde(default)]
     pub(crate) play_count: Option<u32>,
+    /// `None` = "no animation on this channel; hold the static value". The
+    /// bridge signals absence with `Some(false)` at the GPU descriptor's
+    /// `active` slot.
+    #[serde(default)]
+    pub(crate) start_active: Option<bool>,
     #[serde(default)]
     pub(crate) brightness: Option<Vec<f32>>,
     #[serde(default)]
-    pub(crate) color: Option<Vec<[f32; 3]>>,
+    pub(crate) color: Option<Vec<Vec3Lit>>,
     #[serde(default)]
-    pub(crate) direction: Option<Vec<[f32; 3]>>,
+    pub(crate) direction: Option<Vec<Vec3Lit>>,
 }
 
 /// Script-visible state of a map light. Fields that do not vary at runtime
@@ -109,9 +116,10 @@ mod tests {
                 period_ms: 1000.0,
                 phase: Some(0.25),
                 play_count: Some(3),
+                start_active: Some(true),
                 brightness: Some(vec![0.1, 1.0, 0.1]),
-                color: Some(vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
-                direction: Some(vec![[0.0, -1.0, 0.0], [0.1, -0.99, 0.0]]),
+                color: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 0.0, 1.0])]),
+                direction: Some(vec![Vec3Lit([0.0, -1.0, 0.0]), Vec3Lit([0.1, -0.99, 0.0])]),
             }),
         };
         let json = serde_json::to_string(&value).unwrap();

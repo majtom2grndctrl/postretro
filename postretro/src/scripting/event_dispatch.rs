@@ -718,6 +718,81 @@ mod tests {
     }
 
     #[test]
+    fn load_behavior_scripts_fires_handlers_in_filename_lexicographic_order() {
+        // Regression: the production `load_behavior_scripts` loader sorts
+        // discovered scripts by UTF-8 byte order before registering them, so
+        // cross-file handler firing order tracks filename order. Existing
+        // `multiple_handlers_fire_in_registration_order_quickjs` registers
+        // files in hand-picked order and does not exercise the sort. This
+        // test pins the sort contract: swap the filenames for two scripts
+        // that record their source name, and the fire order must swap with
+        // them.
+        fn register_sorted(
+            rt: &ScriptRuntime,
+            mut pairs: Vec<(String, String)>,
+        ) -> Vec<std::path::PathBuf> {
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut paths = Vec::with_capacity(pairs.len());
+            for (name, source) in pairs {
+                let path = temp_script(&name, &source);
+                rt.run_script_file(Which::Behavior, &path).unwrap();
+                paths.push(path);
+            }
+            paths
+        }
+
+        let source_a = r#"
+            globalThis.__order = globalThis.__order || [];
+            registerHandler("levelLoad", function() { globalThis.__order.push("a"); });
+        "#;
+        let source_b = r#"
+            globalThis.__order = globalThis.__order || [];
+            registerHandler("levelLoad", function() { globalThis.__order.push("b"); });
+        "#;
+
+        // Pass 1: a_behavior.ts → "a"; b_behavior.ts → "b". Sorted order is
+        // `[a, b]`, so firing order is `["a", "b"]`.
+        let (rt, _ctx) = runtime();
+        let paths = register_sorted(
+            &rt,
+            vec![
+                ("a_behavior.ts".to_string(), source_a.to_string()),
+                ("b_behavior.ts".to_string(), source_b.to_string()),
+            ],
+        );
+        rt.fire_level_load();
+        rt.quickjs().behavior_ctx().with(|ctx| {
+            let order: Vec<String> = ctx.eval("globalThis.__order").unwrap();
+            assert_eq!(order, vec!["a", "b"], "initial lexicographic order");
+        });
+        for p in &paths {
+            let _ = std::fs::remove_file(p);
+        }
+        drop(rt);
+
+        // Pass 2: swap by rename — z_behavior.ts now carries the `source_a`
+        // body ("a"), and a_behavior.ts carries `source_b` ("b"). Sorted
+        // order is `[a_behavior.ts (b), z_behavior.ts (a)]`, so firing
+        // order is `["b", "a"]`.
+        let (rt, _ctx) = runtime();
+        let paths = register_sorted(
+            &rt,
+            vec![
+                ("z_behavior.ts".to_string(), source_a.to_string()),
+                ("a_behavior.ts".to_string(), source_b.to_string()),
+            ],
+        );
+        rt.fire_level_load();
+        rt.quickjs().behavior_ctx().with(|ctx| {
+            let order: Vec<String> = ctx.eval("globalThis.__order").unwrap();
+            assert_eq!(order, vec!["b", "a"], "order after rename-swap");
+        });
+        for p in &paths {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
     fn clear_level_handlers_empties_table() {
         let (rt, ctx) = runtime();
         let path = temp_script(

@@ -32,6 +32,8 @@ declare module "postretro" {
     phase: number | null;
     /** Total full periods to play; null loops forever. */
     playCount: number | null;
+    /** Whether the animation starts in the active state. null defaults to true; false mirrors the FGD `_start_inactive` flag. */
+    startActive: boolean | null;
     /** Per-sample brightness curve. */
     brightness: ReadonlyArray<number> | null;
     /** Per-sample color curve. Only valid on dynamic lights. */

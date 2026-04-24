@@ -2,7 +2,7 @@
 // See: context/lib/scripting.md
 
 use super::components::light::{LightAnimation, LightComponent};
-use super::conv::{json_to_js, json_to_lua};
+use super::conv::{Vec3Lit, json_to_js, json_to_lua};
 use super::ctx::ScriptCtx;
 use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, PrimitiveRegistry};
@@ -202,7 +202,7 @@ fn validate_and_normalize(
             });
         }
         for (i, sample) in dirs.iter_mut().enumerate() {
-            let [x, y, z] = *sample;
+            let [x, y, z] = sample.as_f32_3();
             let len_sq = x * x + y * y + z * z;
             if !len_sq.is_finite() || len_sq <= 1.0e-12 {
                 return Err(ScriptError::InvalidArgument {
@@ -215,7 +215,7 @@ fn validate_and_normalize(
             let len = len_sq.sqrt();
             // Silently normalize. Matches "unit-length invariant authoritatively
             // enforced here" from plan-2 §Sub-plan 6 error cases.
-            *sample = [x / len, y / len, z / len];
+            *sample = Vec3Lit([x / len, y / len, z / len]);
         }
     }
     // Normalize phase into [0.0, 1.0) via rem_euclid, matching the GPU
@@ -359,6 +359,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "playCount",
             "Option<u32>",
             "Total full periods to play; null loops forever.",
+        )
+        .field(
+            "startActive",
+            "Option<bool>",
+            "Whether the animation starts in the active state. null defaults to true; false mirrors the FGD `_start_inactive` flag.",
         )
         .field(
             "brightness",
@@ -589,6 +594,7 @@ mod tests {
                 period_ms: 500.0,
                 phase: None,
                 play_count: None,
+                start_active: None,
                 brightness: Some(vec![0.1, 0.9]),
                 color: None,
                 direction: None,
@@ -611,6 +617,7 @@ mod tests {
                 period_ms: 500.0,
                 phase: None,
                 play_count: None,
+                start_active: None,
                 brightness: Some(vec![0.1, 0.9]),
                 color: None,
                 direction: None,
@@ -653,6 +660,7 @@ mod tests {
                 period_ms: 0.0,
                 phase: None,
                 play_count: None,
+                start_active: None,
                 brightness: Some(vec![0.1, 1.0]),
                 color: None,
                 direction: None,
@@ -672,6 +680,7 @@ mod tests {
                 period_ms: 100.0,
                 phase: None,
                 play_count: None,
+                start_active: None,
                 brightness: Some(vec![]),
                 color: None,
                 direction: None,
@@ -691,8 +700,9 @@ mod tests {
                 period_ms: 100.0,
                 phase: None,
                 play_count: None,
+                start_active: None,
                 brightness: None,
-                color: Some(vec![[1.0, 0.0, 0.0]]),
+                color: Some(vec![Vec3Lit([1.0, 0.0, 0.0])]),
                 direction: None,
             }),
         )
@@ -710,6 +720,7 @@ mod tests {
                 period_ms: 100.0,
                 phase: Some(2.75),
                 play_count: None,
+                start_active: None,
                 brightness: Some(vec![0.1, 1.0]),
                 color: None,
                 direction: None,
@@ -738,9 +749,10 @@ mod tests {
                 period_ms: 100.0,
                 phase: None,
                 play_count: None,
+                start_active: None,
                 brightness: None,
                 color: None,
-                direction: Some(vec![[2.0, 0.0, 0.0], [0.0, 3.0, 4.0]]),
+                direction: Some(vec![Vec3Lit([2.0, 0.0, 0.0]), Vec3Lit([0.0, 3.0, 4.0])]),
             }),
         )
         .unwrap();
@@ -754,8 +766,10 @@ mod tests {
             .direction
             .clone()
             .unwrap();
-        let len0 = (dirs[0][0].powi(2) + dirs[0][1].powi(2) + dirs[0][2].powi(2)).sqrt();
-        let len1 = (dirs[1][0].powi(2) + dirs[1][1].powi(2) + dirs[1][2].powi(2)).sqrt();
+        let d0 = dirs[0].as_f32_3();
+        let d1 = dirs[1].as_f32_3();
+        let len0 = (d0[0].powi(2) + d0[1].powi(2) + d0[2].powi(2)).sqrt();
+        let len1 = (d1[0].powi(2) + d1[1].powi(2) + d1[2].powi(2)).sqrt();
         assert!((len0 - 1.0).abs() < 1e-5, "dir[0]: {:?}", dirs[0]);
         assert!((len1 - 1.0).abs() < 1e-5, "dir[1]: {:?}", dirs[1]);
     }
@@ -770,9 +784,10 @@ mod tests {
                 period_ms: 100.0,
                 phase: None,
                 play_count: None,
+                start_active: None,
                 brightness: None,
                 color: None,
-                direction: Some(vec![[0.0, 0.0, 0.0]]),
+                direction: Some(vec![Vec3Lit([0.0, 0.0, 0.0])]),
             }),
         )
         .unwrap_err();
@@ -813,5 +828,89 @@ mod tests {
                 .unwrap();
             assert!(msg.contains("not available"), "got: {msg}");
         });
+    }
+
+    #[test]
+    fn set_light_animation_quickjs_and_luau_produce_identical_output() {
+        // Cross-runtime parity: the Luau SDK is a port of the TypeScript SDK.
+        // Running the same logical `set_light_animation` call through each
+        // runtime must yield bitwise-identical `LightAnimation` values in the
+        // registry. Exercises both the scalar (`brightness`) and `Vec3Lit`
+        // (`color`) paths so a regression in either deserializer surfaces
+        // here.
+        let (ctx, id) = test_ctx_with_light(true, None);
+        let r = registry_for(ctx.clone());
+
+        // QuickJS run.
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        let raw = id.to_raw();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let script = format!(
+                r#"
+                set_light_animation({raw}, {{
+                    periodMs: 500,
+                    phase: 0.25,
+                    playCount: 4,
+                    startActive: false,
+                    brightness: [0.1, 1.0, 0.1],
+                    color: [{{ x: 1, y: 0, z: 0 }}, {{ x: 0, y: 0, z: 1 }}],
+                    direction: null,
+                }});
+                "#
+            );
+            let _: () = qjs.eval(script.as_str()).unwrap();
+        });
+        let from_quickjs = ctx
+            .registry
+            .borrow()
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .animation
+            .clone()
+            .expect("QuickJS set_light_animation must have populated animation");
+
+        // Reset and run the equivalent Luau script.
+        apply_light_animation(&ctx, id, None).unwrap();
+        assert!(
+            ctx.registry
+                .borrow()
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .animation
+                .is_none()
+        );
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        lua.load(format!(
+            r#"
+            set_light_animation({raw}, {{
+                periodMs = 500,
+                phase = 0.25,
+                playCount = 4,
+                startActive = false,
+                brightness = {{0.1, 1.0, 0.1}},
+                color = {{ {{x=1, y=0, z=0}}, {{x=0, y=0, z=1}} }},
+                direction = nil,
+            }})
+            "#
+        ))
+        .exec()
+        .unwrap();
+        let from_luau = ctx
+            .registry
+            .borrow()
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .animation
+            .clone()
+            .expect("Luau set_light_animation must have populated animation");
+
+        assert_eq!(
+            from_quickjs, from_luau,
+            "QuickJS and Luau must produce identical LightAnimation values for the same input"
+        );
     }
 }

@@ -19,6 +19,7 @@ use glam::{EulerRot, Quat, Vec3};
 use mlua::{FromLua, IntoLua, Lua, Table, Value as LuaValue};
 use rquickjs::{Array, Ctx, FromJs, IntoJs, Object, Value as JsValue};
 
+use super::components::light::{LightAnimation, LightComponent};
 use super::ctx::ScriptEvent;
 use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
 
@@ -397,7 +398,10 @@ impl IntoLua for ComponentValue {
 // walking the value recursively — there is no JSON string on the wire, scripts
 // see a native object/table.
 
-fn json_to_js<'js>(ctx: &Ctx<'js>, v: &serde_json::Value) -> rquickjs::Result<JsValue<'js>> {
+pub(crate) fn json_to_js<'js>(
+    ctx: &Ctx<'js>,
+    v: &serde_json::Value,
+) -> rquickjs::Result<JsValue<'js>> {
     match v {
         serde_json::Value::Null => Ok(JsValue::new_null(ctx.clone())),
         serde_json::Value::Bool(b) => b.into_js(ctx),
@@ -468,7 +472,7 @@ fn js_to_json<'js>(ctx: &Ctx<'js>, v: JsValue<'js>) -> rquickjs::Result<serde_js
     Ok(serde_json::Value::Null)
 }
 
-fn json_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<LuaValue> {
+pub(crate) fn json_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<LuaValue> {
     match v {
         serde_json::Value::Null => Ok(LuaValue::Nil),
         serde_json::Value::Bool(b) => Ok(LuaValue::Boolean(*b)),
@@ -594,6 +598,111 @@ impl IntoLua for ScriptEvent {
         t.set("kind", self.kind.as_str())?;
         t.set("payload", json_to_lua(lua, &self.payload)?)?;
         Ok(LuaValue::Table(t))
+    }
+}
+
+// --- LightAnimation / LightComponent ----------------------------------------
+//
+// Both cross the FFI boundary as serde-shaped objects. The serde field names
+// on `LightAnimation` use `snake_case` (`period_ms`, `play_count`, ...) while
+// the external API spec uses `camelCase` (`periodMs`, `playCount`). We honor
+// the external spelling here by walking the serde_json payload and renaming
+// the well-known fields on the way in and out; this keeps the internal Rust
+// struct idiomatic while still presenting the agreed script-facing shape.
+//
+// See: context/lib/scripting.md §9 (External API Shape)
+
+fn camel_to_snake(key: &str) -> &str {
+    match key {
+        "periodMs" => "period_ms",
+        "playCount" => "play_count",
+        other => other,
+    }
+}
+
+fn snake_to_camel(key: &str) -> &str {
+    match key {
+        "period_ms" => "periodMs",
+        "play_count" => "playCount",
+        other => other,
+    }
+}
+
+fn rename_json_keys(
+    value: serde_json::Value,
+    map: fn(&str) -> &str,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(obj) => {
+            let mut out = serde_json::Map::with_capacity(obj.len());
+            for (k, v) in obj {
+                out.insert(map(&k).to_string(), rename_json_keys(v, map));
+            }
+            serde_json::Value::Object(out)
+        }
+        other => other,
+    }
+}
+
+impl<'js> FromJs<'js> for LightAnimation {
+    fn from_js(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
+        let json = js_to_json(ctx, value)?;
+        let snake = rename_json_keys(json, camel_to_snake);
+        serde_json::from_value::<LightAnimation>(snake).map_err(|e| {
+            rquickjs::Error::new_from_js_message("value", "LightAnimation", e.to_string())
+        })
+    }
+}
+
+impl<'js> IntoJs<'js> for LightAnimation {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        let json = serde_json::to_value(self).map_err(|e| {
+            rquickjs::Error::new_from_js_message("LightAnimation", "value", e.to_string())
+        })?;
+        let camel = rename_json_keys(json, snake_to_camel);
+        json_to_js(ctx, &camel)
+    }
+}
+
+impl FromLua for LightAnimation {
+    fn from_lua(value: LuaValue, _lua: &Lua) -> mlua::Result<Self> {
+        let json = lua_to_json(value)?;
+        let snake = rename_json_keys(json, camel_to_snake);
+        serde_json::from_value::<LightAnimation>(snake).map_err(|e| {
+            mlua::Error::RuntimeError(format!("invalid LightAnimation: {e}"))
+        })
+    }
+}
+
+impl IntoLua for LightAnimation {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
+        let json = serde_json::to_value(self)
+            .map_err(|e| mlua::Error::RuntimeError(format!("LightAnimation serialize: {e}")))?;
+        let camel = rename_json_keys(json, snake_to_camel);
+        json_to_lua(lua, &camel)
+    }
+}
+
+// `LightComponent` is only emitted from Rust into script (never decoded from
+// script), so we only implement IntoJs / IntoLua. Serialization goes through
+// the same key-rename pipeline as `LightAnimation` so nested `animation`
+// fields keep the `camelCase` external spelling.
+impl<'js> IntoJs<'js> for LightComponent {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        let json = serde_json::to_value(self).map_err(|e| {
+            rquickjs::Error::new_from_js_message("LightComponent", "value", e.to_string())
+        })?;
+        let camel = rename_json_keys(json, snake_to_camel);
+        json_to_js(ctx, &camel)
+    }
+}
+
+impl IntoLua for LightComponent {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
+        let json = serde_json::to_value(self)
+            .map_err(|e| mlua::Error::RuntimeError(format!("LightComponent serialize: {e}")))?;
+        let camel = rename_json_keys(json, snake_to_camel);
+        json_to_lua(lua, &camel)
     }
 }
 

@@ -191,6 +191,11 @@ pub(crate) struct EntityRegistry {
     free_list: Vec<u16>,
     /// One component column per `ComponentKind`, indexed by slot index.
     components: [Vec<Option<ComponentValue>>; ComponentKind::COUNT],
+    /// Parallel column of optional per-entity string tags. Authored at level
+    /// load (e.g. from the `targetname` FGD key on map lights) and consumed by
+    /// `world.query({..., tag })` to narrow results. One `String` per slot; the
+    /// column is resized in lockstep with `components`.
+    tags: Vec<Option<String>>,
 }
 
 impl EntityRegistry {
@@ -199,7 +204,57 @@ impl EntityRegistry {
             slots: Vec::new(),
             free_list: Vec::new(),
             components: [Vec::new(), Vec::new()],
+            tags: Vec::new(),
         }
+    }
+
+    /// Attach (or overwrite) a tag on an entity. `None` clears. Tags are
+    /// opaque to the registry; `world.query` compares them for exact-string
+    /// equality.
+    pub(crate) fn set_tag(
+        &mut self,
+        id: EntityId,
+        tag: Option<String>,
+    ) -> Result<(), RegistryError> {
+        let index = self.validate(id)?;
+        self.tags[index] = tag;
+        Ok(())
+    }
+
+    pub(crate) fn get_tag(&self, id: EntityId) -> Result<Option<&str>, RegistryError> {
+        let index = self.validate(id)?;
+        Ok(self.tags[index].as_deref())
+    }
+
+    /// Iterate every live entity whose component column of `kind` is populated
+    /// and whose tag (if `tag_filter` is `Some`) matches by string equality.
+    /// When `tag_filter` is `None`, any tag (including `None`) matches.
+    ///
+    /// Yields `(EntityId, &ComponentValue)` pairs in slot-index order. Used by
+    /// the `world.query` primitive (Sub-plan 6).
+    pub(crate) fn query_by_component_and_tag<'a>(
+        &'a self,
+        kind: ComponentKind,
+        tag_filter: Option<&'a str>,
+    ) -> impl Iterator<Item = (EntityId, &'a ComponentValue)> + 'a {
+        let column = &self.components[kind as usize];
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(move |(idx, slot)| {
+                if !slot.live || slot.retired {
+                    return None;
+                }
+                if let Some(want) = tag_filter {
+                    match self.tags.get(idx).and_then(|t| t.as_deref()) {
+                        Some(have) if have == want => {}
+                        _ => return None,
+                    }
+                }
+                let cell = column.get(idx).and_then(|c| c.as_ref())?;
+                let id = EntityId::new(idx as u16, slot.generation);
+                Some((id, cell))
+            })
     }
 
     /// Iterate every live entity that carries a component of the given kind.
@@ -253,6 +308,7 @@ impl EntityRegistry {
             for column in &mut self.components {
                 column.push(None);
             }
+            self.tags.push(None);
             i
         };
 
@@ -281,6 +337,7 @@ impl EntityRegistry {
         for column in &mut self.components {
             column[index] = None;
         }
+        self.tags[index] = None;
         slot.live = false;
 
         // Generation-wrap retirement: reusing the slot after wrap would let a

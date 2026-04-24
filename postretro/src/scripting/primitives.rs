@@ -39,10 +39,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_enum("ComponentKind")
         .variant("Transform", "")
+        .variant("Light", "")
         .finish();
     registry
         .register_tagged_union("ComponentValue")
         .variant("Transform", "Transform", "")
+        .variant("Light", "LightComponent", "")
         .finish();
     registry
         .register_type("ScriptEvent")
@@ -57,6 +59,8 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_shared_types(registry);
     super::event_dispatch::register_shared_types(registry);
     super::event_dispatch::register_register_handler(registry, ctx.handlers.clone());
+    super::primitives_light::register_shared_types(registry);
+    super::primitives_light::register_sp6_primitives(registry, ctx.clone());
 
     // entity_exists --------------------------------------------------------
     registry
@@ -210,8 +214,9 @@ mod tests {
     #[test]
     fn register_all_installs_expected_primitives() {
         let (r, _ctx) = registry_with_day_one();
-        // 7 day-one primitives + `registerHandler` from Sub-plan 5.
-        assert_eq!(r.len(), 8);
+        // 7 day-one primitives + `registerHandler` (SP5) + `world_query` and
+        // `set_light_animation` (SP6).
+        assert_eq!(r.len(), 10);
         let names: Vec<_> = r.iter().map(|p| p.name).collect();
         for expected in [
             "entity_exists",
@@ -222,6 +227,8 @@ mod tests {
             "emit_event",
             "send_event",
             "registerHandler",
+            "world_query",
+            "set_light_animation",
         ] {
             assert!(names.contains(&expected), "missing primitive {expected}");
         }

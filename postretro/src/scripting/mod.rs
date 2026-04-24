@@ -18,6 +18,7 @@ pub(crate) mod event_dispatch;
 pub(crate) mod luau;
 pub(crate) mod pool;
 pub(crate) mod primitives;
+pub(crate) mod primitives_light;
 pub(crate) mod primitives_registry;
 pub(crate) mod quickjs;
 pub(crate) mod registry;

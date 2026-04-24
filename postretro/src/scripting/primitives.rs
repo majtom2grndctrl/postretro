@@ -6,6 +6,7 @@
 // new subsystem to the scripting surface: add one field to `ScriptCtx` and a
 // few `.register(...)` lines here.
 
+use super::components::light::LightComponent;
 use super::ctx::{ScriptCtx, ScriptEvent};
 use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, PrimitiveRegistry};
@@ -111,6 +112,10 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                         let t = reg.get_component::<Transform>(id)?;
                         Ok(ComponentValue::Transform(*t))
                     }
+                    ComponentKind::Light => {
+                        let l = reg.get_component::<LightComponent>(id)?;
+                        Ok(ComponentValue::Light(l.clone()))
+                    }
                 }
             }
         })
@@ -133,10 +138,20 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                 // than silently using one of the two.
                 match (kind, &value) {
                     (ComponentKind::Transform, ComponentValue::Transform(_)) => {}
+                    (ComponentKind::Light, ComponentValue::Light(_)) => {}
+                    _ => {
+                        return Err(ScriptError::InvalidArgument {
+                            reason: format!(
+                                "set_component: kind {:?} does not match value discriminant",
+                                kind
+                            ),
+                        });
+                    }
                 }
                 let mut reg = ctx.registry.borrow_mut();
                 match value {
                     ComponentValue::Transform(t) => reg.set_component(id, t)?,
+                    ComponentValue::Light(l) => reg.set_component(id, l)?,
                 }
                 Ok(())
             }

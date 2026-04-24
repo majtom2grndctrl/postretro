@@ -9,6 +9,7 @@
 // than sprinkling `#[allow]` on every item.
 #![allow(dead_code)]
 
+pub(crate) mod components;
 pub(crate) mod conv;
 pub(crate) mod ctx;
 pub(crate) mod error;

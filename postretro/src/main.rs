@@ -17,6 +17,16 @@ mod scripting;
 mod texture;
 mod visibility;
 
+// Per-frame systems that bridge the scripting surface to other engine
+// subsystems. Intentionally rooted at the main-binary crate level (not under
+// `scripting/`) so that `src/bin/gen_script_types.rs` — which re-uses the
+// `scripting` module tree via `#[path]` without the engine's renderer/prl
+// modules — does not pull in wgpu/engine-dependent code.
+//
+// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 4
+#[path = "scripting/systems/mod.rs"]
+mod scripting_systems;
+
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -148,6 +158,9 @@ fn main() -> Result<()> {
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
         smoke_emitters: build_demo_emitters(spawn_demo_smoke, initial_camera_pos),
+        script_ctx: scripting::ctx::ScriptCtx::new(),
+        light_bridge: scripting_systems::light_bridge::LightBridge::new(),
+        level_start: Instant::now(),
     };
 
     event_loop
@@ -285,6 +298,23 @@ struct App {
     ///
     /// See: context/lib/rendering_pipeline.md §7.4
     smoke_emitters: Vec<fx::smoke::SmokeEmitter>,
+
+    /// Scripting entity registry. Populated at level load; outlives the
+    /// renderer so reloads / device resets preserve scripted light state.
+    /// See: context/lib/scripting.md
+    script_ctx: scripting::ctx::ScriptCtx,
+
+    /// Light bridge state: per-entity dirty tracking and play_count clocks.
+    /// Runs once per frame between game logic and render; produces repacked
+    /// `GpuLight` bytes which the renderer uploads via `upload_bridge_lights`.
+    /// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 4
+    light_bridge: scripting_systems::light_bridge::LightBridge,
+
+    /// Per-level monotonic clock in seconds. Seeded at level load; the light
+    /// bridge consults it for `play_count` completion detection. Separate
+    /// from `Renderer::app_start` so scripting time resets cleanly on level
+    /// unload without touching renderer-owned state.
+    level_start: Instant,
 }
 
 struct WindowState {
@@ -384,6 +414,19 @@ impl ApplicationHandler for App {
         self.camera.update_aspect(size.width, size.height);
 
         input::cursor::capture_cursor(&window);
+
+        // Populate the scripting entity registry with one `LightComponent`
+        // entity per map-authored light. Mirrors `LevelWorld.lights` one-to-one
+        // and assigns stable `EntityId`s for the lifetime of the level; the
+        // bridge's dirty tracker hangs its snapshots off those IDs.
+        // See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 4
+        {
+            let level_lights = renderer.level_lights().to_vec();
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            self.light_bridge
+                .populate_from_level(&level_lights, &mut registry);
+        }
+        self.level_start = Instant::now();
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
@@ -566,6 +609,31 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(renderer) = self.renderer.as_mut() {
+                    // Light bridge — between Game Logic and Render. Walks the
+                    // scripting entity registry, detects mutated
+                    // `LightComponent`s, handles `play_count` completion, and
+                    // hands repacked GpuLight bytes to the renderer's upload
+                    // seam. `update_dynamic_light_slots` runs later inside
+                    // `render_frame_indirect` so scripted lights participate
+                    // in slot allocation with their post-mutation state.
+                    {
+                        let current_time =
+                            self.level_start.elapsed().as_secs_f32();
+                        let mut registry = self.script_ctx.registry.borrow_mut();
+                        if let Some(update) =
+                            self.light_bridge.update(&mut registry, current_time)
+                        {
+                            renderer.upload_bridge_lights(&update.lights_bytes);
+                            // NOTE: descriptor_bytes uploads wait on the
+                            // descriptor buffer being resized to per-map-light
+                            // at level load (pre-reservation). Tracked in
+                            // Plan 2 Sub-plan 4; the data is produced now so
+                            // scripts get correct intensity/color changes
+                            // even before descriptor slots ship.
+                            let _ = update.descriptor_bytes;
+                        }
+                    }
+
                     renderer.update_per_frame_uniforms(view_proj, interp.position);
 
                     if renderer.is_ready() {

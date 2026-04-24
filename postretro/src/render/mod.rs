@@ -1716,6 +1716,41 @@ impl Renderer {
         self.sh_volume_resources.animation.set_active(slot, active);
     }
 
+    /// Upload a bridge-produced light byte buffer into the direct-lights
+    /// storage buffer. Called by the game layer between Game Logic and Render
+    /// once per frame with the light bridge's repacked bytes (see
+    /// `crate::scripting::systems::light_bridge`). Bytes must match the
+    /// authored-light layout the renderer booted with — same stride, same
+    /// light count, same order.
+    ///
+    /// Frame-ordering constraint: this must run **before**
+    /// `update_dynamic_light_slots`, which rewrites the same buffer with
+    /// per-frame shadow slot assignments. Slot assignment uses the
+    /// bridge-produced colors/intensities as its input, not the reverse.
+    pub fn upload_bridge_lights(&mut self, lights_bytes: &[u8]) {
+        debug_assert_eq!(
+            lights_bytes.len(),
+            self.level_lights.len() * GPU_LIGHT_SIZE,
+            "bridge produced {} bytes; expected {} × {} = {}",
+            lights_bytes.len(),
+            self.level_lights.len(),
+            GPU_LIGHT_SIZE,
+            self.level_lights.len() * GPU_LIGHT_SIZE,
+        );
+        if lights_bytes.is_empty() {
+            return;
+        }
+        self.queue
+            .write_buffer(&self.lights_buffer, 0, lights_bytes);
+    }
+
+    /// Access the cached level-light list. Called at level-load time by the
+    /// game layer to seed the light bridge so the bridge can populate the
+    /// scripting entity registry.
+    pub fn level_lights(&self) -> &[MapLight] {
+        &self.level_lights
+    }
+
     /// Update the dynamic lights buffer with per-frame shadow slot assignments.
     ///
     /// Ranks visible dynamic spot lights by influence area and assigns slots.

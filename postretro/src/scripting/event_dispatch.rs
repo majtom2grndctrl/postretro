@@ -1,13 +1,5 @@
-// Event dispatch: the handler table and `registerHandler` primitive.
-// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 5
-//
-// Scripts call `registerHandler(event, fn)` in the behavior context. The
-// primitive accumulates into a per-level handler table; `fire_level_load` and
-// `fire_tick` iterate it in registration order.
-//
-// Handler storage is per-VM: QuickJS functions save as `Persistent<Function>`,
-// Luau functions as `mlua::Function` (already owned). On invocation, the
-// runtime enters the matching VM context and calls the stored function.
+// Event dispatch: per-level handler table and `registerHandler` primitive.
+// See: context/lib/scripting.md
 
 use std::cell::RefCell;
 use std::rc::Rc;

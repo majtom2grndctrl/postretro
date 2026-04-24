@@ -255,8 +255,7 @@ pub struct MapLight {
 // converts the former to the latter via Catmull-Rom over authored timestamps,
 // so the wire format and GPU evaluator stay unchanged.
 //
-// See: context/plans/in-progress/scripting-foundation/plan-2-light-entity.md
-//      §Sub-plan 2 — FGD `*_curve` Keyframe Authoring
+// See: context/lib/build_pipeline.md
 
 /// Sample rate (per second of `period_ms`) used when resampling authored
 /// keyframes into uniform `LightAnimation` samples.
@@ -297,7 +296,10 @@ fn catmull_rom<T: Lerp>(p0: &T, p1: &T, p2: &T, p3: &T, t: f32) -> T {
     //                + (-p0 + p2) t
     //                + (2 p0 - 5 p1 + 4 p2 - p3) t^2
     //                + (-p0 + 3 p1 - 3 p2 + p3) t^3 )
-    // Factored form (Barry–Goldman pyramid) using only lerps:
+    // Factored form (Barry–Goldman pyramid) using only lerps.
+    // `lerp(p0, p1, t + 1.0)` matches the standard basis coefficient for p0
+    // in uniform Catmull-Rom: at t=0 the weight is 1·p1, consistent with the
+    // polynomial above. See de Boor / Barry–Goldman §3 for derivation.
     let a1 = T::lerp(p0, p1, t + 1.0);
     let a2 = T::lerp(p1, p2, t);
     let a3 = T::lerp(p2, p3, t - 1.0);

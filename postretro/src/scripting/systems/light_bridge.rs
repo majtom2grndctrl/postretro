@@ -1,16 +1,5 @@
-// Light bridge: seam between the scripting entity registry and the renderer's
-// GPU light buffer.
-//
-// Frame ordering: Input → Game logic → Audio → Render → Present. The bridge
-// runs between Game logic and Render (after scripts mutate `LightComponent`
-// state, before the renderer draws). `update_dynamic_light_slots` runs after
-// the bridge so scripted shadow-casters participate in slot allocation.
-//
-// The bridge owns **no wgpu types**. It produces byte buffers (re-packed
-// lights, descriptor writes) that the renderer's thin GPU layer uploads via
-// `queue.write_buffer`. The split keeps the "renderer owns GPU" invariant.
-//
-// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 4
+// Light bridge: seam between the scripting entity registry and the renderer's GPU light buffer.
+// See: context/lib/scripting.md
 
 use std::collections::HashMap;
 
@@ -102,13 +91,17 @@ impl LightBridge {
 
     /// Number of map lights the bridge owns. Equals `LevelWorld.lights.len()`
     /// captured at `populate_from_level` time.
+    // Not yet called from production paths; retained for future `world.query`
+    // expansion that will expose per-light handles indexed by map position.
     #[allow(dead_code)]
     pub(crate) fn light_count(&self) -> usize {
         self.entity_ids.len()
     }
 
     /// Lookup the `EntityId` for a given map-light index. Used by the
-    /// `world.query` primitive (Sub-plan 6) to build `LightEntity` handles.
+    /// `world.query` primitive to build `LightEntity` handles.
+    // Not yet called from production paths; retained for future `world.query`
+    // expansion that will expose per-light handles indexed by map position.
     #[allow(dead_code)]
     pub(crate) fn entity_for_map_index(&self, map_index: usize) -> Option<EntityId> {
         self.entity_ids.get(map_index).copied()
@@ -409,28 +402,28 @@ fn pack_animation_descriptor(component: &LightComponent) -> [u8; ANIMATION_DESCR
 
     // period is in seconds on the GPU; the script/animation side tracks ms.
     let period_s = anim.period_ms / 1000.0;
-    bytes[0..4].copy_from_slice(&period_s.to_ne_bytes());
+    bytes[0..4].copy_from_slice(&period_s.to_le_bytes());
     let phase = anim.phase.unwrap_or(0.0).rem_euclid(1.0);
-    bytes[4..8].copy_from_slice(&phase.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&phase.to_le_bytes());
 
     let brightness_offset: u32 = 0;
     let brightness_count: u32 = anim.brightness.as_ref().map_or(0, |v| v.len() as u32);
-    bytes[8..12].copy_from_slice(&brightness_offset.to_ne_bytes());
-    bytes[12..16].copy_from_slice(&brightness_count.to_ne_bytes());
+    bytes[8..12].copy_from_slice(&brightness_offset.to_le_bytes());
+    bytes[12..16].copy_from_slice(&brightness_count.to_le_bytes());
 
-    bytes[16..20].copy_from_slice(&component.color[0].to_ne_bytes());
-    bytes[20..24].copy_from_slice(&component.color[1].to_ne_bytes());
-    bytes[24..28].copy_from_slice(&component.color[2].to_ne_bytes());
+    bytes[16..20].copy_from_slice(&component.color[0].to_le_bytes());
+    bytes[20..24].copy_from_slice(&component.color[1].to_le_bytes());
+    bytes[24..28].copy_from_slice(&component.color[2].to_le_bytes());
 
     let color_offset: u32 = 0;
     let color_count: u32 = anim.color.as_ref().map_or(0, |v| v.len() as u32);
-    bytes[28..32].copy_from_slice(&color_offset.to_ne_bytes());
-    bytes[32..36].copy_from_slice(&color_count.to_ne_bytes());
+    bytes[28..32].copy_from_slice(&color_offset.to_le_bytes());
+    bytes[32..36].copy_from_slice(&color_count.to_le_bytes());
 
     // `active` — 1 while an animation is live. Sentinel descriptor above
     // keeps this 0.
     let active: u32 = 1;
-    bytes[36..40].copy_from_slice(&active.to_ne_bytes());
+    bytes[36..40].copy_from_slice(&active.to_le_bytes());
 
     // bytes[40..48] reserved for the direction channel (Sub-plan 1).
     bytes
@@ -583,7 +576,7 @@ mod tests {
             .expect("dirty after mutation");
         // Intensity × color pre-multiplies into bytes 16..28 of the packed
         // GpuLight record. Sampled first channel must reflect the new value.
-        let packed_r = f32::from_ne_bytes(update.lights_bytes[16..20].try_into().unwrap());
+        let packed_r = f32::from_le_bytes(update.lights_bytes[16..20].try_into().unwrap());
         assert!(
             (packed_r - 7.5 * 1.0).abs() < 1e-5,
             "packed color.r should be intensity × color.r = 7.5; got {packed_r}"
@@ -614,9 +607,9 @@ mod tests {
 
         let update = bridge.update(&mut registry, 0.0).expect("dirty");
         let brightness_count =
-            u32::from_ne_bytes(update.descriptor_bytes[12..16].try_into().unwrap());
+            u32::from_le_bytes(update.descriptor_bytes[12..16].try_into().unwrap());
         assert_eq!(brightness_count, 3);
-        let active = u32::from_ne_bytes(update.descriptor_bytes[36..40].try_into().unwrap());
+        let active = u32::from_le_bytes(update.descriptor_bytes[36..40].try_into().unwrap());
         assert_eq!(active, 1);
 
         // Clear animation → sentinel.
@@ -631,9 +624,9 @@ mod tests {
             .update(&mut registry, 0.1)
             .expect("dirty after clear");
         let brightness_count =
-            u32::from_ne_bytes(update.descriptor_bytes[12..16].try_into().unwrap());
-        let color_count = u32::from_ne_bytes(update.descriptor_bytes[32..36].try_into().unwrap());
-        let active = u32::from_ne_bytes(update.descriptor_bytes[36..40].try_into().unwrap());
+            u32::from_le_bytes(update.descriptor_bytes[12..16].try_into().unwrap());
+        let color_count = u32::from_le_bytes(update.descriptor_bytes[32..36].try_into().unwrap());
+        let active = u32::from_le_bytes(update.descriptor_bytes[36..40].try_into().unwrap());
         assert_eq!(brightness_count, 0);
         assert_eq!(color_count, 0);
         assert_eq!(active, 0, "sentinel descriptor must be inactive");
@@ -777,7 +770,7 @@ mod tests {
         });
         registry.set_component(id, comp).unwrap();
         let update = bridge.update(&mut registry, 0.0).expect("dirty");
-        let phase = f32::from_ne_bytes(update.descriptor_bytes[4..8].try_into().unwrap());
+        let phase = f32::from_le_bytes(update.descriptor_bytes[4..8].try_into().unwrap());
         assert!(
             (phase - 0.75).abs() < 1e-5,
             "phase 2.75 should wrap to 0.75; got {phase}"

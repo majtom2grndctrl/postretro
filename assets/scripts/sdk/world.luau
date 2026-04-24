@@ -56,7 +56,7 @@ export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
 export type LightEntityHandle = {
   id: EntityId,
   transform: LightEntityTransform,
-  _isDynamic: boolean,
+  isDynamic: boolean,
   tag: string?,
   component: LightComponent,
 
@@ -227,12 +227,12 @@ end
 
 local function wrapLightEntity(snapshot: LightEntity): LightEntityHandle
   local id: EntityId = snapshot.id
-  local isDynamic = snapshot._isDynamic
+  local isDynamic = snapshot.isDynamic
 
   local handle: LightEntityHandle = {
     id = id,
     transform = snapshot.transform,
-    _isDynamic = isDynamic,
+    isDynamic = isDynamic,
     tag = snapshot.tag,
     component = snapshot.component,
 

@@ -612,6 +612,7 @@ impl IntoLua for ScriptEvent {
 //
 // See: context/lib/scripting.md §9 (External API Shape)
 
+// NOTE: when adding camelCase fields to `LightAnimation`, add the rename here too.
 fn camel_to_snake(key: &str) -> &str {
     match key {
         "periodMs" => "period_ms",

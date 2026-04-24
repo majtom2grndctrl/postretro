@@ -53,7 +53,7 @@ export type LightEntity = {
   --- Read-only handle to origin at query time.
   transform: LightEntityTransform,
   --- Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation.
-  _isDynamic: boolean,
+  isDynamic: boolean,
   --- The entity's tag at query time, if any.
   tag: string?,
   --- Full component snapshot at query time.
@@ -89,5 +89,5 @@ declare function set_light_animation(id: EntityId, animation: LightAnimation | n
 --- Spawns a new entity with the given transform and returns its id.
 declare function spawn_entity(transform: Transform): EntityId
 
---- Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: "light", tag?: string }. SP7 vocabulary wraps this as `world.query`.
+--- Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: "light", tag?: string }. The `world.ts` vocabulary module wraps this as `world.query`.
 declare function world_query(filter: WorldQueryFilter): {LightEntity}

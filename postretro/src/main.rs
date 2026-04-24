@@ -23,7 +23,7 @@ mod visibility;
 // `scripting` module tree via `#[path]` without the engine's renderer/prl
 // modules — does not pull in wgpu/engine-dependent code.
 //
-// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 4
+// See: context/lib/scripting.md
 #[path = "scripting/systems/mod.rs"]
 mod scripting_systems;
 
@@ -153,7 +153,7 @@ fn main() -> Result<()> {
     // order — this fixes the `registerHandler` invocation order across files.
     // `fire_level_load` runs after world population but before the first
     // frame renders; `fire_tick` runs each frame after game logic. See
-    // context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 5.
+    // context/lib/scripting.md.
     let script_ctx = ScriptCtx::new();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
@@ -184,7 +184,6 @@ fn main() -> Result<()> {
         script_runtime,
         script_ctx,
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
-        level_start: Instant::now(),
         level_load_fired: false,
         script_time: 0.0,
     };
@@ -363,7 +362,7 @@ struct App {
 
     /// Script runtime. Holds both QuickJS and Luau subsystems and the
     /// per-level handler table populated by `registerHandler`.
-    /// See: context/lib/scripting.md §Sub-plan 5
+    /// See: context/lib/scripting.md
     script_runtime: ScriptRuntime,
 
     /// Shared scripting context. Holds the entity registry that the light
@@ -376,14 +375,8 @@ struct App {
     /// Light bridge state: per-entity dirty tracking and play_count clocks.
     /// Runs once per frame between game logic and render; produces repacked
     /// `GpuLight` bytes which the renderer uploads via `upload_bridge_lights`.
-    /// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 4
+    /// See: context/lib/scripting.md
     light_bridge: scripting_systems::light_bridge::LightBridge,
-
-    /// Per-level monotonic clock in seconds. Seeded at level load; the light
-    /// bridge consults it for `play_count` completion detection. Separate
-    /// from `Renderer::app_start` so scripting time resets cleanly on level
-    /// unload without touching renderer-owned state.
-    level_start: Instant,
 
     /// Set once the `levelLoad` event has fired. Gates the first-tick
     /// invocation so `levelLoad` handlers are guaranteed to run before the
@@ -498,14 +491,13 @@ impl ApplicationHandler for App {
         // entity per map-authored light. Mirrors `LevelWorld.lights` one-to-one
         // and assigns stable `EntityId`s for the lifetime of the level; the
         // bridge's dirty tracker hangs its snapshots off those IDs.
-        // See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 4
+        // See: context/lib/scripting.md
         {
             let level_lights = renderer.level_lights().to_vec();
             let mut registry = self.script_ctx.registry.borrow_mut();
             self.light_bridge
                 .populate_from_level(&level_lights, &mut registry);
         }
-        self.level_start = Instant::now();
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
@@ -601,7 +593,7 @@ impl ApplicationHandler for App {
                 // loop started). Script files load from `assets/scripts/`
                 // sorted lexicographically — the sort order pins
                 // cross-file `registerHandler` registration order.
-                // See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 5
+                // See: context/lib/scripting.md
                 if !self.level_load_fired {
                     load_behavior_scripts(&self.script_runtime);
                     self.script_runtime.fire_level_load();
@@ -718,17 +710,17 @@ impl ApplicationHandler for App {
                     // `render_frame_indirect` so scripted lights participate
                     // in slot allocation with their post-mutation state.
                     {
-                        let current_time = self.level_start.elapsed().as_secs_f32();
                         let mut registry = self.script_ctx.registry.borrow_mut();
-                        if let Some(update) = self.light_bridge.update(&mut registry, current_time)
+                        if let Some(update) =
+                            self.light_bridge.update(&mut registry, self.script_time)
                         {
                             renderer.upload_bridge_lights(&update.lights_bytes);
-                            // NOTE: descriptor_bytes uploads wait on the
-                            // descriptor buffer being resized to per-map-light
-                            // at level load (pre-reservation). Tracked in
-                            // Plan 2 Sub-plan 4; the data is produced now so
-                            // scripts get correct intensity/color changes
-                            // even before descriptor slots ship.
+                            // Animation descriptor uploads are not yet wired:
+                            // the renderer-side descriptor buffer needs to be
+                            // pre-allocated per map light at level load before
+                            // these bytes can be uploaded. The data is produced
+                            // correctly here; intensity/color changes land via
+                            // `lights_bytes` in the meantime.
                             let _ = update.descriptor_bytes;
                         }
                     }

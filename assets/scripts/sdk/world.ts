@@ -133,7 +133,7 @@ function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntity {
     ...snapshot,
 
     setAnimation(anim: LightAnimation | null): void {
-      if (anim && anim.color && !snapshot._isDynamic) {
+      if (anim && anim.color && !snapshot.isDynamic) {
         throw new Error(
           `setAnimation: light ${idDebug(id)} is not dynamic; color animation is only valid on dynamic lights`,
         );
@@ -161,7 +161,7 @@ function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntity {
       transitionMs: number = 0,
       easing?: EasingCurve,
     ): void {
-      if (!snapshot._isDynamic) {
+      if (!snapshot.isDynamic) {
         throw new Error(
           `setColor: light ${idDebug(id)} is not dynamic; color can only be animated on dynamic lights`,
         );

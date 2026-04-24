@@ -1,11 +1,5 @@
-// SP6 primitives: `world.query` and `set_light_animation`.
-//
-// Both are `BehaviorOnly`. See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 6
-//
-// The SP7 TypeScript/Luau vocabulary layer (`world.ts`, `light_animation.ts`)
-// wraps the handle objects these primitives return and layers `setAnimation`,
-// `setIntensity`, and `setColor` on top. This module ships only the underlying
-// Rust primitives; no vocabulary files.
+// Scripting primitives: `world_query` and `set_light_animation` (behavior-only).
+// See: context/lib/scripting.md
 
 use super::components::light::{LightAnimation, LightComponent};
 use super::conv::{json_to_js, json_to_lua};
@@ -76,7 +70,7 @@ impl FromLua for WorldQueryFilterInput {
 
 /// A single entity-handle snapshot produced by `world.query`. Carries the
 /// `EntityId` plus a read-only copy of the live component data at query time.
-/// SP7 vocabulary turns this into a `LightEntity` script-visible object.
+/// The `world.ts` vocabulary module wraps this into a `LightEntity` script-visible object.
 #[derive(Debug, Clone)]
 struct LightQueryHandle {
     id: EntityId,
@@ -123,10 +117,7 @@ fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
             position.insert("z".to_string(), Value::from(z as f64));
             transform.insert("position".to_string(), Value::Object(position));
             obj.insert("transform".to_string(), Value::Object(transform));
-            obj.insert(
-                "_isDynamic".to_string(),
-                Value::from(h.component.is_dynamic),
-            );
+            obj.insert("isDynamic".to_string(), Value::from(h.component.is_dynamic));
             if let Some(t) = h.tag {
                 obj.insert("tag".to_string(), Value::from(t));
             }
@@ -271,7 +262,7 @@ fn apply_light_animation(
 const WORLD_QUERY_NAME: &str = "world_query";
 const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Behavior context only. \
      Filter shape: { component: \"light\", tag?: string }. \
-     SP7 vocabulary wraps this as `world.query`.";
+     The `world.ts` vocabulary module wraps this as `world.query`.";
 
 const SET_LIGHT_ANIM_NAME: &str = "set_light_animation";
 const SET_LIGHT_ANIM_DOC: &str = "Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. \
@@ -418,7 +409,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Read-only handle to origin at query time.",
         )
         .field(
-            "_isDynamic",
+            "isDynamic",
             "bool",
             "Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation.",
         )
@@ -559,7 +550,7 @@ mod tests {
                     id: h.id,
                     x: h.transform.position.x,
                     tag: h.tag,
-                    dyn: h._isDynamic,
+                    dyn: h.isDynamic,
                 })))
             "#;
             let got: String = qjs.eval(script).unwrap();

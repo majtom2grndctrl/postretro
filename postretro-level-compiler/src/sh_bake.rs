@@ -13,7 +13,9 @@ use bvh::bvh::Bvh;
 use bvh::ray::Ray;
 use glam::{DVec3, Vec3};
 use nalgebra::{Point3, Vector3};
-use postretro_level_format::sh_volume::{AnimationDescriptor, PROBE_STRIDE, ShProbe, ShVolumeSection};
+use postretro_level_format::sh_volume::{
+    AnimationDescriptor, PROBE_STRIDE, ShProbe, ShVolumeSection,
+};
 use rayon::prelude::*;
 
 use crate::bvh_build::BvhPrimitive;

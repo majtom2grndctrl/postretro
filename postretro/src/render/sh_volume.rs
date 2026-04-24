@@ -234,12 +234,8 @@ impl ShVolumeResources {
         );
 
         // Upload grid-info uniform.
-        let grid_info_bytes = build_grid_info_bytes(
-            grid_origin,
-            cell_size,
-            grid_dimensions,
-            present,
-        );
+        let grid_info_bytes =
+            build_grid_info_bytes(grid_origin, cell_size, grid_dimensions, present);
         let grid_info_buffer = device.create_buffer_init_helper(
             "SH Grid Info Uniform",
             &grid_info_bytes,
@@ -449,19 +445,11 @@ pub(crate) fn build_animation_buffers(
     section: Option<&ShVolumeSection>,
 ) -> (Vec<u8>, Vec<u8>, u32) {
     let Some(sec) = section else {
-        return (
-            dummy_descriptor_buffer(),
-            dummy_storage_buffer(),
-            0,
-        );
+        return (dummy_descriptor_buffer(), dummy_storage_buffer(), 0);
     };
     let animated_light_count = sec.animation_descriptors.len();
     if animated_light_count == 0 {
-        return (
-            dummy_descriptor_buffer(),
-            dummy_storage_buffer(),
-            0,
-        );
+        return (dummy_descriptor_buffer(), dummy_storage_buffer(), 0);
     }
 
     // Pack sample arrays contiguously: one brightness block per light, then
@@ -509,11 +497,7 @@ pub(crate) fn build_animation_buffers(
 
     let samples_bytes = f32_slice_to_bytes(&samples);
 
-    (
-        descriptors,
-        samples_bytes,
-        animated_light_count as u32,
-    )
+    (descriptors, samples_bytes, animated_light_count as u32)
 }
 
 #[allow(clippy::too_many_arguments)]

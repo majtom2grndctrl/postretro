@@ -383,11 +383,7 @@ pub fn translate_light(
 
         let direction = if let Some(raw) = props.get("direction_curve") {
             let keyframes = parse_vec3_curve(raw, "direction_curve", &light_ref)?;
-            let mut samples = resample_keyframes(
-                &keyframes,
-                period_ms,
-                KEYFRAME_RESAMPLE_RATE_HZ,
-            );
+            let mut samples = resample_keyframes(&keyframes, period_ms, KEYFRAME_RESAMPLE_RATE_HZ);
             // Direction samples are unit vectors at the authoring seam — the
             // GPU evaluator does not re-normalize.
             for v in samples.iter_mut() {
@@ -671,11 +667,12 @@ fn parse_scalar_curve(
     let entries = split_bracketed_entries(raw, key, light_ref)?;
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
-        let nums = parse_entry_numbers(entry).ok_or_else(|| TranslateError::InvalidKeyframeCurve {
-            key,
-            light_ref: light_ref.to_string(),
-            reason: format!("'[{entry}]' contains a non-numeric value"),
-        })?;
+        let nums =
+            parse_entry_numbers(entry).ok_or_else(|| TranslateError::InvalidKeyframeCurve {
+                key,
+                light_ref: light_ref.to_string(),
+                reason: format!("'[{entry}]' contains a non-numeric value"),
+            })?;
         if nums.len() != 2 {
             return Err(TranslateError::InvalidKeyframeCurve {
                 key,
@@ -700,11 +697,12 @@ fn parse_vec3_curve(
     let entries = split_bracketed_entries(raw, key, light_ref)?;
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
-        let nums = parse_entry_numbers(entry).ok_or_else(|| TranslateError::InvalidKeyframeCurve {
-            key,
-            light_ref: light_ref.to_string(),
-            reason: format!("'[{entry}]' contains a non-numeric value"),
-        })?;
+        let nums =
+            parse_entry_numbers(entry).ok_or_else(|| TranslateError::InvalidKeyframeCurve {
+                key,
+                light_ref: light_ref.to_string(),
+                reason: format!("'[{entry}]' contains a non-numeric value"),
+            })?;
         if nums.len() != 4 {
             return Err(TranslateError::InvalidKeyframeCurve {
                 key,
@@ -1208,7 +1206,10 @@ mod tests {
         // (Catmull-Rom with reflected endpoints on monotone endpoints stays
         // within the convex hull of these three keyframes).
         for v in &curve {
-            assert!(*v >= 0.05 && *v <= 1.05, "brightness sample out of range: {v}");
+            assert!(
+                *v >= 0.05 && *v <= 1.05,
+                "brightness sample out of range: {v}"
+            );
         }
     }
 
@@ -1249,9 +1250,7 @@ mod tests {
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
         match err {
-            TranslateError::InvalidKeyframeCurve {
-                key, light_ref, ..
-            } => {
+            TranslateError::InvalidKeyframeCurve { key, light_ref, .. } => {
                 assert_eq!(key, "brightness_curve");
                 assert!(light_ref.contains("light"));
             }

@@ -257,7 +257,6 @@ impl EntityRegistry {
             })
     }
 
-
     /// Iterate every live entity that carries a component of the given kind.
     /// Yields `(EntityId, &ComponentValue)` pairs in slot-index order.
     ///

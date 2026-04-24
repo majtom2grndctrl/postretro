@@ -628,10 +628,7 @@ fn snake_to_camel(key: &str) -> &str {
     }
 }
 
-fn rename_json_keys(
-    value: serde_json::Value,
-    map: fn(&str) -> &str,
-) -> serde_json::Value {
+fn rename_json_keys(value: serde_json::Value, map: fn(&str) -> &str) -> serde_json::Value {
     match value {
         serde_json::Value::Object(obj) => {
             let mut out = serde_json::Map::with_capacity(obj.len());
@@ -668,9 +665,8 @@ impl FromLua for LightAnimation {
     fn from_lua(value: LuaValue, _lua: &Lua) -> mlua::Result<Self> {
         let json = lua_to_json(value)?;
         let snake = rename_json_keys(json, camel_to_snake);
-        serde_json::from_value::<LightAnimation>(snake).map_err(|e| {
-            mlua::Error::RuntimeError(format!("invalid LightAnimation: {e}"))
-        })
+        serde_json::from_value::<LightAnimation>(snake)
+            .map_err(|e| mlua::Error::RuntimeError(format!("invalid LightAnimation: {e}")))
     }
 }
 

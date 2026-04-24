@@ -319,7 +319,7 @@ pub(crate) fn register_register_handler(
                             ),
                         };
                         return Err(
-                            rquickjs::Exception::from_message(ctx, &err.to_string())?.throw(),
+                            rquickjs::Exception::from_message(ctx, &err.to_string())?.throw()
                         );
                     };
                     handlers
@@ -420,11 +420,7 @@ pub(crate) fn register_register_handler(
 pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("ScriptCallContext")
-        .field(
-            "delta",
-            "f32",
-            "Seconds since the previous tick.",
-        )
+        .field("delta", "f32", "Seconds since the previous tick.")
         .field(
             "time",
             "f32",

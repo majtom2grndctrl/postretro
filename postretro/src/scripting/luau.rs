@@ -29,9 +29,7 @@ const DENIED_GLOBALS: &[&str] = &["io", "package", "require", "dofile", "loadfil
 /// (see: context/plans/ready/scripting-foundation/plan-2-light-entity.md
 /// §Sub-plan 5), not from a free-running clock. `os.date` is denied alongside
 /// them because it exposes the same wall-clock surface in string form.
-const DENIED_OS_FIELDS: &[&str] = &[
-    "execute", "exit", "getenv", "time", "clock", "date",
-];
+const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv", "time", "clock", "date"];
 
 /// Configuration for a [`LuauSubsystem`]. `pool_size` tunes the ephemeral-
 /// context pool. Does NOT affect the shared behavior `Lua` state, which is

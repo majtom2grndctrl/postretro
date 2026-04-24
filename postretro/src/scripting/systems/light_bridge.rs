@@ -18,9 +18,9 @@ use crate::lighting::{GPU_LIGHT_SIZE, pack_light};
 use crate::prl::{FalloffModel, LightType, MapLight};
 use crate::render::sh_volume::ANIMATION_DESCRIPTOR_SIZE;
 
-use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
 #[cfg(test)]
 use crate::scripting::components::light::LightAnimation;
+use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
 use crate::scripting::registry::{EntityId, EntityRegistry};
 
 /// Snapshot of a map light's component state as last observed by the bridge.
@@ -319,8 +319,16 @@ fn map_light_to_component(light: &MapLight) -> LightComponent {
         color: light.color,
         falloff_model,
         falloff_range: light.falloff_range,
-        cone_angle_inner: if is_spot { Some(light.cone_angle_inner) } else { None },
-        cone_angle_outer: if is_spot { Some(light.cone_angle_outer) } else { None },
+        cone_angle_inner: if is_spot {
+            Some(light.cone_angle_inner)
+        } else {
+            None
+        },
+        cone_angle_outer: if is_spot {
+            Some(light.cone_angle_outer)
+        } else {
+            None
+        },
         cone_direction: if is_spot || is_directional {
             Some(light.cone_direction)
         } else {
@@ -563,7 +571,10 @@ mod tests {
 
         // Script-side mutation: read current, bump intensity, write back.
         let id = bridge.entity_for_map_index(0).unwrap();
-        let mut component = registry.get_component::<LightComponent>(id).unwrap().clone();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
         component.intensity = 7.5;
         registry.set_component(id, component).unwrap();
 
@@ -587,7 +598,10 @@ mod tests {
         let _ = bridge.update(&mut registry, 0.0);
 
         let id = bridge.entity_for_map_index(0).unwrap();
-        let mut component = registry.get_component::<LightComponent>(id).unwrap().clone();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
         component.animation = Some(LightAnimation {
             period_ms: 1000.0,
             phase: Some(0.0),
@@ -606,11 +620,16 @@ mod tests {
         assert_eq!(active, 1);
 
         // Clear animation → sentinel.
-        let mut component = registry.get_component::<LightComponent>(id).unwrap().clone();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
         component.animation = None;
         registry.set_component(id, component).unwrap();
 
-        let update = bridge.update(&mut registry, 0.1).expect("dirty after clear");
+        let update = bridge
+            .update(&mut registry, 0.1)
+            .expect("dirty after clear");
         let brightness_count =
             u32::from_ne_bytes(update.descriptor_bytes[12..16].try_into().unwrap());
         let color_count = u32::from_ne_bytes(update.descriptor_bytes[32..36].try_into().unwrap());
@@ -628,7 +647,10 @@ mod tests {
         let _ = bridge.update(&mut registry, 0.0);
 
         let id = bridge.entity_for_map_index(0).unwrap();
-        let mut component = registry.get_component::<LightComponent>(id).unwrap().clone();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
         // 2-period bounded animation; final brightness = 0.25, final color = blue.
         component.animation = Some(LightAnimation {
             period_ms: 500.0,
@@ -647,12 +669,18 @@ mod tests {
         // Not yet complete at t=1.5.
         let _ = bridge.update(&mut registry, 1.5);
         let mid = registry.get_component::<LightComponent>(id).unwrap();
-        assert!(mid.animation.is_some(), "animation still live before completion bound");
+        assert!(
+            mid.animation.is_some(),
+            "animation still live before completion bound"
+        );
 
         // At t=2.01 the 2×500ms bound is crossed. Bridge must settle values.
         let _ = bridge.update(&mut registry, 2.01);
         let settled = registry.get_component::<LightComponent>(id).unwrap();
-        assert!(settled.animation.is_none(), "animation cleared on completion");
+        assert!(
+            settled.animation.is_none(),
+            "animation cleared on completion"
+        );
         assert!(
             (settled.intensity - 0.25).abs() < 1e-6,
             "intensity settled to final brightness keyframe; got {}",
@@ -681,14 +709,20 @@ mod tests {
         };
 
         // Write at t=0.0.
-        let mut comp = registry.get_component::<LightComponent>(id).unwrap().clone();
+        let mut comp = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
         comp.animation = Some(make_anim());
         registry.set_component(id, comp).unwrap();
         let _ = bridge.update(&mut registry, 0.0);
 
         // At t=0.9 — past completion bound (1.0s) would normally fire — but
         // first re-write at t=0.6 resets the clock. Completion now at t=1.6.
-        let mut comp = registry.get_component::<LightComponent>(id).unwrap().clone();
+        let mut comp = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
         // Mutate to trigger the restart path (different animation instance).
         let mut anim = make_anim();
         anim.phase = Some(0.5);
@@ -701,14 +735,22 @@ mod tests {
         // at 0.6, completion at 1.6).
         let _ = bridge.update(&mut registry, 1.1);
         assert!(
-            registry.get_component::<LightComponent>(id).unwrap().animation.is_some(),
+            registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .animation
+                .is_some(),
             "restart must reset completion clock; animation should still be live at t=1.1"
         );
 
         // At t=1.7 — past the restarted clock's completion bound.
         let _ = bridge.update(&mut registry, 1.7);
         assert!(
-            registry.get_component::<LightComponent>(id).unwrap().animation.is_none(),
+            registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .animation
+                .is_none(),
             "animation settles once restarted completion bound is crossed"
         );
     }
@@ -721,7 +763,10 @@ mod tests {
         let _ = bridge.update(&mut registry, 0.0);
         let id = bridge.entity_for_map_index(0).unwrap();
 
-        let mut comp = registry.get_component::<LightComponent>(id).unwrap().clone();
+        let mut comp = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
         comp.animation = Some(LightAnimation {
             period_ms: 1000.0,
             phase: Some(2.75),
@@ -751,7 +796,10 @@ mod tests {
         let _ = bridge.update(&mut registry, 0.0);
         let id = bridge.entity_for_map_index(0).unwrap();
 
-        let mut comp = registry.get_component::<LightComponent>(id).unwrap().clone();
+        let mut comp = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
         comp.animation = Some(LightAnimation {
             period_ms: 100.0,
             phase: None,

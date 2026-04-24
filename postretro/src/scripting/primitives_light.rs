@@ -123,7 +123,10 @@ fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
             position.insert("z".to_string(), Value::from(z as f64));
             transform.insert("position".to_string(), Value::Object(position));
             obj.insert("transform".to_string(), Value::Object(transform));
-            obj.insert("_isDynamic".to_string(), Value::from(h.component.is_dynamic));
+            obj.insert(
+                "_isDynamic".to_string(),
+                Value::from(h.component.is_dynamic),
+            );
             if let Some(t) = h.tag {
                 obj.insert("tag".to_string(), Value::from(t));
             }
@@ -227,7 +230,11 @@ fn validate_and_normalize(
     // Normalize phase into [0.0, 1.0) via rem_euclid, matching the GPU
     // evaluator. `None` and `Some(0.0)` both mean "start at the period head".
     if let Some(p) = anim.phase {
-        let normalized = if p.is_finite() { p.rem_euclid(1.0) } else { 0.0 };
+        let normalized = if p.is_finite() {
+            p.rem_euclid(1.0)
+        } else {
+            0.0
+        };
         anim.phase = Some(normalized);
     }
     Ok(anim)
@@ -262,14 +269,12 @@ fn apply_light_animation(
 // --- Primitive registration --------------------------------------------------
 
 const WORLD_QUERY_NAME: &str = "world_query";
-const WORLD_QUERY_DOC: &str =
-    "Return an array of entity handles matching the filter. Behavior context only. \
+const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Behavior context only. \
      Filter shape: { component: \"light\", tag?: string }. \
      SP7 vocabulary wraps this as `world.query`.";
 
 const SET_LIGHT_ANIM_NAME: &str = "set_light_animation";
-const SET_LIGHT_ANIM_DOC: &str =
-    "Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. \
+const SET_LIGHT_ANIM_DOC: &str = "Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. \
      Non-unit direction samples are silently normalized; zero-length direction samples \
      and color animations on non-dynamic lights error with InvalidArgument. \
      Behavior context only.";
@@ -291,9 +296,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
     match component {
         "light" => Ok(QueryFilter::Light { tag }),
         other => Err(ScriptError::InvalidArgument {
-            reason: format!(
-                "world_query: unknown component `{other}` (SP6 supports only `light`)"
-            ),
+            reason: format!("world_query: unknown component `{other}` (SP6 supports only `light`)"),
         }),
     }
 }
@@ -324,9 +327,7 @@ fn register_set_light_animation(registry: &mut PrimitiveRegistry, ctx: ScriptCtx
     registry
         .register("set_light_animation", {
             let ctx = ctx.clone();
-            move |id: EntityId,
-                  animation: Option<LightAnimation>|
-                  -> Result<(), ScriptError> {
+            move |id: EntityId, animation: Option<LightAnimation>| -> Result<(), ScriptError> {
                 apply_light_animation(&ctx, id, animation)
             }
         })
@@ -562,10 +563,7 @@ mod tests {
                 })))
             "#;
             let got: String = qjs.eval(script).unwrap();
-            let expected = format!(
-                r#"[{{"id":{},"x":1,"tag":"foo","dyn":true}}]"#,
-                id.to_raw()
-            );
+            let expected = format!(r#"[{{"id":{},"x":1,"tag":"foo","dyn":true}}]"#, id.to_raw());
             assert_eq!(got, expected);
         });
     }
@@ -630,7 +628,12 @@ mod tests {
         .unwrap();
         apply_light_animation(&ctx, id, None).unwrap();
         let reg = ctx.registry.borrow();
-        assert!(reg.get_component::<LightComponent>(id).unwrap().animation.is_none());
+        assert!(
+            reg.get_component::<LightComponent>(id)
+                .unwrap()
+                .animation
+                .is_none()
+        );
     }
 
     #[test]
@@ -791,10 +794,7 @@ mod tests {
     fn both_primitives_are_behavior_only() {
         let ctx = ScriptCtx::new();
         let r = registry_for(ctx);
-        let names_scopes: Vec<_> = r
-            .iter()
-            .map(|p| (p.name, p.context_scope))
-            .collect();
+        let names_scopes: Vec<_> = r.iter().map(|p| (p.name, p.context_scope)).collect();
         for &(name, scope) in &names_scopes {
             assert_eq!(
                 scope,

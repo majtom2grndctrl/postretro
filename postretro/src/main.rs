@@ -44,12 +44,12 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, DiagnosticAction};
 use crate::render::Renderer;
-use crate::texture::TextureSet;
 use crate::scripting::call_context::ScriptCallContext;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::register_all;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig, Which as ScriptWhich};
+use crate::texture::TextureSet;
 use crate::visibility::{VisibilityPath, VisibilityStats, VisibleCells};
 
 const DEFAULT_MAP_PATH: &str = "assets/maps/test-3.prl";
@@ -157,9 +157,12 @@ fn main() -> Result<()> {
     let script_ctx = ScriptCtx::new();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
-    let script_runtime =
-        ScriptRuntime::new(&script_registry, &ScriptRuntimeConfig::default(), &script_ctx)
-            .context("failed to construct script runtime")?;
+    let script_runtime = ScriptRuntime::new(
+        &script_registry,
+        &ScriptRuntimeConfig::default(),
+        &script_ctx,
+    )
+    .context("failed to construct script runtime")?;
 
     let mut app = App {
         renderer: None,
@@ -295,10 +298,7 @@ fn load_behavior_scripts(runtime: &ScriptRuntime) {
     paths.sort();
     for path in &paths {
         if let Err(err) = runtime.run_script_file(ScriptWhich::Behavior, path) {
-            log::error!(
-                "[Scripting] failed to load `{}`: {err}",
-                path.display(),
-            );
+            log::error!("[Scripting] failed to load `{}`: {err}", path.display(),);
         }
     }
 }
@@ -718,11 +718,9 @@ impl ApplicationHandler for App {
                     // `render_frame_indirect` so scripted lights participate
                     // in slot allocation with their post-mutation state.
                     {
-                        let current_time =
-                            self.level_start.elapsed().as_secs_f32();
+                        let current_time = self.level_start.elapsed().as_secs_f32();
                         let mut registry = self.script_ctx.registry.borrow_mut();
-                        if let Some(update) =
-                            self.light_bridge.update(&mut registry, current_time)
+                        if let Some(update) = self.light_bridge.update(&mut registry, current_time)
                         {
                             renderer.upload_bridge_lights(&update.lights_bytes);
                             // NOTE: descriptor_bytes uploads wait on the

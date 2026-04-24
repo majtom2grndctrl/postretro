@@ -36,9 +36,8 @@ Bring lights into the scripting surface as first-class entities. After this plan
 ## Settled decisions (do not relitigate)
 
 - **Three-primitive behavior surface for Plan 2.** `registerHandler`, `world.query`, and `set_light_animation` (reached as `light.setAnimation` on the handle). Nothing else is in scope for this plan.
-- **`light()` is a Rust primitive.** The `LightComponent` is tightly coupled to the renderer (lightmap baking, forward shader, light bridge). Its constructor lives in the Rust primitive registry and is auto-documented through the Plan 1 sub-plan 5 type generator, the same path that exposes `world.query` and `set_light_animation`. It is not modder-authored TS vocabulary.
 - **External APIs stay close to internal shapes, but prioritize modder ergonomics.** When internal naming, hardware constraints, or usability concerns diverge, the external API simplifies rather than exposes the constraint. The mapping should be traceable, not required to be identical. A `LightComponent` carries its animation in a nested `animation` field, matching `MapLight.animation: Option<LightAnimation>`; the `LightEntity` handle wraps `origin: [f32; 3]` in a `transform.position` accessor because array-indexed fields are hostile to script authors.
-- **`phase` is a first-class field on `LightAnimation`.** Required for per-light offset effects (rolling waves, phase-staggered flickers). The GPU already evaluates `phase` in every compose pass (`fract(time / period + phase)` in `animated_lightmap_compose.wgsl` line 139 and equivalents). Exposing it to scripts is table stakes — per-light animation offsets are a core authoring need, and without `phase` a wave effect across N lights would need N separate animation curves.
+- **`phase` is a first-class field on `LightAnimation`.** Required for per-light offset effects (rolling waves, phase-staggered flickers). The GPU already evaluates `phase` in every compose pass (`fract(time / period + phase)` in `animated_lightmap_compose.wgsl` line 139 and equivalents), where `time` and `period` are in seconds. The bridge converts `periodMs / 1000.0` when writing the GPU descriptor. Exposing it to scripts is table stakes — per-light animation offsets are a core authoring need, and without `phase` a wave effect across N lights would need N separate animation curves.
 - **Keyframe path, not per-tick setters.** Scripts write a `LightAnimation` once (at level load, or on a trigger); the GPU evaluates it every frame through the shared Catmull-Rom helpers in `postretro/src/shaders/curve_eval.wgsl`. Per-tick `setLightIntensity(entity, value)` helpers do not exist.
 - **`registerHandler(event, fn)` over per-entity callbacks.** Behavior scripts register top-level handlers for engine events. Lighting setup happens in `registerHandler("levelLoad", ...)`. The `tick` event exists and carries `ctx: { delta, time }`, but lighting use cases do not need it — GPU keyframe evaluation handles animation without per-frame script involvement.
 - **`world.query` returns typed entity handles.** `world.query({ component: "light", tag: "..." })` returns `LightEntity[]`. The handle type is inferred from the component filter. Methods live on the handle (`light.setAnimation(anim)`), not as free-standing primitive imports.
@@ -47,7 +46,7 @@ Bring lights into the scripting surface as first-class entities. After this plan
 - **`delta` injected into `tick` handlers.** Scripts read `delta: f32` and `time: f32` from `ScriptCallContext`. Wall-clock access is not exposed. Required for determinism.
 - **Pre-release API policy.** Rename freely, no compat shims, fix all consumers in the same change (`MEMORY.md` / `feedback_api_stability.md`).
 - **Lights are always interruptible.** Last `setAnimation` call wins. No coordination mechanism exists and none is needed — scripts that want sequenced behavior track their own state. Async completion callbacks (Promise/await) are a future direction; they require a Promise API that has been deliberately avoided so far.
-- **`playCount` is CPU-managed.** `LightAnimation` carries `play_count: Option<u32>` (script: `playCount?: number`; omit = loop forever). The light bridge tracks `animation_start_time` in `LightSnapshot` and detects completion by comparing elapsed time to `n × period`. On completion it samples the final keyframe value, writes it as static `intensity`/`color` on the component, and clears the animation. The GPU always sees a looping descriptor — `AnimationDescriptor` gains no `loop_count` or `start_time` fields and stays 48 bytes.
+- **`playCount` is CPU-managed.** `LightAnimation` carries `play_count: Option<u32>` (script: `playCount?: number`; omit = loop forever). The light bridge tracks `animation_start_time` in `LightSnapshot` and detects completion by comparing elapsed time to `n × periodMs`. On completion it samples the final keyframe value, writes it as static `intensity`/`color` on the component, and clears the animation. The GPU always sees a looping descriptor — `AnimationDescriptor` gains no `loop_count` or `start_time` fields and stays 48 bytes.
 - **`setIntensity`/`setColor` are vocabulary helpers, not primitives.** They construct a `LightAnimation` with `playCount: 1` and a one-cycle transition curve, then call `setAnimation`. Defined in `world.ts` as handle methods alongside `setAnimation`. Three Rust primitives hold.
 
 ---
@@ -134,7 +133,7 @@ Direction samples are normalized at write time. The shader does not re-normalize
 
 - [ ] `LightAnimation` carries `direction` end-to-end: compiler authoring → format serialization → shader binding.
 - [ ] Direction-channel evaluation via `curve_eval.wgsl` returns expected values for synthetic samples (unit test).
-- [ ] Test map with `light_spot` whose animation carries a two-sample direction curve visibly sweeps between the directions over `period`.
+- [ ] Test map with `light_spot` whose animation carries a two-sample direction curve visibly sweeps between the directions over `periodMs`.
 - [ ] All three shaders compile. `ANIMATION_DESCRIPTOR_SIZE` stays 48.
 - [ ] Compiler errors at pack time when a non-`bake_only`, non-`is_dynamic` light has `animation.color.is_some()`. Error names the light.
 - [ ] `cargo test -p postretro-level-format`, `cargo test -p postretro-level-compiler`, `cargo clippy -p postretro -- -D warnings` clean.
@@ -155,9 +154,9 @@ Map authors working in TrenchBroom need a way to attach per-light keyframe anima
 
 The arity per key is fixed and known to the compiler — `brightness_curve` is always scalar, `color_curve` and `direction_curve` are always 3-vector. The parser for each key enforces its expected inner-array length and rejects entries with the wrong count. `t_ms` is the timestamp in milliseconds, absolute from zero. The format is self-describing: no separate encoding field.
 
-`period` is a separate scalar FGD key in seconds.
+`period_ms` is a separate scalar FGD key in milliseconds.
 
-**Resampling at compile time.** The internal `LightAnimation` stores uniform samples along `period`. Authored keyframes are resampled at a fixed rate (target: 32 samples per second of `period`, capped at 256 total) using Catmull-Rom over the authored timestamps. This keeps the wire format and GPU evaluator unchanged.
+**Resampling at compile time.** The internal `LightAnimation` stores uniform samples along `period_ms`. Authored keyframes are resampled at a fixed rate — target: `round(period_ms / 1000.0 * 32)` samples (32 per second of period), capped at 256 total — using Catmull-Rom over the authored timestamps. This keeps the wire format and GPU evaluator unchanged.
 
 The 32 Hz rate and 256-sample cap are new limits introduced by Plan 2 — not derived from any existing GPU buffer constraint. Rationale: a conservative ceiling to bound descriptor buffer growth as authored maps scale; revisit if authored content approaches the cap.
 
@@ -172,13 +171,13 @@ The 32 Hz rate and 256-sample cap are new limits introduced by Plan 2 — not de
 ### Files changed
 
 - `postretro-level-compiler/src/format/quake_map.rs` — parse `brightness_curve`, `color_curve`, `direction_curve` on `light_omni`, `light_spot`, `light_sun`. Reject malformed entries (wrong arity, non-monotonic timestamps) with a message naming the light and the offending key.
-- `postretro-level-compiler/src/map_data.rs` — add a `pub phase: Option<f32>` field to `LightAnimation` (`#[serde(default)]`; `None` = 0.0). Authored FGD keyframe animations omit `phase` unless the author sets `_curve_phase`; scripted lights set phase explicitly. Also add the resampler: `resample_keyframes(keyframes: &[(f32, T)], period: f32, samples_per_second: u32) -> Vec<T>`.
+- `postretro-level-compiler/src/map_data.rs` — add a `pub phase: Option<f32>` field to `LightAnimation` (`#[serde(default)]`; `None` = 0.0). Authored FGD keyframe animations omit `phase` unless the author sets `_curve_phase`; scripted lights set phase explicitly. Also add the resampler: `resample_keyframes(keyframes: &[(f32, T)], period_ms: f32, samples_per_second: u32) -> Vec<T>`.
 - `postretro/fgd/*.fgd` — add `brightness_curve`, `color_curve`, `direction_curve`, and `_curve_phase` keys to the `light_omni`, `light_spot`, `light_sun` definitions. Document the `[t_ms, …]` keyframe shape in the FGD descriptions. `_curve_phase` is a float key in `[0.0, 1.0)`; document its separation from the legacy `_phase` key (which is tied to `style` and removed in the follow-up plan).
 
 ### Acceptance criteria
 
-- [ ] A test map authoring `brightness_curve "[0, 0.1] [500, 1.0] [1000, 0.3]"` and `period "1.0"` produces a visible pulse matching the curve.
-- [ ] A `direction_curve` with two keyframes drives a visible sweep over `period`.
+- [ ] A test map authoring `brightness_curve "[0, 0.1] [500, 1.0] [1000, 0.3]"` and `period_ms "1000"` produces a visible pulse matching the curve.
+- [ ] A `direction_curve` with two keyframes drives a visible sweep over `periodMs`.
 - [ ] Malformed keyframes (wrong arity, out-of-order timestamps) error at compile time with a message naming the light and key.
 - [ ] `color_curve` on a baked light (`!bake_only && !is_dynamic`) errors at pack time — same error as Sub-plan 1, now with the FGD key named in the message.
 - [ ] Resampled curves at 32 Hz match the authored keyframes within 1% over the full period (unit test).
@@ -192,7 +191,7 @@ The 32 Hz rate and 256-sample cap are new limits introduced by Plan 2 — not de
 
 ### Description
 
-`LightComponent` is the script's view of a runtime light. Its fields mirror `MapLight` minus compiler-only concerns (`bake_only`, `is_dynamic`). Runtime-spawned scripted lights are dynamic by definition — they never feed the SH bake.
+`LightComponent` is the script's view of a map-authored light. Its fields mirror `MapLight` minus compiler-only concerns (`bake_only`, `is_dynamic`). Map lights are populated into the scripting entity registry at level load by the light bridge; the scripting surface in Plan 2 is mutation-only — no script can spawn or destroy a light.
 
 ### Struct shape
 
@@ -215,13 +214,13 @@ pub struct LightComponent {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LightAnimation {
-    pub period: f32,
+    pub period_ms: f32,
     #[serde(default)]
     pub phase: Option<f32>,               // None = 0.0; [0.0, 1.0) when set; wraps via `fract`
     #[serde(default)]
     pub play_count: Option<u32>,          // None = loop forever; Some(n) = play n times then hold at last keyframe
     pub brightness: Option<Vec<f32>>,
-    pub color: Option<Vec<[f32; 3]>>,     // None for scripted lights with is_dynamic == false (enforced elsewhere)
+    pub color: Option<Vec<[f32; 3]>>,     // None for non-dynamic lights; set_light_animation rejects color on non-dynamic lights
     pub direction: Option<Vec<[f32; 3]>>,
 }
 ```
@@ -255,20 +254,44 @@ Use `Vec3Lit(pub [f32; 3])` in `postretro/src/scripting/ffi_types.rs` for the **
 
 ### Description
 
-Map-authored lights load through `postretro/src/prl.rs` into `LevelWorld.lights: Vec<MapLight>`, packed by `pack_spec_lights` and `pack_lights_with_slots`. The bridge runs once per frame between game logic and render:
+Map-authored lights load through `postretro/src/prl.rs` into `LevelWorld.lights: Vec<MapLight>`, packed by `pack_spec_lights` and `pack_lights_with_slots`. At level load the bridge also populates each `MapLight` into the scripting entity registry as a `LightComponent` entity, giving scripts a query surface. The bridge runs once per frame between game logic and render:
 
 1. Query the entity registry for all entities with a `LightComponent`.
-2. Diff against a stored snapshot (by `EntityId`). New, mutated, and removed entries generate upload / clear ops.
-3. Produce a merged `map_lights ++ scripted_lights` payload. The existing pack paths consume it unchanged.
+2. Diff against a stored `LightSnapshot` per `EntityId`. Mutated entries generate upload ops.
+3. Re-pack the light buffer from the (possibly mutated) component state. The existing pack paths consume it unchanged.
 4. Upload via `queue.write_buffer` on the existing `lights_buffer`.
 
 ### Design notes
 
-- **Single buffer layout.** Scripted lights append after map lights. The shader's light loop sees one buffer, one count.
-- **Capacity.** 500-light budget covers map + scripted combined. Exceeding it logs a warn (rate-limited to at most once per second) and drops the overflow.
-- **Animated scripted lights use a separate writable descriptor buffer.** Today's `anim_descriptors_buffer` in `ShVolumeResources::new` is load-time only, sized to the baked animated light count, and must stay that way — per-frame rewrites would couple scripted lifecycles to baked descriptors. Add a sibling buffer sized to a fixed runtime cap (128 scripted animated lights), `STORAGE | COPY_DST`, with the same 48-byte stride. The bridge writes it via `queue.write_buffer` when dirty. Scripted-light `GpuLight` entries carry descriptor indices into the scripted buffer; baked lights carry indices into the baked buffer. The two index spaces never alias.
-- **Dirty tracking.** `HashMap<EntityId, LightSnapshot>` is enough at 500-light scale.
-- **`play_count` completion tracking.** When a `LightAnimation` has `play_count: Some(n)`, the bridge records the frame timestamp as `animation_start_time: f32` in `LightSnapshot` when the animation is first written. On each subsequent frame, if `current_time − start_time ≥ n × period`, the bridge samples the last brightness/color keyframe value, writes it as static `intensity`/`color` on the `LightComponent`, and clears `animation`. The GPU always sees a looping descriptor — `AnimationDescriptor` is never extended with `loop_count` or `start_time` fields, and the struct stays 48 bytes.
+- **Single buffer layout.** Map lights only — Plan 2 has no spawned lights. The GPU buffer is sized to the authored light count at level load and does not grow.
+- **Descriptor-slot pre-reservation.** Every map light gets an `AnimationDescriptor` slot in `anim_descriptors_buffer` at level load, whether or not authoring supplied an animation. Lights with a baked (`*_curve` FGD) animation get a populated descriptor. Lights that are static at compile time get a **sentinel descriptor** — `brightness_count == 0 && color_count == 0 && direction_count == 0`, all sample indices zeroed — which `forward.wgsl` already treats as "no animation, use the static `intensity` / `color` / `cone_direction` fields." This costs 48 bytes per authored light and gives every light a pre-reserved slot; `setAnimation` always overwrites in place and never allocates.
+
+  | Light compile-time state | Bridge action on `setAnimation` |
+  |---|---|
+  | Had `*_curve` FGD keys (baked animation) | Overwrite the existing slot in `anim_descriptors_buffer` via `queue.write_buffer` at the slot's byte offset. |
+  | Static at compile time (no `*_curve` keys) | Overwrite the pre-reserved sentinel slot in place via `queue.write_buffer`. No new buffer, no slot allocation. |
+  | `setAnimation(null)` on either | Write the sentinel descriptor back into the slot; light reverts to static. |
+
+  This preserves the "slot count and layout fixed at load time" invariant while allowing slot *contents* to be updated by the bridge. No 128-slot scripted buffer reappears.
+- **`LightSnapshot`.** New type; defined here because it does not exist before Plan 2 ships.
+
+  ```rust
+  // Proposed design — lives in postretro/src/scripting/systems/light_bridge.rs.
+  pub struct LightSnapshot {
+      pub component: LightComponent,         // state at last upload; used for dirty detection
+      pub animation_start_time: Option<f32>, // Some(t) when play_count-bounded animation is active
+  }
+  ```
+
+  `animation_start_time` is `Some(current_frame_time)` the moment a `play_count`-bounded animation is written, and `None` otherwise. Any `setAnimation` call (including a repeated call with the same animation value) resets it to the current frame time — "last call wins" always restarts the count from zero.
+- **Dirty tracking.** `HashMap<EntityId, LightSnapshot>` — one entry per map light that has been written at least once by a script.
+- **`play_count` completion tracking.** When a `LightAnimation` has `play_count: Some(n)`, the bridge records the frame timestamp as `animation_start_time: f32` in `LightSnapshot` when the animation is first written. On each subsequent frame, if `current_time_ms − start_time_ms ≥ n × periodMs`, the bridge samples the last brightness/color keyframe value and settles it through the registry:
+
+  1. Call `EntityRegistry::set_component` with a `LightComponent` whose `intensity` / `color` are set to the sampled final values and whose `animation` is `None`. The registry is the source of truth for scripts — a subsequent `world.query` or live re-read (see "Snapshot freshness" in Sub-plan 6) observes the settled static state, not an animation that has already finished.
+  2. Update the in-memory `LightSnapshot.component` to match and clear `animation_start_time` to `None`.
+  3. Re-pack that light's descriptor from the updated component state into the GPU buffer on the same frame — the GPU sees a static light, not a looping descriptor with a dead `play_count`.
+
+  The GPU descriptor itself never learns about `play_count`: `AnimationDescriptor` is not extended with `loop_count` or `start_time` fields, and the struct stays 48 bytes. Completion handling lives entirely on the CPU side, driven by the registry.
 - **f64 → f32 origin conversion at the bridge boundary.** `MapLight.origin` is `[f64; 3]` on the runtime side; script-facing `LightComponent` is `[f32; 3]`. Cast with explicit `as f32` at the one pack point; never round-trip through f64.
 - **Frame ordering.** Bridge runs between Game Logic and Render. `update_dynamic_light_slots` runs after so scripted shadow-casters participate in slot allocation.
 
@@ -278,7 +301,6 @@ Map-authored lights load through `postretro/src/prl.rs` into `LevelWorld.lights:
 - [ ] Clearing an animation (`light.setAnimation(null)`) removes animation effects within one frame.
 - [ ] Mutating `intensity` updates rendered output within one frame.
 - [ ] Map-authored lights render unchanged when no scripts touch them.
-- [ ] Combined-light overflow logs a warn at most once per second and drops the overflow.
 - [ ] Animated lights evaluate via the GPU path every frame without per-tick script involvement.
 - [ ] `cargo test -p postretro`, `cargo clippy -p postretro -- -D warnings` clean.
 
@@ -295,7 +317,13 @@ Behavior scripts register top-level handlers for engine events. Plan 2 delivers 
 - **`"levelLoad"`** — fires once per level, after the world is populated but before the first frame renders. Handler signature: `() => void` in TS; `function()` with no parameters in Luau. The handler receives no argument — no `ScriptCallContext`. This is where light setup happens — query lights, call `setAnimation`.
 - **`"tick"`** — fires once per frame, after game logic and before render. Handler signature: `(ctx: ScriptCallContext) => void`. `ctx.delta` is seconds since the last tick; `ctx.time` is accumulated seconds since level load. `tick` is the only event that carries `ScriptCallContext`. Lighting does not use `tick` — the GPU evaluates animations. `tick` exists for future gameplay logic (NPC steering, triggers, timers).
 
-The handler registry is per-level. `registerHandler` calls in the behavior context accumulate into a table; level unload clears it. Multiple handlers for the same event are allowed and fire in registration order.
+The handler registry is per-level. `registerHandler` calls in the behavior context accumulate into a table; level unload clears it. Multiple handlers for the same event are allowed and fire in **registration order**, defined as:
+
+1. The behavior-script loader discovers all behavior files for the level, collects their paths relative to `assets/scripts/`, and sorts them lexicographically by UTF-8 byte order (case-sensitive). Filesystem enumeration order is never observed — the sort happens at the loader seam before any script executes.
+2. Scripts are executed in that sorted order. `registerHandler` calls within a single file append in source order.
+3. Therefore: all handlers from `a.ts` run before any from `b.ts`; two handlers within `a.ts` run in the order their `registerHandler` calls appear. Authors who need a specific cross-file order use a filename prefix (e.g., `00_setup.ts`, `10_waves.ts`).
+
+This rule is independent of the scripting engine — rquickjs and mlua execute whatever the loader hands them in whatever order — so identical ordering holds for TypeScript and Luau behavior files, including mixed-language levels.
 
 `registerHandler` is a `BehaviorOnly` primitive. A call from the definition context returns `ScriptError::WrongContext` — the same pattern as `set_light_animation`. The definition context is for data declarations only; event subscription belongs to behavior.
 
@@ -336,6 +364,7 @@ If a handler throws (QuickJS) or raises (Luau) or the underlying Rust call panic
 - [ ] A TypeScript tick handler computing `sin(ctx.time * rate)` matches a Rust-side reference within floating-point tolerance.
 - [ ] Calling `registerHandler` from the definition context returns `ScriptError::WrongContext`.
 - [ ] A handler that throws is logged (with script file and event name), swallowed, and does not prevent other handlers for the same event from running or the frame from completing.
+- [ ] Handlers registered across two behavior files (`a.ts` and `b.ts`) for the same event fire with all of `a.ts`'s handlers before any of `b.ts`'s, regardless of on-disk creation order. Rename-to-swap test: swapping the filenames swaps the firing order.
 - [ ] Generated `.d.ts` and `.d.luau` expose `registerHandler` and `ScriptCallContext` with accurate types.
 
 ---
@@ -360,13 +389,14 @@ Defined in `world.ts` (TS) and `world.luau` (Luau). Members:
 |--------|------|-------|
 | `transform.position` | `{ x: f32, y: f32, z: f32 }` | Read-only. Wraps `MapLight.origin: [f64; 3]`, cast to f32 at query time. |
 | `setAnimation(anim)` | `(LightAnimation \| null) -> void` | Wraps `set_light_animation`. Pass `null`/`nil` to clear. Last call wins — lights are always interruptible. |
-| `setIntensity(target, transitionMs?, easing?)` | `(f32, f32?, EasingCurve?) -> void` | Vocabulary helper. Constructs a one-cycle `LightAnimation` transitioning from current intensity to `target` over `transitionMs` ms (default 0 = instant), using `easing` (default: `"easeInOut"` when `transitionMs > 0`). Sets `playCount: 1`. Calls `setAnimation` internally. Defined in `world.ts`, not a Rust primitive. |
-| `setColor(target, transitionMs?, easing?)` | `([f32, f32, f32], f32?, EasingCurve?) -> void` | Same pattern as `setIntensity` for color. |
+| `setIntensity(target, transitionMs?, easing?)` | `(f32, f32?, EasingCurve?) -> void` | Vocabulary helper. Re-reads the live `LightComponent.intensity` from the registry at call time (not the handle's query-time snapshot) and constructs a one-cycle `LightAnimation` transitioning from that live value to `target` over `transitionMs` ms (default 0 = instant), using `easing` (default: `"easeInOut"` when `transitionMs > 0`). Sets `playCount: 1`. Calls `setAnimation` internally. Defined in `world.ts`, not a Rust primitive. |
+| `setColor(target, transitionMs?, easing?)` | `([f32, f32, f32], f32?, EasingCurve?) -> void` | Same pattern as `setIntensity` for color; re-reads live `LightComponent.color` at call time. Rejected on non-dynamic lights — see error table below. |
+
+**Snapshot freshness.** Handle fields populated at query time (`transform.position`, `_isDynamic`) are frozen snapshots. Vocabulary helpers that need the current animatable state — `setIntensity` and `setColor` — re-read the live `LightComponent` from the entity registry at call time to derive the "from" value of the constructed transition curve. The cached snapshot is never the source for animation starting values. If the entity has been despawned between query and call, the re-read surfaces `ScriptError::EntityNotFound` and the helper rethrows to the script. This keeps handles usable across `tick` boundaries and across bridge write-backs without introducing "snap to stale" glitches.
 
 `EasingCurve` is a string union: `"linear" | "easeIn" | "easeOut" | "easeInOut"`. Each maps to a 4-keyframe Catmull-Rom brightness or color curve over `transitionMs`. When `transitionMs` is 0 the curve collapses to a single-sample step; the `easing` parameter is ignored.
-| `destroy()` | `() -> void` | Removes a script-spawned entity. No effect on map-authored lights — they are not registry entities. |
 
-The `light_type`, `falloff_model`, `cast_shadows`, and cone fields are read-only after spawn (not exposed as setters). Position mutation is out of scope for Plan 2.
+The `light_type`, `falloff_model`, `cast_shadows`, and cone fields are read-only (not exposed as setters). Position mutation is out of scope for Plan 2. Script-spawned lights and `destroy()` are non-goals for Plan 2 — all handles returned by `world.query` are map-authored lights.
 
 ### `set_light_animation(id, animation)`
 
@@ -376,8 +406,9 @@ The low-level primitive. `LightEntity.setAnimation` wraps it in TS / Luau. Seman
 
 - Entity does not exist → `ScriptError::EntityNotFound`.
 - Entity has no `LightComponent` → `ScriptError::ComponentNotFound`. Do not auto-add — a typo should fail, not silently succeed.
-- `period <= 0` → `InvalidArgument`.
+- `periodMs <= 0` → `InvalidArgument`.
 - `Some(vec![])` on any channel → `InvalidArgument`. An empty required channel is a shape error.
+- `color` animation on a non-dynamic light (i.e., `MapLight.is_dynamic == false`) → `InvalidArgument`. Color animation on a baked light would produce a direct/indirect mismatch — the SH indirect was baked at compile-time color. The `world.ts` wrapper validates this before calling the primitive and throws a descriptive JS `Error`; the Rust primitive rejects it as a belt-and-suspenders check. The TS check reads `_isDynamic: boolean` from the handle snapshot populated at query time.
 - `phase` outside `[0.0, 1.0)` → accepted and normalized via `fract` before writing. Matches the GPU evaluator's treatment.
 - Direction sample with zero length → `InvalidArgument`.
 - Direction sample non-unit but normalizable → silently normalized. This primitive is the authoritative enforcement site for the unit-length invariant; Sub-plan 1's `debug_assert` is a belt-and-suspenders check.
@@ -407,9 +438,9 @@ The low-level primitive. `LightEntity.setAnimation` wraps it in TS / Luau. Seman
 Pure functions returning `LightAnimation` values. No primitive calls, no side effects. Modders use them or read them as examples.
 
 - `flicker(minBrightness, maxBrightness, rate) -> LightAnimation` — 8-sample irregular brightness curve.
-- `pulse(minBrightness, maxBrightness, period) -> LightAnimation` — 16-sample sine.
-- `colorShift(colors, period) -> LightAnimation` — cycles colors. `colors` is `[number, number, number][]`.
-- `sweep(directions, period) -> LightAnimation` — animated direction channel.
+- `pulse(minBrightness, maxBrightness, periodMs) -> LightAnimation` — 16-sample sine.
+- `colorShift(colors, periodMs) -> LightAnimation` — cycles colors. `colors` is `[number, number, number][]`.
+- `sweep(directions, periodMs) -> LightAnimation` — animated direction channel.
 - `timeline<T extends number[]>(keyframes: [number, ...T][]) -> [number, ...T][]` — keyframes are already `[absolute_ms, ...value]`. Pass-through with shape validation. Invalid input (empty entries, wrong arity, non-number slots, non-monotonic timestamps) throws a JS `Error` in QuickJS and raises a Lua error in Luau with a descriptive message naming the offending entry. Silently dropping bad entries is not acceptable — authoring mistakes must surface.
 - `sequence<T extends number[]>(keyframes: [number, ...T][]) -> [number, ...T][]` — keyframes are `[delta_ms, ...value]`. Accumulates deltas into absolute timestamps:
 
@@ -430,6 +461,8 @@ The other four helpers (`flicker`, `pulse`, `colorShift`, `sweep`) omit `phase` 
 
 Re-exports the `world` primitive as a typed object and declares the `LightEntity` handle type. One thin file — the primitive does the work, `world.ts` exists so the import ergonomics match the other vocabulary files.
 
+`LightEntity` carries a private `_isDynamic: boolean` populated at query time from the component's underlying `MapLight.is_dynamic` flag. The `setAnimation` and `setColor` methods check it before calling the primitive and throw a descriptive `Error` if `color` animation is attempted on a non-dynamic light. This gives script authors a clear message without a round-trip to Rust.
+
 ### Wave example (integration test target)
 
 Map authors tag the hallway lights `"hallway_wave"` in TrenchBroom. The behavior script queries them at level load and staggers phase across the row.
@@ -442,7 +475,7 @@ registerHandler("levelLoad", () => {
     .sort((a, b) => a.transform.position.x - b.transform.position.x);
 
   const pulse: LightAnimation = {
-    period: 10.0,
+    periodMs: 10000,
     brightness: [
       0.1, 0.1, 0.1, 0.1, 0.1,
       0.3, 0.8, 1.0, 0.8, 0.3,
@@ -460,7 +493,7 @@ registerHandler("levelLoad", () => {
 ### Acceptance criteria
 
 - [ ] `flicker(0.7, 1.0, 5)` returns 8 brightness samples in `[0.7, 1.0]`.
-- [ ] `sweep([[1,0,0], [0,0,1]], 2.0)` returns a `LightAnimation` with 2 direction samples and `period == 2.0`.
+- [ ] `sweep([[1,0,0], [0,0,1]], 2000)` returns a `LightAnimation` with 2 direction samples and `periodMs == 2000`.
 - [ ] `timeline([[0, 0.1], [500, 1.0]])` returns the same list (validated shape).
 - [ ] `sequence([[0, 0.1], [500, 1.0], [500, 0.3]])` returns `[[0, 0.1], [500, 1.0], [1000, 0.3]]`.
 - [ ] Both helpers reject wrong-arity value tuples with a clear message.
@@ -491,7 +524,7 @@ registerHandler("levelLoad", function()
   end)
 
   local pulse = {
-    period = 10.0,
+    periodMs = 10000,
     brightness = {
       0.1, 0.1, 0.1, 0.1, 0.1,
       0.3, 0.8, 1.0, 0.8, 0.3,
@@ -502,7 +535,7 @@ registerHandler("levelLoad", function()
 
   for i, light in ipairs(lights) do
     light:setAnimation({
-      period = pulse.period,
+      periodMs = pulse.periodMs,
       brightness = pulse.brightness,
       phase = (i - 1) / #lights,
     })
@@ -535,11 +568,10 @@ Durable knowledge migrates to `context/lib/`:
 - **`context/lib/rendering_pipeline.md`** §4 updates for:
   - `AnimationDescriptor` now carries a direction channel.
   - Direct-lighting buffer merges compile-time and script-time lights.
-  - 500-light budget covers combined count.
+  - Map lights are unbounded; scripted lights have a 128-slot runtime cap.
 - **`context/lib/build_pipeline.md`** gets a brief note under the light-entity FGD section covering the `*_curve` authoring convention, with the authoritative detail staying in the FGD file.
-- **`context/lib/entity_model.md`** gets a cross-reference only, not a "Scripted lights" section. Two exact snippets land verbatim:
-  - §3 addition (appended to the "Runtime spawning" row of the Creation table): "Script-spawned entities (including scripted lights) live in a separate registry described in [scripting.md](./scripting.md); they are not part of the typed collections described in this document."
-  - §8 addition (new bullet): "Script-spawned entity state. The map-authored entity model described here is not ECS. A separate script-facing entity/component registry exists for runtime-spawned entities such as scripted lights and emitters — see [scripting.md](./scripting.md). The two models coexist; the boundary between them is the per-subsystem bridge system (e.g. the light bridge in `postretro/src/scripting/systems/light_bridge.rs`)."
+- **`context/lib/entity_model.md`** gets a cross-reference only, not a "Scripted lights" section. One snippet lands verbatim:
+  - §8 addition (new bullet): "Scripting entity registry. A separate script-facing entity/component registry holds map lights (and, in future plans, emitters and other scripted objects) as mutable components. It is not ECS and is not the typed collection model described in this document. The light bridge populates map lights into it at level load and syncs script mutations back to the GPU each frame — see [scripting.md](./scripting.md)."
 
 The plan document moves `ready/` → `in-progress/` → `done/` and then stays frozen.
 
@@ -547,7 +579,7 @@ The plan document moves `ready/` → `in-progress/` → `done/` and then stays f
 
 ## Non-goals (consolidated)
 
-- `light()` as a TS vocabulary function — `light()` is a Rust primitive, not modder-authored vocabulary.
+- Runtime light spawning. Scripts can only mutate map-authored lights queried via `world.query`. A `light()` spawn primitive and `destroy()` on `LightEntity` are future work — deferred until dynamic lights need a scripted lifecycle.
 - Modder-defined component or entity registration — a future plan.
 - `emitter` component / particle spawning — Plan 3.
 - Physics primitives — deferred.

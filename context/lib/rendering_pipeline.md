@@ -187,7 +187,7 @@ Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter sup
 
 ## 12. Non-Goals
 
-- **Deferred rendering** — forward lighting with influence-volume early-out scales to the 500-light target. Indoor portal-isolated geometry keeps per-fragment light iteration cheap. Deferred adds complexity without benefit.
+- **Deferred rendering** — forward lighting with influence-volume early-out keeps per-fragment iteration proportional to nearby lights. Indoor portal-isolated geometry bounds the set further. Deferred adds complexity without benefit.
 - **PBR materials** — albedo + normal map is the full material vocabulary. Metallic/roughness is out of scope.
 - **Hardware ray tracing** — not in baseline wgpu. Shadow maps cover dynamic shadowing; SH volume covers indirect.
 - **Mesh shaders** — not baseline in wgpu. GPU-driven culling uses compute + `draw_indexed_indirect`.

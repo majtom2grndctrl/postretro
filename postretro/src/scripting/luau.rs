@@ -24,9 +24,14 @@ const COLLECT_FN_NAME: &str = "__collect_definitions";
 /// before any script runs. `sandbox(true)` makes `_G` read-only but does NOT
 /// remove these entries — the sandbox is about immutability, not capabilities.
 const DENIED_GLOBALS: &[&str] = &["io", "package", "require", "dofile", "loadfile", "load"];
-/// Sub-fields of the `os` table we nil out. We keep `os` itself (`os.time`,
-/// `os.date`, `os.clock` are harmless and occasionally useful in scripts).
-const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv"];
+/// Sub-fields of the `os` table we nil out. `os.time` and `os.clock` are wall-
+/// clock sources — handlers must take their timing from `ScriptCallContext`
+/// (see: context/plans/ready/scripting-foundation/plan-2-light-entity.md
+/// §Sub-plan 5), not from a free-running clock. `os.date` is denied alongside
+/// them because it exposes the same wall-clock surface in string form.
+const DENIED_OS_FIELDS: &[&str] = &[
+    "execute", "exit", "getenv", "time", "clock", "date",
+];
 
 /// Configuration for a [`LuauSubsystem`]. `pool_size` tunes the ephemeral-
 /// context pool. Does NOT affect the shared behavior `Lua` state, which is
@@ -417,10 +422,10 @@ mod tests {
     }
 
     #[test]
-    fn denylist_covers_all_nine_names() {
-        // `io`, `os.execute`, `os.exit`, `os.getenv`, `package`, `require`,
-        // `dofile`, `loadfile`, `load` — nine entries total. All must be nil
-        // (or error / nil-on-call) when accessed from a script.
+    fn denylist_covers_all_names() {
+        // `io`, `os.execute`, `os.exit`, `os.getenv`, `os.time`, `os.clock`,
+        // `os.date`, `package`, `require`, `dofile`, `loadfile`, `load`.
+        // All must be nil when accessed from a script.
         let (subsys, _ctx) = setup();
         let results: mlua::MultiValue = subsys
             .run_source(
@@ -431,6 +436,9 @@ mod tests {
                   os.execute == nil,
                   os.exit == nil,
                   os.getenv == nil,
+                  os.time == nil,
+                  os.clock == nil,
+                  os.date == nil,
                   package == nil,
                   require == nil,
                   dofile == nil,
@@ -447,7 +455,7 @@ mod tests {
                 other => panic!("expected boolean, got {other:?}"),
             })
             .collect();
-        assert_eq!(flags.len(), 9, "expected 9 denylist checks");
+        assert_eq!(flags.len(), 12, "expected 12 denylist checks");
         for (i, f) in flags.iter().enumerate() {
             assert!(f, "denylist entry {i} is still reachable");
         }

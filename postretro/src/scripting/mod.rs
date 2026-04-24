@@ -9,9 +9,11 @@
 // than sprinkling `#[allow]` on every item.
 #![allow(dead_code)]
 
+pub(crate) mod call_context;
 pub(crate) mod conv;
 pub(crate) mod ctx;
 pub(crate) mod error;
+pub(crate) mod event_dispatch;
 pub(crate) mod luau;
 pub(crate) mod pool;
 pub(crate) mod primitives;

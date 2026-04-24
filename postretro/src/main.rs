@@ -35,6 +35,11 @@ use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, DiagnosticAction};
 use crate::render::Renderer;
 use crate::texture::TextureSet;
+use crate::scripting::call_context::ScriptCallContext;
+use crate::scripting::ctx::ScriptCtx;
+use crate::scripting::primitives::register_all;
+use crate::scripting::primitives_registry::PrimitiveRegistry;
+use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig, Which as ScriptWhich};
 use crate::visibility::{VisibilityPath, VisibilityStats, VisibleCells};
 
 const DEFAULT_MAP_PATH: &str = "assets/maps/test-3.prl";
@@ -131,6 +136,21 @@ fn main() -> Result<()> {
 
     let initial_state = InterpolableState::new(initial_camera_pos);
 
+    // --- Scripting bootstrap.
+    //
+    // One `ScriptRuntime` per engine instance. Behavior scripts load from
+    // `assets/scripts/` (if present) sorted lexicographically by UTF-8 byte
+    // order — this fixes the `registerHandler` invocation order across files.
+    // `fire_level_load` runs after world population but before the first
+    // frame renders; `fire_tick` runs each frame after game logic. See
+    // context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 5.
+    let script_ctx = ScriptCtx::new();
+    let mut script_registry = PrimitiveRegistry::new();
+    register_all(&mut script_registry, script_ctx.clone());
+    let script_runtime =
+        ScriptRuntime::new(&script_registry, &ScriptRuntimeConfig::default(), &script_ctx)
+            .context("failed to construct script runtime")?;
+
     let mut app = App {
         renderer: None,
         window_state: None,
@@ -148,6 +168,10 @@ fn main() -> Result<()> {
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
         smoke_emitters: build_demo_emitters(spawn_demo_smoke, initial_camera_pos),
+        script_runtime,
+        script_ctx,
+        level_load_fired: false,
+        script_time: 0.0,
     };
 
     event_loop
@@ -228,6 +252,45 @@ fn build_demo_emitters(spawn_demo: bool, camera_pos: Vec3) -> Vec<fx::smoke::Smo
     )]
 }
 
+/// Load every behavior script under `assets/scripts/` in lexicographic order.
+/// The sort order defines cross-file `registerHandler` invocation order per
+/// Sub-plan 5. Missing directory: no-op. Per-file failures are logged and
+/// swallowed — one bad script must not kill the engine.
+fn load_behavior_scripts(runtime: &ScriptRuntime) {
+    let root = Path::new("assets/scripts");
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(err) => {
+            log::debug!(
+                "[Scripting] `{}` not found ({err}); no behavior scripts loaded",
+                root.display(),
+            );
+            return;
+        }
+    };
+    let mut paths: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && matches!(
+                    p.extension().and_then(|s| s.to_str()),
+                    Some("ts") | Some("js") | Some("luau")
+                )
+        })
+        .collect();
+    // Sort by UTF-8 byte order — matches Sub-plan 5's fixed ordering.
+    paths.sort();
+    for path in &paths {
+        if let Err(err) = runtime.run_script_file(ScriptWhich::Behavior, path) {
+            log::error!(
+                "[Scripting] failed to load `{}`: {err}",
+                path.display(),
+            );
+        }
+    }
+}
+
 fn window_attributes() -> WindowAttributes {
     Window::default_attributes()
         .with_title("Postretro")
@@ -285,6 +348,27 @@ struct App {
     ///
     /// See: context/lib/rendering_pipeline.md §7.4
     smoke_emitters: Vec<fx::smoke::SmokeEmitter>,
+
+    /// Script runtime. Holds both QuickJS and Luau subsystems and the
+    /// per-level handler table populated by `registerHandler`. See
+    /// context/plans/ready/scripting-foundation/plan-2-light-entity.md
+    /// §Sub-plan 5.
+    script_runtime: ScriptRuntime,
+
+    /// Shared scripting context handle. Held so entity registry and event
+    /// queue stay alive for the runtime's lifetime.
+    #[allow(dead_code)]
+    script_ctx: ScriptCtx,
+
+    /// Set once the `levelLoad` event has fired. Gates the first-tick
+    /// invocation so `levelLoad` handlers are guaranteed to run before the
+    /// first `tick` handler and before the first render frame.
+    level_load_fired: bool,
+
+    /// Seconds since level load. Fed into `ScriptCallContext::time` each
+    /// tick; resets to zero on level unload. Accumulates from the engine
+    /// frame timer, not a wall clock.
+    script_time: f32,
 }
 
 struct WindowState {
@@ -474,6 +558,19 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
+                // Fire `levelLoad` once, before the first frame renders. The
+                // world is already populated (load_level ran before the event
+                // loop started). Script files load from `assets/scripts/`
+                // sorted lexicographically — the sort order pins
+                // cross-file `registerHandler` registration order.
+                // See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 5
+                if !self.level_load_fired {
+                    load_behavior_scripts(&self.script_runtime);
+                    self.script_runtime.fire_level_load();
+                    self.level_load_fired = true;
+                    self.script_time = 0.0;
+                }
+
                 // Poll gamepad before taking the snapshot.
                 if let Some(gp) = &mut self.gamepad_system {
                     gp.update(&mut self.input_system);
@@ -527,6 +624,15 @@ impl ApplicationHandler for App {
                         emitter.tick(tick_dt);
                     }
                 }
+
+                // Fire `tick` after game logic, before render. `delta` comes
+                // from the engine frame timer (not wall clock); `time` is
+                // seconds since level load, monotonic within a level.
+                self.script_time += frame_dt;
+                self.script_runtime.fire_tick(ScriptCallContext {
+                    delta: frame_dt,
+                    time: self.script_time,
+                });
 
                 // Interpolate between previous and current state for rendering.
                 // Position comes from the tick-state slots; yaw/pitch come from

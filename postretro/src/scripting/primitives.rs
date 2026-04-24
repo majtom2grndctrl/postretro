@@ -54,6 +54,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
 /// any script runtime is created.
 pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_shared_types(registry);
+    super::event_dispatch::register_shared_types(registry);
+    super::event_dispatch::register_register_handler(registry, ctx.handlers.clone());
 
     // entity_exists --------------------------------------------------------
     registry
@@ -191,9 +193,10 @@ mod tests {
     }
 
     #[test]
-    fn register_all_installs_seven_primitives() {
+    fn register_all_installs_expected_primitives() {
         let (r, _ctx) = registry_with_day_one();
-        assert_eq!(r.len(), 7);
+        // 7 day-one primitives + `registerHandler` from Sub-plan 5.
+        assert_eq!(r.len(), 8);
         let names: Vec<_> = r.iter().map(|p| p.name).collect();
         for expected in [
             "entity_exists",
@@ -203,6 +206,7 @@ mod tests {
             "set_component",
             "emit_event",
             "send_event",
+            "registerHandler",
         ] {
             assert!(names.contains(&expected), "missing primitive {expected}");
         }

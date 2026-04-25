@@ -14,6 +14,7 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
+use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::light_tags::LightTagsSection;
@@ -207,6 +208,7 @@ pub fn pack_and_write_pvs(
     animated_light_chunks: Option<&AnimatedLightChunksSection>,
     animated_light_weight_maps: Option<&AnimatedLightWeightMapsSection>,
     light_tags: Option<&LightTagsSection>,
+    delta_sh_volumes: Option<&DeltaShVolumesSection>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -222,6 +224,7 @@ pub fn pack_and_write_pvs(
     let animated_light_chunks_bytes = animated_light_chunks.map(|s| s.to_bytes());
     let animated_light_weight_maps_bytes = animated_light_weight_maps.map(|s| s.to_bytes());
     let light_tags_bytes = light_tags.map(|s| s.to_bytes());
+    let delta_sh_volumes_bytes = delta_sh_volumes.map(|s| s.to_bytes());
 
     let mut sections = vec![
         SectionBlob {
@@ -297,6 +300,13 @@ pub fn pack_and_write_pvs(
     if let Some(ref bytes) = light_tags_bytes {
         sections.push(SectionBlob {
             section_id: SectionId::LightTags as u32,
+            version: 1,
+            data: bytes.clone(),
+        });
+    }
+    if let Some(ref bytes) = delta_sh_volumes_bytes {
+        sections.push(SectionBlob {
+            section_id: SectionId::DeltaShVolumes as u32,
             version: 1,
             data: bytes.clone(),
         });
@@ -392,6 +402,7 @@ pub fn pack_and_write_portals(
     animated_light_chunks: Option<&AnimatedLightChunksSection>,
     animated_light_weight_maps: Option<&AnimatedLightWeightMapsSection>,
     light_tags: Option<&LightTagsSection>,
+    delta_sh_volumes: Option<&DeltaShVolumesSection>,
 ) -> anyhow::Result<()> {
     // Zero out PVS references in leaves since no LeafPvs section is written.
     let portal_leaves = BspLeavesSection {
@@ -423,6 +434,7 @@ pub fn pack_and_write_portals(
     let animated_light_chunks_bytes = animated_light_chunks.map(|s| s.to_bytes());
     let animated_light_weight_maps_bytes = animated_light_weight_maps.map(|s| s.to_bytes());
     let light_tags_bytes = light_tags.map(|s| s.to_bytes());
+    let delta_sh_volumes_bytes = delta_sh_volumes.map(|s| s.to_bytes());
 
     let mut sections = vec![
         SectionBlob {
@@ -498,6 +510,13 @@ pub fn pack_and_write_portals(
     if let Some(ref bytes) = light_tags_bytes {
         sections.push(SectionBlob {
             section_id: SectionId::LightTags as u32,
+            version: 1,
+            data: bytes.clone(),
+        });
+    }
+    if let Some(ref bytes) = delta_sh_volumes_bytes {
+        sections.push(SectionBlob {
+            section_id: SectionId::DeltaShVolumes as u32,
             version: 1,
             data: bytes.clone(),
         });
@@ -809,6 +828,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("pack_and_write_pvs should succeed");
 
@@ -874,6 +894,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -925,6 +946,7 @@ mod tests {
             &empty_sh_volume(),
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
             None,
             None,
             None,
@@ -993,6 +1015,7 @@ mod tests {
             &sh_volume,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
             None,
             None,
             None,
@@ -1078,6 +1101,7 @@ mod tests {
             &sh_volume,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
             None,
             None,
             None,

@@ -58,6 +58,15 @@ const RAY_EPSILON: f32 = 1.0e-3;
 /// don't land on a degenerate sample.
 const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 
+/// Ray-tracing context: the BVH plus the geometry it indexes. Shared between
+/// the base SH baker and the per-light delta SH baker (`delta_sh_bake.rs`) so
+/// neither has to duplicate ray traversal or shadow-test code.
+pub(crate) struct RaytracingCtx<'a> {
+    pub bvh: &'a Bvh<f32, 3>,
+    pub primitives: &'a [BvhPrimitive],
+    pub geometry: &'a GeometryResult,
+}
+
 /// Inputs the baker pulls together from the rest of the compile stages.
 pub struct BakeInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
@@ -71,6 +80,16 @@ pub struct BakeInputs<'a> {
     pub exterior_leaves: &'a HashSet<usize>,
     pub static_lights: &'a StaticBakedLights<'a>,
     pub animated_lights: &'a AnimatedBakedLights<'a>,
+}
+
+impl<'a> BakeInputs<'a> {
+    fn ray_ctx(&self) -> RaytracingCtx<'a> {
+        RaytracingCtx {
+            bvh: self.bvh,
+            primitives: self.primitives,
+            geometry: self.geometry,
+        }
+    }
 }
 
 /// Bake an SH irradiance volume over the level AABB at the requested spacing.
@@ -282,7 +301,7 @@ struct Hit {
 /// Closest-triangle hit along `ray`. `max_distance` clips the search. Uses
 /// the Milestone 4 BVH primitive set plus the shared geometry index buffer.
 fn closest_hit(
-    inputs: &BakeInputs<'_>,
+    ctx: &RaytracingCtx<'_>,
     ray_origin: Vec3,
     ray_dir: Vec3,
     max_distance: f32,
@@ -291,12 +310,12 @@ fn closest_hit(
         Point3::new(ray_origin.x, ray_origin.y, ray_origin.z),
         Vector3::new(ray_dir.x, ray_dir.y, ray_dir.z),
     );
-    let candidates = inputs.bvh.traverse(&ray, inputs.primitives);
+    let candidates = ctx.bvh.traverse(&ray, ctx.primitives);
     if candidates.is_empty() {
         return None;
     }
 
-    let geom = &inputs.geometry.geometry;
+    let geom = &ctx.geometry.geometry;
     let mut best: Option<Hit> = None;
 
     for prim in candidates {
@@ -373,7 +392,7 @@ fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Optio
 
 /// True if the straight path from `from` to `to` is unoccluded. Used by
 /// shadow rays from hit points toward each map light.
-fn segment_clear(inputs: &BakeInputs<'_>, from: Vec3, to: Vec3) -> bool {
+fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {
@@ -385,9 +404,9 @@ fn segment_clear(inputs: &BakeInputs<'_>, from: Vec3, to: Vec3) -> bool {
         Point3::new(origin.x, origin.y, origin.z),
         Vector3::new(dir.x, dir.y, dir.z),
     );
-    let candidates = inputs.bvh.traverse(&ray, inputs.primitives);
+    let candidates = ctx.bvh.traverse(&ray, ctx.primitives);
     let max_distance = length - RAY_EPSILON;
-    let geom = &inputs.geometry.geometry;
+    let geom = &ctx.geometry.geometry;
     for prim in candidates {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
@@ -612,21 +631,68 @@ fn cosine_lobe_factor(band: usize) -> f32 {
 // ---------------------------------------------------------------------------
 // Probe bakes
 
+/// Bake the indirect-only contribution of `lights` at a probe and project
+/// into SH L2 RGB. Shared between the base SH baker (static lights) and the
+/// per-light delta SH baker (one animated light at peak brightness).
+pub(crate) fn bake_probe_indirect_rgb(
+    ctx: &RaytracingCtx<'_>,
+    probe_pos: Vec3,
+    lights: &[&MapLight],
+) -> [f32; 27] {
+    let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
+    let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
+    let mut acc = [0f32; 27];
+    for dir in &directions {
+        let radiance = sample_radiance_rgb(ctx, probe_pos, *dir, lights);
+        accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
+    }
+    apply_cosine_lobe_rgb(&mut acc);
+    acc
+}
+
+/// Bake the direct contribution of a single light at a probe, projected into
+/// SH L2 RGB. Used by the delta SH baker so `compose(base, delta × 1) = base
+/// (indirect-only) + delta (direct + indirect)` covers a light's full peak
+/// contribution.
+///
+/// A point/spot/directional light delivers a delta-direction radiance pulse
+/// at the probe: project that pulse onto the SH basis with magnitude =
+/// visibility × color × intensity × falloff/cone. The cosine-lobe convolution
+/// applied at the end converts radiance projection to irradiance projection,
+/// matching the same convention `bake_probe_indirect_rgb` uses.
+pub(crate) fn bake_probe_direct_rgb(
+    ctx: &RaytracingCtx<'_>,
+    probe_pos: Vec3,
+    light: &MapLight,
+) -> [f32; 27] {
+    let mut acc = [0f32; 27];
+    if !shadow_visible_at_point(ctx, probe_pos, light) {
+        return acc;
+    }
+    let radiance = light_radiance_at_point(light, probe_pos);
+    if radiance == Vec3::ZERO {
+        return acc;
+    }
+    let to_light = light_direction_at_point(light, probe_pos);
+    if to_light == Vec3::ZERO {
+        return acc;
+    }
+    // Project a delta-direction emitter onto SH bands. Weight = 1.0 because
+    // the radiance is concentrated in a single direction (no sphere
+    // integration); SH-reconstructed E(N) = sum coefs × Y(N) then yields the
+    // correct cos-weighted Lambert irradiance after `apply_cosine_lobe_rgb`.
+    accumulate_sh_rgb(&mut acc, to_light, radiance, 1.0);
+    apply_cosine_lobe_rgb(&mut acc);
+    acc
+}
+
 /// Bake the static-light contribution at a probe and project into SH L2 RGB.
 fn bake_probe_rgb(
     inputs: &BakeInputs<'_>,
     probe_pos: Vec3,
     static_lights: &[&MapLight],
 ) -> [f32; 27] {
-    let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
-    let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
-    let mut acc = [0f32; 27];
-    for dir in &directions {
-        let radiance = sample_radiance_rgb(inputs, probe_pos, *dir, static_lights);
-        accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
-    }
-    apply_cosine_lobe_rgb(&mut acc);
-    acc
+    bake_probe_indirect_rgb(&inputs.ray_ctx(), probe_pos, static_lights)
 }
 
 /// Trace a single ray from `origin` along `dir`, evaluate direct lighting at
@@ -635,17 +701,17 @@ fn bake_probe_rgb(
 /// indirect (bounced) contribution only — the direct term is the lightmap's
 /// responsibility.
 fn sample_radiance_rgb(
-    inputs: &BakeInputs<'_>,
+    ctx: &RaytracingCtx<'_>,
     origin: Vec3,
     dir: Vec3,
     lights: &[&MapLight],
 ) -> Vec3 {
-    match closest_hit(inputs, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
+    match closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
         None => Vec3::from(SKY_COLOR),
         Some(hit) => {
             let mut radiance = Vec3::ZERO;
             for light in lights {
-                if !shadow_visible(inputs, hit.point, hit.normal, light) {
+                if !shadow_visible(ctx, hit.point, hit.normal, light) {
                     continue;
                 }
                 radiance += light_contribution_lambert(light, hit.point, hit.normal);
@@ -656,7 +722,7 @@ fn sample_radiance_rgb(
 }
 
 fn shadow_visible(
-    inputs: &BakeInputs<'_>,
+    ctx: &RaytracingCtx<'_>,
     surface_point: Vec3,
     surface_normal: Vec3,
     light: &MapLight,
@@ -668,7 +734,81 @@ fn shadow_visible(
     // Nudge the surface sample a tiny bit along the normal so the first
     // traversal step does not self-intersect the face that was just hit.
     let probe_end = surface_point + surface_normal * RAY_EPSILON;
-    segment_clear(inputs, probe_end, shadow_origin)
+    segment_clear(ctx, probe_end, shadow_origin)
+}
+
+/// Like `shadow_visible` but with no surface to nudge off — used when the
+/// "surface" is the probe sample point itself (no host triangle to back away
+/// from). The probe is in empty space by construction (validity gate), so a
+/// straight shot to the light is the right test.
+fn shadow_visible_at_point(ctx: &RaytracingCtx<'_>, point: Vec3, light: &MapLight) -> bool {
+    if !light.cast_shadows {
+        return true;
+    }
+    let shadow_origin = light_shadow_origin(light, point);
+    segment_clear(ctx, point, shadow_origin)
+}
+
+/// Unit vector from `point` toward `light`. For directional lights, the
+/// negation of the aim vector. Returns ZERO if the light is degenerate.
+fn light_direction_at_point(light: &MapLight, point: Vec3) -> Vec3 {
+    match light.light_type {
+        LightType::Point | LightType::Spot => {
+            let to_light = Vec3::new(
+                light.origin.x as f32 - point.x,
+                light.origin.y as f32 - point.y,
+                light.origin.z as f32 - point.z,
+            );
+            to_light.normalize_or_zero()
+        }
+        LightType::Directional => {
+            let dir = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
+            (-dir).normalize_or_zero()
+        }
+    }
+}
+
+/// Color × intensity × falloff (and cone, for spots) at `point`. Mirrors
+/// `light_contribution_lambert` minus the N·L term — that is reapplied per
+/// sample direction during SH projection.
+fn light_radiance_at_point(light: &MapLight, point: Vec3) -> Vec3 {
+    match light.light_type {
+        LightType::Point => {
+            let to_light = Vec3::new(
+                light.origin.x as f32 - point.x,
+                light.origin.y as f32 - point.y,
+                light.origin.z as f32 - point.z,
+            );
+            let dist = to_light.length();
+            if dist < 1.0e-4 {
+                return Vec3::ZERO;
+            }
+            let attenuation = falloff(light, dist);
+            Vec3::from(light.color) * (light.intensity * attenuation)
+        }
+        LightType::Spot => {
+            let to_light = Vec3::new(
+                light.origin.x as f32 - point.x,
+                light.origin.y as f32 - point.y,
+                light.origin.z as f32 - point.z,
+            );
+            let dist = to_light.length();
+            if dist < 1.0e-4 {
+                return Vec3::ZERO;
+            }
+            let l = to_light / dist;
+            let attenuation = falloff(light, dist);
+            let cone = spot_cone_attenuation(light, -l);
+            Vec3::from(light.color) * (light.intensity * attenuation * cone)
+        }
+        LightType::Directional => Vec3::from(light.color) * light.intensity,
+    }
+}
+
+/// Validity gate for delta-bake probes — same rules as the base bake (probes
+/// inside solid or exterior leaves are flagged invalid).
+pub(crate) fn probe_is_valid_pub(tree: &BspTree, exterior: &HashSet<usize>, pos: DVec3) -> bool {
+    probe_is_valid(tree, exterior, pos)
 }
 
 // ---------------------------------------------------------------------------

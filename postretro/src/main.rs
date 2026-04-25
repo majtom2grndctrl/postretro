@@ -317,11 +317,13 @@ fn load_behavior_scripts(runtime: &ScriptRuntime) {
         .collect();
 
     // Build the set of stems that have a `.ts` source so we can skip
-    // same-stem `.js` files (compiler artifacts).
+    // same-stem `.js` files (compiler artifacts). All paths share the same
+    // root so direct stem comparison (no canonicalize — the bare stem path
+    // does not exist on disk and would always fail to resolve) is sufficient.
     let ts_stems: std::collections::HashSet<std::path::PathBuf> = all_paths
         .iter()
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("ts"))
-        .filter_map(|p| p.with_extension("").canonicalize().ok())
+        .map(|p| p.with_extension(""))
         .collect();
 
     let mut paths: Vec<std::path::PathBuf> = all_paths
@@ -330,11 +332,8 @@ fn load_behavior_scripts(runtime: &ScriptRuntime) {
             if p.extension().and_then(|s| s.to_str()) == Some("js") {
                 // Skip `.js` files that are compiler artifacts — identified by
                 // the presence of a same-stem `.ts` sibling.
-                let stem = p.with_extension("");
-                if let Ok(canonical) = stem.canonicalize() {
-                    if ts_stems.contains(&canonical) {
-                        return false;
-                    }
+                if ts_stems.contains(&p.with_extension("")) {
+                    return false;
                 }
             }
             true

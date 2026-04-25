@@ -1230,12 +1230,12 @@
 // entity 11
 {
 "classname" "light_spot"
-"origin" "832 992 300"
+"origin" "768 960 300"
 "light" "250"
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_lightssss"
+"_tag" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 -100.3 0"
 "_light_radius" "800"
@@ -1269,7 +1269,7 @@
 // entity 14
 {
 "classname" "light_spot"
-"origin" "952 120 300"
+"origin" "920 136 300"
 "light" "250"
 "_color" "200 220 255"
 "_fade" "1024"
@@ -1295,7 +1295,7 @@
 // entity 16
 {
 "classname" "light_spot"
-"origin" "448 32 300"
+"origin" "448 64 300"
 "light" "250"
 "_color" "200 220 255"
 "_fade" "1024"
@@ -1308,7 +1308,7 @@
 // entity 17
 {
 "classname" "light_spot"
-"origin" "744 40 300"
+"origin" "744 72 300"
 "light" "250"
 "_color" "200 220 255"
 "_fade" "1024"

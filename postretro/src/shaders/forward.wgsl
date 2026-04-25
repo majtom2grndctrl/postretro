@@ -157,9 +157,9 @@ struct AnimationDescriptor {
 @group(5) @binding(1) var spot_shadow_compare: sampler_comparison;
 // Uniform (not storage) so we stay under `max_storage_buffers_per_shader_stage`
 // (default limit 8 on some adapters — wgpu refuses the pipeline if we add
-// a 9th). 8 × mat4x4<f32> is 512 bytes, well under the 16 KiB uniform cap.
+// a 9th). 12 × mat4x4<f32> is 768 bytes, well under the 16 KiB uniform cap.
 struct LightSpaceMatrices {
-    m: array<mat4x4<f32>, 8>,
+    m: array<mat4x4<f32>, 12>,
 };
 @group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
 

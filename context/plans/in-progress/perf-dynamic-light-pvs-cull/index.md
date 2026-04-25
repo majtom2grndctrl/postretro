@@ -122,7 +122,7 @@ All three should land together — pre-release policy, no compat shims.
    - `nine_lights_with_eight_visible_assigns_eight`: 9 lights, bitmask with one light marked invisible, assert all 8 visible lights get slots and the invisible one is `NO_SHADOW_SLOT` regardless of heuristic score (specifically: place the invisible light closer than all others so it would otherwise rank #1).
    - `empty_bitmask_treated_as_all_visible`: pass `&[]` and confirm behavior matches today's tests.
 
-   Update the existing `nine_lights_eight_assigned_one_unshadowed` and other tests that pass `&[]` for the bitmask — they continue to use `&[]` and the empty-bitmask defensive-fallback path keeps them green.
+   Update existing tests that pass `&[]` for the bitmask (including `nine_lights_all_assigned_when_pool_has_capacity`, renamed from `nine_lights_eight_assigned_one_unshadowed` when `SHADOW_POOL_SIZE` grew to 12) — they continue to use `&[]` and the empty-bitmask defensive-fallback path keeps them green.
 
 ### Task C acceptance gates
 

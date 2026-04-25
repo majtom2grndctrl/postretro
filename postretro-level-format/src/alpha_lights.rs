@@ -51,7 +51,7 @@ impl AlphaFalloffModel {
     }
 }
 
-/// One serialised light record. Fixed-size on disk: 65 bytes per record.
+/// One serialised light record. Fixed-size on disk: 68 bytes per record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlphaLightRecord {
     /// World position, engine meters (Y-up).
@@ -73,12 +73,17 @@ pub struct AlphaLightRecord {
     /// Normalized aim vector; `[0,0,0]` if Point.
     pub cone_direction: [f32; 3],
     pub cast_shadows: bool,
+    /// Marks the light as runtime-dynamic. Used by the spot-shadow scheduler
+    /// to gate shadow-slot eligibility (only dynamic spot lights cast runtime
+    /// shadows). Sourced from the `_dynamic` key in the `.map` file.
+    pub is_dynamic: bool,
 }
 
 /// Byte size of a single serialised `AlphaLightRecord`.
 /// 24 (origin) + 1 (type) + 4 (intensity) + 12 (color) + 1 (falloff model)
-/// + 4 (range) + 4 + 4 (cone angles) + 12 (cone dir) + 1 (cast shadows) = 67.
-pub const ALPHA_LIGHT_RECORD_SIZE: usize = 67;
+/// + 4 (range) + 4 + 4 (cone angles) + 12 (cone dir) + 1 (cast shadows)
+/// + 1 (is_dynamic) = 68.
+pub const ALPHA_LIGHT_RECORD_SIZE: usize = 68;
 
 /// AlphaLights section (ID 18).
 ///
@@ -114,6 +119,7 @@ impl AlphaLightsSection {
             buf.extend_from_slice(&l.cone_direction[1].to_le_bytes());
             buf.extend_from_slice(&l.cone_direction[2].to_le_bytes());
             buf.push(if l.cast_shadows { 1 } else { 0 });
+            buf.push(if l.is_dynamic { 1 } else { 0 });
         }
 
         buf
@@ -171,6 +177,7 @@ impl AlphaLightsSection {
             let cdy = read_f32_le(&data[o + 58..o + 62]);
             let cdz = read_f32_le(&data[o + 62..o + 66]);
             let cast_shadows = data[o + 66] != 0;
+            let is_dynamic = data[o + 67] != 0;
 
             lights.push(AlphaLightRecord {
                 origin: [ox, oy, oz],
@@ -183,6 +190,7 @@ impl AlphaLightsSection {
                 cone_angle_outer,
                 cone_direction: [cdx, cdy, cdz],
                 cast_shadows,
+                is_dynamic,
             });
 
             o += ALPHA_LIGHT_RECORD_SIZE;
@@ -216,6 +224,7 @@ mod tests {
             cone_angle_outer: std::f32::consts::FRAC_PI_4, // 45 deg
             cone_direction: [0.0, -1.0, 0.0],
             cast_shadows: true,
+            is_dynamic: false,
         }
     }
 
@@ -254,6 +263,7 @@ mod tests {
                     cone_angle_outer: 0.0,
                     cone_direction: [0.0, 0.0, 0.0],
                     cast_shadows: true,
+                    is_dynamic: false,
                 },
                 sample_record(),
                 AlphaLightRecord {
@@ -271,6 +281,7 @@ mod tests {
                         -std::f32::consts::FRAC_1_SQRT_2,
                     ],
                     cast_shadows: false,
+                    is_dynamic: false,
                 },
             ],
         };

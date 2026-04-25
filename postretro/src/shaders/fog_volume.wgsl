@@ -62,7 +62,7 @@ struct AnimationDescriptor {
 @group(5) @binding(1) var spot_shadow_compare: sampler_comparison;
 
 struct LightSpaceMatrices {
-    m: array<mat4x4<f32>, 8>,
+    m: array<mat4x4<f32>, 12>,
 }
 @group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
 

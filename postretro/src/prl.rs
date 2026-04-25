@@ -305,7 +305,7 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 cone_angle_outer: r.cone_angle_outer,
                 cone_direction: r.cone_direction,
                 cast_shadows: r.cast_shadows,
-                is_dynamic: false,
+                is_dynamic: r.is_dynamic,
                 tag: None,
             }
         })
@@ -1340,6 +1340,7 @@ mod tests {
                     cone_angle_outer: 0.0,
                     cone_direction: [0.0, 0.0, 0.0],
                     cast_shadows: true,
+                    is_dynamic: false,
                 },
                 AlphaLightRecord {
                     origin: [-4.0, 5.5, 6.0],
@@ -1352,6 +1353,7 @@ mod tests {
                     cone_angle_outer: std::f32::consts::FRAC_PI_4,
                     cone_direction: [0.0, -1.0, 0.0],
                     cast_shadows: false,
+                    is_dynamic: true,
                 },
                 AlphaLightRecord {
                     origin: [0.0, 10.0, 0.0],
@@ -1364,6 +1366,7 @@ mod tests {
                     cone_angle_outer: 0.0,
                     cone_direction: [0.0, -0.70710677, -0.70710677],
                     cast_shadows: true,
+                    is_dynamic: false,
                 },
             ],
         }

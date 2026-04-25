@@ -6,6 +6,7 @@ pub mod animated_light_weight_maps;
 pub mod bvh_build;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
+pub mod delta_sh_bake;
 pub mod format;
 pub mod geometry;
 pub mod geometry_utils;
@@ -261,6 +262,28 @@ fn main() -> anyhow::Result<()> {
         sh_bake::log_stats(&sh_volume_section);
     }
 
+    progress.start_stage("Delta SH volume bake...");
+    let stage_start = Instant::now();
+    let delta_sh_volumes_section = {
+        let inputs = delta_sh_bake::DeltaBakeInputs {
+            bvh: &bvh,
+            primitives: &bvh_primitives,
+            geometry: &geo_result,
+            tree: &result.tree,
+            exterior_leaves: &exterior_leaves,
+            animated_lights: &animated_baked_lights,
+        };
+        delta_sh_bake::bake_delta_sh_volumes(&inputs, args.probe_spacing)
+    };
+    timings.push(("Delta SH Bake", stage_start.elapsed()));
+    if args.verbose {
+        if let Some(ref section) = delta_sh_volumes_section {
+            delta_sh_bake::log_stats(section);
+        } else {
+            log::info!("DeltaShVolumes: skipped (no animated lights)");
+        }
+    }
+
     progress.start_stage("Chunk light list bake...");
     let stage_start = Instant::now();
     let chunk_light_list_section = {
@@ -362,6 +385,7 @@ fn main() -> anyhow::Result<()> {
             animated_light_chunks_section.as_ref(),
             animated_light_weight_maps_section.as_ref(),
             light_tags_section.as_ref(),
+            delta_sh_volumes_section.as_ref(),
         )?;
     } else {
         if args.verbose {
@@ -384,6 +408,7 @@ fn main() -> anyhow::Result<()> {
             animated_light_chunks_section.as_ref(),
             animated_light_weight_maps_section.as_ref(),
             light_tags_section.as_ref(),
+            delta_sh_volumes_section.as_ref(),
         )?;
     }
     timings.push(("Packing", stage_start.elapsed()));

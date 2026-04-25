@@ -539,6 +539,7 @@ impl ApplicationHandler for App {
             chunk_light_list: world.chunk_light_list.as_ref(),
             animated_light_chunks: world.animated_light_chunks.as_ref(),
             animated_light_weight_maps: world.animated_light_weight_maps.as_ref(),
+            delta_sh_volumes: world.delta_sh_volumes.as_ref(),
             texture_materials: &texture_materials,
         });
 

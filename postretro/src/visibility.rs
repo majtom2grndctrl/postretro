@@ -862,6 +862,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         }
     }
 
@@ -904,6 +905,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();

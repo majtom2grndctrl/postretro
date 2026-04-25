@@ -12,6 +12,7 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
+use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::light_influence::LightInfluenceSection;
@@ -211,6 +212,13 @@ pub struct LevelWorld {
     /// no animated lights — the renderer falls back to a 1×1 zero atlas
     /// for the animated-contribution slot.
     pub animated_light_weight_maps: Option<AnimatedLightWeightMapsSection>,
+    /// Per-animated-light delta SH probe grids (ID 27). Each grid carries the
+    /// peak (brightness = 1.0, base color) SH contribution for one animated
+    /// light, in `AnimatedBakedLights` index order. The runtime SH compose
+    /// pass accumulates these weighted by each light's animation curve.
+    /// `None` when the map has no animated lights — the compose pass falls
+    /// back to a base→total copy.
+    pub delta_sh_volumes: Option<DeltaShVolumesSection>,
 }
 
 impl LevelWorld {
@@ -692,6 +700,26 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => None,
         };
 
+    // DeltaShVolumes section (optional). Missing for maps with no animated
+    // lights — the SH compose pass falls back to a base→total copy.
+    let delta_sh_volumes: Option<DeltaShVolumesSection> = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::DeltaShVolumes as u32,
+    )? {
+        Some(data) => {
+            let section = DeltaShVolumesSection::from_bytes(&data)?;
+            let total_probes: usize = section.grids.iter().map(|g| g.total_probes()).sum();
+            log::info!(
+                "[PRL] DeltaShVolumes: {} animated light(s), {} total probes",
+                section.grids.len(),
+                total_probes,
+            );
+            Some(section)
+        }
+        None => None,
+    };
+
     let has_pvs = pvs_section.is_some();
     let has_portals = portals_section.is_some();
 
@@ -871,6 +899,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         chunk_light_list,
         animated_light_chunks,
         animated_light_weight_maps,
+        delta_sh_volumes,
     })
 }
 
@@ -966,6 +995,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         }
     }
 
@@ -1016,6 +1046,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -1058,6 +1089,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
 
         let spawn = world.spawn_position();
@@ -1089,6 +1121,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
 
         let indices = face_leaf_indices(&world);

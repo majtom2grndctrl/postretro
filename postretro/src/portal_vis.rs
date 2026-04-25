@@ -932,6 +932,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         }
     }
 
@@ -1015,6 +1016,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
 
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::NEG_Z);
@@ -1100,6 +1102,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
 
         // Camera in leaf A, looking straight along +X toward portal 0.
@@ -1427,6 +1430,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
 
         // Camera looking through the LEFT passage (Z=63, center of Z=62..64 gap).
@@ -1843,6 +1847,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
 
         let camera_pos = Vec3::new(1.0, 0.0, 0.0);
@@ -2015,6 +2020,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
 
         // Camera at origin looking +X. The camera frustum is wide enough that
@@ -2119,6 +2125,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
 
         // Camera pose from the captured blank-frame trace. The live trace
@@ -2254,6 +2261,7 @@ mod tests {
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
+            delta_sh_volumes: None,
         };
 
         // Camera pose from the captured blank-frame trace. z = -13.00

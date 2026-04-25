@@ -58,6 +58,7 @@ mod tests {
             cone_direction: [0.0, 0.0, 0.0],
             cast_shadows: false,
             is_dynamic: false,
+            tag: None,
         }
     }
 

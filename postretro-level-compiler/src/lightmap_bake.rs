@@ -1116,6 +1116,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            tag: None,
         }
     }
 
@@ -1479,6 +1480,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            tag: None,
         };
         let lights = vec![light];
         let mut inputs = LightmapInputs {

@@ -270,6 +270,28 @@ fn build_demo_emitters(spawn_demo: bool, camera_pos: Vec3) -> Vec<fx::smoke::Smo
 /// The sort order defines cross-file `registerHandler` invocation order per
 /// Sub-plan 5. Missing directory: no-op. Per-file failures are logged and
 /// swallowed — one bad script must not kill the engine.
+///
+/// # TypeScript compilation
+///
+/// `.ts` files are compiled to `.js` before loading (debug builds only, where
+/// the watcher module is available). The compiled `.js` artifact lands next to
+/// the source; any bare `.js` that already has a same-stem `.ts` sibling is
+/// treated as a compiler artifact and skipped to avoid running the script twice.
+///
+/// If no TypeScript compiler is found at startup, `.ts` files are passed
+/// directly to QuickJS, which will fail with "Unexpected token" errors for any
+/// TS-specific syntax. A warning is logged in that case.
+///
+/// # ⚠ ES module output warning
+///
+/// `assets/scripts/tsconfig.json` sets `"module": "ES2020"`, so `tsc` emits
+/// output with `import`/`export` statements. QuickJS's `ctx.eval()` (script
+/// mode) cannot parse ES module syntax and will reject the compiled output.
+/// The proper fix is the `scripts-build` bundler sidecar — it strips
+/// imports/exports and produces a self-contained IIFE/plain-JS bundle that
+/// QuickJS can evaluate. Until `scripts-build` is the active compiler,
+/// TypeScript files that use `import`/`export` will fail to load even after
+/// successful compilation.
 fn load_behavior_scripts(runtime: &ScriptRuntime) {
     let root = Path::new("assets/scripts");
     let entries = match std::fs::read_dir(root) {
@@ -282,7 +304,7 @@ fn load_behavior_scripts(runtime: &ScriptRuntime) {
             return;
         }
     };
-    let mut paths: Vec<std::path::PathBuf> = entries
+    let all_paths: Vec<std::path::PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
@@ -293,9 +315,98 @@ fn load_behavior_scripts(runtime: &ScriptRuntime) {
                 )
         })
         .collect();
+
+    // Build the set of stems that have a `.ts` source so we can skip
+    // same-stem `.js` files (compiler artifacts).
+    let ts_stems: std::collections::HashSet<std::path::PathBuf> = all_paths
+        .iter()
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("ts"))
+        .filter_map(|p| p.with_extension("").canonicalize().ok())
+        .collect();
+
+    let mut paths: Vec<std::path::PathBuf> = all_paths
+        .into_iter()
+        .filter(|p| {
+            if p.extension().and_then(|s| s.to_str()) == Some("js") {
+                // Skip `.js` files that are compiler artifacts — identified by
+                // the presence of a same-stem `.ts` sibling.
+                let stem = p.with_extension("");
+                if let Ok(canonical) = stem.canonicalize() {
+                    if ts_stems.contains(&canonical) {
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+        .collect();
+
     // Sort by UTF-8 byte order — matches Sub-plan 5's fixed ordering.
     paths.sort();
+
+    // In debug builds, compile `.ts` → `.js` before loading. The watcher
+    // module (and TsCompilerPath) is only compiled under debug_assertions.
+    #[cfg(debug_assertions)]
+    let ts_compiler = crate::scripting::watcher::TsCompilerPath::detect();
+
+    #[cfg(debug_assertions)]
+    if ts_compiler.is_none() {
+        log::warn!(
+            "[Scripting] No TypeScript compiler found (tsc / npx / scripts-build). \
+             `.ts` files will be passed to QuickJS as-is and will likely fail with \
+             \"Unexpected token\" errors. Install tsc or ensure scripts-build ships \
+             next to the engine binary."
+        );
+    }
+
     for path in &paths {
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+        // In debug builds, compile `.ts` to `.js` first.
+        #[cfg(debug_assertions)]
+        if ext == "ts" {
+            match &ts_compiler {
+                Some(compiler) => {
+                    let out_path =
+                        crate::scripting::watcher::compiled_output_for(path);
+                    match crate::scripting::watcher::run_ts_compiler(
+                        compiler,
+                        path,
+                        &out_path,
+                        root,
+                    ) {
+                        Ok(()) => {
+                            // ⚠ See the doc-comment above: tsc with
+                            // `"module": "ES2020"` emits import/export syntax
+                            // that QuickJS cannot parse in script mode. Loading
+                            // will fail unless scripts-build (the bundler
+                            // sidecar) is the active compiler.
+                            if let Err(err) =
+                                runtime.run_script_file(ScriptWhich::Behavior, &out_path)
+                            {
+                                log::error!(
+                                    "[Scripting] failed to load compiled `{}`: {err}",
+                                    out_path.display(),
+                                );
+                            }
+                        }
+                        Err(msg) => {
+                            log::error!(
+                                "[Scripting] TS compile failed for `{}`: {msg}",
+                                path.display(),
+                            );
+                        }
+                    }
+                    continue;
+                }
+                None => {
+                    // No compiler — fall through to loading the raw `.ts`
+                    // (preserves prior behavior; warning already logged above).
+                }
+            }
+        }
+
+        // `.js`, `.luau`, or `.ts` with no compiler available.
         if let Err(err) = runtime.run_script_file(ScriptWhich::Behavior, path) {
             log::error!("[Scripting] failed to load `{}`: {err}", path.display(),);
         }
@@ -494,9 +605,11 @@ impl ApplicationHandler for App {
         // See: context/lib/scripting.md
         {
             let level_lights = renderer.level_lights().to_vec();
+            let fgd_sample_float_count =
+                (renderer.scripted_sample_byte_offset() / 4) as u32;
             let mut registry = self.script_ctx.registry.borrow_mut();
             self.light_bridge
-                .populate_from_level(&level_lights, &mut registry);
+                .populate_from_level(&level_lights, &mut registry, fgd_sample_float_count);
         }
 
         self.renderer = Some(renderer);
@@ -716,6 +829,8 @@ impl ApplicationHandler for App {
                         {
                             renderer.upload_bridge_lights(&update.lights_bytes);
                             renderer.upload_bridge_descriptors(&update.descriptor_bytes);
+                            renderer.upload_bridge_samples(&update.samples_bytes);
+                            renderer.set_light_effective_brightness(&update.effective_brightness);
                         }
                     }
 

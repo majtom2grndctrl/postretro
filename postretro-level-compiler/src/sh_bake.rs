@@ -758,6 +758,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            tag: None,
         }
     }
 
@@ -1005,6 +1006,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            tag: None,
         };
         let exterior: HashSet<usize> = HashSet::new();
         let inputs = BakeInputs {
@@ -1046,6 +1048,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            tag: None,
         };
         let exterior: HashSet<usize> = HashSet::new();
         let inputs = BakeInputs {
@@ -1096,6 +1099,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            tag: None,
         };
         let exterior: HashSet<usize> = HashSet::new();
         let inputs = BakeInputs {
@@ -1319,6 +1323,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            tag: None,
         };
         dyn_light.is_dynamic = true;
 

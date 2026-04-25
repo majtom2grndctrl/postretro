@@ -19,6 +19,7 @@
 - **Input handling / gamepad** → `input.md`
 - **Resource management / textures / materials** → `resource_management.md`
 - **Scripting / primitives / SDK types / hot reload** → `scripting.md`
+- **Game / mod author docs (human-facing, not agent context)** → `docs/`
 - **Collision / player movement** → `entity_model.md` §7 · `reference/collision-without-bsp.md` · `plans/drafts/grounded-movement/index.md`
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **Roadmap / implementation phases** → `plans/roadmap.md`

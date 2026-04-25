@@ -64,6 +64,17 @@ pub const ANIMATION_DESCRIPTOR_SIZE: usize = 48;
 /// `AnimatedLightBuffers::set_active` to patch the CPU mirror in place.
 pub const ANIMATION_DESCRIPTOR_ACTIVE_OFFSET: usize = 36;
 
+/// Number of f32 slots reserved per map light in the scripted-animation
+/// region of the `anim_samples` buffer for brightness samples.
+pub const SCRIPTED_BRIGHTNESS_SLOT: usize = 128;
+/// Number of f32 slots reserved per map light in the scripted-animation
+/// region for color samples (interleaved RGB, so 128 / 3 ≈ 42 keyframes max).
+pub const SCRIPTED_COLOR_SLOT_F32: usize = 128;
+/// Total f32 slots per map light in the scripted-animation region.
+/// Layout within each slot: [0..SCRIPTED_BRIGHTNESS_SLOT) = brightness,
+/// [SCRIPTED_BRIGHTNESS_SLOT..SCRIPTED_FLOATS_PER_LIGHT) = color (RGB interleaved).
+pub const SCRIPTED_FLOATS_PER_LIGHT: usize = SCRIPTED_BRIGHTNESS_SLOT + SCRIPTED_COLOR_SLOT_F32;
+
 /// Uploaded SH volume handles + bind group. Always populated — when the level
 /// has no SH section, the bind group binds dummy 1×1×1 textures and the
 /// `has_sh_volume` flag is zero so the fragment shader skips SH sampling.
@@ -92,6 +103,11 @@ pub struct ShVolumeResources {
     /// field is not on the hot path.
     #[allow(dead_code)]
     pub scripted_light_count: u32,
+    /// Byte offset within `anim_samples` where the scripted-animation region
+    /// begins (immediately after any FGD-baked samples). The bridge writes its
+    /// per-light sample data starting here; `upload_bridge_samples` passes this
+    /// to `queue.write_buffer` as the destination offset.
+    pub scripted_sample_byte_offset: usize,
 }
 
 /// Shared handle exposing the animated-light descriptor and sample buffers to
@@ -242,8 +258,15 @@ impl ShVolumeResources {
         // no animated lights (or no section exists) the two storage buffers
         // are single-element dummies so the bind group remains valid (wgpu
         // rejects zero-sized storage buffer bindings).
-        let (anim_descriptor_bytes, anim_sample_bytes, animated_light_count) =
+        let (anim_descriptor_bytes, mut anim_sample_bytes, animated_light_count) =
             build_animation_buffers(usable);
+
+        // Append the scripted-animation region: one slot per map light.
+        // FGD samples occupy [0, scripted_sample_byte_offset); scripted samples
+        // follow. The LightBridge writes into this region at runtime.
+        let scripted_sample_byte_offset = anim_sample_bytes.len();
+        let scripted_region_bytes = map_light_count * SCRIPTED_FLOATS_PER_LIGHT * 4;
+        anim_sample_bytes.extend(std::iter::repeat(0u8).take(scripted_region_bytes));
 
         let anim_descriptors_buffer = device.create_buffer_init_helper(
             "SH Animation Descriptors",
@@ -336,6 +359,7 @@ impl ShVolumeResources {
             animation,
             scripted_light_descriptors: scripted_light_descriptors_buffer,
             scripted_light_count: map_light_count as u32,
+            scripted_sample_byte_offset,
         }
     }
 }

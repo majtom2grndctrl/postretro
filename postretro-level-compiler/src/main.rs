@@ -270,6 +270,7 @@ fn main() -> anyhow::Result<()> {
     // `i` in one corresponds to record `i` in the other.
     let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
     let light_influence_section = pack::encode_light_influence(&map_data.lights);
+    let light_tags_section = pack::encode_light_tags(&map_data.lights);
 
     // The animated-light-chunks builder indexes into the
     // `!is_dynamic && animation.is_some()` namespace — the exact same filter
@@ -371,6 +372,7 @@ fn main() -> anyhow::Result<()> {
             &chunk_light_list_section,
             animated_light_chunks_section.as_ref(),
             animated_light_weight_maps_section.as_ref(),
+            light_tags_section.as_ref(),
         )?;
     } else {
         if args.verbose {
@@ -391,6 +393,7 @@ fn main() -> anyhow::Result<()> {
             &chunk_light_list_section,
             animated_light_chunks_section.as_ref(),
             animated_light_weight_maps_section.as_ref(),
+            light_tags_section.as_ref(),
         )?;
     }
     timings.push(("Packing", stage_start.elapsed()));

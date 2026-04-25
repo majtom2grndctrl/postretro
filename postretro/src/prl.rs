@@ -15,6 +15,7 @@ use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::light_influence::LightInfluenceSection;
+use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sh_volume::ShVolumeSection;
@@ -148,6 +149,11 @@ pub struct MapLight {
     /// spec buffer (they are already driven by the dynamic `GpuLight`
     /// loop).
     pub is_dynamic: bool,
+    /// Optional author-supplied script tag loaded from the `LightTags`
+    /// section (ID 26). Consumed by the scripting bridge at level load to
+    /// populate the entity registry's tag column so scripts can call
+    /// `world.query({ component: "light", tag: "<tag>" })`.
+    pub tag: Option<String>,
 }
 
 /// BSP tree + BVH level data loaded from a .prl file.
@@ -300,6 +306,7 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 cone_direction: r.cone_direction,
                 cast_shadows: r.cast_shadows,
                 is_dynamic: false,
+                tag: None,
             }
         })
         .collect()
@@ -480,7 +487,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     // AlphaLights section (optional). Missing for maps compiled before the
     // Lighting Foundation milestone — fall back to an empty light list with
     // a warning so older maps still load.
-    let lights: Vec<MapLight> = match prl_format::read_section_data(
+    let mut lights: Vec<MapLight> = match prl_format::read_section_data(
         &mut cursor,
         &meta,
         SectionId::AlphaLights as u32,
@@ -499,6 +506,35 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             Vec::new()
         }
     };
+
+    // LightTags section (optional). Entries correspond 1:1 with AlphaLights
+    // records in the same order; a mismatch is a format error. Absence means
+    // no light carries a tag.
+    if let Some(data) =
+        prl_format::read_section_data(&mut cursor, &meta, SectionId::LightTags as u32)?
+    {
+        let section = LightTagsSection::from_bytes(&data)?;
+        if section.tags.len() != lights.len() {
+            return Err(PrlLoadError::FormatError(prl_format::FormatError::Io(
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "LightTags count ({}) does not match AlphaLights count ({})",
+                        section.tags.len(),
+                        lights.len()
+                    ),
+                ),
+            )));
+        }
+        let mut tagged = 0usize;
+        for (light, tag) in lights.iter_mut().zip(section.tags.into_iter()) {
+            if !tag.is_empty() {
+                tagged += 1;
+                light.tag = Some(tag);
+            }
+        }
+        log::info!("[PRL] LightTags: {tagged} tagged lights");
+    }
 
     // LightInfluence section (optional). Missing for maps compiled before
     // sub-plan 4 — fall back to empty (all lights treated as infinite-bound).

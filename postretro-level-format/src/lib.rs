@@ -10,6 +10,7 @@ pub mod chunk_light_list;
 pub mod geometry;
 pub mod leaf_pvs;
 pub mod light_influence;
+pub mod light_tags;
 pub mod lightmap;
 pub mod octahedral;
 pub mod portals;
@@ -122,6 +123,13 @@ pub enum SectionId {
     /// runtime into the animated-lightmap contribution atlas. See
     /// `animated_light_weight_maps::AnimatedLightWeightMapsSection`.
     AnimatedLightWeightMaps = 25,
+
+    /// Optional script tags for AlphaLights (one entry per AlphaLights record,
+    /// same order). Authored via the FGD `_tag` key; consumed by the runtime
+    /// to populate the scripting entity registry's tag column so
+    /// `world.query({ component: "light", tag: "<tag>" })` can filter lights.
+    /// See `light_tags::LightTagsSection`.
+    LightTags = 26,
 }
 
 impl SectionId {
@@ -141,6 +149,7 @@ impl SectionId {
             23 => Some(Self::ChunkLightList),
             24 => Some(Self::AnimatedLightChunks),
             25 => Some(Self::AnimatedLightWeightMaps),
+            26 => Some(Self::LightTags),
             _ => None,
         }
     }

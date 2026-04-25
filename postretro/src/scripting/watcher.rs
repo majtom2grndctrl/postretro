@@ -369,13 +369,13 @@ fn handle_path(
 
 /// The `.js` artifact path for a given `.ts` source: same directory, same stem.
 /// Sibling placement avoids an extra config knob.
-fn compiled_output_for(ts_source: &Path) -> PathBuf {
+pub(crate) fn compiled_output_for(ts_source: &Path) -> PathBuf {
     ts_source.with_extension("js")
 }
 
 /// Spawn the configured TS compiler and wait for it. Logs stderr on failure;
 /// returns a short `Err` with the exit status.
-fn run_ts_compiler(
+pub(crate) fn run_ts_compiler(
     compiler: &TsCompilerPath,
     input: &Path,
     output: &Path,

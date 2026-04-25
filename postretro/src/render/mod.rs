@@ -397,6 +397,13 @@ pub struct Renderer {
     /// Per-frame light list cached from the level (for slot assignment).
     #[allow(dead_code)]
     level_lights: Vec<MapLight>,
+    /// Per-map-light current effective brightness, in `level_lights` order.
+    /// Updated each dirty frame by `set_light_effective_brightness` from the
+    /// light bridge. Lights whose animation curve evaluates near zero are
+    /// excluded from dynamic spot shadow slot ranking. Empty (or shorter than
+    /// `level_lights`) means "no suppression"; missing entries are treated
+    /// as 1.0.
+    light_effective_brightness: Vec<f32>,
     /// Last camera position uploaded via `update_per_frame_uniforms`,
     /// cached so the shadow pass can re-rank lights on its own clock.
     last_camera_position: Vec3,
@@ -1569,6 +1576,7 @@ impl Renderer {
             animated_lightmap,
             lights_buffer,
             level_lights,
+            light_effective_brightness: Vec::new(),
             last_camera_position: Vec3::ZERO,
             spot_shadow_pool,
             shadow_vs_uniform_buffer,
@@ -1784,6 +1792,28 @@ impl Renderer {
         );
     }
 
+    /// Upload scripted animation samples into the `anim_samples` GPU buffer,
+    /// starting at the scripted-region offset (immediately after FGD samples).
+    /// Called once per dirty frame, after `upload_bridge_descriptors`.
+    pub fn upload_bridge_samples(&mut self, samples_bytes: &[u8]) {
+        if samples_bytes.is_empty() {
+            return;
+        }
+        let offset = self.sh_volume_resources.scripted_sample_byte_offset as u64;
+        self.queue.write_buffer(
+            &self.sh_volume_resources.animation.anim_samples,
+            offset,
+            samples_bytes,
+        );
+    }
+
+    /// Byte offset within `anim_samples` where the scripted-animation region
+    /// starts. Divide by 4 to get the float index; pass to
+    /// `LightBridge::populate_from_level` as `fgd_sample_float_count`.
+    pub fn scripted_sample_byte_offset(&self) -> usize {
+        self.sh_volume_resources.scripted_sample_byte_offset
+    }
+
     /// Access the cached level-light list. Called at level-load time by the
     /// game layer to seed the light bridge so the bridge can populate the
     /// scripting entity registry.
@@ -1791,25 +1821,53 @@ impl Renderer {
         &self.level_lights
     }
 
+    /// Cache per-map-light effective brightness from the light bridge for
+    /// the next call to `update_dynamic_light_slots`. Called once per dirty
+    /// frame from the game layer alongside the other `upload_bridge_*`
+    /// methods. An empty slice clears the cache (treated as "no suppression").
+    pub fn set_light_effective_brightness(&mut self, effective_brightness: &[f32]) {
+        self.light_effective_brightness.clear();
+        self.light_effective_brightness
+            .extend_from_slice(effective_brightness);
+    }
+
     /// Update the dynamic lights buffer with per-frame shadow slot assignments.
     ///
     /// Ranks visible dynamic spot lights by influence area and assigns slots.
     /// Rewrites the lights buffer with slot indices. Called once per frame
     /// before rendering.
+    ///
+    /// `effective_brightness` is a per-map-light current brightness in
+    /// `level_lights` order, evaluated CPU-side from any active animation
+    /// curve (see `light_bridge`). Lights whose effective brightness is below
+    /// 0.01 are excluded from the candidate list so an animated-dark light
+    /// does not waste one of the 8 shadow slots. An empty (or short) slice
+    /// is treated as all-1.0 (no suppression) — the engine's first frame
+    /// runs before the bridge produces an update.
     pub fn update_dynamic_light_slots(
         &mut self,
         camera_position: Vec3,
         camera_near_clip: f32,
         light_influences: &[LightInfluence],
+        effective_brightness: &[f32],
     ) {
         if self.level_lights.is_empty() {
             return;
         }
 
         // For now, we don't have per-frame visibility (visible_cell_bitmask).
-        // Use a dummy bitmask that considers all lights visible.
-        // This will be replaced with actual visibility data in Task B.
-        let dummy_visible = vec![true; self.level_lights.len()];
+        // Use a dummy bitmask that considers all lights visible. Lights whose
+        // animated brightness is below the suppression threshold are folded
+        // into the visibility mask so the existing `rank_lights` filter
+        // naturally drops them from the candidate list.
+        const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
+        let mut dummy_visible = vec![true; self.level_lights.len()];
+        for (i, vis) in dummy_visible.iter_mut().enumerate() {
+            let b = effective_brightness.get(i).copied().unwrap_or(1.0);
+            if b < BRIGHTNESS_SUPPRESSION_THRESHOLD {
+                *vis = false;
+            }
+        }
 
         // Rank lights and get slot assignments.
         let slot_assignment = SpotShadowPool::rank_lights(
@@ -2028,11 +2086,17 @@ impl Renderer {
         // matrices, then render a depth-only pass per allocated slot.
         // The pass draws all static geometry into the slot's depth layer;
         // per-light BVH culling would be a future optimization.
+        // Take the cached bridge-produced brightness out for the call so we
+        // don't borrow `self` immutably while also borrowing it mutably; put
+        // it back afterwards so the next frame reuses the same allocation.
+        let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
         self.update_dynamic_light_slots(
             self.last_camera_position,
             crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
             &[],
+            &eff_brightness,
         );
+        self.light_effective_brightness = eff_brightness;
         if self.has_geometry && self.index_count > 0 {
             let stride = self.shadow_vs_stride;
             let slot_assignment = self.spot_shadow_pool.slot_assignment.clone();

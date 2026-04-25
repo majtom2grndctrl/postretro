@@ -436,6 +436,19 @@ pub fn translate_light(
         );
     }
 
+    // -- Author-supplied script tag --
+    // Opaque string; the runtime uses it as-is for `world.query({ tag: ... })`.
+    // Treat whitespace-only as absent so a TrenchBroom default of "" doesn't
+    // pollute the registry's tag column.
+    let tag = props.get("_tag").and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
     Ok(MapLight {
         origin,
         light_type,
@@ -450,6 +463,7 @@ pub fn translate_light(
         cast_shadows: true,
         bake_only,
         is_dynamic,
+        tag,
     })
 }
 
@@ -1366,6 +1380,41 @@ mod tests {
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         let anim = light.animation.expect("animation present");
         assert!((anim.phase - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn tag_property_round_trips_on_light() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_tag", "hallway_wave"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert_eq!(light.tag.as_deref(), Some("hallway_wave"));
+    }
+
+    #[test]
+    fn tag_absent_yields_none() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(light.tag.is_none());
+    }
+
+    #[test]
+    fn tag_whitespace_only_yields_none() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_tag", "   "),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(light.tag.is_none());
     }
 
     #[test]

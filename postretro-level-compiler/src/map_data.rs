@@ -245,6 +245,12 @@ pub struct MapLight {
     /// `_dynamic` FGD property on `light`, `light_spot`, and `light_sun`.
     /// See `context/plans/ready/lighting-dynamic-flag/index.md`.
     pub is_dynamic: bool,
+
+    /// Optional author-supplied tag (FGD `_tag`). Carried through the PRL
+    /// `LightTags` section so the runtime can register each light with the
+    /// scripting entity registry's tag column, enabling
+    /// `world.query({ component: "light", tag: "<tag>" })`.
+    pub tag: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

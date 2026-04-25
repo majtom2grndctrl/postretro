@@ -442,6 +442,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            tag: None,
         }
     }
 
@@ -466,6 +467,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            tag: None,
         }
     }
 

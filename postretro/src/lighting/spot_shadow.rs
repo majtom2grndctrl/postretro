@@ -242,7 +242,7 @@ impl SpotShadowPool {
         lights: &[MapLight],
         camera_position: Vec3,
         camera_near_clip: f32,
-        _visible_cell_bitmask: &[bool],
+        eligible_lights: &[bool],
         influence_volumes: &[crate::lighting::influence::LightInfluence],
     ) -> Vec<u32> {
         let mut slot_assignment = vec![NO_SHADOW_SLOT; lights.len()];
@@ -254,6 +254,14 @@ impl SpotShadowPool {
             .filter_map(|(idx, light)| {
                 // Only consider dynamic spot lights.
                 if !light.is_dynamic || light.light_type != LightType::Spot {
+                    return None;
+                }
+
+                // Per-light eligibility gate. The caller folds visibility and
+                // animated-brightness suppression into this slice; an empty
+                // (or short) slice is treated as all-eligible so existing
+                // tests and the first-frame pre-bridge call keep working.
+                if idx < eligible_lights.len() && !eligible_lights[idx] {
                     return None;
                 }
 
@@ -328,6 +336,7 @@ mod tests {
             cone_direction: [0.0, 0.0, -1.0],
             cast_shadows: true,
             is_dynamic,
+            tag: None,
         }
     }
 

@@ -73,7 +73,12 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
     let seed = partition::find_leaf_for_point(tree, probe);
 
     if tree.leaves[seed].is_solid {
-        log::warn!("Void probe landed in a solid leaf — exterior leaf culling skipped");
+        log::warn!(
+            "Exterior probe landed in a solid leaf — exterior culling is disabled for this \
+             compile (no leaves classified as exterior, all geometry treated as interior). \
+             The map likely has a boundary leak: a brush touches or extends past the outer \
+             AABB so the void seed point falls inside solid space."
+        );
         return HashSet::new();
     }
 

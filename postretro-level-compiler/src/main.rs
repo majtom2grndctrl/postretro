@@ -155,7 +155,7 @@ fn main() -> anyhow::Result<()> {
     // Build the global BVH over all static geometry. One acceleration
     // structure feeds both the runtime GPU traversal (via the flattened
     // BvhSection) and Milestone 5's CPU baker (via the live bvh::Bvh).
-    let (bvh, bvh_primitives, mut bvh_section) =
+    let (bvh, bvh_primitives, bvh_section) =
         bvh_build::build_bvh(&geo_result).map_err(|e| anyhow::anyhow!("BVH build failed: {e}"))?;
     timings.push(("BVH Build", stage_start.elapsed()));
     if args.verbose {
@@ -198,9 +198,12 @@ fn main() -> anyhow::Result<()> {
                     ..
                 }) if attempt < MAX_RETRIES => {
                     let next = density * 2.0;
+                    let retries_left = MAX_RETRIES - attempt - 1;
                     log::warn!(
-                        "Lightmap atlas overflow at {density} m/texel (needed {needed_w}x{needed_h}, \
-                         max {max}x{max}); retrying at {next} m/texel"
+                        "Lightmap atlas overflow at {density} m/texel \
+                         (computed {needed_w}x{needed_h} px, limit {max}x{max} px); \
+                         retrying at {next} m/texel ({retries_left} retr{} remaining)",
+                        if retries_left == 1 { "y" } else { "ies" }
                     );
                     density = next;
                     attempt += 1;
@@ -304,19 +307,22 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("Animated light chunks...");
     let stage_start = Instant::now();
-    // Builds the per-face, per-leaf animated-light chunk partition and
-    // stamps `chunk_range_start` / `chunk_range_count` on every `BvhLeaf`.
-    // Must run before `bvh_section` is serialized into the output file.
+    // Builds the per-face, per-leaf animated-light chunk partition. Returns a
+    // parallel `(chunk_range_start, chunk_range_count)` table indexed by BVH
+    // leaf slot; pack stamps the table onto the on-disk `BvhLeaf` records at
+    // serialization time (`pack::serialize_bvh_with_chunk_ranges`). The
+    // explicit data flow replaces an earlier hidden mutation of `bvh_section`.
     // When the map has no animated lights the returned section is empty,
     // which is the signal to skip emission — no placeholder record needed.
-    let animated_light_chunks_section = animated_light_chunks::build_animated_light_chunks(
-        &mut bvh_section,
-        &animated_chunk_lights,
-        &animated_chunk_influence,
-        &face_charts,
-        &geo_result.face_index_ranges,
-        final_lightmap_density,
-    );
+    let (animated_light_chunks_section, bvh_chunk_ranges) =
+        animated_light_chunks::build_animated_light_chunks(
+            &bvh_section,
+            &animated_chunk_lights,
+            &animated_chunk_influence,
+            &face_charts,
+            &geo_result.face_index_ranges,
+            final_lightmap_density,
+        );
     timings.push(("AnimLightChunks", stage_start.elapsed()));
 
     // Weight-map bake: for every chunk, emit per-texel animated-light
@@ -365,6 +371,7 @@ fn main() -> anyhow::Result<()> {
             &vis_result.leaves_section,
             &vis_result.leaf_pvs_section,
             &bvh_section,
+            &bvh_chunk_ranges,
             &alpha_lights_section,
             &light_influence_section,
             &sh_volume_section,
@@ -386,6 +393,7 @@ fn main() -> anyhow::Result<()> {
             &vis_result.leaves_section,
             &portals_section,
             &bvh_section,
+            &bvh_chunk_ranges,
             &alpha_lights_section,
             &light_influence_section,
             &sh_volume_section,

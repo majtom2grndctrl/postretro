@@ -22,7 +22,7 @@ const WINDING_HALF_EXTENT: f64 = 16384.0;
 /// Minimum polygon area to keep a portal winding. Slivers below this
 /// threshold are discarded to prevent accumulation of degenerate geometry
 /// from numerical precision loss.
-const MIN_WINDING_AREA: f64 = 0.1;
+const MIN_PORTAL_AREA_M2: f64 = 0.1;
 
 /// A portal connecting two adjacent BSP leaves through a splitting plane.
 pub struct Portal {
@@ -108,12 +108,12 @@ fn make_node_portal(
     for &(anc_normal, anc_distance) in ancestor_planes {
         winding = clip_polygon_to_front(&winding, anc_normal, anc_distance, PORTAL_EPSILON)?;
 
-        if winding.len() < 3 || polygon_area(&winding) < MIN_WINDING_AREA {
+        if winding.len() < 3 || polygon_area(&winding) < MIN_PORTAL_AREA_M2 {
             return None;
         }
     }
 
-    if winding.len() < 3 || polygon_area(&winding) < MIN_WINDING_AREA {
+    if winding.len() < 3 || polygon_area(&winding) < MIN_PORTAL_AREA_M2 {
         return None;
     }
 
@@ -183,12 +183,12 @@ fn distribute_portal(
             );
 
             if let Some(fw) = front_winding {
-                if fw.len() >= 3 && polygon_area(&fw) >= MIN_WINDING_AREA {
+                if fw.len() >= 3 && polygon_area(&fw) >= MIN_PORTAL_AREA_M2 {
                     distribute_portal(tree, &fw, &split_node.front, back_child, portals);
                 }
             }
             if let Some(bw) = back_winding {
-                if bw.len() >= 3 && polygon_area(&bw) >= MIN_WINDING_AREA {
+                if bw.len() >= 3 && polygon_area(&bw) >= MIN_PORTAL_AREA_M2 {
                     distribute_portal(tree, &bw, &split_node.back, back_child, portals);
                 }
             }
@@ -205,12 +205,12 @@ fn distribute_portal(
             );
 
             if let Some(fw) = front_winding {
-                if fw.len() >= 3 && polygon_area(&fw) >= MIN_WINDING_AREA {
+                if fw.len() >= 3 && polygon_area(&fw) >= MIN_PORTAL_AREA_M2 {
                     distribute_portal(tree, &fw, front_child, &split_node.front, portals);
                 }
             }
             if let Some(bw) = back_winding {
-                if bw.len() >= 3 && polygon_area(&bw) >= MIN_WINDING_AREA {
+                if bw.len() >= 3 && polygon_area(&bw) >= MIN_PORTAL_AREA_M2 {
                     distribute_portal(tree, &bw, front_child, &split_node.back, portals);
                 }
             }

@@ -27,6 +27,37 @@ use crate::geometry::GeometryResult;
 use crate::map_data::{FalloffModel, LightType, MapLight};
 use crate::portals::Portal;
 
+/// Serialize a `BvhSection` with per-leaf animated-light chunk ranges stamped
+/// into the on-disk `BvhLeaf` records.
+///
+/// `chunk_ranges` is the parallel `(chunk_range_start, chunk_range_count)`
+/// table returned by `animated_light_chunks::build_animated_light_chunks`,
+/// indexed by BVH leaf slot. Pass an empty slice when no animated-light chunk
+/// section is being emitted — every leaf then carries `(0, 0)` (the default).
+///
+/// This is the only sanctioned site that writes the chunk-range fields of
+/// `BvhLeaf` to disk: keeping the application here, immediately adjacent to
+/// `to_bytes()`, makes the "animated-light chunks must run before BVH
+/// serialization" ordering an explicit data dependency rather than a hidden
+/// side effect on `BvhSection`.
+fn serialize_bvh_with_chunk_ranges(bvh: &BvhSection, chunk_ranges: &[(u32, u32)]) -> Vec<u8> {
+    if chunk_ranges.is_empty() {
+        // No chunk ranges to stamp — leaves keep their (0, 0) default.
+        return bvh.to_bytes();
+    }
+    debug_assert_eq!(
+        chunk_ranges.len(),
+        bvh.leaves.len(),
+        "chunk_ranges must be parallel to bvh.leaves",
+    );
+    let mut stamped = bvh.clone();
+    for (leaf, &(start, count)) in stamped.leaves.iter_mut().zip(chunk_ranges.iter()) {
+        leaf.chunk_range_start = start;
+        leaf.chunk_range_count = count;
+    }
+    stamped.to_bytes()
+}
+
 /// Convert translated map lights into an `AlphaLightsSection` for the format
 /// crate. Strips animation curves (direct lighting path uses static base
 /// properties only — sub-plan 3 of the Lighting Foundation plan).
@@ -58,6 +89,7 @@ pub fn encode_alpha_lights(lights: &[MapLight]) -> AlphaLightsSection {
                 cone_angle_outer: l.cone_angle_outer.unwrap_or(0.0),
                 cone_direction: l.cone_direction.unwrap_or([0.0, 0.0, 0.0]),
                 cast_shadows: l.cast_shadows,
+                is_dynamic: l.is_dynamic,
             }
         })
         .collect();
@@ -146,6 +178,7 @@ pub fn pack_and_write_pvs(
     leaves: &BspLeavesSection,
     leaf_pvs: &LeafPvsSection,
     bvh: &BvhSection,
+    bvh_chunk_ranges: &[(u32, u32)],
     alpha_lights: &AlphaLightsSection,
     light_influence: &LightInfluenceSection,
     sh_volume: &ShVolumeSection,
@@ -160,7 +193,7 @@ pub fn pack_and_write_pvs(
     let nodes_bytes = nodes.to_bytes();
     let leaves_bytes = leaves.to_bytes();
     let leaf_pvs_bytes = leaf_pvs.to_bytes();
-    let bvh_bytes = bvh.to_bytes();
+    let bvh_bytes = serialize_bvh_with_chunk_ranges(bvh, bvh_chunk_ranges);
     let alpha_lights_bytes = alpha_lights.to_bytes();
     let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
@@ -322,6 +355,7 @@ pub fn pack_and_write_portals(
     leaves: &BspLeavesSection,
     portals: &PortalsSection,
     bvh: &BvhSection,
+    bvh_chunk_ranges: &[(u32, u32)],
     alpha_lights: &AlphaLightsSection,
     light_influence: &LightInfluenceSection,
     sh_volume: &ShVolumeSection,
@@ -352,7 +386,7 @@ pub fn pack_and_write_portals(
     let nodes_bytes = nodes.to_bytes();
     let leaves_bytes = portal_leaves.to_bytes();
     let portals_bytes = portals.to_bytes();
-    let bvh_bytes = bvh.to_bytes();
+    let bvh_bytes = serialize_bvh_with_chunk_ranges(bvh, bvh_chunk_ranges);
     let alpha_lights_bytes = alpha_lights.to_bytes();
     let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
@@ -730,6 +764,7 @@ mod tests {
             &leaves,
             &leaf_pvs,
             &bvh,
+            &[],
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
@@ -794,6 +829,7 @@ mod tests {
             &leaves,
             &portals,
             &bvh,
+            &[],
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
@@ -847,6 +883,7 @@ mod tests {
             &leaves,
             &leaf_pvs,
             &bvh,
+            &[],
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
@@ -908,6 +945,7 @@ mod tests {
             &vis_result.leaves_section,
             &vis_result.leaf_pvs_section,
             &bvh_section,
+            &[],
             &alpha_lights,
             &light_influence,
             &sh_volume,
@@ -986,6 +1024,7 @@ mod tests {
             &vis_result.leaves_section,
             &portals_section,
             &bvh_section,
+            &[],
             &alpha_lights,
             &light_influence,
             &sh_volume,

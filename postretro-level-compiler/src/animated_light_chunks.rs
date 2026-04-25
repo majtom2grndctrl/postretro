@@ -2,10 +2,11 @@
 //
 // For every BVH leaf that owns a face overlapped by an animated light, build
 // a recursive face-local UV-space partition where every emitted chunk carries
-// at most `MAX_ANIMATED_LIGHTS_PER_CHUNK` animated-light indices. Stamps
-// `chunk_range_*` on every leaf in flat-leaf-array order so a runtime BVH
-// walk over visible leaves enumerates visible animated-light chunks as a
-// union of contiguous ranges.
+// at most `MAX_ANIMATED_LIGHTS_PER_CHUNK` animated-light indices. Returns a
+// per-leaf `(chunk_range_start, chunk_range_count)` table parallel to the BVH
+// leaf array; the pack stage stamps these onto the on-disk `BvhLeaf` records
+// during serialization. The runtime BVH walk over visible leaves then
+// enumerates visible animated-light chunks as a union of contiguous ranges.
 //
 // Light indices in the emitted flat pool index into the **filtered** light
 // list passed by the caller (the `!is_dynamic && animation.is_some()`
@@ -34,12 +35,17 @@ use crate::map_data::MapLight;
 /// inputs while preserving the first few diagnostic lines.
 const MAX_OVERFLOW_LOG_LINES: u64 = 8;
 
-/// Build the `AnimatedLightChunksSection` and stamp `chunk_range_*` on every
-/// `BvhLeaf` in `bvh_section`.
+/// Build the `AnimatedLightChunksSection` and a parallel per-leaf
+/// `(chunk_range_start, chunk_range_count)` table.
+///
+/// The returned `Vec<(u32, u32)>` is indexed by BVH leaf slot (parallel to
+/// `bvh_section.leaves`). The pack stage applies it to the on-disk `BvhLeaf`
+/// records during serialization — making the dependency from "this stage
+/// must run before BVH serialization" explicit at the call site rather than
+/// hidden behind a side-effect on a shared struct.
 ///
 /// Inputs:
-/// - `bvh_section`: mutated — `chunk_range_start` / `chunk_range_count` are
-///   stamped on each leaf in flat-leaf-array order.
+/// - `bvh_section`: read-only. Iterated to pair leaves to faces.
 /// - `filtered_lights` / `filtered_influence`: parallel slices, post
 ///   `!is_dynamic && animation.is_some()` filter — the same namespace and
 ///   iteration order the runtime `AnimationDescriptor` buffer uses, so
@@ -59,13 +65,13 @@ const MAX_OVERFLOW_LOG_LINES: u64 = 8;
 ///   floor is the texel size in meters — finer subdivision cannot be
 ///   addressed by the UV-indexed weight-map baker downstream.
 pub fn build_animated_light_chunks(
-    bvh_section: &mut BvhSection,
+    bvh_section: &BvhSection,
     filtered_lights: &[MapLight],
     filtered_influence: &[InfluenceRecord],
     face_charts: &[Chart],
     face_index_ranges: &[FaceIndexRange],
     lightmap_texel_density: f32,
-) -> AnimatedLightChunksSection {
+) -> (AnimatedLightChunksSection, Vec<(u32, u32)>) {
     debug_assert_eq!(
         filtered_lights.len(),
         filtered_influence.len(),
@@ -113,17 +119,17 @@ pub fn build_animated_light_chunks(
 
     let mut chunks: Vec<AnimatedLightChunk> = Vec::new();
     let mut light_indices: Vec<u32> = Vec::new();
+    let mut leaf_chunk_ranges: Vec<(u32, u32)> = vec![(0, 0); bvh_section.leaves.len()];
 
     if animated.is_empty() {
-        for leaf in &mut bvh_section.leaves {
-            leaf.chunk_range_start = 0;
-            leaf.chunk_range_count = 0;
-        }
         log::info!("[AnimatedLightChunks] no non-directional animated lights; section empty",);
-        return AnimatedLightChunksSection {
-            chunks,
-            light_indices,
-        };
+        return (
+            AnimatedLightChunksSection {
+                chunks,
+                light_indices,
+            },
+            leaf_chunk_ranges,
+        );
     }
 
     // Pair leaves to faces. Today `bvh_build::collect_primitives` emits one
@@ -157,7 +163,7 @@ pub fn build_animated_light_chunks(
     for leaf_idx in 0..leaf_count {
         let range_start = chunks.len() as u32;
 
-        let leaf = bvh_section.leaves[leaf_idx];
+        let leaf = &bvh_section.leaves[leaf_idx];
         let leaf_offset = leaf.index_offset;
 
         // O(1) leaf→face resolution. Today each leaf's `index_offset` is
@@ -217,9 +223,7 @@ pub fn build_animated_light_chunks(
         }
 
         let range_count = chunks.len() as u32 - range_start;
-        let leaf_mut = &mut bvh_section.leaves[leaf_idx];
-        leaf_mut.chunk_range_start = range_start;
-        leaf_mut.chunk_range_count = range_count;
+        leaf_chunk_ranges[leaf_idx] = (range_start, range_count);
     }
 
     let max_per_chunk = chunks.iter().map(|c| c.index_count).max().unwrap_or(0);
@@ -245,10 +249,13 @@ pub fn build_animated_light_chunks(
         );
     }
 
-    AnimatedLightChunksSection {
-        chunks,
-        light_indices,
-    }
+    (
+        AnimatedLightChunksSection {
+            chunks,
+            light_indices,
+        },
+        leaf_chunk_ranges,
+    )
 }
 
 /// Animated light, with its filtered-list index for stable index emission.
@@ -464,9 +471,10 @@ mod tests {
                 index_offset: 0,
                 index_count: 6,
                 cell_id: 0,
-                // Poison values; build_animated_light_chunks must overwrite.
-                chunk_range_start: 999,
-                chunk_range_count: 999,
+                // Default zero — these fields are populated by pack-time
+                // stamping from the per-leaf range table the builder returns.
+                chunk_range_start: 0,
+                chunk_range_count: 0,
             }],
             root_node_index: 0,
         }
@@ -481,9 +489,10 @@ mod tests {
                 index_offset: (i * 6) as u32,
                 index_count: 6,
                 cell_id: 0,
-                // Poison values; build_animated_light_chunks must overwrite.
-                chunk_range_start: 999,
-                chunk_range_count: 999,
+                // Default zero — these fields are populated by pack-time
+                // stamping from the per-leaf range table the builder returns.
+                chunk_range_start: 0,
+                chunk_range_count: 0,
             })
             .collect();
         BvhSection {
@@ -565,9 +574,9 @@ mod tests {
 
     #[test]
     fn no_animated_lights_emits_empty_section_and_zero_ranges() {
-        let mut bvh = make_bvh_with_one_leaf();
-        let section = build_animated_light_chunks(
-            &mut bvh,
+        let bvh = make_bvh_with_one_leaf();
+        let (section, ranges) = build_animated_light_chunks(
+            &bvh,
             &[],
             &[],
             &[chart_xz_plane()],
@@ -576,20 +585,19 @@ mod tests {
         );
         assert!(section.chunks.is_empty());
         assert!(section.light_indices.is_empty());
-        assert_eq!(bvh.leaves[0].chunk_range_start, 0);
-        assert_eq!(bvh.leaves[0].chunk_range_count, 0);
+        assert_eq!(ranges[0], (0, 0));
     }
 
     #[test]
     fn directional_animated_light_skipped() {
-        let mut bvh = make_bvh_with_one_leaf();
+        let bvh = make_bvh_with_one_leaf();
         let lights = vec![animated_point_light()];
         let influence = vec![InfluenceRecord {
             center: [0.0, 0.0, 0.0],
             radius: f32::MAX,
         }];
-        let section = build_animated_light_chunks(
-            &mut bvh,
+        let (section, ranges) = build_animated_light_chunks(
+            &bvh,
             &lights,
             &influence,
             &[chart_xz_plane()],
@@ -597,19 +605,19 @@ mod tests {
             0.04,
         );
         assert!(section.chunks.is_empty());
-        assert_eq!(bvh.leaves[0].chunk_range_count, 0);
+        assert_eq!(ranges[0].1, 0);
     }
 
     #[test]
     fn one_overlapping_animated_light_emits_one_chunk() {
-        let mut bvh = make_bvh_with_one_leaf();
+        let bvh = make_bvh_with_one_leaf();
         let lights = vec![animated_point_light()];
         let influence = vec![InfluenceRecord {
             center: [0.5, 0.0, 0.5],
             radius: 5.0,
         }];
-        let section = build_animated_light_chunks(
-            &mut bvh,
+        let (section, ranges) = build_animated_light_chunks(
+            &bvh,
             &lights,
             &influence,
             &[chart_xz_plane()],
@@ -618,8 +626,7 @@ mod tests {
         );
         assert_eq!(section.chunks.len(), 1);
         assert_eq!(section.light_indices, vec![0]);
-        assert_eq!(bvh.leaves[0].chunk_range_start, 0);
-        assert_eq!(bvh.leaves[0].chunk_range_count, 1);
+        assert_eq!(ranges[0], (0, 1));
     }
 
     // ---- new tests (Task 4) ----------------------------------------------
@@ -633,9 +640,9 @@ mod tests {
         let lights: Vec<_> = (0..n).map(|_| mk_animated_light()).collect();
         let influence: Vec<_> = (0..n).map(|_| mk_inf(0.5, 0.5, 5.0)).collect();
 
-        let mut bvh = make_bvh_with_one_leaf();
-        let section = build_animated_light_chunks(
-            &mut bvh,
+        let bvh = make_bvh_with_one_leaf();
+        let (section, ranges) = build_animated_light_chunks(
+            &bvh,
             &lights,
             &influence,
             &[chart_xz_plane()],
@@ -650,7 +657,7 @@ mod tests {
         got.sort();
         let expected: Vec<u32> = (0..n as u32).collect();
         assert_eq!(got, expected);
-        assert_eq!(bvh.leaves[0].chunk_range_count, 1);
+        assert_eq!(ranges[0].1, 1);
     }
 
     /// Scope case 3: > cap overlapping animated lights → subdivision produces
@@ -682,9 +689,9 @@ mod tests {
             })
             .collect();
 
-        let mut bvh = make_bvh_with_one_leaf();
-        let section = build_animated_light_chunks(
-            &mut bvh,
+        let bvh = make_bvh_with_one_leaf();
+        let (section, ranges) = build_animated_light_chunks(
+            &bvh,
             &lights,
             &influence,
             &[chart_tilted(origin)],
@@ -704,10 +711,7 @@ mod tests {
                 c
             );
         }
-        assert_eq!(
-            bvh.leaves[0].chunk_range_count as usize,
-            section.chunks.len()
-        );
+        assert_eq!(ranges[0].1 as usize, section.chunks.len());
     }
 
     /// Regression: an axis-aligned planar face (walls/floors/ceilings — the
@@ -736,9 +740,9 @@ mod tests {
             radius: 1.0,
         });
 
-        let mut bvh = make_bvh_with_one_leaf();
-        let section = build_animated_light_chunks(
-            &mut bvh,
+        let bvh = make_bvh_with_one_leaf();
+        let (section, _ranges) = build_animated_light_chunks(
+            &bvh,
             &all_lights,
             &all_influence,
             &[chart_xz_plane()],
@@ -765,11 +769,11 @@ mod tests {
         let lights: Vec<_> = (0..n_lights).map(|_| mk_animated_light()).collect();
         let influence: Vec<_> = (0..n_lights).map(|_| mk_inf(0.5, 0.5, 5.0)).collect();
 
-        let mut bvh = make_bvh_with_one_leaf();
+        let bvh = make_bvh_with_one_leaf();
         // texel density = 1.0 m/texel so `min_uv_extent >= uv_extent` on the
         // root rect; builder must NOT recurse.
-        let section = build_animated_light_chunks(
-            &mut bvh,
+        let (section, _ranges) = build_animated_light_chunks(
+            &bvh,
             &lights,
             &influence,
             &[chart_xz_plane()],
@@ -790,9 +794,9 @@ mod tests {
     fn bake_only_animated_light_produces_a_chunk() {
         let lights = vec![mk_bake_only_light()];
         let influence = vec![mk_inf(0.5, 0.5, 5.0)];
-        let mut bvh = make_bvh_with_one_leaf();
-        let section = build_animated_light_chunks(
-            &mut bvh,
+        let bvh = make_bvh_with_one_leaf();
+        let (section, ranges) = build_animated_light_chunks(
+            &bvh,
             &lights,
             &influence,
             &[chart_xz_plane()],
@@ -805,7 +809,7 @@ mod tests {
             "bake_only animated light must participate in weight-map compose",
         );
         assert_eq!(section.light_indices, vec![0]);
-        assert_eq!(bvh.leaves[0].chunk_range_count, 1);
+        assert_eq!(ranges[0].1, 1);
     }
 
     /// Scope case 7: animated-flagged `is_dynamic` lights are not treated as
@@ -814,9 +818,9 @@ mod tests {
     fn dynamic_animated_light_is_skipped() {
         let lights = vec![mk_dynamic_light()];
         let influence = vec![mk_inf(0.5, 0.5, 5.0)];
-        let mut bvh = make_bvh_with_one_leaf();
-        let section = build_animated_light_chunks(
-            &mut bvh,
+        let bvh = make_bvh_with_one_leaf();
+        let (section, ranges) = build_animated_light_chunks(
+            &bvh,
             &lights,
             &influence,
             &[chart_xz_plane()],
@@ -824,7 +828,7 @@ mod tests {
             0.04,
         );
         assert!(section.chunks.is_empty());
-        assert_eq!(bvh.leaves[0].chunk_range_count, 0);
+        assert_eq!(ranges[0].1, 0);
     }
 
     /// Scope case 8: emitted u32 indices index into the **filtered** light list
@@ -854,9 +858,9 @@ mod tests {
             mk_inf(0.5, 0.5, 5.0),
         ];
 
-        let mut bvh = make_bvh_with_one_leaf();
-        let section = build_animated_light_chunks(
-            &mut bvh,
+        let bvh = make_bvh_with_one_leaf();
+        let (section, _ranges) = build_animated_light_chunks(
+            &bvh,
             &lights,
             &influence,
             &[chart_xz_plane()],
@@ -900,9 +904,9 @@ mod tests {
         let chart = chart_tilted(origin);
         let face_ranges = one_face_range();
 
-        let mut bvh_a = make_bvh_with_one_leaf();
-        let section_a = build_animated_light_chunks(
-            &mut bvh_a,
+        let bvh_a = make_bvh_with_one_leaf();
+        let (section_a, ranges_a) = build_animated_light_chunks(
+            &bvh_a,
             &lights,
             &influence,
             std::slice::from_ref(&chart),
@@ -910,9 +914,9 @@ mod tests {
             0.01,
         );
 
-        let mut bvh_b = make_bvh_with_one_leaf();
-        let section_b = build_animated_light_chunks(
-            &mut bvh_b,
+        let bvh_b = make_bvh_with_one_leaf();
+        let (section_b, ranges_b) = build_animated_light_chunks(
+            &bvh_b,
             &lights,
             &influence,
             std::slice::from_ref(&chart),
@@ -921,16 +925,9 @@ mod tests {
         );
 
         assert_eq!(section_a.to_bytes(), section_b.to_bytes());
-        assert_eq!(bvh_a.to_bytes(), bvh_b.to_bytes());
-        // Spot-check the stamped leaf fields match.
-        assert_eq!(
-            bvh_a.leaves[0].chunk_range_start,
-            bvh_b.leaves[0].chunk_range_start
-        );
-        assert_eq!(
-            bvh_a.leaves[0].chunk_range_count,
-            bvh_b.leaves[0].chunk_range_count
-        );
+        // Per-leaf range table must be identical across builds — covers what
+        // the on-disk stamped `chunk_range_*` fields will carry.
+        assert_eq!(ranges_a, ranges_b);
     }
 
     /// Acceptance invariant: every leaf owns a contiguous range into the chunk
@@ -987,13 +984,13 @@ mod tests {
         ];
 
         let face_ranges = n_face_ranges(4);
-        let mut bvh = make_bvh_with_n_leaves(4);
+        let bvh = make_bvh_with_n_leaves(4);
 
-        let section =
-            build_animated_light_chunks(&mut bvh, &lights, &influence, &charts, &face_ranges, 0.01);
+        let (section, ranges) =
+            build_animated_light_chunks(&bvh, &lights, &influence, &charts, &face_ranges, 0.01);
 
         // Invariant: total = sum of per-leaf counts.
-        let sum: u32 = bvh.leaves.iter().map(|l| l.chunk_range_count).sum();
+        let sum: u32 = ranges.iter().map(|r| r.1).sum();
         assert_eq!(sum as usize, section.chunks.len());
 
         // Invariant: ranges do not overlap AND are contiguous when we ignore
@@ -1001,25 +998,24 @@ mod tests {
         // carry a `chunk_range_start` equal to the next emit-point at their
         // turn in the walk).
         let mut expected_next: u32 = 0;
-        for leaf in &bvh.leaves {
+        for &(start, count) in &ranges {
             assert_eq!(
-                leaf.chunk_range_start, expected_next,
-                "leaf chunk_range_start {} does not abut previous end {}",
-                leaf.chunk_range_start, expected_next
+                start, expected_next,
+                "leaf chunk_range_start {start} does not abut previous end {expected_next}",
             );
-            expected_next = leaf.chunk_range_start + leaf.chunk_range_count;
+            expected_next = start + count;
         }
         assert_eq!(expected_next as usize, section.chunks.len());
 
         // Invariant: face-0 leaf has exactly one chunk; face-2 leaf has more
         // than one; faces 1 and 3 have zero.
-        assert_eq!(bvh.leaves[0].chunk_range_count, 1);
-        assert_eq!(bvh.leaves[1].chunk_range_count, 0);
+        assert_eq!(ranges[0].1, 1);
+        assert_eq!(ranges[1].1, 0);
         assert!(
-            bvh.leaves[2].chunk_range_count > 1,
+            ranges[2].1 > 1,
             "expected face-2 leaf to have subdivided chunks, got {}",
-            bvh.leaves[2].chunk_range_count
+            ranges[2].1
         );
-        assert_eq!(bvh.leaves[3].chunk_range_count, 0);
+        assert_eq!(ranges[3].1, 0);
     }
 }

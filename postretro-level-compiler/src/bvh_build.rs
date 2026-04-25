@@ -244,8 +244,11 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
                     index_offset: prim.index_offset,
                     index_count: prim.index_count,
                     cell_id: prim.cell_id,
-                    // Stamped later by the animated-light-chunks builder.
-                    // Leaves on maps without animated lights keep zeros.
+                    // Default zero. The animated-light-chunks builder
+                    // returns a separate per-leaf range table; pack stamps it
+                    // onto these fields at serialization time (see
+                    // `pack::serialize_bvh_with_chunk_ranges`). Leaves on maps
+                    // without animated lights keep zeros.
                     chunk_range_start: 0,
                     chunk_range_count: 0,
                 });

@@ -147,7 +147,8 @@ base SH bake; store those slots as zero coefficients so the per-light grid stays
 for GPU trilinear lookup.
 
 The composed result at runtime must satisfy: `compose(base, delta[i] × 0) == base` and
-`compose(base, delta[i] × 1) == what the base would be if light i were always at peak`.
+`compose(base, delta[i] × 1) == base + delta[i]` (light i's full direct + indirect
+contribution at peak added to the indirect-only base).
 
 Task C depends on Task B (section format) and can be developed in parallel with Task A.
 
@@ -192,6 +193,10 @@ Rename the existing single `use_direct` boolean into three independent booleans:
 lightmap sample, the specular accumulation block, and the dynamic-light loop count — all
 three must be separated. Update the lighting isolation switch:
 
+The four flags map to the existing shader terms: `use_lightmap` gates the lightmap atlas
+sample, `use_specular` gates the specular accumulation block, `use_indirect` gates the SH
+volume sample (already a separate flag), and `use_dynamic` gates the dynamic-light loop.
+
 | Mode | `use_lightmap` | `use_specular` | `use_indirect` | `use_dynamic` |
 |------|---------------|----------------|----------------|---------------|
 | Normal (0) | true | true | true | true |
@@ -222,7 +227,7 @@ contribution independently.
 
 Update `LightingIsolation` and the forward shader isolation logic to the following modes:
 
-| Mode | Name | Ambient | Lightmap | Static SH | Animated ΔSH | Dynamic | Specular |
+| Mode | Name | Ambient | Lightmap | Static SH | Animated delta SH | Dynamic | Specular |
 |------|------|---------|----------|-----------|--------------|---------|---------|
 | 0 | Normal | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | 1 | DirectOnly | ✓ | ✓ | — | — | ✓ | ✓ |
@@ -277,11 +282,12 @@ The SH compose pass can share the same helper. Both passes read from the same gr
 descriptor and sample buffers (bindings 11–12) — no new curve infrastructure needed.
 
 **Memory.** With per-light AABB baking at 1.0m spacing: a small panel light at 5m radius
-produces a 10×10×10 = 1000-probe grid (worst case); 16 such lights × 27 × 2 bytes × 1000
-≈ 864 KB. A wide ambient fill at 20m radius: 40×40×40 = 64 000 probes × 27 × 2 bytes ≈ 3.5 MB
-per light. In practice, most animated lights are small-to-medium panel lights; a scene with
-16 small panel lights sits around 800 KB–1 MB delta total. The probe spacing lives in
-`prl-build` as `--delta-spacing` (default 1.0m).
+produces a 10×10×10 = 1000-probe grid (worst case); summed across 16 such lights:
+16 × 27 × 2 bytes × 1000 ≈ 864 KB total delta storage. A wide ambient fill at 20m radius:
+40×40×40 = 64 000 probes × 27 × 2 bytes ≈ 3.5 MB per light. In practice, most animated
+lights are small-to-medium panel lights; a scene with 16 small panel lights sits around
+800 KB–1 MB delta total. The probe spacing lives in `prl-build` as `--delta-spacing`
+(default 1.0m).
 
 **Probe validity gate (delta bake).** Same gate as the base SH bake: classify each probe
 via the BSP tree, reject solid leaves and leaves outside the exterior flood-fill boundary,

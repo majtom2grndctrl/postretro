@@ -14,6 +14,8 @@
 --
 -- ```lua
 -- registerHandler("levelLoad", function()
+--   -- world:query dispatches on component; passing component = "light"
+--   -- returns LightEntityHandle values with :setAnimation / :setIntensity / :setColor.
 --   local lights = world:query({ component = "light", tag = "hallway_wave" })
 --   table.sort(lights, function(a, b)
 --     return a.transform.position.x < b.transform.position.x
@@ -55,7 +57,7 @@ export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
 --- (e.g. `light:setAnimation(anim)`).
 export type LightEntityHandle = {
   id: EntityId,
-  transform: LightEntityTransform,
+  transform: EntityTransform,
   isDynamic: boolean,
   tag: string?,
   component: LightComponent,
@@ -96,12 +98,21 @@ export type LightEntityHandle = {
   ) -> (),
 }
 
+--- Base entity handle returned by `world:query` when the component type
+--- is not "light". Carries id, transform, and tag; use `get_component`
+--- to access the component data for non-light entities.
+export type EntityHandle = {
+  id: EntityId,
+  transform: EntityTransform,
+  tag: string?,
+}
+
 --- Typed vocabulary object returned from `world:query`.
+--- Pass `{ component = "light", tag = "..." }` to get `LightEntityHandle`
+--- values; any other component filter returns `EntityHandle` values.
 export type World = {
-  --- Query entities matching the filter. Currently the only supported
-  --- filter is `{ component = "light", tag = string? }`, which returns
-  --- an array of `LightEntityHandle` values.
-  query: (self: World, filter: WorldQueryFilter) -> {LightEntityHandle},
+  query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
+       & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
 }
 
 -- ---------------------------------------------------------------------
@@ -280,15 +291,25 @@ end
 -- ---------------------------------------------------------------------
 
 local world: World = {
-  query = function(self: World, filter: WorldQueryFilter): {LightEntityHandle}
+  query = function(self: World, filter: WorldQueryFilter): {EntityHandle}
     local normalized: WorldQueryFilter = {
       component = filter.component,
       tag = filter.tag,
     }
     local raw = world_query(normalized)
-    local out: {LightEntityHandle} = {}
-    for i, snapshot in ipairs(raw) do
-      out[i] = wrapLightEntity(snapshot)
+    if filter.component == "light" then
+      local out: {LightEntityHandle} = {}
+      for i, snapshot in ipairs(raw) do
+        out[i] = wrapLightEntity(snapshot :: LightEntity)
+      end
+      return out :: any
+    end
+    local out: {EntityHandle} = {}
+    -- Cast at the array level: the primitive returns per-component snapshots
+    -- that are supersets of `Entity`, so individual field access is safe.
+    local snapshots = raw :: {any}
+    for i, snapshot in ipairs(snapshots) do
+      out[i] = { id = snapshot.id, transform = snapshot.transform, tag = snapshot.tag }
     end
     return out
   end,

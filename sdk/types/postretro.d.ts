@@ -51,10 +51,23 @@ declare module "postretro" {
     tag: string | null;
   };
 
+  /** Minimum transform shape guaranteed for all entity handles. */
+  export type EntityTransform = { position: Vec3 };
+
+  /** Generic entity handle returned by `world.query` when the component type is not known at compile time. */
+  export type Entity = {
+    id: EntityId;
+    /** Entity position at query time. */
+    transform: EntityTransform;
+    /** The entity's tag at query time, if any. */
+    tag: string | null;
+  };
+
+  /** Entity handle returned by `world.query` when filtering for light entities. */
   export type LightEntity = {
     id: EntityId;
-    /** Read-only handle to origin at query time. */
-    transform: LightEntityTransform;
+    /** Light origin at query time. */
+    transform: EntityTransform;
     /** Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation. */
     isDynamic: boolean;
     /** The entity's tag at query time, if any. */
@@ -62,8 +75,6 @@ declare module "postretro" {
     /** Full component snapshot at query time. */
     component: LightComponent;
   };
-
-  export type LightEntityTransform = { position: Vec3 };
 
   /** Despawns a previously-spawned entity. Errors if the id is stale. */
   export function despawn_entity(id: EntityId): void;
@@ -92,6 +103,6 @@ declare module "postretro" {
   /** Spawns a new entity with the given transform and returns its id. */
   export function spawn_entity(transform: Transform): EntityId;
 
-  /** Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: "light", tag?: string }. The `world.ts` vocabulary module wraps this as `world.query`. */
-  export function world_query(filter: WorldQueryFilter): ReadonlyArray<LightEntity>;
+  /** Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: string, tag?: string } where `component` names the component type to query. Only "light" is supported in the current build; other values return an InvalidArgument error. The `world.ts` vocabulary module wraps this as `world.query`. */
+  export function world_query(filter: WorldQueryFilter): ReadonlyArray<Entity>;
 }

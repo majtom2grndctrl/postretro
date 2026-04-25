@@ -1,69 +1,17 @@
-// Scripting primitives: `world_query` and `set_light_animation` (behavior-only).
+// Scripting primitives: `set_light_animation` (behavior-only).
+// `world_query` lives in `primitives.rs` — it is a generic ECS primitive
+// that happens to support lights; keeping it with the other entity primitives
+// means adding a second queryable component only requires editing that file.
 // See: context/lib/scripting.md
 
 use super::components::light::{LightAnimation, LightComponent};
-use super::conv::{Vec3Lit, json_to_js, json_to_lua};
+use super::conv::Vec3Lit;
 use super::ctx::ScriptCtx;
 use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, PrimitiveRegistry};
 use super::registry::{Component, ComponentKind, EntityId};
-use mlua::{FromLua, IntoLua, Lua, Value as LuaValue};
-use rquickjs::{Ctx, FromJs, IntoJs, Value as JsValue};
 
-/// Opaque newtype implementing `IntoJs` and `IntoLua` so we can return a
-/// serde_json-shaped value from a primitive closure without the caller having
-/// to write the `for<'js>` lifetime on the closure by hand — rquickjs'
-/// `IntoJsFunc` derives the HRTB from the impl.
-struct JsonValue(serde_json::Value);
-
-impl<'js> IntoJs<'js> for JsonValue {
-    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        json_to_js(ctx, &self.0)
-    }
-}
-
-impl IntoLua for JsonValue {
-    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
-        json_to_lua(lua, &self.0)
-    }
-}
-
-/// Filter object adapter with FromJs / FromLua impls so the primitive
-/// declares a typed parameter instead of manually walking an `Object`.
-struct WorldQueryFilterInput {
-    component: String,
-    tag: Option<String>,
-}
-
-impl<'js> FromJs<'js> for WorldQueryFilterInput {
-    fn from_js(_ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
-        let obj = rquickjs::Object::from_value(value)
-            .map_err(|_| rquickjs::Error::new_from_js("value", "WorldQueryFilter object"))?;
-        let component: String = obj.get("component")?;
-        let tag: Option<String> = obj.get("tag").ok();
-        Ok(Self { component, tag })
-    }
-}
-
-impl FromLua for WorldQueryFilterInput {
-    fn from_lua(value: LuaValue, _lua: &Lua) -> mlua::Result<Self> {
-        let t = match value {
-            LuaValue::Table(t) => t,
-            other => {
-                return Err(mlua::Error::FromLuaConversionError {
-                    from: other.type_name(),
-                    to: "WorldQueryFilter".to_string(),
-                    message: Some("expected a table".to_string()),
-                });
-            }
-        };
-        let component: String = t.get("component")?;
-        let tag: Option<String> = t.get("tag").ok();
-        Ok(Self { component, tag })
-    }
-}
-
-// --- Shared logic: query + set_light_animation ------------------------------
+// --- Shared logic: set_light_animation --------------------------------------
 //
 // Both runtimes go through these so behavior stays identical across QuickJS
 // and Luau (see plan-2, settled-decisions: "no runtime gets a superset").
@@ -72,7 +20,7 @@ impl FromLua for WorldQueryFilterInput {
 /// `EntityId` plus a read-only copy of the live component data at query time.
 /// The `world.ts` vocabulary module wraps this into a `LightEntity` script-visible object.
 #[derive(Debug, Clone)]
-struct LightQueryHandle {
+pub(super) struct LightQueryHandle {
     id: EntityId,
     component: LightComponent,
     tag: Option<String>,
@@ -80,7 +28,7 @@ struct LightQueryHandle {
 
 /// Build every light-entity handle that matches the supplied `tag` filter.
 /// Returns an empty vec when no entities match.
-fn collect_light_handles(ctx: &ScriptCtx, tag: Option<&str>) -> Vec<LightQueryHandle> {
+pub(super) fn collect_light_handles(ctx: &ScriptCtx, tag: Option<&str>) -> Vec<LightQueryHandle> {
     let reg = ctx.registry.borrow();
     let mut out = Vec::new();
     for (id, value) in reg.query_by_component_and_tag(ComponentKind::Light, tag) {
@@ -99,7 +47,7 @@ fn collect_light_handles(ctx: &ScriptCtx, tag: Option<&str>) -> Vec<LightQueryHa
 
 /// Serialize a query-handle list into a serde_json array the FFI layers
 /// forward to JS/Lua. Keeps the wire shape identical across runtimes.
-fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
+pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
     use serde_json::{Map, Value};
     let arr: Vec<Value> = handles
         .into_iter()
@@ -118,9 +66,10 @@ fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
             transform.insert("position".to_string(), Value::Object(position));
             obj.insert("transform".to_string(), Value::Object(transform));
             obj.insert("isDynamic".to_string(), Value::from(h.component.is_dynamic));
-            if let Some(t) = h.tag {
-                obj.insert("tag".to_string(), Value::from(t));
-            }
+            obj.insert("tag".to_string(), match h.tag {
+                Some(t) => Value::String(t),
+                None => Value::Null,
+            });
             obj.insert("component".to_string(), comp);
             Value::Object(obj)
         })
@@ -259,12 +208,6 @@ fn apply_light_animation(
 
 // --- Primitive registration --------------------------------------------------
 
-const WORLD_QUERY_NAME: &str = "world_query";
-const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Behavior context only. \
-     Filter shape: { component: \"light\", tag?: string }. \
-     The `world.ts` vocabulary module wraps this as `world.query`.";
-
-const SET_LIGHT_ANIM_NAME: &str = "set_light_animation";
 const SET_LIGHT_ANIM_DOC: &str = "Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. \
      Non-unit direction samples are silently normalized; zero-length direction samples \
      and color animations on non-dynamic lights error with InvalidArgument. \
@@ -272,46 +215,7 @@ const SET_LIGHT_ANIM_DOC: &str = "Overwrite the LightComponent.animation on the 
 
 #[allow(clippy::arc_with_non_send_sync)]
 pub(crate) fn register_sp6_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
-    register_world_query(registry, ctx.clone());
     register_set_light_animation(registry, ctx);
-}
-
-/// Parse the filter object passed to `world_query`. Returns the component
-/// kind and the optional tag string. Unknown component names surface as
-/// `InvalidArgument` — the primitive knows only `"light"` in SP6.
-enum QueryFilter {
-    Light { tag: Option<String> },
-}
-
-fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilter, ScriptError> {
-    match component {
-        "light" => Ok(QueryFilter::Light { tag }),
-        other => Err(ScriptError::InvalidArgument {
-            reason: format!("world_query: unknown component `{other}` (SP6 supports only `light`)"),
-        }),
-    }
-}
-
-fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
-    // Generic registration path: because `WorldQueryFilterInput: FromJs + FromLua`
-    // and the returned `JsonValue: IntoJs + IntoLua`, rquickjs / mlua both
-    // derive the HRTB lifetime bounds from their respective conversion traits.
-    // That side-steps the `'_`-inside-closure lifetime problem writing a raw
-    // `rquickjs::Ctx<'_> -> Value<'_>` closure would hit.
-    registry
-        .register("world_query", {
-            let ctx = ctx.clone();
-            move |filter: WorldQueryFilterInput| -> Result<JsonValue, ScriptError> {
-                let filter = parse_query_filter(&filter.component, filter.tag)?;
-                let QueryFilter::Light { tag } = filter;
-                let handles = collect_light_handles(&ctx, tag.as_deref());
-                Ok(JsonValue(handles_to_json(handles)))
-            }
-        })
-        .scope(ContextScope::BehaviorOnly)
-        .doc(WORLD_QUERY_DOC)
-        .param("filter", "WorldQueryFilter")
-        .finish();
 }
 
 fn register_set_light_animation(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
@@ -406,13 +310,22 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
-        .register_type("LightEntity")
+        .register_type("EntityTransform")
+        .doc("Minimum transform shape guaranteed for all entity handles.")
+        .field("position", "Vec3", "")
+        .finish();
+    registry
+        .register_type("Entity")
+        .doc("Generic entity handle returned by `world.query` when the component type is not known at compile time.")
         .field("id", "EntityId", "")
-        .field(
-            "transform",
-            "LightEntityTransform",
-            "Read-only handle to origin at query time.",
-        )
+        .field("transform", "EntityTransform", "Entity position at query time.")
+        .field("tag", "Option<String>", "The entity's tag at query time, if any.")
+        .finish();
+    registry
+        .register_type("LightEntity")
+        .doc("Entity handle returned by `world.query` when filtering for light entities.")
+        .field("id", "EntityId", "")
+        .field("transform", "EntityTransform", "Light origin at query time.")
         .field(
             "isDynamic",
             "bool",
@@ -428,10 +341,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "LightComponent",
             "Full component snapshot at query time.",
         )
-        .finish();
-    registry
-        .register_type("LightEntityTransform")
-        .field("position", "Vec3", "")
         .finish();
 }
 
@@ -487,7 +396,8 @@ mod tests {
 
     fn registry_for(ctx: ScriptCtx) -> PrimitiveRegistry {
         let mut r = PrimitiveRegistry::new();
-        register_sp6_primitives(&mut r, ctx);
+        register_sp6_primitives(&mut r, ctx.clone());
+        crate::scripting::primitives::register_world_query(&mut r, ctx);
         r
     }
 
@@ -580,6 +490,239 @@ mod tests {
             .eval()
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    // --- world.query cross-runtime parity -----------------------------------
+    //
+    // The `set_light_animation_quickjs_and_luau_produce_identical_output` test
+    // covers the mutate path; these cover the dispatch (read) path: shape of
+    // the returned handles, error surface for unknown components, tag filter
+    // behavior, and the `tag: <wrong type>` conversion error.
+
+    #[test]
+    fn world_query_light_component_returns_light_handles() {
+        let (ctx, id) = test_ctx_with_light(true, Some("hallway_wave"));
+        let r = registry_for(ctx);
+        let raw = id.to_raw();
+
+        // QuickJS: assert id, isDynamic, tag, transform.position.
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const hs = world_query({ component: "light", tag: "hallway_wave" });
+                    JSON.stringify(hs.map(h => ({
+                        id: h.id,
+                        isDynamic: h.isDynamic,
+                        tag: h.tag,
+                        x: h.transform.position.x,
+                        y: h.transform.position.y,
+                        z: h.transform.position.z,
+                    })))
+                    "#,
+                )
+                .unwrap();
+            let expected = format!(
+                r#"[{{"id":{raw},"isDynamic":true,"tag":"hallway_wave","x":1,"y":2,"z":3}}]"#
+            );
+            assert_eq!(json, expected);
+        });
+
+        // Luau: assert the same fields via separate return values.
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        let (got_id, is_dynamic, tag, x, y, z): (i64, bool, String, f64, f64, f64) = lua
+            .load(
+                r#"
+                local hs = world_query({ component = "light", tag = "hallway_wave" })
+                local h = hs[1]
+                return h.id, h.isDynamic, h.tag, h.transform.position.x,
+                       h.transform.position.y, h.transform.position.z
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(got_id as u32, raw);
+        assert!(is_dynamic);
+        assert_eq!(tag, "hallway_wave");
+        assert!((x - 1.0).abs() < 1e-5);
+        assert!((y - 2.0).abs() < 1e-5);
+        assert!((z - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn world_query_unknown_component_errors() {
+        let (ctx, _id) = test_ctx_with_light(true, None);
+        let r = registry_for(ctx);
+
+        // QuickJS: catch and surface the message.
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let msg: String = qjs
+                .eval::<String, _>(
+                    r#"try { world_query({ component: "decal" }); "no-throw" }
+                       catch (e) { String(e.message || e) }"#,
+                )
+                .unwrap();
+            assert!(
+                msg.contains("invalid argument") && msg.contains("decal"),
+                "expected InvalidArgument from QuickJS, got: {msg}"
+            );
+        });
+
+        // Luau: pcall returns (ok, err); err stringifies to the same message.
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        let (ok, err): (bool, String) = lua
+            .load(
+                r#"
+                local ok, err = pcall(function()
+                    return world_query({ component = "decal" })
+                end)
+                return ok, tostring(err)
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert!(!ok, "expected Luau call to error");
+        assert!(
+            err.contains("invalid argument") && err.contains("decal"),
+            "expected InvalidArgument from Luau, got: {err}"
+        );
+    }
+
+    #[test]
+    fn world_query_tag_filter_excludes_unmatched() {
+        // Two lights with distinct tags: tag filter must isolate one; querying
+        // without a tag must yield both.
+        let (ctx, first) = test_ctx_with_light(true, Some("alpha"));
+        let second;
+        {
+            let mut reg = ctx.registry.borrow_mut();
+            second = reg.spawn(Transform::default());
+            reg.set_component(
+                second,
+                LightComponent {
+                    origin: [9.0, 9.0, 9.0],
+                    light_type: LightKind::Point,
+                    intensity: 1.0,
+                    color: [1.0, 1.0, 1.0],
+                    falloff_model: FalloffKind::InverseSquared,
+                    falloff_range: 10.0,
+                    cone_angle_inner: None,
+                    cone_angle_outer: None,
+                    cone_direction: None,
+                    cast_shadows: false,
+                    is_dynamic: true,
+                    animation: None,
+                },
+            )
+            .unwrap();
+            reg.set_tag(second, Some("beta".to_string())).unwrap();
+        }
+        let r = registry_for(ctx);
+        let first_raw = first.to_raw();
+
+        // QuickJS: filtered → only "alpha"; unfiltered → both.
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let filtered: String = qjs
+                .eval(
+                    r#"
+                    const hs = world_query({ component: "light", tag: "alpha" });
+                    JSON.stringify(hs.map(h => h.id))
+                    "#,
+                )
+                .unwrap();
+            assert_eq!(filtered, format!("[{first_raw}]"));
+            let total: i32 = qjs
+                .eval(r#"world_query({ component: "light" }).length"#)
+                .unwrap();
+            assert_eq!(total, 2);
+        });
+
+        // Luau: same checks.
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        let (filtered_count, filtered_id, total_count): (i64, i64, i64) = lua
+            .load(
+                r#"
+                local hs = world_query({ component = "light", tag = "alpha" })
+                local all = world_query({ component = "light" })
+                return #hs, hs[1].id, #all
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(filtered_count, 1);
+        assert_eq!(filtered_id as u32, first_raw);
+        assert_eq!(total_count, 2);
+    }
+
+    #[test]
+    fn world_query_tag_wrong_type_errors() {
+        // Regression: numeric `tag` previously fell through `Option::ok()` and
+        // returned all lights; now it must surface a conversion error so
+        // typos / wrong-typed inputs are visible to script authors.
+        let (ctx, _id) = test_ctx_with_light(true, Some("alpha"));
+        let r = registry_for(ctx);
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let result: String = qjs
+                .eval::<String, _>(
+                    r#"try { world_query({ component: "light", tag: 42 }); "no-throw" }
+                       catch (e) { "threw" }"#,
+                )
+                .unwrap();
+            assert_eq!(
+                result, "threw",
+                "QuickJS world_query with numeric tag must throw, not silently return all lights"
+            );
+        });
+
+        // Luau: mlua coerces numbers to strings for `Option<String>`, so a
+        // numeric `tag` becomes the string `"42"`. The contract being tested
+        // is the same as the bug fix it covers: a wrong-typed tag must NOT
+        // silently fall through to "no filter" and return every light. Either
+        // erroring or treating the coerced string as a literal tag (which
+        // matches no entity) is acceptable.
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        let count: i64 = lua
+            .load(
+                r#"
+                local ok, val = pcall(function()
+                    return world_query({ component = "light", tag = 42 })
+                end)
+                if ok then
+                    return #val
+                else
+                    return -1
+                end
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_ne!(
+            count, 1,
+            "Luau world_query with numeric tag must not silently return the tagged light \
+             as if no filter were applied"
+        );
+        // Defensive: the seeded fixture has exactly one light tagged \"alpha\".
+        // A return of 1 here would mean the numeric tag was dropped to None
+        // and all lights were returned (the original bug). 0 (no match) or
+        // -1 (error) are both acceptable.
+        assert!(count == 0 || count == -1, "got unexpected count: {count}");
     }
 
     // --- set_light_animation -------------------------------------------------

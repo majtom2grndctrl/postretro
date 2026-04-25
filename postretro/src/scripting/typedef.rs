@@ -88,15 +88,17 @@ fn rust_to_ts(ty_name: &str) -> String {
         // Rust side uses the placeholder `HandlerFn` type name rather than
         // trying to spell a generic callable through the trait plumbing.
         "HandlerFn" => "(ctx?: ScriptCallContext) => void".to_string(),
-        // `world_query` returns a JSON-shaped array of light-entity handles.
-        // The Rust return type is an opaque wrapper; the script surface is an
-        // array of `LightEntity`.
-        "JsonValue" => "ReadonlyArray<LightEntity>".to_string(),
+        // `world_query` returns a JSON-shaped array of entity handles. The
+        // Rust return type is an opaque wrapper; the declared script surface
+        // is `Entity[]` — the SDK layer narrows to a specific entity type
+        // (e.g. `LightEntity`) based on the query's component filter.
+        "JsonValue" => "ReadonlyArray<Entity>".to_string(),
         "WorldQueryFilter" => "WorldQueryFilter".to_string(),
+        "EntityTransform" => "EntityTransform".to_string(),
+        "Entity" => "Entity".to_string(),
         "LightAnimation" => "LightAnimation".to_string(),
         "LightComponent" => "LightComponent".to_string(),
         "LightEntity" => "LightEntity".to_string(),
-        "LightEntityTransform" => "LightEntityTransform".to_string(),
         "LightKind" => "LightKind".to_string(),
         "FalloffKind" => "FalloffKind".to_string(),
         other => {
@@ -142,12 +144,13 @@ fn rust_to_luau(ty_name: &str) -> String {
         "ScriptEvent" => "ScriptEvent".to_string(),
         "ScriptCallContext" => "ScriptCallContext".to_string(),
         "HandlerFn" => "(ctx: ScriptCallContext?) -> ()".to_string(),
-        "JsonValue" => "{LightEntity}".to_string(),
+        "JsonValue" => "{Entity}".to_string(),
         "WorldQueryFilter" => "WorldQueryFilter".to_string(),
+        "EntityTransform" => "EntityTransform".to_string(),
+        "Entity" => "Entity".to_string(),
         "LightAnimation" => "LightAnimation".to_string(),
         "LightComponent" => "LightComponent".to_string(),
         "LightEntity" => "LightEntity".to_string(),
-        "LightEntityTransform" => "LightEntityTransform".to_string(),
         "LightKind" => "LightKind".to_string(),
         "FalloffKind" => "FalloffKind".to_string(),
         other => {

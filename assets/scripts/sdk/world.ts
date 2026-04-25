@@ -44,6 +44,7 @@ import {
   world_query,
 } from "postretro";
 import type {
+  Entity,
   EntityId,
   LightAnimation,
   LightComponent,
@@ -101,24 +102,56 @@ export interface LightEntity extends GeneratedLightEntity {
   ): void;
 }
 
+/**
+ * Maps a component-name string literal to the rich entity handle type
+ * returned by `world.query`. Extend this as new component types gain
+ * dedicated handles; unknown component names fall back to `Entity`.
+ */
+export type EntityForComponent<T extends string> =
+  T extends "light" ? LightEntity : Entity;
+
 /** Typed vocabulary object returned from `world.query`. */
 export interface World {
   /**
-   * Query entities matching the filter. Currently the only supported
-   * filter is `{ component: "light", tag?: string }`, which returns an
-   * array of `LightEntity` handles.
+   * Query entities matching the filter. The return type is selected by
+   * the literal `component` string: `"light"` yields `LightEntity[]`
+   * (with convenience methods `setAnimation`, `setIntensity`,
+   * `setColor`); any other component name yields base `Entity[]`
+   * (id, transform, tag) — use `get_component` to access component data.
+   *
+   * **Note:** Unknown `component` strings (e.g. typos like `"lights"`)
+   * compile without error but throw `InvalidArgument` at runtime; only
+   * `"light"` is supported in the current build.
    */
-  query(filter: WorldQueryFilter | { component: "light"; tag?: string }): LightEntity[];
+  query<T extends string>(
+    filter: { component: T; tag?: string | null },
+  ): EntityForComponent<T>[];
 }
 
 export const world: World = {
-  query(filter) {
+  query<T extends string>(
+    filter: { component: T; tag?: string | null },
+  ): EntityForComponent<T>[] {
     const normalized: WorldQueryFilter = {
       component: filter.component,
-      tag: (filter as { tag?: string | null }).tag ?? null,
+      tag: filter.tag ?? null,
     };
     const raw = world_query(normalized);
-    return raw.map((snapshot) => wrapLightEntity(snapshot));
+    if (filter.component === "light") {
+      const lights = (raw as ReadonlyArray<GeneratedLightEntity>).map(
+        wrapLightEntity,
+      );
+      return lights as EntityForComponent<T>[];
+    }
+    // Project per-component snapshots down to the `Entity` shape so
+    // callers using the generic path don't observe component-specific
+    // fields that the type does not promise.
+    const entities: Entity[] = raw.map((s) => ({
+      id: s.id,
+      transform: s.transform,
+      tag: s.tag ?? null,
+    }));
+    return entities as EntityForComponent<T>[];
   },
 };
 

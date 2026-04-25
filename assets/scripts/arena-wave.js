@@ -5,7 +5,16 @@ const world = {
             tag: filter.tag ?? null
         };
         const raw = world_query(normalized);
-        return raw.map((snapshot)=>wrapLightEntity(snapshot));
+        if (filter.component === "light") {
+            const lights = raw.map(wrapLightEntity);
+            return lights;
+        }
+        const entities = raw.map((s)=>({
+                id: s.id,
+                transform: s.transform,
+                tag: s.tag ?? null
+            }));
+        return entities;
     }
 };
 function wrapLightEntity(snapshot) {

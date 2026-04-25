@@ -50,10 +50,23 @@ export type WorldQueryFilter = {
   tag: string?,
 }
 
+--- Minimum transform shape guaranteed for all entity handles.
+export type EntityTransform = { position: Vec3 }
+
+--- Generic entity handle returned by `world.query` when the component type is not known at compile time.
+export type Entity = {
+  id: EntityId,
+  --- Entity position at query time.
+  transform: EntityTransform,
+  --- The entity's tag at query time, if any.
+  tag: string?,
+}
+
+--- Entity handle returned by `world.query` when filtering for light entities.
 export type LightEntity = {
   id: EntityId,
-  --- Read-only handle to origin at query time.
-  transform: LightEntityTransform,
+  --- Light origin at query time.
+  transform: EntityTransform,
   --- Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation.
   isDynamic: boolean,
   --- The entity's tag at query time, if any.
@@ -61,8 +74,6 @@ export type LightEntity = {
   --- Full component snapshot at query time.
   component: LightComponent,
 }
-
-export type LightEntityTransform = { position: Vec3 }
 
 --- Despawns a previously-spawned entity. Errors if the id is stale.
 declare function despawn_entity(id: EntityId): ()
@@ -91,5 +102,5 @@ declare function set_light_animation(id: EntityId, animation: LightAnimation | n
 --- Spawns a new entity with the given transform and returns its id.
 declare function spawn_entity(transform: Transform): EntityId
 
---- Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: "light", tag?: string }. The `world.ts` vocabulary module wraps this as `world.query`.
-declare function world_query(filter: WorldQueryFilter): {LightEntity}
+--- Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: string, tag?: string } where `component` names the component type to query. Only "light" is supported in the current build; other values return an InvalidArgument error. The `world.ts` vocabulary module wraps this as `world.query`.
+declare function world_query(filter: WorldQueryFilter): {Entity}

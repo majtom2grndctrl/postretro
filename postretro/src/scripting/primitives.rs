@@ -7,10 +7,125 @@
 // few `.register(...)` lines here.
 
 use super::components::light::LightComponent;
+use super::conv::{json_to_js, json_to_lua};
 use super::ctx::{ScriptCtx, ScriptEvent};
 use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, PrimitiveRegistry};
 use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
+use mlua::{FromLua, IntoLua, Lua, Value as LuaValue};
+use rquickjs::{Ctx, FromJs, IntoJs, Value as JsValue};
+
+// --- world_query ------------------------------------------------------------
+//
+// `world_query` is a generic ECS query primitive. It lives here alongside the
+// other entity primitives (`entity_exists`, `spawn_entity`, `get_component`)
+// so that adding a second queryable component type only requires editing this
+// file, not the light-specific one.
+
+/// Opaque newtype implementing `IntoJs` and `IntoLua` so we can return a
+/// serde_json-shaped value from a primitive closure without the caller having
+/// to write the `for<'js>` lifetime on the closure by hand — rquickjs'
+/// `IntoJsFunc` derives the HRTB from the impl.
+struct JsonValue(serde_json::Value);
+
+impl<'js> IntoJs<'js> for JsonValue {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        json_to_js(ctx, &self.0)
+    }
+}
+
+impl IntoLua for JsonValue {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
+        json_to_lua(lua, &self.0)
+    }
+}
+
+/// Filter object adapter with FromJs / FromLua impls so the primitive
+/// declares a typed parameter instead of manually walking an `Object`.
+struct WorldQueryFilterInput {
+    component: String,
+    tag: Option<String>,
+}
+
+impl<'js> FromJs<'js> for WorldQueryFilterInput {
+    fn from_js(_ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
+        let obj = rquickjs::Object::from_value(value)
+            .map_err(|_| rquickjs::Error::new_from_js("value", "WorldQueryFilter object"))?;
+        let component: String = obj.get("component")?;
+        let tag: Option<String> = obj.get("tag")?;
+        Ok(Self { component, tag })
+    }
+}
+
+impl FromLua for WorldQueryFilterInput {
+    fn from_lua(value: LuaValue, _lua: &Lua) -> mlua::Result<Self> {
+        let t = match value {
+            LuaValue::Table(t) => t,
+            other => {
+                return Err(mlua::Error::FromLuaConversionError {
+                    from: other.type_name(),
+                    to: "WorldQueryFilter".to_string(),
+                    message: Some("expected a table".to_string()),
+                });
+            }
+        };
+        let component: String = t.get("component")?;
+        let tag: Option<String> = t.get("tag")?;
+        Ok(Self { component, tag })
+    }
+}
+
+/// Parsed and validated form of the filter passed to `world_query`. Extend
+/// with new variants as additional queryable component types are added.
+enum QueryFilter {
+    Light { tag: Option<String> },
+}
+
+/// Parse the filter object passed to `world_query`. Returns the component
+/// kind and the optional tag string. Unknown component names surface as
+/// `InvalidArgument`.
+fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilter, ScriptError> {
+    match component {
+        "light" => Ok(QueryFilter::Light { tag }),
+        other => Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "world_query: unknown component `{other}`; supported components: \"light\""
+            ),
+        }),
+    }
+}
+
+const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Behavior context only. \
+     Filter shape: { component: string, tag?: string } where `component` names the \
+     component type to query. Only \"light\" is supported in the current build; \
+     other values return an InvalidArgument error. \
+     The `world.ts` vocabulary module wraps this as `world.query`.";
+
+pub(crate) fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
+    // Generic registration path: because `WorldQueryFilterInput: FromJs + FromLua`
+    // and the returned `JsonValue: IntoJs + IntoLua`, rquickjs / mlua both
+    // derive the HRTB lifetime bounds from their respective conversion traits.
+    // That side-steps the `'_`-inside-closure lifetime problem writing a raw
+    // `rquickjs::Ctx<'_> -> Value<'_>` closure would hit.
+    registry
+        .register("world_query", {
+            let ctx = ctx.clone();
+            move |filter: WorldQueryFilterInput| -> Result<JsonValue, ScriptError> {
+                let filter = parse_query_filter(&filter.component, filter.tag)?;
+                match filter {
+                    QueryFilter::Light { tag } => {
+                        let handles =
+                            super::primitives_light::collect_light_handles(&ctx, tag.as_deref());
+                        Ok(JsonValue(super::primitives_light::handles_to_json(handles)))
+                    }
+                }
+            }
+        })
+        .scope(ContextScope::BehaviorOnly)
+        .doc(WORLD_QUERY_DOC)
+        .param("filter", "WorldQueryFilter")
+        .finish();
+}
 
 /// Register the shared types referenced by day-one primitive signatures. These
 /// feed the typedef generator (see: context/lib/scripting.md §7). No type-level
@@ -61,6 +176,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     super::event_dispatch::register_register_handler(registry, ctx.handlers.clone());
     super::primitives_light::register_shared_types(registry);
     super::primitives_light::register_sp6_primitives(registry, ctx.clone());
+    register_world_query(registry, ctx.clone());
 
     // entity_exists --------------------------------------------------------
     registry

@@ -271,7 +271,7 @@ fn main() -> anyhow::Result<()> {
 
     // AlphaLights and LightInfluence share the `!bake_only` filter — record
     // `i` in one corresponds to record `i` in the other.
-    let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights);
+    let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights, &result.tree);
     let light_influence_section = pack::encode_light_influence(&map_data.lights);
     let light_tags_section = pack::encode_light_tags(&map_data.lights);
 

@@ -59,6 +59,7 @@ mod tests {
             cast_shadows: false,
             is_dynamic: false,
             tag: None,
+            leaf_index: 0,
         }
     }
 

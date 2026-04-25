@@ -4,7 +4,7 @@
 // **INTERIM FORMAT.** This section exists to unblock direct lighting before
 // the entity system lands. Do not build stable consumers against this layout
 // — it will be replaced by proper entity serialization in Milestone 6+.
-// See: context/plans/in-progress/lighting-foundation/1-fgd-canonical.md
+// See: context/plans/done/lighting-foundation/1-fgd-canonical.md
 //      §AlphaLights PRL section
 
 use crate::FormatError;
@@ -51,7 +51,7 @@ impl AlphaFalloffModel {
     }
 }
 
-/// One serialised light record. Fixed-size on disk: 68 bytes per record.
+/// One serialised light record. Fixed-size on disk: 72 bytes per record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlphaLightRecord {
     /// World position, engine meters (Y-up).
@@ -77,13 +77,23 @@ pub struct AlphaLightRecord {
     /// to gate shadow-slot eligibility (only dynamic spot lights cast runtime
     /// shadows). Sourced from the `_dynamic` key in the `.map` file.
     pub is_dynamic: bool,
+    /// BSP leaf index containing the light origin, baked at compile time for
+    /// the runtime PVS cull. `u32::MAX` is the reserved sentinel for
+    /// "unassigned / cannot determine leaf" (e.g. the light origin landed in
+    /// a solid leaf — a map-authoring error). Runtime culls these and warns.
+    pub leaf_index: u32,
 }
+
+/// Sentinel `leaf_index` for lights whose origin could not be assigned to a
+/// non-solid leaf at compile time. Runtime consumers cull these and emit a
+/// warning at load.
+pub const ALPHA_LIGHT_LEAF_UNASSIGNED: u32 = u32::MAX;
 
 /// Byte size of a single serialised `AlphaLightRecord`.
 /// 24 (origin) + 1 (type) + 4 (intensity) + 12 (color) + 1 (falloff model)
 /// + 4 (range) + 4 + 4 (cone angles) + 12 (cone dir) + 1 (cast shadows)
-/// + 1 (is_dynamic) = 68.
-pub const ALPHA_LIGHT_RECORD_SIZE: usize = 68;
+/// + 1 (is_dynamic) + 4 (leaf_index) = 72.
+pub const ALPHA_LIGHT_RECORD_SIZE: usize = 72;
 
 /// AlphaLights section (ID 18).
 ///
@@ -120,6 +130,7 @@ impl AlphaLightsSection {
             buf.extend_from_slice(&l.cone_direction[2].to_le_bytes());
             buf.push(if l.cast_shadows { 1 } else { 0 });
             buf.push(if l.is_dynamic { 1 } else { 0 });
+            buf.extend_from_slice(&l.leaf_index.to_le_bytes());
         }
 
         buf
@@ -178,6 +189,8 @@ impl AlphaLightsSection {
             let cdz = read_f32_le(&data[o + 62..o + 66]);
             let cast_shadows = data[o + 66] != 0;
             let is_dynamic = data[o + 67] != 0;
+            let leaf_index =
+                u32::from_le_bytes([data[o + 68], data[o + 69], data[o + 70], data[o + 71]]);
 
             lights.push(AlphaLightRecord {
                 origin: [ox, oy, oz],
@@ -191,6 +204,7 @@ impl AlphaLightsSection {
                 cone_direction: [cdx, cdy, cdz],
                 cast_shadows,
                 is_dynamic,
+                leaf_index,
             });
 
             o += ALPHA_LIGHT_RECORD_SIZE;
@@ -225,6 +239,7 @@ mod tests {
             cone_direction: [0.0, -1.0, 0.0],
             cast_shadows: true,
             is_dynamic: false,
+            leaf_index: 7,
         }
     }
 
@@ -264,6 +279,7 @@ mod tests {
                     cone_direction: [0.0, 0.0, 0.0],
                     cast_shadows: true,
                     is_dynamic: false,
+                    leaf_index: 0,
                 },
                 sample_record(),
                 AlphaLightRecord {
@@ -282,6 +298,7 @@ mod tests {
                     ],
                     cast_shadows: false,
                     is_dynamic: false,
+                    leaf_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
                 },
             ],
         };

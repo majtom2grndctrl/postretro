@@ -6,7 +6,8 @@ use std::io::Cursor;
 use std::path::Path;
 
 use postretro_level_format::alpha_lights::{
-    AlphaFalloffModel, AlphaLightRecord, AlphaLightType, AlphaLightsSection,
+    ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
+    AlphaLightsSection,
 };
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
@@ -25,6 +26,7 @@ use postretro_level_format::{
 
 use crate::geometry::GeometryResult;
 use crate::map_data::{FalloffModel, LightType, MapLight};
+use crate::partition::{BspTree, find_leaf_for_point};
 use crate::portals::Portal;
 
 /// Serialize a `BvhSection` with per-leaf animated-light chunk ranges stamped
@@ -63,11 +65,12 @@ fn serialize_bvh_with_chunk_ranges(bvh: &BvhSection, chunk_ranges: &[(u32, u32)]
 /// properties only — sub-plan 3 of the Lighting Foundation plan).
 /// Bake-only lights are excluded; see `encode_light_influence` for the
 /// invariant this maintains.
-pub fn encode_alpha_lights(lights: &[MapLight]) -> AlphaLightsSection {
-    let records = lights
+pub fn encode_alpha_lights(lights: &[MapLight], tree: &BspTree) -> AlphaLightsSection {
+    let records: Vec<AlphaLightRecord> = lights
         .iter()
-        .filter(|l| !l.bake_only)
-        .map(|l| {
+        .enumerate()
+        .filter(|(_, l)| !l.bake_only)
+        .map(|(src_index, l)| {
             let light_type = match l.light_type {
                 LightType::Point => AlphaLightType::Point,
                 LightType::Spot => AlphaLightType::Spot,
@@ -78,6 +81,24 @@ pub fn encode_alpha_lights(lights: &[MapLight]) -> AlphaLightsSection {
                 FalloffModel::InverseDistance => AlphaFalloffModel::InverseDistance,
                 FalloffModel::InverseSquared => AlphaFalloffModel::InverseSquared,
             };
+
+            let leaf_index = if tree.leaves.is_empty() {
+                ALPHA_LIGHT_LEAF_UNASSIGNED
+            } else {
+                let idx = find_leaf_for_point(tree, l.origin);
+                if tree.leaves[idx].is_solid {
+                    log::warn!(
+                        "[Compiler] AlphaLights: light {src_index} at origin ({:.3}, {:.3}, {:.3}) is inside a solid leaf; marking unassigned",
+                        l.origin.x,
+                        l.origin.y,
+                        l.origin.z,
+                    );
+                    ALPHA_LIGHT_LEAF_UNASSIGNED
+                } else {
+                    idx as u32
+                }
+            };
+
             AlphaLightRecord {
                 origin: [l.origin.x, l.origin.y, l.origin.z],
                 light_type,
@@ -90,6 +111,7 @@ pub fn encode_alpha_lights(lights: &[MapLight]) -> AlphaLightsSection {
                 cone_direction: l.cone_direction.unwrap_or([0.0, 0.0, 0.0]),
                 cast_shadows: l.cast_shadows,
                 is_dynamic: l.is_dynamic,
+                leaf_index,
             }
         })
         .collect();
@@ -291,10 +313,18 @@ pub fn pack_and_write_pvs(
     log::info!("  BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("  LeafPvs: {} bytes", leaf_pvs_bytes.len());
     log::info!("  Bvh: {} bytes", bvh_bytes.len());
+    let assigned_count = alpha_lights
+        .lights
+        .iter()
+        .filter(|r| r.leaf_index != ALPHA_LIGHT_LEAF_UNASSIGNED)
+        .count();
+    let unassigned_count = alpha_lights.lights.len() - assigned_count;
     log::info!(
-        "  AlphaLights: {} bytes ({} lights)",
+        "  AlphaLights: {} bytes ({} lights, {} assigned to leaves, {} unassigned)",
         alpha_lights_bytes.len(),
-        alpha_lights.lights.len()
+        alpha_lights.lights.len(),
+        assigned_count,
+        unassigned_count,
     );
     log::info!(
         "  LightInfluence: {} bytes ({} records)",
@@ -484,10 +514,18 @@ pub fn pack_and_write_portals(
     log::info!("  BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("  Portals: {} bytes", portals_bytes.len());
     log::info!("  Bvh: {} bytes", bvh_bytes.len());
+    let assigned_count = alpha_lights
+        .lights
+        .iter()
+        .filter(|r| r.leaf_index != ALPHA_LIGHT_LEAF_UNASSIGNED)
+        .count();
+    let unassigned_count = alpha_lights.lights.len() - assigned_count;
     log::info!(
-        "  AlphaLights: {} bytes ({} lights)",
+        "  AlphaLights: {} bytes ({} lights, {} assigned to leaves, {} unassigned)",
         alpha_lights_bytes.len(),
-        alpha_lights.lights.len()
+        alpha_lights.lights.len(),
+        assigned_count,
+        unassigned_count,
     );
     log::info!(
         "  LightInfluence: {} bytes ({} records)",
@@ -936,7 +974,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let output = dir.join("test_pipeline_pvs.prl");
 
-        let alpha_lights = encode_alpha_lights(&map_data.lights);
+        let alpha_lights = encode_alpha_lights(&map_data.lights, &result.tree);
         let light_influence = encode_light_influence(&map_data.lights);
         pack_and_write_pvs(
             &output,
@@ -1015,7 +1053,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let output = dir.join("test_pipeline_portals.prl");
 
-        let alpha_lights = encode_alpha_lights(&map_data.lights);
+        let alpha_lights = encode_alpha_lights(&map_data.lights, &result.tree);
         let light_influence = encode_light_influence(&map_data.lights);
         pack_and_write_portals(
             &output,
@@ -1191,5 +1229,67 @@ mod tests {
         // Directional: center zeroed, radius = f32::MAX sentinel.
         assert_eq!(section.records[2].center, [0.0, 0.0, 0.0]);
         assert_eq!(section.records[2].radius, f32::MAX);
+    }
+
+    #[test]
+    fn encode_alpha_lights_assigns_leaf_indices_and_flags_solid_leaf_lights() {
+        use crate::map_data::{FalloffModel, LightType, MapLight};
+        use crate::partition::{Aabb, BspChild, BspLeaf, BspNode, BspTree};
+        use glam::DVec3;
+
+        // Trivial tree: split on X = 0; back leaf (0) is empty, front leaf (1)
+        // is solid. A light at +X lands in the solid leaf (sentinel); a light
+        // at -X lands in the empty leaf (real index).
+        let tree = BspTree {
+            nodes: vec![BspNode {
+                plane_normal: DVec3::X,
+                plane_distance: 0.0,
+                front: BspChild::Leaf(1),
+                back: BspChild::Leaf(0),
+                parent: None,
+            }],
+            leaves: vec![
+                BspLeaf {
+                    face_indices: vec![],
+                    bounds: Aabb::empty(),
+                    is_solid: false,
+                },
+                BspLeaf {
+                    face_indices: vec![],
+                    bounds: Aabb::empty(),
+                    is_solid: true,
+                },
+            ],
+        };
+
+        let mk = |origin: DVec3| MapLight {
+            origin,
+            light_type: LightType::Point,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 10.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            animation: None,
+            cast_shadows: false,
+            bake_only: false,
+            is_dynamic: false,
+            tag: None,
+        };
+
+        let lights = vec![
+            mk(DVec3::new(-5.0, 0.0, 0.0)),
+            mk(DVec3::new(5.0, 0.0, 0.0)),
+        ];
+
+        let section = encode_alpha_lights(&lights, &tree);
+        assert_eq!(section.lights.len(), 2);
+        assert_eq!(section.lights[0].leaf_index, 0);
+        assert_eq!(
+            section.lights[1].leaf_index,
+            postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED
+        );
     }
 }

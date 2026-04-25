@@ -366,13 +366,9 @@ fn load_behavior_scripts(runtime: &ScriptRuntime) {
         if ext == "ts" {
             match &ts_compiler {
                 Some(compiler) => {
-                    let out_path =
-                        crate::scripting::watcher::compiled_output_for(path);
+                    let out_path = crate::scripting::watcher::compiled_output_for(path);
                     match crate::scripting::watcher::run_ts_compiler(
-                        compiler,
-                        path,
-                        &out_path,
-                        root,
+                        compiler, path, &out_path, root,
                     ) {
                         Ok(()) => {
                             // ⚠ See the doc-comment above: tsc with
@@ -604,11 +600,13 @@ impl ApplicationHandler for App {
         // See: context/lib/scripting.md
         {
             let level_lights = renderer.level_lights().to_vec();
-            let fgd_sample_float_count =
-                (renderer.scripted_sample_byte_offset() / 4) as u32;
+            let fgd_sample_float_count = (renderer.scripted_sample_byte_offset() / 4) as u32;
             let mut registry = self.script_ctx.registry.borrow_mut();
-            self.light_bridge
-                .populate_from_level(&level_lights, &mut registry, fgd_sample_float_count);
+            self.light_bridge.populate_from_level(
+                &level_lights,
+                &mut registry,
+                fgd_sample_float_count,
+            );
         }
 
         self.renderer = Some(renderer);
@@ -813,6 +811,24 @@ impl ApplicationHandler for App {
                     ),
                 };
 
+                // Build the per-leaf visibility bitmask the renderer needs to
+                // cull dynamic lights against the visible cell set. Empty slice
+                // is the DrawAll sentinel (`update_dynamic_light_slots` keeps
+                // every leaf-assigned light eligible on that path).
+                let visible_leaf_mask: Vec<bool> = match (&visible_cells, self.level.as_ref()) {
+                    (VisibleCells::DrawAll, _) | (_, None) => Vec::new(),
+                    (VisibleCells::Culled(cell_ids), Some(world)) => {
+                        let mut mask = vec![false; world.leaves.len()];
+                        for &id in cell_ids {
+                            let i = id as usize;
+                            if i < mask.len() {
+                                mask[i] = true;
+                            }
+                        }
+                        mask
+                    }
+                };
+
                 if let Some(renderer) = self.renderer.as_mut() {
                     // Light bridge — between Game Logic and Render. Walks the
                     // scripting entity registry, detects mutated
@@ -840,9 +856,12 @@ impl ApplicationHandler for App {
                     if renderer.is_ready() {
                         let emitter_refs: Vec<&fx::smoke::SmokeEmitter> =
                             self.smoke_emitters.iter().collect();
-                        if let Err(err) =
-                            renderer.render_frame_indirect(&visible_cells, view_proj, &emitter_refs)
-                        {
+                        if let Err(err) = renderer.render_frame_indirect(
+                            &visible_cells,
+                            &visible_leaf_mask,
+                            view_proj,
+                            &emitter_refs,
+                        ) {
                             self.exit_result = Err(err);
                             event_loop.exit();
                         }

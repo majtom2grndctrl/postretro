@@ -141,19 +141,21 @@ pub struct MapLight {
     /// built in sub-plan 3 does not consume this; the shader's
     /// `shadow_info` slot is zeroed at upload time.
     pub cast_shadows: bool,
-    /// Runtime counterpart of the compiler's `MapLight.is_dynamic`. The
-    /// AlphaLights wire format does not yet carry this flag — it's always
-    /// `false` at load time until `lighting-dynamic-flag/` plumbs it
-    /// through. `pack_spec_lights` filters on `!is_dynamic` so that when
-    /// the field goes live, dynamic lights stop appearing in the static
-    /// spec buffer (they are already driven by the dynamic `GpuLight`
-    /// loop).
+    /// Runtime counterpart of the compiler's `MapLight.is_dynamic`. Sourced
+    /// from the `_dynamic` key in the `.map` file via the AlphaLights wire
+    /// format. `pack_spec_lights` filters on `!is_dynamic` so dynamic lights
+    /// are driven by the dynamic `GpuLight` loop, not the static spec buffer.
     pub is_dynamic: bool,
     /// Optional author-supplied script tag loaded from the `LightTags`
     /// section (ID 26). Consumed by the scripting bridge at level load to
     /// populate the entity registry's tag column so scripts can call
     /// `world.query({ component: "light", tag: "<tag>" })`.
     pub tag: Option<String>,
+    /// BSP leaf index containing the light origin, baked at compile time.
+    /// `u32::MAX` (`ALPHA_LIGHT_LEAF_UNASSIGNED`) means the light could not
+    /// be assigned to a non-solid leaf and is permanently culled by the
+    /// runtime PVS check.
+    pub leaf_index: u32,
 }
 
 /// BSP tree + BVH level data loaded from a .prl file.
@@ -307,6 +309,7 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 cast_shadows: r.cast_shadows,
                 is_dynamic: r.is_dynamic,
                 tag: None,
+                leaf_index: r.leaf_index,
             }
         })
         .collect()
@@ -1341,6 +1344,7 @@ mod tests {
                     cone_direction: [0.0, 0.0, 0.0],
                     cast_shadows: true,
                     is_dynamic: false,
+                    leaf_index: 0,
                 },
                 AlphaLightRecord {
                     origin: [-4.0, 5.5, 6.0],
@@ -1354,6 +1358,7 @@ mod tests {
                     cone_direction: [0.0, -1.0, 0.0],
                     cast_shadows: false,
                     is_dynamic: true,
+                    leaf_index: 1,
                 },
                 AlphaLightRecord {
                     origin: [0.0, 10.0, 0.0],
@@ -1367,6 +1372,7 @@ mod tests {
                     cone_direction: [0.0, -0.70710677, -0.70710677],
                     cast_shadows: true,
                     is_dynamic: false,
+                    leaf_index: 2,
                 },
             ],
         }

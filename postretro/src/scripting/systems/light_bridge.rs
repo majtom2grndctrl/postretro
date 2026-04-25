@@ -106,6 +106,7 @@ pub(crate) struct LightBridge {
 #[derive(Debug, Clone)]
 struct MapLightShape {
     is_dynamic: bool,
+    leaf_index: u32,
 }
 
 impl LightBridge {
@@ -183,6 +184,7 @@ impl LightBridge {
             self.entity_ids.push(id);
             self.shape.push(MapLightShape {
                 is_dynamic: light.is_dynamic,
+                leaf_index: light.leaf_index,
             });
             self.cached_origins_f64.push(light.origin);
         }
@@ -333,6 +335,7 @@ impl LightBridge {
                 component,
                 self.cached_origins_f64[map_idx],
                 self.shape[map_idx].is_dynamic,
+                self.shape[map_idx].leaf_index,
             );
             lights_bytes.extend_from_slice(&pack_light(&map_light));
 
@@ -442,6 +445,7 @@ fn component_to_map_light(
     component: &LightComponent,
     origin_f64: [f64; 3],
     is_dynamic: bool,
+    leaf_index: u32,
 ) -> MapLight {
     let light_type = match component.light_type {
         LightKind::Point => LightType::Point,
@@ -470,6 +474,7 @@ fn component_to_map_light(
         is_dynamic,
         // Tag is not used by `pack_light`; script mutations don't touch it.
         tag: None,
+        leaf_index,
     }
 }
 
@@ -668,6 +673,7 @@ mod tests {
             cast_shadows: false,
             is_dynamic: false,
             tag: None,
+            leaf_index: 0,
         }
     }
 
@@ -685,6 +691,7 @@ mod tests {
             cast_shadows: true,
             is_dynamic: true,
             tag: None,
+            leaf_index: 0,
         }
     }
 
@@ -699,10 +706,7 @@ mod tests {
 
         let tagged_id = bridge.entity_for_map_index(0).unwrap();
         let untagged_id = bridge.entity_for_map_index(1).unwrap();
-        assert_eq!(
-            registry.get_tag(tagged_id).unwrap(),
-            Some("hallway_wave")
-        );
+        assert_eq!(registry.get_tag(tagged_id).unwrap(), Some("hallway_wave"));
         assert_eq!(registry.get_tag(untagged_id).unwrap(), None);
     }
 
@@ -733,7 +737,10 @@ mod tests {
         bridge.populate_from_level(&lights, &mut registry, 0);
 
         let update = bridge.update(&mut registry, 0.0).expect("initial dirty");
-        assert!(update.has_dirty_data, "first update must have dirty GPU data");
+        assert!(
+            update.has_dirty_data,
+            "first update must have dirty GPU data"
+        );
         assert_eq!(update.lights_bytes.len(), GPU_LIGHT_SIZE);
         assert_eq!(update.descriptor_bytes.len(), ANIMATION_DESCRIPTOR_SIZE);
     }
@@ -779,7 +786,10 @@ mod tests {
         let update = bridge
             .update(&mut registry, 0.016)
             .expect("dirty after mutation");
-        assert!(update.has_dirty_data, "mutation must trigger GPU buffer repack");
+        assert!(
+            update.has_dirty_data,
+            "mutation must trigger GPU buffer repack"
+        );
         // Intensity × color pre-multiplies into bytes 16..28 of the packed
         // GpuLight record. Sampled first channel must reflect the new value.
         let packed_r = f32::from_le_bytes(update.lights_bytes[16..20].try_into().unwrap());
@@ -1050,9 +1060,15 @@ mod tests {
 
         // Now idle frames must not re-upload GPU buffers.
         let idle1 = bridge.update(&mut registry, 0.3).unwrap();
-        assert!(!idle1.has_dirty_data, "settled idle frame must not re-upload");
+        assert!(
+            !idle1.has_dirty_data,
+            "settled idle frame must not re-upload"
+        );
         let idle2 = bridge.update(&mut registry, 10.0).unwrap();
-        assert!(!idle2.has_dirty_data, "subsequent idle frame must not re-upload");
+        assert!(
+            !idle2.has_dirty_data,
+            "subsequent idle frame must not re-upload"
+        );
     }
 
     #[test]
@@ -1068,7 +1084,10 @@ mod tests {
         let _ = bridge.update(&mut registry, 0.0);
 
         let id = bridge.entity_for_map_index(0).unwrap();
-        let mut comp = registry.get_component::<LightComponent>(id).unwrap().clone();
+        let mut comp = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
         // Pulse at phase 0 (bright at T=0, dark for the rest of the period).
         comp.animation = Some(LightAnimation {
             period_ms: 1000.0,

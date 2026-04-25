@@ -33,9 +33,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, anyhow, bail};
 use swc_atoms::Atom;
 use swc_bundler::{Bundler, Config, Hook, Load, ModuleData, ModuleRecord, Resolve};
-use swc_common::{
-    FileName, GLOBALS, Globals, Mark, SourceMap, Span, errors::Handler, sync::Lrc,
-};
+use swc_common::{FileName, GLOBALS, Globals, Mark, SourceMap, Span, errors::Handler, sync::Lrc};
 use swc_ecma_ast::{
     EsVersion, Expr, ExprStmt, KeyValueProp, MemberProp, ModuleItem, Pass, Program, Stmt,
 };
@@ -151,10 +149,7 @@ fn bundle(entry: &Path) -> Result<String> {
         );
 
         let mut entries = HashMap::new();
-        entries.insert(
-            "main".to_string(),
-            FileName::Real(entry.to_path_buf()),
-        );
+        entries.insert("main".to_string(), FileName::Real(entry.to_path_buf()));
 
         let mut bundles = bundler
             .bundle(entries)
@@ -213,10 +208,9 @@ impl Load for TsLoader {
         // Bare-specifier sentinels from RelativeOnlyResolver: return an empty
         // module so the bundler inlines nothing and leaves no import artifacts.
         if let FileName::Custom(_) = file {
-            let fm = self.cm.new_source_file(
-                Lrc::new(file.clone()),
-                String::new(),
-            );
+            let fm = self
+                .cm
+                .new_source_file(Lrc::new(file.clone()), String::new());
             return Ok(ModuleData {
                 fm,
                 module: swc_ecma_ast::Module {
@@ -240,7 +234,8 @@ impl Load for TsLoader {
             .cm
             .new_source_file(Lrc::new(FileName::Real(path.clone())), src);
 
-        let handler = Handler::with_emitter_writer(Box::new(std::io::stderr()), Some(self.cm.clone()));
+        let handler =
+            Handler::with_emitter_writer(Box::new(std::io::stderr()), Some(self.cm.clone()));
 
         let lexer = Lexer::new(
             Syntax::Typescript(TsSyntax {
@@ -331,7 +326,10 @@ impl Resolve for RelativeOnlyResolver {
         })?;
 
         let canonical = std::fs::canonicalize(&resolved).with_context(|| {
-            format!("failed to canonicalize resolved path `{}`", resolved.display())
+            format!(
+                "failed to canonicalize resolved path `{}`",
+                resolved.display()
+            )
         })?;
 
         Ok(Resolution {

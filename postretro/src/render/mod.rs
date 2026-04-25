@@ -468,6 +468,9 @@ pub struct Renderer {
 
     has_geometry: bool,
 
+    /// Number of BSP leaves in the loaded level. Cached at construction so
+    /// future renderer-side bitmask sizing has the count without holding a
+    /// reference to the world. `0` for no-geometry mode. Currently the
     /// Monotonic frame counter for debug logging.
     debug_frame: u64,
     /// Previous frame's visible-cell bitmask fingerprint (popcount, xor_hash).
@@ -1764,11 +1767,11 @@ impl Renderer {
     /// shader's light loop keys on `is_active` to decide whether to evaluate
     /// a curve or pass through the static `GpuLight` color.
     ///
-    /// Bytes must match the pre-allocated buffer size — `level_lights.len()
-    /// * ANIMATION_DESCRIPTOR_SIZE`. A mismatched length logs a warning and
-    /// returns without uploading (defensive: Plan 2 Sub-plan 4 guarantees
-    /// the bridge emits exactly that count, but we fail soft rather than
-    /// crash the frame if the invariant slips).
+    /// Bytes must match the pre-allocated buffer size —
+    /// `level_lights.len() * ANIMATION_DESCRIPTOR_SIZE`. A mismatched length
+    /// logs a warning and returns without uploading (defensive: Plan 2
+    /// Sub-plan 4 guarantees the bridge emits exactly that count, but we fail
+    /// soft rather than crash the frame if the invariant slips).
     pub fn upload_bridge_descriptors(&mut self, descriptor_bytes: &[u8]) {
         let expected = self.level_lights.len() * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
         if descriptor_bytes.len() != expected {
@@ -1850,23 +1853,38 @@ impl Renderer {
         camera_near_clip: f32,
         light_influences: &[LightInfluence],
         effective_brightness: &[f32],
+        visible_leaf_mask: &[bool],
     ) {
         if self.level_lights.is_empty() {
             return;
         }
 
-        // For now, we don't have per-frame visibility (visible_cell_bitmask).
-        // Use a dummy bitmask that considers all lights visible. Lights whose
-        // animated brightness is below the suppression threshold are folded
-        // into the visibility mask so the existing `rank_lights` filter
-        // naturally drops them from the candidate list.
+        // Build the per-light visibility mask. An empty `visible_leaf_mask`
+        // is the DrawAll sentinel (empty world, fallback paths) — every
+        // light with a real leaf assignment is eligible. Otherwise consult
+        // the per-leaf bitmask. Lights with `leaf_index == u32::MAX` are
+        // always culled (compile-time sentinel for "could not assign to a
+        // non-solid leaf"). Lights whose animated brightness is below the
+        // suppression threshold are folded in so `rank_lights` drops them.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
-        let mut dummy_visible = vec![true; self.level_lights.len()];
-        for (i, vis) in dummy_visible.iter_mut().enumerate() {
+        let mut visible_lights = vec![false; self.level_lights.len()];
+        for (i, light) in self.level_lights.iter().enumerate() {
+            let leaf_visible = if light.leaf_index == u32::MAX {
+                false
+            } else if visible_leaf_mask.is_empty() {
+                true
+            } else {
+                let li = light.leaf_index as usize;
+                li < visible_leaf_mask.len() && visible_leaf_mask[li]
+            };
+            if !leaf_visible {
+                continue;
+            }
             let b = effective_brightness.get(i).copied().unwrap_or(1.0);
             if b < BRIGHTNESS_SUPPRESSION_THRESHOLD {
-                *vis = false;
+                continue;
             }
+            visible_lights[i] = true;
         }
 
         // Rank lights and get slot assignments.
@@ -1874,7 +1892,7 @@ impl Renderer {
             &self.level_lights,
             camera_position,
             camera_near_clip,
-            &dummy_visible,
+            &visible_lights,
             light_influences,
         );
 
@@ -1957,6 +1975,7 @@ impl Renderer {
     pub fn render_frame_indirect(
         &mut self,
         visible: &VisibleCells,
+        visible_leaf_mask: &[bool],
         view_proj: Mat4,
         emitters: &[&SmokeEmitter],
     ) -> Result<()> {
@@ -2095,6 +2114,7 @@ impl Renderer {
             crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
             &[],
             &eff_brightness,
+            visible_leaf_mask,
         );
         self.light_effective_brightness = eff_brightness;
         if self.has_geometry && self.index_count > 0 {

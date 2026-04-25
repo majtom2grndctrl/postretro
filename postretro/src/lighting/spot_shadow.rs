@@ -237,7 +237,6 @@ impl SpotShadowPool {
     /// top 8 to slots.
     ///
     /// Returns a Vec indexed by light index: entry is the slot index (0..8) or NO_SHADOW_SLOT.
-    #[allow(dead_code)]
     pub fn rank_lights(
         lights: &[MapLight],
         camera_position: Vec3,
@@ -337,6 +336,7 @@ mod tests {
             cast_shadows: true,
             is_dynamic,
             tag: None,
+            leaf_index: 0,
         }
     }
 
@@ -436,6 +436,60 @@ mod tests {
         // Light 0 (lower index) should get slot 0; light 1 gets slot 1.
         assert_eq!(assignment[0], 0);
         assert_eq!(assignment[1], 1);
+    }
+
+    #[test]
+    fn lights_in_invisible_cells_are_culled() {
+        let lights = vec![
+            test_light(0, [0.0, 0.0, -10.0], 10.0, true),
+            test_light(1, [10.0, 0.0, -10.0], 10.0, true),
+            test_light(2, [20.0, 0.0, -10.0], 10.0, true),
+        ];
+        let bitmask = [true, false, true];
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &bitmask, &[]);
+        assert_ne!(assignment[0], NO_SHADOW_SLOT);
+        assert_eq!(assignment[1], NO_SHADOW_SLOT);
+        assert_ne!(assignment[2], NO_SHADOW_SLOT);
+    }
+
+    #[test]
+    fn nine_lights_with_eight_visible_assigns_eight() {
+        // The invisible light (index 0) is placed closest to the camera so it
+        // would otherwise rank #1 by heuristic — proving the bitmask filter
+        // takes precedence over the score.
+        let mut lights = Vec::new();
+        lights.push(test_light(0, [0.0, 0.0, -1.0], 10.0, true));
+        for i in 1..9 {
+            lights.push(test_light(
+                i as u32,
+                [i as f64 * 50.0, 0.0, -10.0],
+                10.0,
+                true,
+            ));
+        }
+        let mut bitmask = vec![true; 9];
+        bitmask[0] = false;
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &bitmask, &[]);
+
+        assert_eq!(assignment[0], NO_SHADOW_SLOT);
+        let assigned_count = assignment[1..]
+            .iter()
+            .filter(|&&s| s != NO_SHADOW_SLOT)
+            .count();
+        assert_eq!(assigned_count, 8, "all 8 visible lights get slots");
+    }
+
+    #[test]
+    fn empty_bitmask_treated_as_all_visible() {
+        let lights = vec![
+            test_light(0, [0.0, 0.0, -10.0], 10.0, true),
+            test_light(1, [10.0, 0.0, -10.0], 10.0, true),
+            test_light(2, [20.0, 0.0, -10.0], 10.0, true),
+        ];
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        assert_ne!(assignment[0], NO_SHADOW_SLOT);
+        assert_ne!(assignment[1], NO_SHADOW_SLOT);
+        assert_ne!(assignment[2], NO_SHADOW_SLOT);
     }
 
     #[test]

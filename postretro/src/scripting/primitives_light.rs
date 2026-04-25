@@ -66,10 +66,13 @@ pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Val
             transform.insert("position".to_string(), Value::Object(position));
             obj.insert("transform".to_string(), Value::Object(transform));
             obj.insert("isDynamic".to_string(), Value::from(h.component.is_dynamic));
-            obj.insert("tag".to_string(), match h.tag {
-                Some(t) => Value::String(t),
-                None => Value::Null,
-            });
+            obj.insert(
+                "tag".to_string(),
+                match h.tag {
+                    Some(t) => Value::String(t),
+                    None => Value::Null,
+                },
+            );
             obj.insert("component".to_string(), comp);
             Value::Object(obj)
         })

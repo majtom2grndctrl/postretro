@@ -159,11 +159,9 @@ pub fn build_animated_light_chunks(
     let mut overflow_drops: u64 = 0;
     let mut overflow_log_count: u64 = 0;
 
-    let leaf_count = bvh_section.leaves.len();
-    for leaf_idx in 0..leaf_count {
+    for (leaf_idx, leaf) in bvh_section.leaves.iter().enumerate() {
         let range_start = chunks.len() as u32;
 
-        let leaf = &bvh_section.leaves[leaf_idx];
         let leaf_offset = leaf.index_offset;
 
         // O(1) leaf→face resolution. Today each leaf's `index_offset` is

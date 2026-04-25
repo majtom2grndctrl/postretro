@@ -266,7 +266,7 @@ impl ShVolumeResources {
         // follow. The LightBridge writes into this region at runtime.
         let scripted_sample_byte_offset = anim_sample_bytes.len();
         let scripted_region_bytes = map_light_count * SCRIPTED_FLOATS_PER_LIGHT * 4;
-        anim_sample_bytes.extend(std::iter::repeat(0u8).take(scripted_region_bytes));
+        anim_sample_bytes.extend(std::iter::repeat_n(0u8, scripted_region_bytes));
 
         let anim_descriptors_buffer = device.create_buffer_init_helper(
             "SH Animation Descriptors",

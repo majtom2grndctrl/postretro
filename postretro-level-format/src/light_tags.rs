@@ -51,8 +51,8 @@ impl LightTagsSection {
                     format!("light tags entry {i}: truncated length prefix"),
                 )));
             }
-            let byte_len = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]])
-                as usize;
+            let byte_len =
+                u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
             o += 4;
             if o + byte_len > data.len() {
                 return Err(FormatError::Io(std::io::Error::new(

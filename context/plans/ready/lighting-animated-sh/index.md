@@ -129,15 +129,96 @@ light at 5m radius produces an ~11×11×11 (≤1331 probes) worst-case, typicall
 sphere clip; a wide ambient fill at 20m radius produces ~41×41×41. The runtime performs
 trilinear interpolation within each per-light AABB during the compose pass.
 
-### Task C — Delta SH volume baking
+### Task C — Typed light namespace envelopes
+
+**Crate:** `postretro-level-compiler` · **New file:** `src/light_namespaces.rs` ·
+**Touches:** `src/lightmap_bake.rs`, `src/sh_bake.rs`,
+`src/chunk_light_list_bake.rs`, `src/animated_light_chunks.rs`, `src/pack.rs`,
+`src/main.rs`
+
+Each bake stage today re-applies its own filter predicate against the raw
+`&[MapLight]`. The conventions across stages — and the index alignment between
+`AlphaLights`, `LightInfluence`, and `AnimatedLightChunks` light indices — are
+maintained by these parallel filters, not enforced by types. Adding a new light
+property or changing one filter silently misaligns runtime indices.
+
+Current filter map:
+
+| Stage | Predicate today | Output namespace |
+|---|---|---|
+| `lightmap_bake::bake_lightmap` | `!is_dynamic && animation.is_none()` | static-only, internal |
+| `sh_bake::bake_sh_volume` (base) | `!is_dynamic` then partition by `animation.is_none()` | static + animated split |
+| `chunk_light_list_bake::bake_chunk_light_list` | `!is_dynamic && !bake_only` | AlphaLights namespace |
+| `animated_light_chunks::build_animated_light_chunks` | caller pre-filters; builder re-checks `!is_dynamic && animation.is_some()` | animated namespace |
+| `pack::encode_alpha_lights` / `encode_light_influence` | `!bake_only` | AlphaLights namespace (output) |
+
+`AlphaLights` and `LightInfluence` index slots must stay aligned (the runtime
+direct-lighting path and chunk light lists both index into them). Animated
+chunks index a separate namespace (animation-descriptor order). These contracts
+are nowhere named today.
+
+Introduce typed envelopes — newtype-wrapped slices over `&[MapLight]` paired
+with their index-namespace identity — and pre-compute them once at the top of
+`main.rs` before any bake stage runs. The envelopes are pre-filtered for their
+stage's namespace, so each bake takes the typed slice it needs and applies no
+further filter predicate.
+
+Envelopes (names are illustrative — pick what reads cleanly):
+
+- `StaticBakedLights` — `!is_dynamic && animation.is_none()`. Consumed by
+  lightmap bake; consumed by SH base bake (folds into base coefficients).
+- `AnimatedBakedLights` — `!is_dynamic && animation.is_some()`. Consumed by
+  the animated-light-chunks builder (Task D delta SH bake also consumes this
+  namespace). Index space matches the `AnimationDescriptor` array.
+- `AlphaLights` namespace — `!bake_only`. Consumed by chunk light list bake,
+  AlphaLights pack, LightInfluence pack. Index space is the on-disk
+  `AlphaLightRecord` order.
+
+Each envelope exposes the original `MapLight` reference plus its index in the
+relevant namespace. The builder for the `AlphaLights` namespace also exposes
+the original-`MapLight`-index so animated/static envelopes can map back when a
+stage needs both perspectives (e.g. SH bake's static / animated partition).
+
+Refactors required:
+
+- `lightmap_bake::LightmapInputs::lights` accepts `&StaticBakedLights` instead
+  of `&[MapLight]`; the internal `static_lights` filter is dropped.
+- `sh_bake::BakeInputs::lights` is replaced by two fields: a
+  `&StaticBakedLights` for the base bake and an `&AnimatedBakedLights` for the
+  descriptor list; the internal `partition` is dropped.
+- `chunk_light_list_bake::ChunkLightListInputs::lights` accepts an
+  `AlphaLights`-namespace envelope; `is_eligible` is dropped. The emitted
+  `light_indices` index the envelope (i.e. `AlphaLights` slots) directly,
+  preserving today's runtime contract.
+- `animated_light_chunks::build_animated_light_chunks` accepts
+  `&AnimatedBakedLights` and a parallel `&[InfluenceRecord]` aligned to the
+  same namespace; the internal `!is_dynamic && animation.is_some()` re-check
+  is dropped.
+- `pack::encode_alpha_lights` and `pack::encode_light_influence` accept the
+  `AlphaLights` envelope; the `!bake_only` filter moves to the envelope
+  builder. Iteration order is preserved exactly.
+- `main.rs` builds the three envelopes once after `MapData` translation and
+  hands the typed slices to each stage in turn.
+
+No behavior change. The bake outputs are byte-identical to pre-refactor on
+every existing fixture map. Existing tests continue to pass; per-stage tests
+that construct `&[MapLight]` directly are updated to construct envelopes via
+the same builder `main.rs` uses.
+
+This task is purely structural cleanup. Land before Task D so the delta SH
+baker is written against the typed `AnimatedBakedLights` namespace from the
+start, rather than re-introducing a fourth parallel filter for the same set.
+
+### Task D — Delta SH volume baking
 
 **Crate:** `postretro-level-compiler` · **New file:** `src/delta_sh_bake.rs`
 
-For each animated light: compute the light's influence sphere AABB, place probes at the
-configured fixed spacing (default 1.0m) within that AABB, then run the same ray-tracing
-loop used by the base SH bake with only that one light active and brightness fixed at 1.0
-(peak contribution). Store the result as a per-light delta SH probe grid. The bake is
-embarrassingly parallel across lights (each is independent).
+For each animated light in the `AnimatedBakedLights` envelope (Task C):
+compute the light's influence sphere AABB, place probes at the configured fixed
+spacing (default 1.0m) within that AABB, then run the same ray-tracing loop
+used by the base SH bake with only that one light active and brightness fixed
+at 1.0 (peak contribution). Store the result as a per-light delta SH probe
+grid. The bake is embarrassingly parallel across lights (each is independent).
 
 The base SH baker and delta baker share the same BVH, primitive list, and ray-generation
 helpers. Extract shared helpers if not already separated.
@@ -150,9 +231,15 @@ The composed result at runtime must satisfy: `compose(base, delta[i] × 0) == ba
 `compose(base, delta[i] × 1) == base + delta[i]` (light i's full direct + indirect
 contribution at peak added to the indirect-only base).
 
-Task C depends on Task B (section format) and can be developed in parallel with Task A.
+The per-light index in the emitted `DeltaShVolumes` section matches the
+`AnimatedBakedLights` namespace (same as the SH section's
+`animation_descriptors` array), so no remap is needed in the runtime compose
+pass.
 
-### Task D — Compose pass (runtime)
+Task D depends on Task B (section format) and Task C (typed envelopes) and can
+be developed in parallel with Task A.
+
+### Task E — Compose pass (runtime)
 
 **Crate:** `postretro` · **New files:** `src/render/sh_compose.rs`,
 `src/shaders/sh_compose.wgsl`
@@ -180,11 +267,11 @@ When no animated lights are present (delta section absent or empty), the compose
 copies base to total unconditionally — one compute dispatch that amounts to a 3D texture
 blit. This is cheap (~300KB blit) and keeps the code path uniform.
 
-Task D depends on Task B (section format for loading delta data) and Task C (data to
-compose). Can be developed with a zeroed delta buffer before Task C lands, confirming
+Task E depends on Task B (section format for loading delta data) and Task D (data to
+compose). Can be developed with a zeroed delta buffer before Task D lands, confirming
 consumer correctness independently.
 
-### Task E — Split `use_direct` flag
+### Task F — Split `use_direct` flag
 
 **Crate:** `postretro` · **File:** `src/shaders/forward.wgsl`
 
@@ -210,12 +297,12 @@ working specmaps. AmbientOnly is a minimal debug view; specular off there is int
 
 Also update `src/render/mod.rs` where the isolation uniform value is packed.
 
-Note: Task F extends this switch to 9 modes; both tasks edit `forward.wgsl` and
-`render/mod.rs`. Land Task E first; Task F applies on top.
+Note: Task G extends this switch to 9 modes; both tasks edit `forward.wgsl` and
+`render/mod.rs`. Land Task F first; Task G applies on top.
 
 This task is independent of all others.
 
-### Task F — Extended Lighting Isolation Modes
+### Task G — Extended Lighting Isolation Modes
 
 **Crate:** `postretro` · **Files:** `src/render/mod.rs`, `src/shaders/forward.wgsl`
 
@@ -243,8 +330,8 @@ The Alt+Shift+4 chord cycles through modes 0–8 in order. The existing
 `cycle_lighting_isolation()` method in `src/render/mod.rs` wraps at 9 instead of 4. The
 uniform value stays a u32; the forward shader uses a switch/match to enable each term.
 
-Note: modes 5 (StaticSHOnly) and 6 (AnimatedDeltaOnly) are only meaningful after Task D
-lands. Before Task D they both show the base SH result (there is no separate animated delta
+Note: modes 5 (StaticSHOnly) and 6 (AnimatedDeltaOnly) are only meaningful after Task E
+lands. Before Task E they both show the base SH result (there is no separate animated delta
 term yet).
 
 This task is independent of all others.
@@ -254,14 +341,15 @@ This task is independent of all others.
 ## Sequencing
 
 **Phase 1 (concurrent):** Task A (indirect-only bake), Task B (PRL section format),
-Task E then Task F (both edit forward.wgsl and render/mod.rs — land E first, F applies
-on top; can develop concurrently, merge sequentially).
+Task C (typed light namespace envelopes), Task F then Task G (both edit forward.wgsl
+and render/mod.rs — land F first, G applies on top; can develop concurrently, merge
+sequentially).
 
-**Phase 2 (concurrent):** Task C (delta baking — needs Task B PRL format), Task D
-(compose pass stub — needs Task B for loading; can stub with zero deltas to validate
-consumer correctness independently).
+**Phase 2 (concurrent):** Task D (delta baking — needs Task B PRL format and Task C
+envelopes), Task E (compose pass stub — needs Task B for loading; can stub with zero
+deltas to validate consumer correctness independently).
 
-**Phase 3 (sequential):** Task D full (wire Task C delta data into Task D's compose pass
+**Phase 3 (sequential):** Task E full (wire Task D delta data into Task E's compose pass
 once delta baking lands). Close acceptance criteria.
 
 ---

@@ -19,6 +19,7 @@ use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
+use crate::light_namespaces::AlphaLightsNs;
 use crate::map_data::{LightType, MapLight};
 
 /// Default chunk edge length in meters. 8 m fits the rendering-pipeline
@@ -51,7 +52,7 @@ pub struct ChunkLightListInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
-    pub lights: &'a [MapLight],
+    pub lights: &'a AlphaLightsNs<'a>,
 }
 
 /// Build the chunk light list from the current compile stage outputs.
@@ -69,17 +70,23 @@ pub fn bake_chunk_light_list(
         return Ok(ChunkLightListSection::placeholder());
     }
 
-    // Static-light index table: original `MapLight` index so offsets line up
-    // with consumers that keep the full light array (the baker does not
-    // re-number or filter dynamic/bake-only lights — those are skipped at
-    // bucketing time, not dropped from the index space).
-    let static_light_indices: Vec<usize> = inputs
+    // Slot indices into the AlphaLights namespace for every non-dynamic light.
+    // Emitted u32s in `light_indices` are AlphaLights slot indices, matching
+    // the runtime spec-buffer layout one-to-one.
+    let static_slots: Vec<(u32, &MapLight)> = inputs
         .lights
+        .entries()
         .iter()
         .enumerate()
-        .filter_map(|(i, l)| if is_eligible(l) { Some(i) } else { None })
+        .filter_map(|(slot, e)| {
+            if !e.light.is_dynamic {
+                Some((slot as u32, e.light))
+            } else {
+                None
+            }
+        })
         .collect();
-    if static_light_indices.is_empty() {
+    if static_slots.is_empty() {
         return Ok(ChunkLightListSection::placeholder());
     }
 
@@ -117,8 +124,7 @@ pub fn bake_chunk_light_list(
                 let chunk_centroid = (chunk_min + chunk_max) * 0.5;
 
                 let bucket = &mut per_chunk[chunk_idx];
-                for &li in &static_light_indices {
-                    let light = &inputs.lights[li];
+                for &(slot, light) in &static_slots {
                     if !overlaps_chunk(light, chunk_min, chunk_max) {
                         continue;
                     }
@@ -133,7 +139,7 @@ pub fn bake_chunk_light_list(
                     ) {
                         continue;
                     }
-                    bucket.push(li as u32);
+                    bucket.push(slot);
                 }
 
                 if bucket.len() > cap {
@@ -191,7 +197,7 @@ pub fn bake_chunk_light_list(
         dims[1],
         dims[2],
         chunk_count,
-        static_light_indices.len(),
+        static_slots.len(),
         avg,
         max_count,
         total_indices,
@@ -213,13 +219,6 @@ pub fn bake_chunk_light_list(
         offsets,
         light_indices: indices,
     })
-}
-
-/// Static-and-live filter. Dynamic lights are evaluated at runtime (the spec
-/// buffer they drive lives in Task B); bake-only lights never reach the
-/// runtime direct path at all.
-fn is_eligible(light: &MapLight) -> bool {
-    !light.is_dynamic && !light.bake_only
 }
 
 fn world_aabb(geo: &GeometryResult) -> (Vec3, Vec3) {
@@ -609,11 +608,12 @@ mod tests {
         };
         let bvh = bvh::bvh::Bvh { nodes: Vec::new() };
         let lights = vec![point_light(DVec3::ZERO, 10.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let inputs = ChunkLightListInputs {
             bvh: &bvh,
             primitives: &[],
             geometry: &geo,
-            lights: &lights,
+            lights: &alpha_lights,
         };
         let section = bake_chunk_light_list(
             &inputs,
@@ -629,11 +629,12 @@ mod tests {
         let geo = single_quad_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights = vec![dynamic_point_light(DVec3::ZERO, 10.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let inputs = ChunkLightListInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
-            lights: &lights,
+            lights: &alpha_lights,
         };
         let section = bake_chunk_light_list(
             &inputs,
@@ -652,11 +653,12 @@ mod tests {
         let geo = single_quad_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights = vec![point_light(DVec3::new(7.0, 1.0, 7.0), 4.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let inputs = ChunkLightListInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
-            lights: &lights,
+            lights: &alpha_lights,
         };
         let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
         assert_eq!(section.has_grid, 1);
@@ -675,11 +677,12 @@ mod tests {
         let geo = single_quad_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights = vec![directional_light([0.0, -1.0, 0.0])];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let inputs = ChunkLightListInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
-            lights: &lights,
+            lights: &alpha_lights,
         };
         let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
         assert_eq!(section.has_grid, 1);
@@ -697,11 +700,12 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let light_pos = DVec3::new(-5.0, 2.0, 0.0);
         let lights = vec![point_light(light_pos, 50.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let inputs = ChunkLightListInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
-            lights: &lights,
+            lights: &alpha_lights,
         };
         let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
         assert_eq!(section.has_grid, 1);
@@ -735,11 +739,12 @@ mod tests {
         for _ in 0..70 {
             lights.push(point_light(DVec3::new(0.0, 1.0, 0.0), 4.0));
         }
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let inputs = ChunkLightListInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
-            lights: &lights,
+            lights: &alpha_lights,
         };
         let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
         for entry in &section.offsets {
@@ -758,11 +763,12 @@ mod tests {
         let geo = single_quad_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights = vec![point_light(DVec3::new(0.0, 1.0, 0.0), 4.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let inputs = ChunkLightListInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
-            lights: &lights,
+            lights: &alpha_lights,
         };
         // 16 m map, 0.05 m cells → 320^1 on XZ × 1 on Y. Still big enough to
         // exceed 16 MB offset table (320*320*1*8 = ~820 KB), so instead crank

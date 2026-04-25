@@ -9,6 +9,7 @@ pub mod chunk_light_list_bake;
 pub mod format;
 pub mod geometry;
 pub mod geometry_utils;
+pub mod light_namespaces;
 pub mod lightmap_bake;
 pub mod map_data;
 pub mod map_format;
@@ -102,6 +103,14 @@ fn main() -> anyhow::Result<()> {
     let map_data = parse::parse_map_file(&args.input, args.format)?;
     timings.push(("Parsing", stage_start.elapsed()));
 
+    // Pre-compute light-namespace envelopes once so each bake stage takes the
+    // typed slice it needs and applies no further filter. See
+    // `light_namespaces.rs` for the index-space contracts.
+    let static_baked_lights = light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
+    let animated_baked_lights =
+        light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
+    let alpha_lights_ns = light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
+
     progress.start_stage("BSP partitioning...");
     let stage_start = Instant::now();
     // Partition space with brush-derived planes, then project each brush
@@ -184,7 +193,7 @@ fn main() -> anyhow::Result<()> {
                 bvh: &bvh,
                 primitives: &bvh_primitives,
                 geometry: &mut geo_result,
-                lights: &map_data.lights,
+                lights: &static_baked_lights,
             };
             match lightmap_bake::bake_lightmap(&mut lm_inputs, density) {
                 Ok(result) => {
@@ -243,7 +252,8 @@ fn main() -> anyhow::Result<()> {
         geometry: &geo_result,
         tree: &result.tree,
         exterior_leaves: &exterior_leaves,
-        lights: &map_data.lights,
+        static_lights: &static_baked_lights,
+        animated_lights: &animated_baked_lights,
     };
     let sh_volume_section = sh_bake::bake_sh_volume(&sh_inputs, args.probe_spacing);
     timings.push(("SH Bake", stage_start.elapsed()));
@@ -258,7 +268,7 @@ fn main() -> anyhow::Result<()> {
             bvh: &bvh,
             primitives: &bvh_primitives,
             geometry: &geo_result,
-            lights: &map_data.lights,
+            lights: &alpha_lights_ns,
         };
         chunk_light_list_bake::bake_chunk_light_list(
             &inputs,
@@ -269,41 +279,14 @@ fn main() -> anyhow::Result<()> {
     };
     timings.push(("ChunkLightList", stage_start.elapsed()));
 
-    // AlphaLights and LightInfluence share the `!bake_only` filter — record
-    // `i` in one corresponds to record `i` in the other.
-    let alpha_lights_section = pack::encode_alpha_lights(&map_data.lights, &result.tree);
-    let light_influence_section = pack::encode_light_influence(&map_data.lights);
-    let light_tags_section = pack::encode_light_tags(&map_data.lights);
+    let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &result.tree);
+    let light_influence_section = pack::encode_light_influence(&alpha_lights_ns);
+    let light_tags_section = pack::encode_light_tags(&alpha_lights_ns);
 
-    // The animated-light-chunks builder indexes into the
-    // `!is_dynamic && animation.is_some()` namespace — the exact same filter
-    // `sh_bake.rs` (~line 99) uses to build `animation_descriptors`. Emitted
-    // `light_index` values thus index the runtime `AnimationDescriptor` buffer
-    // directly, with no per-entry remap. Pre-filtering here (rather than
-    // inside the builder) keeps the namespace contract visible at the call
-    // site. `bake_only` animated lights participate in weight-map compose and
-    // are retained.
-    let (animated_chunk_lights, animated_chunk_influence): (
-        Vec<map_data::MapLight>,
-        Vec<postretro_level_format::light_influence::InfluenceRecord>,
-    ) = map_data
-        .lights
-        .iter()
-        .filter(|l| !l.is_dynamic && l.animation.is_some())
-        .map(|l| {
-            let (center, radius) = match l.light_type {
-                map_data::LightType::Directional => ([0.0f32, 0.0, 0.0], f32::MAX),
-                map_data::LightType::Point | map_data::LightType::Spot => (
-                    [l.origin.x as f32, l.origin.y as f32, l.origin.z as f32],
-                    l.falloff_range,
-                ),
-            };
-            (
-                l.clone(),
-                postretro_level_format::light_influence::InfluenceRecord { center, radius },
-            )
-        })
-        .unzip();
+    // Owned parallel `MapLight` slice in the AnimatedBakedLights namespace —
+    // the animated weight-map baker holds its light list across multi-stage
+    // pipelines and needs owned values.
+    let (animated_chunk_lights, _) = animated_baked_lights.to_parallel_vecs();
 
     progress.start_stage("Animated light chunks...");
     let stage_start = Instant::now();
@@ -317,8 +300,7 @@ fn main() -> anyhow::Result<()> {
     let (animated_light_chunks_section, bvh_chunk_ranges) =
         animated_light_chunks::build_animated_light_chunks(
             &bvh_section,
-            &animated_chunk_lights,
-            &animated_chunk_influence,
+            &animated_baked_lights,
             &face_charts,
             &geo_result.face_index_ranges,
             final_lightmap_density,

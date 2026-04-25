@@ -456,7 +456,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // floor always contributes so interior geometry is never pitch black.
     let iso = uniforms.lighting_isolation;
     let use_indirect = (iso == 0u) || (iso == 2u);
-    let use_direct = (iso == 0u) || (iso == 1u);
+    // `use_direct` was previously a single flag covering the lightmap, the
+    // specular block, and the dynamic-light loop. Split into three so
+    // IndirectOnly mode can keep specular alive (its best-looking debug
+    // view), while AmbientOnly still silences everything but the floor.
+    let use_lightmap = (iso == 0u) || (iso == 1u);
+    let use_specular = (iso == 0u) || (iso == 1u) || (iso == 2u);
+    let use_dynamic = (iso == 0u) || (iso == 1u);
 
     // Indirect term: baked SH irradiance. Zero when no SH volume is loaded
     // or when the isolation mode suppresses indirect.
@@ -478,7 +484,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // baker's pre-multiplied NdotL is the right answer; reapplying NdotL
     // here would double-count the Lambert term.
     var static_direct = vec3<f32>(0.0);
-    if use_direct {
+    if use_lightmap {
         let lm_irr = textureSample(lightmap_irradiance, lightmap_sampler, in.lightmap_uv).rgb;
         // Animated contribution: pre-shaded Lambert irradiance composed each
         // frame from weight maps + descriptor curves. Sampled at the same
@@ -500,7 +506,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // to diffuse — no energy conservation. See
     // lighting-chunk-lists/ Task B.
     var specular_sum = vec3<f32>(0.0);
-    if use_direct {
+    if use_specular {
         let V = normalize(uniforms.camera_position - in.world_position);
         let spec_int = textureSample(spec_texture, base_sampler, in.uv).r;
         let spec_exp = max(material.shininess, 1.0);
@@ -563,9 +569,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     total_light = total_light + specular_sum;
 
-    // DirectOnly / AmbientOnly modes skip the direct-light loop entirely —
+    // IndirectOnly / AmbientOnly modes skip the dynamic-light loop entirely —
     // cheaper than zeroing contributions inside the loop.
-    let light_count = select(0u, uniforms.light_count, use_direct);
+    let light_count = select(0u, uniforms.light_count, use_dynamic);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         // Influence-volume early-out: skip lights whose sphere bound does
         // not contain this fragment. Pure optimization — no pixel change.

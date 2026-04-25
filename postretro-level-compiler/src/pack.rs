@@ -25,7 +25,8 @@ use postretro_level_format::{
 };
 
 use crate::geometry::GeometryResult;
-use crate::map_data::{FalloffModel, LightType, MapLight};
+use crate::light_namespaces::AlphaLightsNs;
+use crate::map_data::{FalloffModel, LightType};
 use crate::partition::{BspTree, find_leaf_for_point};
 use crate::portals::Portal;
 
@@ -63,14 +64,13 @@ fn serialize_bvh_with_chunk_ranges(bvh: &BvhSection, chunk_ranges: &[(u32, u32)]
 /// Convert translated map lights into an `AlphaLightsSection` for the format
 /// crate. Strips animation curves (direct lighting path uses static base
 /// properties only — sub-plan 3 of the Lighting Foundation plan).
-/// Bake-only lights are excluded; see `encode_light_influence` for the
-/// invariant this maintains.
-pub fn encode_alpha_lights(lights: &[MapLight], tree: &BspTree) -> AlphaLightsSection {
+pub fn encode_alpha_lights(lights: &AlphaLightsNs<'_>, tree: &BspTree) -> AlphaLightsSection {
     let records: Vec<AlphaLightRecord> = lights
+        .entries()
         .iter()
-        .enumerate()
-        .filter(|(_, l)| !l.bake_only)
-        .map(|(src_index, l)| {
+        .map(|entry| {
+            let src_index = entry.source_index;
+            let l = entry.light;
             let light_type = match l.light_type {
                 LightType::Point => AlphaLightType::Point,
                 LightType::Spot => AlphaLightType::Spot,
@@ -119,32 +119,30 @@ pub fn encode_alpha_lights(lights: &[MapLight], tree: &BspTree) -> AlphaLightsSe
     AlphaLightsSection { lights: records }
 }
 
-/// Encode per-light script tags, aligned with the AlphaLights record order
-/// (same `!bake_only` filter). Returns `None` when no light in the filtered
-/// set carries a tag — the caller omits the section entirely in that case so
-/// tag-less maps add zero bytes.
-pub fn encode_light_tags(lights: &[MapLight]) -> Option<LightTagsSection> {
-    let filtered: Vec<&MapLight> = lights.iter().filter(|l| !l.bake_only).collect();
-    if filtered.iter().all(|l| l.tag.is_none()) {
+/// Encode per-light script tags, aligned with the AlphaLights record order.
+/// Returns `None` when no light in the AlphaLights namespace carries a tag —
+/// the caller omits the section entirely in that case so tag-less maps add
+/// zero bytes.
+pub fn encode_light_tags(lights: &AlphaLightsNs<'_>) -> Option<LightTagsSection> {
+    if lights.entries().iter().all(|e| e.light.tag.is_none()) {
         return None;
     }
-    let tags = filtered
+    let tags = lights
+        .entries()
         .iter()
-        .map(|l| l.tag.clone().unwrap_or_default())
+        .map(|e| e.light.tag.clone().unwrap_or_default())
         .collect();
     Some(LightTagsSection { tags })
 }
 
-/// Derive influence records from the same light list used for AlphaLights.
-/// Same iteration order — record `i` corresponds to light `i` in AlphaLights.
-/// Bake-only lights are excluded with the same filter as `encode_alpha_lights`
-/// to maintain the invariant that record `i` in LightInfluence corresponds to
-/// record `i` in AlphaLights.
-pub fn encode_light_influence(lights: &[MapLight]) -> LightInfluenceSection {
+/// Derive influence records from the AlphaLights namespace. Iteration order
+/// matches AlphaLights — record `i` here corresponds to light `i` there.
+pub fn encode_light_influence(lights: &AlphaLightsNs<'_>) -> LightInfluenceSection {
     let records = lights
+        .entries()
         .iter()
-        .filter(|l| !l.bake_only)
-        .map(|l| {
+        .map(|e| {
+            let l = e.light;
             let (center, radius) = match l.light_type {
                 LightType::Directional => ([0.0f32, 0.0, 0.0], f32::MAX),
                 LightType::Point | LightType::Spot => {
@@ -960,13 +958,19 @@ mod tests {
         let (bvh, primitives, bvh_section) =
             crate::bvh_build::build_bvh(&geo_result).expect("bvh build should succeed");
 
+        let static_lights =
+            crate::light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
+        let animated_lights =
+            crate::light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
+        let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
         let sh_inputs = crate::sh_bake::BakeInputs {
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geo_result,
             tree: &result.tree,
             exterior_leaves: &exterior,
-            lights: &map_data.lights,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
         };
         let sh_volume = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
 
@@ -974,8 +978,8 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let output = dir.join("test_pipeline_pvs.prl");
 
-        let alpha_lights = encode_alpha_lights(&map_data.lights, &result.tree);
-        let light_influence = encode_light_influence(&map_data.lights);
+        let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
+        let light_influence = encode_light_influence(&alpha_ns);
         pack_and_write_pvs(
             &output,
             &geo_result,
@@ -1037,13 +1041,19 @@ mod tests {
         let (bvh, primitives, bvh_section) =
             crate::bvh_build::build_bvh(&geo_result).expect("bvh build should succeed");
 
+        let static_lights =
+            crate::light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
+        let animated_lights =
+            crate::light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
+        let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
         let sh_inputs = crate::sh_bake::BakeInputs {
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geo_result,
             tree: &result.tree,
             exterior_leaves: &exterior,
-            lights: &map_data.lights,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
         };
         let sh_volume = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
 
@@ -1053,8 +1063,8 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let output = dir.join("test_pipeline_portals.prl");
 
-        let alpha_lights = encode_alpha_lights(&map_data.lights, &result.tree);
-        let light_influence = encode_light_influence(&map_data.lights);
+        let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
+        let light_influence = encode_light_influence(&alpha_ns);
         pack_and_write_portals(
             &output,
             &geo_result,
@@ -1127,13 +1137,18 @@ mod tests {
             let (bvh, primitives, _) = crate::bvh_build::build_bvh(&geo_result)
                 .unwrap_or_else(|e| panic!("bvh build failed on {}: {e}", path.display()));
 
+            let static_lights =
+                crate::light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
+            let animated_lights =
+                crate::light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
             let sh_inputs = crate::sh_bake::BakeInputs {
                 bvh: &bvh,
                 primitives: &primitives,
                 geometry: &geo_result,
                 tree: &result.tree,
                 exterior_leaves: &exterior,
-                lights: &map_data.lights,
+                static_lights: &static_lights,
+                animated_lights: &animated_lights,
             };
             let section = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
 
@@ -1215,7 +1230,8 @@ mod tests {
             },
         ];
 
-        let section = encode_light_influence(&lights);
+        let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&lights);
+        let section = encode_light_influence(&alpha_ns);
         assert_eq!(section.records.len(), 3);
 
         // Point: center = position (f64→f32), radius = falloff_range.
@@ -1284,7 +1300,8 @@ mod tests {
             mk(DVec3::new(5.0, 0.0, 0.0)),
         ];
 
-        let section = encode_alpha_lights(&lights, &tree);
+        let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&lights);
+        let section = encode_alpha_lights(&alpha_ns, &tree);
         assert_eq!(section.lights.len(), 2);
         assert_eq!(section.lights[0].leaf_index, 0);
         assert_eq!(

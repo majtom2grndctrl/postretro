@@ -601,11 +601,12 @@ mod tests {
         F: FnOnce(&[Chart]) -> AnimatedLightChunksSection,
     {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
         let mut lm_inputs = crate::lightmap_bake::LightmapInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo,
-            lights: &lights,
+            lights: &static_lights,
         };
         let lm_output = crate::lightmap_bake::bake_lightmap(&mut lm_inputs, 0.25).unwrap();
 

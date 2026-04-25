@@ -7,6 +7,7 @@ pub mod animated_light_weight_maps;
 pub mod bsp;
 pub mod bvh;
 pub mod chunk_light_list;
+pub mod delta_sh_volumes;
 pub mod geometry;
 pub mod leaf_pvs;
 pub mod light_influence;
@@ -130,6 +131,12 @@ pub enum SectionId {
     /// `world.query({ component: "light", tag: "<tag>" })` can filter lights.
     /// See `light_tags::LightTagsSection`.
     LightTags = 26,
+
+    /// Per-animated-light delta SH probe grids — each light's contribution at
+    /// peak brightness (brightness = 1.0, base color), used by the runtime
+    /// compose pass that blends animated lights into the SH irradiance volume.
+    /// See `delta_sh_volumes::DeltaShVolumesSection`.
+    DeltaShVolumes = 27,
 }
 
 impl SectionId {
@@ -150,6 +157,7 @@ impl SectionId {
             24 => Some(Self::AnimatedLightChunks),
             25 => Some(Self::AnimatedLightWeightMaps),
             26 => Some(Self::LightTags),
+            27 => Some(Self::DeltaShVolumes),
             _ => None,
         }
     }

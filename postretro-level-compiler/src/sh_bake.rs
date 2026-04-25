@@ -1,9 +1,12 @@
 // SH irradiance volume baker.
 //
 // Places L2 probes on a regular grid over the level AABB, traces stratified
-// spherical samples through the Milestone 4 BVH, projects the incoming
-// radiance into SH coefficients, and flags probes inside solid geometry as
-// invalid. Animated lights bake into separate monochrome per-light layers.
+// spherical samples through the Milestone 4 BVH, and projects the radiance
+// reflected off each ray hit (irradiance × Lambertian albedo / π) into SH
+// coefficients — the indirect / bounced component only. Probes inside solid
+// or exterior geometry are flagged invalid. Animated lights produce
+// per-light animation descriptors; their indirect contribution is composed
+// at runtime via the lightmap weight maps.
 //
 // See: context/plans/in-progress/lighting-foundation/2-sh-baker.md
 
@@ -20,6 +23,7 @@ use rayon::prelude::*;
 
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
+use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::map_data::{FalloffModel, LightAnimation, LightType, MapLight};
 use crate::partition::{BspTree, find_leaf_for_point};
 
@@ -30,11 +34,14 @@ pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 /// expose a CLI flag if bake-time budget becomes the bottleneck.
 const RAYS_PER_PROBE: u32 = 256;
 
-/// Constant Lambertian albedo used to approximate a single bounce at every
-/// ray hit. Postretro's aesthetic is not photorealistic GI — a uniform grey
-/// albedo is enough to carry directional indirect color and intensity. A
-/// future revision may sample per-face albedo once a material system exists.
-const BOUNCE_ALBEDO: f32 = 0.5;
+/// Constant Lambertian albedo used to weight reflected radiance at each ray
+/// hit. The base SH bake records only the indirect (bounced) component, so
+/// the irradiance evaluated at a hit surface is multiplied by this albedo
+/// before projection — the lightmap already carries the direct term, and
+/// folding direct into SH would double-count it at runtime. Per-face texture
+/// color is not accessible at bake time; a future revision may sample
+/// per-face albedo once the material system exposes it offline.
+const BOUNCE_ALBEDO: f32 = 0.45;
 
 /// Sky / miss color. Rays that miss all geometry contribute this constant
 /// ambient.
@@ -62,7 +69,8 @@ pub struct BakeInputs<'a> {
     /// the SH volume doesn't carry radiance for out-of-map points — those
     /// values pollute trilinear interpolation at the playable edge.
     pub exterior_leaves: &'a HashSet<usize>,
-    pub lights: &'a [MapLight],
+    pub static_lights: &'a StaticBakedLights<'a>,
+    pub animated_lights: &'a AnimatedBakedLights<'a>,
 }
 
 /// Bake an SH irradiance volume over the level AABB at the requested spacing.
@@ -88,15 +96,18 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
     let dims = grid_dimensions(world_min, world_max, probe_spacing_meters);
     let total = dims[0] as usize * dims[1] as usize * dims[2] as usize;
 
-    // Decompose lights into static (folded into the base coefficients) and
-    // animated (one per-light mono layer each). `is_dynamic` lights are
-    // excluded from both — they are evaluated at runtime by the direct
-    // lighting loop, so baking them would double-count their contribution.
-    let (static_lights, animated_lights): (Vec<&MapLight>, Vec<&MapLight>) = inputs
-        .lights
+    let static_lights: Vec<&MapLight> = inputs
+        .static_lights
+        .entries()
         .iter()
-        .filter(|l| !l.is_dynamic)
-        .partition(|l| l.animation.is_none());
+        .map(|e| e.light)
+        .collect();
+    let animated_lights: Vec<&MapLight> = inputs
+        .animated_lights
+        .entries()
+        .iter()
+        .map(|e| e.light)
+        .collect();
 
     // Build probe list and flag validity against the BSP tree.
     let probe_positions: Vec<DVec3> = (0..total)
@@ -619,8 +630,10 @@ fn bake_probe_rgb(
 }
 
 /// Trace a single ray from `origin` along `dir`, evaluate direct lighting at
-/// the closest hit (or sky), and return the RGB radiance heading back toward
-/// `origin`.
+/// the closest hit (or sky), and return the RGB radiance reflected back
+/// toward `origin` after the Lambertian BRDF (albedo / π). This is the
+/// indirect (bounced) contribution only — the direct term is the lightmap's
+/// responsibility.
 fn sample_radiance_rgb(
     inputs: &BakeInputs<'_>,
     origin: Vec3,
@@ -876,13 +889,17 @@ mod tests {
         let bvh = bvh::bvh::Bvh { nodes: Vec::new() };
         let primitives: Vec<BvhPrimitive> = Vec::new();
         let exterior: HashSet<usize> = HashSet::new();
+        let lights: &[MapLight] = &[];
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geo,
             tree: &tree,
             exterior_leaves: &exterior,
-            lights: &[],
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
         };
         let section = bake_sh_volume(&inputs, 1.0);
         assert_eq!(section.grid_dimensions, [0, 0, 0]);
@@ -1009,13 +1026,17 @@ mod tests {
             tag: None,
         };
         let exterior: HashSet<usize> = HashSet::new();
+        let lights = std::slice::from_ref(&light);
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
             tree: &tree,
             exterior_leaves: &exterior,
-            lights: std::slice::from_ref(&light),
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
         };
         let a = bake_sh_volume(&inputs, 1.0);
         let b = bake_sh_volume(&inputs, 1.0);
@@ -1051,13 +1072,17 @@ mod tests {
             tag: None,
         };
         let exterior: HashSet<usize> = HashSet::new();
+        let lights = std::slice::from_ref(&animated);
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
             tree: &tree,
             exterior_leaves: &exterior,
-            lights: std::slice::from_ref(&animated),
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
         };
         let section = bake_sh_volume(&inputs, 1.0);
         assert_eq!(section.animation_descriptors.len(), 1);
@@ -1102,13 +1127,17 @@ mod tests {
             tag: None,
         };
         let exterior: HashSet<usize> = HashSet::new();
+        let lights = std::slice::from_ref(&light);
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
             tree: &tree,
             exterior_leaves: &exterior,
-            lights: std::slice::from_ref(&light),
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
         };
         let section = bake_sh_volume(&inputs, 1.0);
         assert_eq!(section.animation_descriptors.len(), 1);
@@ -1129,13 +1158,17 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
         let exterior: HashSet<usize> = HashSet::new();
+        let lights: &[MapLight] = &[];
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
             tree: &tree,
             exterior_leaves: &exterior,
-            lights: &[],
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
         };
         let section = bake_sh_volume(&inputs, 1.0);
         assert!(section.animation_descriptors.is_empty());
@@ -1163,13 +1196,17 @@ mod tests {
         let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let exterior: HashSet<usize> = HashSet::new();
+        let lights: &[MapLight] = &[];
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
             tree: &tree,
             exterior_leaves: &exterior,
-            lights: &[],
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
         };
         let section = bake_sh_volume(&inputs, 1.0);
         for probe in &section.probes {
@@ -1265,13 +1302,17 @@ mod tests {
         let tree = tree_all_empty();
         let mut exterior: HashSet<usize> = HashSet::new();
         exterior.insert(0);
+        let lights: &[MapLight] = &[];
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
         let inputs = BakeInputs {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
             tree: &tree,
             exterior_leaves: &exterior,
-            lights: &[],
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
         };
         let section = bake_sh_volume(&inputs, 1.0);
         assert!(
@@ -1298,13 +1339,17 @@ mod tests {
         let exterior: HashSet<usize> = HashSet::new();
 
         let baseline = {
+            let lights: &[MapLight] = &[];
+            let static_lights = StaticBakedLights::from_lights(lights);
+            let animated_lights = AnimatedBakedLights::from_lights(lights);
             let inputs = BakeInputs {
                 bvh: &bvh,
                 primitives: &prims,
                 geometry: &geo,
                 tree: &tree,
                 exterior_leaves: &exterior,
-                lights: &[],
+                static_lights: &static_lights,
+                animated_lights: &animated_lights,
             };
             bake_sh_volume(&inputs, 1.0)
         };
@@ -1328,13 +1373,17 @@ mod tests {
         dyn_light.is_dynamic = true;
 
         let with_dynamic = {
+            let lights = std::slice::from_ref(&dyn_light);
+            let static_lights = StaticBakedLights::from_lights(lights);
+            let animated_lights = AnimatedBakedLights::from_lights(lights);
             let inputs = BakeInputs {
                 bvh: &bvh,
                 primitives: &prims,
                 geometry: &geo,
                 tree: &tree,
                 exterior_leaves: &exterior,
-                lights: std::slice::from_ref(&dyn_light),
+                static_lights: &static_lights,
+                animated_lights: &animated_lights,
             };
             bake_sh_volume(&inputs, 1.0)
         };

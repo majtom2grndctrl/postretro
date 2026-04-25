@@ -24,11 +24,10 @@ use postretro_level_format::animated_light_chunks::{
     AnimatedLightChunk, AnimatedLightChunksSection, MAX_ANIMATED_LIGHTS_PER_CHUNK,
 };
 use postretro_level_format::bvh::BvhSection;
-use postretro_level_format::light_influence::InfluenceRecord;
 
 use crate::geometry::FaceIndexRange;
+use crate::light_namespaces::AnimatedBakedLights;
 use crate::lightmap_bake::Chart;
-use crate::map_data::MapLight;
 
 /// How many overflow events to log individually before falling back to a
 /// single summary log line. Keeps the compile log readable on pathological
@@ -66,17 +65,11 @@ const MAX_OVERFLOW_LOG_LINES: u64 = 8;
 ///   addressed by the UV-indexed weight-map baker downstream.
 pub fn build_animated_light_chunks(
     bvh_section: &BvhSection,
-    filtered_lights: &[MapLight],
-    filtered_influence: &[InfluenceRecord],
+    animated_lights: &AnimatedBakedLights<'_>,
     face_charts: &[Chart],
     face_index_ranges: &[FaceIndexRange],
     lightmap_texel_density: f32,
 ) -> (AnimatedLightChunksSection, Vec<(u32, u32)>) {
-    debug_assert_eq!(
-        filtered_lights.len(),
-        filtered_influence.len(),
-        "filtered_lights and filtered_influence must be parallel slices",
-    );
     debug_assert_eq!(
         face_charts.len(),
         face_index_ranges.len(),
@@ -88,26 +81,18 @@ pub fn build_animated_light_chunks(
     // so the floor is the texel size itself; clamp to a safe positive value.
     let min_uv_extent = lightmap_texel_density.max(1.0e-4);
 
-    // Build the animated subset, recording each light's *filtered* index so
-    // emitted u32s match the animated-descriptor namespace (`!is_dynamic`-
-    // filtered list). Order matches the filtered light list so the per-chunk
-    // pool is fed in animation-descriptor order — a determinism precondition
-    // for the recursion.
-    let animated: Vec<AnimatedLight> = filtered_lights
+    // Drop directional and zero-radius animated lights from chunk emission.
+    // Order matches the AnimatedBakedLights namespace so the per-chunk pool
+    // feeds animation-descriptor slots directly with no remap.
+    let animated: Vec<AnimatedLight> = animated_lights
+        .entries()
         .iter()
-        .zip(filtered_influence.iter())
         .enumerate()
-        .filter_map(|(i, (light, infl))| {
-            // `bake_only` animated lights participate in weight-map compose
-            // (retroactive Spec 1 change) so they are NOT filtered out here.
-            // `is_dynamic` lights are already excluded by the caller's filter.
-            if !light.is_dynamic
-                && light.animation.is_some()
-                && infl.radius != f32::MAX
-                && infl.radius > 0.0
-            {
+        .filter_map(|(slot, e)| {
+            let infl = &e.influence;
+            if infl.radius != f32::MAX && infl.radius > 0.0 {
                 Some(AnimatedLight {
-                    filtered_index: i as u32,
+                    filtered_index: slot as u32,
                     center: Vec3::from(infl.center),
                     radius: infl.radius,
                 })
@@ -419,7 +404,9 @@ fn sphere_overlaps_aabb(center: Vec3, radius: f32, aabb_min: Vec3, aabb_max: Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map_data::MapLight;
     use postretro_level_format::bvh::{BvhLeaf, BvhSection};
+    use postretro_level_format::light_influence::InfluenceRecord;
 
     // ---- fixture helpers -------------------------------------------------
 
@@ -573,10 +560,10 @@ mod tests {
     #[test]
     fn no_animated_lights_emits_empty_section_and_zero_ranges() {
         let bvh = make_bvh_with_one_leaf();
+        let envelope = AnimatedBakedLights::from_parallel_slices(&[], &[]);
         let (section, ranges) = build_animated_light_chunks(
             &bvh,
-            &[],
-            &[],
+            &envelope,
             &[chart_xz_plane()],
             &one_face_range(),
             0.04,
@@ -594,10 +581,10 @@ mod tests {
             center: [0.0, 0.0, 0.0],
             radius: f32::MAX,
         }];
+        let envelope = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
         let (section, ranges) = build_animated_light_chunks(
             &bvh,
-            &lights,
-            &influence,
+            &envelope,
             &[chart_xz_plane()],
             &one_face_range(),
             0.04,
@@ -614,10 +601,10 @@ mod tests {
             center: [0.5, 0.0, 0.5],
             radius: 5.0,
         }];
+        let envelope = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
         let (section, ranges) = build_animated_light_chunks(
             &bvh,
-            &lights,
-            &influence,
+            &envelope,
             &[chart_xz_plane()],
             &one_face_range(),
             0.04,
@@ -639,10 +626,10 @@ mod tests {
         let influence: Vec<_> = (0..n).map(|_| mk_inf(0.5, 0.5, 5.0)).collect();
 
         let bvh = make_bvh_with_one_leaf();
+        let envelope = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
         let (section, ranges) = build_animated_light_chunks(
             &bvh,
-            &lights,
-            &influence,
+            &envelope,
             &[chart_xz_plane()],
             &one_face_range(),
             0.04,
@@ -688,10 +675,10 @@ mod tests {
             .collect();
 
         let bvh = make_bvh_with_one_leaf();
+        let envelope = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
         let (section, ranges) = build_animated_light_chunks(
             &bvh,
-            &lights,
-            &influence,
+            &envelope,
             &[chart_tilted(origin)],
             &one_face_range(),
             0.01, // 1 cm / texel — floor not triggered at 1 m face extent.
@@ -739,10 +726,10 @@ mod tests {
         });
 
         let bvh = make_bvh_with_one_leaf();
+        let envelope = AnimatedBakedLights::from_parallel_slices(&all_lights, &all_influence);
         let (section, _ranges) = build_animated_light_chunks(
             &bvh,
-            &all_lights,
-            &all_influence,
+            &envelope,
             &[chart_xz_plane()],
             &one_face_range(),
             0.01,
@@ -770,10 +757,10 @@ mod tests {
         let bvh = make_bvh_with_one_leaf();
         // texel density = 1.0 m/texel so `min_uv_extent >= uv_extent` on the
         // root rect; builder must NOT recurse.
+        let envelope = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
         let (section, _ranges) = build_animated_light_chunks(
             &bvh,
-            &lights,
-            &influence,
+            &envelope,
             &[chart_xz_plane()],
             &one_face_range(),
             1.0,
@@ -793,10 +780,10 @@ mod tests {
         let lights = vec![mk_bake_only_light()];
         let influence = vec![mk_inf(0.5, 0.5, 5.0)];
         let bvh = make_bvh_with_one_leaf();
+        let envelope = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
         let (section, ranges) = build_animated_light_chunks(
             &bvh,
-            &lights,
-            &influence,
+            &envelope,
             &[chart_xz_plane()],
             &one_face_range(),
             0.04,
@@ -815,12 +802,15 @@ mod tests {
     #[test]
     fn dynamic_animated_light_is_skipped() {
         let lights = vec![mk_dynamic_light()];
-        let influence = vec![mk_inf(0.5, 0.5, 5.0)];
         let bvh = make_bvh_with_one_leaf();
+        let envelope = AnimatedBakedLights::from_lights(&lights);
+        assert!(
+            envelope.is_empty(),
+            "is_dynamic light must not enter the envelope"
+        );
         let (section, ranges) = build_animated_light_chunks(
             &bvh,
-            &lights,
-            &influence,
+            &envelope,
             &[chart_xz_plane()],
             &one_face_range(),
             0.04,
@@ -829,18 +819,15 @@ mod tests {
         assert_eq!(ranges[0].1, 0);
     }
 
-    /// Scope case 8: emitted u32 indices index into the **filtered** light list
-    /// (positions inside `filtered_lights`). `is_dynamic` entries that slip
-    /// into the filtered list are skipped by the builder's animated predicate,
-    /// so emitted indices must be a subset of the animated positions only.
-    ///
-    /// We use `is_dynamic` for the non-animated slots (the builder filters
-    /// those out). `bake_only` animated lights, by contrast, ARE retained —
-    /// see `bake_only_animated_light_produces_a_chunk`.
+    /// Scope case 8: emitted u32 indices index into the AnimatedBakedLights
+    /// namespace (positions inside the envelope). `is_dynamic` entries are
+    /// dropped by `AnimatedBakedLights::from_lights`, so they never receive a
+    /// slot. `bake_only` animated lights ARE retained — see
+    /// `bake_only_animated_light_produces_a_chunk`.
     #[test]
-    fn index_namespace_matches_filtered_list_positions() {
-        // Filtered list: [animated, dynamic, animated, dynamic, animated].
-        // Only positions 0, 2, 4 should ever appear in the emitted pool.
+    fn index_namespace_matches_envelope_slot_positions() {
+        // Source list: [animated, dynamic, animated, dynamic, animated].
+        // Envelope keeps positions 0, 2, 4 → slot indices 0, 1, 2.
         let lights = vec![
             mk_animated_light(),
             mk_dynamic_light(),
@@ -848,19 +835,13 @@ mod tests {
             mk_dynamic_light(),
             mk_animated_light(),
         ];
-        let influence = vec![
-            mk_inf(0.5, 0.5, 5.0),
-            mk_inf(0.5, 0.5, 5.0),
-            mk_inf(0.5, 0.5, 5.0),
-            mk_inf(0.5, 0.5, 5.0),
-            mk_inf(0.5, 0.5, 5.0),
-        ];
 
         let bvh = make_bvh_with_one_leaf();
+        let envelope = AnimatedBakedLights::from_lights(&lights);
+        assert_eq!(envelope.len(), 3);
         let (section, _ranges) = build_animated_light_chunks(
             &bvh,
-            &lights,
-            &influence,
+            &envelope,
             &[chart_xz_plane()],
             &one_face_range(),
             0.04,
@@ -869,15 +850,14 @@ mod tests {
         assert!(!section.light_indices.is_empty());
         for &idx in &section.light_indices {
             assert!(
-                matches!(idx, 0 | 2 | 4),
-                "emitted index {idx} outside filtered-animated positions {{0, 2, 4}}"
+                matches!(idx, 0 | 1 | 2),
+                "emitted index {idx} outside envelope slot positions {{0, 1, 2}}"
             );
         }
-        // All three animated lights must appear (they all overlap the face).
         let mut seen: Vec<u32> = section.light_indices.clone();
         seen.sort();
         seen.dedup();
-        assert_eq!(seen, vec![0, 2, 4]);
+        assert_eq!(seen, vec![0, 1, 2]);
     }
 
     /// Scope case 9: two builds on identical input produce byte-identical
@@ -902,21 +882,21 @@ mod tests {
         let chart = chart_tilted(origin);
         let face_ranges = one_face_range();
 
+        let envelope_a = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
         let bvh_a = make_bvh_with_one_leaf();
         let (section_a, ranges_a) = build_animated_light_chunks(
             &bvh_a,
-            &lights,
-            &influence,
+            &envelope_a,
             std::slice::from_ref(&chart),
             &face_ranges,
             0.01,
         );
 
+        let envelope_b = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
         let bvh_b = make_bvh_with_one_leaf();
         let (section_b, ranges_b) = build_animated_light_chunks(
             &bvh_b,
-            &lights,
-            &influence,
+            &envelope_b,
             std::slice::from_ref(&chart),
             &face_ranges,
             0.01,
@@ -984,8 +964,9 @@ mod tests {
         let face_ranges = n_face_ranges(4);
         let bvh = make_bvh_with_n_leaves(4);
 
+        let envelope = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
         let (section, ranges) =
-            build_animated_light_chunks(&bvh, &lights, &influence, &charts, &face_ranges, 0.01);
+            build_animated_light_chunks(&bvh, &envelope, &charts, &face_ranges, 0.01);
 
         // Invariant: total = sum of per-leaf counts.
         let sum: u32 = ranges.iter().map(|r| r.1).sum();

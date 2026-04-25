@@ -78,6 +78,15 @@ pub const SCRIPTED_FLOATS_PER_LIGHT: usize = SCRIPTED_BRIGHTNESS_SLOT + SCRIPTED
 /// Uploaded SH volume handles + bind group. Always populated — when the level
 /// has no SH section, the bind group binds dummy 1×1×1 textures and the
 /// `has_sh_volume` flag is zero so the fragment shader skips SH sampling.
+///
+/// Two parallel sets of 9 SH band textures exist:
+/// - **base**: uploaded once at load time from the PRL `ShVolume` section.
+///   Held as the source-of-truth static SH bands.
+/// - **total**: storage-writeable copies the per-frame compose pass
+///   (`sh_compose`) writes into. The consumer-facing `bind_group` references
+///   these — forward, billboard, fog all sample "total" so animated deltas
+///   apply seamlessly. In the stub phase the compose pass is a base→total
+///   copy, so total ≡ base every frame.
 pub struct ShVolumeResources {
     pub bind_group: wgpu::BindGroup,
     pub bind_group_layout: wgpu::BindGroupLayout,
@@ -85,6 +94,16 @@ pub struct ShVolumeResources {
     /// Read by the diagnostic logging path; kept public for future debug UI.
     #[allow(dead_code)]
     pub present: bool,
+    /// Probe grid dimensions (in cells, x/y/z). Used by the compose pass to
+    /// pick a dispatch shape that covers exactly one workgroup-thread per probe.
+    pub grid_dimensions: [u32; 3],
+    /// Sampled views over the base SH band textures. Consumed by the compose
+    /// pass as `textureLoad` inputs. Length is always `SH_BAND_COUNT`.
+    pub base_band_views: Vec<wgpu::TextureView>,
+    /// Storage-writeable views over the total SH band textures. Consumed by
+    /// the compose pass as `textureStore` outputs. Length is always
+    /// `SH_BAND_COUNT`.
+    pub total_band_storage_views: Vec<wgpu::TextureView>,
     /// Descriptor + sample buffers are owned here but also borrowed by the
     /// compose pass (Task 5's `animated_lightmap.rs`). One upload, two bind
     /// groups. The CPU mirror lives alongside so per-frame edits to `active`
@@ -230,14 +249,24 @@ impl ShVolumeResources {
         let cell_size: [f32; 3];
         let grid_dimensions: [u32; 3];
         let present: bool;
-        let textures: Vec<wgpu::Texture>;
+        // Base SH bands — uploaded from PRL data (or dummy zeros). Read-only
+        // sampled inputs to the compose pass.
+        let base_textures: Vec<wgpu::Texture>;
+        // Total SH bands — storage-writeable parallel set. Compose pass writes
+        // each frame; consumer bind group samples from these. Created with
+        // `STORAGE_BINDING | TEXTURE_BINDING` so a single texture serves both
+        // accesses.
+        let total_textures: Vec<wgpu::Texture>;
 
         if let Some(sec) = usable {
             let packed = pack_probes_to_band_slices(&sec.probes, sec.grid_dimensions);
-            textures = (0..SH_BAND_COUNT)
+            base_textures = (0..SH_BAND_COUNT)
                 .map(|band| {
                     upload_band_texture(device, queue, sec.grid_dimensions, &packed[band], band)
                 })
+                .collect();
+            total_textures = (0..SH_BAND_COUNT)
+                .map(|band| create_total_band_texture(device, sec.grid_dimensions, band))
                 .collect();
             grid_origin = sec.grid_origin;
             cell_size = sec.cell_size;
@@ -245,8 +274,11 @@ impl ShVolumeResources {
             present = true;
         } else {
             let dummy = [0u16; 4]; // one rgba16float texel, all zeros.
-            textures = (0..SH_BAND_COUNT)
+            base_textures = (0..SH_BAND_COUNT)
                 .map(|band| upload_band_texture(device, queue, [1, 1, 1], &dummy, band))
+                .collect();
+            total_textures = (0..SH_BAND_COUNT)
+                .map(|band| create_total_band_texture(device, [1, 1, 1], band))
                 .collect();
             grid_origin = [0.0; 3];
             cell_size = [1.0; 3];
@@ -303,9 +335,25 @@ impl ShVolumeResources {
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
 
-        let views: Vec<wgpu::TextureView> = textures
+        // Base views: read-only sampled inputs to the compose pass.
+        let base_band_views: Vec<wgpu::TextureView> = base_textures
             .iter()
             .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+            .collect();
+        // Total views (sampled): bound on group 3 for forward/billboard/fog.
+        let total_sampled_views: Vec<wgpu::TextureView> = total_textures
+            .iter()
+            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+            .collect();
+        // Total views (storage write): consumed by the compose pass.
+        let total_band_storage_views: Vec<wgpu::TextureView> = total_textures
+            .iter()
+            .map(|t| {
+                t.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("SH Total Band Storage View"),
+                    ..Default::default()
+                })
+            })
             .collect();
 
         let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(SH_BAND_COUNT + 6);
@@ -313,7 +361,10 @@ impl ShVolumeResources {
             binding: 0,
             resource: wgpu::BindingResource::Sampler(&sampler),
         });
-        for (i, view) in views.iter().enumerate() {
+        // Bind the **total** sampled views — consumers (forward, billboard,
+        // fog) read post-compose SH. The compose pass writes here every
+        // frame; in the stub phase it's a base→total copy.
+        for (i, view) in total_sampled_views.iter().enumerate() {
             entries.push(wgpu::BindGroupEntry {
                 binding: 1 + i as u32,
                 resource: wgpu::BindingResource::TextureView(view),
@@ -356,6 +407,9 @@ impl ShVolumeResources {
             bind_group,
             bind_group_layout,
             present,
+            grid_dimensions,
+            base_band_views,
+            total_band_storage_views,
             animation,
             scripted_light_descriptors: scripted_light_descriptors_buffer,
             scripted_light_count: map_light_count as u32,
@@ -506,6 +560,30 @@ fn upload_band_texture(
     );
 
     texture
+}
+
+/// Create one total-SH band texture: same `Rgba16Float` format and 3D shape
+/// as the corresponding base texture, but with `STORAGE_BINDING |
+/// TEXTURE_BINDING` usage so the compose compute pass can write through a
+/// storage view while consumers sample through a sampled view. No data is
+/// uploaded — wgpu zero-initializes; the compose pass overwrites every texel
+/// each frame.
+fn create_total_band_texture(device: &wgpu::Device, grid: [u32; 3], band: usize) -> wgpu::Texture {
+    let label = format!("SH Total Band {band}");
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(&label),
+        size: wgpu::Extent3d {
+            width: grid[0].max(1),
+            height: grid[1].max(1),
+            depth_or_array_layers: grid[2].max(1),
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
 }
 
 /// Build the two animation storage-buffer payloads from an (optional)

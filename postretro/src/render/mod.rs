@@ -3,6 +3,7 @@
 
 pub mod animated_lightmap;
 pub mod frame_timing;
+pub mod sh_compose;
 pub mod sh_volume;
 pub mod smoke;
 
@@ -31,6 +32,7 @@ use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 
 use frame_timing::FrameTiming;
+use sh_compose::ShComposeResources;
 use sh_volume::ShVolumeResources;
 use smoke::SmokePass;
 
@@ -392,6 +394,12 @@ pub struct Renderer {
     /// the fragment shader's `has_sh_volume` flag is 0 so SH sampling is
     /// skipped. See `sh_volume` module for layout.
     sh_volume_resources: ShVolumeResources,
+
+    /// SH compose compute pass. Runs once per frame before the depth
+    /// pre-pass; composes base SH bands into the total SH bands that
+    /// `sh_volume_resources.bind_group` exposes to all SH consumers
+    /// (forward, billboard, fog). Stub phase: pure base→total copy.
+    sh_compose: ShComposeResources,
 
     /// Group 4 — directional lightmap atlas resources. Always allocated;
     /// when no Lightmap section is present the bind group binds a 1×1
@@ -1121,6 +1129,12 @@ impl Renderer {
             level_lights.len(),
         );
 
+        // SH compose pass — populates the total SH bands consumers sample
+        // through `sh_volume_resources.bind_group`. Stub: copies base→total
+        // each frame. Always allocated; cost is irrelevant for the typical
+        // probe-grid shape.
+        let sh_compose = ShComposeResources::new(&device, &sh_volume_resources);
+
         // Animated-lightmap compose pass. Owns the compute pipeline, the
         // Rgba16Float storage atlas, and the dispatch-tile buffer. When the
         // PRL has no weight-map section (zero animated lights), this
@@ -1591,6 +1605,7 @@ impl Renderer {
             light_count,
             ambient_floor,
             sh_volume_resources,
+            sh_compose,
             lightmap_resources,
             animated_lightmap,
             lights_buffer,
@@ -2115,6 +2130,15 @@ impl Renderer {
                 animated_ts,
             );
         }
+
+        // --- SH compose pass ---
+        // Composes the base SH bands (and, in later phases, animated
+        // per-light deltas) into the total SH bands that all SH consumers
+        // sample via `sh_volume_resources.bind_group`. Stub phase: pure
+        // base→total copy. Encoded before the depth pre-pass so the
+        // storage-write → sampled-read barrier resolves before any forward
+        // fragment samples SH.
+        self.sh_compose.dispatch(&mut encoder);
 
         // --- Dynamic spot shadow slot update + depth pass ---
         // Rank dynamic spot lights, upload slot indices + light-space

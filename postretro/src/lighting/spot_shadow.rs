@@ -234,9 +234,9 @@ impl SpotShadowPool {
     ///
     /// Takes the full light list and camera position. Identifies dynamic spot lights
     /// that pass frustum culling, ranks by influence-area heuristic, and assigns the
-    /// top 8 to slots.
+    /// top `SHADOW_POOL_SIZE` to slots.
     ///
-    /// Returns a Vec indexed by light index: entry is the slot index (0..8) or NO_SHADOW_SLOT.
+    /// Returns a Vec indexed by light index: entry is the slot index (`0..SHADOW_POOL_SIZE`) or NO_SHADOW_SLOT.
     pub fn rank_lights(
         lights: &[MapLight],
         camera_position: Vec3,

@@ -1446,6 +1446,7 @@ mod tests {
         assert_eq!(world.lights[0].falloff_model, FalloffModel::InverseSquared);
         assert!((world.lights[0].falloff_range - 50.0).abs() < 1e-5);
         assert!(world.lights[0].cast_shadows);
+        assert_eq!(world.lights[0].leaf_index, 0);
 
         assert_eq!(world.lights[1].light_type, LightType::Spot);
         assert_eq!(world.lights[1].falloff_model, FalloffModel::Linear);
@@ -1453,8 +1454,10 @@ mod tests {
         assert!((world.lights[1].cone_angle_outer - std::f32::consts::FRAC_PI_4).abs() < 1e-4);
         assert_eq!(world.lights[1].cone_direction, [0.0, -1.0, 0.0]);
         assert!(!world.lights[1].cast_shadows);
+        assert_eq!(world.lights[1].leaf_index, 1);
 
         assert_eq!(world.lights[2].light_type, LightType::Directional);
+        assert_eq!(world.lights[2].leaf_index, 2);
 
         std::fs::remove_file(&tmp).ok();
     }

@@ -28,6 +28,7 @@ use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots};
 use crate::material::Material;
 use crate::prl::MapLight;
+use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 
@@ -498,9 +499,6 @@ pub struct Renderer {
 
     has_geometry: bool,
 
-    /// Number of BSP leaves in the loaded level. Cached at construction so
-    /// future renderer-side bitmask sizing has the count without holding a
-    /// reference to the world. `0` for no-geometry mode. Currently the
     /// Monotonic frame counter for debug logging.
     debug_frame: u64,
     /// Previous frame's visible-cell bitmask fingerprint (popcount, xor_hash).
@@ -1905,14 +1903,15 @@ impl Renderer {
         // Build the per-light visibility mask. An empty `visible_leaf_mask`
         // is the DrawAll sentinel (empty world, fallback paths) — every
         // light with a real leaf assignment is eligible. Otherwise consult
-        // the per-leaf bitmask. Lights with `leaf_index == u32::MAX` are
-        // always culled (compile-time sentinel for "could not assign to a
-        // non-solid leaf"). Lights whose animated brightness is below the
-        // suppression threshold are folded in so `rank_lights` drops them.
+        // the per-leaf bitmask. Lights with `leaf_index ==
+        // ALPHA_LIGHT_LEAF_UNASSIGNED` are always culled (compile-time
+        // sentinel for "could not assign to a non-solid leaf"). Lights
+        // whose animated brightness is below the suppression threshold
+        // are folded in so `rank_lights` drops them.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let mut visible_lights = vec![false; self.level_lights.len()];
         for (i, light) in self.level_lights.iter().enumerate() {
-            let leaf_visible = if light.leaf_index == u32::MAX {
+            let leaf_visible = if light.leaf_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
                 false
             } else if visible_leaf_mask.is_empty() {
                 true

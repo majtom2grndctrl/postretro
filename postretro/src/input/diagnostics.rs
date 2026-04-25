@@ -52,19 +52,22 @@ pub enum DiagnosticAction {
     /// 1.0. Interim diagnostic chord — ambient floor will move to the
     /// settings menu when one exists. Sub-plan 3 acceptance criterion.
     RaiseAmbientFloor,
-    /// Cycle the lighting-term isolation mode used to split direct from
-    /// indirect contributions during leak/bleed debugging.
+    /// Cycle the lighting-term isolation mode used to isolate individual
+    /// lighting contributions during leak/bleed debugging.
     ///
-    /// Cycles through four modes:
-    ///   0 — Normal      (direct + indirect + ambient floor)
-    ///   1 — DirectOnly  (direct sum + ambient floor; SH indirect = 0)
-    ///   2 — IndirectOnly (SH indirect + ambient floor; direct sum skipped)
-    ///   3 — AmbientOnly (ambient floor only; both terms skipped)
+    /// Cycles through nine modes (ambient floor always contributes):
+    ///   0 — Normal             (all terms; production shading)
+    ///   1 — DirectOnly         (lightmap + dynamic + specular)
+    ///   2 — IndirectOnly       (SH indirect + specular)
+    ///   3 — AmbientOnly        (ambient floor only)
+    ///   4 — LightmapOnly       (static lightmap atlas)
+    ///   5 — StaticSHOnly       (static SH indirect)
+    ///   6 — AnimatedDeltaOnly  (animated SH delta)
+    ///   7 — DynamicOnly        (dynamic direct lights)
+    ///   8 — SpecularOnly       (specular only)
     ///
-    /// When diagnosing "light leaks through a wall," toggling to DirectOnly
-    /// vs IndirectOnly tells you which lighting path is carrying the bad
-    /// contribution — bake-time bleed vs runtime bleed require different
-    /// fixes.
+    /// When diagnosing "light leaks through a wall," each "*Only" mode
+    /// isolates a single contribution so the offending path is unambiguous.
     CycleLightingIsolation,
 }
 

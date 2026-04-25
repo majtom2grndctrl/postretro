@@ -93,16 +93,17 @@ const TIMING_PAIR_COUNT: usize = 4;
 ///   76..80   ambient_floor       (f32)
 ///   80..84   light_count         (u32)
 ///   84..88   time                (f32, elapsed seconds for SH animation)
-///   88..92   lighting_isolation  (u32, cycles 0..4; chord Alt+Shift+4)
+///   88..92   lighting_isolation  (u32, cycles 0..9; chord Alt+Shift+4)
 ///   92..96   _pad                (u32, keeps the struct 16-byte aligned)
 const UNIFORM_SIZE: usize = 96;
 
 /// Lighting-term isolation mode for leak/bleed debugging.
 ///
 /// Cycled by the `Alt+Shift+4` diagnostic chord. The fragment shader branches
-/// on this value to zero out either the SH indirect term or the direct-light
-/// sum, so an A/B compare inside a leaky room pins the bug to exactly one
-/// lighting path. `Normal` is the default and matches production shading.
+/// on this value to enable each lighting term independently, so an A/B compare
+/// inside a leaky room pins the bug to exactly one lighting path. `Normal` is
+/// the default and matches production shading. The ambient floor always
+/// contributes so interior geometry is never pitch black.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum LightingIsolation {
@@ -110,6 +111,11 @@ pub enum LightingIsolation {
     DirectOnly = 1,
     IndirectOnly = 2,
     AmbientOnly = 3,
+    LightmapOnly = 4,
+    StaticSHOnly = 5,
+    AnimatedDeltaOnly = 6,
+    DynamicOnly = 7,
+    SpecularOnly = 8,
 }
 
 impl LightingIsolation {
@@ -119,17 +125,27 @@ impl LightingIsolation {
             LightingIsolation::Normal => LightingIsolation::DirectOnly,
             LightingIsolation::DirectOnly => LightingIsolation::IndirectOnly,
             LightingIsolation::IndirectOnly => LightingIsolation::AmbientOnly,
-            LightingIsolation::AmbientOnly => LightingIsolation::Normal,
+            LightingIsolation::AmbientOnly => LightingIsolation::LightmapOnly,
+            LightingIsolation::LightmapOnly => LightingIsolation::StaticSHOnly,
+            LightingIsolation::StaticSHOnly => LightingIsolation::AnimatedDeltaOnly,
+            LightingIsolation::AnimatedDeltaOnly => LightingIsolation::DynamicOnly,
+            LightingIsolation::DynamicOnly => LightingIsolation::SpecularOnly,
+            LightingIsolation::SpecularOnly => LightingIsolation::Normal,
         }
     }
 
     /// Human-readable label for diagnostics logging.
     pub fn label(self) -> &'static str {
         match self {
-            LightingIsolation::Normal => "Normal (direct + indirect)",
-            LightingIsolation::DirectOnly => "DirectOnly (SH indirect = 0)",
-            LightingIsolation::IndirectOnly => "IndirectOnly (direct = 0)",
-            LightingIsolation::AmbientOnly => "AmbientOnly (both = 0)",
+            LightingIsolation::Normal => "Normal (all terms)",
+            LightingIsolation::DirectOnly => "DirectOnly (lightmap + dynamic + specular)",
+            LightingIsolation::IndirectOnly => "IndirectOnly (SH + specular)",
+            LightingIsolation::AmbientOnly => "AmbientOnly (ambient floor only)",
+            LightingIsolation::LightmapOnly => "LightmapOnly (static lightmap)",
+            LightingIsolation::StaticSHOnly => "StaticSHOnly (static SH indirect)",
+            LightingIsolation::AnimatedDeltaOnly => "AnimatedDeltaOnly (animated SH delta)",
+            LightingIsolation::DynamicOnly => "DynamicOnly (dynamic direct lights)",
+            LightingIsolation::SpecularOnly => "SpecularOnly (specular only)",
         }
     }
 }
@@ -1642,14 +1658,14 @@ impl Renderer {
         self.wireframe_enabled
     }
 
-    /// Advance the lighting-term isolation mode through its four-step
-    /// cycle (Normal → DirectOnly → IndirectOnly → AmbientOnly → Normal).
+    /// Advance the lighting-term isolation mode through its nine-step cycle
+    /// (Normal → DirectOnly → IndirectOnly → AmbientOnly → LightmapOnly →
+    /// StaticSHOnly → AnimatedDeltaOnly → DynamicOnly → SpecularOnly → Normal).
     /// Takes effect on the next `update_per_frame_uniforms` upload.
     ///
-    /// Used to A/B compare direct vs indirect contributions when diagnosing
-    /// light leaks: flipping from DirectOnly to IndirectOnly inside a
-    /// leaky room reveals whether the bad light is coming from the runtime
-    /// direct path or from the baked SH volume.
+    /// Used to A/B compare individual lighting terms when diagnosing leaks:
+    /// each "*Only" mode shows the ambient floor plus a single contribution,
+    /// while DirectOnly / IndirectOnly group terms by category.
     pub fn cycle_lighting_isolation(&mut self) -> LightingIsolation {
         self.lighting_isolation = self.lighting_isolation.cycle();
         log::info!(

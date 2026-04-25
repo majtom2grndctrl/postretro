@@ -11,11 +11,10 @@ struct Uniforms {
     // evaluation; wrapping is handled per-light via fract().
     time: f32,
     // Lighting-term isolation for leak/bleed debugging. Cycled by the
-    // Alt+Shift+4 diagnostic chord. Values:
-    //   0 = Normal       (direct + indirect + ambient floor — production shading)
-    //   1 = DirectOnly   (SH indirect forced to 0)
-    //   2 = IndirectOnly (direct-light loop skipped)
-    //   3 = AmbientOnly  (both terms skipped; only ambient floor contributes)
+    // Alt+Shift+4 diagnostic chord. Values 0..9 — see fs_main for the full
+    // table; in summary 0 = Normal, 1 = DirectOnly, 2 = IndirectOnly,
+    // 3 = AmbientOnly, 4 = LightmapOnly, 5 = StaticSHOnly,
+    // 6 = AnimatedDeltaOnly, 7 = DynamicOnly, 8 = SpecularOnly.
     lighting_isolation: u32,
     _pad: u32,
 };
@@ -447,22 +446,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let base_color = textureSample(base_texture, base_sampler, in.uv);
     let N = normalize(in.world_normal);
 
-    // Lighting isolation mode: split direct from indirect for leak debugging.
-    //   0 = Normal        — direct + indirect (production shading)
-    //   1 = DirectOnly    — zero the SH indirect term
-    //   2 = IndirectOnly  — zero direct contributions (short-circuit the loop)
-    //   3 = AmbientOnly   — zero both; only ambient floor survives
-    // See `LightingIsolation` in postretro/src/render/mod.rs. The ambient
-    // floor always contributes so interior geometry is never pitch black.
+    // Lighting isolation mode: enable each contributing term independently
+    // for leak/bleed debugging. The ambient floor always contributes so
+    // interior geometry is never pitch black.
+    //   0 = Normal             — all terms
+    //   1 = DirectOnly         — lightmap + dynamic + specular
+    //   2 = IndirectOnly       — SH indirect + specular
+    //   3 = AmbientOnly        — ambient floor only
+    //   4 = LightmapOnly       — static lightmap (incl. animated atlas)
+    //   5 = StaticSHOnly       — static SH indirect only
+    //   6 = AnimatedDeltaOnly  — animated SH delta only (no separate term
+    //                            yet; meaningful once the compose pass lands)
+    //   7 = DynamicOnly        — dynamic direct lights only
+    //   8 = SpecularOnly       — specular only
+    // See `LightingIsolation` in postretro/src/render/mod.rs.
     let iso = uniforms.lighting_isolation;
-    let use_indirect = (iso == 0u) || (iso == 2u);
-    // `use_direct` was previously a single flag covering the lightmap, the
-    // specular block, and the dynamic-light loop. Split into three so
-    // IndirectOnly mode can keep specular alive (its best-looking debug
-    // view), while AmbientOnly still silences everything but the floor.
-    let use_lightmap = (iso == 0u) || (iso == 1u);
-    let use_specular = (iso == 0u) || (iso == 1u) || (iso == 2u);
-    let use_dynamic = (iso == 0u) || (iso == 1u);
+    let use_lightmap = (iso == 0u) || (iso == 1u) || (iso == 4u);
+    // `use_indirect` covers the full composed SH volume today (static + animated
+    // delta share one sampler). Mode 5 (StaticSHOnly) and mode 6
+    // (AnimatedDeltaOnly) both route through this flag until Task E adds the
+    // separate animated-delta term; until then mode 5 shows the base SH and
+    // mode 6 shows nothing useful (intentionally — flag stays off).
+    let use_indirect = (iso == 0u) || (iso == 2u) || (iso == 5u);
+    let use_specular = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u);
+    let use_dynamic = (iso == 0u) || (iso == 1u) || (iso == 7u);
 
     // Indirect term: baked SH irradiance. Zero when no SH volume is loaded
     // or when the isolation mode suppresses indirect.

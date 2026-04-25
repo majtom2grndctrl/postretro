@@ -35,10 +35,12 @@ pub(crate) struct LightSnapshot {
     pub(crate) animation_start_time: Option<f32>,
 }
 
-/// Payload handed back to the renderer after `update`. All three fields are
-/// `Some` together when any `LightComponent` changed since last frame; `None`
-/// means nothing to upload. Keeping the trio atomic avoids partial uploads
-/// (re-packed lights without the matching descriptor rewrite, etc.).
+/// Payload handed back to the renderer after `update`. The GPU buffer fields
+/// (`lights_bytes`, `descriptor_bytes`, `samples_bytes`) are only populated
+/// when `has_dirty_data` is true; callers should skip `write_buffer` when it
+/// is false. `effective_brightness` is always populated — it is a time-varying
+/// value that must be re-evaluated every frame for correct shadow-slot ranking
+/// regardless of whether any component changed.
 ///
 /// - `lights_bytes` — packed `GpuLight` records for `queue.write_buffer` on
 ///   the renderer's `lights_buffer`. Always sized to the authored-light count
@@ -53,18 +55,18 @@ pub(crate) struct LightSnapshot {
 ///   `Renderer::upload_bridge_samples`.
 #[derive(Debug)]
 pub(crate) struct LightBridgeUpdate {
+    /// True when any `LightComponent` changed this frame; false when the GPU
+    /// buffers are unchanged and the caller should skip `write_buffer` calls.
+    pub(crate) has_dirty_data: bool,
     pub(crate) lights_bytes: Vec<u8>,
     pub(crate) descriptor_bytes: Vec<u8>,
     pub(crate) samples_bytes: Vec<u8>,
     /// Per-map-light current effective brightness (one f32 per map light, in
-    /// map-light-index order). Static lights (no animation) and color-only
-    /// animations report `1.0`. Animated brightness curves are evaluated CPU-
-    /// side via `sample_brightness_at` at the current `cycle_t`. Lights with
+    /// map-light-index order). Always evaluated at the current frame time —
+    /// not gated on dirty — so shadow-slot suppression tracks the live
+    /// animation curve every frame. Static lights (no animation) and
+    /// color-only animations report `1.0`. Lights with
     /// `start_active: Some(false)` report `0.0`.
-    ///
-    /// Consumed by the renderer's dynamic spot shadow ranking to exclude
-    /// lights whose animation has dimmed them to near-zero brightness from
-    /// competing for one of the 8 shadow map slots.
     pub(crate) effective_brightness: Vec<f32>,
 }
 
@@ -276,8 +278,33 @@ impl LightBridge {
             self.dirty = true;
         }
 
+        // Always compute effective_brightness at the current frame time. This
+        // must happen before the dirty guard because it is time-varying: the
+        // GPU evaluates animation curves continuously, and the CPU-side
+        // suppression check must track the same curve every frame so that
+        // dimmed lights lose their shadow slots promptly and bright lights gain
+        // them as soon as they fire. Freezing this at the single dirty frame
+        // caused only lights that happened to be above threshold when the
+        // levelLoad animation was first applied to hold permanent shadow slots.
+        let effective_brightness: Vec<f32> = self
+            .entity_ids
+            .iter()
+            .map(|&id| {
+                let Ok(component) = registry.get_component::<LightComponent>(id) else {
+                    return 0.0;
+                };
+                eval_effective_brightness(component, current_time)
+            })
+            .collect();
+
         if !self.dirty {
-            return None;
+            return Some(LightBridgeUpdate {
+                has_dirty_data: false,
+                lights_bytes: Vec::new(),
+                descriptor_bytes: Vec::new(),
+                samples_bytes: Vec::new(),
+                effective_brightness,
+            });
         }
         self.dirty = false;
 
@@ -287,7 +314,6 @@ impl LightBridge {
         let mut lights_bytes: Vec<u8> = Vec::with_capacity(self.entity_ids.len() * GPU_LIGHT_SIZE);
         let mut descriptor_bytes: Vec<u8> =
             Vec::with_capacity(self.entity_ids.len() * ANIMATION_DESCRIPTOR_SIZE);
-        let mut effective_brightness: Vec<f32> = Vec::with_capacity(self.entity_ids.len());
 
         // Zero the scripted sample region; live animations will overwrite their slots.
         self.scripted_sample_buf.fill(0.0);
@@ -300,7 +326,6 @@ impl LightBridge {
                 // despawn but a future plan may reach this case.
                 lights_bytes.extend_from_slice(&[0u8; GPU_LIGHT_SIZE]);
                 descriptor_bytes.extend_from_slice(&[0u8; ANIMATION_DESCRIPTOR_SIZE]);
-                effective_brightness.push(0.0);
                 continue;
             };
 
@@ -340,37 +365,6 @@ impl LightBridge {
 
             let desc = pack_animation_descriptor(component, brightness_offset, color_offset);
             descriptor_bytes.extend_from_slice(&desc);
-
-            // Effective brightness for shadow-slot ranking. Mirrors the GPU's
-            // brightness curve evaluation so dynamic spot lights animated to
-            // ~0 don't consume one of the 8 shadow slots. Lights with no
-            // animation, or color-only animations, report 1.0 (no
-            // suppression). `start_active: Some(false)` reports 0.0.
-            let eff = match &component.animation {
-                None => 1.0,
-                Some(anim) => {
-                    if anim.start_active == Some(false) {
-                        0.0
-                    } else if let Some(brightness) = &anim.brightness
-                        && !brightness.is_empty()
-                    {
-                        let period_s = anim.period_ms / 1000.0;
-                        if period_s > 0.0 {
-                            let phase = anim.phase.unwrap_or(0.0);
-                            let cycle_t =
-                                (current_time / period_s + phase).rem_euclid(1.0);
-                            sample_brightness_at(brightness, cycle_t)
-                        } else {
-                            // Degenerate period — sample the first keyframe.
-                            brightness[0]
-                        }
-                    } else {
-                        // Color- or direction-only animation: brightness is static.
-                        1.0
-                    }
-                }
-            };
-            effective_brightness.push(eff);
         }
 
         // Convert the scripted sample region to bytes (native endian, matching
@@ -382,6 +376,7 @@ impl LightBridge {
             .collect();
 
         Some(LightBridgeUpdate {
+            has_dirty_data: true,
             lights_bytes,
             descriptor_bytes,
             samples_bytes,
@@ -507,6 +502,33 @@ fn sample_brightness_at(samples: &[f32], cycle_t: f32) -> f32 {
     let c = -0.5 * p0 + 0.5 * p2;
     let d = p1;
     ((a * f + b) * f + c) * f + d
+}
+
+/// CPU-side effective brightness for a single light at `current_time`.
+/// Mirrors the GPU animation evaluation so shadow-slot suppression tracks the
+/// live curve. Called every frame (not just on dirty frames).
+fn eval_effective_brightness(component: &LightComponent, current_time: f32) -> f32 {
+    match &component.animation {
+        None => 1.0,
+        Some(anim) => {
+            if anim.start_active == Some(false) {
+                0.0
+            } else if let Some(brightness) = &anim.brightness
+                && !brightness.is_empty()
+            {
+                let period_s = anim.period_ms / 1000.0;
+                if period_s > 0.0 {
+                    let phase = anim.phase.unwrap_or(0.0);
+                    let cycle_t = (current_time / period_s + phase).rem_euclid(1.0);
+                    sample_brightness_at(brightness, cycle_t)
+                } else {
+                    brightness[0]
+                }
+            } else {
+                1.0
+            }
+        }
+    }
 }
 
 /// Pack one `LightComponent`'s animation state into a 48-byte
@@ -711,20 +733,31 @@ mod tests {
         bridge.populate_from_level(&lights, &mut registry, 0);
 
         let update = bridge.update(&mut registry, 0.0).expect("initial dirty");
+        assert!(update.has_dirty_data, "first update must have dirty GPU data");
         assert_eq!(update.lights_bytes.len(), GPU_LIGHT_SIZE);
         assert_eq!(update.descriptor_bytes.len(), ANIMATION_DESCRIPTOR_SIZE);
     }
 
     #[test]
-    fn update_returns_none_when_no_component_changed_since_last_call() {
+    fn update_skips_buffer_reupload_when_no_component_changed_since_last_call() {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
         // Flush initial upload.
         let _ = bridge.update(&mut registry, 0.0);
 
-        let update = bridge.update(&mut registry, 0.016);
-        assert!(update.is_none(), "idle frame must not re-upload");
+        let update = bridge
+            .update(&mut registry, 0.016)
+            .expect("update always returns Some when lights are present");
+        assert!(
+            !update.has_dirty_data,
+            "idle frame must not re-upload GPU buffers"
+        );
+        assert_eq!(
+            update.lights_bytes.len(),
+            0,
+            "lights_bytes empty when not dirty"
+        );
     }
 
     #[test]
@@ -746,6 +779,7 @@ mod tests {
         let update = bridge
             .update(&mut registry, 0.016)
             .expect("dirty after mutation");
+        assert!(update.has_dirty_data, "mutation must trigger GPU buffer repack");
         // Intensity × color pre-multiplies into bytes 16..28 of the packed
         // GpuLight record. Sampled first channel must reflect the new value.
         let packed_r = f32::from_le_bytes(update.lights_bytes[16..20].try_into().unwrap());
@@ -1014,8 +1048,60 @@ mod tests {
         let _ = bridge.update(&mut registry, 0.0);
         let _ = bridge.update(&mut registry, 0.2); // past completion
 
-        // Now idle frames must return None.
-        assert!(bridge.update(&mut registry, 0.3).is_none());
-        assert!(bridge.update(&mut registry, 10.0).is_none());
+        // Now idle frames must not re-upload GPU buffers.
+        let idle1 = bridge.update(&mut registry, 0.3).unwrap();
+        assert!(!idle1.has_dirty_data, "settled idle frame must not re-upload");
+        let idle2 = bridge.update(&mut registry, 10.0).unwrap();
+        assert!(!idle2.has_dirty_data, "subsequent idle frame must not re-upload");
+    }
+
+    #[test]
+    fn effective_brightness_tracks_animation_curve_on_idle_frames() {
+        // Regression: effective_brightness was frozen at the value computed on
+        // the one dirty frame when the levelLoad script applied animations.
+        // Lights at 0% during that window were permanently suppressed; lights
+        // at non-zero were permanently eligible — shadow slot assignment was
+        // stuck regardless of which lights were actually bright at render time.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_spot_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut comp = registry.get_component::<LightComponent>(id).unwrap().clone();
+        // Pulse at phase 0 (bright at T=0, dark for the rest of the period).
+        comp.animation = Some(LightAnimation {
+            period_ms: 1000.0,
+            phase: Some(0.0),
+            play_count: None,
+            start_active: None,
+            brightness: Some(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            color: None,
+            direction: None,
+        });
+        registry.set_component(id, comp).unwrap();
+        // Flush the dirty frame caused by setting the animation.
+        let _ = bridge.update(&mut registry, 0.0);
+
+        // At T=0.5s: mid-period, no component change, light is dark.
+        let dark = bridge.update(&mut registry, 0.5).unwrap();
+        assert!(
+            !dark.has_dirty_data,
+            "no mutation, GPU buffers must not re-upload"
+        );
+        assert!(
+            dark.effective_brightness[0] < 0.01,
+            "light is dark at T=0.5s; effective_brightness must reflect live curve; got {}",
+            dark.effective_brightness[0]
+        );
+
+        // At T=1.0s: cycle wraps back to phase=0, light is bright again.
+        let bright = bridge.update(&mut registry, 1.0).unwrap();
+        assert!(!bright.has_dirty_data);
+        assert!(
+            bright.effective_brightness[0] > 0.5,
+            "light is bright at T=1.0s (cycle wrap); got {}",
+            bright.effective_brightness[0]
+        );
     }
 }

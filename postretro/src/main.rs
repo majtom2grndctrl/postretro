@@ -826,9 +826,11 @@ impl ApplicationHandler for App {
                         if let Some(update) =
                             self.light_bridge.update(&mut registry, self.script_time)
                         {
-                            renderer.upload_bridge_lights(&update.lights_bytes);
-                            renderer.upload_bridge_descriptors(&update.descriptor_bytes);
-                            renderer.upload_bridge_samples(&update.samples_bytes);
+                            if update.has_dirty_data {
+                                renderer.upload_bridge_lights(&update.lights_bytes);
+                                renderer.upload_bridge_descriptors(&update.descriptor_bytes);
+                                renderer.upload_bridge_samples(&update.samples_bytes);
+                            }
                             renderer.set_light_effective_brightness(&update.effective_brightness);
                         }
                     }

@@ -49,7 +49,7 @@ pub fn light_space_matrix(light: &MapLight) -> Mat4 {
 }
 
 /// Number of shadow-map slots in the pool (retunable constant).
-pub const SHADOW_POOL_SIZE: usize = 8;
+pub const SHADOW_POOL_SIZE: usize = 12;
 
 /// Depth format for shadow maps.
 pub const SHADOW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn nine_lights_eight_assigned_one_unshadowed() {
+    fn nine_lights_all_assigned_when_pool_has_capacity() {
         let mut lights = Vec::new();
         for i in 0..9 {
             lights.push(test_light(
@@ -393,10 +393,10 @@ mod tests {
         let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
 
         let assigned_count = assignment.iter().filter(|&&s| s != NO_SHADOW_SLOT).count();
-        assert_eq!(assigned_count, SHADOW_POOL_SIZE);
+        assert_eq!(assigned_count, 9, "all 9 lights fit within pool capacity");
 
         let unshadowed_count = assignment.iter().filter(|&&s| s == NO_SHADOW_SLOT).count();
-        assert_eq!(unshadowed_count, 1);
+        assert_eq!(unshadowed_count, 0, "no lights left unshadowed");
     }
 
     #[test]

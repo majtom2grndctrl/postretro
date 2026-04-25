@@ -29,14 +29,15 @@ With it: the same animation curve drives all three consumers from a single share
   Animated and dynamic lights are unaffected by this change.
 
 - **Delta SH volumes — bake.** For each animated light, `prl-build` bakes a
-  small per-light delta SH volume representing that light's contribution to the probe grid
-  at peak brightness (brightness = 1.0, base color). New PRL section. Delta volumes use the
-  same world extent and probe layout as the base SH volume but may be baked at coarser
-  spatial resolution (1/4 per axis minimum); the runtime compose pass interpolates.
+  per-light delta SH volume representing that light's contribution at peak brightness
+  (brightness = 1.0, base color). New PRL section. Each delta volume covers only that
+  light's influence sphere AABB, at a fixed probe spacing (default 1.0m, bake-time
+  configurable). A small panel light (5m radius) yields ~125 probes; a wide ambient fill
+  gets proportionally more. The runtime compose pass interpolates during sample.
 
 - **Delta SH volumes — PRL section.** New PRL section (`DeltaShVolumes`) that stores
-  header metadata (delta grid dimensions, world extent, animated light count, per-light
-  `AnimationDescriptorIndex`) and per-light probe data in f16 format.
+  header metadata (per-light AABB origin, cell size, grid dimensions, animated light count,
+  per-light `AnimationDescriptorIndex`) and per-light probe data in f16 format.
 
 - **Compose pass.** A pre-frame GPU compute pass runs before the depth prepass. It
   reads the static base SH textures and per-light delta data, evaluates animated curve
@@ -62,6 +63,7 @@ With it: the same animation curve drives all three consumers from a single share
   The delta volumes carry the full 9-band SH, so directional color response is preserved;
   this note is to clarify that only the delta magnitude and hue change per frame — the
   spatial distribution is baked.
+- Configurable ambient floor — out of scope; a separate future task.
 
 ---
 
@@ -98,9 +100,9 @@ estimated albedo before projecting into the SH bands. This converts the SH bake 
 "what does the probe see as incident radiance" to "what bounced off surfaces into the
 probe," which is the indirect component.
 
-Albedo estimation: use the texture's stored average color (from the level material table)
-or a fixed constant (0.7 per channel) as a fallback. The exact value affects brightness but
-not correctness of the separation.
+Albedo estimation: use a fixed constant (0.7 per channel) — `BOUNCE_ALBEDO` already present
+in `sh_bake.rs`. Per-face texture color is not accessible at bake time (see Q4 decision
+below). The exact value affects brightness but not correctness of the separation.
 
 This task changes the baked output. Existing `.prl` files must be recompiled after this
 lands. The change is isolated to the bake side; the runtime consumes the same section
@@ -113,26 +115,29 @@ format.
 Define a new PRL section type (assign next available `SectionId` integer) for delta SH
 volumes. Section layout:
 
-- Header: version, probe grid origin + cell size + dimensions for the delta grid, world
-  extent (must match or be a sub-grid of the base SH extent), animated light count,
-  `AnimationDescriptorIndex` table (one u32 per animated light → index into the SH section's
-  descriptor array).
-- Per-light probe data: the same 9-band f16 RGB layout as the base SH section but at the
-  delta grid resolution. Each probe stores 27 × f16 values (9 bands × RGB).
-- Probe order matches the base SH section (Z-major then Y then X).
+- Header: version, animated light count, `AnimationDescriptorIndex` table (one u32 per
+  animated light → index into the SH section's descriptor array).
+- Per-light grid header: AABB origin, cell size, and grid dimensions for that light's delta
+  volume (each light has its own AABB derived from its influence sphere).
+- Per-light probe data: the same 9-band f16 RGB layout as the base SH section. Each probe
+  stores 27 × f16 values (9 bands × RGB).
+- Probe order is Z-major then Y then X within each per-light grid.
 
-The delta grid resolution is configurable at bake time (default: 1/4 per axis vs. the base
-grid, minimum 1 probe per axis). The runtime performs trilinear interpolation to upsample
-delta contributions to base-grid resolution during the compose pass.
+The probe spacing is fixed at bake time (default 1.0m, configurable via `--delta-spacing`).
+Each light's grid is sized to cover its influence sphere AABB at that spacing. A small panel
+light at 5m radius produces an ~11×11×11 (≤1331 probes) worst-case, typically a tighter
+sphere clip; a wide ambient fill at 20m radius produces ~41×41×41. The runtime performs
+trilinear interpolation within each per-light AABB during the compose pass.
 
 ### Task C — Delta SH volume baking
 
 **Crate:** `postretro-level-compiler` · **New file:** `src/delta_sh_bake.rs`
 
-For each animated light: run the same ray-tracing loop used by the base SH bake, but with
-only that one light active in the evaluator and brightness fixed at 1.0 / base_color = 1.0
-(peak contribution). Store the result as a delta SH probe grid at the configured coarse
-resolution. The bake is embarrassingly parallel across lights (each is independent).
+For each animated light: compute the light's influence sphere AABB, place probes at the
+configured fixed spacing (default 1.0m) within that AABB, then run the same ray-tracing
+loop used by the base SH bake with only that one light active and brightness fixed at 1.0
+(peak contribution). Store the result as a per-light delta SH probe grid. The bake is
+embarrassingly parallel across lights (each is independent).
 
 The base SH baker and delta baker share the same BVH, primitive list, and ray-generation
 helpers. Extract shared helpers if not already separated.
@@ -195,12 +200,46 @@ Also update `src/render/mod.rs` where the isolation uniform value is packed.
 
 This task is independent of all others.
 
+### Task F — Extended Lighting Isolation Modes
+
+**Crate:** `postretro` · **Files:** `src/render/mod.rs`, `src/shaders/forward.wgsl`
+
+Redesign the `LightingIsolation` enum from the current 4-value sequential enum to a wider
+set of named diagnostic modes. After this plan ships, the forward shader has six distinct
+contributing terms: ambient floor, static lightmap, static SH (indirect), animated SH
+delta, dynamic direct, and specular. A mode per term lets the user isolate each
+contribution independently.
+
+Update `LightingIsolation` and the forward shader isolation logic to the following modes:
+
+| Mode | Name | Ambient | Lightmap | Static SH | Animated ΔSH | Dynamic | Specular |
+|------|------|---------|----------|-----------|--------------|---------|---------|
+| 0 | Normal | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 1 | DirectOnly | ✓ | ✓ | — | — | ✓ | ✓ |
+| 2 | IndirectOnly | ✓ | — | ✓ | ✓ | — | ✓ |
+| 3 | AmbientOnly | ✓ | — | — | — | — | — |
+| 4 | LightmapOnly | ✓ | ✓ | — | — | — | — |
+| 5 | StaticSHOnly | ✓ | — | ✓ | — | — | — |
+| 6 | AnimatedDeltaOnly | ✓ | — | — | ✓ | — | — |
+| 7 | DynamicOnly | ✓ | — | — | — | ✓ | — |
+| 8 | SpecularOnly | ✓ | — | — | — | — | ✓ |
+
+The Alt+Shift+4 chord cycles through modes 0–8 in order. The existing
+`cycle_lighting_isolation()` method in `src/render/mod.rs` wraps at 9 instead of 4. The
+uniform value stays a u32; the forward shader uses a switch/match to enable each term.
+
+Note: modes 5 (StaticSHOnly) and 6 (AnimatedDeltaOnly) are only meaningful after Task D
+lands. Before Task D they both show the base SH result (there is no separate animated delta
+term yet).
+
+This task is independent of all others.
+
 ---
 
 ## Sequencing
 
 **Phase 1 (concurrent):** Task A (indirect-only bake), Task B (PRL section format),
-Task E (split use_direct) — all independent.
+Task E (split use_direct), Task F (extended isolation modes) — all independent.
 
 **Phase 2 (concurrent):** Task C (delta baking — needs Task B PRL format), Task D
 (compose pass stub — needs Task B for loading; can stub with zero deltas to validate
@@ -226,9 +265,12 @@ evaluates Catmull-Rom curves per animated light using the shared `curve_eval.wgs
 The SH compose pass can share the same helper. Both passes read from the same group-3
 descriptor and sample buffers (bindings 11–12) — no new curve infrastructure needed.
 
-**Memory.** At 1/4 resolution (8×4×2 = 64 probes), 16 animated lights × 27 × 2 bytes × 64
-probes ≈ 55 KB on GPU. At same resolution as base (4096 probes): 16 × 27 × 2 × 4096 ≈ 3.5 MB.
-Default 1/4 resolution is recommended; the constant lives in `prl-build` as a configurable flag.
+**Memory.** With per-light AABB baking at 1.0m spacing: a small panel light at 5m radius
+produces a 10×10×10 = 1000-probe grid (worst case); 16 such lights × 27 × 2 bytes × 1000
+≈ 864 KB. A wide ambient fill at 20m radius: 40×40×40 = 64 000 probes × 27 × 2 bytes ≈ 3.5 MB
+per light. In practice, most animated lights are small-to-medium panel lights; a scene with
+16 small panel lights sits around 800 KB–1 MB delta total. The probe spacing lives in
+`prl-build` as `--delta-spacing` (default 1.0m).
 
 **Albedo fallback for Task A.** If no material albedo is accessible at bake time for a hit
 surface, use a neutral 0.7 constant per channel. This is a conservative estimate for
@@ -238,22 +280,24 @@ typical painted surfaces and matches common radiosity defaults.
 
 ## Open Questions
 
-1. **Base SH re-bake delta.** After the indirect-only change (Task A), will existing maps
-   look significantly different at base ambience levels? The SH contribution may drop (it
-   was previously over-bright due to double-counting). Should `ambient_floor` be adjusted
-   upward to compensate, or is the resulting look acceptable as-is after the fix?
+*(All previously open questions have been resolved.)*
 
-2. **Delta grid resolution.** Is 1/4 per axis (8×4×2 probe default) sufficient spatial
-   precision for animated panel lights? A flickering ceiling panel over a doorway should
-   visibly affect a character passing through. If the 1/4 grid smears the contribution
-   over too large an area, a 1/2 resolution delta (~8× the memory) may be warranted.
-   A visual prototype of the compose result at both resolutions should inform this before
-   Task C starts.
+**Q1 — Ambient floor:** Closed. Configurable ambient floor is out of scope; moved to Out of
+Scope above. The resulting look after the indirect-only rebake will be evaluated visually;
+no pre-emptive floor adjustment is planned.
 
-3. **Animated lights in AmbientOnly mode.** Mode 3 today shows a flat ambient floor only.
-   After this plan, should mode 3 also include the composed animated SH ambient? Current
-   proposal: no — AmbientOnly is a debug baseline and should stay minimal.
+**Q2 — Delta grid resolution:** Closed. Per-light AABB baking at fixed 1.0m spacing
+(bake-time configurable via `--delta-spacing`). See Task B, Task C, and the Memory sketch
+above.
 
-4. **Surface albedo for indirect bake (Task A).** The baker needs a per-surface albedo to
-   weight the reflected contribution. Does `prl-build` have access to average texture color
-   at bake time, or is the 0.7 constant fallback the practical path for now?
+**Q3 — Animated lights in AmbientOnly mode:** Closed. AmbientOnly (mode 3) stays minimal —
+no composed animated SH. See Task F isolation table.
+
+**Q4 — Surface albedo for indirect bake (Task A):** Closed. `prl-build` does NOT have
+access to per-face texture color at bake time. `BakeInputs` carries only BVH primitives,
+geometry (positions/UVs/normals), BSP tree, and lights — no material color table and no
+texture image data. Texture names are stored as strings in the `TextureNames` PRL section
+but are never loaded as images during the bake. Adding average-texture-color sampling to
+`prl-build` is out of scope for this plan. **Decision: use the 0.7 constant per-channel
+fallback (`BOUNCE_ALBEDO`) already present in `sh_bake.rs`.** This is a reasonable
+estimate for typical painted surfaces and is already the de facto implementation.

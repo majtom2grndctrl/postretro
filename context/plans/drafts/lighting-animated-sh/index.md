@@ -100,9 +100,9 @@ estimated albedo before projecting into the SH bands. This converts the SH bake 
 "what does the probe see as incident radiance" to "what bounced off surfaces into the
 probe," which is the indirect component.
 
-Albedo estimation: use a fixed constant (0.7 per channel) — `BOUNCE_ALBEDO` already present
-in `sh_bake.rs`. Per-face texture color is not accessible at bake time (see Q4 decision
-below). The exact value affects brightness but not correctness of the separation.
+Albedo estimation: use a fixed constant (0.45 per channel) — update `BOUNCE_ALBEDO` in
+`sh_bake.rs` to this value. Per-face texture color is not accessible at bake time (see Q4
+decision below). The exact value affects brightness but not correctness of the separation.
 
 This task changes the baked output. Existing `.prl` files must be recompiled after this
 lands. The change is isolated to the bake side; the runtime consumes the same section
@@ -162,9 +162,10 @@ and culling prepasses block at §7.1). The pass:
    reads the corresponding delta probe (with trilinear fetch from the coarser delta grid),
    evaluates the animation curve at the current time using the shared Catmull-Rom helper,
    multiplies delta bands by the curve result, and accumulates into the total.
-3. Writes the total SH bands into the existing `sh_band0..8` 3D textures (or into a
-   separate `sh_total_band0..8` set if wgpu requires non-overlapping read/write bindings —
-   both sets would be created at load time; consumers rebind to the total set).
+3. Writes the total SH bands into a separate `sh_total_band0..8` set of 3D textures created
+   at load time alongside the base textures. Consumer bind groups (group 3) point at the
+   total set rather than the base set; `ShVolumeResources` must be updated to create both
+   sets and expose the total-set bind group to the forward, billboard, and fog pipelines.
 
 Because all SH consumers (forward, billboard, fog) already sample `sh_band0..8` via
 group 3, no consumer shader changes are required. The compose pass is the only point of
@@ -182,21 +183,26 @@ consumer correctness independently.
 
 **Crate:** `postretro` · **File:** `src/shaders/forward.wgsl`
 
-Rename the existing single `use_direct` boolean into two independent booleans:
-`use_lightmap` and `use_specular`. Update the lighting isolation switch:
+Rename the existing single `use_direct` boolean into three independent booleans:
+`use_lightmap`, `use_specular`, and `use_dynamic`. The current `use_direct` gates the
+lightmap sample, the specular accumulation block, and the dynamic-light loop count — all
+three must be separated. Update the lighting isolation switch:
 
-| Mode | `use_lightmap` | `use_specular` | `use_indirect` |
-|------|---------------|----------------|----------------|
-| Normal (0) | true | true | true |
-| DirectOnly (1) | true | true | false |
-| IndirectOnly (2) | false | true | false |
-| AmbientOnly (3) | false | false | false |
+| Mode | `use_lightmap` | `use_specular` | `use_indirect` | `use_dynamic` |
+|------|---------------|----------------|----------------|---------------|
+| Normal (0) | true | true | true | true |
+| DirectOnly (1) | true | true | false | true |
+| IndirectOnly (2) | false | true | false | false |
+| AmbientOnly (3) | false | false | false | false |
 
 Specular was previously silenced in IndirectOnly mode because it shared the `use_direct`
 flag with the lightmap sample. IndirectOnly was the best-looking mode and should have
 working specmaps. AmbientOnly is a minimal debug view; specular off there is intentional.
 
 Also update `src/render/mod.rs` where the isolation uniform value is packed.
+
+Note: Task F extends this switch to 9 modes; both tasks edit `forward.wgsl` and
+`render/mod.rs`. Land Task E first; Task F applies on top.
 
 This task is independent of all others.
 
@@ -239,7 +245,8 @@ This task is independent of all others.
 ## Sequencing
 
 **Phase 1 (concurrent):** Task A (indirect-only bake), Task B (PRL section format),
-Task E (split use_direct), Task F (extended isolation modes) — all independent.
+Task E then Task F (both edit forward.wgsl and render/mod.rs — land E first, F applies
+on top; can develop concurrently, merge sequentially).
 
 **Phase 2 (concurrent):** Task C (delta baking — needs Task B PRL format), Task D
 (compose pass stub — needs Task B for loading; can stub with zero deltas to validate
@@ -272,9 +279,8 @@ per light. In practice, most animated lights are small-to-medium panel lights; a
 16 small panel lights sits around 800 KB–1 MB delta total. The probe spacing lives in
 `prl-build` as `--delta-spacing` (default 1.0m).
 
-**Albedo fallback for Task A.** If no material albedo is accessible at bake time for a hit
-surface, use a neutral 0.7 constant per channel. This is a conservative estimate for
-typical painted surfaces and matches common radiosity defaults.
+**Albedo fallback for Task A.** Use a fixed 0.45 constant per channel (`BOUNCE_ALBEDO`).
+Tuned to avoid over-brightening the indirect contribution relative to the direct lightmap.
 
 ---
 
@@ -294,10 +300,6 @@ above.
 no composed animated SH. See Task F isolation table.
 
 **Q4 — Surface albedo for indirect bake (Task A):** Closed. `prl-build` does NOT have
-access to per-face texture color at bake time. `BakeInputs` carries only BVH primitives,
-geometry (positions/UVs/normals), BSP tree, and lights — no material color table and no
-texture image data. Texture names are stored as strings in the `TextureNames` PRL section
-but are never loaded as images during the bake. Adding average-texture-color sampling to
-`prl-build` is out of scope for this plan. **Decision: use the 0.7 constant per-channel
-fallback (`BOUNCE_ALBEDO`) already present in `sh_bake.rs`.** This is a reasonable
-estimate for typical painted surfaces and is already the de facto implementation.
+access to per-face texture color at bake time. Texture images are never loaded during the
+bake. Adding texture sampling to `prl-build` is out of scope. **Decision: use
+`BOUNCE_ALBEDO = 0.45` — update the existing constant in `sh_bake.rs`.**

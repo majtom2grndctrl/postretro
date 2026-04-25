@@ -17,17 +17,23 @@ path = "src/main.rs"
 
 [dependencies]
 # Narrow swc dep set: parser + TS strip transform + codegen + common + base
-# (for `resolver`). Nothing else. This sidecar exists so the main `postretro`
-# crate never pulls in any `swc_*` crate — keep the surface area here tight so
-# engine build times and final binary size stay bounded.
+# (for `resolver`) + bundler (to inline relative imports into a single script
+# QuickJS can evaluate in script mode). Nothing else. This sidecar exists so
+# the main `postretro` crate never pulls in any `swc_*` crate — keep the
+# surface area here tight so engine build times and final binary size stay
+# bounded.
 #
 # Individual swc_* sub-crates version independently; pins below reflect the
 # versions currently published by swc-project that compose cleanly with
 # swc_ecma_transforms_typescript 46.
+swc_atoms = "9"
+swc_bundler = { version = "48", default-features = false }
 swc_common = "21"
 swc_ecma_ast = "23"
+swc_ecma_loader = "21"
 swc_ecma_parser = { version = "39", default-features = false, features = ["typescript"] }
 swc_ecma_codegen = "26"
 swc_ecma_transforms_base = "42"
 swc_ecma_transforms_typescript = "46"
+swc_ecma_visit = "23"
 anyhow.workspace = true

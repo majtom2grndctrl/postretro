@@ -1139,7 +1139,7 @@
 // entity 2
 {
 "classname" "player"
-"origin" "512 256 40"
+"origin" "512 256 136"
 "angle" "90"
 }
 // entity 3
@@ -1154,12 +1154,16 @@
 }
 // entity 4
 {
-"classname" "light"
-"origin" "512 512 300"
-"light" "300"
+"classname" "light_spot"
+"origin" "112 960 300"
+"light" "250"
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
+"_tag" "arena_1_light"
+"_dynamic" "1"
+"mangle" "-15 -38.7 0"
+"_light_radius" "800"
 }
 // entity 5
 {
@@ -1196,4 +1200,121 @@
 "_color" "220 220 255"
 "_fade" "200"
 "_bake_only" "0"
+}
+// entity 9
+{
+"classname" "light_spot"
+"origin" "424 968 300"
+"light" "250"
+"_color" "200 220 255"
+"_fade" "1024"
+"_bake_only" "0"
+"_tag" "arena_1_light"
+"_dynamic" "1"
+"mangle" "-15 -60.6 0"
+"_light_radius" "800"
+}
+// entity 10
+{
+"classname" "light_spot"
+"origin" "968 952 300"
+"light" "250"
+"_color" "200 220 255"
+"_fade" "1024"
+"_bake_only" "0"
+"_tag" "arena_1_light"
+"_dynamic" "1"
+"mangle" "-15 -130.6 0"
+"_light_radius" "800"
+}
+// entity 11
+{
+"classname" "light_spot"
+"origin" "832 992 300"
+"light" "250"
+"_color" "200 220 255"
+"_fade" "1024"
+"_bake_only" "0"
+"_tag" "arena_1_lightssss"
+"_dynamic" "1"
+"mangle" "-15 -100.3 0"
+"_light_radius" "800"
+}
+// entity 12
+{
+"classname" "light_spot"
+"origin" "936 664 300"
+"light" "250"
+"_color" "200 220 255"
+"_fade" "1024"
+"_bake_only" "0"
+"_tag" "arena_1_light"
+"_dynamic" "1"
+"mangle" "-15 -154.7 0"
+"_light_radius" "800"
+}
+// entity 13
+{
+"classname" "light_spot"
+"origin" "936 408 300"
+"light" "250"
+"_color" "200 220 255"
+"_fade" "1024"
+"_bake_only" "0"
+"_tag" "arena_1_light"
+"_dynamic" "1"
+"mangle" "-15 159.6 0"
+"_light_radius" "800"
+}
+// entity 14
+{
+"classname" "light_spot"
+"origin" "952 120 300"
+"light" "250"
+"_color" "200 220 255"
+"_fade" "1024"
+"_bake_only" "0"
+"_tag" "arena_1_light"
+"_dynamic" "1"
+"mangle" "-15 131.7 0"
+"_light_radius" "800"
+}
+// entity 15
+{
+"classname" "light_spot"
+"origin" "120 88 300"
+"light" "250"
+"_color" "200 220 255"
+"_fade" "1024"
+"_bake_only" "0"
+"_tag" "arena_1_light"
+"_dynamic" "1"
+"mangle" "-15 44.0 0"
+"_light_radius" "800"
+}
+// entity 16
+{
+"classname" "light_spot"
+"origin" "448 32 300"
+"light" "250"
+"_color" "200 220 255"
+"_fade" "1024"
+"_bake_only" "0"
+"_tag" "arena_1_light"
+"_dynamic" "1"
+"mangle" "-15 66.5 0"
+"_light_radius" "800"
+}
+// entity 17
+{
+"classname" "light_spot"
+"origin" "744 40 300"
+"light" "250"
+"_color" "200 220 255"
+"_fade" "1024"
+"_bake_only" "0"
+"_tag" "arena_1_light"
+"_dynamic" "1"
+"mangle" "-15 106.1 0"
+"_light_radius" "800"
 }

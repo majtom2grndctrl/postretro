@@ -47,8 +47,7 @@ For each phase in the sequencing section:
 
 **Sequential:** One Opus agent at a time. Wait for completion before starting the next.
 
-**Concurrent:** Spawn all phase Opus agents simultaneously via multiple Agent tool calls in one message. Use `isolation: "worktree"` to avoid file conflicts.
-
+**Concurrent:** Spawn all phase Opus agents simultaneously via multiple Agent tool calls in one message.
 **For each agent, provide:**
 1. The plan's **Shared Context** section
 2. The agent's **specific task** — description, acceptance criteria

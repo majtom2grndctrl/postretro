@@ -1,0 +1,6 @@
+{
+  "languageMode": "strict",
+  "aliases": {
+    "postretro": "../../sdk/types/postretro.d.luau"
+  }
+}

@@ -346,6 +346,12 @@ pub struct LevelGeometry<'a> {
     pub animated_light_weight_maps: Option<
         &'a postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection,
     >,
+    /// Per-animated-light delta SH probe grids (ID 27). Consumed by the SH
+    /// compose pass to accumulate per-light animated contributions on top of
+    /// the static base SH bands. `None` when the map has no animated lights —
+    /// the compose pass falls back to a base→total copy.
+    pub delta_sh_volumes:
+        Option<&'a postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
     /// Per-texture material, indexed by texture (bucket) index. Drives
     /// per-material shininess uploaded to group 1 binding 3.
     pub texture_materials: &'a [crate::material::Material],
@@ -1133,7 +1139,13 @@ impl Renderer {
         // through `sh_volume_resources.bind_group`. Stub: copies base→total
         // each frame. Always allocated; cost is irrelevant for the typical
         // probe-grid shape.
-        let sh_compose = ShComposeResources::new(&device, &sh_volume_resources);
+        let sh_compose = ShComposeResources::new(
+            &device,
+            &sh_volume_resources,
+            geometry.and_then(|g| g.sh_volume),
+            geometry.and_then(|g| g.delta_sh_volumes),
+            &uniform_bind_group_layout,
+        );
 
         // Animated-lightmap compose pass. Owns the compute pipeline, the
         // Rgba16Float storage atlas, and the dispatch-tile buffer. When the
@@ -2138,7 +2150,8 @@ impl Renderer {
         // base→total copy. Encoded before the depth pre-pass so the
         // storage-write → sampled-read barrier resolves before any forward
         // fragment samples SH.
-        self.sh_compose.dispatch(&mut encoder);
+        self.sh_compose
+            .dispatch(&mut encoder, &self.uniform_bind_group);
 
         // --- Dynamic spot shadow slot update + depth pass ---
         // Rank dynamic spot lights, upload slot indices + light-space

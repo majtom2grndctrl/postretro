@@ -142,6 +142,10 @@ embarrassingly parallel across lights (each is independent).
 The base SH baker and delta baker share the same BVH, primitive list, and ray-generation
 helpers. Extract shared helpers if not already separated.
 
+Skip ray-tracing for probes that fall in solid or exterior-flagged leaves, matching the
+base SH bake; store those slots as zero coefficients so the per-light grid stays uniform
+for GPU trilinear lookup.
+
 The composed result at runtime must satisfy: `compose(base, delta[i] × 0) == base` and
 `compose(base, delta[i] × 1) == what the base would be if light i were always at peak`.
 
@@ -278,6 +282,11 @@ produces a 10×10×10 = 1000-probe grid (worst case); 16 such lights × 27 × 2 
 per light. In practice, most animated lights are small-to-medium panel lights; a scene with
 16 small panel lights sits around 800 KB–1 MB delta total. The probe spacing lives in
 `prl-build` as `--delta-spacing` (default 1.0m).
+
+**Probe validity gate (delta bake).** Same gate as the base SH bake: classify each probe
+via the BSP tree, reject solid leaves and leaves outside the exterior flood-fill boundary,
+and emit zero coefficients for rejected slots without tracing rays. The BSP tree and
+exterior leaf set are both already part of the bake inputs; no new data plumbing required.
 
 **Albedo fallback for Task A.** Use a fixed 0.45 constant per channel (`BOUNCE_ALBEDO`).
 Tuned to avoid over-brightening the indirect contribution relative to the direct lightmap.

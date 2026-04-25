@@ -49,20 +49,30 @@ end)
 
 ---
 
-## Querying lights
+## world.query
 
-`world.query` returns an array of `LightEntity` handles matching a filter. The only currently supported component filter is `"light"`. Providing a `tag` narrows the result to entities whose tag matches exactly.
+`world.query(filter)` returns an array of entity handles matching a filter. The concrete handle type depends on the `component` you query — currently only `"light"` is supported. Querying an unknown component name throws `InvalidArgument`.
 
 ```typescript
-world.query({ component: "light" })            // all lights
+world.query({ component: "light" })            // all lights → LightEntity[]
 world.query({ component: "light", tag: "foo" }) // only lights tagged "foo"
 ```
 
-The returned `LightEntity` is a **snapshot**: `transform.position`, `isDynamic`, `tag`, and `component` reflect values at query time. `setAnimation`, `setIntensity`, and `setColor` operate on the **live** entity — they reach into the engine registry by entity id.
+Providing a `tag` narrows the result to entities whose tag matches exactly. `world.query` is only valid inside a `registerHandler` callback (behavior context). Calling it outside that context is an error.
 
-`world.query` is only valid inside a `registerHandler` callback (behavior context). Calling it outside that context is an error.
+### LightEntity
 
-### Canonical example — rolling wave down a hallway
+Returned when `component` is `"light"`. All fields are a snapshot at query time. `setAnimation`, `setIntensity`, and `setColor` operate on the **live** entity by id and do not require a fresh `world.query`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `EntityId` | Stable entity id. Pass to `set_light_animation` and other primitives. |
+| `transform.position` | `{ x, y, z }` | Light origin in world space at query time. |
+| `isDynamic` | `boolean` | Whether the light is runtime-dynamic. Sourced from the `_dynamic` key in the `.map` file. Dynamic lights participate in the per-fragment GPU light loop and the shadow-slot scheduler; use this to gate color animations (color animation is only valid on dynamic lights). |
+| `tag` | `string \| null` | The entity's tag at query time. |
+| `component` | `LightComponent` | Full component snapshot at query time. See [LightComponent](#lightcomponent) below. |
+
+#### Example — rolling wave down a hallway
 
 Tag the hallway lights `"hallway_wave"` in TrenchBroom. The script queries them at level load, sorts along the x axis, and staggers `phase` so the pulse travels.
 
@@ -140,6 +150,26 @@ A `LightAnimation` describes one looping (or finite) animation cycle. All fields
 | `phase` | `number` | `null` | Offset into the cycle where this light starts, in `[0, 1)`. Use to stagger lights in a sequence. Values outside `[0, 1)` are normalized automatically. |
 | `playCount` | `number` | `null` | Number of complete cycles to play, then stop. `null` loops forever. |
 | `startActive` | `boolean` | `null` (true) | `false` defers the animation until an event activates the entity. Mirrors the FGD `_start_inactive` flag. |
+
+---
+
+## LightComponent
+
+The full component state returned in `LightEntity.component`. All fields are read-only on the snapshot; use `setAnimation`, `setIntensity`, or `setColor` to mutate the live entity.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `lightType` | `"Point" \| "Spot" \| "Directional"` | Light shape. |
+| `intensity` | `number` | Brightness multiplier (linear, unbounded). |
+| `color` | `{ x, y, z }` | Linear RGB base color, nominally `[0, 1]`. |
+| `falloffModel` | `"Linear" \| "InverseDistance" \| "InverseSquared"` | Attenuation model. |
+| `falloffRange` | `number` | Attenuation radius, in meters. |
+| `coneAngleInner` | `number \| null` | Inner cone half-angle in radians. `null` for non-Spot lights. |
+| `coneAngleOuter` | `number \| null` | Outer cone half-angle in radians. `null` for non-Spot lights. |
+| `coneDirection` | `{ x, y, z } \| null` | Normalized aim vector. `null` for Point lights. |
+| `castShadows` | `boolean` | Whether the light casts shadows. |
+| `isDynamic` | `boolean` | Same as `LightEntity.isDynamic`. |
+| `animation` | `LightAnimation \| null` | Active animation, or `null` if none. Reflects any animation set by `setAnimation` in a previous frame. |
 
 ---
 

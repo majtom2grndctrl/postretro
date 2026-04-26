@@ -120,6 +120,17 @@ Optional per-texture normal maps for fine surface detail.
 - **Placeholder:** Shared 1×1 neutral-normal texture encoding `(127, 127, 255)` — decodes to approximately `(0, 0, 1)` (tangent-space +Z; exact value `(-0.004, -0.004, 1.0)`). Engine-lifetime; survives level unload. Used when `_n.png` is absent, dimensions mismatch (logs a warning), or decode fails (logs an error).
 - **Fallback:** Missing or invalid sibling falls back to the placeholder silently except for the log entry. Flat mesh-normal shading is preserved — the placeholder is a true no-op through the TBN path.
 
+### 4.4 Normal Map Generation Tool
+
+`tools/gen_normal.py` generates normal maps from diffuse textures using Sobel filtering on the luminance channel.
+
+- **Heuristics:** `metal_` (strength 1.5 — pronounced detail), `stone_` (1.2), `concrete_`/`wood_` (1.0), `plaster_` (0.8 — subtle).
+- **Dependency:** Requires `Pillow` (always) and `numpy` (for Sobel filtering). Managed via `uv`.
+- **Setup:** `uv venv && source .venv/bin/activate && uv pip install Pillow numpy`.
+- **Usage:** `python3 tools/gen_normal.py --input <path> --recursive`.
+- **Fallback without numpy:** outputs a flat `(127, 127, 255)` normal map (no surface detail) with a console warning.
+- **Linear-output guarantee:** same as `gen_specular.py` — outputs are written without `sRGB`, `gAMA`, or `iCCP` PNG chunks. Strips color-management metadata carried forward from the diffuse source.
+
 ---
 
 ## 5. Cubemap Handling

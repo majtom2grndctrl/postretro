@@ -11,7 +11,7 @@ Reorganize the repo to make "base game" and "mod" content first-class alongside 
 - Move Rust workspace crates under `crates/`
 - Introduce `content/` tree — `base/` for first-party game content, `tests/` for engine test fixtures
 - Extend map-path → content root derivation to scripts loading (replace hardcoded `assets/scripts/`)
-- Consolidate `sdk/types/` to a single copy at repo root; add `sdk/TrenchBroom/` as FGD generation target
+- Consolidate `sdk/types/` to a single copy at repo root; add `sdk/lib/` for core modder-facing TS/Luau libraries; add `sdk/TrenchBroom/` as FGD generation target
 - Reorganize `tools/`: external pre-compiled binaries to `tools/ext/`, automation scripts to `tools/scripts/`
 - Update `.gitignore`, `CLAUDE.md`, and context docs to reflect new paths
 
@@ -26,9 +26,8 @@ Reorganize the repo to make "base game" and "mod" content first-class alongside 
 ## Acceptance criteria
 
 - [ ] `cargo build` succeeds with workspace members declared as `crates/postretro`, `crates/level-compiler`, `crates/level-format`, `crates/script-compiler`
-- [ ] `cargo run -p postretro -- content/base/maps/test.prl` loads correctly; textures resolve from `content/base/textures/`, scripts from `content/base/scripts/`
-- [ ] `cargo run -p postretro -- content/tests/maps/test-3.prl` also works (engine test fixtures accessible)
-- [ ] `cargo run -p postretro` (no argument) still boots; default map path updated to point at `content/base/`
+- [ ] `cargo run -p postretro -- content/tests/maps/test-3.prl` loads correctly; textures resolve from `content/tests/textures/`, scripts from `content/tests/scripts/` (or absent — engine tolerates missing scripts dir)
+- [ ] `cargo run -p postretro` (no argument) still boots; default map path updated to `content/tests/maps/test-3.prl`
 - [ ] No references to `assets/` remain in engine source or CLAUDE.md
 - [ ] `sdk/types/` exists at repo root only — `crates/postretro/sdk/types/` directory removed; engine gen-types output path updated to `sdk/types/`
 - [ ] `sdk/TrenchBroom/postretro.fgd` exists (moved from `assets/postretro.fgd`)
@@ -56,15 +55,16 @@ Move game content from `assets/` to `content/`:
 
 | Old path | New path | Notes |
 |----------|----------|-------|
-| `assets/maps/*.map` + `*.prl` | `content/base/maps/` | Game maps only — see below for test fixtures |
-| `assets/textures/` | `content/base/textures/` | Full directory tree |
-| `assets/scripts/` | `content/base/scripts/` | `.ts`, `.js`, `.luau`, `tsconfig.json` |
-| `assets/maps/test-*.map` + `test_animated*` | `content/tests/maps/` | Engine test fixtures — not game content |
-| `assets/maps/autosave/` | `content/tests/maps/autosave/` | |
+| `assets/maps/*.map` + `*.prl` + sidecar files | `content/tests/maps/` | All existing maps are test fixtures |
 | `assets/maps/gen_*.py` | `content/tests/maps/` | Map generation scripts stay with test maps |
+| `assets/textures/` | `content/tests/textures/` | All existing textures are test fixtures |
+| `assets/scripts/*.ts` + `*.js` + `tsconfig.json` | `content/tests/scripts/` | Game behavior scripts — test fixtures |
+| `assets/scripts/sdk/` | `sdk/lib/` | Core modder-facing TS/Luau libraries |
 | `assets/postretro.fgd` | `sdk/TrenchBroom/postretro.fgd` | |
 
-Test-fixture map boundary: all maps in `assets/maps/` are test fixtures — including `campaign-test.map`. None go to `content/base/maps/`. The base game map directory starts empty and grows as authored content is added.
+All maps, textures, and scripts in `assets/` are test fixtures. `content/base/` starts empty — maps, textures, and scripts grow there as first-party game content is authored.
+
+TrenchBroom autosave directories (`autosave/` under any maps folder) are not migrated — add `autosave/` to `.gitignore` instead.
 
 Delete `assets/` once all files are accounted for.
 
@@ -75,8 +75,8 @@ Currently `load_scripts()` in `crates/postretro/src/main.rs` hardcodes `Path::ne
 - Given a map path `content/base/maps/e1m1.prl`, the content root is `content/base/` (parent of the `maps/` directory).
 - `resolve_texture_root(map_path)` becomes `content_root_from_map(map_path).join("textures")`.
 - `load_scripts()` accepts a `content_root: &Path` and loads from `content_root.join("scripts")`.
-- Update `DEFAULT_MAP_PATH` to `content/base/maps/test.prl` (or the first available game map after Task 2).
-- Update `tools/gen_specular.py` input examples/docs to reference `content/base/textures/`.
+- Update `DEFAULT_MAP_PATH` to `content/tests/maps/test-3.prl` — base starts empty so the default points at a test fixture.
+- Update `tools/gen_specular.py` input examples/docs to reference `content/tests/textures/` or `content/base/textures/` as appropriate.
 
 No new struct or abstraction needed — a single `content_root_from_map(map_path: &str) -> PathBuf` free function is sufficient. The convention (`maps/` lives one level below the content root) also applies to future mod content trees, so engine content loading will extend naturally to mods without further restructuring.
 
@@ -85,7 +85,8 @@ No new struct or abstraction needed — a single `content_root_from_map(map_path
 - Remove `crates/postretro/sdk/` — this is a duplicate of root `sdk/types/`.
 - Update `crates/postretro/src/bin/gen_script_types.rs` output path from `postretro/sdk/types/` to `sdk/types/`. Use `concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/types")` — after the crate moves to `crates/postretro/`, two levels up reaches the workspace root.
 - Create `sdk/TrenchBroom/` directory; `assets/postretro.fgd` moves there (covered by Task 2 above).
-- Add `sdk/templates/` with a starter `tsconfig.json` (copy from `content/base/scripts/tsconfig.json`).
+- Create `sdk/lib/` and move `assets/scripts/sdk/` contents there (covered by Task 2 above): `light_animation.ts`, `light_animation.luau`, `world.ts`, `world.luau`.
+- Add `sdk/templates/` with a starter `tsconfig.json` (copy from `content/tests/scripts/tsconfig.json`).
 
 ### Task 5: Tools reorganization
 
@@ -96,10 +97,10 @@ No new struct or abstraction needed — a single `content_root_from_map(map_path
 
 ### Task 6: Housekeeping
 
-- `.gitignore`: add `dist/`; remove `target/` if not already present (add if missing).
+- `.gitignore`: add `dist/`, `autosave/`; ensure `target/` is present.
 - `CLAUDE.md`: update all build commands and path references (`assets/` → `content/`); update `prl-build` example to use `content/base/maps/` as output target.
 - `context/lib/build_pipeline.md`: update texture authoring path (`textures/` is now under `content/<mod>/textures/`), update FGD location.
-- `context/lib/resource_management.md`: update §1.1 authoring layout to reflect `content/base/textures/` convention.
+- `context/lib/resource_management.md`: update §1.1 authoring layout to reflect `content/<mod>/textures/` convention.
 - `context/lib/scripting.md`: update §8 hot reload path reference.
 - `README.md`: update getting-started instructions.
 

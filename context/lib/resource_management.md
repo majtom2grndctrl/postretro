@@ -22,7 +22,7 @@ TrenchBroom requires this subdirectory structure for texture browsing. Collectio
 
 ### 1.2 PRL Texture References
 
-PRL files store a deduplicated texture name list (TextureNames section). No pixel data. At load time, the engine matches texture name strings from PRL face data against PNG filenames in the `textures/` tree. Missing texture at runtime falls back to a checkerboard placeholder and logs a warning.
+PRL files store a deduplicated texture name list (TextureNames section). No pixel data. At load time, the engine matches texture name strings from PRL face data against PNG filenames in the `textures/` tree. For each loaded diffuse, the loader also probes for `{name}_s.png` (specular) and `{name}_n.png` (normal-map) siblings in the same collection directory; missing or invalid siblings fall back to shared 1×1 placeholders (see §4). Missing diffuse at runtime falls back to a checkerboard placeholder and logs a warning; sibling probes are skipped when the diffuse itself is a placeholder.
 
 ### 1.3 Sprite Animations
 

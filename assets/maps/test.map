@@ -404,3 +404,15 @@
 "_fade" "2048"
 "delay" "2"
 }
+// entity 3
+// Directional sun light — drives sky-dominant SH bake (normal-maps AC-3).
+// `mangle` is "pitch yaw roll" in degrees; -50 30 0 aims down-and-forward
+// so the bumped wall surfaces receive a clearly directional irradiance.
+{
+"classname" "light_sun"
+"origin" "192 128 200"
+"mangle" "-50 30 0"
+"light" "200"
+"_color" "200 220 255"
+"style" "0"
+}

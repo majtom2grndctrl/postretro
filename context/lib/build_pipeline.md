@@ -34,7 +34,7 @@ No WAD files. Textures are authored as PNGs.
 
 | Stage | What happens |
 |-------|-------------|
-| Author | Create PNGs in `textures/<collection>/<name>.png`. TrenchBroom requires one subdirectory level. |
+| Author | Create PNGs in `content/<mod>/textures/<collection>/<name>.png` (where `<mod>` is `base` for first-party content or `tests` for fixtures). TrenchBroom requires one subdirectory level. |
 | TrenchBroom | Browses the textures directory via the Postretro game config. |
 | prl-build | Reads PNGs for dimensions during compilation. |
 | PRL output | TextureNames section stores a deduplicated texture name list. No pixel data. |

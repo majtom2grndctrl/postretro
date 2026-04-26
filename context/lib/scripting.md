@@ -64,8 +64,8 @@ Wrap primitive closures in `catch_unwind` at the FFI boundary. Caught panics sur
 
 In debug builds, the runtime emits type-definition files at startup from registered primitive signatures:
 
-- `postretro/sdk/types/postretro.d.ts` — TypeScript declarations
-- `postretro/sdk/types/postretro.d.luau` — Luau type annotations
+- `sdk/types/postretro.d.ts` — TypeScript declarations
+- `sdk/types/postretro.d.luau` — Luau type annotations
 
 Files stay in sync automatically when primitives change. Scripts written against the SDK get IDE completions and type checking. Not emitted in release builds.
 

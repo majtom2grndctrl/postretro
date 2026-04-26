@@ -12,13 +12,15 @@ All visual assets — world textures, billboard sprites, UI elements — are aut
 
 ### 1.1 Authoring Layout
 
-Textures live under `textures/` with one required subdirectory level:
+Textures live under `content/<mod>/textures/` (where `<mod>` is `base` for first-party content or `tests` for engine test fixtures) with one required subdirectory level:
 
 ```
-textures/<collection>/<name>.png
+content/<mod>/textures/<collection>/<name>.png
 ```
 
-TrenchBroom requires this subdirectory structure for texture browsing. Collections group related textures (e.g., `textures/concrete/`, `textures/metal/`, `textures/trim/`).
+Example paths: `content/base/textures/concrete/wall.png`, `content/tests/textures/metal/panel.png`.
+
+TrenchBroom requires the collection subdirectory structure for texture browsing. Collections group related textures (e.g., `concrete/`, `metal/`, `trim/`). At runtime, the engine derives the texture root from the loaded map's path: given a map at `content/<mod>/maps/level.prl`, the content root is `content/<mod>/`, and textures resolve from `content/<mod>/textures/`.
 
 ### 1.2 PRL Texture References
 

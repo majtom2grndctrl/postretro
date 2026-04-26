@@ -44,6 +44,11 @@ struct MaterialUniform {
     _pad: vec3<f32>,
 };
 @group(1) @binding(3) var<uniform> material: MaterialUniform;
+// Per-material tangent-space normal map. Sampled with `base_sampler`. The
+// neutral placeholder is (127, 127, 255, 255) which decodes to ~(0, 0, 1) in
+// tangent space, so surfaces with no `_n.png` sibling render identically to
+// the mesh-normal path. See context/lib/resource_management.md §4.1.
+@group(1) @binding(4) var t_normal: texture_2d<f32>;
 
 @group(2) @binding(0) var<storage, read> lights: array<GpuLight>;
 // Per-light influence volume: xyz = sphere center, w = radius.
@@ -426,8 +431,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 
     // Bias the lookup toward the lit side by offsetting along the surface
     // normal by a fraction of the probe grid spacing. Reduces SH bleed across
-    // thin walls. Uses the mesh normal today; switch to the normal-mapped N
-    // when the TBN/normal-map path lands in fs_main.
+    // thin walls.
     const SH_NORMAL_OFFSET_M: f32 = 0.1;
     let offset_world = world_pos + normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
     let gdims_u = sh_grid.grid_dimensions;
@@ -444,7 +448,26 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let base_color = textureSample(base_texture, base_sampler, in.uv);
-    let N = normalize(in.world_normal);
+
+    // Tangent-space normal map sampling + TBN construction. The neutral
+    // placeholder (127, 127, 255, 255) decodes to ~(0, 0, 1), which TBN
+    // transforms back to the mesh normal — so surfaces without an `_n.png`
+    // sibling render identically to the pre-bump path.
+    let n_sample = textureSample(t_normal, base_sampler, in.uv).rgb;
+    let n_ts = n_sample * 2.0 - 1.0; // decode tangent-space RGB
+    let mesh_n = normalize(in.world_normal);
+    // Degenerate-tangent guard: meshes with collapsed UVs produce zero-length
+    // tangents. Skip TBN in that case to avoid NaN propagation.
+    const TBN_EPS: f32 = 1.0e-4;
+    var N_bump: vec3<f32>;
+    if length(in.world_tangent) < TBN_EPS {
+        N_bump = mesh_n;
+    } else {
+        let T = normalize(in.world_tangent);
+        let B = cross(mesh_n, T) * in.bitangent_sign;
+        let TBN = mat3x3<f32>(T, B, mesh_n);
+        N_bump = normalize(TBN * n_ts);
+    }
 
     // Lighting isolation mode: enable each contributing term independently
     // for leak/bleed debugging. The ambient floor always contributes so
@@ -475,7 +498,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // or when the isolation mode suppresses indirect.
     var indirect = vec3<f32>(0.0);
     if use_indirect {
-        indirect = sample_sh_indirect(in.world_position, N);
+        indirect = sample_sh_indirect(in.world_position, N_bump);
     }
 
     // Static direct term: baked directional lightmap. The atlas stores
@@ -483,13 +506,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // mesh normal) — NdotL is already folded in by the baker. Sampling the
     // atlas directly gives the correct static direct contribution for a
     // mesh-normal surface.
-    //
-    // The bumped-Lambert correction (divide out the baked mesh-normal
-    // response, multiply in the normal-mapped response using the stored
-    // dominant direction) will be reintroduced when the TBN / normal-map
-    // path lands. Until then `N` is the interpolated mesh normal and the
-    // baker's pre-multiplied NdotL is the right answer; reapplying NdotL
-    // here would double-count the Lambert term.
     var static_direct = vec3<f32>(0.0);
     if use_lightmap {
         let lm_irr = textureSample(lightmap_irradiance, lightmap_sampler, in.lightmap_uv).rgb;
@@ -569,7 +585,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // eliminates out-of-reach lights).
             let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
             let contribution = blinn_phong(
-                L, V, N, sl.color_and_pad.xyz, spec_exp, spec_int
+                L, V, N_bump, sl.color_and_pad.xyz, spec_exp, spec_int
             ) * atten;
             specular_sum = specular_sum + contribution;
         }
@@ -670,7 +686,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }
         }
 
-        let NdotL = max(dot(N, L), 0.0);
+        let NdotL = max(dot(N_bump, L), 0.0);
 
         // No runtime shadows in this iteration — the legacy runtime shadow
         // systems have been retired ahead of the lighting rework that will

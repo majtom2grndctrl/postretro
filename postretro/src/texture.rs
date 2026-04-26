@@ -269,7 +269,7 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
                     }
                 },
                 None => {
-                    log::info!("[Texture] no normal map for {name}");
+                    log::info!("[Texture] No normal map for '{name}' — using neutral placeholder");
                     None
                 }
             }
@@ -288,7 +288,7 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
 }
 
 /// Strict variant of `load_png` that surfaces decode errors to the caller
-/// instead of substituting a checkerboard. Used for sidecar maps where the
+/// instead of substituting a checkerboard. Used for sidecar textures where the
 /// caller wants to log a sidecar-specific message and fall back to a shared
 /// placeholder rather than to a per-texture checkerboard.
 fn load_png_strict(path: &Path) -> Result<LoadedTexture, image::ImageError> {

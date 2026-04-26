@@ -47,7 +47,7 @@ struct MaterialUniform {
 // Per-material tangent-space normal map. Sampled with `base_sampler`. The
 // neutral placeholder is (127, 127, 255, 255) which decodes to ~(0, 0, 1) in
 // tangent space, so surfaces with no `_n.png` sibling render identically to
-// the mesh-normal path. See context/lib/resource_management.md §4.1.
+// the mesh-normal path. See context/lib/resource_management.md §4.3.
 @group(1) @binding(4) var t_normal: texture_2d<f32>;
 
 @group(2) @binding(0) var<storage, read> lights: array<GpuLight>;
@@ -524,11 +524,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // The animated atlas (lm_anim) is *not* corrected — it is added
         // uncorrected at the end. See normal-maps/ Task 4.
         let dom = decode_lightmap_direction(textureSample(lightmap_direction, lightmap_sampler, in.lightmap_uv));
-        let n_dot_l_mesh = max(dot(in.world_normal, dom), 0.0);
+        let n_dot_l_mesh = max(dot(mesh_n, dom), 0.0);
         let n_dot_l_bump = max(dot(N_bump, dom), 0.0);
         // EPS guards grazing texels where mesh NdotL ≈ 0 (avoid div-by-zero
         // and the resulting NaN/inf blowup).
-        let EPS = 1e-3;
+        const EPS: f32 = 1e-3;
         let scale = select(0.0, n_dot_l_bump / max(n_dot_l_mesh, EPS), n_dot_l_mesh > EPS);
         // Cap at 4.0: prevents an unbounded spike when N_bump tilts toward
         // the light on a near-backfacing mesh surface.

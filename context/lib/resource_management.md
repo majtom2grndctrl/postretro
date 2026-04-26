@@ -115,7 +115,7 @@ Optional per-texture normal maps for fine surface detail.
 - **Naming:** `{name}_n.png` suffix alongside the diffuse texture.
 - **Format:** `Rgba8Unorm` (linear). Must not be sRGB-tagged — prl-build rejects sRGB-tagged siblings at compile time.
 - **Encoding:** Tangent-space RGB. Decode: `n = sample.rgb * 2.0 - 1.0`. Dimensions must match the diffuse texture.
-- **Placeholder:** Shared 1×1 neutral-normal texture encoding `(127, 127, 255)` — decodes to `(0, 0, 1)` (tangent-space +Z). Engine-lifetime; survives level unload. Used when `_n.png` is absent, dimensions mismatch (logs a warning), or decode fails (logs an error).
+- **Placeholder:** Shared 1×1 neutral-normal texture encoding `(127, 127, 255)` — decodes to approximately `(0, 0, 1)` (tangent-space +Z; exact value `(-0.004, -0.004, 1.0)`). Engine-lifetime; survives level unload. Used when `_n.png` is absent, dimensions mismatch (logs a warning), or decode fails (logs an error).
 - **Fallback:** Missing or invalid sibling falls back to the placeholder silently except for the log entry. Flat mesh-normal shading is preserved — the placeholder is a true no-op through the TBN path.
 
 ---

@@ -516,7 +516,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // to zero by the compose pre-pass, so this is safe to add
         // unconditionally. See animated-light-weight-maps/ §Task 5.
         let lm_anim = textureSample(animated_lm_atlas, lightmap_sampler, in.lightmap_uv).rgb;
-        static_direct = lm_irr + lm_anim;
+
+        // Bumped-Lambert correction for the static lightmap term: the baker
+        // pre-multiplied irradiance by mesh-normal NdotL using the dominant
+        // incident direction. To make the static term respond to normal-map
+        // detail, we divide out mesh NdotL and remultiply with N_bump NdotL.
+        // The animated atlas (lm_anim) is *not* corrected — it is added
+        // uncorrected at the end. See normal-maps/ Task 4.
+        let dom = decode_lightmap_direction(textureSample(lightmap_direction, lightmap_sampler, in.lightmap_uv));
+        let n_dot_l_mesh = max(dot(in.world_normal, dom), 0.0);
+        let n_dot_l_bump = max(dot(N_bump, dom), 0.0);
+        // EPS guards grazing texels where mesh NdotL ≈ 0 (avoid div-by-zero
+        // and the resulting NaN/inf blowup).
+        let EPS = 1e-3;
+        let scale = select(0.0, n_dot_l_bump / max(n_dot_l_mesh, EPS), n_dot_l_mesh > EPS);
+        // Cap at 4.0: prevents an unbounded spike when N_bump tilts toward
+        // the light on a near-backfacing mesh surface.
+        let scale_capped = min(scale, 4.0);
+        static_direct = lm_irr * scale_capped + lm_anim;
     }
 
     // Total light = ambient floor (minimum) + indirect + static direct + dynamic sum.

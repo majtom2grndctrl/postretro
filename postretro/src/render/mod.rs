@@ -28,9 +28,9 @@ use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots};
 use crate::material::Material;
 use crate::prl::MapLight;
-use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
+use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 
 use frame_timing::FrameTiming;
 use sh_compose::ShComposeResources;
@@ -188,7 +188,7 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
 /// Provisional value from sub-plan 3; tuned via the ambient-floor slider
 /// in the settings menu. The right default is the lowest value where a
 /// player can still navigate dark areas.
-pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.05;
+pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.005;
 
 // --- GPU texture ---
 

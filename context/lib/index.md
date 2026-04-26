@@ -32,7 +32,11 @@
 
 ## 1. Product Definition
 
-Retro-style FPS engine. Doom/Quake boomer shooter with a cyberpunk aesthetic. Low-poly 3D environments with fully dynamic direct lighting, baked volumetric indirect lighting (SH irradiance volumes), normal-mapped surfaces, billboard sprite characters, and modern embellishments (bloom, particles). Visual fidelity through a lean, wgpu-driven pipeline — not a modern engine with retro filters. Near-instant boot, tiny binary.
+**Retro-inspired FPS engine** — a hybrid of new and old. Doom/Quake boomer shooter with a cyberpunk aesthetic. Monster closets and scripted reveals are first-class set-pieces rather than engine-fighting workarounds, making for theatrical gameplay experiences. Inspired by retro look and feel but game design is a meaningful iteration beyond games of the period.
+
+**Aesthetic:** Low-poly 3D environments + blocky pixelated textures; with modern embellishments like baked volumetric indirect lighting (SH irradiance volumes), normal-mapped surfaces, fully dynamic direct lighting, and billboard sprite volumetrics that react to light.
+
+**Architectural northstar:** Lean, wgpu-driven pipeline — not a modern engine with retro filters. Near-instant boot, tiny binary.
 
 ---
 

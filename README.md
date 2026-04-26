@@ -14,6 +14,8 @@ Postretro is a Quake-style FPS engine in Rust that looks and feels “like they 
 
 The visual target is something like Prodeus — chunky pixels, baked lighting, specular maps, cyberpunk atmosphere. But the goal is to earn that look through low-cost rendering techniques, resulting in _a game that **feels like** you remember_ but _**looks better** than the real thing._
 
+For example: we want to bring back monster closets, but make them more theatrical and visually polished than was feasible in the 90s, while still retaining a vintage low-poly and blocky texture art direction.
+
 It's early days, but the foundation is coming together fast. Right now Postretro compiles TrenchBroom maps into a custom binary format, renders fully textured levels, and drives the whole thing through a GPU-culled rendering pipeline: per-frame portal traversal narrows the visible set, a global BVH handles frustum culling on the GPU, and geometry is dispatched via indirect draw calls with zero per-object CPU overhead. Everything after that — lighting, movement, enemies, the whole game — is still ahead of us. That's kind of the fun part.
 
 ## Context Architecture (Like Project Docs for Agents)

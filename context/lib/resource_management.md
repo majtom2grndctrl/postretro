@@ -122,14 +122,13 @@ Optional per-texture normal maps for fine surface detail.
 
 ### 4.4 Normal Map Generation Tool
 
-`tools/gen_normal.py` generates normal maps from diffuse textures using Sobel filtering on the luminance channel.
+`tools/gen_normal.py` generates `_n.png` siblings from diffuse textures via Sobel filtering on luminance. Material-prefix strength heuristics: `metal_` (1.5), `stone_` (1.2), `concrete_`/`wood_` (1.0), `plaster_` (0.8).
 
-- **Heuristics:** `metal_` (strength 1.5 — pronounced detail), `stone_` (1.2), `concrete_`/`wood_` (1.0), `plaster_` (0.8 — subtle).
-- **Dependency:** Requires `Pillow` (always) and `numpy` (for Sobel filtering). Managed via `uv`.
+- **Dependencies:** `Pillow` + `numpy`. Managed via `uv`.
 - **Setup:** `uv venv && source .venv/bin/activate && uv pip install Pillow numpy`.
 - **Usage:** `python3 tools/gen_normal.py --input <path> --recursive`.
-- **Fallback without numpy:** outputs a flat `(127, 127, 255)` normal map (no surface detail) with a console warning.
-- **Linear-output guarantee:** same as `gen_specular.py` — outputs are written without `sRGB`, `gAMA`, or `iCCP` PNG chunks. Strips color-management metadata carried forward from the diffuse source.
+- **Fallback:** without `numpy`, emits flat `(127, 127, 255)` maps with no surface detail.
+- **Linear guarantee:** no `sRGB`, `gAMA`, or `iCCP` chunks — passes `prl-build` validation.
 
 ---
 

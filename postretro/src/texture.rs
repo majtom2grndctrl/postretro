@@ -564,4 +564,230 @@ mod tests {
             ImageBuffer::from_pixel(width, height, Rgba([128, 128, 128, 255]));
         img.save(path).unwrap();
     }
+
+    /// Write a PNG with a specific solid color. Used to verify that sibling
+    /// data is preserved verbatim through the loader (e.g. that a normal-map
+    /// sibling's pixels reach the consumer unmodified).
+    fn write_solid_png(path: &Path, width: u32, height: u32, color: [u8; 4]) {
+        use image::{ImageBuffer, Rgba};
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(width, height, Rgba(color));
+        img.save(path).unwrap();
+    }
+
+    // -- Sibling probe: `_n.png` (tangent-space normal map) --
+    //
+    // Contract (resource_management.md §4.3):
+    //   - Sibling absent              → `normal[i] == None`
+    //   - Sibling present + dims OK   → `normal[i] == Some(loaded)` with pixels preserved
+    //   - Dimension mismatch          → `normal[i] == None`
+    //   - Sibling decode failure      → `normal[i] == None` (strict path; no checkerboard substitution)
+    //   - Diffuse failed to load      → `normal[i] == None` (probe skipped entirely)
+
+    #[test]
+    fn normal_sibling_present_and_matching_produces_some() {
+        let dir = tempdir("normal_present_match");
+        let collection = dir.join("walls");
+        fs::create_dir(&collection).unwrap();
+        write_test_png(&collection.join("brick.png"), 32, 32);
+        // Neutral tangent-space normal: (0.5, 0.5, 1.0) → (128, 128, 255).
+        write_solid_png(&collection.join("brick_n.png"), 32, 32, [128, 128, 255, 255]);
+
+        let result = load_textures(&[Some("brick".to_string())], &dir);
+
+        let normal = result.normal[0]
+            .as_ref()
+            .expect("matching-dim normal sibling should be loaded");
+        assert_eq!(normal.width, 32);
+        assert_eq!(normal.height, 32);
+        assert!(!normal.is_placeholder);
+        // Pixel data must round-trip unmodified — normals are direction
+        // vectors, not colors; any silent transform would corrupt lighting.
+        assert_eq!(&normal.data[0..4], &[128, 128, 255, 255]);
+    }
+
+    #[test]
+    fn normal_sibling_absent_produces_none() {
+        let dir = tempdir("normal_absent");
+        let collection = dir.join("walls");
+        fs::create_dir(&collection).unwrap();
+        write_test_png(&collection.join("brick.png"), 32, 32);
+
+        let result = load_textures(&[Some("brick".to_string())], &dir);
+
+        assert!(result.normal[0].is_none());
+        // Diffuse still loads cleanly when the optional sibling is missing.
+        assert!(!result.textures[0].is_placeholder);
+    }
+
+    #[test]
+    fn normal_sibling_dimension_mismatch_produces_none() {
+        let dir = tempdir("normal_dim_mismatch");
+        let collection = dir.join("walls");
+        fs::create_dir(&collection).unwrap();
+        write_test_png(&collection.join("brick.png"), 32, 32);
+        // Wrong size — must not be silently rescaled or accepted.
+        write_solid_png(&collection.join("brick_n.png"), 16, 16, [128, 128, 255, 255]);
+
+        let result = load_textures(&[Some("brick".to_string())], &dir);
+
+        assert!(result.normal[0].is_none());
+    }
+
+    #[test]
+    fn normal_sibling_corrupt_produces_none_not_checkerboard() {
+        // The strict-load path is what distinguishes `_n` from the diffuse
+        // loader: a malformed normal map must NOT be substituted with a
+        // checkerboard placeholder (which would have valid 64x64 dims and
+        // could surface as broken lighting if it reached the GPU). It must
+        // become `None` so the renderer falls back to its neutral placeholder.
+        let dir = tempdir("normal_corrupt");
+        let collection = dir.join("walls");
+        fs::create_dir(&collection).unwrap();
+        write_test_png(&collection.join("brick.png"), 32, 32);
+        fs::write(collection.join("brick_n.png"), b"not a real PNG file").unwrap();
+
+        let result = load_textures(&[Some("brick".to_string())], &dir);
+
+        assert!(result.normal[0].is_none());
+    }
+
+    #[test]
+    fn normal_sibling_skipped_when_diffuse_is_placeholder() {
+        // Documents the current contract: when the diffuse fails to load and
+        // the loader substitutes a 64x64 checkerboard, the sibling probe is
+        // skipped even if a valid `_n.png` exists. Rationale (per the source
+        // comment): a normal map without a real diffuse is meaningless and
+        // could spuriously dimension-match the placeholder.
+        let dir = tempdir("normal_skip_when_diffuse_placeholder");
+        let collection = dir.join("walls");
+        fs::create_dir(&collection).unwrap();
+        // No `brick.png` — diffuse will become a 64x64 checkerboard.
+        // A valid 64x64 `_n.png` would otherwise dimension-match.
+        write_solid_png(&collection.join("brick_n.png"), 64, 64, [128, 128, 255, 255]);
+
+        let result = load_textures(&[Some("brick".to_string())], &dir);
+
+        assert!(result.textures[0].is_placeholder);
+        assert!(
+            result.normal[0].is_none(),
+            "normal probe must be skipped when diffuse is a placeholder"
+        );
+    }
+
+    // -- Sibling probe: `_s.png` (specular intensity) --
+    //
+    // Contract (resource_management.md §4.1):
+    //   - Sibling absent              → `specular[i] == None`
+    //   - Sibling present + dims OK   → `specular[i] == Some(loaded)` with pixels preserved
+    //   - Dimension mismatch          → `specular[i] == None`
+    //   - Sibling decode failure      → `specular[i] == None` (loader uses non-strict
+    //                                    path, then converts the resulting placeholder
+    //                                    back to None — checkerboard must not leak through)
+    //   - Diffuse failed to load      → `specular[i] == None` (probe skipped entirely)
+
+    #[test]
+    fn specular_sibling_present_and_matching_produces_some() {
+        let dir = tempdir("specular_present_match");
+        let collection = dir.join("metal");
+        fs::create_dir(&collection).unwrap();
+        write_test_png(&collection.join("plate.png"), 32, 32);
+        // Specular intensity in R channel; G/B/A unused by the shader.
+        write_solid_png(&collection.join("plate_s.png"), 32, 32, [200, 0, 0, 255]);
+
+        let result = load_textures(&[Some("plate".to_string())], &dir);
+
+        let spec = result.specular[0]
+            .as_ref()
+            .expect("matching-dim specular sibling should be loaded");
+        assert_eq!(spec.width, 32);
+        assert_eq!(spec.height, 32);
+        assert!(!spec.is_placeholder);
+        assert_eq!(spec.data[0], 200, "specular R channel must be preserved");
+    }
+
+    #[test]
+    fn specular_sibling_absent_produces_none() {
+        let dir = tempdir("specular_absent");
+        let collection = dir.join("metal");
+        fs::create_dir(&collection).unwrap();
+        write_test_png(&collection.join("plate.png"), 32, 32);
+
+        let result = load_textures(&[Some("plate".to_string())], &dir);
+
+        assert!(result.specular[0].is_none());
+        assert!(!result.textures[0].is_placeholder);
+    }
+
+    #[test]
+    fn specular_sibling_dimension_mismatch_produces_none() {
+        let dir = tempdir("specular_dim_mismatch");
+        let collection = dir.join("metal");
+        fs::create_dir(&collection).unwrap();
+        write_test_png(&collection.join("plate.png"), 64, 64);
+        write_solid_png(&collection.join("plate_s.png"), 32, 32, [200, 0, 0, 255]);
+
+        let result = load_textures(&[Some("plate".to_string())], &dir);
+
+        assert!(result.specular[0].is_none());
+    }
+
+    #[test]
+    fn specular_sibling_corrupt_produces_none_not_checkerboard() {
+        // The diffuse loader substitutes a 64x64 checkerboard on PNG decode
+        // failure. The specular probe must recognize that placeholder and
+        // emit `None` rather than letting a magenta checker reach the shader
+        // as a "specular intensity map".
+        let dir = tempdir("specular_corrupt");
+        let collection = dir.join("metal");
+        fs::create_dir(&collection).unwrap();
+        write_test_png(&collection.join("plate.png"), 32, 32);
+        fs::write(collection.join("plate_s.png"), b"definitely not a PNG").unwrap();
+
+        let result = load_textures(&[Some("plate".to_string())], &dir);
+
+        assert!(result.specular[0].is_none());
+    }
+
+    #[test]
+    fn specular_sibling_skipped_when_diffuse_is_placeholder() {
+        // Mirrors the `_n` contract: no real diffuse → no sibling probe, even
+        // when the sibling happens to be a valid 64x64 PNG that would
+        // dimension-match the checkerboard.
+        let dir = tempdir("specular_skip_when_diffuse_placeholder");
+        let collection = dir.join("metal");
+        fs::create_dir(&collection).unwrap();
+        write_solid_png(&collection.join("plate_s.png"), 64, 64, [200, 0, 0, 255]);
+
+        let result = load_textures(&[Some("plate".to_string())], &dir);
+
+        assert!(result.textures[0].is_placeholder);
+        assert!(
+            result.specular[0].is_none(),
+            "specular probe must be skipped when diffuse is a placeholder"
+        );
+    }
+
+    // -- Sibling independence --
+
+    #[test]
+    fn sibling_probes_are_independent() {
+        // A broken `_s.png` must not poison the `_n.png` slot, and vice versa.
+        // The two sibling channels are independent contracts.
+        let dir = tempdir("sibling_independence");
+        let collection = dir.join("mixed");
+        fs::create_dir(&collection).unwrap();
+        write_test_png(&collection.join("surface.png"), 32, 32);
+        write_solid_png(&collection.join("surface_n.png"), 32, 32, [128, 128, 255, 255]);
+        // Corrupt specular alongside a valid normal map.
+        fs::write(collection.join("surface_s.png"), b"junk").unwrap();
+
+        let result = load_textures(&[Some("surface".to_string())], &dir);
+
+        assert!(result.specular[0].is_none(), "broken _s must be None");
+        assert!(
+            result.normal[0].is_some(),
+            "valid _n must still load when sibling _s is broken"
+        );
+    }
 }

@@ -50,15 +50,15 @@ This plan also lays the substrate (deterministic stage outputs, serializable int
 
 ### Task 1: Cache substrate
 
-Build a `cache` module in `postretro-level-compiler` exposing a `StageCache` with `get(key) -> Option<Bytes>` and `put(key, bytes)`. Storage: one file per entry under the cache directory, name is the hex key, contents are `[length: u32 | blake3-of-payload: 32 bytes | payload]`. Atomic write via temp file + rename. Length+hash check on load; mismatch is a soft failure (warn, return `None`). Provide a `CacheKey` builder that hashes `(stage_id_str, stage_version_u32, input_hash)` with blake3.
+Build a `cache` module in `postretro-level-compiler` exposing a `StageCache` with `get(key) -> Option<Bytes>` and `put(key, bytes)`. Storage: one file per entry under the cache directory, name is the hex key, contents are `[length: u32 | blake3-of-payload: 32 bytes | payload]`. Atomic write via temp file + rename. Length+hash check on load; mismatch is a soft failure (warn, return `None`). Provide a `CacheKey` builder that hashes `(stage_id_str, stage_version_u32, input_hash)` with blake3. Each participating stage module owns a `const STAGE_VERSION: u32`, manually bumped by the engineer when the algorithm changes. Stage ID in the key means entries are per-stage by construction — no cross-stage collision risk.
 
 ### Task 2: Stage I/O serialization
 
-Add `serde` derives (or implement `to_bytes`/`from_bytes` consistent with the format crate's pattern) to the intermediate types consumed and produced by the cached stages: at minimum `GeometryResult` and the relevant slices of `MapData` that feed lightmap and SH bake. Avoid serializing the live `bvh::Bvh` — derive its inputs from cached `GeometryResult` and rebuild on cache hit. Pick one serialization (postcard or bincode) and use it consistently.
+Add `serde` derives (or implement `to_bytes`/`from_bytes` consistent with the format crate's pattern) to the intermediate types consumed and produced by the cached stages: at minimum `GeometryResult` and the relevant slices of `MapData` that feed lightmap and SH bake. Avoid serializing the live `bvh::Bvh` — derive its inputs from cached `GeometryResult` and rebuild on cache hit. Use postcard throughout: more compact than bincode (varint vs. fixed-width encoding) and designed for deterministic Rust-to-Rust byte serialization.
 
 ### Task 3: Determinism audit + fixes
 
-Audit lightmap bake and SH volume bake for non-determinism that would defeat byte-identical caching. Known suspects from initial survey: any `HashMap` whose iteration order leaks into output, rayon reductions that aren't order-preserving, floating-point accumulation order across threads. Fix by replacing `HashMap` with `BTreeMap` (or sorting before iteration), and by ensuring `par_iter().collect()` is the only parallel pattern (it preserves index order). Add a determinism test that runs each cached stage twice and asserts byte-identical output.
+Audit lightmap bake and SH volume bake for non-determinism that would defeat byte-identical caching. Known suspects from initial survey: any `HashMap` whose iteration order leaks into output, rayon reductions that aren't order-preserving, floating-point accumulation order across threads. Fix by replacing `HashMap` with `BTreeMap` (or sorting before iteration), and by ensuring `par_iter().collect()` is the only parallel pattern (it preserves index order). Scope is the two cached stages only; wider non-determinism in other stages is deferred to the per-element sibling plan. Add a determinism test that runs each cached stage twice and asserts byte-identical output.
 
 ### Task 4: Wire cache into lightmap stage
 
@@ -70,7 +70,7 @@ Same shape as Task 4. Input hash includes serialized geometry, BVH section bytes
 
 ### Task 6: CLI flags
 
-Extend `parse_args()` with `--cache-dir <path>` (default `<input.map dir>/.prl-cache/`) and `--no-cache`. Thread into the pipeline. Update `--help` text. Reject the combination `--no-cache --cache-dir` with a clear error (or silently ignore `--cache-dir` and warn — pick one in the spec moment).
+Extend `parse_args()` with `--cache-dir <path>` (default `<workspace-root>/.prl-cache/`, workspace root located by walking parent dirs from the input `.map` for `Cargo.toml`, falling back to map-adjacent) and `--no-cache`. Thread into the pipeline. Update `--help` text. Reject `--no-cache --cache-dir` together with a clear error.
 
 ### Task 7: Tests
 
@@ -80,6 +80,7 @@ Extend `parse_args()` with `--cache-dir <path>` (default `<input.map dir>/.prl-c
 - Stage version bump: change a stage's version constant in source, build; assert that stage misses and others hit.
 - Corruption recovery: write garbage into a cache entry, build; assert warning is logged and the stage re-runs.
 - `--no-cache`: assert no files are read from or written to the cache directory.
+- Consider a CI lint: warn when a cached stage's source file changes but its `STAGE_VERSION` constant does not.
 
 ### Task 8: Documentation
 
@@ -93,15 +94,3 @@ Update `context/lib/build_pipeline.md` with a new Build Cache section: where the
 **Phase 4 (concurrent):** Task 4, Task 5 — lightmap and SH wiring are independent.
 **Phase 5 (sequential):** Task 6 — CLI flags depend on the wired stages reading them.
 **Phase 6 (concurrent):** Task 7, Task 8 — tests and docs are independent and finish the plan.
-
-## Open questions
-
-- **Should the cache be content-addressable across stages?** Storing entries as `<key>.bin` means two stages with the same input+output (unlikely but possible) share an entry. Cleaner but trivially solvable either way; no impact on correctness.
-- **Determinism scope of Task 3:** are there latent non-determinism issues outside the cached stages that should be fixed opportunistically (e.g., for the future per-element plan), or held strictly to the cached stages to keep this plan tight? Decided: hold to cached stages; capture the rest as research notes for the sibling plan.
-
-## Decisions
-
-- **Cache directory default:** workspace-adjacent (`.prl-cache/` next to the workspace `Cargo.toml`). One directory to nuke when clearing; shared across all maps in the workspace. Workspace root located by walking parent dirs from the input `.map`; falls back to map-adjacent if no workspace root found.
-- **Serialization format:** postcard. More compact than bincode (varint encoding vs. fixed-width), no false-positive invalidation risk from upstream API churn (bincode v1→v2 break history), and designed for deterministic Rust-to-Rust byte serialization — which is exactly this use case.
-- **Stage version representation:** manual `const STAGE_VERSION: u32` per stage module, bumped by the engineer changing the algorithm. Source-file-hash auto-bump was rejected: too many false positives (editing a doc comment re-runs a 30-second SH bake). Optionally enforce via CI lint: warn if a stage source file changed but its version constant did not.
-- **Determinism scope:** audit and fix only the two cached stages (lightmap, SH volume). Wider cleanup deferred to the per-element sibling plan.

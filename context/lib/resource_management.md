@@ -106,12 +106,17 @@ Per-texel specular intensity modulates the direct lighting highlight.
 - **Dependency:** Requires `Pillow`, managed via `uv`.
 - **Setup:** `uv venv && source .venv/bin/activate && uv pip install Pillow`.
 - **Usage:** `python3 tools/gen_specular.py --input <path> --recursive`.
+- **Linear-output guarantee:** outputs are written without `sRGB`, `gAMA`, or `iCCP` PNG chunks, so they pass `prl-build`'s linear color-space validation (see §4.1, §4.3). The script strips any color-management metadata that Pillow would otherwise carry forward from the diffuse source.
 
 ### 4.3 Normal Maps (Phase 5+)
 
-> **Not yet implemented.**
+Optional per-texture normal maps for fine surface detail.
 
-Optional per-texture normal maps for fine surface detail. Convention: `_n` suffix alongside the diffuse texture. Tangent-space RGB PNGs matching the diffuse dimensions.
+- **Naming:** `{name}_n.png` suffix alongside the diffuse texture.
+- **Format:** `Rgba8Unorm` (linear). Must not be sRGB-tagged — prl-build rejects sRGB-tagged siblings at compile time.
+- **Encoding:** Tangent-space RGB. Decode: `n = sample.rgb * 2.0 - 1.0`. Dimensions must match the diffuse texture.
+- **Placeholder:** Shared 1×1 neutral-normal texture encoding `(127, 127, 255)` — decodes to `(0, 0, 1)` (tangent-space +Z). Engine-lifetime; survives level unload. Used when `_n.png` is absent, dimensions mismatch (logs a warning), or decode fails (logs an error).
+- **Fallback:** Missing or invalid sibling falls back to the placeholder silently except for the log entry. Flat mesh-normal shading is preserved — the placeholder is a true no-op through the TBN path.
 
 ---
 

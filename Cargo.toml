@@ -40,6 +40,9 @@ rayon = "1"
 
 # Image loading
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Lower-level PNG decoder — used by prl-build to inspect color-space chunks
+# (sRGB, gAMA, iCCP) that the `image` crate does not surface in its public API.
+png = "0.18"
 
 # Serialization (scripting FFI transit)
 serde = { version = "1", features = ["derive"] }

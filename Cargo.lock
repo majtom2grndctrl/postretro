@@ -2690,6 +2690,7 @@ dependencies = [
  "indicatif",
  "log",
  "nalgebra 0.33.3",
+ "png",
  "postretro-level-format",
  "rayon",
  "shambler",

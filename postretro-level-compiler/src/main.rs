@@ -19,6 +19,7 @@ pub mod parse;
 pub mod partition;
 pub mod portals;
 pub mod sh_bake;
+pub mod texture_validation;
 pub mod visibility;
 
 use std::path::PathBuf;
@@ -79,6 +80,24 @@ impl BuildProgress {
     }
 }
 
+/// Resolve the textures directory from a map input path.
+///
+/// Mirrors the runtime resolver in `postretro/src/main.rs`: `<asset_root>/textures/`,
+/// where `<asset_root>` is the parent of the map's directory (typically `assets/maps/`).
+/// For a map outside this layout the path is still constructed; the validator is a
+/// no-op if the directory does not exist.
+fn resolve_texture_root(map_path: &PathBuf) -> PathBuf {
+    let map_dir = map_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let asset_root = map_dir
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    asset_root.join("textures")
+}
+
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
@@ -103,6 +122,16 @@ fn main() -> anyhow::Result<()> {
     let stage_start = Instant::now();
     let map_data = parse::parse_map_file(&args.input, args.format)?;
     timings.push(("Parsing", stage_start.elapsed()));
+
+    // Validate that every `_n.png` / `_s.png` surface-map sibling under the
+    // textures root carries linear PNG color-space metadata. Diffuse textures
+    // (no suffix) are not checked — the runtime samples them as Rgba8UnormSrgb.
+    // See `context/lib/resource_management.md` §4 and `texture_validation.rs`.
+    progress.start_stage("Texture color-space validation...");
+    let stage_start = Instant::now();
+    let texture_root = resolve_texture_root(&args.input);
+    texture_validation::validate_sibling_color_spaces(&texture_root)?;
+    timings.push(("TexValidation", stage_start.elapsed()));
 
     // Pre-compute light-namespace envelopes once so each bake stage takes the
     // typed slice it needs and applies no further filter. See

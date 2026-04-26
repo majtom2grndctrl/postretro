@@ -22,7 +22,7 @@ pub mod sh_bake;
 pub mod texture_validation;
 pub mod visibility;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -86,7 +86,7 @@ impl BuildProgress {
 /// where `<asset_root>` is the parent of the map's directory (typically `assets/maps/`).
 /// For a map outside this layout the path is still constructed; the validator is a
 /// no-op if the directory does not exist.
-fn resolve_texture_root(map_path: &PathBuf) -> PathBuf {
+fn resolve_texture_root(map_path: &Path) -> PathBuf {
     let map_dir = map_path
         .parent()
         .map(PathBuf::from)

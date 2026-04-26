@@ -1026,8 +1026,7 @@ impl Renderer {
         let texture_materials: &[Material] = geometry.map(|g| g.texture_materials).unwrap_or(&[]);
         let specular_set: Option<&[Option<LoadedTexture>]> =
             texture_set.map(|s| s.specular.as_slice());
-        let normal_set: Option<&[Option<LoadedTexture>]> =
-            texture_set.map(|s| s.normal.as_slice());
+        let normal_set: Option<&[Option<LoadedTexture>]> = texture_set.map(|s| s.normal.as_slice());
 
         let mut gpu_textures: Vec<GpuTexture> = Vec::new();
         if let Some(tex_set) = texture_set {
@@ -1067,9 +1066,7 @@ impl Renderer {
                 // vectors must not gamma-correct). Falls back to the shared
                 // neutral-normal placeholder when no `_n` sibling was present
                 // or it failed validation in the loader.
-                let normal_view = match normal_set
-                    .and_then(|s| s.get(idx))
-                    .and_then(|o| o.as_ref())
+                let normal_view = match normal_set.and_then(|s| s.get(idx)).and_then(|o| o.as_ref())
                 {
                     Some(normal_loaded) => {
                         let tex = upload_texture_data(

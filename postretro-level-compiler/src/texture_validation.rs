@@ -127,7 +127,9 @@ fn collect_sibling_pngs(texture_root: &Path) -> std::io::Result<Vec<(PathBuf, &'
         };
         for file in files.flatten() {
             let p = file.path();
-            if p.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase())
+            if p.extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
                 != Some("png".to_string())
             {
                 continue;
@@ -226,7 +228,11 @@ mod tests {
                     let mut c = i as u32;
                     let mut k = 0;
                     while k < 8 {
-                        c = if c & 1 != 0 { 0xedb88320 ^ (c >> 1) } else { c >> 1 };
+                        c = if c & 1 != 0 {
+                            0xedb88320 ^ (c >> 1)
+                        } else {
+                            c >> 1
+                        };
                         k += 1;
                     }
                     t[i] = c;
@@ -290,7 +296,8 @@ mod tests {
     }
 
     fn write_temp(name: &str, bytes: &[u8]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prl-build-tex-validate-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("prl-build-tex-validate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
         let mut f = std::fs::File::create(&p).unwrap();
@@ -302,7 +309,10 @@ mod tests {
     fn detects_linear_when_no_color_chunks_present() {
         let png = build_test_png(&[]);
         let p = write_temp("plain.png", &png);
-        assert!(matches!(detect_color_space(&p).unwrap(), DetectedColorSpace::Linear));
+        assert!(matches!(
+            detect_color_space(&p).unwrap(),
+            DetectedColorSpace::Linear
+        ));
     }
 
     #[test]
@@ -310,7 +320,10 @@ mod tests {
         // sRGB chunk: 1 byte rendering intent.
         let png = build_test_png(&[(b"sRGB", vec![0u8])]);
         let p = write_temp("srgb.png", &png);
-        assert!(matches!(detect_color_space(&p).unwrap(), DetectedColorSpace::Srgb));
+        assert!(matches!(
+            detect_color_space(&p).unwrap(),
+            DetectedColorSpace::Srgb
+        ));
     }
 
     #[test]
@@ -331,7 +344,10 @@ mod tests {
         // gAMA = 1.0 is encoded as 100000.
         let png = build_test_png(&[(b"gAMA", 100000u32.to_be_bytes().to_vec())]);
         let p = write_temp("gama_linear.png", &png);
-        assert!(matches!(detect_color_space(&p).unwrap(), DetectedColorSpace::Linear));
+        assert!(matches!(
+            detect_color_space(&p).unwrap(),
+            DetectedColorSpace::Linear
+        ));
     }
 
     #[test]

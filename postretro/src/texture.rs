@@ -213,23 +213,30 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
             None
         } else {
             match name_to_path.get(&spec_key) {
-                Some(path) => {
-                    let loaded = load_png(path, &spec_key);
-                    if loaded.is_placeholder {
-                        None
-                    } else if loaded.width != diffuse.width || loaded.height != diffuse.height {
-                        log::warn!(
-                            "[Texture] Specular '{spec_key}' dimensions {}x{} do not match diffuse '{name}' {}x{} - ignoring",
-                            loaded.width,
-                            loaded.height,
-                            diffuse.width,
-                            diffuse.height,
+                Some(path) => match load_png_strict(path) {
+                    Ok(loaded) => {
+                        if loaded.width != diffuse.width || loaded.height != diffuse.height {
+                            log::warn!(
+                                "[Texture] Specular '{spec_key}' dimensions {}x{} do not match diffuse '{name}' {}x{} - ignoring",
+                                loaded.width,
+                                loaded.height,
+                                diffuse.width,
+                                diffuse.height,
+                            );
+                            None
+                        } else {
+                            Some(loaded)
+                        }
+                    }
+                    Err(err) => {
+                        log::error!(
+                            "[Texture] Failed to decode specular map '{}' from {}: {err} - using no specular",
+                            spec_key,
+                            path.display(),
                         );
                         None
-                    } else {
-                        Some(loaded)
                     }
-                }
+                },
                 None => None,
             }
         };
@@ -269,7 +276,7 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
                     }
                 },
                 None => {
-                    log::info!("[Texture] No normal map for '{name}' — using neutral placeholder");
+                    log::trace!("[Texture] No normal map for '{name}' — using neutral placeholder");
                     None
                 }
             }
@@ -291,6 +298,11 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
 /// instead of substituting a checkerboard. Used for sidecar textures where the
 /// caller wants to log a sidecar-specific message and fall back to a shared
 /// placeholder rather than to a per-texture checkerboard.
+///
+/// Callers are responsible for uploading the result with the correct GPU format.
+/// Normal maps (`_n.png`) must be uploaded as `Rgba8Unorm` (linear, NOT sRGB) —
+/// this is the load-bearing invariant that the build-time validator enforces and
+/// what distinguishes them from diffuse textures (`Rgba8UnormSrgb`).
 fn load_png_strict(path: &Path) -> Result<LoadedTexture, image::ImageError> {
     let img = image::open(path)?;
     let rgba = img.to_rgba8();
@@ -591,7 +603,12 @@ mod tests {
         fs::create_dir(&collection).unwrap();
         write_test_png(&collection.join("brick.png"), 32, 32);
         // Neutral tangent-space normal: (0.5, 0.5, 1.0) → (128, 128, 255).
-        write_solid_png(&collection.join("brick_n.png"), 32, 32, [128, 128, 255, 255]);
+        write_solid_png(
+            &collection.join("brick_n.png"),
+            32,
+            32,
+            [128, 128, 255, 255],
+        );
 
         let result = load_textures(&[Some("brick".to_string())], &dir);
 
@@ -627,7 +644,12 @@ mod tests {
         fs::create_dir(&collection).unwrap();
         write_test_png(&collection.join("brick.png"), 32, 32);
         // Wrong size — must not be silently rescaled or accepted.
-        write_solid_png(&collection.join("brick_n.png"), 16, 16, [128, 128, 255, 255]);
+        write_solid_png(
+            &collection.join("brick_n.png"),
+            16,
+            16,
+            [128, 128, 255, 255],
+        );
 
         let result = load_textures(&[Some("brick".to_string())], &dir);
 
@@ -664,7 +686,12 @@ mod tests {
         fs::create_dir(&collection).unwrap();
         // No `brick.png` — diffuse will become a 64x64 checkerboard.
         // A valid 64x64 `_n.png` would otherwise dimension-match.
-        write_solid_png(&collection.join("brick_n.png"), 64, 64, [128, 128, 255, 255]);
+        write_solid_png(
+            &collection.join("brick_n.png"),
+            64,
+            64,
+            [128, 128, 255, 255],
+        );
 
         let result = load_textures(&[Some("brick".to_string())], &dir);
 
@@ -778,7 +805,12 @@ mod tests {
         let collection = dir.join("mixed");
         fs::create_dir(&collection).unwrap();
         write_test_png(&collection.join("surface.png"), 32, 32);
-        write_solid_png(&collection.join("surface_n.png"), 32, 32, [128, 128, 255, 255]);
+        write_solid_png(
+            &collection.join("surface_n.png"),
+            32,
+            32,
+            [128, 128, 255, 255],
+        );
         // Corrupt specular alongside a valid normal map.
         fs::write(collection.join("surface_s.png"), b"junk").unwrap();
 

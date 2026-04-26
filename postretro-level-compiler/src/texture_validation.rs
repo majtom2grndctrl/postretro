@@ -39,7 +39,7 @@ enum DetectedColorSpace {
     /// PNG has an `iCCP` chunk — embeds an ICC profile, treated as non-linear.
     /// Most exporters that emit `iCCP` are tagging an sRGB or display profile;
     /// authoring a linear surface map should not include an embedded profile.
-    IccProfile { profile_name: String },
+    IccProfile,
     /// PNG has a `gAMA` chunk with value not within `LINEAR_GAMMA_EPSILON` of 1.0.
     NonLinearGamma { gamma: f32 },
     /// No color-space metadata, or a `gAMA` chunk approximately equal to 1.0.
@@ -50,9 +50,7 @@ impl DetectedColorSpace {
     fn describe(&self) -> String {
         match self {
             Self::Srgb => "sRGB (sRGB chunk present)".to_string(),
-            Self::IccProfile { profile_name } => {
-                format!("ICC profile '{profile_name}' (iCCP chunk present)")
-            }
+            Self::IccProfile => "has an embedded ICC profile (iCCP chunk present)".to_string(),
             Self::NonLinearGamma { gamma } => format!("non-linear gamma {gamma:.5}"),
             Self::Linear => "linear".to_string(),
         }
@@ -80,15 +78,10 @@ fn detect_color_space(path: &Path) -> anyhow::Result<DetectedColorSpace> {
         return Ok(DetectedColorSpace::Srgb);
     }
 
-    if let Some(icc) = info.icc_profile.as_ref() {
-        // The iCCP chunk leads with a 1–79 byte Latin-1 profile name terminated
-        // by a NUL, but `png` already strips that and exposes the decompressed
-        // profile body. We don't have the original name, so report a stable
-        // marker and the profile size.
-        let _ = icc; // body content not used; presence is the signal
-        return Ok(DetectedColorSpace::IccProfile {
-            profile_name: "embedded".to_string(),
-        });
+    if info.icc_profile.is_some() {
+        // The iCCP chunk embeds a compressed ICC profile body. Presence alone
+        // is the signal — the profile body content is not inspected.
+        return Ok(DetectedColorSpace::IccProfile);
     }
 
     if let Some(gama) = info.gama_chunk {
@@ -138,9 +131,10 @@ fn collect_sibling_pngs(texture_root: &Path) -> std::io::Result<Vec<(PathBuf, &'
                 Some(s) => s,
                 None => continue,
             };
-            let suffix = if stem.ends_with("_n") {
+            let stem_lower = stem.to_lowercase();
+            let suffix = if stem_lower.ends_with("_n") {
                 "_n.png"
-            } else if stem.ends_with("_s") {
+            } else if stem_lower.ends_with("_s") {
                 "_s.png"
             } else {
                 continue;

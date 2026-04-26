@@ -592,12 +592,14 @@ impl Renderer {
         // lights + spec stack, SH volume, lightmap); `lighting-spot-shadows`
         // will add a shadow-pool group. 8 is the WebGPU maximum and is
         // supported on every desktop backend we target.
-        // NOTE: the forward fragment shader now binds exactly 16 sampled textures
-        // (3 material + 9 SH bands + 3 lightmap + 1 shadow depth), which is the
-        // WebGPU spec floor for max_sampled_textures_per_shader_stage. Adding
-        // another sampled texture to the forward pass requires bumping this limit
-        // (all desktop backends support ≥32) or restructuring the SH bindings
-        // (e.g., collapsing the 9 band textures into a texture array).
+        // NOTE: the forward fragment shader binds exactly 16 sampled textures
+        // (3 material [diffuse, spec, normal — normal at binding 4 was added by
+        // the normal-maps plan; previously 15] + 9 SH bands + 3 lightmap +
+        // 1 shadow depth), which is the WebGPU spec floor for
+        // max_sampled_textures_per_shader_stage. Adding another sampled texture
+        // to the forward pass requires bumping this limit (all desktop backends
+        // support ≥32) or restructuring the SH bindings (e.g., collapsing the
+        // 9 band textures into a texture array).
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
             // SH compose pass writes 9 storage textures (one per SH band).

@@ -45,9 +45,10 @@ struct MaterialUniform {
 };
 @group(1) @binding(3) var<uniform> material: MaterialUniform;
 // Per-material tangent-space normal map. Sampled with `base_sampler`. The
-// neutral placeholder is (127, 127, 255, 255) which decodes to ~(0, 0, 1) in
-// tangent space, so surfaces with no `_n.png` sibling render identically to
-// the mesh-normal path. See context/lib/resource_management.md §4.3.
+// neutral placeholder is (127, 127, 255, 255) which decodes to ~(0, 0, 1)
+// (exact: (-0.004, -0.004, 1.0)) in tangent space, so surfaces with no
+// `_n.png` sibling render identically to the mesh-normal path.
+// See context/lib/resource_management.md §4.3.
 @group(1) @binding(4) var t_normal: texture_2d<f32>;
 
 @group(2) @binding(0) var<storage, read> lights: array<GpuLight>;
@@ -463,10 +464,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if length(in.world_tangent) < TBN_EPS {
         N_bump = mesh_n;
     } else {
-        let T = normalize(in.world_tangent);
+        // Gram-Schmidt: project out mesh_n component so T stays in the tangent plane.
+        let T = normalize(in.world_tangent - mesh_n * dot(in.world_tangent, mesh_n));
         let B = cross(mesh_n, T) * in.bitangent_sign;
         let TBN = mat3x3<f32>(T, B, mesh_n);
-        N_bump = normalize(TBN * n_ts);
+        let n_ts_world = TBN * n_ts;
+        if length(n_ts_world) < TBN_EPS {
+            N_bump = mesh_n;
+        } else {
+            N_bump = normalize(n_ts_world);
+        }
     }
 
     // Lighting isolation mode: enable each contributing term independently
@@ -529,11 +536,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // EPS guards grazing texels where mesh NdotL ≈ 0 (avoid div-by-zero
         // and the resulting NaN/inf blowup).
         const EPS: f32 = 1e-3;
-        let scale = select(0.0, n_dot_l_bump / max(n_dot_l_mesh, EPS), n_dot_l_mesh > EPS);
+        // Skip bumped correction when irradiance is negligible — dominant
+        // direction is unreliable for unlit texels, and we'd just scale ~0.
+        const LM_IRR_EPS: f32 = 1.0e-4;
+        let use_correction = length(lm_irr) >= LM_IRR_EPS && n_dot_l_mesh > EPS;
         // Cap at 4.0: prevents an unbounded spike when N_bump tilts toward
         // the light on a near-backfacing mesh surface.
-        let scale_capped = min(scale, 4.0);
-        static_direct = lm_irr * scale_capped + lm_anim;
+        let scale = select(1.0, min(n_dot_l_bump / max(n_dot_l_mesh, EPS), 4.0), use_correction);
+        static_direct = lm_irr * scale + lm_anim;
     }
 
     // Total light = ambient floor (minimum) + indirect + static direct + dynamic sum.

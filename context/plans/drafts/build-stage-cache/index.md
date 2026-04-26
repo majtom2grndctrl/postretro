@@ -20,7 +20,7 @@ This plan also lays the substrate (deterministic stage outputs, serializable int
 - Cache participation for the two expensive stages: **lightmap bake** and **SH volume bake**.
 - Cache substrate (key derivation, atomic write, load, eviction-by-nuke) usable by additional stages later without rework.
 - Determinism audit and fixes for any cached stage's output. Two builds with identical input must produce byte-identical cache entries.
-- CLI surface: `--cache-dir <path>` (default: `<map-dir>/.prl-cache/`), `--no-cache` (bypass read and write).
+- CLI surface: `--cache-dir <path>` (default: `<workspace-root>/.prl-cache/`), `--no-cache` (bypass read and write). Workspace root is located by walking parent directories for `Cargo.toml`; falls back to map-adjacent if no workspace root is found.
 - Cache invalidation tests: edit-property-only round trips skip the bakes; edit-light round trips re-bake; bumping a stage version constant invalidates that stage's entries.
 - Documentation update in `context/lib/build_pipeline.md` describing the cache, its invariants, and the stage-version bump discipline.
 
@@ -96,8 +96,12 @@ Update `context/lib/build_pipeline.md` with a new Build Cache section: where the
 
 ## Open questions
 
-- **Cache directory default:** next to the input `.map` (`<map-dir>/.prl-cache/`) vs. next to the output `.prl` vs. a workspace-rooted `target/prl-cache/`. Map-adjacent is most discoverable for a level author iterating on a single file; workspace-rooted survives `cargo clean` and shares across maps. Lean: map-adjacent default, overridable via flag.
-- **Serialization format:** postcard (compact, no_std-friendly) vs. bincode (mature, slower-evolving). Either works; pick whichever the format crate already leans on. If neither, postcard.
-- **Stage version representation:** a single `const STAGE_VERSION: u32` per stage module, manually bumped by the engineer changing the algorithm. Alternative: derive from a hash of the stage source file (auto-bump on any edit, but invalidates on whitespace changes). Lean: manual constant — discipline cost is low, false-invalidation cost is irritating.
 - **Should the cache be content-addressable across stages?** Storing entries as `<key>.bin` means two stages with the same input+output (unlikely but possible) share an entry. Cleaner but trivially solvable either way; no impact on correctness.
-- **Determinism scope of Task 3:** are there latent non-determinism issues outside the cached stages that should be fixed opportunistically (e.g., for the future per-element plan), or held strictly to the cached stages to keep this plan tight? Lean: hold to cached stages; capture the rest as research notes for the sibling plan.
+- **Determinism scope of Task 3:** are there latent non-determinism issues outside the cached stages that should be fixed opportunistically (e.g., for the future per-element plan), or held strictly to the cached stages to keep this plan tight? Decided: hold to cached stages; capture the rest as research notes for the sibling plan.
+
+## Decisions
+
+- **Cache directory default:** workspace-adjacent (`.prl-cache/` next to the workspace `Cargo.toml`). One directory to nuke when clearing; shared across all maps in the workspace. Workspace root located by walking parent dirs from the input `.map`; falls back to map-adjacent if no workspace root found.
+- **Serialization format:** postcard. More compact than bincode (varint encoding vs. fixed-width), no false-positive invalidation risk from upstream API churn (bincode v1→v2 break history), and designed for deterministic Rust-to-Rust byte serialization — which is exactly this use case.
+- **Stage version representation:** manual `const STAGE_VERSION: u32` per stage module, bumped by the engineer changing the algorithm. Source-file-hash auto-bump was rejected: too many false positives (editing a doc comment re-runs a 30-second SH bake). Optionally enforce via CI lint: warn if a stage source file changed but its version constant did not.
+- **Determinism scope:** audit and fix only the two cached stages (lightmap, SH volume). Wider cleanup deferred to the per-element sibling plan.

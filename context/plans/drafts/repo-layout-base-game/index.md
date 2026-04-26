@@ -12,7 +12,7 @@ Reorganize the repo to make "base game" and "mod" content first-class alongside 
 - Introduce `content/` tree — `base/` for first-party game content, `tests/` for engine test fixtures
 - Extend map-path → content root derivation to scripts loading (replace hardcoded `assets/scripts/`)
 - Consolidate `sdk/types/` to a single copy at repo root; add `sdk/lib/` for core modder-facing TS/Luau libraries; add `sdk/TrenchBroom/` as FGD generation target
-- Reorganize `tools/`: external pre-compiled binaries to `tools/ext/`, automation scripts to `tools/scripts/`
+- Clean up `tools/`: remove all ericw-tools binaries and docs (unused); keep `gen_specular.py`; add `tools/scripts/` placeholder
 - Update `.gitignore`, `CLAUDE.md`, and context docs to reflect new paths
 
 ### Out of scope
@@ -32,7 +32,7 @@ Reorganize the repo to make "base game" and "mod" content first-class alongside 
 - [ ] No references to `assets/` remain in engine source or CLAUDE.md
 - [ ] `sdk/types/` exists at repo root only — `crates/postretro/sdk/types/` directory removed; engine gen-types output path updated to `sdk/types/`
 - [ ] `sdk/TrenchBroom/postretro.fgd` exists (moved from `assets/postretro.fgd`)
-- [ ] `tools/ext/` contains external binaries (qbsp, vis, bspinfo, maputil, lightpreview.app, embree .dylib); `tools/README.md` updated
+- [ ] All ericw-tools binaries and docs removed from `tools/`; `tools/gen_specular.py` and `tools/README.md` remain; `tools/scripts/` placeholder exists
 - [ ] `dist/` is listed in `.gitignore`
 
 ## Tasks
@@ -90,16 +90,21 @@ No new struct or abstraction needed — a single `content_root_from_map(map_path
 - Create `sdk/lib/` and move `assets/scripts/sdk/` contents there (covered by Task 2 above): `light_animation.ts`, `light_animation.luau`, `world.ts`, `world.luau`.
 - Add `sdk/templates/` with a starter `tsconfig.json` (copy from `content/tests/scripts/tsconfig.json`).
 
-### Task 5: Tools reorganization
+### Task 5: Tools cleanup
 
-- Move external pre-compiled binaries and dylibs to `tools/ext/`: `light`, `qbsp`, `vis`, `bspinfo`, `maputil`, `bsputil`, `lightpreview.app`, `libembree4.4.dylib`, `libtbb.12.dylib`, `libtbbmalloc.2.dylib`, `LICENSE-embree.txt`, `gpl_v3.txt`.
-- Keep `tools/gen_specular.py` and `tools/README.md` at `tools/` root.
-- Create `tools/scripts/` as a placeholder for future automation scripts (`new-mod.sh`, etc.) with a brief README.
-- Update `tools/README.md` to document `ext/` as external binaries not built from source.
+The `tools/` directory currently contains ericw-tools pre-compiled binaries (`light`, `qbsp`, `vis`, `bspinfo`, `maputil`, `bsputil`, `lightpreview.app`), embree/TBB dylibs (`libembree4.4.dylib`, `libtbb.12.dylib`, `libtbbmalloc.2.dylib`), license files (`LICENSE-embree.txt`, `gpl_v3.txt`), and a `doc/` tree of Sphinx HTML for ericw-tools. These tools are not used — the project's own `prl-build` crate handles all map compilation. Delete all of them.
+
+Retain:
+- `tools/gen_specular.py` — actively used specular map generation script
+- `tools/README.md` — update to remove ericw-tools documentation and describe `gen_specular.py` and `scripts/` only
+
+Create `tools/scripts/` as a placeholder for future automation scripts (`new-mod.sh`, `new-level.sh`, etc.) with a brief README.
+
+Also remove the `/tools` entry from `.gitignore` (it was added to ignore the large tracked binaries; once the binaries are gone, `tools/` has no gitignore-worthy content).
 
 ### Task 6: Housekeeping
 
-- `.gitignore`: add `dist/`, `autosave/`; ensure `target/` is present; remove `postretro/sdk/` entry (stale after Task 4 deletes the directory); add `sdk/types/` if generated types should remain untracked.
+- `.gitignore`: add `dist/`, `autosave/`; ensure `target/` is present; remove `postretro/sdk/` entry (stale after Task 4 deletes the directory); remove `/tools` entry (was suppressing the large ericw-tools binaries; once deleted in Task 5, `tools/` needs no ignore rule); add `sdk/types/` if generated types should remain untracked.
 - `CLAUDE.md`: update all build commands and path references (`assets/` → `content/`); update `prl-build` example to use `content/base/maps/` as output target.
 - Update `postretro-level-compiler/` source and test files: audit `src/` and `tests/` for hardcoded `assets/maps/` and `assets/textures/` paths (doc comments, CLI `--help` examples, test fixture path helpers — confirmed call sites include `src/main.rs`, `src/parse.rs`, `src/partition.rs`, `src/portals.rs`, `src/geometry.rs`, `src/pack.rs`, and `tests/animated_weight_maps_fixtures.rs`) and update them to `content/tests/maps/` and `content/tests/textures/` respectively. Run `cargo test --workspace` to verify fixtures pass after the move.
 - `context/lib/build_pipeline.md`: update texture authoring path (`textures/` is now under `content/<mod>/textures/`), update FGD location.

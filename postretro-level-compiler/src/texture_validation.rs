@@ -36,9 +36,11 @@ const LINEAR_GAMMA_EPSILON: f32 = 0.01;
 enum DetectedColorSpace {
     /// PNG has an `sRGB` chunk — explicitly tagged sRGB.
     Srgb,
-    /// PNG has an `iCCP` chunk — embeds an ICC profile, treated as non-linear.
-    /// Most exporters that emit `iCCP` are tagging an sRGB or display profile;
-    /// authoring a linear surface map should not include an embedded profile.
+    /// PNG has an `iCCP` chunk — embeds an ICC profile. Rejected unconditionally,
+    /// even if the profile tags a linear color space: parsing the ICC payload to
+    /// distinguish linear-vs-non-linear is more complexity than the policy is
+    /// worth. Authors should strip the profile (e.g. `convert -strip`) regardless
+    /// of what it claims.
     IccProfile,
     /// PNG has a `gAMA` chunk with value not within `LINEAR_GAMMA_EPSILON` of 1.0.
     NonLinearGamma { gamma: f32 },
@@ -50,7 +52,10 @@ impl DetectedColorSpace {
     fn describe(&self) -> String {
         match self {
             Self::Srgb => "sRGB (sRGB chunk present)".to_string(),
-            Self::IccProfile => "has an embedded ICC profile (iCCP chunk present)".to_string(),
+            Self::IccProfile => "has an embedded ICC profile (iCCP chunk) — \
+                rejected unconditionally; strip it even if it tags linear color space \
+                (use `gen_specular.py` or `convert -strip` to remove color management metadata)"
+                .to_string(),
             Self::NonLinearGamma { gamma } => format!("non-linear gamma {gamma:.5}"),
             Self::Linear => "linear".to_string(),
         }

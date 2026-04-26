@@ -450,30 +450,35 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let base_color = textureSample(base_texture, base_sampler, in.uv);
 
+    let mesh_n = normalize(in.world_normal);
+
     // Tangent-space normal map sampling + TBN construction. The neutral
     // placeholder (127, 127, 255, 255) decodes to ~(0, 0, 1), which TBN
     // transforms back to the mesh normal — so surfaces without an `_n.png`
     // sibling render identically to the pre-bump path.
-    let n_ts = textureSample(t_normal, base_sampler, in.uv).rgb * 2.0 - 1.0;
-    let mesh_n = normalize(in.world_normal);
-    // Degenerate-tangent guard: meshes with collapsed UVs produce zero-length
-    // tangents. Skip TBN in that case to avoid NaN propagation.
-    const TBN_EPS: f32 = 1.0e-4;
-    var N_bump: vec3<f32>;
-    // Defensive guard against NaN propagation through interpolation; in
-    // practice the post-multiply guard below is the one that fires.
-    if dot(in.world_tangent, in.world_tangent) < TBN_EPS * TBN_EPS {
-        N_bump = mesh_n;
-    } else {
-        // Gram-Schmidt: project out mesh_n component so T stays in the tangent plane.
-        let T = normalize(in.world_tangent - mesh_n * dot(in.world_tangent, mesh_n));
-        let B = cross(mesh_n, T) * in.bitangent_sign;
-        let TBN = mat3x3<f32>(T, B, mesh_n);
-        let n_ts_world = TBN * n_ts;
-        if dot(n_ts_world, n_ts_world) < TBN_EPS * TBN_EPS {
-            N_bump = mesh_n;
-        } else {
-            N_bump = normalize(n_ts_world);
+    //
+    // Skipped entirely in AmbientOnly isolation mode (iso == 3u): the ambient
+    // floor branch is view-independent and never reads N_bump, and every other
+    // consumer of N_bump (specular, bumped-Lambert correction, dynamic loop)
+    // is also gated off in that mode.
+    let iso = uniforms.lighting_isolation;
+    var N_bump: vec3<f32> = mesh_n;
+    if iso != 3u {
+        let n_ts = textureSample(t_normal, base_sampler, in.uv).rgb * 2.0 - 1.0;
+        // Degenerate-tangent guard: meshes with collapsed UVs produce zero-length
+        // tangents. Skip TBN in that case to avoid NaN propagation.
+        const TBN_EPS: f32 = 1.0e-4;
+        // Defensive guard against NaN propagation through interpolation; in
+        // practice the post-multiply guard below is the one that fires.
+        if dot(in.world_tangent, in.world_tangent) >= TBN_EPS * TBN_EPS {
+            // Gram-Schmidt: project out mesh_n component so T stays in the tangent plane.
+            let T = normalize(in.world_tangent - mesh_n * dot(in.world_tangent, mesh_n));
+            let B = cross(mesh_n, T) * in.bitangent_sign;
+            let TBN = mat3x3<f32>(T, B, mesh_n);
+            let n_ts_world = TBN * n_ts;
+            if dot(n_ts_world, n_ts_world) >= TBN_EPS * TBN_EPS {
+                N_bump = normalize(n_ts_world);
+            }
         }
     }
 
@@ -491,7 +496,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     //   7 = DynamicOnly        — dynamic direct lights only
     //   8 = SpecularOnly       — specular only
     // See `LightingIsolation` in postretro/src/render/mod.rs.
-    let iso = uniforms.lighting_isolation;
+    // (`iso` is read above for the AmbientOnly TBN gate.)
     let use_lightmap = (iso == 0u) || (iso == 1u) || (iso == 4u);
     // `use_indirect` covers the full composed SH volume today (static + animated
     // delta share one sampler). Mode 5 (StaticSHOnly) and mode 6
@@ -535,8 +540,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let n_dot_l_mesh = max(dot(mesh_n, dom), 0.0);
         let n_dot_l_bump = max(dot(N_bump, dom), 0.0);
         // NDOTL_EPS guards grazing texels where mesh NdotL ≈ 0 (avoid div-by-zero
-        // and the resulting NaN/inf blowup).
-        const NDOTL_EPS: f32 = 1e-3;
+        // and the resulting NaN/inf blowup). Set to 1e-2 (~10° from tangent) to
+        // skip correction at grazing — the dominant-direction bake is unreliable
+        // below ~10° anyway, and a tighter epsilon lets the cap-clamped ratio
+        // produce visible brightness pops at near-grazing angles.
+        const NDOTL_EPS: f32 = 1.0e-2;
         // Skip bumped correction when irradiance is negligible — dominant
         // direction is unreliable for unlit texels, and we'd just scale ~0.
         const LM_IRR_EPS: f32 = 1.0e-4;

@@ -33,9 +33,9 @@ Static spec lights bleed specular highlights through solid geometry because chun
 
 ## Tasks
 
-### Task A: Thread BSP tree and portal list into the chunk bake
+### Task A: Thread BSP tree, portal list, and exterior leaf set into the chunk bake
 
-Add `tree: &BspTree` and `portals: &[Portal]` to `ChunkLightListInputs`. Wire them at the call site in `main.rs` — both are already bound there (`result.tree`, `generated_portals`). No logic changes yet; this task only extends the struct and the call site.
+Add `tree: &BspTree`, `portals: &[Portal]`, and `exterior_leaves: &ExteriorLeaves` to `ChunkLightListInputs`. Wire them at the call site in `main.rs` — all three are already bound there (`result.tree`, `generated_portals`, `exterior_leaves`). No logic changes yet; this task only extends the struct and the call site.
 
 ### Task B: Portal-reachability filter in the chunk bake
 
@@ -43,7 +43,7 @@ Inside `bake_chunk_light_list()`:
 
 1. **Build adjacency map.** For each portal, record both directed edges (`front_leaf → back_leaf` and `back_leaf → front_leaf`). Result: `HashMap<usize, Vec<usize>>`.
 2. **Locate each light's source leaf.** Call `find_leaf_for_point(tree, light.origin)` (re-exported from `partition`). If the returned leaf is solid or exterior, mark the light as unlocated → skip portal filter for that light.
-3. **BFS per light.** From the source leaf, flood-fill through the adjacency map. Collect all reachable leaf indices into a `HashSet<usize>`.
+3. **BFS per light.** From the source leaf, flood-fill through the adjacency map. Skip expansion into exterior leaves. Collect all reachable non-exterior leaf indices into a `HashSet<usize>`.
 4. **Gate chunk assignment.** For each candidate chunk, compute its center point and call `find_leaf_for_point` to determine its leaf. If the leaf is not in the reachable set, skip the chunk. Existing spatial (range sphere) and BVH occlusion checks follow for accepted candidates.
 
 ## Sequencing
@@ -97,4 +97,3 @@ The `find_leaf_for_point` call for each chunk center is the inner loop. For typi
 ## Open questions
 
 - **`NdotL > 0` back-face guard:** The static spec loop has no guard; `blinn_phong` uses `NdH` not `NdotL`, so geometrically back-facing lights can still produce highlights. Adding `if dot(N_bump, L) <= 0.0 { continue; }` in the WGSL loop is a cheap complementary fix. Out of scope here but worth a follow-up.
-- **Exterior leaf handling:** The BFS should not expand through exterior leaves (they're outside the map). Confirm that `exterior_leaves` should be passed too, or verify that exterior leaves naturally have no adjacency entries (exterior flood-fill may have already removed them from the portal graph).

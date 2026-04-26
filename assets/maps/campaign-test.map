@@ -1171,7 +1171,7 @@
 "origin" "1824 512 400"
 "light" "400"
 "_color" "255 150 100"
-"_fade" "2048"
+"_fade" "1024"
 "_bake_only" "0"
 }
 // entity 6
@@ -1189,7 +1189,7 @@
 "origin" "-1184 2080 400"
 "light" "500"
 "_color" "200 255 200"
-"_fade" "2048"
+"_fade" "500"
 "_bake_only" "0"
 }
 // entity 8
@@ -1317,4 +1317,44 @@
 "_dynamic" "1"
 "mangle" "-15 106.1 0"
 "_light_radius" "800"
+}
+// entity 18
+{
+"classname" "light"
+"origin" "-1704 2616 140"
+"light" "300"
+"_color" "220 220 255"
+"_fade" "200"
+"_bake_only" "0"
+"style" "2"
+}
+// entity 19
+{
+"classname" "light"
+"origin" "-1704 2232 140"
+"light" "300"
+"_color" "220 220 255"
+"_fade" "200"
+"_bake_only" "0"
+"style" "2"
+}
+// entity 20
+{
+"classname" "light"
+"origin" "-1688 1848 140"
+"light" "300"
+"_color" "220 220 255"
+"_fade" "200"
+"_bake_only" "0"
+"style" "2"
+}
+// entity 21
+{
+"classname" "light"
+"origin" "-1672 1560 140"
+"light" "300"
+"_color" "220 220 255"
+"_fade" "200"
+"_bake_only" "0"
+"style" "2"
 }

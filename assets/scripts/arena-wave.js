@@ -162,17 +162,23 @@ registerHandler("levelLoad", ()=>{
             angle
         };
     });
-    lightsWithAngle.sort((a, b)=>a.angle - b.angle);
+    const startAngle = lightsWithAngle.reduce((best, cur)=>cur.light.transform.position.z > best.light.transform.position.z ? cur : best).angle;
+    const TWO_PI = 2 * Math.PI;
+    lightsWithAngle.sort((a, b)=>{
+        const da = (a.angle - startAngle + TWO_PI) % TWO_PI;
+        const db = (b.angle - startAngle + TWO_PI) % TWO_PI;
+        return da - db;
+    });
     const numLights = lightsWithAngle.length;
-    const periodMs = (numLights - 1) * 300 + 600 + 5000;
-    const pulseFraction = 600 / periodMs;
+    const periodMs = (numLights - 1) * 150 + 300 + 2000;
+    const pulseFraction = 300 / periodMs;
     const brightness = [];
     for(let i = 0; i < 32; i++){
         const t = i / 32;
         brightness.push(t < pulseFraction ? Math.sin(t / pulseFraction * Math.PI) : 0);
     }
     for(let i = 0; i < lightsWithAngle.length; i++){
-        const phase = i * 300 / periodMs;
+        const phase = i * 150 / periodMs;
         lightsWithAngle[i].light.setAnimation({
             periodMs,
             phase,

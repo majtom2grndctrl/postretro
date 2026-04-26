@@ -79,13 +79,25 @@ Entry point: `drain_reload_requests` on `ScriptRuntime`, called at the top of ea
 
 ---
 
-## 9. External API Shape
+## 9. Compilation Tooling
+
+`.ts` scripts compile to `.js` via `scripts-build` (`postretro-script-compiler` crate). Bundles the entry file with its relative imports, strips TypeScript-only syntax, removes bare-specifier imports — engine APIs arrive as QuickJS globals, not module imports.
+
+CLI: `scripts-build --in <entry.ts> --out <output.js>`
+
+Debug builds auto-compile at startup: any `.ts` with a same-stem `.js` sibling is recompiled before the engine loads it. Run the CLI directly for authoring workflows, CI, or when modifying scripts outside the engine.
+
+Does not type-check. Use `tsc --noEmit` separately.
+
+---
+
+## 11. External API Shape
 
 External scripting APIs stay close to internal data shapes by default. When internal naming, hardware constraints, or usability concerns diverge, the external API simplifies rather than exposes the constraint. The mapping should be traceable, not required to be identical. Examples: a `[f32; 3]` origin field becomes `transform.position` on an entity handle; a GPU loop-count convention (`0` = infinite) becomes `playCount` where omitting the field means forever.
 
 ---
 
-## 10. Non-Goals
+## 12. Non-Goals
 
 - General-purpose scripting host (only explicitly registered Rust functions are callable)
 - Synchronous cross-VM communication (QuickJS and Luau are independent runtimes)

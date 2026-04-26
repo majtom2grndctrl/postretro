@@ -594,6 +594,9 @@ impl Renderer {
         // supported on every desktop backend we target.
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
+            // SH compose pass writes 9 storage textures (one per SH band).
+            // WebGPU spec floor is 4; all desktop backends (Metal, Vulkan, DX12) support ≥9.
+            max_storage_textures_per_shader_stage: 9,
             ..wgpu::Limits::default()
         };
 

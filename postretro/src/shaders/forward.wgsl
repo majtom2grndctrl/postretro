@@ -12,9 +12,10 @@ struct Uniforms {
     time: f32,
     // Lighting-term isolation for leak/bleed debugging. Cycled by the
     // Alt+Shift+4 diagnostic chord. Values 0..9 — see fs_main for the full
-    // table; in summary 0 = Normal, 1 = DirectOnly, 2 = IndirectOnly,
-    // 3 = AmbientOnly, 4 = LightmapOnly, 5 = StaticSHOnly,
-    // 6 = AnimatedDeltaOnly, 7 = DynamicOnly, 8 = SpecularOnly.
+    // table; in summary 0 = Normal, 1 = NoLightmap, 2 = DirectOnly,
+    // 3 = IndirectOnly, 4 = AmbientOnly, 5 = LightmapOnly,
+    // 6 = StaticSHOnly, 7 = AnimatedDeltaOnly, 8 = DynamicOnly,
+    // 9 = SpecularOnly.
     lighting_isolation: u32,
     _pad: u32,
 };
@@ -457,13 +458,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // transforms back to the mesh normal — so surfaces without an `_n.png`
     // sibling render identically to the pre-bump path.
     //
-    // Skipped entirely in AmbientOnly isolation mode (iso == 3u): the ambient
+    // Skipped entirely in AmbientOnly isolation mode (iso == 4u): the ambient
     // floor branch is view-independent and never reads N_bump, and every other
     // consumer of N_bump (specular, bumped-Lambert correction, dynamic loop)
     // is also gated off in that mode.
     let iso = uniforms.lighting_isolation;
     var N_bump: vec3<f32> = mesh_n;
-    if iso != 3u {
+    if iso != 4u {
         let n_ts = textureSample(t_normal, base_sampler, in.uv).rgb * 2.0 - 1.0;
         // Degenerate-tangent guard: meshes with collapsed UVs produce zero-length
         // tangents. Skip TBN in that case to avoid NaN propagation.
@@ -486,26 +487,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // for leak/bleed debugging. The ambient floor always contributes so
     // interior geometry is never pitch black.
     //   0 = Normal             — all terms
-    //   1 = DirectOnly         — lightmap + dynamic + specular
-    //   2 = IndirectOnly       — SH indirect + specular
-    //   3 = AmbientOnly        — ambient floor only
-    //   4 = LightmapOnly       — static lightmap (incl. animated atlas)
-    //   5 = StaticSHOnly       — static SH indirect only
-    //   6 = AnimatedDeltaOnly  — animated SH delta only (no separate term
+    //   1 = NoLightmap         — all terms except static lightmap
+    //   2 = DirectOnly         — lightmap + dynamic + specular
+    //   3 = IndirectOnly       — SH indirect + specular
+    //   4 = AmbientOnly        — ambient floor only
+    //   5 = LightmapOnly       — static lightmap (incl. animated atlas)
+    //   6 = StaticSHOnly       — static SH indirect only
+    //   7 = AnimatedDeltaOnly  — animated SH delta only (no separate term
     //                            yet; meaningful once the compose pass lands)
-    //   7 = DynamicOnly        — dynamic direct lights only
-    //   8 = SpecularOnly       — specular only
+    //   8 = DynamicOnly        — dynamic direct lights only
+    //   9 = SpecularOnly       — specular only
     // See `LightingIsolation` in postretro/src/render/mod.rs.
     // (`iso` is read above for the AmbientOnly TBN gate.)
-    let use_lightmap = (iso == 0u) || (iso == 1u) || (iso == 4u);
+    let use_lightmap = (iso == 0u) || (iso == 2u) || (iso == 5u);
     // `use_indirect` covers the full composed SH volume today (static + animated
-    // delta share one sampler). Mode 5 (StaticSHOnly) and mode 6
+    // delta share one sampler). Mode 6 (StaticSHOnly) and mode 7
     // (AnimatedDeltaOnly) both route through this flag until Task E adds the
-    // separate animated-delta term; until then mode 5 shows the base SH and
-    // mode 6 shows nothing useful (intentionally — flag stays off).
-    let use_indirect = (iso == 0u) || (iso == 2u) || (iso == 5u);
-    let use_specular = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u);
-    let use_dynamic = (iso == 0u) || (iso == 1u) || (iso == 7u);
+    // separate animated-delta term; until then mode 6 shows the base SH and
+    // mode 7 shows nothing useful (intentionally — flag stays off).
+    let use_indirect = (iso == 0u) || (iso == 1u) || (iso == 3u) || (iso == 6u);
+    let use_specular = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 3u) || (iso == 9u);
+    let use_dynamic = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u);
 
     // Indirect term: baked SH irradiance. Zero when no SH volume is loaded
     // or when the isolation mode suppresses indirect.

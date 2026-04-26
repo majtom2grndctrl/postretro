@@ -30,6 +30,12 @@ pub struct TextureSet {
     /// sibling's dimensions did not match the diffuse. Same indexing as
     /// `textures`. See `context/lib/resource_management.md` §4.1.
     pub specular: Vec<Option<LoadedTexture>>,
+    /// Optional tangent-space normal map, sibling-loaded as `{name}_n.png`.
+    /// Stored as RGBA8 and uploaded as `Rgba8Unorm` (linear, NOT sRGB). `None`
+    /// when no `_n` sibling was present, the sibling's dimensions did not
+    /// match the diffuse, or the sibling failed to decode. Same indexing as
+    /// `textures`. See `context/lib/resource_management.md` §4.3.
+    pub normal: Vec<Option<LoadedTexture>>,
 }
 
 // --- Checkerboard placeholder ---
@@ -168,6 +174,7 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
 
     let mut textures: Vec<LoadedTexture> = Vec::with_capacity(texture_names.len());
     let mut specular: Vec<Option<LoadedTexture>> = Vec::with_capacity(texture_names.len());
+    let mut normal: Vec<Option<LoadedTexture>> = Vec::with_capacity(texture_names.len());
 
     for (idx, name_opt) in texture_names.iter().enumerate() {
         let name = match name_opt {
@@ -178,6 +185,7 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
                 );
                 textures.push(generate_checkerboard());
                 specular.push(None);
+                normal.push(None);
                 continue;
             }
         };
@@ -226,11 +234,73 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
             }
         };
 
+        // Probe for `{name}_n.png` sibling (tangent-space normal map). Absent
+        // → log info once and the renderer binds the shared neutral-normal
+        // placeholder. Dimension mismatch → warn + None. Decode failure →
+        // error + None. As with `_s`, skip the probe when the diffuse itself
+        // failed to load. See context/lib/resource_management.md §4.3.
+        let normal_key = format!("{lookup_key}_n");
+        let normal_loaded = if diffuse.is_placeholder {
+            None
+        } else {
+            match name_to_path.get(&normal_key) {
+                Some(path) => match load_png_strict(path) {
+                    Ok(loaded) => {
+                        if loaded.width != diffuse.width || loaded.height != diffuse.height {
+                            log::warn!(
+                                "[Texture] Normal map '{normal_key}' dimensions {}x{} do not match diffuse '{name}' {}x{} - ignoring",
+                                loaded.width,
+                                loaded.height,
+                                diffuse.width,
+                                diffuse.height,
+                            );
+                            None
+                        } else {
+                            Some(loaded)
+                        }
+                    }
+                    Err(err) => {
+                        log::error!(
+                            "[Texture] Failed to decode normal map '{}' from {}: {err} - using neutral placeholder",
+                            normal_key,
+                            path.display(),
+                        );
+                        None
+                    }
+                },
+                None => {
+                    log::info!("[Texture] no normal map for {name}");
+                    None
+                }
+            }
+        };
+
         textures.push(diffuse);
         specular.push(spec);
+        normal.push(normal_loaded);
     }
 
-    TextureSet { textures, specular }
+    TextureSet {
+        textures,
+        specular,
+        normal,
+    }
+}
+
+/// Strict variant of `load_png` that surfaces decode errors to the caller
+/// instead of substituting a checkerboard. Used for sidecar maps where the
+/// caller wants to log a sidecar-specific message and fall back to a shared
+/// placeholder rather than to a per-texture checkerboard.
+fn load_png_strict(path: &Path) -> Result<LoadedTexture, image::ImageError> {
+    let img = image::open(path)?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(LoadedTexture {
+        data: rgba.into_raw(),
+        width,
+        height,
+        is_placeholder: false,
+    })
 }
 
 // --- Tests ---

@@ -740,9 +740,12 @@ impl Renderer {
 
         // Bind group layout for group 1: per-material.
         //   0 = diffuse texture
-        //   1 = base sampler (shared across diffuse + specular)
+        //   1 = base sampler (shared across diffuse + specular + normal)
         //   2 = specular texture (R8 in .r channel; 1×1 black fallback)
         //   3 = MaterialUniform (shininess)
+        //   4 = normal map texture (Rgba8Unorm tangent-space; 1×1 +Z fallback)
+        //       Decode in shader: n = sample.rgb * 2.0 - 1.0.
+        //       See context/lib/resource_management.md §4.3.
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Material Bind Group Layout"),
@@ -780,6 +783,16 @@ impl Renderer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
                             min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
                         },
                         count: None,
                     },
@@ -991,10 +1004,30 @@ impl Renderer {
         let black_specular_view =
             black_specular_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Shared 1×1 neutral-normal placeholder. Tangent-space +Z encoded in
+        // Rgba8Unorm: (0, 0, 1) → (127, 127, 255) in u8. Decode in the shader
+        // is `n = sample.rgb * 2.0 - 1.0`, which round-trips to (≈0, ≈0, ≈1).
+        // Engine-lifetime: allocated alongside the diffuse-checkerboard and
+        // black-spec placeholders; survives level swaps because the renderer
+        // owns it directly. See context/lib/resource_management.md §4.3.
+        let neutral_normal_texture = upload_texture_data(
+            &device,
+            &queue,
+            1,
+            1,
+            &[127u8, 127, 255, 255],
+            wgpu::TextureFormat::Rgba8Unorm,
+            "Normal Neutral 1x1",
+        );
+        let neutral_normal_view =
+            neutral_normal_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         // Upload textures to GPU and build per-material bind groups.
         let texture_materials: &[Material] = geometry.map(|g| g.texture_materials).unwrap_or(&[]);
         let specular_set: Option<&[Option<LoadedTexture>]> =
             texture_set.map(|s| s.specular.as_slice());
+        let normal_set: Option<&[Option<LoadedTexture>]> =
+            texture_set.map(|s| s.normal.as_slice());
 
         let mut gpu_textures: Vec<GpuTexture> = Vec::new();
         if let Some(tex_set) = texture_set {
@@ -1030,6 +1063,29 @@ impl Renderer {
                     None => black_specular_view.clone(),
                 };
 
+                // Normal-map upload: linear `Rgba8Unorm` (NOT sRGB — tangent
+                // vectors must not gamma-correct). Falls back to the shared
+                // neutral-normal placeholder when no `_n` sibling was present
+                // or it failed validation in the loader.
+                let normal_view = match normal_set
+                    .and_then(|s| s.get(idx))
+                    .and_then(|o| o.as_ref())
+                {
+                    Some(normal_loaded) => {
+                        let tex = upload_texture_data(
+                            &device,
+                            &queue,
+                            normal_loaded.width,
+                            normal_loaded.height,
+                            &normal_loaded.data,
+                            wgpu::TextureFormat::Rgba8Unorm,
+                            &format!("Texture {idx} Normal"),
+                        );
+                        tex.create_view(&wgpu::TextureViewDescriptor::default())
+                    }
+                    None => neutral_normal_view.clone(),
+                };
+
                 let material = texture_materials
                     .get(idx)
                     .copied()
@@ -1060,6 +1116,10 @@ impl Renderer {
                         wgpu::BindGroupEntry {
                             binding: 3,
                             resource: uniform_buf.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: wgpu::BindingResource::TextureView(&normal_view),
                         },
                     ],
                 });
@@ -1106,6 +1166,10 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 3,
                         resource: uniform_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&neutral_normal_view),
                     },
                 ],
             });

@@ -454,14 +454,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // placeholder (127, 127, 255, 255) decodes to ~(0, 0, 1), which TBN
     // transforms back to the mesh normal — so surfaces without an `_n.png`
     // sibling render identically to the pre-bump path.
-    let n_sample = textureSample(t_normal, base_sampler, in.uv).rgb;
-    let n_ts = n_sample * 2.0 - 1.0; // decode tangent-space RGB
+    let n_ts = textureSample(t_normal, base_sampler, in.uv).rgb * 2.0 - 1.0;
     let mesh_n = normalize(in.world_normal);
     // Degenerate-tangent guard: meshes with collapsed UVs produce zero-length
     // tangents. Skip TBN in that case to avoid NaN propagation.
     const TBN_EPS: f32 = 1.0e-4;
     var N_bump: vec3<f32>;
-    if length(in.world_tangent) < TBN_EPS {
+    // Defensive guard against NaN propagation through interpolation; in
+    // practice the post-multiply guard below is the one that fires.
+    if dot(in.world_tangent, in.world_tangent) < TBN_EPS * TBN_EPS {
         N_bump = mesh_n;
     } else {
         // Gram-Schmidt: project out mesh_n component so T stays in the tangent plane.
@@ -469,7 +470,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let B = cross(mesh_n, T) * in.bitangent_sign;
         let TBN = mat3x3<f32>(T, B, mesh_n);
         let n_ts_world = TBN * n_ts;
-        if length(n_ts_world) < TBN_EPS {
+        if dot(n_ts_world, n_ts_world) < TBN_EPS * TBN_EPS {
             N_bump = mesh_n;
         } else {
             N_bump = normalize(n_ts_world);
@@ -533,16 +534,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let dom = decode_lightmap_direction(textureSample(lightmap_direction, lightmap_sampler, in.lightmap_uv));
         let n_dot_l_mesh = max(dot(mesh_n, dom), 0.0);
         let n_dot_l_bump = max(dot(N_bump, dom), 0.0);
-        // EPS guards grazing texels where mesh NdotL ≈ 0 (avoid div-by-zero
+        // NDOTL_EPS guards grazing texels where mesh NdotL ≈ 0 (avoid div-by-zero
         // and the resulting NaN/inf blowup).
-        const EPS: f32 = 1e-3;
+        const NDOTL_EPS: f32 = 1e-3;
         // Skip bumped correction when irradiance is negligible — dominant
         // direction is unreliable for unlit texels, and we'd just scale ~0.
         const LM_IRR_EPS: f32 = 1.0e-4;
-        let use_correction = length(lm_irr) >= LM_IRR_EPS && n_dot_l_mesh > EPS;
+        let use_correction = dot(lm_irr, lm_irr) >= LM_IRR_EPS * LM_IRR_EPS && n_dot_l_mesh > NDOTL_EPS;
         // Cap at 4.0: prevents an unbounded spike when N_bump tilts toward
         // the light on a near-backfacing mesh surface.
-        let scale = select(1.0, min(n_dot_l_bump / max(n_dot_l_mesh, EPS), 4.0), use_correction);
+        let scale = select(1.0, min(n_dot_l_bump / max(n_dot_l_mesh, NDOTL_EPS), 4.0), use_correction);
         static_direct = lm_irr * scale + lm_anim;
     }
 

@@ -237,7 +237,12 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
                         None
                     }
                 },
-                None => None,
+                None => {
+                    log::trace!(
+                        "[Texture] No specular map for '{name}' — using 1×1 black fallback"
+                    );
+                    None
+                }
             }
         };
 

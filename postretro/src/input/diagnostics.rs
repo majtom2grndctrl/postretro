@@ -69,13 +69,17 @@ pub enum DiagnosticAction {
     /// When diagnosing "light leaks through a wall," each "*Only" mode
     /// isolates a single contribution so the offending path is unambiguous.
     CycleLightingIsolation,
+    /// Lower the SH indirect scale by one step, clamped to 0.0.
+    LowerIndirectScale,
+    /// Raise the SH indirect scale by one step, clamped to 1.0.
+    RaiseIndirectScale,
 }
 
-/// Per-press step size for the ambient-floor diagnostic chords. 0.025
-/// gives 40 steps across the full 0.0–1.0 range — fine enough for tuning,
-/// coarse enough that a held key (each press fires once, no repeat) walks
-/// the slider in a few seconds.
-pub const AMBIENT_FLOOR_STEP: f32 = 0.025;
+/// Per-press step size for the ambient-floor diagnostic chords.
+pub const AMBIENT_FLOOR_STEP: f32 = 0.00125;
+
+/// Per-press step size for the indirect-scale diagnostic chords.
+pub const INDIRECT_SCALE_STEP: f32 = 0.05;
 
 /// A modifier+key combination bound to a diagnostic action.
 #[derive(Debug, Clone, Copy)]
@@ -191,6 +195,17 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
             modifiers: Modifiers::ALT_SHIFT,
             key: KeyCode::Digit4,
             action: DiagnosticAction::CycleLightingIsolation,
+        },
+        // `Alt+Shift+-` and `Alt+Shift+=` adjust the SH indirect scale at runtime.
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::Minus,
+            action: DiagnosticAction::LowerIndirectScale,
+        },
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::Equal,
+            action: DiagnosticAction::RaiseIndirectScale,
         },
     ]
 }

@@ -1012,14 +1012,28 @@ impl App {
                 if let Some(renderer) = self.renderer.as_mut() {
                     let next = renderer.ambient_floor() - input::AMBIENT_FLOOR_STEP;
                     renderer.set_ambient_floor(next);
-                    log::info!("[Renderer] ambient floor: {:.3}", renderer.ambient_floor());
+                    log::info!("[Renderer] ambient floor: {:.5}", renderer.ambient_floor());
                 }
             }
             DiagnosticAction::RaiseAmbientFloor => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     let next = renderer.ambient_floor() + input::AMBIENT_FLOOR_STEP;
                     renderer.set_ambient_floor(next);
-                    log::info!("[Renderer] ambient floor: {:.3}", renderer.ambient_floor());
+                    log::info!("[Renderer] ambient floor: {:.5}", renderer.ambient_floor());
+                }
+            }
+            DiagnosticAction::LowerIndirectScale => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    let next = renderer.indirect_scale() - input::INDIRECT_SCALE_STEP;
+                    renderer.set_indirect_scale(next);
+                    log::info!("[Renderer] indirect scale: {:.2}", renderer.indirect_scale());
+                }
+            }
+            DiagnosticAction::RaiseIndirectScale => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    let next = renderer.indirect_scale() + input::INDIRECT_SCALE_STEP;
+                    renderer.set_indirect_scale(next);
+                    log::info!("[Renderer] indirect scale: {:.2}", renderer.indirect_scale());
                 }
             }
             DiagnosticAction::CycleLightingIsolation => {

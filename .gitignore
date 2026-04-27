@@ -22,6 +22,8 @@ target
 assets/maps/*
 !assets/maps/*.map
 !assets/maps/*.py
+# Autosave maps (local, not version controlled)
+assets/maps/autosave/
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

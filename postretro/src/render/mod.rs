@@ -193,7 +193,11 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
 /// Provisional value from sub-plan 3; tuned via the ambient-floor slider
 /// in the settings menu. The right default is the lowest value where a
 /// player can still navigate dark areas.
-pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.005;
+pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.001;
+
+/// Global until per-draw world/entity split lands; entities will need a
+/// higher value than static surfaces once they are mesh-drawn.
+pub const DEFAULT_INDIRECT_SCALE: f32 = 0.10;
 
 // --- GPU texture ---
 
@@ -400,6 +404,8 @@ pub struct Renderer {
     /// (0.0–1.0 slider); default is `DEFAULT_AMBIENT_FLOOR`. A scalar
     /// brightness only — no color.
     ambient_floor: f32,
+    /// SH indirect scale. See `DEFAULT_INDIRECT_SCALE`.
+    indirect_scale: f32,
 
     /// Group 3 — SH irradiance volume resources. Always allocated; when no
     /// SH section is present the bind group binds dummy 1×1×1 textures and
@@ -700,7 +706,14 @@ impl Renderer {
         let view_proj = build_default_view_projection(
             surface_config.width as f32 / surface_config.height as f32,
         );
-        let light_count = geometry.map(|g| g.lights.len() as u32).unwrap_or(0);
+        // Only dynamic lights go into the GPU real-time loop. Static lights are
+        // baked into the lightmap; putting them in the loop would double-apply
+        // their direct contribution on top of the bake.
+        let (level_lights, dynamic_influences) = filter_dynamic_lights(
+            geometry.map(|g| g.lights).unwrap_or(&[]),
+            geometry.map(|g| g.light_influences).unwrap_or(&[]),
+        );
+        let light_count = level_lights.len() as u32;
         let ambient_floor = DEFAULT_AMBIENT_FLOOR;
         let uniform_data = build_uniform_data(&FrameUniforms {
             view_proj,
@@ -709,7 +722,7 @@ impl Renderer {
             light_count,
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
-            indirect_scale: 1.0,
+            indirect_scale: DEFAULT_INDIRECT_SCALE,
         });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -852,9 +865,6 @@ impl Renderer {
                 ],
             });
 
-        // Cache the level's light list for per-frame slot assignment.
-        let level_lights = geometry.map(|g| g.lights.to_vec()).unwrap_or_default();
-
         // Check for dynamic directional lights and warn (not supported).
         for (idx, light) in level_lights.iter().enumerate() {
             if light.is_dynamic && light.light_type == crate::prl::LightType::Directional {
@@ -892,11 +902,10 @@ impl Renderer {
         );
 
         // Influence volume buffer (binding 1). Same dummy strategy as lights.
-        let influence_data = match geometry {
-            Some(g) if !g.light_influences.is_empty() => {
-                influence::pack_influence(g.light_influences)
-            }
-            _ => vec![0u8; 16], // one dummy vec4<f32>
+        let influence_data = if !dynamic_influences.is_empty() {
+            influence::pack_influence(&dynamic_influences)
+        } else {
+            vec![0u8; 16]
         };
         let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Influence Storage Buffer"),
@@ -1692,6 +1701,7 @@ impl Renderer {
             lighting_bind_group,
             light_count,
             ambient_floor,
+            indirect_scale: DEFAULT_INDIRECT_SCALE,
             sh_volume_resources,
             sh_compose,
             lightmap_resources,
@@ -1828,7 +1838,7 @@ impl Renderer {
             light_count: self.light_count,
             time,
             lighting_isolation: self.lighting_isolation,
-            indirect_scale: 1.0,
+            indirect_scale: self.indirect_scale,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
@@ -2072,6 +2082,15 @@ impl Renderer {
     /// chords; will move to the settings menu when one exists.
     pub fn set_ambient_floor(&mut self, value: f32) {
         self.ambient_floor = value.clamp(0.0, 1.0);
+    }
+
+    pub fn indirect_scale(&self) -> f32 {
+        self.indirect_scale
+    }
+
+    /// Takes effect on the next `update_per_frame_uniforms` upload.
+    pub fn set_indirect_scale(&mut self, value: f32) {
+        self.indirect_scale = value.max(0.0);
     }
 
     pub fn is_ready(&self) -> bool {
@@ -2587,6 +2606,30 @@ fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
     bytes
 }
 
+/// Filter the parallel `(lights, influences)` slices loaded from the PRL down
+/// to only the dynamic lights, preserving original order. Static lights are
+/// already baked into the lightmap; including them in the runtime direct loop
+/// would double-apply their contribution. Influences shorter than `lights`
+/// fall back to a zero-radius placeholder so the output stays index-aligned.
+fn filter_dynamic_lights(
+    lights: &[MapLight],
+    influences: &[LightInfluence],
+) -> (Vec<MapLight>, Vec<LightInfluence>) {
+    lights
+        .iter()
+        // enumerate before filter so i is the original index into influences
+        .enumerate()
+        .filter(|(_, l)| l.is_dynamic)
+        .map(|(i, l)| {
+            let inf = influences.get(i).cloned().unwrap_or(LightInfluence {
+                center: Vec3::ZERO,
+                radius: 0.0,
+            });
+            (l.clone(), inf)
+        })
+        .unzip()
+}
+
 // --- Tests ---
 
 #[cfg(test)]
@@ -2935,6 +2978,7 @@ mod tests {
         let camera = Vec3::new(10.0, 20.0, 30.0);
         let ambient_floor = 0.125_f32;
         let light_count = 7_u32;
+        let indirect_scale = 0.5_f32;
         let data = build_uniform_data(&FrameUniforms {
             view_proj: Mat4::IDENTITY,
             camera_position: camera,
@@ -2942,7 +2986,7 @@ mod tests {
             light_count,
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
-            indirect_scale: 1.0,
+            indirect_scale,
         });
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
@@ -2985,8 +3029,88 @@ mod tests {
         let iso = u32::from_ne_bytes(data[88..92].try_into().unwrap());
         assert_eq!(iso, 0);
 
-        // indirect_scale at bytes 92..96 (passed 1.0).
+        // indirect_scale at bytes 92..96.
         let scale = f32::from_ne_bytes(data[92..96].try_into().unwrap());
-        assert_eq!(scale, 1.0);
+        assert!((scale - indirect_scale).abs() < 1e-6);
+    }
+
+    /// Static lights are baked into the lightmap; including them in the
+    /// runtime direct-light loop would double-apply their contribution on
+    /// top of the bake. The filter at renderer init time must drop them
+    /// while keeping influences index-aligned with the surviving lights.
+    #[test]
+    fn dynamic_light_filter_excludes_static_lights() {
+        fn mk_light(intensity: f32, is_dynamic: bool) -> MapLight {
+            MapLight {
+                origin: [0.0, 0.0, 0.0],
+                light_type: crate::prl::LightType::Point,
+                // intensity doubles as an identity tag so the test can verify
+                // ordering after the filter without inspecting other fields.
+                intensity,
+                color: [1.0, 1.0, 1.0],
+                falloff_model: crate::prl::FalloffModel::InverseSquared,
+                falloff_range: 10.0,
+                cone_angle_inner: 0.0,
+                cone_angle_outer: 0.0,
+                cone_direction: [0.0, 0.0, -1.0],
+                cast_shadows: false,
+                is_dynamic,
+                tag: None,
+                leaf_index: 0,
+            }
+        }
+
+        // Mixed input: dyn, static, dyn, static, dyn — three should survive.
+        let lights = vec![
+            mk_light(1.0, true),
+            mk_light(2.0, false),
+            mk_light(3.0, true),
+            mk_light(4.0, false),
+            mk_light(5.0, true),
+        ];
+        // Each influence's `radius` doubles as an identity tag so the test
+        // can verify alignment between surviving lights and their influence.
+        let influences = vec![
+            LightInfluence {
+                center: Vec3::new(1.0, 0.0, 0.0),
+                radius: 1.0,
+            },
+            LightInfluence {
+                center: Vec3::new(2.0, 0.0, 0.0),
+                radius: 2.0,
+            },
+            LightInfluence {
+                center: Vec3::new(3.0, 0.0, 0.0),
+                radius: 3.0,
+            },
+            LightInfluence {
+                center: Vec3::new(4.0, 0.0, 0.0),
+                radius: 4.0,
+            },
+            LightInfluence {
+                center: Vec3::new(5.0, 0.0, 0.0),
+                radius: 5.0,
+            },
+        ];
+
+        let (out_lights, out_influences) = filter_dynamic_lights(&lights, &influences);
+
+        assert_eq!(out_lights.len(), 3, "expected 3 dynamic lights");
+        assert_eq!(out_influences.len(), 3, "influences must match lights len");
+
+        // Surviving lights are the dynamic ones (intensity 1, 3, 5) in order.
+        assert_eq!(out_lights[0].intensity, 1.0);
+        assert_eq!(out_lights[1].intensity, 3.0);
+        assert_eq!(out_lights[2].intensity, 5.0);
+        assert!(out_lights.iter().all(|l| l.is_dynamic));
+
+        // Influences are aligned with the original light's index — radius
+        // 1.0 stays paired with the light tagged 1.0, not shifted.
+        assert_eq!(out_influences[0].radius, 1.0);
+        assert_eq!(out_influences[1].radius, 3.0);
+        assert_eq!(out_influences[2].radius, 5.0);
+        assert_eq!(out_influences[0].center, Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(out_influences[1].center, Vec3::new(3.0, 0.0, 0.0));
+        assert_eq!(out_influences[2].center, Vec3::new(5.0, 0.0, 0.0));
     }
 }

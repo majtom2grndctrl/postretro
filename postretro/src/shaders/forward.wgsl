@@ -615,6 +615,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 continue;
             }
             let L = to_light / max(dist, 0.0001);
+            // Back-face guard: skip lights on the wrong side of the surface.
+            // Mirrors the NdotL term in the dynamic loop (line ~733).
+            let NdotL = dot(N_bump, L);
+            if NdotL <= 0.0 {
+                continue;
+            }
             // Match the diffuse falloff model applied in the GpuLight loop:
             // spec lights come from the same static set and share range
             // semantics. We use a simple linear falloff here — the

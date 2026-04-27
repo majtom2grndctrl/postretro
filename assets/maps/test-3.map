@@ -756,6 +756,7 @@
 "_cone" "25"
 "_cone2" "40"
 "mangle" "-10 270 0"
+"style" "3"
 }
 // entity 7
 {
@@ -804,4 +805,5 @@
 "_cone" "25"
 "_cone2" "40"
 "mangle" "-10 90 0"
+"style" "2"
 }

@@ -1,26 +1,29 @@
 // Per-chunk static-light list builder.
 //
-// Partitions the world AABB into a uniform cubic grid, buckets static lights
-// per chunk by sphere-vs-AABB overlap, filters each bucket with 4 BVH shadow
-// rays to drop lights that cannot reach the chunk through geometry, then
-// clamps each chunk to a fixed cap. Output packs into the `ChunkLightList`
-// PRL section for the runtime specular path.
+// Partitions the world AABB into a uniform cubic grid, pre-filters by portal-graph
+// reachability, buckets static lights per chunk by sphere-vs-AABB overlap, filters
+// each bucket with 4 BVH shadow rays to drop lights that cannot reach the chunk
+// through geometry, then clamps each chunk to a fixed cap. Output packs into the
+// `ChunkLightList` PRL section for the runtime specular path.
 //
 // See: lighting-chunk-lists/
 
 use bvh::bvh::Bvh;
 use bvh::ray::Ray;
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::chunk_light_list::{
     ChunkEntry, ChunkLightListSection, DEFAULT_PER_CHUNK_CAP,
 };
+use std::collections::{HashMap, HashSet, VecDeque};
 use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AlphaLightsNs;
 use crate::map_data::{LightType, MapLight};
+use crate::partition::{BspTree, find_leaf_for_point};
+use crate::portals::Portal;
 
 /// Default chunk edge length in meters. 8 m fits the rendering-pipeline
 /// cadence: small enough that per-chunk buckets stay sparse, large enough that
@@ -53,6 +56,9 @@ pub struct ChunkLightListInputs<'a> {
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
     pub lights: &'a AlphaLightsNs<'a>,
+    pub tree: &'a BspTree,
+    pub portals: &'a [Portal],
+    pub exterior_leaves: &'a HashSet<usize>,
 }
 
 /// Build the chunk light list from the current compile stage outputs.
@@ -106,6 +112,50 @@ pub fn bake_chunk_light_list(
 
     let cap = per_chunk_cap.max(1) as usize;
 
+    // Portal adjacency: undirected edges between leaves connected by a portal.
+    let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
+    for p in inputs.portals {
+        adjacency.entry(p.front_leaf).or_default().push(p.back_leaf);
+        adjacency.entry(p.back_leaf).or_default().push(p.front_leaf);
+    }
+
+    // Reachable-leaf set per static light. `None` means the portal filter
+    // is bypassed (directional sources, or origin in solid/exterior — fall
+    // back to spatial + BVH only).
+    let light_reachable: Vec<Option<HashSet<usize>>> = static_slots
+        .iter()
+        .map(|&(_, light)| {
+            if matches!(light.light_type, LightType::Directional) {
+                return None;
+            }
+            let source = find_leaf_for_point(inputs.tree, light.origin);
+            if source >= inputs.tree.leaves.len() {
+                // Degenerate tree (no leaves, or point strictly outside BSP bounds).
+                return None;
+            }
+            if inputs.tree.leaves[source].is_solid || inputs.exterior_leaves.contains(&source) {
+                return None;
+            }
+            let mut reachable: HashSet<usize> = HashSet::new();
+            reachable.insert(source);
+            let mut queue: VecDeque<usize> = VecDeque::new();
+            queue.push_back(source);
+            while let Some(leaf) = queue.pop_front() {
+                if let Some(neighbors) = adjacency.get(&leaf) {
+                    for &n in neighbors {
+                        if inputs.exterior_leaves.contains(&n) {
+                            continue;
+                        }
+                        if reachable.insert(n) {
+                            queue.push_back(n);
+                        }
+                    }
+                }
+            }
+            Some(reachable)
+        })
+        .collect();
+
     // Per-chunk retained light-index lists.
     let mut per_chunk: Vec<Vec<u32>> = vec![Vec::new(); chunk_count];
     let mut overflow_drops = 0u64;
@@ -122,11 +172,37 @@ pub fn bake_chunk_light_list(
                 );
                 let chunk_max = chunk_min + Vec3::splat(cell);
                 let chunk_centroid = (chunk_min + chunk_max) * 0.5;
+                let chunk_leaf = find_leaf_for_point(
+                    inputs.tree,
+                    DVec3::new(
+                        chunk_centroid.x as f64,
+                        chunk_centroid.y as f64,
+                        chunk_centroid.z as f64,
+                    ),
+                );
+
+                // Bypass the portal filter for this chunk when its centroid
+                // lands in a solid leaf (wall bisects the chunk — common at
+                // the default 8 m grid), an exterior leaf, or a degenerate
+                // out-of-range index. The chunk's AABB still overlaps visible
+                // air, so falling back to spatial-overlap + BVH-shadow-rays
+                // alone preserves baseline behavior. Mirrors the per-light
+                // bypass semantics in `light_reachable` above.
+                let chunk_filter_bypassed = chunk_leaf >= inputs.tree.leaves.len()
+                    || inputs.tree.leaves[chunk_leaf].is_solid
+                    || inputs.exterior_leaves.contains(&chunk_leaf);
 
                 let bucket = &mut per_chunk[chunk_idx];
-                for &(slot, light) in &static_slots {
+                for (idx, &(slot, light)) in static_slots.iter().enumerate() {
                     if !overlaps_chunk(light, chunk_min, chunk_max) {
                         continue;
+                    }
+                    if !chunk_filter_bypassed {
+                        if let Some(reachable) = &light_reachable[idx] {
+                            if !reachable.contains(&chunk_leaf) {
+                                continue;
+                            }
+                        }
                     }
                     if !any_ray_unoccluded(
                         inputs.bvh,
@@ -614,6 +690,12 @@ mod tests {
             primitives: &[],
             geometry: &geo,
             lights: &alpha_lights,
+            tree: &BspTree {
+                nodes: Vec::new(),
+                leaves: Vec::new(),
+            },
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
         };
         let section = bake_chunk_light_list(
             &inputs,
@@ -635,6 +717,12 @@ mod tests {
             primitives: &prims,
             geometry: &geo,
             lights: &alpha_lights,
+            tree: &BspTree {
+                nodes: Vec::new(),
+                leaves: Vec::new(),
+            },
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
         };
         let section = bake_chunk_light_list(
             &inputs,
@@ -659,6 +747,12 @@ mod tests {
             primitives: &prims,
             geometry: &geo,
             lights: &alpha_lights,
+            tree: &BspTree {
+                nodes: Vec::new(),
+                leaves: Vec::new(),
+            },
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
         };
         let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
         assert_eq!(section.has_grid, 1);
@@ -683,6 +777,12 @@ mod tests {
             primitives: &prims,
             geometry: &geo,
             lights: &alpha_lights,
+            tree: &BspTree {
+                nodes: Vec::new(),
+                leaves: Vec::new(),
+            },
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
         };
         let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
         assert_eq!(section.has_grid, 1);
@@ -706,6 +806,12 @@ mod tests {
             primitives: &prims,
             geometry: &geo,
             lights: &alpha_lights,
+            tree: &BspTree {
+                nodes: Vec::new(),
+                leaves: Vec::new(),
+            },
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
         };
         let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
         assert_eq!(section.has_grid, 1);
@@ -745,6 +851,12 @@ mod tests {
             primitives: &prims,
             geometry: &geo,
             lights: &alpha_lights,
+            tree: &BspTree {
+                nodes: Vec::new(),
+                leaves: Vec::new(),
+            },
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
         };
         let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
         for entry in &section.offsets {
@@ -769,6 +881,12 @@ mod tests {
             primitives: &prims,
             geometry: &geo,
             lights: &alpha_lights,
+            tree: &BspTree {
+                nodes: Vec::new(),
+                leaves: Vec::new(),
+            },
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
         };
         // 16 m map, 0.05 m cells → 320^1 on XZ × 1 on Y. Still big enough to
         // exceed 16 MB offset table (320*320*1*8 = ~820 KB), so instead crank
@@ -783,5 +901,285 @@ mod tests {
                 assert!(actual > max);
             }
         }
+    }
+
+    fn empty_tree() -> BspTree {
+        BspTree {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+        }
+    }
+
+    fn two_leaf_tree_no_portals() -> BspTree {
+        // Single splitting plane at x = 0 (normal +X). Leaf 0 is the back (x < 0),
+        // leaf 1 is the front (x > 0). No portals between them.
+        use crate::partition::{Aabb, BspChild, BspLeaf, BspNode};
+        BspTree {
+            nodes: vec![BspNode {
+                plane_normal: DVec3::X,
+                plane_distance: 0.0,
+                front: BspChild::Leaf(1),
+                back: BspChild::Leaf(0),
+                parent: None,
+            }],
+            leaves: vec![
+                BspLeaf {
+                    face_indices: Vec::new(),
+                    bounds: Aabb::empty(),
+                    is_solid: false,
+                },
+                BspLeaf {
+                    face_indices: Vec::new(),
+                    bounds: Aabb::empty(),
+                    is_solid: false,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn portal_cull_drops_light_from_unreachable_leaf() {
+        // A light in leaf 0 (x < 0) with no portals: the BFS reachable set is
+        // {0}. Chunks whose centroid falls in leaf 1 (x > 0) must be filtered
+        // out by the portal filter.
+        // Note: two_room_geometry has a solid wall that BVH rays would also block.
+        // This test verifies the portal filter fires; both filters agree on the
+        // result here. A future test could use open geometry to isolate just the
+        // portal filter.
+        let geo = two_room_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        // Light in Room A (leaf 0), large range so spatial sphere reaches Room B.
+        let lights = vec![point_light(DVec3::new(-5.0, 2.0, 0.0), 50.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let tree = two_leaf_tree_no_portals();
+        let exterior: HashSet<usize> = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+        // 4 m cells; the world spans roughly x ∈ [-10, 10], so a chunk at
+        // x ≈ 5 (centroid) lands in leaf 1 and must see zero lights.
+        let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
+        assert_eq!(section.has_grid, 1);
+
+        let origin = Vec3::from(section.grid_origin);
+        let cell = section.cell_size;
+        let far_point = Vec3::new(5.0, 2.0, 0.0);
+        let cx = ((far_point.x - origin.x) / cell).floor() as i32;
+        let cy = ((far_point.y - origin.y) / cell).floor() as i32;
+        let cz = ((far_point.z - origin.z) / cell).floor() as i32;
+        let nx = section.grid_dimensions[0] as i32;
+        let ny = section.grid_dimensions[1] as i32;
+        let linear = (cz * ny * nx + cy * nx + cx) as usize;
+        let count = section.offsets[linear].count;
+        assert_eq!(
+            count, 0,
+            "portal filter must drop the light from the unreachable leaf-1 chunk (got {count})"
+        );
+    }
+
+    fn two_leaf_tree_with_portal() -> (BspTree, Vec<Portal>) {
+        // Splitting plane at x = 0, normal +X. Leaf 0 = back (x < 0),
+        // leaf 1 = front (x > 0). A single portal connects them across the
+        // x = 0 plane. Both leaves non-solid.
+        use crate::partition::{Aabb, BspChild, BspLeaf, BspNode};
+        let tree = BspTree {
+            nodes: vec![BspNode {
+                plane_normal: DVec3::X,
+                plane_distance: 0.0,
+                front: BspChild::Leaf(1),
+                back: BspChild::Leaf(0),
+                parent: None,
+            }],
+            leaves: vec![
+                BspLeaf {
+                    face_indices: Vec::new(),
+                    bounds: Aabb::empty(),
+                    is_solid: false,
+                },
+                BspLeaf {
+                    face_indices: Vec::new(),
+                    bounds: Aabb::empty(),
+                    is_solid: false,
+                },
+            ],
+        };
+        let portal = Portal {
+            polygon: vec![
+                DVec3::new(0.0, 0.0, -10.0),
+                DVec3::new(0.0, 10.0, -10.0),
+                DVec3::new(0.0, 10.0, 10.0),
+                DVec3::new(0.0, 0.0, 10.0),
+            ],
+            front_leaf: 1,
+            back_leaf: 0,
+        };
+        (tree, vec![portal])
+    }
+
+    fn two_leaf_tree_solid_back() -> BspTree {
+        // Splitting plane at x = 0, normal +X. Leaf 0 = back (x < 0) marked
+        // SOLID, leaf 1 = front (x > 0) non-solid. Used to drive a chunk
+        // centroid into a solid leaf so the bypass path is exercised.
+        use crate::partition::{Aabb, BspChild, BspLeaf, BspNode};
+        BspTree {
+            nodes: vec![BspNode {
+                plane_normal: DVec3::X,
+                plane_distance: 0.0,
+                front: BspChild::Leaf(1),
+                back: BspChild::Leaf(0),
+                parent: None,
+            }],
+            leaves: vec![
+                BspLeaf {
+                    face_indices: Vec::new(),
+                    bounds: Aabb::empty(),
+                    is_solid: true,
+                },
+                BspLeaf {
+                    face_indices: Vec::new(),
+                    bounds: Aabb::empty(),
+                    is_solid: false,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn chunk_centroid_in_solid_leaf_bypasses_portal_filter() {
+        // The chunk on the negative-X side of the 16 m floor has its centroid
+        // at x = -4 — which falls into a SOLID leaf in this tree. A static
+        // light sits in the non-solid leaf 1 (x > 0) with no portals, so the
+        // BFS reachable set is {1}. Without the solid-leaf bypass, the
+        // portal filter would reject the light from this chunk even though
+        // (a) the spatial sphere covers the chunk, and (b) the BVH shadow
+        // rays from light to chunk samples are clear (open world above the
+        // floor quad).
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        // Light high above and to the +X side. y = 4 keeps shadow rays well
+        // clear of the floor at y = 0; range 50 m guarantees sphere overlap.
+        let light = point_light(DVec3::new(4.0, 4.0, -4.0), 50.0);
+        let lights = vec![light];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let tree = two_leaf_tree_solid_back();
+        let exterior: HashSet<usize> = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+        let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
+        assert_eq!(section.has_grid, 1);
+
+        // Locate the chunk whose centroid is at (-4, 4, -4) — solid leaf 0.
+        let probe = Vec3::new(-4.0, 4.0, -4.0);
+        let origin = Vec3::from(section.grid_origin);
+        let cell = section.cell_size;
+        let cx = ((probe.x - origin.x) / cell).floor() as i32;
+        let cy = ((probe.y - origin.y) / cell).floor() as i32;
+        let cz = ((probe.z - origin.z) / cell).floor() as i32;
+        let nx = section.grid_dimensions[0] as i32;
+        let ny = section.grid_dimensions[1] as i32;
+        assert!(cx >= 0 && cy >= 0 && cz >= 0);
+        let linear = (cz * ny * nx + cy * nx + cx) as usize;
+        let entry = section.offsets[linear];
+        assert_eq!(
+            entry.count, 1,
+            "solid-leaf bypass must let the spatial+BVH-clear light through (got {})",
+            entry.count
+        );
+        let slot = section.light_indices[entry.offset as usize];
+        assert_eq!(
+            slot, 0,
+            "expected the only static light's slot in the bucket"
+        );
+    }
+
+    #[test]
+    fn light_reaches_chunk_in_adjacent_leaf_through_portal() {
+        // Two non-solid leaves connected by one portal across x = 0. A static
+        // light in leaf 0 must reach a chunk whose centroid is in leaf 1 via
+        // the portal-BFS reachable set. Open geometry (just the floor quad —
+        // no occluding wall) keeps the BVH from rejecting the rays, isolating
+        // the portal-path from the wall-occlusion path tested elsewhere.
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let light = point_light(DVec3::new(-4.0, 4.0, -4.0), 50.0);
+        let lights = vec![light];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let (tree, portals) = two_leaf_tree_with_portal();
+        let exterior: HashSet<usize> = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &portals,
+            exterior_leaves: &exterior,
+        };
+        let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
+        assert_eq!(section.has_grid, 1);
+
+        // Locate the chunk whose centroid is at (4, 4, -4) — leaf 1.
+        let probe = Vec3::new(4.0, 4.0, -4.0);
+        let origin = Vec3::from(section.grid_origin);
+        let cell = section.cell_size;
+        let cx = ((probe.x - origin.x) / cell).floor() as i32;
+        let cy = ((probe.y - origin.y) / cell).floor() as i32;
+        let cz = ((probe.z - origin.z) / cell).floor() as i32;
+        let nx = section.grid_dimensions[0] as i32;
+        let ny = section.grid_dimensions[1] as i32;
+        assert!(cx >= 0 && cy >= 0 && cz >= 0);
+        let linear = (cz * ny * nx + cy * nx + cx) as usize;
+        let entry = section.offsets[linear];
+        assert_eq!(
+            entry.count, 1,
+            "portal BFS must reach the adjacent leaf (got {})",
+            entry.count
+        );
+        let slot = section.light_indices[entry.offset as usize];
+        assert_eq!(slot, 0);
+    }
+
+    #[test]
+    fn portal_filter_bypassed_for_empty_tree() {
+        // Degenerate-tree contract: empty BspTree means `find_leaf_for_point`
+        // returns 0 for every point, and the portal list is empty, so the
+        // BFS reachable set is exactly {0}. Every chunk centroid also maps to
+        // leaf 0, so `reachable.contains(&0)` is always true — no chunk is
+        // filtered. This pins the no-portal degenerate case.
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![point_light(DVec3::new(0.0, 1.0, 0.0), 4.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let tree = empty_tree();
+        let exterior: HashSet<usize> = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+        let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
+        assert_eq!(section.has_grid, 1);
+        let total: u32 = section.offsets.iter().map(|e| e.count).sum();
+        assert!(
+            total >= 1,
+            "no-portal degenerate case must not filter out all assignments"
+        );
     }
 }

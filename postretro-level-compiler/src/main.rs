@@ -321,6 +321,9 @@ fn main() -> anyhow::Result<()> {
             primitives: &bvh_primitives,
             geometry: &geo_result,
             lights: &alpha_lights_ns,
+            tree: &result.tree,
+            portals: &generated_portals,
+            exterior_leaves: &exterior_leaves,
         };
         chunk_light_list_bake::bake_chunk_light_list(
             &inputs,

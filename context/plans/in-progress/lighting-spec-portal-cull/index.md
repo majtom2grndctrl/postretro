@@ -13,12 +13,13 @@ Static spec lights bleed specular highlights through solid geometry because chun
 - `prl-build`: for each spec light, locate its source leaf via point-location in the BSP tree
 - `prl-build`: BFS through the portal adjacency graph from the source leaf to build a reachable-leaf set; gate chunk assignment on membership
 - Fallback: lights whose origin lands in a solid or exterior leaf skip the portal filter and use the existing spatial + BVH path
+- Fallback: chunks whose centroid lands in a solid or exterior leaf (wall bisects the chunk) skip the portal filter for that chunk and use the existing spatial + BVH path
+- `forward.wgsl`: add an `NdotL > 0` back-face guard on the static spec loop. `blinn_phong` uses `NdH` not `NdotL`, so geometrically back-facing lights can still produce highlights without this guard. Cheap and complementary to the portal cull.
 
 ### Out of scope
 
-- Runtime shader changes — `forward.wgsl` is unchanged
+- Other runtime shader changes — `forward.wgsl` only gains the targeted NdotL guard; no other modifications
 - Dynamic light specular — dynamic lights use shadow maps (spots) or influence spheres; unrelated path
-- `NdotL > 0` back-face guard on the static spec loop — correct but separate; note in Open questions
 - PVS — not used; runtime uses portal traversal
 - Range-capped BFS — the spatial range check already gates the final per-light assignment; unconstrained portal BFS is correct
 
@@ -96,4 +97,4 @@ The `find_leaf_for_point` call for each chunk center is the inner loop. For typi
 
 ## Open questions
 
-- **`NdotL > 0` back-face guard:** The static spec loop has no guard; `blinn_phong` uses `NdH` not `NdotL`, so geometrically back-facing lights can still produce highlights. Adding `if dot(N_bump, L) <= 0.0 { continue; }` in the WGSL loop is a cheap complementary fix. Out of scope here but worth a follow-up.
+(none)

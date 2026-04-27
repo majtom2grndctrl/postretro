@@ -37,4 +37,4 @@ assets/maps/autosave/
 .venv/
 
 # Generated script SDK type declarations (rebuilt on debug startup).
-postretro/sdk/
+crates/postretro/sdk/

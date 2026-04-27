@@ -33,6 +33,8 @@ Every well-maintained mod in every ecosystem physically separates data definitio
 | Angel's Mods | `prototypes/` | `src/` |
 | Krastorio2 | `prototypes/` | `scripts/` |
 | ArcCW | SWEP table fields (inline) | `sh_firing.lua`, `sh_reload.lua`, etc. |
+| ARC9-COD2019 | Per-weapon files in `lua/weapons/` | `arc9_cod2019_base.lua` framework |
+| Beatrun | `sh/!Helpers.lua` (XP tables, constants) | `sv/XP.lua`, `sh/Climb.lua`, etc. |
 | The Dungeons | `Shared/Configs/`, `Shared/Constants/` | `Server/Features/` |
 | SCF | `Combat/AttackModule/Types.luau` | `Combat/AttackModule/init.luau` |
 
@@ -135,7 +137,7 @@ The transition from Stage 1 to Stage 2 happens around 5–10 entries with the sa
 
 ### Parameterized vs. curated content
 
-The Stage 3 generator pattern only applies when differences between entries are values, not structural decisions. ARC9-COD2019 ships 95+ weapon files — each 1,820+ lines — with no generator loops. Two assault rifles (M4 and AK-47) share identical field structure but the M4 was individually tuned at 811 RPM with specific recoil curves and animation timings that are qualitative design decisions, not parameters. Writing an AK-47 from an M4 by changing numbers would miss that distinction.
+The Stage 3 generator pattern only applies when differences between entries are values, not structural decisions. ARC9-COD2019 ships 95+ weapon files — each 1,820+ lines — with no generator loops. Two assault rifles (M4 and AK-47) share identical field structure, but each was individually tuned — different RPM, different recoil curves, different animation timings — as qualitative design decisions, not parameter variations. The AK-47 isn't a rescaled M4; it's a different weapon that happens to fit the same envelope.
 
 The practical test: if all entries are variations on the same shape with only values changing, a generator helps. If each entry contains independent design decisions that happen to share a common envelope, hand-written files are the right tool. Large mods often use both — generators for systematic content (recipes, tiers, elemental variants) and hand-written files for individually designed content (base weapon archetypes, unique items).
 
@@ -150,7 +152,7 @@ ArcCW (GMod weapon base) and Krastorio2 (Factorio) both demonstrate a middle gro
 An ArcCW weapon file is ~80–85% data fields and ~15–20% optional callback hooks. The data fields cover ballistics, firing mechanics, accuracy, recoil, animations, and audio — everything that describes what the weapon is. The callbacks override default behavior where needed:
 
 ```lua
--- ~150 data fields
+-- ~150 data fields covering ballistics, mechanics, accuracy, recoil, audio
 SWEP.PrintName        = "M4A1"
 SWEP.Primary.Damage   = 32
 SWEP.Primary.Delay    = 60/800   -- 800 RPM
@@ -160,13 +162,13 @@ SWEP.Recoil           = 0.4
 SWEP.ShootSound       = "weapons/m4a1/fire.wav"
 -- ...
 
--- Optional callbacks — nil means use framework default
-SWEP.Hook_GetReloading        = nil
-SWEP.Hook_TranslateAnimation  = nil
-SWEP.Hook_FireBullets         = nil
+-- A weapon needing custom behavior adds a callback; most weapons omit these entirely
+SWEP.Hook_TranslateAnimation = function(self, anim)
+    -- remap animation names for this model's rig
+end
 ```
 
-All firing, reload, animation dispatch, and network sync logic live in separate framework modules (`sh_firing.lua`, `sh_reload.lua`, `sh_anim.lua`, etc.). A weapon modder who doesn't need custom behavior writes zero callbacks. The callbacks exist, but most weapons never use them — the 15–20% figure is a ceiling for the most complex weapons, not typical. The 30-weapon ARC9-COD2019 roster uses zero callbacks across all weapons.
+All firing, reload, animation dispatch, and network sync logic live in separate framework modules (`sh_firing.lua`, `sh_reload.lua`, `sh_anim.lua`, etc.). A weapon modder who doesn't need custom behavior writes zero callbacks — the hooks are absent, not set to nil. The 15–20% callback share is a ceiling for the most complex weapons. The 95-weapon ARC9-COD2019 roster uses zero callbacks across all weapons.
 
 ### Krastorio2 equipment with triggered behavior
 
@@ -300,18 +302,15 @@ Target use cases: bullets, particles, UI elements, any object created and destro
 Repeated API calls on the same object within a tick have measurable cost. Cache results that don't change mid-tick rather than re-querying:
 
 ```lua
--- Expensive: calls API every iteration
+-- Expensive: re-queries the API on every iteration
 for _, entity in pairs(entities) do
-    if entity.valid and entity.surface.name == target_surface then ...
--- Cheaper: cache surface name once
-local surface_name = target_surface.name
+    if entity.valid and entity.surface.name == target_surface_name then ...
+
+-- Cheaper: resolve once before the loop
+local surface = game.surfaces[target_surface_name]
 for _, entity in pairs(entities) do
-    if entity.valid and entity.surface_name == surface_name then ...
+    if entity.valid and entity.surface == surface then ...
 ```
-
-### Table removal order
-
-Removing from the end of a Lua table is cheaper than removing from the front. Front removal requires re-indexing the entire array portion. The standard pattern: swap the target element with the last element, then remove from the end.
 
 ---
 
@@ -323,7 +322,7 @@ Both ecosystems show the same arc: performance problems that couldn't be solved 
 
 **Roblox Parallel Luau** was added after enough large games hit the single-threaded script ceiling. Scripts that needed parallelism no longer had to work around the limitation — the engine gave them a new primitive.
 
-The pattern: when a scripted behavior consistently appears across many mods and consistently causes the same performance problem, that's the signal that the behavior belongs in the engine. The HandyHands mod's tick polling became an event subscription. The iterative entity scan that every mod reimplemented became a filtered API call. The graduation path moves from script to primitive and the script is deleted.
+The pattern: when a scripted behavior consistently appears across many mods and consistently causes the same performance problem, that's the signal that the behavior belongs in the engine. The HandyHands mod's tick polling became an event subscription. The iterative entity scan that every mod reimplemented by hand became `surface.find_entities_filtered()` — a native API call with spatial indexing the engine already maintains. Each time, the pattern moved from script into the engine and the script was deleted.
 
 ---
 

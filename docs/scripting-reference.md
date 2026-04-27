@@ -2,7 +2,7 @@
 
 ## Overview
 
-Behavior scripts are TypeScript (`.ts`) or Luau (`.lua` / `.luau`) files placed in `assets/scripts/`. The engine loads all scripts automatically when a level starts — no registration file needed. While the engine is running, changing a script file triggers a hot-reload: the new code takes effect on the next event dispatch without restarting the level.
+Behavior scripts are TypeScript (`.ts`) or Luau (`.lua` / `.luau`) files placed in `content/<mod>/scripts/`. The engine loads all scripts automatically when a level starts — no registration file needed. While the engine is running, changing a script file triggers a hot-reload: the new code takes effect on the next event dispatch without restarting the level.
 
 Scripts respond to engine events via `registerHandler`. They can query light entities, attach animations, and drive transitions. The GPU evaluates animation curves each frame; scripts only need to set up the animation once.
 
@@ -346,7 +346,7 @@ light.setColor([1, 0.3, 0], 800); // shift to orange over 800 ms
 
 ### TypeScript
 
-Drop this into `assets/scripts/hallway_wave.ts`. Tag the hallway lights `"hallway_wave"` in TrenchBroom and one additional light `"boss_light"` somewhere in the map.
+Drop this into `content/base/scripts/hallway_wave.ts`. Tag the hallway lights `"hallway_wave"` in TrenchBroom and one additional light `"boss_light"` somewhere in the map.
 
 ```typescript
 import { registerHandler } from "postretro";

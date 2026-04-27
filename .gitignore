@@ -19,11 +19,12 @@ target
 # Compiled map assets (only *.map source files are tracked)
 *.bsp
 *.prl
-assets/maps/*
-!assets/maps/*.map
-!assets/maps/*.py
 # Autosave maps (local, not version controlled)
-assets/maps/autosave/
+**/maps/autosave/
+autosave/
+
+# Distribution artifacts
+dist/
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
@@ -37,3 +38,4 @@ assets/maps/autosave/
 
 # Generated script SDK type declarations (rebuilt on debug startup).
 crates/postretro/sdk/
+sdk/types/

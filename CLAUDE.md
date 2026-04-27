@@ -16,8 +16,8 @@ Read `context/lib/index.md` before doing anything else. It routes to the right c
 
 ```bash
 cargo run -p postretro                        # engine (debug)
-cargo run -p postretro -- assets/maps/test.prl  # engine with a PRL map
-cargo run -p postretro-level-compiler -- input.map -o output.prl  # compile a level (binary: prl-build)
+cargo run -p postretro -- content/tests/maps/test-3.prl  # engine with a PRL map
+cargo run -p postretro-level-compiler -- input.map -o content/base/maps/output.prl  # compile a level (binary: prl-build)
 cargo run --release -p postretro              # optimized engine build
 RUST_LOG=info cargo run -p postretro          # with logging
 POSTRETRO_GPU_TIMING=1 cargo run -p postretro # log per-pass GPU time (requires TIMESTAMP_QUERY adapter support)

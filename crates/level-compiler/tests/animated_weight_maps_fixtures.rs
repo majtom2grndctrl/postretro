@@ -21,7 +21,7 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::{read_container, read_section_data};
 
-/// Walk from the crate root to the workspace root (for locating `assets/`).
+/// Walk from the crate root to the workspace root (for locating `content/tests/`).
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR = crates/level-compiler/. Workspace root is ../../.
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -35,7 +35,7 @@ fn workspace_root() -> PathBuf {
 #[test]
 fn single_fixture_compiles_and_carries_weight_map_section() {
     let ws = workspace_root();
-    let input = ws.join("assets/maps/test_animated_weight_maps_single.map");
+    let input = ws.join("content/tests/maps/test_animated_weight_maps_single.map");
     assert!(input.exists(), "fixture map missing: {}", input.display(),);
 
     // Use a tempfile under the OS temp dir so the integration test does not
@@ -130,7 +130,7 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
 #[test]
 fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
     let ws = workspace_root();
-    let input = ws.join("assets/maps/test_animated_weight_maps_mixed.map");
+    let input = ws.join("content/tests/maps/test_animated_weight_maps_mixed.map");
     assert!(input.exists(), "fixture map missing: {}", input.display(),);
 
     let out_dir = std::env::temp_dir().join("postretro_fixture_mixed");
@@ -219,7 +219,7 @@ fn cap_fixture_every_texel_respects_max_lights_per_chunk() {
     use postretro_level_format::animated_light_chunks::MAX_ANIMATED_LIGHTS_PER_CHUNK;
 
     let ws = workspace_root();
-    let input = ws.join("assets/maps/test_animated_weight_maps_cap.map");
+    let input = ws.join("content/tests/maps/test_animated_weight_maps_cap.map");
     assert!(input.exists(), "fixture map missing: {}", input.display());
 
     let out_dir = std::env::temp_dir().join("postretro_fixture_cap");

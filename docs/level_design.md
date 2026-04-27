@@ -8,8 +8,8 @@ Levels are made in **TrenchBroom** and compiled to `.prl` files that the engine 
 
 ### Setting Up TrenchBroom
 
-1. Open TrenchBroom and load the Postretro game definition: `assets/postretro.fgd`.
-2. Set the texture path to the `assets/textures/` directory.
+1. Open TrenchBroom and load the Postretro game definition: `sdk/TrenchBroom/postretro.fgd`.
+2. Set the texture path to the `content/<mod>/textures/` directory (e.g., `content/base/textures/`).
 3. Author your map in Quake 1/2 `.map` format. Both Standard and Valve 220 UV projections work and can coexist in the same file.
 
 ### Compiling Your Map
@@ -129,7 +129,7 @@ If you set both `brightness_curve` and `style`, the curve wins and `style` is ig
 
 ## Textures
 
-Textures are PNG files under `assets/textures/<collection>/<name>.png`. TrenchBroom requires this one-level subdirectory structure.
+Textures are PNG files under `content/<mod>/textures/<collection>/<name>.png`. TrenchBroom requires this one-level subdirectory structure.
 
 ### Material System
 
@@ -159,7 +159,7 @@ You can auto-generate `_s` maps using the included tool, which applies sensible 
 
 ```bash
 uv venv && source .venv/bin/activate && uv pip install Pillow
-python3 tools/gen_specular.py --input assets/textures/ --recursive
+python3 tools/gen_specular.py --input content/base/textures/ --recursive
 ```
 
 ---

@@ -83,7 +83,7 @@ impl BuildProgress {
 /// Resolve the textures directory from a map input path.
 ///
 /// Mirrors the runtime resolver in `postretro/src/main.rs`: `<asset_root>/textures/`,
-/// where `<asset_root>` is the parent of the map's directory (typically `assets/maps/`).
+/// where `<asset_root>` is the parent of the map's directory (typically `content/<mod>/maps/`).
 /// For a map outside this layout the path is still constructed; the validator is a
 /// no-op if the directory does not exist.
 fn resolve_texture_root(map_path: &Path) -> PathBuf {

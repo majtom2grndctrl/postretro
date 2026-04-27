@@ -429,7 +429,7 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root")
-            .join("assets/maps/test.map")
+            .join("content/tests/maps/test.map")
     }
 
     #[test]

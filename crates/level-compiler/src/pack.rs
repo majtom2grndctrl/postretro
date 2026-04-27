@@ -688,7 +688,7 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root")
-            .join("assets/maps/test.map");
+            .join("content/tests/maps/test.map");
 
         let map_data =
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
@@ -770,7 +770,7 @@ mod tests {
         let _ = std::fs::remove_file(&output);
     }
 
-    /// Every test map in `assets/maps/` must compile end-to-end and emit an
+    /// Every test map in `content/tests/maps/` must compile end-to-end and emit an
     /// SH volume section. The bake uses a coarse spacing (4 m) to keep test
     /// time bounded — the probe count is a design parameter, not what this
     /// test is exercising.
@@ -780,7 +780,7 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root")
-            .join("assets/maps");
+            .join("content/tests/maps");
 
         let mut map_count = 0;
         for entry in std::fs::read_dir(&maps_dir).expect("maps dir should exist") {

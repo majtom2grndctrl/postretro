@@ -1168,7 +1168,7 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root")
-            .join("assets/maps/test.map");
+            .join("content/tests/maps/test.map");
 
         let map_data =
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)

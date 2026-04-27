@@ -53,7 +53,7 @@ Data files are 10–200 lines each. They contain only table literals: no event r
 - Localization strings
 - Signal and virtual type definitions
 - User-facing settings and defaults
-- Type schemas (Luau `export type` declarations)
+- Type schemas (Luau `export type` declarations) — SCF defines `AttackData` as a 6-field type in a standalone `Types.luau`, imported by the runtime module as the enforced contract between data authors and logic authors
 
 The Lua or Luau is used for its authoring convenience — comments, named constants, `require()` composition — but the files carry no behavior. They could be JSON without losing anything semantic.
 
@@ -127,19 +127,11 @@ end
 
 Writing this as literal tables would be hundreds of entries. The config lists (axes) stay readable; the generated output is invisible. Angel's `recipe-builder.lua` extends this further with operator-based transformations (`=`, `+`, `*`, `~`) so recipes can express "add 10% to whatever the base ingredient amount is" without enumerating every modified variant.
 
-### When each stage applies
+### When to use each stage
 
-The transition from Stage 1 to Stage 2 happens around 5–10 entries with the same shape. The transition from Stage 2 to Stage 3 happens when:
+The generator pattern only applies when differences between entries are values, not structural decisions. The transition from Stage 1 to Stage 2 happens around 5–10 entries with the same shape. The move to Stage 3 is warranted when the config list grows long enough to separate cleanly from the generator, when content must be conditionally generated based on external state (Angel's Mods does extensive `if mods["bobplates"] then` gating for inter-mod compatibility), or when non-programmers need to add entries without touching generator code.
 
-- The config list itself grows long enough to separate from the generator
-- Content must be conditionally generated based on external state (e.g., other mods being present — Angel's Mods does extensive `if mods["bobplates"] then` gating)
-- Non-programmers need to add entries without touching generator code
-
-### Parameterized vs. curated content
-
-The Stage 3 generator pattern only applies when differences between entries are values, not structural decisions. ARC9-COD2019 ships 95+ weapon files — each 1,820+ lines — with no generator loops. Two assault rifles (M4 and AK-47) share identical field structure, but each was individually tuned — different RPM, different recoil curves, different animation timings — as qualitative design decisions, not parameter variations. The AK-47 isn't a rescaled M4; it's a different weapon that happens to fit the same envelope.
-
-The practical test: if all entries are variations on the same shape with only values changing, a generator helps. If each entry contains independent design decisions that happen to share a common envelope, hand-written files are the right tool. Large mods often use both — generators for systematic content (recipes, tiers, elemental variants) and hand-written files for individually designed content (base weapon archetypes, unique items).
+ARC9-COD2019 illustrates when Stage 3 is the wrong tool: 95+ weapon files, each 1,820+ lines, with no generator loops. Two assault rifles (M4 and AK-47) share identical field structure, but each was individually tuned — different RPM, different recoil curves, different animation timings — as qualitative design decisions, not parameter variations. The AK-47 isn't a rescaled M4; it's a different weapon that happens to fit the same envelope. Large mods often use both approaches — generators for systematic content (recipes, tiers, elemental variants) and hand-written files for individually designed content (base weapon archetypes, unique items).
 
 ---
 
@@ -190,119 +182,78 @@ The energy absorber is a tighter example: a one-slot constraint (only one allowe
 
 The item's stats, icon, and grid category are data. The constraint is a short script.
 
-### The SCF type contract
+---
 
-The Simple Combat Framework uses a Luau type declaration as the explicit contract between data and logic:
+## 5. The Load-Time vs. Runtime Boundary
 
-```luau
-export type AttackData = {
-    AttackType:         string,
-    Animation:          string,
-    EnemyAnim:          string,
-    PushbackMagnitude:  number,
-    Hitbox:             Vector3,
-    Damage:             number,
-}
-```
+The data/logic split describes *what* goes where. A separate question is *when* the script/engine boundary is crossed — and this has direct consequences for performance and complexity.
 
-`Types.luau` is 10 lines of pure type declarations. `init.luau` is 150+ lines of runtime logic that imports and enforces that type. The boundary is explicit and machine-checked.
+### Load-time boundary (descriptor handoff)
+
+The lowest-cost boundary crossing is one that happens once, at load or creation time. Script computes whatever it needs — sorting, centroid calculations, phase offsets, stat rolls — produces a complete descriptor, hands it to the engine, and is done. The engine owns all runtime behavior from that point forward with zero per-frame script involvement.
+
+This pattern appears whenever a mod pre-configures a complex behavior sequence at setup time. A light animation system might take a list of entities, compute sine-pulse brightness arrays and per-entity phase offsets from their spatial positions, then hand the engine a fully-specified animation descriptor. The engine runs the animation loop internally; the script never fires again during that level's lifetime.
+
+The same shape applies to item generation in loot-driven mods: RNG, pool sampling, affix selection, and stat scaling all run at item-drop time in script, producing a descriptor that the engine instantiates. The script's job ends at creation; the engine owns the weapon instance and its runtime behavior.
+
+The cost profile of this boundary: a brief computation at load or creation time, then zero ongoing overhead. The descriptor functions as data that happened to require computation to produce.
+
+### Runtime boundary (event callbacks)
+
+Some behaviors genuinely cannot be pre-computed. A triggered effect that fires when a specific condition is met at an unpredictable time — an on-hit proc, a proximity trigger, a state transition driven by player input — requires the script to be re-invoked when the condition occurs.
+
+Krastorio2's tesla coil is a clean example: which entities are in range and connected by beams changes as the game world changes. The script handler re-evaluates on each trigger event. This isn't avoidable by pre-computing a descriptor, because the relevant world state isn't known at load time.
+
+The cost profile of this boundary: proportional to event frequency and the number of entities involved. At low entity counts — the scale of Doom or Quake — per-event script callbacks are not a practical concern. QuakeC ran all of Quake's game logic (enemy AI, weapon behavior, damage, effects, triggers) through an interpreted bytecode VM on 1996 hardware. Roblox and GMod both run large amounts of per-event script logic at scale without the pattern being the bottleneck.
+
+### The practical question
+
+For any scripted behavior, the question is: can it be fully expressed as a descriptor produced once, or does it require re-evaluation when runtime conditions change? The former is always cheaper; the latter is necessary when the behavior is genuinely condition-dependent. Most content falls into the former category. Triggered effects and AI-driven behavior are the minority cases that require runtime callbacks.
 
 ---
 
-## 5. Performance: Documented Failure Modes
+## 6. Performance: Documented Failure Modes and Mitigations
 
-Three failure modes recur across all platforms studied.
+Three failure modes recur across all platforms studied, each with a documented mitigation.
 
-### Polling every entity every tick
+### Polling → event-driven replacement
 
-The most common problem. A mod registers an `on_tick` handler and iterates over all tracked entities every frame, checking conditions. At low entity counts this is invisible. At scale — hundreds of tracked entities, dozens of mods each doing the same — it compounds into meaningful UPS loss.
+**Problem:** A mod registers an `on_tick` handler and iterates over all tracked entities every frame checking conditions. At low entity counts this is invisible. At scale — hundreds of tracked entities, multiple mods each doing the same — it compounds into meaningful UPS loss.
 
-Factorio's HandyHands mod is a documented case: it polled player crafting queues every tick. Switching to event callbacks (`on_player_crafted_item`, `on_pre_player_crafting`) eliminated idle CPU entirely. No entities to scan = zero cost when nothing is happening.
+**Mitigation:** Register handlers for specific state-change events. Cost becomes proportional to event frequency, not entity count — zero cost when nothing is changing. Factorio's HandyHands mod is a documented case: replacing a per-tick crafting queue poll with `on_player_crafted_item` callbacks eliminated idle CPU entirely.
 
-### GC pressure from per-frame allocation
+The related pattern is the **rolling event queue**: update an entity when it starts doing something, when it finishes, and every N ticks if still running. Most entities spend most of their time idle; this collapses "check 3,000 entities × 60 ticks/sec" into "check only entities currently transitioning state."
 
-Creating and discarding tables or objects in tight loops generates continuous GC pressure. Luau uses an incremental collector, but the atomic step — one indivisible phase per GC cycle — can cause 10–50ms pauses if the heap is large. Roblox/Luau's documented mitigation: incremental coroutine marking and weak-table shrinking reduced atomic step cost significantly, but the fundamental issue is allocation rate.
-
-In GMod and Roblox, frequent `Instance.new()` and `:Destroy()` cycles for bullets, particles, and UI elements are the primary allocation source. Creating a new table per bullet fired is the canonical failure mode.
-
-### Event connection leaks
-
-In Roblox/Luau, event connections that aren't explicitly disconnected remain active indefinitely — even after the objects they reference are destroyed. Orphaned connections fire on every relevant event, accumulating CPU cost invisibly over session lifetime. This is the documented #1 memory and performance leak source in Roblox development.
-
----
-
-## 6. Documented Mitigation Strategies
-
-### Event-driven over polling
-
-Universal across all platforms. Register handlers for state-change events instead of checking conditions every tick. Cost is proportional to event frequency, not entity count — zero cost when nothing is changing.
-
-The related pattern is the **rolling event queue**: update an entity exactly three times — when it starts doing something, when it finishes, and every N ticks if it's still running. Most entities spend most of their time idle; this collapses "check 3,000 entities × 60 ticks/sec" into "check only entities currently transitioning state."
-
-### nth-tick bucket distribution (Factorio)
-
-When periodic checks on many entities are genuinely necessary, distribute them across ticks by entity ID:
+When periodic checks on many entities are genuinely necessary, distribute them across ticks by entity ID (Factorio's nth-tick bucket pattern):
 
 ```lua
--- Distribute entities across 64 ticks
 script.on_nth_tick(64, function(event)
     local bucket = all_entities[event.tick % 64]
     for _, entity in pairs(bucket) do update(entity) end
 end)
 ```
 
-Each entity is checked once every 64 ticks rather than every tick. Work spreads evenly rather than landing on the same frame. The documented recommendation: use prime numbers for the interval (61, 67, etc.) rather than powers of two. Prime intervals have a larger least-common-multiple with other mods' intervals — mods running on 64-tick intervals can bunch up on the same tick; prime intervals spread naturally.
+Each entity is checked once every 64 ticks rather than every tick. Documented recommendation: use prime-number intervals (61, 67, etc.) rather than powers of two — prime intervals have a larger LCM with other mods' intervals, preventing multiple mods' work from bunching on the same tick.
 
-Quantified impact: switching from `settings.global` API calls to cached `storage[]` references improved performance from 0.090 UPS to 0.070 UPS on a test save. Factorio's reference: 1 ms of scripting cost per tick equals approximately 3.5 UPS loss at 60 UPS.
+Quantified reference: switching from `settings.global` API calls to cached `storage[]` references improved a test save from 0.090 to 0.070 UPS. Factorio's baseline: 1 ms of scripting cost per tick equals ~3.5 UPS loss at 60 UPS.
 
-### Actor parallelism (Roblox)
+### Per-frame allocation → object pooling
 
-For genuinely heavy computation — raycasting, pathfinding, NPC AI — Roblox added first-class parallel execution via Actor instances:
+**Problem:** Creating and discarding tables or objects in tight loops generates continuous GC pressure. Luau's incremental collector handles most of this incrementally, but the atomic step — one indivisible phase per GC cycle — can cause 10–50ms pauses if the heap is large. In GMod and Roblox, frequent `Instance.new()` and `:Destroy()` cycles for bullets, particles, and UI elements are the primary source. Creating a new table per bullet fired is the canonical failure mode.
 
-```lua
--- In a script under an Actor
-task.desynchronize()           -- enter parallel phase
-local result = expensiveRaycast()  -- runs concurrently with other Actors
-task.synchronize()             -- return to serial for data model writes
-instance.Value = result
-```
-
-Read-only work (collision checks, distance queries, AI decisions) runs on separate threads. Writes must be serial. The constraint is enforced by the engine.
-
-### Maid/Janitor pattern (Roblox)
-
-A cleanup object that manages all event connections for a component's lifetime:
-
-```lua
-local maid = Maid.new()
-maid:GiveTask(part.Touched:Connect(onTouched))
-maid:GiveTask(player.CharacterAdded:Connect(onSpawn))
-maid:GiveTask(someInstance)
-
-maid:Destroy()  -- disconnects all connections, destroys all instances
-```
-
-Connections are disconnected before instances are destroyed, preventing callbacks from firing on partially-destroyed state during cleanup. This pattern is standard practice in professional Roblox development and is documented as the primary defense against connection leak accumulation.
-
-### Object pooling
-
-Pre-allocate a fixed set of objects and recycle them rather than creating and destroying per use:
+**Mitigation:** Pre-allocate a fixed set of objects and recycle them rather than creating and destroying per use:
 
 ```lua
 local pool = ObjectPool.new(bulletTemplate)
-local bullet = pool:Get()      -- reuse or create
--- ... use bullet ...
-pool:Return(bullet)            -- reset and recycle, no GC involved
+local bullet = pool:Get()    -- reuse or create
+-- ...
+pool:Return(bullet)          -- reset and recycle, no GC involved
 ```
 
-Target use cases: bullets, particles, UI elements, any object created and destroyed at high frequency. Roblox's own core scripts include an `ObjectPool.lua` for this purpose. The pattern eliminates the GC assist cost that accumulates when allocation rate is high.
-
-### API call caching
-
-Repeated API calls on the same object within a tick have measurable cost. Cache results that don't change mid-tick rather than re-querying:
+Roblox's own core scripts include an `ObjectPool.lua`. The pattern eliminates the GC assist cost that accumulates when allocation rate is high. For API calls specifically, cache results that don't change mid-tick rather than re-querying on every iteration:
 
 ```lua
--- Expensive: re-queries the API on every iteration
+-- Expensive: re-queries surface on every iteration
 for _, entity in pairs(entities) do
     if entity.valid and entity.surface.name == target_surface_name then ...
 
@@ -312,9 +263,41 @@ for _, entity in pairs(entities) do
     if entity.valid and entity.surface == surface then ...
 ```
 
+### Event connection leaks → Maid/Janitor pattern
+
+**Problem:** In Roblox/Luau, event connections that aren't explicitly disconnected remain active indefinitely, even after the objects they reference are destroyed. Orphaned connections fire on every relevant event, accumulating CPU cost invisibly over a session's lifetime. This is the documented #1 memory and performance leak source in Roblox development.
+
+**Mitigation:** A cleanup object (Maid or Janitor) manages all event connections for a component's lifetime:
+
+```lua
+local maid = Maid.new()
+maid:GiveTask(part.Touched:Connect(onTouched))
+maid:GiveTask(player.CharacterAdded:Connect(onSpawn))
+maid:GiveTask(someInstance)
+
+maid:Destroy()  -- disconnects connections before destroying instances
+```
+
+Connections are disconnected before instances are destroyed, preventing callbacks from firing on partially-destroyed state during cleanup. This is standard practice in professional Roblox development.
+
+### Heavy computation → Actor parallelism (Roblox)
+
+**Problem:** Expensive computation — raycasting, pathfinding, NPC AI — blocks the main script thread, causing frame spikes.
+
+**Mitigation:** Roblox added first-class parallel execution via Actor instances:
+
+```lua
+task.desynchronize()              -- enter parallel phase
+local result = expensiveRaycast() -- runs concurrently with other Actors
+task.synchronize()                -- return to serial for data model writes
+instance.Value = result
+```
+
+Read-only work runs on separate threads; writes must be serial. The engine enforces the constraint.
+
 ---
 
-## 7. Engine Evolution
+## 7. Engine Evolution Over Time
 
 Both ecosystems show the same arc: performance problems that couldn't be solved in script were eventually absorbed into the engine.
 

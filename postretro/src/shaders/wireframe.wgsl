@@ -17,7 +17,7 @@ struct Uniforms {
     light_count: u32,
     time: f32,
     lighting_isolation: u32,
-    _pad: u32,
+    indirect_scale: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;

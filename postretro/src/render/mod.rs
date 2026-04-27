@@ -82,7 +82,8 @@ const TIMING_PAIR_COUNT: usize = 4;
 // --- Uniform buffer layout ---
 
 /// Per-frame uniform data: view-projection, camera world-space position,
-/// ambient floor, light count, elapsed time, and lighting-isolation mode.
+/// ambient floor, light count, elapsed time, lighting-isolation mode,
+/// and SH indirect scale.
 ///
 /// Layout must match the WGSL `Uniforms` struct in `forward.wgsl` and
 /// `wireframe.wgsl` — both shaders bind the same buffer. std140 rules
@@ -97,7 +98,7 @@ const TIMING_PAIR_COUNT: usize = 4;
 ///   80..84   light_count         (u32)
 ///   84..88   time                (f32, elapsed seconds for SH animation)
 ///   88..92   lighting_isolation  (u32, cycles 0..=9; chord Alt+Shift+4)
-///   92..96   _pad                (u32, keeps the struct 16-byte aligned)
+///   92..96   indirect_scale      (f32, per-frame SH indirect multiplier)
 const UNIFORM_SIZE: usize = 96;
 
 /// Lighting-term isolation mode for leak/bleed debugging.
@@ -166,6 +167,7 @@ struct FrameUniforms {
     light_count: u32,
     time: f32,
     lighting_isolation: LightingIsolation,
+    indirect_scale: f32,
 }
 
 fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -183,7 +185,7 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[84..88].copy_from_slice(&u.time.to_ne_bytes());
     let isolation: u32 = u.lighting_isolation as u32;
     bytes[88..92].copy_from_slice(&isolation.to_ne_bytes());
-    // bytes 92..96 stay zero — pad.
+    bytes[92..96].copy_from_slice(&u.indirect_scale.to_ne_bytes());
     bytes
 }
 
@@ -707,6 +709,7 @@ impl Renderer {
             light_count,
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
         });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1825,6 +1828,7 @@ impl Renderer {
             light_count: self.light_count,
             time,
             lighting_isolation: self.lighting_isolation,
+            indirect_scale: 1.0,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
@@ -2661,6 +2665,7 @@ mod tests {
             light_count: 0,
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -2937,6 +2942,7 @@ mod tests {
             light_count,
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
         });
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
@@ -2979,9 +2985,8 @@ mod tests {
         let iso = u32::from_ne_bytes(data[88..92].try_into().unwrap());
         assert_eq!(iso, 0);
 
-        // Trailing pad (92..96) zero.
-        for &b in &data[92..96] {
-            assert_eq!(b, 0);
-        }
+        // indirect_scale at bytes 92..96 (passed 1.0).
+        let scale = f32::from_ne_bytes(data[92..96].try_into().unwrap());
+        assert_eq!(scale, 1.0);
     }
 }

@@ -17,7 +17,11 @@ struct Uniforms {
     // 6 = StaticSHOnly, 7 = AnimatedDeltaOnly, 8 = DynamicOnly,
     // 9 = SpecularOnly.
     lighting_isolation: u32,
-    _pad: u32,
+    // Per-frame multiplier on the SH indirect term. 1.0 preserves baked
+    // intensity; lower values suppress SH fill on static surfaces to keep
+    // lightmap shadow contrast. Forced to 1.0 in indirect-only isolation
+    // modes so debug views aren't affected by runtime suppression.
+    indirect_scale: f32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
@@ -511,9 +515,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Indirect term: baked SH irradiance. Zero when no SH volume is loaded
     // or when the isolation mode suppresses indirect.
+    // Force scale to 1.0 in modes that exist to view the indirect term
+    // directly (IndirectOnly = 3, StaticSHOnly = 6), so runtime suppression
+    // doesn't distort the debug view.
+    let indirect_scale = select(uniforms.indirect_scale, 1.0, iso == 3u || iso == 6u);
     var indirect = vec3<f32>(0.0);
     if use_indirect {
-        indirect = sample_sh_indirect(in.world_position, N_bump);
+        indirect = sample_sh_indirect(in.world_position, N_bump) * indirect_scale;
     }
 
     // Static direct term: baked directional lightmap. The atlas stores

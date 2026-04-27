@@ -28,7 +28,7 @@ mod visibility;
 mod scripting_systems;
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -52,7 +52,7 @@ use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig, Which as Scr
 use crate::texture::TextureSet;
 use crate::visibility::{VisibilityPath, VisibilityStats, VisibleCells};
 
-const DEFAULT_MAP_PATH: &str = "assets/maps/test-3.prl";
+const DEFAULT_MAP_PATH: &str = "content/tests/maps/test-3.prl";
 
 fn resolve_map_path(args: &[String]) -> String {
     args.iter()
@@ -62,17 +62,19 @@ fn resolve_map_path(args: &[String]) -> String {
         .unwrap_or_else(|| DEFAULT_MAP_PATH.to_string())
 }
 
-/// Resolve the texture root directory from a map file path.
-/// For `assets/maps/test-3.prl`, the texture root is `assets/textures/`.
-/// Navigates up from the map file to the asset root (parent of `maps/`),
-/// then appends `textures/`.
-fn resolve_texture_root(map_path: &str) -> std::path::PathBuf {
-    let map_dir = Path::new(map_path)
+/// Derive the content root directory from a map file path. The content root
+/// is the parent of the `maps/` directory containing the map; sibling
+/// directories such as `textures/` and `scripts/` live alongside `maps/`
+/// under this root.
+///
+/// For `content/tests/maps/test-3.prl`, returns `content/tests/`.
+/// For `content/base/maps/e1m1.prl`, returns `content/base/`.
+fn content_root_from_map(map_path: &str) -> PathBuf {
+    Path::new(map_path)
         .parent()
-        .unwrap_or_else(|| Path::new("."));
-    // Go up one level from the maps directory to get the asset root.
-    let asset_root = map_dir.parent().unwrap_or_else(|| Path::new("."));
-    asset_root.join("textures")
+        .and_then(|maps_dir| maps_dir.parent())
+        .unwrap_or(Path::new("."))
+        .to_path_buf()
 }
 
 fn load_level(path: &str) -> Result<Option<prl::LevelWorld>> {
@@ -110,13 +112,15 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     let map_path = resolve_map_path(&args);
+    let content_root = content_root_from_map(&map_path);
+    log::info!("[Engine] Content root: {}", content_root.display());
     let mut level = load_level(&map_path)?;
     let spawn_demo_smoke = args.iter().any(|a| a == "--demo-smoke");
 
     // Load textures for PRL levels.
     let texture_set = match &level {
         Some(world) if !world.texture_names.is_empty() => {
-            let texture_root = resolve_texture_root(&map_path);
+            let texture_root = content_root.join("textures");
             log::info!(
                 "[Engine] Loading PRL textures from {}",
                 texture_root.display()
@@ -149,8 +153,9 @@ fn main() -> Result<()> {
     // --- Scripting bootstrap.
     //
     // One `ScriptRuntime` per engine instance. Behavior scripts load from
-    // `assets/scripts/` (if present) sorted lexicographically by UTF-8 byte
-    // order — this fixes the `registerHandler` invocation order across files.
+    // `<content_root>/scripts/` (if present) sorted lexicographically by
+    // UTF-8 byte order — this fixes `registerHandler` invocation order
+    // across files.
     // `fire_level_load` runs after world population but before the first
     // frame renders; `fire_tick` runs each frame after game logic. See
     // context/lib/scripting.md.
@@ -169,6 +174,7 @@ fn main() -> Result<()> {
         window_state: None,
         level,
         texture_set,
+        content_root,
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
         input_system: input::InputSystem::new(input::default_bindings()),
@@ -266,10 +272,11 @@ fn build_demo_emitters(spawn_demo: bool, camera_pos: Vec3) -> Vec<fx::smoke::Smo
     )]
 }
 
-/// Load every behavior script under `assets/scripts/` in lexicographic order.
-/// The sort order defines cross-file `registerHandler` invocation order per
-/// Sub-plan 5. Missing directory: no-op. Per-file failures are logged and
-/// swallowed — one bad script must not kill the engine.
+/// Load every behavior script under `<content_root>/scripts/` in
+/// lexicographic order. The sort order defines cross-file `registerHandler`
+/// invocation order per Sub-plan 5. Missing directory: no-op. Per-file
+/// failures are logged and swallowed — one bad script must not kill the
+/// engine.
 ///
 /// # TypeScript compilation
 ///
@@ -284,16 +291,17 @@ fn build_demo_emitters(spawn_demo: bool, camera_pos: Vec3) -> Vec<fx::smoke::Smo
 ///
 /// # ⚠ ES module output warning
 ///
-/// `assets/scripts/tsconfig.json` sets `"module": "ES2020"`, so `tsc` emits
-/// output with `import`/`export` statements. QuickJS's `ctx.eval()` (script
-/// mode) cannot parse ES module syntax and will reject the compiled output.
-/// The proper fix is the `scripts-build` bundler sidecar — it strips
+/// `<content_root>/scripts/tsconfig.json` sets `"module": "ES2020"`, so `tsc`
+/// emits output with `import`/`export` statements. QuickJS's `ctx.eval()`
+/// (script mode) cannot parse ES module syntax and will reject the compiled
+/// output. The proper fix is the `scripts-build` bundler sidecar — it strips
 /// imports/exports and produces a self-contained IIFE/plain-JS bundle that
 /// QuickJS can evaluate. Until `scripts-build` is the active compiler,
 /// TypeScript files that use `import`/`export` will fail to load even after
 /// successful compilation.
-fn load_behavior_scripts(runtime: &ScriptRuntime) {
-    let root = Path::new("assets/scripts");
+fn load_behavior_scripts(runtime: &ScriptRuntime, content_root: &Path) {
+    let root_buf = content_root.join("scripts");
+    let root = root_buf.as_path();
     let entries = match std::fs::read_dir(root) {
         Ok(e) => e,
         Err(err) => {
@@ -423,6 +431,12 @@ struct App {
     level: Option<prl::LevelWorld>,
     /// CPU-side textures loaded from disk, consumed by renderer during init.
     texture_set: Option<TextureSet>,
+
+    /// Content root for the active level — derived once from the map path at
+    /// startup. Sibling directories (`textures/`, `scripts/`) live under this
+    /// root; both texture loading and behavior-script discovery read from it.
+    content_root: PathBuf,
+
     exit_result: Result<()>,
 
     camera: Camera,
@@ -563,8 +577,7 @@ impl ApplicationHandler for App {
         // Vec is populated by developer hook or future PRL section. This
         // keeps the renderer + emitter update pipeline exercised while the
         // cross-crate plumbing is staged. See the task deliverable notes.
-        let texture_root =
-            resolve_texture_root(&resolve_map_path(&std::env::args().collect::<Vec<_>>()));
+        let texture_root = self.content_root.join("textures");
         let mut registered: std::collections::HashSet<String> = std::collections::HashSet::new();
         for emitter in &self.smoke_emitters {
             let collection = emitter.collection().to_string();
@@ -701,12 +714,13 @@ impl ApplicationHandler for App {
 
                 // Fire `levelLoad` once, before the first frame renders. The
                 // world is already populated (load_level ran before the event
-                // loop started). Script files load from `assets/scripts/`
-                // sorted lexicographically — the sort order pins
-                // cross-file `registerHandler` registration order.
+                // loop started). Script files load from
+                // `<content_root>/scripts/` sorted lexicographically — the
+                // sort order pins cross-file `registerHandler` registration
+                // order.
                 // See: context/lib/scripting.md
                 if !self.level_load_fired {
-                    load_behavior_scripts(&self.script_runtime);
+                    load_behavior_scripts(&self.script_runtime, &self.content_root);
                     self.script_runtime.fire_level_load();
                     self.level_load_fired = true;
                     self.script_time = 0.0;

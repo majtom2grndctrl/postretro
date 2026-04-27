@@ -23,9 +23,13 @@ use postretro_level_format::{read_container, read_section_data};
 
 /// Walk from the crate root to the workspace root (for locating `assets/`).
 fn workspace_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR = postretro-level-compiler/. Workspace root is ../.
+    // CARGO_MANIFEST_DIR = crates/level-compiler/. Workspace root is ../../.
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest.parent().expect("workspace root").to_path_buf()
+    manifest
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root")
+        .to_path_buf()
 }
 
 #[test]

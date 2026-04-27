@@ -790,6 +790,7 @@ mod tests {
     fn portals_with_test_map() {
         let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
+            .and_then(|p| p.parent())
             .expect("workspace root")
             .join("assets/maps/test.map");
 

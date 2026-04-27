@@ -504,19 +504,25 @@ mod tests {
     /// for binaries declared as a dep of the current crate; falls back to
     /// walking relative to `CARGO_MANIFEST_DIR`.
     fn scripts_build_binary() -> Option<PathBuf> {
-        // `CARGO_MANIFEST_DIR` is always set under `cargo test`.
+        // `CARGO_MANIFEST_DIR` is always set under `cargo test`. Walk up until
+        // we find a `target/` directory — the workspace root sits two parents
+        // above this crate (`crates/postretro/..`), but be tolerant of layout
+        // changes by searching upward.
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace = manifest.parent()?;
         let name = if cfg!(windows) {
             "scripts-build.exe"
         } else {
             "scripts-build"
         };
-        for profile in ["debug", "release"] {
-            let candidate = workspace.join("target").join(profile).join(name);
-            if candidate.is_file() {
-                return Some(candidate);
+        let mut dir: Option<&std::path::Path> = Some(manifest.as_path());
+        while let Some(d) = dir {
+            for profile in ["debug", "release"] {
+                let candidate = d.join("target").join(profile).join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
+            dir = d.parent();
         }
         None
     }

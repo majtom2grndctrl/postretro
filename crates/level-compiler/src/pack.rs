@@ -686,6 +686,7 @@ mod tests {
     fn full_pipeline_portal_mode_produces_valid_prl() {
         let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
+            .and_then(|p| p.parent())
             .expect("workspace root")
             .join("assets/maps/test.map");
 
@@ -777,6 +778,7 @@ mod tests {
     fn every_test_map_compiles_with_sh_section() {
         let maps_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
+            .and_then(|p| p.parent())
             .expect("workspace root")
             .join("assets/maps");
 

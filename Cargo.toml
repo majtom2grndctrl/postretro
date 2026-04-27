@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "postretro",
-    "postretro-level-format",
-    "postretro-level-compiler",
-    "postretro-script-compiler",
+    "crates/postretro",
+    "crates/level-format",
+    "crates/level-compiler",
+    "crates/script-compiler",
 ]
 resolver = "2"
 
@@ -68,7 +68,7 @@ env_logger = "0.11"
 proptest = "1"
 
 # Workspace members
-postretro-level-format = { path = "postretro-level-format" }
+postretro-level-format = { path = "crates/level-format" }
 
 [profile.release]
 opt-level = 3

@@ -96,7 +96,7 @@ const TIMING_PAIR_COUNT: usize = 4;
 ///   76..80   ambient_floor       (f32)
 ///   80..84   light_count         (u32)
 ///   84..88   time                (f32, elapsed seconds for SH animation)
-///   88..92   lighting_isolation  (u32, cycles 0..9; chord Alt+Shift+4)
+///   88..92   lighting_isolation  (u32, cycles 0..=9; chord Alt+Shift+4)
 ///   92..96   _pad                (u32, keeps the struct 16-byte aligned)
 const UNIFORM_SIZE: usize = 96;
 
@@ -111,21 +111,23 @@ const UNIFORM_SIZE: usize = 96;
 #[repr(u32)]
 pub enum LightingIsolation {
     Normal = 0,
-    DirectOnly = 1,
-    IndirectOnly = 2,
-    AmbientOnly = 3,
-    LightmapOnly = 4,
-    StaticSHOnly = 5,
-    AnimatedDeltaOnly = 6,
-    DynamicOnly = 7,
-    SpecularOnly = 8,
+    NoLightmap = 1,
+    DirectOnly = 2,
+    IndirectOnly = 3,
+    AmbientOnly = 4,
+    LightmapOnly = 5,
+    StaticSHOnly = 6,
+    AnimatedDeltaOnly = 7,
+    DynamicOnly = 8,
+    SpecularOnly = 9,
 }
 
 impl LightingIsolation {
     /// Advance to the next mode in the cycle, wrapping back to `Normal`.
     pub fn cycle(self) -> Self {
         match self {
-            LightingIsolation::Normal => LightingIsolation::DirectOnly,
+            LightingIsolation::Normal => LightingIsolation::NoLightmap,
+            LightingIsolation::NoLightmap => LightingIsolation::DirectOnly,
             LightingIsolation::DirectOnly => LightingIsolation::IndirectOnly,
             LightingIsolation::IndirectOnly => LightingIsolation::AmbientOnly,
             LightingIsolation::AmbientOnly => LightingIsolation::LightmapOnly,
@@ -141,6 +143,7 @@ impl LightingIsolation {
     pub fn label(self) -> &'static str {
         match self {
             LightingIsolation::Normal => "Normal (all terms)",
+            LightingIsolation::NoLightmap => "NoLightmap (all terms except static lightmap)",
             LightingIsolation::DirectOnly => "DirectOnly (lightmap + dynamic + specular)",
             LightingIsolation::IndirectOnly => "IndirectOnly (SH + specular)",
             LightingIsolation::AmbientOnly => "AmbientOnly (ambient floor only)",

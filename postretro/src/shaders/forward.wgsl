@@ -11,7 +11,7 @@ struct Uniforms {
     // evaluation; wrapping is handled per-light via fract().
     time: f32,
     // Lighting-term isolation for leak/bleed debugging. Cycled by the
-    // Alt+Shift+4 diagnostic chord. Values 0..9 — see fs_main for the full
+    // Alt+Shift+4 diagnostic chord. Values 0..=9 — see fs_main for the full
     // table; in summary 0 = Normal, 1 = NoLightmap, 2 = DirectOnly,
     // 3 = IndirectOnly, 4 = AmbientOnly, 5 = LightmapOnly,
     // 6 = StaticSHOnly, 7 = AnimatedDeltaOnly, 8 = DynamicOnly,

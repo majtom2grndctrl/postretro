@@ -16,7 +16,7 @@
 | Data-driven behavior | Texture name prefix → material enum derivation, PRL section presence/absence shaping renderer paths |
 | Boundary parsing | PRL loading, FGD entity parsing, config file parsing — anywhere external data enters the engine |
 | Domain logic | BSP traversal ordering, lightmap atlas packing, collision detection, entity resolution from BSP leaves |
-| Degradation paths | Missing optional PRL sections (lightmaps, PVS), malformed textures, absent assets |
+| Degradation paths | Missing optional PRL sections (lightmaps, portals), malformed textures, absent assets |
 
 ### Decision criteria
 

@@ -804,7 +804,6 @@ impl ApplicationHandler for App {
                         VisibilityStats {
                             camera_leaf: 0,
                             total_faces: 0,
-                            pvs_reach: 0,
                             drawn_faces: 0,
                             path: VisibilityPath::EmptyWorldFallback,
                         },
@@ -878,9 +877,8 @@ impl ApplicationHandler for App {
                 let pos = interp.position;
                 let region_label = "leaf";
                 let path_label = match stats.path {
-                    VisibilityPath::PrlPvs => "prl-pvs",
                     VisibilityPath::PrlPortal { .. } => "prl-portal",
-                    VisibilityPath::NoPvsFallback => "no-pvs",
+                    VisibilityPath::NoPortalsFallback => "no-portals",
                     VisibilityPath::EmptyWorldFallback => "empty",
                     VisibilityPath::SolidLeafFallback => "solid-leaf",
                     VisibilityPath::ExteriorCameraFallback => "exterior",
@@ -890,10 +888,9 @@ impl ApplicationHandler for App {
                     None => String::new(),
                 };
                 log::debug!(
-                    "[Diagnostics] {region_label}:{} path:{path_label} | draw:{} pvs:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
+                    "[Diagnostics] {region_label}:{} path:{path_label} | draw:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
                     stats.camera_leaf,
                     stats.drawn_faces,
-                    stats.pvs_reach,
                     stats.total_faces,
                     pos.x,
                     pos.y,
@@ -920,10 +917,9 @@ impl ApplicationHandler for App {
                         self.title_buffer.clear();
                         let _ = write!(
                             &mut self.title_buffer,
-                            "Postretro | {region_label}:{} path:{path_label} | draw:{} pvs:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
+                            "Postretro | {region_label}:{} path:{path_label} | draw:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
                             stats.camera_leaf,
                             stats.drawn_faces,
-                            stats.pvs_reach,
                             stats.total_faces,
                             pos.x,
                             pos.y,

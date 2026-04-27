@@ -9,7 +9,6 @@ pub mod bvh;
 pub mod chunk_light_list;
 pub mod delta_sh_volumes;
 pub mod geometry;
-pub mod leaf_pvs;
 pub mod light_influence;
 pub mod light_tags;
 pub mod lightmap;
@@ -17,7 +16,6 @@ pub mod octahedral;
 pub mod portals;
 pub mod sh_volume;
 pub mod texture_names;
-pub mod visibility;
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -68,11 +66,10 @@ pub enum SectionId {
     /// Flat array of BSP interior nodes (splitting planes + child references).
     BspNodes = 12,
 
-    /// Flat array of BSP leaf records (face ranges, bounds, PVS references).
+    /// Flat array of BSP leaf records (face ranges, bounds).
     BspLeaves = 13,
 
-    /// Per-leaf RLE-compressed PVS bitsets (concatenated blob).
-    LeafPvs = 14,
+    // 14 (LeafPvs) retired — precomputed PVS removed; portal traversal is the only vis path.
 
     /// Portal graph for runtime portal traversal.
     Portals = 15,
@@ -144,7 +141,6 @@ impl SectionId {
         match value {
             12 => Some(Self::BspNodes),
             13 => Some(Self::BspLeaves),
-            14 => Some(Self::LeafPvs),
             15 => Some(Self::Portals),
             16 => Some(Self::TextureNames),
             17 => Some(Self::Geometry),
@@ -372,7 +368,7 @@ mod tests {
                 data: vec![0xDE, 0xAD, 0xBE, 0xEF],
             },
             SectionBlob {
-                section_id: SectionId::LeafPvs as u32,
+                section_id: SectionId::Portals as u32,
                 version: 1,
                 data: vec![0xCA, 0xFE],
             },
@@ -392,17 +388,17 @@ mod tests {
         assert_eq!(meta.header.section_count, 2);
         assert_eq!(meta.sections.len(), 2);
         assert_eq!(meta.sections[0].section_id, SectionId::Geometry as u32);
-        assert_eq!(meta.sections[1].section_id, SectionId::LeafPvs as u32);
+        assert_eq!(meta.sections[1].section_id, SectionId::Portals as u32);
 
         let geom = read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)
             .unwrap()
             .unwrap();
         assert_eq!(geom, vec![0xDE, 0xAD, 0xBE, 0xEF]);
 
-        let pvs = read_section_data(&mut cursor, &meta, SectionId::LeafPvs as u32)
+        let portals = read_section_data(&mut cursor, &meta, SectionId::Portals as u32)
             .unwrap()
             .unwrap();
-        assert_eq!(pvs, vec![0xCA, 0xFE]);
+        assert_eq!(portals, vec![0xCA, 0xFE]);
     }
 
     #[test]
@@ -469,7 +465,7 @@ mod tests {
 
         let mut cursor = Cursor::new(&buf);
         let meta = read_container(&mut cursor).unwrap();
-        let result = read_section_data(&mut cursor, &meta, SectionId::LeafPvs as u32).unwrap();
+        let result = read_section_data(&mut cursor, &meta, SectionId::BspNodes as u32).unwrap();
         assert!(result.is_none());
     }
 

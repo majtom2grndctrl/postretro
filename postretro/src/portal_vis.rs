@@ -890,7 +890,6 @@ mod tests {
                     bounds_max: Vec3::new(32.0, 64.0, 64.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 LeafData {
@@ -898,7 +897,6 @@ mod tests {
                     bounds_max: Vec3::new(64.0, 64.0, 64.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 LeafData {
@@ -906,12 +904,10 @@ mod tests {
                     bounds_max: Vec3::new(96.0, 64.0, 64.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
             ],
             root: BspChild::Node(0),
-            has_pvs: false,
             portals: vec![portal_0, portal_1],
             leaf_portals: vec![
                 vec![0],    // leaf 0 touches portal 0
@@ -999,7 +995,6 @@ mod tests {
             nodes: vec![],
             leaves: vec![],
             root: BspChild::Leaf(0),
-            has_pvs: false,
             portals: vec![],
             leaf_portals: vec![],
             has_portals: false,
@@ -1064,7 +1059,6 @@ mod tests {
                     bounds_max: Vec3::new(32.0, 64.0, 64.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 LeafData {
@@ -1072,7 +1066,6 @@ mod tests {
                     bounds_max: Vec3::new(64.0, 64.0, 200.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 LeafData {
@@ -1080,12 +1073,10 @@ mod tests {
                     bounds_max: Vec3::new(64.0, 64.0, 264.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
             ],
             root: BspChild::Leaf(0),
-            has_pvs: false,
             portals: vec![portal_0, portal_1],
             leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
             has_portals: true,
@@ -1376,7 +1367,6 @@ mod tests {
                     bounds_max: Vec3::new(120.0, 128.0, 128.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 // Leaf 1: left gap passage (B), Z=62..64
@@ -1385,7 +1375,6 @@ mod tests {
                     bounds_max: Vec3::new(136.0, 112.0, 64.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 // Leaf 2: right gap passage (C), Z=66..68
@@ -1394,7 +1383,6 @@ mod tests {
                     bounds_max: Vec3::new(136.0, 112.0, 68.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 // Leaf 3: far room (D), X=136..256
@@ -1403,12 +1391,10 @@ mod tests {
                     bounds_max: Vec3::new(256.0, 128.0, 128.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
             ],
             root: BspChild::Node(0),
-            has_pvs: false,
             portals: vec![portal_a_b, portal_a_c, portal_b_d, portal_c_d],
             leaf_portals: vec![
                 vec![0, 1], // leaf A touches portal 0 (A-B) and portal 1 (A-C)
@@ -1809,7 +1795,6 @@ mod tests {
                     bounds_max: Vec3::new(10.0, 500.0, 500.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 LeafData {
@@ -1817,7 +1802,6 @@ mod tests {
                     bounds_max: Vec3::new(25.0, 500.0, 500.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 LeafData {
@@ -1825,12 +1809,10 @@ mod tests {
                     bounds_max: Vec3::new(25.0, 600.0, 500.0),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
             ],
             root: BspChild::Leaf(0),
-            has_pvs: false,
             portals: vec![portal_a_b, portal_b_c],
             leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
             has_portals: true,
@@ -1977,7 +1959,6 @@ mod tests {
             bounds_max: Vec3::new(1000.0, 1000.0, 1000.0),
             face_start: 0,
             face_count: 0,
-            pvs: vec![],
             is_solid: false,
         };
 
@@ -1994,7 +1975,6 @@ mod tests {
                 leaf_template(), // 4: Y
             ],
             root: BspChild::Leaf(0),
-            has_pvs: false,
             portals: vec![portal_a_b, portal_a_c, portal_b_x, portal_c_x, portal_x_y],
             // Iteration order matters: A lists portal 0 (narrow) BEFORE
             // portal 1 (wide) so BFS would deterministically plant the
@@ -2095,7 +2075,6 @@ mod tests {
                     bounds_max: Vec3::new(11.38, 4.88, -11.38),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 LeafData {
@@ -2103,12 +2082,10 @@ mod tests {
                     bounds_max: Vec3::new(4.88, 4.88, -11.38),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
             ],
             root: BspChild::Leaf(0),
-            has_pvs: false,
             portals: vec![portal],
             leaf_portals: vec![vec![0], vec![0]],
             has_portals: true,
@@ -2230,7 +2207,6 @@ mod tests {
                     bounds_max: Vec3::new(-34.34, 13.00, -13.00),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
                 // Leaf B — neighbor on the +Z side of the portal.
@@ -2239,12 +2215,10 @@ mod tests {
                     bounds_max: Vec3::new(-34.34, 13.00, -5.00),
                     face_start: 0,
                     face_count: 0,
-                    pvs: vec![],
                     is_solid: false,
                 },
             ],
             root: BspChild::Leaf(0),
-            has_pvs: false,
             portals: vec![portal],
             leaf_portals: vec![vec![0], vec![0]],
             has_portals: true,

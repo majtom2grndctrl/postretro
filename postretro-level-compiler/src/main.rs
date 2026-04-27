@@ -168,7 +168,7 @@ fn main() -> anyhow::Result<()> {
 
     let exterior_leaves = visibility::find_exterior_leaves(&result.tree, &generated_portals);
 
-    let vis_result = visibility::encode_vis(&result.tree, &generated_portals, &exterior_leaves);
+    let vis_result = visibility::encode_vis(&result.tree, &exterior_leaves);
     timings.push(("Visibility", stage_start.elapsed()));
     if args.verbose {
         visibility::log_stats(&vis_result, portal_count);
@@ -397,52 +397,25 @@ fn main() -> anyhow::Result<()> {
     progress.start_stage("Packing and writing...");
     let stage_start = Instant::now();
 
-    if args.pvs {
-        if args.verbose {
-            log::info!("Writing precomputed PVS mode (--pvs).");
-        }
-        pack::pack_and_write_pvs(
-            &args.output,
-            &geo_result,
-            &vis_result.nodes_section,
-            &vis_result.leaves_section,
-            &vis_result.leaf_pvs_section,
-            &bvh_section,
-            &bvh_chunk_ranges,
-            &alpha_lights_section,
-            &light_influence_section,
-            &sh_volume_section,
-            &lightmap_section,
-            &chunk_light_list_section,
-            animated_light_chunks_section.as_ref(),
-            animated_light_weight_maps_section.as_ref(),
-            light_tags_section.as_ref(),
-            delta_sh_volumes_section.as_ref(),
-        )?;
-    } else {
-        if args.verbose {
-            log::info!("Writing portal graph mode (default).");
-        }
-        let portals_section = pack::encode_portals(&generated_portals);
-        pack::pack_and_write_portals(
-            &args.output,
-            &geo_result,
-            &vis_result.nodes_section,
-            &vis_result.leaves_section,
-            &portals_section,
-            &bvh_section,
-            &bvh_chunk_ranges,
-            &alpha_lights_section,
-            &light_influence_section,
-            &sh_volume_section,
-            &lightmap_section,
-            &chunk_light_list_section,
-            animated_light_chunks_section.as_ref(),
-            animated_light_weight_maps_section.as_ref(),
-            light_tags_section.as_ref(),
-            delta_sh_volumes_section.as_ref(),
-        )?;
-    }
+    let portals_section = pack::encode_portals(&generated_portals);
+    pack::pack_and_write_portals(
+        &args.output,
+        &geo_result,
+        &vis_result.nodes_section,
+        &vis_result.leaves_section,
+        &portals_section,
+        &bvh_section,
+        &bvh_chunk_ranges,
+        &alpha_lights_section,
+        &light_influence_section,
+        &sh_volume_section,
+        &lightmap_section,
+        &chunk_light_list_section,
+        animated_light_chunks_section.as_ref(),
+        animated_light_weight_maps_section.as_ref(),
+        light_tags_section.as_ref(),
+        delta_sh_volumes_section.as_ref(),
+    )?;
     timings.push(("Packing", stage_start.elapsed()));
 
     progress.finish();
@@ -464,8 +437,6 @@ fn main() -> anyhow::Result<()> {
 struct Args {
     input: PathBuf,
     output: PathBuf,
-    /// When true, emit precomputed PVS (LeafPvs section) instead of portal graph.
-    pvs: bool,
     /// Enable detailed logging.
     verbose: bool,
     /// Map dialect to parse (default: IdTech2).
@@ -487,7 +458,6 @@ where
 {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
-    let mut pvs = false;
     let mut verbose = false;
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
@@ -500,9 +470,6 @@ where
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("-o requires an output path"))?;
                 output = Some(PathBuf::from(path));
-            }
-            "--pvs" => {
-                pvs = true;
             }
             "-v" | "--verbose" => {
                 verbose = true;
@@ -550,7 +517,7 @@ where
 
     let input = input.ok_or_else(|| {
         anyhow::anyhow!(
-            "usage: prl-build <input.map> [-o <output.prl>] [--pvs] [-v|--verbose] \
+            "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--probe-spacing <METERS>] [--lightmap-density <METERS>]"
         )
     })?;
@@ -560,7 +527,6 @@ where
     Ok(Args {
         input,
         output,
-        pvs,
         verbose,
         format,
         probe_spacing,
@@ -578,7 +544,6 @@ mod tests {
         let parsed = parse_args_from(args.into_iter()).unwrap();
         assert_eq!(parsed.input, PathBuf::from("input.map"));
         assert_eq!(parsed.output, PathBuf::from("input.prl"));
-        assert!(!parsed.pvs);
         assert!(!parsed.verbose);
         assert_eq!(parsed.format, MapFormat::IdTech2);
         assert_eq!(parsed.probe_spacing, sh_bake::DEFAULT_PROBE_SPACING);
@@ -641,23 +606,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_pvs_flag() {
+    fn parse_args_pvs_flag_rejected() {
         let args = vec!["input.map".to_string(), "--pvs".to_string()];
-        let parsed = parse_args_from(args.into_iter()).unwrap();
-        assert!(parsed.pvs);
-    }
-
-    #[test]
-    fn parse_args_pvs_flag_with_output() {
-        let args = vec![
-            "input.map".to_string(),
-            "--pvs".to_string(),
-            "-o".to_string(),
-            "out.prl".to_string(),
-        ];
-        let parsed = parse_args_from(args.into_iter()).unwrap();
-        assert!(parsed.pvs);
-        assert_eq!(parsed.output, PathBuf::from("out.prl"));
+        assert!(
+            parse_args_from(args.into_iter()).is_err(),
+            "--pvs is retired and must be rejected"
+        );
     }
 
     #[test]

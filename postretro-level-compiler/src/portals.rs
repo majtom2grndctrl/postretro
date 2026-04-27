@@ -1,7 +1,6 @@
 // Portal generation: emit portal polygons between adjacent BSP leaves.
-// In --pvs mode, portals are consumed by the vis stage then discarded.
-// In default mode, portals are also written to the PRL for runtime traversal
-// and consumed by chunk_light_list_bake for compile-time reachability filtering.
+// Portals are always written to the PRL for runtime traversal and consumed by
+// chunk_light_list_bake for compile-time reachability filtering.
 // Algorithm: recursive portal distribution (ericw-tools shape).
 // See: context/lib/build_pipeline.md §PRL Compilation
 

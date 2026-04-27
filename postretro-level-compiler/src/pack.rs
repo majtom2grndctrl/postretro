@@ -15,7 +15,6 @@ use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
-use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
@@ -189,202 +188,8 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
     }
 }
 
-/// Write geometry, texture names, BSP nodes, BSP leaves, leaf PVS, BVH,
-/// alpha lights, light influence, and SH volume sections to a .prl file (--pvs mode).
-#[allow(clippy::too_many_arguments)]
-pub fn pack_and_write_pvs(
-    output: &Path,
-    geo_result: &GeometryResult,
-    nodes: &BspNodesSection,
-    leaves: &BspLeavesSection,
-    leaf_pvs: &LeafPvsSection,
-    bvh: &BvhSection,
-    bvh_chunk_ranges: &[(u32, u32)],
-    alpha_lights: &AlphaLightsSection,
-    light_influence: &LightInfluenceSection,
-    sh_volume: &ShVolumeSection,
-    lightmap: &LightmapSection,
-    chunk_light_list: &ChunkLightListSection,
-    animated_light_chunks: Option<&AnimatedLightChunksSection>,
-    animated_light_weight_maps: Option<&AnimatedLightWeightMapsSection>,
-    light_tags: Option<&LightTagsSection>,
-    delta_sh_volumes: Option<&DeltaShVolumesSection>,
-) -> anyhow::Result<()> {
-    let geometry_bytes = geo_result.geometry.to_bytes();
-    let texture_names_bytes = geo_result.texture_names.to_bytes();
-    let nodes_bytes = nodes.to_bytes();
-    let leaves_bytes = leaves.to_bytes();
-    let leaf_pvs_bytes = leaf_pvs.to_bytes();
-    let bvh_bytes = serialize_bvh_with_chunk_ranges(bvh, bvh_chunk_ranges);
-    let alpha_lights_bytes = alpha_lights.to_bytes();
-    let light_influence_bytes = light_influence.to_bytes();
-    let sh_volume_bytes = sh_volume.to_bytes();
-    let lightmap_bytes = lightmap.to_bytes();
-    let chunk_light_list_bytes = chunk_light_list.to_bytes();
-    let animated_light_chunks_bytes = animated_light_chunks.map(|s| s.to_bytes());
-    let animated_light_weight_maps_bytes = animated_light_weight_maps.map(|s| s.to_bytes());
-    let light_tags_bytes = light_tags.map(|s| s.to_bytes());
-    let delta_sh_volumes_bytes = delta_sh_volumes.map(|s| s.to_bytes());
-
-    let mut sections = vec![
-        SectionBlob {
-            section_id: SectionId::Geometry as u32,
-            version: 1,
-            data: geometry_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::TextureNames as u32,
-            version: 1,
-            data: texture_names_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::BspNodes as u32,
-            version: 1,
-            data: nodes_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::BspLeaves as u32,
-            version: 1,
-            data: leaves_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::LeafPvs as u32,
-            version: 1,
-            data: leaf_pvs_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::Bvh as u32,
-            version: 1,
-            data: bvh_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::AlphaLights as u32,
-            version: 1,
-            data: alpha_lights_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::LightInfluence as u32,
-            version: 1,
-            data: light_influence_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::ShVolume as u32,
-            version: 1,
-            data: sh_volume_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::Lightmap as u32,
-            version: 1,
-            data: lightmap_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::ChunkLightList as u32,
-            version: 1,
-            data: chunk_light_list_bytes.clone(),
-        },
-    ];
-    if let Some(ref bytes) = animated_light_chunks_bytes {
-        sections.push(SectionBlob {
-            section_id: SectionId::AnimatedLightChunks as u32,
-            version: 1,
-            data: bytes.clone(),
-        });
-    }
-    if let Some(ref bytes) = animated_light_weight_maps_bytes {
-        sections.push(SectionBlob {
-            section_id: SectionId::AnimatedLightWeightMaps as u32,
-            version: 1,
-            data: bytes.clone(),
-        });
-    }
-    if let Some(ref bytes) = light_tags_bytes {
-        sections.push(SectionBlob {
-            section_id: SectionId::LightTags as u32,
-            version: 1,
-            data: bytes.clone(),
-        });
-    }
-    if let Some(ref bytes) = delta_sh_volumes_bytes {
-        sections.push(SectionBlob {
-            section_id: SectionId::DeltaShVolumes as u32,
-            version: 1,
-            data: bytes.clone(),
-        });
-    }
-
-    write_and_validate_sections(output, &sections)?;
-
-    log::info!("Sections: {}", sections.len());
-    log::info!("  Geometry: {} bytes", geometry_bytes.len());
-    log::info!("  TextureNames: {} bytes", texture_names_bytes.len());
-    log::info!("  BspNodes: {} bytes", nodes_bytes.len());
-    log::info!("  BspLeaves: {} bytes", leaves_bytes.len());
-    log::info!("  LeafPvs: {} bytes", leaf_pvs_bytes.len());
-    log::info!("  Bvh: {} bytes", bvh_bytes.len());
-    let assigned_count = alpha_lights
-        .lights
-        .iter()
-        .filter(|r| r.leaf_index != ALPHA_LIGHT_LEAF_UNASSIGNED)
-        .count();
-    let unassigned_count = alpha_lights.lights.len() - assigned_count;
-    log::info!(
-        "  AlphaLights: {} bytes ({} lights, {} assigned to leaves, {} unassigned)",
-        alpha_lights_bytes.len(),
-        alpha_lights.lights.len(),
-        assigned_count,
-        unassigned_count,
-    );
-    log::info!(
-        "  LightInfluence: {} bytes ({} records)",
-        light_influence_bytes.len(),
-        light_influence.records.len()
-    );
-    log::info!(
-        "  ShVolume: {} bytes ({} probes)",
-        sh_volume_bytes.len(),
-        sh_volume.probes.len()
-    );
-    log::info!(
-        "  Lightmap: {} bytes ({}x{})",
-        lightmap_bytes.len(),
-        lightmap.width,
-        lightmap.height,
-    );
-    log::info!(
-        "  ChunkLightList: {} bytes (has_grid={}, {} chunks, {} indices)",
-        chunk_light_list_bytes.len(),
-        chunk_light_list.has_grid,
-        chunk_light_list.chunk_count(),
-        chunk_light_list.light_indices.len(),
-    );
-    if let (Some(section), Some(bytes)) = (animated_light_chunks, &animated_light_chunks_bytes) {
-        log::info!(
-            "  AnimatedLightChunks: {} bytes ({} chunks, {} indices)",
-            bytes.len(),
-            section.chunks.len(),
-            section.light_indices.len(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (
-        animated_light_weight_maps,
-        &animated_light_weight_maps_bytes,
-    ) {
-        log::info!(
-            "  AnimatedLightWeightMaps: {} bytes ({} chunks, {} offset entries, {} texel lights)",
-            bytes.len(),
-            section.chunk_rects.len(),
-            section.offset_counts.len(),
-            section.texel_lights.len(),
-        );
-    }
-
-    Ok(())
-}
-
 /// Write geometry, texture names, BSP nodes, BSP leaves, portals, BVH,
-/// alpha lights, light influence, and SH volume sections to a .prl file (default mode).
-///
-/// Clears pvs_offset and pvs_size in leaf records since no PVS section is written.
+/// alpha lights, light influence, and SH volume sections to a .prl file.
 #[allow(clippy::too_many_arguments)]
 pub fn pack_and_write_portals(
     output: &Path,
@@ -404,26 +209,10 @@ pub fn pack_and_write_portals(
     light_tags: Option<&LightTagsSection>,
     delta_sh_volumes: Option<&DeltaShVolumesSection>,
 ) -> anyhow::Result<()> {
-    // Zero out PVS references in leaves since no LeafPvs section is written.
-    let portal_leaves = BspLeavesSection {
-        leaves: leaves
-            .leaves
-            .iter()
-            .map(|l| {
-                use postretro_level_format::bsp::BspLeafRecord;
-                BspLeafRecord {
-                    pvs_offset: 0,
-                    pvs_size: 0,
-                    ..*l
-                }
-            })
-            .collect(),
-    };
-
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
     let nodes_bytes = nodes.to_bytes();
-    let leaves_bytes = portal_leaves.to_bytes();
+    let leaves_bytes = leaves.to_bytes();
     let portals_bytes = portals.to_bytes();
     let bvh_bytes = serialize_bvh_with_chunk_ranges(bvh, bvh_chunk_ranges);
     let alpha_lights_bytes = alpha_lights.to_bytes();
@@ -725,8 +514,6 @@ mod tests {
                     face_count: 1,
                     bounds_min: [0.0, 0.0, 0.0],
                     bounds_max: [32.0, 64.0, 64.0],
-                    pvs_offset: 0,
-                    pvs_size: 1,
                     is_solid: 0,
                 },
                 BspLeafRecord {
@@ -734,17 +521,9 @@ mod tests {
                     face_count: 0,
                     bounds_min: [32.0, 0.0, 0.0],
                     bounds_max: [64.0, 64.0, 64.0],
-                    pvs_offset: 0,
-                    pvs_size: 0,
                     is_solid: 1,
                 },
             ],
-        }
-    }
-
-    fn sample_leaf_pvs() -> LeafPvsSection {
-        LeafPvsSection {
-            pvs_data: vec![0xFF],
         }
     }
 
@@ -797,64 +576,6 @@ mod tests {
 
     fn placeholder_chunk_light_list() -> ChunkLightListSection {
         ChunkLightListSection::placeholder()
-    }
-
-    #[test]
-    fn pack_write_pvs_produces_valid_prl_file() {
-        let dir = std::env::temp_dir().join("postretro_test_pack");
-        let _ = std::fs::create_dir_all(&dir);
-        let output = dir.join("test_pack_pvs.prl");
-
-        let geo_result = sample_geo_result();
-        let nodes = sample_nodes();
-        let leaves = sample_leaves();
-        let leaf_pvs = sample_leaf_pvs();
-        let bvh = sample_bvh();
-        let alpha_lights = empty_alpha_lights();
-
-        pack_and_write_pvs(
-            &output,
-            &geo_result,
-            &nodes,
-            &leaves,
-            &leaf_pvs,
-            &bvh,
-            &[],
-            &alpha_lights,
-            &empty_light_influence(),
-            &empty_sh_volume(),
-            &placeholder_lightmap(),
-            &placeholder_chunk_light_list(),
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("pack_and_write_pvs should succeed");
-
-        let data = std::fs::read(&output).expect("should read output file");
-        assert_eq!(&data[0..4], b"PRL\0");
-
-        let mut cursor = Cursor::new(&data);
-        let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 11);
-
-        assert!(meta.find_section(SectionId::Geometry as u32).is_some());
-        assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
-        assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
-        assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
-        assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
-        assert!(meta.find_section(SectionId::Bvh as u32).is_some());
-        assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
-        assert!(
-            meta.find_section(SectionId::LightInfluence as u32)
-                .is_some()
-        );
-        assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
-        assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
-        assert!(meta.find_section(SectionId::Portals as u32).is_none());
-
-        let _ = std::fs::remove_file(&output);
     }
 
     #[test]
@@ -918,7 +639,6 @@ mod tests {
         );
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
-        assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
 
         let _ = std::fs::remove_file(&output);
     }
@@ -929,16 +649,19 @@ mod tests {
         let geo_result = sample_geo_result();
         let nodes = sample_nodes();
         let leaves = sample_leaves();
-        let leaf_pvs = sample_leaf_pvs();
+        let portals = PortalsSection {
+            vertices: vec![],
+            portals: vec![],
+        };
         let bvh = sample_bvh();
         let alpha_lights = empty_alpha_lights();
 
-        let result = pack_and_write_pvs(
+        let result = pack_and_write_portals(
             output,
             &geo_result,
             &nodes,
             &leaves,
-            &leaf_pvs,
+            &portals,
             &bvh,
             &[],
             &alpha_lights,
@@ -960,90 +683,6 @@ mod tests {
     }
 
     #[test]
-    fn full_pipeline_pvs_mode_produces_valid_prl() {
-        let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("workspace root")
-            .join("assets/maps/test.map");
-
-        let map_data =
-            crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
-                .expect("test.map should parse");
-        let result =
-            crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
-
-        let exterior = std::collections::HashSet::new();
-        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
-        let generated_portals = crate::portals::generate_portals(&result.tree);
-        let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
-
-        let (bvh, primitives, bvh_section) =
-            crate::bvh_build::build_bvh(&geo_result).expect("bvh build should succeed");
-
-        let static_lights =
-            crate::light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
-        let animated_lights =
-            crate::light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
-        let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
-        let sh_inputs = crate::sh_bake::BakeInputs {
-            bvh: &bvh,
-            primitives: &primitives,
-            geometry: &geo_result,
-            tree: &result.tree,
-            exterior_leaves: &exterior,
-            static_lights: &static_lights,
-            animated_lights: &animated_lights,
-        };
-        let sh_volume = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
-
-        let dir = std::env::temp_dir().join("postretro_test_pipeline");
-        let _ = std::fs::create_dir_all(&dir);
-        let output = dir.join("test_pipeline_pvs.prl");
-
-        let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
-        let light_influence = encode_light_influence(&alpha_ns);
-        pack_and_write_pvs(
-            &output,
-            &geo_result,
-            &vis_result.nodes_section,
-            &vis_result.leaves_section,
-            &vis_result.leaf_pvs_section,
-            &bvh_section,
-            &[],
-            &alpha_lights,
-            &light_influence,
-            &sh_volume,
-            &placeholder_lightmap(),
-            &placeholder_chunk_light_list(),
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("full pipeline pvs pack should succeed");
-
-        let data = std::fs::read(&output).expect("should read output file");
-        let mut cursor = Cursor::new(&data);
-        let meta = read_container(&mut cursor).expect("should read container");
-
-        assert_eq!(meta.header.section_count, 11);
-        assert!(meta.find_section(SectionId::Geometry as u32).is_some());
-        assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
-        assert!(meta.find_section(SectionId::LeafPvs as u32).is_some());
-        assert!(meta.find_section(SectionId::Bvh as u32).is_some());
-        assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
-        assert!(
-            meta.find_section(SectionId::LightInfluence as u32)
-                .is_some()
-        );
-        assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
-        assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
-        assert!(meta.find_section(SectionId::Portals as u32).is_none());
-
-        let _ = std::fs::remove_file(&output);
-    }
-
-    #[test]
     fn full_pipeline_portal_mode_produces_valid_prl() {
         let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1059,7 +698,7 @@ mod tests {
         let exterior = std::collections::HashSet::new();
         let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
         let generated_portals = crate::portals::generate_portals(&result.tree);
-        let vis_result = crate::visibility::encode_vis(&result.tree, &generated_portals, &exterior);
+        let vis_result = crate::visibility::encode_vis(&result.tree, &exterior);
 
         let (bvh, primitives, bvh_section) =
             crate::bvh_build::build_bvh(&geo_result).expect("bvh build should succeed");
@@ -1124,7 +763,6 @@ mod tests {
         );
         assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
-        assert!(meta.find_section(SectionId::LeafPvs as u32).is_none());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
 

@@ -14,14 +14,12 @@ use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
-use postretro_level_format::leaf_pvs::LeafPvsSection;
 use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::texture_names::TextureNamesSection;
-use postretro_level_format::visibility::decompress_pvs;
 use postretro_level_format::{self as prl_format, SectionId};
 use thiserror::Error;
 
@@ -81,15 +79,13 @@ pub struct NodeData {
     pub back: BspChild,
 }
 
-/// BSP leaf: contains face range, bounds, PVS, and solid flag.
+/// BSP leaf: contains face range, bounds, and solid flag.
 #[derive(Debug, Clone)]
 pub struct LeafData {
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
     pub face_start: u32,
     pub face_count: u32,
-    /// Decompressed PVS: `pvs[i]` = leaf `i` is visible from this leaf.
-    pub pvs: Vec<bool>,
     pub is_solid: bool,
 }
 
@@ -154,8 +150,8 @@ pub struct MapLight {
     pub tag: Option<String>,
     /// BSP leaf index containing the light origin, baked at compile time.
     /// `u32::MAX` (`ALPHA_LIGHT_LEAF_UNASSIGNED`) means the light could not
-    /// be assigned to a non-solid leaf and is permanently culled by the
-    /// runtime PVS check.
+    /// be assigned to a non-solid leaf and is excluded from portal-graph
+    /// reachability filtering and chunk light lists.
     pub leaf_index: u32,
 }
 
@@ -169,8 +165,6 @@ pub struct LevelWorld {
     pub nodes: Vec<NodeData>,
     /// Root of the BSP tree. For a single-leaf tree (no nodes), this is BspChild::Leaf(0).
     pub root: BspChild,
-    /// Whether PVS data was present in the file.
-    pub has_pvs: bool,
     /// Portal polygons loaded from the Portals section.
     pub portals: Vec<PortalData>,
     /// Portal indices per leaf (adjacency list). `leaf_portals[i]` lists all
@@ -481,13 +475,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => None,
         };
 
-    // Leaf PVS section (optional).
-    let pvs_section =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::LeafPvs as u32)? {
-            Some(data) => Some(LeafPvsSection::from_bytes(&data)?),
-            None => None,
-        };
-
     // Portals section (optional).
     let portals_section =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::Portals as u32)? {
@@ -720,7 +707,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
 
-    let has_pvs = pvs_section.is_some();
     let has_portals = portals_section.is_some();
 
     // Build runtime nodes from the nodes section.
@@ -738,56 +724,19 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => Vec::new(),
     };
 
-    // Build runtime leaves from the leaves section + PVS data.
+    // Build runtime leaves from the leaves section.
     let leaves: Vec<LeafData> = match &leaves_section {
-        Some(leaf_sec) => {
-            let leaf_count = leaf_sec.leaves.len();
-            let pvs_byte_count = leaf_count.div_ceil(8);
-
-            leaf_sec
-                .leaves
-                .iter()
-                .map(|lr| {
-                    let pvs = if let Some(pvs_sec) = &pvs_section {
-                        if lr.pvs_size > 0 && lr.is_solid == 0 {
-                            let start = lr.pvs_offset as usize;
-                            let end = start + lr.pvs_size as usize;
-                            let pvs_slice = if end <= pvs_sec.pvs_data.len() {
-                                &pvs_sec.pvs_data[start..end]
-                            } else {
-                                &[]
-                            };
-
-                            let decompressed = decompress_pvs(pvs_slice, pvs_byte_count);
-
-                            // Convert byte bitfield to per-leaf bool vec.
-                            let mut pvs_bools = Vec::with_capacity(leaf_count);
-                            for leaf_idx in 0..leaf_count {
-                                let byte_idx = leaf_idx / 8;
-                                let bit_idx = leaf_idx % 8;
-                                let visible = byte_idx < decompressed.len()
-                                    && (decompressed[byte_idx] & (1 << bit_idx)) != 0;
-                                pvs_bools.push(visible);
-                            }
-                            pvs_bools
-                        } else {
-                            vec![false; leaf_count]
-                        }
-                    } else {
-                        vec![true; leaf_count]
-                    };
-
-                    LeafData {
-                        bounds_min: Vec3::from(lr.bounds_min),
-                        bounds_max: Vec3::from(lr.bounds_max),
-                        face_start: lr.face_start,
-                        face_count: lr.face_count,
-                        pvs,
-                        is_solid: lr.is_solid != 0,
-                    }
-                })
-                .collect()
-        }
+        Some(leaf_sec) => leaf_sec
+            .leaves
+            .iter()
+            .map(|lr| LeafData {
+                bounds_min: Vec3::from(lr.bounds_min),
+                bounds_max: Vec3::from(lr.bounds_max),
+                face_start: lr.face_start,
+                face_count: lr.face_count,
+                is_solid: lr.is_solid != 0,
+            })
+            .collect(),
         None => {
             log::warn!("[PRL] No BSP leaves section — creating single-leaf fallback");
             let mut mins = Vec3::splat(f32::MAX);
@@ -802,7 +751,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                 bounds_max: maxs,
                 face_start: 0,
                 face_count: face_meta.len() as u32,
-                pvs: vec![true],
                 is_solid: false,
             }]
         }
@@ -865,7 +813,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     };
 
     log::info!(
-        "[PRL] Loaded: {} vertices, {} indices ({} triangles), {} faces, {} nodes, {} leaves, bvh=[{} nodes, {} leaves], pvs={}, portals={}, textures={}",
+        "[PRL] Loaded: {} vertices, {} indices ({} triangles), {} faces, {} nodes, {} leaves, bvh=[{} nodes, {} leaves], portals={}, textures={}",
         vertices.len(),
         indices.len(),
         indices.len() / 3,
@@ -874,7 +822,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         leaves.len(),
         bvh.nodes.len(),
         bvh.leaves.len(),
-        has_pvs,
         portals.len(),
         texture_names.len(),
     );
@@ -886,7 +833,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         leaves,
         nodes,
         root,
-        has_pvs,
         portals,
         leaf_portals,
         has_portals,
@@ -913,8 +859,6 @@ mod tests {
         BvhLeaf as FormatBvhLeaf, BvhNode as FormatBvhNode, BvhSection,
     };
     use postretro_level_format::geometry::{FaceMeta as FormatFaceMeta, GeometrySection, Vertex};
-    use postretro_level_format::leaf_pvs::LeafPvsSection;
-    use postretro_level_format::visibility::compress_pvs;
 
     fn simple_face_meta() -> FaceMeta {
         FaceMeta {
@@ -939,7 +883,6 @@ mod tests {
         bounds_max: Vec3,
         face_start: u32,
         face_count: u32,
-        pvs: Vec<bool>,
         is_solid: bool,
     ) -> LeafData {
         LeafData {
@@ -947,7 +890,6 @@ mod tests {
             bounds_max,
             face_start,
             face_count,
-            pvs,
             is_solid,
         }
     }
@@ -969,7 +911,6 @@ mod tests {
                     Vec3::new(100.0, 100.0, 100.0),
                     0,
                     1,
-                    vec![true, true],
                     false,
                 ),
                 simple_leaf(
@@ -977,12 +918,10 @@ mod tests {
                     Vec3::new(0.0, 100.0, 100.0),
                     1,
                     1,
-                    vec![true, true],
                     false,
                 ),
             ],
             root: BspChild::Node(0),
-            has_pvs: true,
             portals: vec![],
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
@@ -1029,11 +968,9 @@ mod tests {
                 Vec3::splat(100.0),
                 0,
                 0,
-                vec![true],
                 false,
             )],
             root: BspChild::Leaf(0),
-            has_pvs: false,
             portals: vec![],
             leaf_portals: vec![vec![]],
             has_portals: false,
@@ -1072,11 +1009,10 @@ mod tests {
             face_meta: vec![simple_face_meta()],
             nodes: vec![],
             leaves: vec![
-                simple_leaf(Vec3::ZERO, Vec3::splat(10.0), 0, 1, vec![], false),
-                simple_leaf(Vec3::ZERO, Vec3::ZERO, 0, 0, vec![], true),
+                simple_leaf(Vec3::ZERO, Vec3::splat(10.0), 0, 1, false),
+                simple_leaf(Vec3::ZERO, Vec3::ZERO, 0, 0, true),
             ],
             root: BspChild::Leaf(0),
-            has_pvs: false,
             portals: vec![],
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
@@ -1104,11 +1040,10 @@ mod tests {
             face_meta: vec![simple_face_meta(), simple_face_meta(), simple_face_meta()],
             nodes: vec![],
             leaves: vec![
-                simple_leaf(Vec3::ZERO, Vec3::ZERO, 0, 2, vec![], false),
-                simple_leaf(Vec3::ZERO, Vec3::ZERO, 2, 1, vec![], false),
+                simple_leaf(Vec3::ZERO, Vec3::ZERO, 0, 2, false),
+                simple_leaf(Vec3::ZERO, Vec3::ZERO, 2, 1, false),
             ],
             root: BspChild::Leaf(0),
-            has_pvs: false,
             portals: vec![],
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
@@ -1247,18 +1182,6 @@ mod tests {
             }],
         };
 
-        let pvs_uncompressed = vec![0b0000_0011u8];
-        let compressed_0 = compress_pvs(&pvs_uncompressed);
-        let compressed_1 = compress_pvs(&pvs_uncompressed);
-
-        let mut pvs_data = Vec::new();
-        let offset_0 = pvs_data.len() as u32;
-        let size_0 = compressed_0.len() as u32;
-        pvs_data.extend_from_slice(&compressed_0);
-        let offset_1 = pvs_data.len() as u32;
-        let size_1 = compressed_1.len() as u32;
-        pvs_data.extend_from_slice(&compressed_1);
-
         let leaves = BspLeavesSection {
             leaves: vec![
                 BspLeafRecord {
@@ -1266,8 +1189,6 @@ mod tests {
                     face_count: 1,
                     bounds_min: [0.0, 0.0, 0.0],
                     bounds_max: [2.0, 2.0, 2.0],
-                    pvs_offset: offset_0,
-                    pvs_size: size_0,
                     is_solid: 0,
                 },
                 BspLeafRecord {
@@ -1275,14 +1196,10 @@ mod tests {
                     face_count: 1,
                     bounds_min: [9.0, 0.0, 0.0],
                     bounds_max: [12.0, 2.0, 2.0],
-                    pvs_offset: offset_1,
-                    pvs_size: size_1,
                     is_solid: 0,
                 },
             ],
         };
-
-        let pvs_section = LeafPvsSection { pvs_data };
 
         let sections = vec![
             prl_format::SectionBlob {
@@ -1305,11 +1222,6 @@ mod tests {
                 version: 1,
                 data: leaves.to_bytes(),
             },
-            prl_format::SectionBlob {
-                section_id: SectionId::LeafPvs as u32,
-                version: 1,
-                data: pvs_section.to_bytes(),
-            },
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_bvh_round_trip.prl");
@@ -1322,7 +1234,6 @@ mod tests {
         assert_eq!(world.leaves.len(), 2);
         assert_eq!(world.bvh.nodes.len(), 3);
         assert_eq!(world.bvh.leaves.len(), 2);
-        assert!(world.has_pvs);
         assert_eq!(world.root, BspChild::Node(0));
         assert_eq!(world.find_leaf(Vec3::new(10.0, 0.0, 0.0)), 0);
         assert_eq!(world.find_leaf(Vec3::new(0.0, 0.0, 0.0)), 1);

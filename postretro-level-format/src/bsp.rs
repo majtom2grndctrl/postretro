@@ -117,10 +117,6 @@ pub struct BspLeafRecord {
     pub face_count: u32,
     pub bounds_min: [f32; 3],
     pub bounds_max: [f32; 3],
-    /// Byte offset into the LeafPvs section blob.
-    pub pvs_offset: u32,
-    /// Byte length of this leaf's RLE-compressed PVS.
-    pub pvs_size: u32,
     /// 1 if solid, 0 if empty.
     pub is_solid: u8,
 }
@@ -129,20 +125,18 @@ pub struct BspLeafRecord {
 ///
 /// On-disk layout (all little-endian):
 ///   u32              leaf_count
-///   Per leaf (41 bytes each):
+///   Per leaf (33 bytes each):
 ///     u32            face_start
 ///     u32            face_count
 ///     f32 * 3        bounds_min (x, y, z)
 ///     f32 * 3        bounds_max (x, y, z)
-///     u32            pvs_offset
-///     u32            pvs_size
 ///     u8             is_solid (1 = solid, 0 = empty)
 #[derive(Debug, Clone, PartialEq)]
 pub struct BspLeavesSection {
     pub leaves: Vec<BspLeafRecord>,
 }
 
-const LEAF_RECORD_SIZE: usize = 41;
+const LEAF_RECORD_SIZE: usize = 33;
 
 impl BspLeavesSection {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -161,8 +155,6 @@ impl BspLeavesSection {
             buf.extend_from_slice(&l.bounds_max[0].to_le_bytes());
             buf.extend_from_slice(&l.bounds_max[1].to_le_bytes());
             buf.extend_from_slice(&l.bounds_max[2].to_le_bytes());
-            buf.extend_from_slice(&l.pvs_offset.to_le_bytes());
-            buf.extend_from_slice(&l.pvs_size.to_le_bytes());
             buf.push(l.is_solid);
         }
 
@@ -215,9 +207,7 @@ impl BspLeavesSection {
                 face_count: u(4),
                 bounds_min: [f(8), f(12), f(16)],
                 bounds_max: [f(20), f(24), f(28)],
-                pvs_offset: u(32),
-                pvs_size: u(36),
-                is_solid: data[base + 40],
+                is_solid: data[base + 32],
             });
         }
 
@@ -310,8 +300,6 @@ mod tests {
                     face_count: 10,
                     bounds_min: [0.0, 0.0, 0.0],
                     bounds_max: [64.0, 64.0, 64.0],
-                    pvs_offset: 0,
-                    pvs_size: 5,
                     is_solid: 0,
                 },
                 BspLeafRecord {
@@ -319,8 +307,6 @@ mod tests {
                     face_count: 5,
                     bounds_min: [64.0, 0.0, 0.0],
                     bounds_max: [128.0, 64.0, 64.0],
-                    pvs_offset: 5,
-                    pvs_size: 3,
                     is_solid: 0,
                 },
                 BspLeafRecord {
@@ -328,8 +314,6 @@ mod tests {
                     face_count: 0,
                     bounds_min: [0.0, 0.0, 0.0],
                     bounds_max: [0.0, 0.0, 0.0],
-                    pvs_offset: 0,
-                    pvs_size: 0,
                     is_solid: 1,
                 },
             ],
@@ -357,8 +341,6 @@ mod tests {
                     face_count: 3,
                     bounds_min: [1.0, 2.0, 3.0],
                     bounds_max: [4.0, 5.0, 6.0],
-                    pvs_offset: 0,
-                    pvs_size: 2,
                     is_solid: 0,
                 },
                 BspLeafRecord {
@@ -366,8 +348,6 @@ mod tests {
                     face_count: 0,
                     bounds_min: [0.0, 0.0, 0.0],
                     bounds_max: [0.0, 0.0, 0.0],
-                    pvs_offset: 0,
-                    pvs_size: 0,
                     is_solid: 1,
                 },
             ],

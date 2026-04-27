@@ -2,6 +2,11 @@ import { registerHandler } from "postretro";
 import { world } from "./sdk/world";
 
 registerHandler("levelLoad", () => {
+  setupArena1Wave();
+  setupArena2Wave();
+});
+
+function setupArena1Wave() {
   const lights = world.query({ component: "light", tag: "arena_1_light" });
 
   if (lights.length === 0) return;
@@ -74,4 +79,49 @@ registerHandler("levelLoad", () => {
       direction: null,
     });
   }
-});
+}
+
+function setupArena2Wave() {
+  const lights = world.query({ component: "light", tag: "arena_wave_2" });
+
+  if (lights.length === 0) return;
+
+  // Lights are on the west wall; the wave runs south → north.
+  // Swizzle: engine_x = -quake_y, so south (low Quake Y) = high engine X.
+  // Sort descending by position.x so index 0 is the southernmost light.
+  const sorted = [...lights].sort(
+    (a, b) => b.transform.position.x - a.transform.position.x,
+  );
+
+  const pulseDurationMs = 200;
+  const lightSpacingMs = 50;
+  const cyclePauseMs = 2000;
+
+  const numLights = sorted.length;
+  const periodMs =
+    (numLights - 1) * lightSpacingMs + pulseDurationMs + cyclePauseMs;
+  const pulseFraction = pulseDurationMs / periodMs;
+
+  const samples = 32;
+  const brightness = [];
+  for (let i = 0; i < samples; i++) {
+    const t = i / samples;
+    brightness.push(
+      t < pulseFraction ? Math.sin((t / pulseFraction) * Math.PI) : 0,
+    );
+  }
+
+  for (let i = 0; i < sorted.length; i++) {
+    const phase = (i * lightSpacingMs) / periodMs;
+
+    sorted[i].setAnimation({
+      periodMs,
+      phase,
+      playCount: null,
+      startActive: true,
+      brightness,
+      color: null,
+      direction: null,
+    });
+  }
+}

@@ -744,12 +744,12 @@
 }
 // brush 82
 {
-( -128 2432 0 ) ( -128 2368 32 ) ( -128 2368 0 ) concrete_stone_030 0 0 0 1 1
-( -128 2368 0 ) ( 640 2368 32 ) ( 640 2368 0 ) concrete_stone_030 0 0 0 1 1
-( -128 2368 0 ) ( 640 2432 0 ) ( -128 2432 0 ) concrete_stone_030 0 0 0 1 1
-( -128 2432 32 ) ( 640 2368 32 ) ( -128 2368 32 ) concrete_stone_030 0 0 0 1 1
-( 640 2432 0 ) ( -128 2432 32 ) ( -128 2432 0 ) concrete_stone_030 0 0 0 1 1
-( 640 2368 0 ) ( 640 2432 32 ) ( 640 2432 0 ) concrete_stone_030 0 0 0 1 1
+( -128 2432 64 ) ( -128 2368 64 ) ( -128 2368 0 ) concrete_stone_030 0 0 0 1 2
+( -128 2368 64 ) ( 640 2368 64 ) ( 640 2368 0 ) concrete_stone_030 0 0 0 1 2
+( 640 2368 0 ) ( 640 2432 0 ) ( -128 2432 0 ) concrete_stone_030 0 0 0 1 1
+( -128 2432 64 ) ( 640 2432 64 ) ( 640 2368 64 ) concrete_stone_030 0 0 0 1 1
+( 640 2432 0 ) ( 640 2432 64 ) ( -128 2432 64 ) concrete_stone_030 0 0 0 1 2
+( 640 2368 64 ) ( 640 2432 64 ) ( 640 2432 0 ) concrete_stone_030 0 0 0 1 2
 }
 // brush 83
 {
@@ -1151,6 +1151,7 @@
 "_fade" "2048"
 "_bake_only" "0"
 "mangle" "-50 210 0"
+"dynamic" "0"
 }
 // entity 4
 {
@@ -1177,11 +1178,13 @@
 // entity 6
 {
 "classname" "light"
-"origin" "-160 2288 140"
-"light" "300"
+"origin" "-176 2416 140"
+"light" "5"
 "_color" "220 220 255"
-"_fade" "200"
+"_fade" "325"
 "_bake_only" "0"
+"_tag" "arena_wave_2"
+"dynamic" "1"
 }
 // entity 7
 {
@@ -1195,11 +1198,13 @@
 // entity 8
 {
 "classname" "light"
-"origin" "-160 1872 140"
-"light" "300"
+"origin" "-224 1792 284"
+"light" "5"
 "_color" "220 220 255"
-"_fade" "200"
+"_fade" "325"
 "_bake_only" "0"
+"_tag" "arena_wave_2"
+"dynamic" "1"
 }
 // entity 9
 {
@@ -1357,4 +1362,59 @@
 "_fade" "200"
 "_bake_only" "0"
 "style" "2"
+}
+// entity 22
+{
+"classname" "light"
+"origin" "-176 1648 172"
+"light" "5"
+"_color" "220 220 255"
+"_fade" "325"
+"_bake_only" "0"
+"_tag" "arena_wave_2"
+"dynamic" "1"
+}
+// entity 23
+{
+"classname" "light"
+"origin" "-176 1904 172"
+"light" "5"
+"_color" "220 220 255"
+"_fade" "325"
+"_bake_only" "0"
+"_tag" "arena_wave_2"
+"dynamic" "1"
+}
+// entity 24
+{
+"classname" "light"
+"origin" "-176 2160 172"
+"light" "5"
+"_color" "220 220 255"
+"_fade" "325"
+"_bake_only" "0"
+"_tag" "arena_wave_2"
+"dynamic" "1"
+}
+// entity 25
+{
+"classname" "light"
+"origin" "-208 2048 284"
+"light" "5"
+"_color" "220 220 255"
+"_fade" "325"
+"_bake_only" "0"
+"_tag" "arena_wave_2"
+"dynamic" "1"
+}
+// entity 26
+{
+"classname" "light"
+"origin" "-208 2288 268"
+"light" "5"
+"_color" "220 220 255"
+"_fade" "325"
+"_bake_only" "0"
+"_tag" "arena_wave_2"
+"dynamic" "1"
 }

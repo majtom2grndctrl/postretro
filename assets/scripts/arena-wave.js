@@ -141,6 +141,10 @@ function buildColorAnimation(from, to, transitionMs, easing) {
     };
 }
 registerHandler("levelLoad", ()=>{
+    setupArena1Wave();
+    setupArena2Wave();
+});
+function setupArena1Wave() {
     const lights = world.query({
         component: "light",
         tag: "arena_1_light"
@@ -189,4 +193,34 @@ registerHandler("levelLoad", ()=>{
             direction: null
         });
     }
-});
+}
+function setupArena2Wave() {
+    const lights = world.query({
+        component: "light",
+        tag: "arena_wave_2"
+    });
+    if (lights.length === 0) return;
+    const sorted = [
+        ...lights
+    ].sort((a, b)=>b.transform.position.x - a.transform.position.x);
+    const numLights = sorted.length;
+    const periodMs = (numLights - 1) * 50 + 200 + 2000;
+    const pulseFraction = 200 / periodMs;
+    const brightness = [];
+    for(let i = 0; i < 32; i++){
+        const t = i / 32;
+        brightness.push(t < pulseFraction ? Math.sin(t / pulseFraction * Math.PI) : 0);
+    }
+    for(let i = 0; i < sorted.length; i++){
+        const phase = i * 50 / periodMs;
+        sorted[i].setAnimation({
+            periodMs,
+            phase,
+            playCount: null,
+            startActive: true,
+            brightness,
+            color: null,
+            direction: null
+        });
+    }
+}

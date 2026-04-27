@@ -1036,14 +1036,20 @@ impl App {
                 if let Some(renderer) = self.renderer.as_mut() {
                     let next = renderer.indirect_scale() - input::INDIRECT_SCALE_STEP;
                     renderer.set_indirect_scale(next);
-                    log::info!("[Renderer] indirect scale: {:.2}", renderer.indirect_scale());
+                    log::info!(
+                        "[Renderer] indirect scale: {:.2}",
+                        renderer.indirect_scale()
+                    );
                 }
             }
             DiagnosticAction::RaiseIndirectScale => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     let next = renderer.indirect_scale() + input::INDIRECT_SCALE_STEP;
                     renderer.set_indirect_scale(next);
-                    log::info!("[Renderer] indirect scale: {:.2}", renderer.indirect_scale());
+                    log::info!(
+                        "[Renderer] indirect scale: {:.2}",
+                        renderer.indirect_scale()
+                    );
                 }
             }
             DiagnosticAction::CycleLightingIsolation => {

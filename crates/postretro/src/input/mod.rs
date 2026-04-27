@@ -11,7 +11,7 @@ mod types;
 
 pub use defaults::default_bindings;
 pub use diagnostics::{
-    AMBIENT_FLOOR_STEP, INDIRECT_SCALE_STEP, DiagnosticAction, DiagnosticInputs,
+    AMBIENT_FLOOR_STEP, DiagnosticAction, DiagnosticInputs, INDIRECT_SCALE_STEP,
     default_diagnostic_chords,
 };
 pub use look::LookInputs;

@@ -70,7 +70,6 @@ pub enum SectionId {
     BspLeaves = 13,
 
     // 14 (LeafPvs) retired — precomputed PVS removed; portal traversal is the only vis path.
-
     /// Portal graph for runtime portal traversal.
     Portals = 15,
 

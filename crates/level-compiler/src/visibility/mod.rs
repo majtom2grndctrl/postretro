@@ -135,10 +135,7 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
 /// Encodes BSP nodes and leaves into their PRL sections, zeroing face counts
 /// for any leaf in `exterior_leaves` so exterior geometry is dropped in
 /// lockstep with the geometry section.
-pub fn encode_vis(
-    tree: &BspTree,
-    exterior_leaves: &HashSet<usize>,
-) -> VisibilityResult {
+pub fn encode_vis(tree: &BspTree, exterior_leaves: &HashSet<usize>) -> VisibilityResult {
     let nodes_section = encode_nodes(tree);
     let (leaves_section, empty_leaf_count) = encode_leaves(tree, exterior_leaves);
 
@@ -180,10 +177,7 @@ fn encode_nodes(tree: &BspTree) -> BspNodesSection {
 /// Faces are ordered by leaf in the geometry section (all faces for leaf 0 first,
 /// then leaf 1, etc.). `face_start` / `face_count` index into that ordering.
 /// Only empty leaves contribute faces; solid leaves get face_start=0, face_count=0.
-fn encode_leaves(
-    tree: &BspTree,
-    exterior_leaves: &HashSet<usize>,
-) -> (BspLeavesSection, usize) {
+fn encode_leaves(tree: &BspTree, exterior_leaves: &HashSet<usize>) -> (BspLeavesSection, usize) {
     let mut leaf_records: Vec<BspLeafRecord> = Vec::with_capacity(tree.leaves.len());
     let mut empty_leaf_count = 0usize;
 
@@ -228,7 +222,12 @@ fn encode_leaves(
         face_cursor += face_count;
     }
 
-    (BspLeavesSection { leaves: leaf_records }, empty_leaf_count)
+    (
+        BspLeavesSection {
+            leaves: leaf_records,
+        },
+        empty_leaf_count,
+    )
 }
 
 /// Log visibility statistics.

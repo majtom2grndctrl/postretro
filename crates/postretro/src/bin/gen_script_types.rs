@@ -33,7 +33,9 @@ fn parse_out_dir<I: IntoIterator<Item = String>>(args: I) -> PathBuf {
             return PathBuf::from(v);
         }
     }
-    PathBuf::from("sdk/types")
+    // Default to repo-root `sdk/types`, anchored at this crate's manifest dir
+    // so the binary works regardless of the caller's CWD.
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/types"))
 }
 
 fn main() -> ExitCode {

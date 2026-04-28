@@ -380,9 +380,7 @@ fn load_behavior_scripts(runtime: &ScriptRuntime, content_root: &Path) {
             match &ts_compiler {
                 Some(compiler) => {
                     let out_path = crate::scripting::watcher::compiled_output_for(path);
-                    match crate::scripting::watcher::run_ts_compiler(
-                        compiler, path, &out_path, root,
-                    ) {
+                    match crate::scripting::watcher::run_ts_compiler(compiler, path, &out_path) {
                         Ok(()) => {
                             if let Err(err) =
                                 runtime.run_script_file(ScriptWhich::Behavior, &out_path)

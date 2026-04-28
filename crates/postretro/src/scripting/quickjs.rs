@@ -236,7 +236,6 @@ fn build_behavior_context_from_snapshot(
 /// Remove wall-clock access from the behavior context globals. Scripts must
 /// take their timing from `ScriptCallContext` only, not from `Date.now()`.
 /// Deleting the global makes `Date` a `ReferenceError` on access.
-/// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 5
 fn deny_wall_clock(ctx: &Ctx<'_>) -> Result<(), ScriptError> {
     let globals = ctx.globals();
     // `Object.remove` is the rquickjs API for true delete. Assigning
@@ -616,8 +615,14 @@ mod tests {
             ctx_handle.with(|ctx| {
                 let typeof_world: String = ctx.eval("typeof world").unwrap();
                 assert_eq!(typeof_world, "object", "{ctx_label}: world missing");
-                for fn_name in ["flicker", "pulse", "colorShift", "sweep", "timeline", "sequence"]
-                {
+                for fn_name in [
+                    "flicker",
+                    "pulse",
+                    "colorShift",
+                    "sweep",
+                    "timeline",
+                    "sequence",
+                ] {
                     let kind: String = ctx
                         .eval(format!("typeof {fn_name}").as_str())
                         .unwrap_or_else(|e| panic!("{ctx_label}/{fn_name}: {e}"));

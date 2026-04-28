@@ -343,10 +343,7 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
 /// from "postretro"`. See: context/lib/scripting.md §7.
 const TS_SDK_LIB_BLOCK: &str = r#"
   // -------------------------------------------------------------------------
-  // SDK library — installed into every QuickJS context as globals via the
-  // prelude (`sdk/lib/prelude.js`). Authors import these by bare specifier
-  // (`import { world, flicker } from "postretro"`); the bundler strips the
-  // import and the prelude resolves the symbol at runtime.
+  // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.
 
   /** Easing family used by `LightEntityHandle.setIntensity` / `setColor`. */
   export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut";
@@ -909,7 +906,15 @@ export type Event = {
         register_all(&mut r, ScriptCtx::new());
         let ts = generate_typescript(&r);
         let luau = generate_luau(&r);
-        for name in ["world", "flicker", "pulse", "colorShift", "sweep", "timeline", "sequence"] {
+        for name in [
+            "world",
+            "flicker",
+            "pulse",
+            "colorShift",
+            "sweep",
+            "timeline",
+            "sequence",
+        ] {
             assert!(ts.contains(name), "ts missing sdk-lib symbol {name}");
             assert!(luau.contains(name), "luau missing sdk-lib symbol {name}");
         }

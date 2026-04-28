@@ -28,7 +28,7 @@
 //!                                            ┌──────────────────────────────┐
 //!                                            │ frame loop                   │
 //!                                            │  drain_reload_requests()     │
-//!                                            │  ScriptRuntime::reload_…()   │
+//!                                            │  clear + reload + levelLoad   │
 //!                                            └──────────────────────────────┘
 //! ```
 //!
@@ -280,6 +280,9 @@ fn compile_worker_loop(
     ts_compiler: Option<TsCompilerPath>,
     script_root: &Path,
 ) {
+    // `script_root` is kept here (and passed to `handle_path`) for potential
+    // future use (e.g. computing relative paths for error messages).
+    let _ = script_root;
     while let Ok(ev) = event_rx.recv() {
         // Filter out event kinds that can't represent a content edit. Modify
         // and Create are the interesting ones. `Remove` is ignored — a file
@@ -292,7 +295,7 @@ fn compile_worker_loop(
         }
 
         for path in &ev.event.paths {
-            handle_path(path, &reload_tx, ts_compiler.as_ref(), script_root);
+            handle_path(path, &reload_tx, ts_compiler.as_ref());
         }
     }
 }
@@ -303,7 +306,6 @@ fn handle_path(
     path: &Path,
     reload_tx: &Sender<ReloadRequest>,
     ts_compiler: Option<&TsCompilerPath>,
-    script_root: &Path,
 ) {
     let ext = path
         .extension()
@@ -326,7 +328,7 @@ fn handle_path(
             };
 
             let out_path = compiled_output_for(path);
-            match run_ts_compiler(compiler, path, &out_path, script_root) {
+            match run_ts_compiler(compiler, path, &out_path) {
                 Ok(()) => {
                     let _ = reload_tx.send(ReloadRequest);
                 }
@@ -357,7 +359,6 @@ pub(crate) fn run_ts_compiler(
     compiler: &TsCompilerPath,
     input: &Path,
     output: &Path,
-    _script_root: &Path,
 ) -> Result<(), String> {
     use std::process::Command;
 

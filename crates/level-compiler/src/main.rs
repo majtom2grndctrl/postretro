@@ -636,23 +636,31 @@ fn compile_worldspawn_script(
                 js_path.display(),
                 compiler.display()
             );
-            let status = std::process::Command::new(&compiler)
+            let out = std::process::Command::new(&compiler)
                 .arg("--in")
                 .arg(&ts_path)
                 .arg("--out")
                 .arg(&js_path)
-                .status()
+                .output()
                 .map_err(|e| {
                     anyhow::anyhow!(
                         "[prl-build] failed to spawn scripts-build at {}: {e}",
                         compiler.display()
                     )
                 })?;
-            if !status.success() {
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if !stderr.trim().is_empty() {
+                    eprintln!("[prl-build] scripts-build stderr:\n{stderr}");
+                }
+                if !stdout.trim().is_empty() {
+                    eprintln!("[prl-build] scripts-build stdout:\n{stdout}");
+                }
                 anyhow::bail!(
                     "[prl-build] scripts-build failed for {}: exit status {}",
                     ts_path.display(),
-                    status
+                    out.status
                 );
             }
             Ok(())
@@ -685,6 +693,7 @@ fn js_is_fresh(ts_path: &std::path::Path, js_path: &std::path::Path) -> Option<b
     }
     let ts_mtime = std::fs::metadata(ts_path).ok()?.modified().ok()?;
     let js_mtime = std::fs::metadata(js_path).ok()?.modified().ok()?;
+    // mtime is unreliable after `git checkout` and on network filesystems — this is best-effort, not a correctness gate.
     Some(js_mtime >= ts_mtime)
 }
 

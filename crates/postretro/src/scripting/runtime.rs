@@ -119,7 +119,7 @@ impl ScriptRuntime {
     }
 
     /// Drop every registered handler. Called on level unload and hot reload —
-    /// the handler registry is strictly per-level (see `scripting.md` §10
+    /// the handler registry is strictly per-level (see `scripting.md` §11
     /// Non-Goals); on hot reload, scripts re-register from a clean slate so
     /// handlers don't accumulate across reloads.
     pub(crate) fn clear_level_handlers(&self) {

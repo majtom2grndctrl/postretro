@@ -45,9 +45,8 @@ const LIGHT_ANIMATION_FIELDS: &[&str] = &[
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed (the prelude
 /// references `world_query`, `set_light_animation`, `get_component`) and
-/// before `sandbox(true)` (which freezes `_G`). The Luau preludes still
-/// reference SDK *type* names from `postretro.d.luau`, but those are author-
-/// time only — Luau runtime doesn't need them to evaluate the source.
+/// before `sandbox(true)` (which freezes `_G`).
+/// The prelude source uses type annotations declared in postretro.d.luau (luau-lsp only); the runtime evaluates the .luau source without loading the declaration file.
 pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
     let world: mlua::Value = lua
         .load(WORLD_LUAU_SRC)
@@ -88,10 +87,9 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
 /// remove these entries — the sandbox is about immutability, not capabilities.
 const DENIED_GLOBALS: &[&str] = &["io", "package", "require", "dofile", "loadfile", "load"];
 /// Sub-fields of the `os` table we nil out. `os.time` and `os.clock` are wall-
-/// clock sources — handlers must take their timing from `ScriptCallContext`
-/// (see: context/plans/ready/scripting-foundation/plan-2-light-entity.md
-/// §Sub-plan 5), not from a free-running clock. `os.date` is denied alongside
-/// them because it exposes the same wall-clock surface in string form.
+/// clock sources — handlers must take their timing from `ScriptCallContext`,
+/// not from a free-running clock. `os.date` is denied alongside them because
+/// it exposes the same wall-clock surface in string form.
 const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv", "time", "clock", "date"];
 
 /// Configuration for a [`LuauSubsystem`]. `pool_size` tunes the ephemeral-

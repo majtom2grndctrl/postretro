@@ -266,7 +266,8 @@ pub(crate) struct LuauContextPool {
 impl LuauContextPool {
     /// Pre-create `size` behavior-scope Lua states. Each state runs the same
     /// deny-list scrub, `print` redirect, behavior-scope primitive install,
-    /// and `sandbox(true)` finalization as `LuauSubsystem::behavior_lua`.
+    /// SDK prelude evaluation, and `sandbox(true)` finalization as
+    /// `LuauSubsystem::behavior_lua`.
     pub(crate) fn new(primitives: &[ScriptPrimitive], size: usize) -> Result<Self, ScriptError> {
         let mut idle = VecDeque::with_capacity(size);
         for _ in 0..size {

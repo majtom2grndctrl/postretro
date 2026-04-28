@@ -169,6 +169,17 @@ impl QuickJsSubsystem {
         )?;
         Ok(())
     }
+
+    /// Drop the current behavior context and build a fresh one. Used by the
+    /// dev-mode hot-reload path so re-running behavior scripts that contain
+    /// top-level `const`/`let` declarations does not throw `SyntaxError:
+    /// redeclaration` against state left over from the previous load.
+    /// Primitives, `Date` deletion, and the SDK prelude are reinstalled from
+    /// the snapshot.
+    pub(crate) fn reload_behavior_context(&mut self) -> Result<(), ScriptError> {
+        self.behavior_ctx = build_behavior_context_from_snapshot(&self.runtime, &self.primitives)?;
+        Ok(())
+    }
 }
 
 /// Evaluate `source` inside `ctx`, converting JS exceptions into
@@ -630,6 +641,23 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[test]
+    fn reload_behavior_context_allows_const_redeclaration() {
+        // A script with a top-level `const` reused across hot reloads would
+        // throw `SyntaxError: redeclaration` on the second eval against the
+        // same context. Rebuilding the behavior context must produce a fresh
+        // global scope where the same source evaluates cleanly.
+        let (mut subsys, _ctx) = setup();
+        let script = "const x = 1;";
+        subsys.behavior_ctx().with(|ctx| {
+            ctx.eval::<(), _>(script).unwrap();
+        });
+        subsys.reload_behavior_context().unwrap();
+        subsys.behavior_ctx().with(|ctx| {
+            ctx.eval::<(), _>(script).unwrap();
+        });
     }
 
     #[test]

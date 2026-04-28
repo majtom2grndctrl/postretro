@@ -187,6 +187,18 @@ impl ScriptRuntime {
         Ok(())
     }
 
+    /// Reload both behavior contexts. Called from the dev-mode hot-reload path
+    /// before re-running behavior scripts. Rebuilding the contexts means
+    /// top-level `const`/`let` (JS) or `local` (Luau) declarations in user
+    /// scripts don't collide with state left over from the previous load.
+    /// Handler tables live in `ScriptCtx`, not in the contexts themselves —
+    /// callers must still call `clear_level_handlers` to drain them.
+    pub(crate) fn reload_behavior_context(&mut self) -> Result<(), ScriptError> {
+        self.quickjs.reload_behavior_context()?;
+        self.luau.reload_behavior_context()?;
+        Ok(())
+    }
+
     /// Read `path` from disk and run it in the appropriate subsystem, chosen
     /// by extension:
     ///
@@ -338,10 +350,11 @@ mod tests {
     /// handlers. Three simulated reloads each settle to the cold-load count.
     #[test]
     fn hot_reload_does_not_duplicate_handlers() {
-        let (rt, ctx) = runtime();
+        let (mut rt, ctx) = runtime();
         let path = temp_script(
             "reload_dedup.js",
             r#"
+            const tag = "reload-dedup";
             registerHandler("levelLoad", function () {});
             "#,
         );
@@ -355,10 +368,13 @@ mod tests {
         );
 
         // Three simulated hot reloads. Mirrors main.rs's reload sequence:
-        // clear handlers, then re-run all behavior scripts. The handler count
-        // must equal `cold_count` after each reload — no accumulation.
+        // clear handlers, rebuild the behavior context (so the top-level
+        // `const` doesn't trip `SyntaxError: redeclaration` on the second
+        // pass), then re-run all behavior scripts. The handler count must
+        // equal `cold_count` after each reload — no accumulation.
         for i in 1..=3 {
             rt.clear_level_handlers();
+            rt.reload_behavior_context().unwrap();
             rt.run_script_file(Which::Behavior, &path).unwrap();
             assert_eq!(
                 ctx.handlers.borrow().len(),

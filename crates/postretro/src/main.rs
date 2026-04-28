@@ -720,11 +720,17 @@ impl ApplicationHandler for App {
                 match self.script_runtime.drain_reload_requests() {
                     Ok(true) => {
                         self.script_runtime.clear_level_handlers();
-                        load_behavior_scripts(&self.script_runtime, &self.content_root);
-                        if self.level_load_fired {
-                            self.script_runtime.fire_level_load();
+                        if let Err(e) = self.script_runtime.reload_behavior_context() {
+                            log::error!(
+                                "[Scripting] hot reload: failed to rebuild behavior context: {e}",
+                            );
+                        } else {
+                            load_behavior_scripts(&self.script_runtime, &self.content_root);
+                            if self.level_load_fired {
+                                self.script_runtime.fire_level_load();
+                            }
+                            log::info!("[Scripting] hot reload complete");
                         }
-                        log::info!("[Scripting] hot reload complete");
                     }
                     Ok(false) => {}
                     Err(err) => {

@@ -211,6 +211,15 @@ impl LuauSubsystem {
         Ok(())
     }
 
+    /// Drop the current behavior Lua state and rebuild it. Dev-mode hot-reload
+    /// path counterpart to `reload_definition_context`: ensures re-running
+    /// behavior scripts always sees a fresh global table, so top-level
+    /// declarations from a previous load can't conflict with the next.
+    pub(crate) fn reload_behavior_context(&mut self) -> Result<(), ScriptError> {
+        self.behavior_lua = build_lua_state(&self.primitives, ContextScope::BehaviorOnly, None)?;
+        Ok(())
+    }
+
     /// Compile and evaluate `source` inside the chosen state. Compile errors
     /// surface as `ScriptError::ScriptThrew` (same variant as runtime errors).
     /// Runtime errors include mlua's source-line traceback because

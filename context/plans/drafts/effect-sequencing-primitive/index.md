@@ -92,10 +92,12 @@ validation, same errors. Difference is only the registration surface.
 
 Add the `sequence` shape and `setLightAnimation` step payload to the SDK
 type declarations. Update the `registerEffect` overload set so authors get
-type checking on `sequence` step entries. Provide a thin authoring helper
-(matching the `light_animation.ts` style) for building a step list from a
-sorted `LightEntity[]` and a stagger function — encapsulates the
-"phase = i / N" pattern from the existing scripts.
+type checking on `sequence` step entries. The `sequence` field is always an
+array — no single-step sugar form; `effects: []` is the only supported
+syntax regardless of list length. Provide a thin authoring helper (matching
+the `light_animation.ts` style) for building a step list from a sorted
+`LightEntity[]` and a stagger function — encapsulates the "phase = i / N"
+pattern from the existing scripts.
 
 ### Task 4: Migrate arena light waves
 
@@ -169,10 +171,6 @@ steps unaffected.
 
 ## Open questions
 
-- **Single-step ergonomics:** when a `sequence` has one step, authors could
-  write a flatter `{ id, primitive, args }` form instead of a one-element
-  list. Worth a sugar shape, or does the consistent list form win? Resolve
-  before Task 3 freezes the SDK signature.
 - **Per-step `onComplete`:** the tag-based `primitive` shape carries an
   `onComplete` event. Does each `sequence` step need its own, the whole
   sequence need one at the end, or both? Pick when a sequenced primitive

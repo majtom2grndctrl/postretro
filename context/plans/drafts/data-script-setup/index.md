@@ -73,10 +73,19 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
 - [ ] `postretro.d.ts` and `postretro.d.luau` include typed declarations for
   `registerEffect` and `registerEntities`, including the `progress` and
   `primitive` effect shapes
+- [ ] An entity carrying `_tags "wave1 reactorMonster"` in the map matches
+  `world.query({ component: "light", tag: "wave1" })` AND
+  `world.query({ component: "light", tag: "reactorMonster" })` independently —
+  single entity, two distinct queries, both return results
+- [ ] A PRL section ID is reserved for the compiled data script payload (bytes
+  + source path) and added to `context/lib/build_pipeline.md`
+  §"PRL section IDs"
 
 ---
 
 ## Tasks
+
+> **Prerequisite complete:** The multi-tag entity registry change (`_tag` → `_tags`, `Option<String>` → `Vec<String>`) was implemented during plan refinement and is already merged — no task needed.
 
 ### Task 1: Data script build step
 
@@ -108,6 +117,9 @@ loads with no registered effects rather than failing.
 The data context is a third context role alongside Definition and Behavior
 (see `scripting.md` §2). It is distinct from the context pool: one context,
 created and dropped once per level load.
+
+This task does NOT wire up a file watcher — the architecture is structured to
+support hot reload, but the watcher itself is a follow-on task.
 
 ### Task 4: Effect registry and dispatch
 

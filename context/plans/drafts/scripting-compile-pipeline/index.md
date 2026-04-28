@@ -2,19 +2,23 @@
 
 ## Goal
 
-Three related improvements: unify SDK library imports under the `"postretro"` bare specifier
-via an engine-evaluated JS prelude; remove the tsc/npx compile dependency so scripts-build
-(SWC) is the sole TS compiler; and move script compilation into the map build step so `prl-build`
-compiles scripts when a worldspawn KVP lists them. Together these eliminate the NPM/tsc runtime
-dependency and make content packaging coherent — compiling a map also compiles its scripts.
+Four related improvements: unify SDK library imports under the `"postretro"` bare specifier
+for both TypeScript and Luau via engine-evaluated preludes; remove the tsc/npx compile
+dependency so scripts-build (SWC) is the sole TS compiler; and move script compilation into
+the map build step so `prl-build` compiles scripts when a worldspawn KVP lists them. Together
+these eliminate the NPM/tsc runtime dependency, make content packaging coherent, and give Luau
+and TypeScript authors identical import ergonomics.
 
 ## Scope
 
 ### In scope
 
-- **SDK prelude:** bundle `sdk/lib/*.ts` into a committed `sdk/lib/prelude.js`; engine evaluates
-  it before user scripts so all SDK lib exports are runtime globals. `import { world } from
-  "postretro"` replaces `import { world } from "../../../sdk/lib/world"`.
+- **SDK prelude (TypeScript):** bundle `sdk/lib/*.ts` into a committed `sdk/lib/prelude.js`;
+  engine evaluates it before user scripts so all SDK lib exports are runtime globals.
+  `import { world } from "postretro"` replaces `import { world } from "../../../sdk/lib/world"`.
+- **SDK prelude (Luau):** embed `sdk/lib/world.luau` and `sdk/lib/light_animation.luau` via
+  `include_str!`; engine evaluates each in every Luau context and sets their return values as
+  globals. Luau authors use `world`, `flicker`, etc. directly without any require call.
 - **scripts-build only:** remove `tsc`/`npx` fallback detection from the hot-reload watcher;
   scripts-build is the sole TS compiler path.
 - **Level compiler script compilation:** worldspawn `script` KVP names a single `.ts` entry
@@ -27,10 +31,8 @@ dependency and make content packaging coherent — compiling a map also compiles
 
 ### Out of scope
 
-- Luau SDK prelude (`sdk/lib/*.luau` equivalents compiled to a prelude). Luau SDK lib stays
-  as source files modders import directly for now. This asymmetry is intentional: TS authors use
-  `import { world } from "postretro"` (bare specifier, prelude-backed), while Luau authors
-  continue to use relative imports from `sdk/lib/` until a Luau prelude is added.
+- Luau hot reload of sdk/lib changes. Prelude is embedded at compile time; engine restart
+  required if `world.luau` or `light_animation.luau` change (same constraint as TS prelude).
 - Embedding scripts-build into the engine binary. Sidecar model stays.
 - QuickJS bytecode compilation (separate optimization concern).
 - Type checking in scripts-build (`tsc --noEmit` remains the type-check path for authors).
@@ -53,6 +55,15 @@ dependency and make content packaging coherent — compiling a map also compiles
   `include_str!`. `cargo build -p postretro` fails with a clear error if the file is absent.
 - [ ] `sdk/lib/index.ts` exists as the entry point for prelude generation; re-exports all public
   symbols from `world.ts` and `light_animation.ts`.
+
+### Luau SDK prelude
+
+- [ ] `world`, `flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence` are available
+  as globals in every Luau behavior context without any `require` call.
+- [ ] `world:query({ component = "light", tag = "..." })` returns handle objects with
+  `:setAnimation`, `:setIntensity`, `:setColor` methods.
+- [ ] `sdk/types/postretro.d.luau` exports the same SDK lib symbols as the TS declarations so
+  luau-lsp completions work.
 
 ### scripts-build only
 
@@ -116,6 +127,19 @@ by running scripts-build against the updated source as part of completing this t
 Document prelude regeneration: when `sdk/lib/*.ts` changes, run
 `cargo run -p postretro-script-compiler -- --prelude --sdk-root sdk/lib --out sdk/lib/prelude.js`
 and commit the result.
+
+**Luau prelude:** no bundler step needed. The engine embeds `sdk/lib/world.luau` and
+`sdk/lib/light_animation.luau` directly via `include_str!` (same pattern as the JS prelude).
+At context construction, evaluate each file in the Luau state and promote its return value to
+globals: `world.luau` returns the `world` table → set as global `world`;
+`light_animation.luau` returns the `LightAnimationSdk` table → destructure into globals
+`flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`. No separate
+`sdk/lib/prelude.luau` file is needed — the Rust context-init code handles it. When
+`sdk/lib/*.luau` changes, `cargo build` picks it up automatically via `include_str!`'s
+implicit file dependency.
+
+Update `sdk/types/postretro.d.luau` to export all SDK lib public symbols alongside the
+existing primitive declarations, matching the additions made to `postretro.d.ts`.
 
 ### Task 2: Remove tsc/npx detection
 
@@ -253,8 +277,10 @@ if they diverge. This keeps the committed prelude honest without requiring a cus
 - **Prelude in pooled contexts:** pooled contexts are recycled per-entity. Evaluating the prelude
   in every warm-up is correct but may be measurable overhead at high entity counts. Profile before
   optimizing; the simple path is evaluate-on-warmup.
-- **Luau SDK prelude:** `sdk/lib/*.luau` equivalents don't exist yet. Should this plan stub them
-  or defer entirely? The Luau SDK surface is currently weaker than the TS one anyway.
+- **Luau prelude globals:** `light_animation.luau` returns a table (`LightAnimationSdk`) whose
+  fields are promoted to individual globals. Verify mlua's `eval::<Table>()` returns the table
+  cleanly and that iterating its fields for `globals.set()` covers all six helpers without
+  hardcoding names. If mlua requires a different eval path, adjust accordingly.
 - **scripts-build --prelude export coverage:** `ExportToGlobal` handles named `ExportDecl` and
   inlined `export` keywords cleanly. Re-exports (`export { x } from "./y"`) and default exports
   are out of scope for the initial sdk/lib surface (`world.ts` and `light_animation.ts` use only

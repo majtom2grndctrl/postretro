@@ -82,9 +82,11 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
 
 prl-build reads the `data_script` KVP from `worldspawn`. If present, it
 locates the file, compiles TS→JS via `scripts-build` (Luau passes through
-as-is), and embeds the compiled output as a new PRL section. Absent KVP
-emits no section; the engine skips the data script path at load time. Missing
-file is a hard compile error.
+as-is), and embeds the compiled output as a new PRL section. The section
+carries two fields: the compiled bytes and the original source path (for
+future hot reload — not consumed at runtime yet). Absent KVP emits no
+section; the engine skips the data script path at load time. Missing file is
+a hard compile error.
 
 ### Task 2: Effect and entity descriptor types
 
@@ -184,9 +186,10 @@ requirement.
 
 ## Open questions
 
-- **PRL section format:** embed compiled JS/Lua as a raw bytes section, or
-  reference by path and load from disk? Embedding keeps distribution simple;
-  path reference is easier for development hot reload later.
+- **PRL section format:** ~~embed vs path reference~~ **Resolved:** embed
+  compiled bytes in PRL. The section also carries a source path metadata field
+  (even though it is not consumed yet) so the hot reload watcher can reference
+  the original file without a recompile.
 - **Kill counter tag resolution:** does the spawn tag on an entity in the map
   (`spawnGroup "reactorWave1"`) match directly against the `tag` field in the
   effect descriptor, or is there an indirection layer? Direct match is simpler;

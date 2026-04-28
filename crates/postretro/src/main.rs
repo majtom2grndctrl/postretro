@@ -166,12 +166,24 @@ fn main() -> Result<()> {
     let script_ctx = ScriptCtx::new();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
-    let script_runtime = ScriptRuntime::new(
+    let mut script_runtime = ScriptRuntime::new(
         &script_registry,
         &ScriptRuntimeConfig::default(),
         &script_ctx,
     )
     .context("failed to construct script runtime")?;
+
+    // Start the dev-mode hot-reload watcher rooted at the same `scripts/`
+    // directory `load_behavior_scripts` reads from. No-op in release builds.
+    // Failure is logged and swallowed — a missing or unwatchable directory
+    // must not prevent engine startup.
+    let scripts_root = content_root.join("scripts");
+    if let Err(err) = script_runtime.start_watcher(&scripts_root) {
+        log::warn!(
+            "[Scripting] failed to start hot-reload watcher on `{}`: {err}",
+            scripts_root.display(),
+        );
+    }
 
     let mut app = App {
         renderer: None,
@@ -289,22 +301,9 @@ fn build_demo_emitters(spawn_demo: bool, camera_pos: Vec3) -> Vec<fx::smoke::Smo
 /// the source; any bare `.js` that already has a same-stem `.ts` sibling is
 /// treated as a compiler artifact and skipped to avoid running the script twice.
 ///
-/// If no TypeScript compiler is found at startup, `.ts` files are passed
-/// directly to QuickJS, which will fail with "Unexpected token" errors for any
+/// If `scripts-build` is not found at startup, `.ts` files are passed directly
+/// to QuickJS, which will fail with "Unexpected token" errors for any
 /// TS-specific syntax. A warning is logged in that case.
-///
-/// # ⚠ ES module output warning
-///
-/// `<content_root>/scripts/tsconfig.json` sets `"module": "ES2020"`, so `tsc`
-/// emits output with `import`/`export` statements. QuickJS's `ctx.eval()`
-/// (script mode) cannot parse ES module syntax and will reject the compiled
-/// output. The proper fix is the `scripts-build` bundler sidecar — it strips
-/// imports/exports and produces a self-contained IIFE/plain-JS bundle that
-/// QuickJS can evaluate. Until `scripts-build` is the active compiler,
-/// TypeScript files that use `import`/`export` will fail to load even after
-/// successful compilation.
-///
-/// This applies only when `tsc` or `npx` is the detected compiler; `scripts-build` produces QuickJS-compatible output directly.
 fn load_behavior_scripts(runtime: &ScriptRuntime, content_root: &Path) {
     let root_buf = content_root.join("scripts");
     let root = root_buf.as_path();
@@ -366,10 +365,9 @@ fn load_behavior_scripts(runtime: &ScriptRuntime, content_root: &Path) {
     #[cfg(debug_assertions)]
     if ts_compiler.is_none() {
         log::warn!(
-            "[Scripting] No TypeScript compiler found (tsc / npx / scripts-build). \
-             `.ts` files will be passed to QuickJS as-is and will likely fail with \
-             \"Unexpected token\" errors. Install tsc or ensure scripts-build ships \
-             next to the engine binary."
+            "[Scripting] `scripts-build` not found. `.ts` files will be passed to \
+             QuickJS as-is and will likely fail with \"Unexpected token\" errors. \
+             Install scripts-build or ship it next to the engine binary."
         );
     }
 
@@ -386,11 +384,6 @@ fn load_behavior_scripts(runtime: &ScriptRuntime, content_root: &Path) {
                         compiler, path, &out_path, root,
                     ) {
                         Ok(()) => {
-                            // ⚠ See the doc-comment above: tsc with
-                            // `"module": "ES2020"` emits import/export syntax
-                            // that QuickJS cannot parse in script mode. Loading
-                            // will fail unless scripts-build (the bundler
-                            // sidecar) is the active compiler.
                             if let Err(err) =
                                 runtime.run_script_file(ScriptWhich::Behavior, &out_path)
                             {
@@ -718,6 +711,28 @@ impl ApplicationHandler for App {
                 let tick_dt = self.frame_timing.tick_dt();
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
+
+                // Hot reload (debug builds only). Drain pending watcher
+                // requests; if any landed, rebuild the behavior surface from
+                // disk and re-fire `levelLoad` so newly registered handlers
+                // execute immediately. `level_load_fired` is intentionally NOT
+                // reset — it gates the first-frame `levelLoad` fire, not
+                // subsequent reloads.
+                // See: context/lib/scripting.md §8
+                match self.script_runtime.drain_reload_requests() {
+                    Ok(true) => {
+                        self.script_runtime.clear_level_handlers();
+                        load_behavior_scripts(&self.script_runtime, &self.content_root);
+                        if self.level_load_fired {
+                            self.script_runtime.fire_level_load();
+                        }
+                        log::info!("[Scripting] hot reload complete");
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        log::error!("[Scripting] drain_reload_requests failed: {err}");
+                    }
+                }
 
                 // Fire `levelLoad` once, before the first frame renders. The
                 // world is already populated (load_level ran before the event

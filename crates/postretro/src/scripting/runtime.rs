@@ -118,8 +118,10 @@ impl ScriptRuntime {
         );
     }
 
-    /// Drop every registered handler. Called on level unload — the handler
-    /// registry is strictly per-level (see `scripting.md` §10 Non-Goals).
+    /// Drop every registered handler. Called on level unload and hot reload —
+    /// the handler registry is strictly per-level (see `scripting.md` §10
+    /// Non-Goals); on hot reload, scripts re-register from a clean slate so
+    /// handlers don't accumulate across reloads.
     pub(crate) fn clear_level_handlers(&self) {
         self.handlers.borrow_mut().clear();
     }
@@ -154,22 +156,18 @@ impl ScriptRuntime {
     }
 
     /// Drain any pending reload requests produced by the watcher. Call at the
-    /// top of each frame. No-op in release builds. Reload errors are logged
-    /// and swallowed — one failed reload must not kill the engine.
-    pub(crate) fn drain_reload_requests(&mut self) -> Result<(), ScriptError> {
+    /// top of each frame. Returns `Ok(true)` when at least one reload request
+    /// was drained — the caller is responsible for the actual reload sequence
+    /// (clear handlers, re-run behavior scripts, re-fire `levelLoad` if the
+    /// level is loaded). No-op in release builds: always returns `Ok(false)`.
+    pub(crate) fn drain_reload_requests(&mut self) -> Result<bool, ScriptError> {
         #[cfg(debug_assertions)]
         {
-            // Temporarily take the watcher to satisfy the borrow checker:
-            // `drain_reload_requests` needs `&mut self` on both the watcher
-            // and the runtime simultaneously. The field is always re-set;
-            // panics inside propagate but do not leak the watcher.
-            if let Some(mut w) = self.watcher.take() {
-                let result = w.drain_reload_requests(self);
-                self.watcher = Some(w);
-                return result;
+            if let Some(w) = self.watcher.as_mut() {
+                return w.drain_reload_requests();
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Access the QuickJS subsystem.
@@ -332,6 +330,43 @@ mod tests {
                 .exists(crate::scripting::registry::EntityId::from_raw(0)),
             "luau path should have spawned via QuickJs-symmetric primitives",
         );
+        fs::remove_file(&path).ok();
+    }
+
+    /// Acceptance criterion for hot reload (Task 4): re-running the same
+    /// behavior script after `clear_level_handlers` must not accumulate
+    /// handlers. Three simulated reloads each settle to the cold-load count.
+    #[test]
+    fn hot_reload_does_not_duplicate_handlers() {
+        let (rt, ctx) = runtime();
+        let path = temp_script(
+            "reload_dedup.js",
+            r#"
+            registerHandler("levelLoad", function () {});
+            "#,
+        );
+
+        // Cold load.
+        rt.run_script_file(Which::Behavior, &path).unwrap();
+        let cold_count = ctx.handlers.borrow().len();
+        assert!(
+            cold_count > 0,
+            "cold load should have registered at least one handler",
+        );
+
+        // Three simulated hot reloads. Mirrors main.rs's reload sequence:
+        // clear handlers, then re-run all behavior scripts. The handler count
+        // must equal `cold_count` after each reload — no accumulation.
+        for i in 1..=3 {
+            rt.clear_level_handlers();
+            rt.run_script_file(Which::Behavior, &path).unwrap();
+            assert_eq!(
+                ctx.handlers.borrow().len(),
+                cold_count,
+                "after hot reload #{i}, handler count must equal cold-load count",
+            );
+        }
+
         fs::remove_file(&path).ok();
     }
 

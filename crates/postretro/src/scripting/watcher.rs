@@ -32,10 +32,10 @@
 //!                                            └──────────────────────────────┘
 //! ```
 //!
-//! Separation matters: a `tsc` or `scripts-build` subprocess can take
-//! hundreds of milliseconds; blocking the debouncer's delivery thread would
-//! drop events during a compile. The watcher thread forwards immediately;
-//! the compile-worker owns the slow path.
+//! Separation matters: a `scripts-build` subprocess can take hundreds of
+//! milliseconds; blocking the debouncer's delivery thread would drop events
+//! during a compile. The watcher thread forwards immediately; the
+//! compile-worker owns the slow path.
 
 // Belt-and-braces: the `mod watcher;` in `scripting::mod` is already
 // `#[cfg(debug_assertions)]`, but gating the module itself ensures a release
@@ -53,7 +53,6 @@ use notify::{EventKind, RecursiveMode};
 use notify_debouncer_full::{DebouncedEvent, new_debouncer};
 
 use super::error::ScriptError;
-use super::runtime::ScriptRuntime;
 
 /// ~200 ms debounce — well below a one-second reload budget even with a
 /// compile step on the critical path.
@@ -61,16 +60,12 @@ const DEBOUNCE_MS: u64 = 200;
 
 /// One reload request enqueued by the compile-worker for the frame loop.
 ///
-/// `compiled_output_path` is the path to re-evaluate: for `.luau`, the source
-/// file; for `.ts`, the compiled `.js` artifact. The frame loop swaps the
-/// definition context; re-evaluation is the caller's concern.
+/// The request carries no payload: every reload triggers a full rebuild of all
+/// behavior scripts, so the specific changed path is not needed downstream.
 #[derive(Debug, Clone)]
-pub(crate) struct ReloadRequest {
-    #[allow(dead_code)]
-    pub(crate) compiled_output_path: PathBuf,
-}
+pub(crate) struct ReloadRequest;
 
-/// Where to find the TypeScript compiler, chosen once at startup via the
+/// Where to find the `scripts-build` sidecar, chosen once at startup via the
 /// detection cascade in [`TsCompilerPath::detect`].
 #[derive(Debug, Clone)]
 pub(crate) enum TsCompilerPath {
@@ -78,10 +73,6 @@ pub(crate) enum TsCompilerPath {
     /// self-contained distribution ships — the sidecar travels with the
     /// engine binary, no PATH configuration required.
     ScriptsBuildNextToEngine(PathBuf),
-    /// `tsc` on `PATH`. Invoked as `tsc --project <root>/tsconfig.json`.
-    Tsc(PathBuf),
-    /// `npx` on `PATH`. Invoked as `npx tsc --project <root>/tsconfig.json`.
-    Npx(PathBuf),
     /// `scripts-build` on `PATH` (developer global install).
     ScriptsBuildOnPath(PathBuf),
 }
@@ -93,9 +84,11 @@ impl TsCompilerPath {
     /// **Order:**
     ///
     /// 1. `scripts-build` next to `std::env::current_exe()`.
-    /// 2. `tsc` on `PATH`.
-    /// 3. `npx` on `PATH`.
-    /// 4. `scripts-build` on `PATH`.
+    /// 2. `scripts-build` on `PATH`.
+    ///
+    /// Detection cascade duplicated in `crates/level-compiler/src/main.rs`
+    /// (`find_scripts_build`). If it grows (e.g. add POSTRETRO_SCRIPTS_BUILD
+    /// env var), promote to a shared crate.
     pub(crate) fn detect() -> Option<Self> {
         let exe_dir = std::env::current_exe()
             .ok()
@@ -116,12 +109,6 @@ impl TsCompilerPath {
         {
             return Some(Self::ScriptsBuildNextToEngine(p));
         }
-        if let Some(p) = which_in(path_var, "tsc") {
-            return Some(Self::Tsc(p));
-        }
-        if let Some(p) = which_in(path_var, "npx") {
-            return Some(Self::Npx(p));
-        }
         if let Some(p) = which_in(path_var, "scripts-build") {
             return Some(Self::ScriptsBuildOnPath(p));
         }
@@ -133,8 +120,6 @@ impl TsCompilerPath {
             Self::ScriptsBuildNextToEngine(p) => {
                 format!("scripts-build (from current_exe dir: {})", p.display())
             }
-            Self::Tsc(p) => format!("tsc ({})", p.display()),
-            Self::Npx(p) => format!("npx ({})", p.display()),
             Self::ScriptsBuildOnPath(p) => format!("scripts-build (from PATH: {})", p.display()),
         }
     }
@@ -203,12 +188,12 @@ impl ScriptWatcher {
         let script_root = script_root.to_path_buf();
 
         if let Some(ref c) = ts_compiler {
-            info!("scripts: TS compiler = {}", c.describe());
+            info!("[Scripting] TS compiler = {}", c.describe());
         } else {
             error!(
-                "scripts: no TypeScript compiler found — install `tsc` or `npx`, \
-                 or ensure `scripts-build` ships next to the engine binary. \
-                 `.ts` hot reload disabled; `.luau` files still work."
+                "[Scripting] `scripts-build` not found — install it on PATH or \
+                 ship it next to the engine binary. `.ts` hot reload disabled; \
+                 `.luau` files still work."
             );
         }
 
@@ -263,27 +248,24 @@ impl ScriptWatcher {
         })
     }
 
-    /// Drain pending reload requests non-blockingly. Call at the top of each
-    /// frame. Reload errors are logged; the prior archetype set stays active.
-    pub(crate) fn drain_reload_requests(
-        &mut self,
-        runtime: &mut ScriptRuntime,
-    ) -> Result<(), ScriptError> {
+    /// Drain pending reload requests non-blockingly. Returns `Ok(true)` if at
+    /// least one reload request was drained — the caller is responsible for
+    /// the actual reload sequence (clear handlers, re-run behavior scripts,
+    /// re-fire `levelLoad` if applicable).
+    ///
+    /// Every reload re-runs all behavior scripts (full rebuild; targeted
+    /// single-file reload not implemented).
+    pub(crate) fn drain_reload_requests(&mut self) -> Result<bool, ScriptError> {
+        let mut any = false;
         loop {
             match self.reload_rx.try_recv() {
                 Ok(_req) => {
-                    if let Err(e) = runtime.reload_definition_context() {
-                        // Don't propagate — one bad reload mustn't kill the
-                        // engine. The prior archetype set stays active.
-                        error!("scripts: definition-context reload failed: {e}");
-                    } else {
-                        info!("scripts: definition context reloaded");
-                    }
+                    any = true;
                 }
-                Err(TryRecvError::Empty) => return Ok(()),
+                Err(TryRecvError::Empty) => return Ok(any),
                 Err(TryRecvError::Disconnected) => {
                     // Compile-worker exited; channel is closed.
-                    return Ok(());
+                    return Ok(any);
                 }
             }
         }
@@ -331,9 +313,7 @@ fn handle_path(
     match ext {
         "luau" => {
             // Straight-through: Luau reads source directly.
-            let _ = reload_tx.send(ReloadRequest {
-                compiled_output_path: path.to_path_buf(),
-            });
+            let _ = reload_tx.send(ReloadRequest);
         }
         "ts" => {
             let Some(compiler) = ts_compiler else {
@@ -348,9 +328,7 @@ fn handle_path(
             let out_path = compiled_output_for(path);
             match run_ts_compiler(compiler, path, &out_path, script_root) {
                 Ok(()) => {
-                    let _ = reload_tx.send(ReloadRequest {
-                        compiled_output_path: out_path,
-                    });
+                    let _ = reload_tx.send(ReloadRequest);
                 }
                 Err(msg) => {
                     // Compiler stderr already logged inside run_ts_compiler;
@@ -379,7 +357,7 @@ pub(crate) fn run_ts_compiler(
     compiler: &TsCompilerPath,
     input: &Path,
     output: &Path,
-    script_root: &Path,
+    _script_root: &Path,
 ) -> Result<(), String> {
     use std::process::Command;
 
@@ -389,35 +367,17 @@ pub(crate) fn run_ts_compiler(
             c.arg("--in").arg(input).arg("--out").arg(output);
             c
         }
-        TsCompilerPath::Tsc(p) => {
-            // `tsc` is project-oriented: `--project <root>/tsconfig.json`
-            // produces a whole-project build. Per-file `--out` via tsc is
-            // awkward; the project config places artifacts where the engine
-            // expects them.
-            let mut c = Command::new(p);
-            c.arg("--project").arg(script_root.join("tsconfig.json"));
-            c
-        }
-        TsCompilerPath::Npx(p) => {
-            let mut c = Command::new(p);
-            c.arg("tsc")
-                .arg("--project")
-                .arg(script_root.join("tsconfig.json"));
-            c
-        }
     };
 
     let out = cmd.output().map_err(|e| format!("spawn failed: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
-        // Log compiler output at `error` level so the modder sees exactly
-        // what `tsc`/`scripts-build` said.
         if !stderr.trim().is_empty() {
-            error!("scripts: TS compiler stderr:\n{stderr}");
+            error!("[Scripting] scripts-build stderr:\n{stderr}");
         }
         if !stdout.trim().is_empty() {
-            error!("scripts: TS compiler stdout:\n{stdout}");
+            error!("[Scripting] scripts-build stdout:\n{stdout}");
         }
         return Err(format!("exit status {}", out.status));
     }
@@ -602,10 +562,10 @@ mod tests {
 
     #[test]
     fn detect_finds_scripts_build_next_to_engine() {
-        // Acceptance criterion: with `tsc` and `npx` absent from PATH but
-        // `scripts-build` sitting next to the engine executable, the cascade
-        // picks step 1. We simulate by pointing `exe_dir` at the directory
-        // containing the freshly-built sidecar and passing an empty PATH.
+        // Acceptance criterion: with `scripts-build` sitting next to the
+        // engine executable, the cascade picks step 1. We simulate by pointing
+        // `exe_dir` at the directory containing the freshly-built sidecar and
+        // passing an empty PATH.
         let binary = ensure_scripts_build();
         let dir = binary.parent().unwrap().to_path_buf();
 
@@ -622,8 +582,8 @@ mod tests {
 
     #[test]
     fn detect_falls_through_to_scripts_build_on_path() {
-        // Step 4 of the cascade: `tsc` and `npx` absent, no `scripts-build`
-        // next to current_exe, but one on PATH.
+        // Step 2 of the cascade: no `scripts-build` next to current_exe, but
+        // one on PATH.
         let binary = ensure_scripts_build();
         let dir = binary.parent().unwrap().to_path_buf();
 

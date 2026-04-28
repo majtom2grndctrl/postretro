@@ -202,6 +202,9 @@ requirement.
   runtime; no use case for per-type handle references exists in the current
   design. Behavior scripts will rely on `world.query()` for per-type access
   when that layer lands.
-- **Setup failure policy:** log-and-continue is specified above, but a level
-  with broken effects may behave confusingly. Consider a `--strict` prl-build
-  flag that makes setup errors fatal.
+- **Setup failure policy:** ~~log-and-continue vs --strict~~ **Resolved:**
+  log-and-continue. Errors print to terminal (no in-game UI yet). Level
+  loads with no registered effects rather than aborting. This keeps the
+  path open for hot reload: a broken data script can be fixed and
+  re-executed without restarting the level. No `--strict` flag — not worth
+  the surface area before hot reload exists.

@@ -19,6 +19,8 @@ dependency and make content packaging coherent — compiling a map also compiles
   scripts-build is the sole TS compiler path.
 - **Level compiler script compilation:** worldspawn `scripts_dir` KVP triggers script
   compilation in `prl-build`; compiled `.js` files land beside their `.ts` sources.
+- **Hot reload wiring:** connect the watcher to the frame loop and fix the reload path so it
+  actually re-evaluates changed scripts in the correct context without duplicating handlers.
 - `const enum` usage across file boundaries documented as unsupported and flagged in
   `tsconfig.json` via `isolatedModules: true`.
 
@@ -69,6 +71,20 @@ dependency and make content packaging coherent — compiling a map also compiles
   already have up-to-date `.js` siblings.
 - [ ] FGD `worldspawn` entity updated with `scripts_dir` property.
 
+### Hot reload wiring
+
+- [ ] `start_watcher` is called from `main.rs` after `ScriptRuntime` is constructed; failure is
+  logged as a warning, not fatal.
+- [ ] `drain_reload_requests` is called at the top of the frame loop (`RedrawRequested`) before
+  game logic fires.
+- [ ] On reload, `clear_level_handlers()` is called before re-running scripts; no handler
+  duplication after N hot reloads.
+- [ ] Reload re-evaluates behavior scripts in the behavior context (not the definition context).
+- [ ] `compiled_output_path` in `ReloadRequest` is either used to target only the changed file,
+  or the field is removed and the full-reload approach is made explicit.
+- [ ] Editing `arena-wave.ts` (or any `.luau` script) while the engine runs causes the new
+  handler logic to fire on the next `levelLoad` event without restarting the engine.
+
 ## Tasks
 
 ### Task 1: SDK prelude
@@ -108,12 +124,34 @@ the resolved `scripts_dir`, invoke scripts-build per file, and collect errors. A
 missing-compiler / stale-js fallback logic from the acceptance criteria. Update the FGD
 `worldspawn` definition to document `scripts_dir`.
 
+### Task 4: Fix hot reload wiring
+
+Four problems found by audit — all in the engine crate, no compiler changes needed:
+
+1. **Not wired:** `start_watcher` and `drain_reload_requests` are never called from `main.rs`.
+   Call `start_watcher` after `ScriptRuntime` construction; call `drain_reload_requests` at the
+   top of the `RedrawRequested` handler.
+
+2. **Wrong context:** `reload_definition_context` rebuilds the definition context only. Behavior
+   scripts (`registerHandler`) live in the behavior context. The reload path must rebuild the
+   behavior context and re-run all behavior script files.
+
+3. **Handler duplication:** `HandlerTable` appends on every `registerHandler` call with no
+   deduplication. Reload must call `clear_level_handlers()` before re-running scripts.
+
+4. **Dead field:** `compiled_output_path` on `ReloadRequest` is `#[allow(dead_code)]` and
+   discarded in `drain_reload_requests`. Either use it for targeted single-file reload, or remove
+   it and document the full-reload approach explicitly.
+
+The correct reload sequence: receive `ReloadRequest` → clear level handlers → re-run all
+behavior scripts from disk → log result.
+
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — establishes the SDK import convention; `arena-wave.ts`
 change depends on it.
 
-**Phase 2 (concurrent):** Task 2 and Task 3 — independent of each other; both can start once
+**Phase 2 (concurrent):** Tasks 2, 3, and 4 — all independent of each other; all can start once
 Task 1 ships.
 
 ## Rough sketch

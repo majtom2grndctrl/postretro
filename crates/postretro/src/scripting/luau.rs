@@ -28,14 +28,19 @@ const WORLD_LUAU_SRC: &str = include_str!("../../../../sdk/lib/world.luau");
 /// SDK library prelude — `light_animation.luau` returns a table whose fields
 /// (`flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`) are
 /// destructured into globals so authors call them by bare name.
-const LIGHT_ANIMATION_LUAU_SRC: &str =
-    include_str!("../../../../sdk/lib/light_animation.luau");
+const LIGHT_ANIMATION_LUAU_SRC: &str = include_str!("../../../../sdk/lib/light_animation.luau");
 
 /// Light-animation SDK fields lifted to globals after evaluating
 /// `light_animation.luau`. Order is informational; iteration order is the
 /// same.
-const LIGHT_ANIMATION_FIELDS: &[&str] =
-    &["flicker", "pulse", "colorShift", "sweep", "timeline", "sequence"];
+const LIGHT_ANIMATION_FIELDS: &[&str] = &[
+    "flicker",
+    "pulse",
+    "colorShift",
+    "sweep",
+    "timeline",
+    "sequence",
+];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed (the prelude
@@ -66,10 +71,9 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
         })?;
     let globals = lua.globals();
     for field in LIGHT_ANIMATION_FIELDS {
-        let value: mlua::Value =
-            sdk.get(*field).map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("light_animation.luau missing `{field}`: {e}"),
-            })?;
+        let value: mlua::Value = sdk.get(*field).map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("light_animation.luau missing `{field}`: {e}"),
+        })?;
         globals
             .set(*field, value)
             .map_err(|e| ScriptError::InvalidArgument {

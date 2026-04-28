@@ -157,8 +157,8 @@ fn parse_args() -> Result<CliMode> {
         if input.is_some() {
             bail!("`--in` is incompatible with `--prelude`");
         }
-        let sdk_root = sdk_root
-            .ok_or_else(|| anyhow!("`--prelude` requires `--sdk-root <dir>`"))?;
+        let sdk_root =
+            sdk_root.ok_or_else(|| anyhow!("`--prelude` requires `--sdk-root <dir>`"))?;
         Ok(CliMode::Prelude { sdk_root, output })
     } else {
         if sdk_root.is_some() {
@@ -531,9 +531,7 @@ impl VisitMut for ExportToGlobal {
                 }
                 ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(_))
                 | ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(_)) => {
-                    panic!(
-                        "ExportToGlobal: `export default` is unsupported in the prelude entry"
-                    );
+                    panic!("ExportToGlobal: `export default` is unsupported in the prelude entry");
                 }
                 ModuleItem::ModuleDecl(ModuleDecl::ExportAll(all)) => {
                     let src = all.src.value.to_string_lossy();
@@ -562,8 +560,8 @@ fn decl_binding_names(decl: &Decl) -> Vec<String> {
         Decl::Var(v) => v
             .decls
             .iter()
-            .filter_map(|d| match &d.name {
-                Pat::Ident(BindingIdent { id, .. }) => Some(id.sym.to_string()),
+            .map(|d| match &d.name {
+                Pat::Ident(BindingIdent { id, .. }) => id.sym.to_string(),
                 // Destructuring at the top of the SDK lib is not part of the
                 // surface contract; bail loudly so authors notice.
                 other => panic!(
@@ -577,10 +575,9 @@ fn decl_binding_names(decl: &Decl) -> Vec<String> {
         }
         // Type-only declarations are stripped by the TS strip pass before the
         // bundler runs, but we cover the cases for completeness.
-        Decl::TsInterface(_)
-        | Decl::TsTypeAlias(_)
-        | Decl::TsEnum(_)
-        | Decl::TsModule(_) => Vec::new(),
+        Decl::TsInterface(_) | Decl::TsTypeAlias(_) | Decl::TsEnum(_) | Decl::TsModule(_) => {
+            Vec::new()
+        }
     }
 }
 

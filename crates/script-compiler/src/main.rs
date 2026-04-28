@@ -24,7 +24,14 @@
 //!
 //! ```text
 //! scripts-build --in <INPUT.ts> --out <OUTPUT.js>
+//! scripts-build --prelude --sdk-root <DIR> --out <OUTPUT.js>
 //! ```
+//!
+//! In `--prelude` mode the bundler entry is `<DIR>/index.ts` and every named
+//! export is rewritten as a `globalThis.<name> = <name>` assignment so the
+//! resulting script, when evaluated in a QuickJS context, installs the SDK
+//! library symbols as globals visible to subsequent user scripts. See
+//! `context/lib/scripting.md §7` for the prelude design.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,7 +42,9 @@ use swc_atoms::Atom;
 use swc_bundler::{Bundler, Config, Hook, Load, ModuleData, ModuleRecord, Resolve};
 use swc_common::{FileName, GLOBALS, Globals, Mark, SourceMap, Span, errors::Handler, sync::Lrc};
 use swc_ecma_ast::{
-    EsVersion, Expr, ExprStmt, KeyValueProp, MemberProp, ModuleItem, Pass, Program, Stmt,
+    AssignExpr, AssignOp, AssignTarget, BindingIdent, ComputedPropName, Decl, EsVersion, Expr,
+    ExprStmt, Ident, KeyValueProp, MemberExpr, MemberProp, ModuleDecl, ModuleExportName,
+    ModuleItem, Pass, Pat, Program, SimpleAssignTarget, Stmt,
 };
 use swc_ecma_codegen::{Emitter, text_writer::JsWriter};
 use swc_ecma_loader::resolve::Resolution;
@@ -55,14 +64,27 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let (input, output) = parse_args()?;
+    let mode = parse_args()?;
 
-    // Canonicalize the entry path so the bundler's per-platform path normalization
-    // (it canonicalizes on Windows) and our own resolver agree on file identity.
-    let entry = std::fs::canonicalize(&input)
-        .with_context(|| format!("failed to locate input `{}`", input.display()))?;
+    let (entry, output, prelude) = match mode {
+        CliMode::Bundle { input, output } => {
+            let entry = std::fs::canonicalize(&input)
+                .with_context(|| format!("failed to locate input `{}`", input.display()))?;
+            (entry, output, false)
+        }
+        CliMode::Prelude { sdk_root, output } => {
+            let entry_path = sdk_root.join("index.ts");
+            let entry = std::fs::canonicalize(&entry_path).with_context(|| {
+                format!(
+                    "failed to locate prelude entry `{}` (expected `<sdk-root>/index.ts`)",
+                    entry_path.display(),
+                )
+            })?;
+            (entry, output, true)
+        }
+    };
 
-    let js = bundle(&entry)?;
+    let js = bundle(&entry, prelude)?;
 
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
@@ -76,12 +98,23 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn parse_args() -> Result<(PathBuf, PathBuf)> {
-    // Tiny hand-rolled parser: `--in <path> --out <path>`. Keeping `clap` out
-    // of the sidecar deliberately — this is a single-purpose binary and the
-    // argument surface is two required flags.
+/// Parsed command-line invocation: either bundle a user entry script or build
+/// the SDK-library prelude. The two modes share output handling but differ in
+/// how the entry is located and how exports survive into the output JS.
+enum CliMode {
+    Bundle { input: PathBuf, output: PathBuf },
+    Prelude { sdk_root: PathBuf, output: PathBuf },
+}
+
+fn parse_args() -> Result<CliMode> {
+    // Tiny hand-rolled parser. Two modes:
+    //   * `--in <path> --out <path>` — bundle a user entry script.
+    //   * `--prelude --sdk-root <dir> --out <path>` — bundle `<dir>/index.ts`
+    //     with named exports rewritten as `globalThis.<name> = <name>`.
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
+    let mut sdk_root: Option<PathBuf> = None;
+    let mut prelude = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -99,16 +132,41 @@ fn parse_args() -> Result<(PathBuf, PathBuf)> {
                         .into(),
                 );
             }
+            "--prelude" => {
+                prelude = true;
+            }
+            "--sdk-root" => {
+                sdk_root = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow!("`--sdk-root` requires a path argument"))?
+                        .into(),
+                );
+            }
             "-h" | "--help" => {
                 print_usage();
                 std::process::exit(0);
             }
-            other => bail!("unknown argument `{other}` (expected `--in <path> --out <path>`)"),
+            other => bail!(
+                "unknown argument `{other}` (expected `--in <path> --out <path>` \
+                 or `--prelude --sdk-root <dir> --out <path>`)"
+            ),
         }
     }
-    let input = input.ok_or_else(|| anyhow!("missing `--in <path>`"))?;
     let output = output.ok_or_else(|| anyhow!("missing `--out <path>`"))?;
-    Ok((input, output))
+    if prelude {
+        if input.is_some() {
+            bail!("`--in` is incompatible with `--prelude`");
+        }
+        let sdk_root = sdk_root
+            .ok_or_else(|| anyhow!("`--prelude` requires `--sdk-root <dir>`"))?;
+        Ok(CliMode::Prelude { sdk_root, output })
+    } else {
+        if sdk_root.is_some() {
+            bail!("`--sdk-root` is only valid with `--prelude`");
+        }
+        let input = input.ok_or_else(|| anyhow!("missing `--in <path>`"))?;
+        Ok(CliMode::Bundle { input, output })
+    }
 }
 
 fn print_usage() {
@@ -116,6 +174,7 @@ fn print_usage() {
         "scripts-build — bundle and transpile TypeScript to JavaScript (no type checking).\n\
          \n\
          USAGE:\n    scripts-build --in <INPUT.ts> --out <OUTPUT.js>\n\
+         \n    scripts-build --prelude --sdk-root <DIR> --out <OUTPUT.js>\n\
          \n\
          Run `tsc --noEmit` in your editor or CI for type safety."
     );
@@ -126,8 +185,11 @@ fn print_usage() {
 // ---------------------------------------------------------------------------
 
 /// Bundle the entry TypeScript file and its relative imports into a single JS
-/// string suitable for QuickJS script-mode evaluation.
-fn bundle(entry: &Path) -> Result<String> {
+/// string suitable for QuickJS script-mode evaluation. When `prelude` is true,
+/// surviving named exports are rewritten as `globalThis.<name> = <name>` so
+/// the resulting script can be evaluated as a prelude that installs SDK
+/// vocabulary as globals.
+fn bundle(entry: &Path, prelude: bool) -> Result<String> {
     let cm: Lrc<SourceMap> = Default::default();
     let globals = Globals::new();
 
@@ -166,6 +228,13 @@ fn bundle(entry: &Path) -> Result<String> {
         // `import`/`export` declarations for external (bare) specifiers
         // untouched. QuickJS rejects all of these in script mode.
         module.visit_mut_with(&mut StripModuleGlue);
+        if prelude {
+            // Promote each surviving named export to a `globalThis.x = x`
+            // assignment before `StripExternalImports` discards the module
+            // declarations. Order matters: `ExportToGlobal` reads exports;
+            // `StripExternalImports` then deletes the husks.
+            module.visit_mut_with(&mut ExportToGlobal);
+        }
         module.visit_mut_with(&mut StripExternalImports);
 
         Ok(module)
@@ -387,6 +456,178 @@ impl Hook for NoopHook {
 // AST visitors
 // ---------------------------------------------------------------------------
 
+/// Rewrites every surviving named-export form into a bare statement (or
+/// statements) that:
+///   1. Keeps the underlying declaration so the binding still exists at the
+///      module's top level.
+///   2. Adds a trailing `globalThis.<exported_name> = <local_name>` assignment
+///      so subsequent script evaluations against the same QuickJS context
+///      can resolve the symbol as a plain global.
+///
+/// Forms handled:
+///   * `export const x = expr;` / `export let|var x = expr;`
+///   * `export function f() {}`
+///   * `export class C {}`
+///   * `export { foo, bar as baz };` (no `from`)
+///
+/// Forms that bail with a panic (callers should not feed them to the prelude
+/// bundler):
+///   * `export default ...` — the prelude is a vocabulary surface; default
+///     exports have no global name to bind.
+///   * `export * from "..."` and `export { x } from "..."` with a surviving
+///     source — relative re-exports should have been inlined by the bundler;
+///     a bare-specifier source is not a valid SDK shape.
+///   * `export = ...` (TS export-assignment) — never produced by the SDK
+///     sources, listed for completeness.
+struct ExportToGlobal;
+
+impl VisitMut for ExportToGlobal {
+    fn visit_mut_module_items(&mut self, items: &mut Vec<ModuleItem>) {
+        let mut out: Vec<ModuleItem> = Vec::with_capacity(items.len());
+        for item in items.drain(..) {
+            match item {
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
+                    let names = decl_binding_names(&export_decl.decl);
+                    // Keep the underlying declaration; drop the `export` wrapper.
+                    out.push(ModuleItem::Stmt(Stmt::Decl(export_decl.decl)));
+                    for name in names {
+                        out.push(global_assignment(&name, &name));
+                    }
+                }
+                ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) => {
+                    if named.src.is_some() {
+                        panic!(
+                            "ExportToGlobal: re-export with source survived bundling \
+                             (specifiers={:?}); bare-specifier re-exports are unsupported \
+                             in the prelude entry",
+                            named.specifiers,
+                        );
+                    }
+                    for spec in named.specifiers {
+                        match spec {
+                            swc_ecma_ast::ExportSpecifier::Named(named_spec) => {
+                                let local = export_name_to_string(&named_spec.orig);
+                                let exported = match &named_spec.exported {
+                                    Some(name) => export_name_to_string(name),
+                                    None => local.clone(),
+                                };
+                                out.push(global_assignment(&exported, &local));
+                            }
+                            swc_ecma_ast::ExportSpecifier::Default(default_spec) => {
+                                panic!(
+                                    "ExportToGlobal: `export default` specifier (`{}`) \
+                                     unsupported in prelude",
+                                    default_spec.exported.sym,
+                                );
+                            }
+                            swc_ecma_ast::ExportSpecifier::Namespace(_) => {
+                                panic!(
+                                    "ExportToGlobal: namespace re-export `export * as X` \
+                                     unsupported in prelude",
+                                );
+                            }
+                        }
+                    }
+                }
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(_))
+                | ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(_)) => {
+                    panic!(
+                        "ExportToGlobal: `export default` is unsupported in the prelude entry"
+                    );
+                }
+                ModuleItem::ModuleDecl(ModuleDecl::ExportAll(all)) => {
+                    let src = all.src.value.to_string_lossy();
+                    panic!(
+                        "ExportToGlobal: `export * from \"{src}\"` survived bundling and is \
+                         unsupported in the prelude entry"
+                    );
+                }
+                ModuleItem::ModuleDecl(ModuleDecl::TsExportAssignment(_)) => {
+                    panic!("ExportToGlobal: `export =` is unsupported in the prelude entry");
+                }
+                other => out.push(other),
+            }
+        }
+        *items = out;
+    }
+}
+
+/// Collect the set of binding names introduced by a `Decl` so the
+/// `globalThis.<name> = <name>` assignments emitted by `ExportToGlobal` cover
+/// every name an `export` keyword would have published.
+fn decl_binding_names(decl: &Decl) -> Vec<String> {
+    match decl {
+        Decl::Class(c) => vec![c.ident.sym.to_string()],
+        Decl::Fn(f) => vec![f.ident.sym.to_string()],
+        Decl::Var(v) => v
+            .decls
+            .iter()
+            .filter_map(|d| match &d.name {
+                Pat::Ident(BindingIdent { id, .. }) => Some(id.sym.to_string()),
+                // Destructuring at the top of the SDK lib is not part of the
+                // surface contract; bail loudly so authors notice.
+                other => panic!(
+                    "ExportToGlobal: only simple identifier patterns are \
+                     supported in `export const`/`let`/`var`, got {other:?}"
+                ),
+            })
+            .collect(),
+        Decl::Using(_) => {
+            panic!("ExportToGlobal: `using` declarations are unsupported in the prelude")
+        }
+        // Type-only declarations are stripped by the TS strip pass before the
+        // bundler runs, but we cover the cases for completeness.
+        Decl::TsInterface(_)
+        | Decl::TsTypeAlias(_)
+        | Decl::TsEnum(_)
+        | Decl::TsModule(_) => Vec::new(),
+    }
+}
+
+fn export_name_to_string(name: &ModuleExportName) -> String {
+    match name {
+        ModuleExportName::Ident(i) => i.sym.to_string(),
+        ModuleExportName::Str(s) => s.value.to_string_lossy().into_owned(),
+    }
+}
+
+/// Build `globalThis.<exported> = <local>;` as a top-level expression statement.
+fn global_assignment(exported: &str, local: &str) -> ModuleItem {
+    let global_this = Expr::Ident(Ident::new(
+        "globalThis".into(),
+        swc_common::DUMMY_SP,
+        Default::default(),
+    ));
+    let target = MemberExpr {
+        span: swc_common::DUMMY_SP,
+        obj: Box::new(global_this),
+        // Use computed property access so reserved words and arbitrary
+        // export names always parse cleanly.
+        prop: MemberProp::Computed(ComputedPropName {
+            span: swc_common::DUMMY_SP,
+            expr: Box::new(Expr::Lit(swc_ecma_ast::Lit::Str(swc_ecma_ast::Str {
+                span: swc_common::DUMMY_SP,
+                value: exported.into(),
+                raw: None,
+            }))),
+        }),
+    };
+    let assign = AssignExpr {
+        span: swc_common::DUMMY_SP,
+        op: AssignOp::Assign,
+        left: AssignTarget::Simple(SimpleAssignTarget::Member(target)),
+        right: Box::new(Expr::Ident(Ident::new(
+            local.into(),
+            swc_common::DUMMY_SP,
+            Default::default(),
+        ))),
+    };
+    ModuleItem::Stmt(Stmt::Expr(ExprStmt {
+        span: swc_common::DUMMY_SP,
+        expr: Box::new(Expr::Assign(assign)),
+    }))
+}
+
 /// Removes `ImportDecl` and `ExportDecl`/re-export nodes left in the bundled
 /// output. Anything that reaches this visitor is necessarily a bare specifier
 /// (relative imports were inlined by the bundler), and bare specifiers map to
@@ -511,7 +752,7 @@ mod tests {
         .unwrap();
 
         let canonical_entry = fs::canonicalize(&entry).unwrap();
-        let js = bundle(&canonical_entry).expect("bundle should succeed");
+        let js = bundle(&canonical_entry, false).expect("bundle should succeed");
 
         // No surviving module-level syntax.
         assert!(
@@ -550,7 +791,7 @@ mod tests {
         .unwrap();
 
         let canonical_entry = fs::canonicalize(&entry).unwrap();
-        let js = bundle(&canonical_entry).expect("bundle should succeed");
+        let js = bundle(&canonical_entry, false).expect("bundle should succeed");
 
         assert!(
             !js.contains("import "),
@@ -565,6 +806,62 @@ mod tests {
             js.contains("registerHandler"),
             "bundled output dropped the registerHandler call site: {js}"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prelude_mode_rewrites_named_exports_as_global_assignments() {
+        let dir = unique_tempdir("prelude");
+        let world = dir.join("world.ts");
+        let helpers = dir.join("helpers.ts");
+        let entry = dir.join("index.ts");
+
+        fs::write(
+            &world,
+            r#"
+            export const world = { tag: "w" };
+            export function spawn() { return 1; }
+            "#,
+        )
+        .unwrap();
+
+        fs::write(
+            &helpers,
+            r#"
+            export function flicker() { return 0.5; }
+            export function pulse() { return 1.0; }
+            "#,
+        )
+        .unwrap();
+
+        fs::write(
+            &entry,
+            r#"
+            export { world, spawn } from "./world";
+            export { flicker, pulse } from "./helpers";
+            "#,
+        )
+        .unwrap();
+
+        let canonical_entry = fs::canonicalize(&entry).unwrap();
+        let js = bundle(&canonical_entry, true).expect("prelude bundle should succeed");
+
+        assert!(
+            !js.contains("import "),
+            "prelude bundle still contains an `import` statement: {js}"
+        );
+        assert!(
+            !js.contains("export "),
+            "prelude bundle still contains an `export` declaration: {js}"
+        );
+        for name in ["world", "spawn", "flicker", "pulse"] {
+            assert!(
+                js.contains(&format!("globalThis[\"{name}\"]"))
+                    || js.contains(&format!("globalThis['{name}']")),
+                "prelude bundle missing globalThis assignment for `{name}`: {js}"
+            );
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -587,7 +884,7 @@ mod tests {
         .unwrap();
 
         let canonical_entry = fs::canonicalize(&entry).unwrap();
-        let js = bundle(&canonical_entry).expect("bundle should succeed");
+        let js = bundle(&canonical_entry, false).expect("bundle should succeed");
 
         assert!(
             !js.contains("interface "),

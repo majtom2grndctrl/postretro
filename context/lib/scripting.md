@@ -107,6 +107,18 @@ Debug builds auto-compile at startup: any `.ts` with a same-stem `.js` sibling i
 
 Does not type-check. Use `tsc --noEmit` separately.
 
+### Prelude regeneration
+
+`sdk/lib/prelude.js` is committed to the repo and embedded in the engine via `include_str!`. Regenerate it whenever `sdk/lib/*.ts` changes:
+
+```bash
+cargo run -p postretro-script-compiler -- --prelude --sdk-root sdk/lib --out sdk/lib/prelude.js
+```
+
+`--prelude` mode bundles `<sdk-root>/index.ts`, then runs an extra AST pass that rewrites every surviving named export as `globalThis.<name> = <name>`. The result evaluates as a plain script that installs SDK vocabulary on the QuickJS global object before any user script runs. Default exports, namespace re-exports, and bare-specifier re-exports are unsupported in the prelude entry and bail with a clear panic.
+
+The Luau prelude is not pre-bundled — `world.luau` and `light_animation.luau` are embedded directly via `include_str!` and evaluated during Lua state construction; their return values are promoted to globals.
+
 **`const enum` across file boundaries is unsupported.** SWC strips `const enum` declarations without inlining their values into consumers in other files, producing `undefined` at runtime. Use `enum` or `as const` objects instead. Enforce with `"isolatedModules": true` in `tsconfig.json`.
 
 ---

@@ -332,9 +332,90 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
         .unwrap();
     }
 
+    out.push_str(TS_SDK_LIB_BLOCK);
     out.push_str("}\n");
     out
 }
+
+/// Static type declarations for the SDK library globals (`world`, `flicker`,
+/// etc.) installed by the prelude. The block is appended verbatim inside
+/// `declare module "postretro" { ... }` so authors can `import { world }
+/// from "postretro"`. See: context/lib/scripting.md §7.
+const TS_SDK_LIB_BLOCK: &str = r#"
+  // -------------------------------------------------------------------------
+  // SDK library — installed into every QuickJS context as globals via the
+  // prelude (`sdk/lib/prelude.js`). Authors import these by bare specifier
+  // (`import { world, flicker } from "postretro"`); the bundler strips the
+  // import and the prelude resolves the symbol at runtime.
+
+  /** Easing family used by `LightEntityHandle.setIntensity` / `setColor`. */
+  export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut";
+
+  /** Typed light handle returned by `world.query({ component: "light" })`. */
+  export interface LightEntityHandle extends LightEntity {
+    setAnimation(anim: LightAnimation | null): void;
+    setIntensity(target: number, transitionMs?: number, easing?: EasingCurve): void;
+    setColor(
+      target: [number, number, number],
+      transitionMs?: number,
+      easing?: EasingCurve,
+    ): void;
+  }
+
+  /** Maps a component-name literal to the rich entity handle type. */
+  export type EntityForComponent<T extends string> =
+    T extends "light" ? LightEntityHandle : Entity;
+
+  /** Vocabulary object installed as `globalThis.world`. */
+  export interface World {
+    query<T extends string>(filter: {
+      component: T;
+      tag?: string | null;
+    }): EntityForComponent<T>[];
+  }
+
+  /** `world` vocabulary global. Wraps `world_query` with a typed handle. */
+  export const world: World;
+
+  /** Per-channel keyframe accepted by `timeline` / `sequence`. */
+  export type Keyframe<T extends number[]> = [number, ...T];
+
+  /** Returns an 8-sample irregular flicker brightness curve. */
+  export function flicker(
+    minBrightness: number,
+    maxBrightness: number,
+    rate: number,
+  ): LightAnimation;
+
+  /** Returns a 16-sample sine pulse brightness curve. */
+  export function pulse(
+    minBrightness: number,
+    maxBrightness: number,
+    periodMs: number,
+  ): LightAnimation;
+
+  /** Cycles uniformly through the given RGB colors. Dynamic lights only. */
+  export function colorShift(
+    colors: [number, number, number][],
+    periodMs: number,
+  ): LightAnimation;
+
+  /** Sweeps the light's `direction` through the given normalized vectors. */
+  export function sweep(
+    directions: [number, number, number][],
+    periodMs: number,
+  ): LightAnimation;
+
+  /** Validate `[absolute_ms, ...value]` keyframes; pass-through on success. */
+  export function timeline<T extends number[]>(
+    keyframes: [number, ...T][],
+  ): [number, ...T][];
+
+  /** Convert `[delta_ms, ...value]` keyframes to absolute-time form. */
+  export function sequence<T extends number[]>(
+    keyframes: [number, ...T][],
+  ): [number, ...T][];
+"#;
 
 // ---------------------------------------------------------------------------
 // Luau generation
@@ -459,8 +540,84 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
         writeln!(&mut out, "declare function {}({}): {}", p.name, params, ret).unwrap();
     }
 
+    out.push_str(LUAU_SDK_LIB_BLOCK);
     out
 }
+
+/// Static type declarations for the Luau SDK library globals installed by
+/// the embedded `world.luau` and `light_animation.luau` preludes. Appended
+/// to the generated `postretro.d.luau` so `luau-lsp` resolves the symbols
+/// without an explicit `require`. See: context/lib/scripting.md §7.
+const LUAU_SDK_LIB_BLOCK: &str = r#"
+-- ---------------------------------------------------------------------------
+-- SDK library — embedded into every Luau context via `include_str!` and
+-- evaluated during state construction. `world.luau`'s return value becomes
+-- global `world`; `light_animation.luau`'s return value is destructured into
+-- globals `flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`.
+
+--- Easing family used by `LightEntityHandle:setIntensity` / `:setColor`.
+export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
+
+--- Typed light handle returned by `world:query({ component = "light" })`.
+export type LightEntityHandle = {
+  id: EntityId,
+  transform: EntityTransform,
+  isDynamic: boolean,
+  tag: string?,
+  component: LightComponent,
+
+  setAnimation: (self: LightEntityHandle, anim: LightAnimation?) -> (),
+  setIntensity: (
+    self: LightEntityHandle,
+    target: number,
+    transitionMs: number?,
+    easing: EasingCurve?
+  ) -> (),
+  setColor: (
+    self: LightEntityHandle,
+    target: {number},
+    transitionMs: number?,
+    easing: EasingCurve?
+  ) -> (),
+}
+
+--- Generic entity handle returned by `world:query` when the component is
+--- not "light". Use `get_component` for component data.
+export type EntityHandle = {
+  id: EntityId,
+  transform: EntityTransform,
+  tag: string?,
+}
+
+--- `world` vocabulary global. Wraps `world_query` with a typed handle.
+export type World = {
+  query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
+       & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
+}
+
+--- Per-channel keyframe accepted by `timeline` / `sequence`.
+export type Keyframe = {number}
+
+declare world: World
+
+--- 8-sample irregular flicker brightness curve.
+declare function flicker(minBrightness: number, maxBrightness: number, rate: number): LightAnimation
+
+--- 16-sample sine pulse brightness curve.
+declare function pulse(minBrightness: number, maxBrightness: number, periodMs: number): LightAnimation
+
+--- Cycles uniformly through the given RGB colors. Dynamic lights only.
+declare function colorShift(colors: {{number}}, periodMs: number): LightAnimation
+
+--- Sweeps the light's `direction` through normalized vectors over `periodMs`.
+declare function sweep(directions: {{number}}, periodMs: number): LightAnimation
+
+--- Validate `{absolute_ms, ...value}` keyframes; pass-through on success.
+declare function timeline(keyframes: {Keyframe}): {Keyframe}
+
+--- Convert `{delta_ms, ...value}` keyframes to absolute-time form.
+declare function sequence(keyframes: {Keyframe}): {Keyframe}
+"#;
 
 // ---------------------------------------------------------------------------
 // Filesystem emission
@@ -697,31 +854,65 @@ export type Event = {
 }
 ";
 
+    /// Inject the static SDK-lib TS block before the trailing `}` of the
+    /// `declare module` body. Lets snapshot tests describe just the registry-
+    /// driven prefix; the lib block is verified separately.
+    fn ts_with_sdk_lib_block(prefix_with_brace: &str) -> String {
+        let stripped = prefix_with_brace
+            .strip_suffix("}\n")
+            .expect("expected TS snapshot to end with `}\\n`");
+        format!("{stripped}{TS_SDK_LIB_BLOCK}}}\n")
+    }
+
+    /// Append the static SDK-lib Luau block to a registry-driven snapshot
+    /// prefix, matching what `generate_luau` produces.
+    fn luau_with_sdk_lib_block(prefix: &str) -> String {
+        format!("{prefix}{LUAU_SDK_LIB_BLOCK}")
+    }
+
     #[test]
     fn typescript_snapshot_matches_mini_registry_with_docs() {
         let got = generate_typescript(&mini_registry_with_docs());
-        assert_eq!(got, EXPECTED_TS_WITH_DOCS, "TS docs snapshot drift:\n{got}");
+        let expected = ts_with_sdk_lib_block(EXPECTED_TS_WITH_DOCS);
+        assert_eq!(got, expected, "TS docs snapshot drift:\n{got}");
     }
 
     #[test]
     fn luau_snapshot_matches_mini_registry_with_docs() {
         let got = generate_luau(&mini_registry_with_docs());
-        assert_eq!(
-            got, EXPECTED_LUAU_WITH_DOCS,
-            "Luau docs snapshot drift:\n{got}"
-        );
+        let expected = luau_with_sdk_lib_block(EXPECTED_LUAU_WITH_DOCS);
+        assert_eq!(got, expected, "Luau docs snapshot drift:\n{got}");
     }
 
     #[test]
     fn typescript_snapshot_matches_mini_registry() {
         let got = generate_typescript(&mini_registry());
-        assert_eq!(got, EXPECTED_TS, "TS snapshot drift:\n{got}");
+        let expected = ts_with_sdk_lib_block(EXPECTED_TS);
+        assert_eq!(got, expected, "TS snapshot drift:\n{got}");
     }
 
     #[test]
     fn luau_snapshot_matches_mini_registry() {
         let got = generate_luau(&mini_registry());
-        assert_eq!(got, EXPECTED_LUAU, "Luau snapshot drift:\n{got}");
+        let expected = luau_with_sdk_lib_block(EXPECTED_LUAU);
+        assert_eq!(got, expected, "Luau snapshot drift:\n{got}");
+    }
+
+    #[test]
+    fn sdk_lib_block_is_present_in_full_outputs() {
+        // Sanity: the prelude-installed globals (`world`, `flicker`, …) must
+        // surface in the type files so authors get IDE completions.
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let luau = generate_luau(&r);
+        for name in ["world", "flicker", "pulse", "colorShift", "sweep", "timeline", "sequence"] {
+            assert!(ts.contains(name), "ts missing sdk-lib symbol {name}");
+            assert!(luau.contains(name), "luau missing sdk-lib symbol {name}");
+        }
     }
 
     #[test]

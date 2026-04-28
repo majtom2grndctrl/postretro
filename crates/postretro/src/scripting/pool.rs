@@ -197,6 +197,7 @@ fn build_pool_context(
     })?;
     ctx.with(|ctx| -> Result<(), ScriptError> {
         install_pool_primitives(&ctx, primitives)?;
+        super::quickjs::evaluate_prelude(&ctx)?;
         ctx.eval::<(), _>("Object.freeze(globalThis);")
             .map_err(|e| ScriptError::InvalidArgument {
                 reason: e.to_string(),
@@ -355,6 +356,7 @@ fn build_pool_lua(primitives: &[ScriptPrimitive]) -> Result<mlua::Lua, ScriptErr
     apply_denylist(&lua)?;
     install_print_redirect(&lua)?;
     install_behavior_primitives(&lua, primitives)?;
+    super::luau::evaluate_prelude(&lua)?;
     lua.sandbox(true)
         .map_err(|e| ScriptError::InvalidArgument {
             reason: e.to_string(),

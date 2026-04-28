@@ -20,6 +20,65 @@ use super::quickjs::{ArchetypeAccumulator, ArchetypeDescriptor};
 /// Leading underscore: the type-def generator skips names starting with `_`.
 const COLLECT_FN_NAME: &str = "__collect_definitions";
 
+/// SDK library prelude — `world.luau` returns the `world` table; we promote
+/// it to global `world`. Embedded at compile time; SDK changes require an
+/// engine rebuild.
+const WORLD_LUAU_SRC: &str = include_str!("../../../../sdk/lib/world.luau");
+
+/// SDK library prelude — `light_animation.luau` returns a table whose fields
+/// (`flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`) are
+/// destructured into globals so authors call them by bare name.
+const LIGHT_ANIMATION_LUAU_SRC: &str =
+    include_str!("../../../../sdk/lib/light_animation.luau");
+
+/// Light-animation SDK fields lifted to globals after evaluating
+/// `light_animation.luau`. Order is informational; iteration order is the
+/// same.
+const LIGHT_ANIMATION_FIELDS: &[&str] =
+    &["flicker", "pulse", "colorShift", "sweep", "timeline", "sequence"];
+
+/// Evaluate the Luau SDK prelude in `lua` and promote the return values to
+/// globals. Must be called after primitives are installed (the prelude
+/// references `world_query`, `set_light_animation`, `get_component`) and
+/// before `sandbox(true)` (which freezes `_G`). The Luau preludes still
+/// reference SDK *type* names from `postretro.d.luau`, but those are author-
+/// time only — Luau runtime doesn't need them to evaluate the source.
+pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
+    let world: mlua::Value = lua
+        .load(WORLD_LUAU_SRC)
+        .set_name("postretro/sdk/world.luau")
+        .eval()
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to evaluate SDK prelude `world.luau`: {e}"),
+        })?;
+    lua.globals()
+        .set("world", world)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to install global `world`: {e}"),
+        })?;
+
+    let sdk: Table = lua
+        .load(LIGHT_ANIMATION_LUAU_SRC)
+        .set_name("postretro/sdk/light_animation.luau")
+        .eval()
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to evaluate SDK prelude `light_animation.luau`: {e}"),
+        })?;
+    let globals = lua.globals();
+    for field in LIGHT_ANIMATION_FIELDS {
+        let value: mlua::Value =
+            sdk.get(*field).map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("light_animation.luau missing `{field}`: {e}"),
+            })?;
+        globals
+            .set(*field, value)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to install global `{field}`: {e}"),
+            })?;
+    }
+    Ok(())
+}
+
 /// Deny-list: global names (and `os.<sub>` fields) we clear on both Lua states
 /// before any script runs. `sandbox(true)` makes `_G` read-only but does NOT
 /// remove these entries — the sandbox is about immutability, not capabilities.
@@ -230,7 +289,12 @@ fn build_lua_state(
         install_collect_definitions(&lua, accum.clone())?;
     }
 
-    // 5. Freeze `_G`.
+    // 5. SDK prelude — installs `world`, `flicker`, `pulse`, etc. as globals.
+    //    Must run before `sandbox(true)` because the prelude writes to `_G`,
+    //    and after primitive install because the prelude calls them.
+    evaluate_prelude(&lua)?;
+
+    // 6. Freeze `_G`.
     lua.sandbox(true)
         .map_err(|e| ScriptError::InvalidArgument {
             reason: e.to_string(),
@@ -679,6 +743,46 @@ mod tests {
             .unwrap();
         assert_eq!(names, vec!["goblin", "orc", "troll"]);
         assert!(archetypes.borrow().is_empty());
+    }
+
+    #[test]
+    fn sdk_prelude_installs_globals() {
+        // `world.luau` returns the world table; `light_animation.luau` returns
+        // a record whose fields we promote to globals.
+        let (subsys, _ctx) = setup();
+        for which in [Which::Definition, Which::Behavior] {
+            let (world_ty, flicker_ty, pulse_ty, color_ty, sweep_ty, timeline_ty, sequence_ty): (
+                String,
+                String,
+                String,
+                String,
+                String,
+                String,
+                String,
+            ) = subsys
+                .run_source(
+                    which,
+                    r#"
+                    return
+                      type(world),
+                      type(flicker),
+                      type(pulse),
+                      type(colorShift),
+                      type(sweep),
+                      type(timeline),
+                      type(sequence)
+                    "#,
+                    "prelude.luau",
+                )
+                .unwrap();
+            assert_eq!(world_ty, "table", "{which:?}: world");
+            assert_eq!(flicker_ty, "function", "{which:?}: flicker");
+            assert_eq!(pulse_ty, "function", "{which:?}: pulse");
+            assert_eq!(color_ty, "function", "{which:?}: colorShift");
+            assert_eq!(sweep_ty, "function", "{which:?}: sweep");
+            assert_eq!(timeline_ty, "function", "{which:?}: timeline");
+            assert_eq!(sequence_ty, "function", "{which:?}: sequence");
+        }
     }
 
     #[test]

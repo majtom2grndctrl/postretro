@@ -30,6 +30,24 @@ const DEFAULT_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
 /// uses to skip engine-internal functions.
 const COLLECT_FN_NAME: &str = "__collect_definitions";
 
+/// SDK library prelude bundled at compile time. Evaluated in every QuickJS
+/// context (definition + behavior + pooled) before user scripts run so the
+/// vocabulary symbols (`world`, `flicker`, `pulse`, …) resolve as globals.
+/// Regenerate with: `cargo run -p postretro-script-compiler -- --prelude
+/// --sdk-root sdk/lib --out sdk/lib/prelude.js`.
+const SDK_PRELUDE_JS: &str = include_str!("../../../../sdk/lib/prelude.js");
+
+/// Evaluate the SDK prelude inside `ctx`. The prelude is plain script-mode JS
+/// — its `globalThis.x = expr` tail leaves the symbols available to scripts
+/// loaded into the same context later.
+pub(crate) fn evaluate_prelude(ctx: &Ctx<'_>) -> Result<(), ScriptError> {
+    ctx.eval::<(), _>(SDK_PRELUDE_JS)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to evaluate SDK prelude: {e}"),
+        })?;
+    Ok(())
+}
+
 /// Configuration for a [`QuickJsSubsystem`]. `memory_limit_bytes` defaults to
 /// 100 MB; override for measured workloads. `pool_size` tunes the ephemeral-
 /// context pool; it does NOT affect the shared behavior context, which is never
@@ -193,6 +211,7 @@ fn build_definition_context_from_snapshot(
     ctx.with(|ctx| -> Result<(), ScriptError> {
         install_primitives(&ctx, primitives, ContextScope::DefinitionOnly)?;
         install_collect_definitions(&ctx, archetypes)?;
+        evaluate_prelude(&ctx)?;
         Ok(())
     })?;
     Ok(ctx)
@@ -208,6 +227,7 @@ fn build_behavior_context_from_snapshot(
     ctx.with(|ctx| -> Result<(), ScriptError> {
         install_primitives(&ctx, primitives, ContextScope::BehaviorOnly)?;
         deny_wall_clock(&ctx)?;
+        evaluate_prelude(&ctx)?;
         Ok(())
     })?;
     Ok(ctx)
@@ -579,6 +599,32 @@ mod tests {
                 .borrow()
                 .exists(crate::scripting::registry::EntityId::from_raw(0))
         );
+    }
+
+    #[test]
+    fn sdk_prelude_installs_globals() {
+        // The prelude rewrites `export const world = ...` and friends as
+        // `globalThis.x = ...` assignments. Verify each surfaces in both
+        // shared contexts.
+        let (subsys, _ctx) = setup();
+        for ctx_label in ["definition", "behavior"] {
+            let ctx_handle = if ctx_label == "definition" {
+                subsys.definition_ctx()
+            } else {
+                subsys.behavior_ctx()
+            };
+            ctx_handle.with(|ctx| {
+                let typeof_world: String = ctx.eval("typeof world").unwrap();
+                assert_eq!(typeof_world, "object", "{ctx_label}: world missing");
+                for fn_name in ["flicker", "pulse", "colorShift", "sweep", "timeline", "sequence"]
+                {
+                    let kind: String = ctx
+                        .eval(format!("typeof {fn_name}").as_str())
+                        .unwrap_or_else(|e| panic!("{ctx_label}/{fn_name}: {e}"));
+                    assert_eq!(kind, "function", "{ctx_label}/{fn_name}");
+                }
+            });
+        }
     }
 
     #[test]

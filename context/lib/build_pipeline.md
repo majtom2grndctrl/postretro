@@ -55,7 +55,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | `env_smoke_emitter` | point | Smoke/particle emitter | `rate` (sprites/sec; default 4), `lifetime` (seconds; default 3.0), `size` (world units; default 0.5), `speed` (drift velocity; default 0.3), `collection` (sprite sheet collection name), `spec_intensity` (Blinn-Phong specular scale; default 0.3) |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
-| `worldspawn` | special | Scene-wide render settings | `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8) |
+| `worldspawn` | special | Scene-wide render settings | `script` (path to entry `.ts` script, relative to `.map` file; compiled by `prl-build`), `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8) |
 
 ### Entity resolution
 

@@ -69,6 +69,16 @@ In debug builds, the runtime emits type-definition files at startup from registe
 
 Files stay in sync automatically when primitives change. Scripts written against the SDK get IDE completions and type checking. Not emitted in release builds.
 
+### SDK library globals
+
+Higher-level vocabulary (`world`, `flicker`, `pulse`, etc.) is provided by the SDK library, evaluated as a prelude in every scripting context before user scripts load.
+
+**TypeScript:** `sdk/lib/prelude.js` (committed, regenerated when `sdk/lib/*.ts` changes) is embedded in the engine binary via `include_str!` and evaluated in every QuickJS context. Authors import SDK symbols as bare specifiers: `import { world, flicker } from "postretro"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
+
+**Luau:** `sdk/lib/world.luau` and `sdk/lib/light_animation.luau` are embedded via `include_str!` and evaluated in every Luau context. Their return values are promoted to globals (`world`, `flicker`, `pulse`, etc.). No import or require needed — SDK symbols are plain globals.
+
+Both preludes are baked at compile time. SDK library changes require an engine restart; hot reload does not reload the prelude.
+
 ---
 
 ## 8. Hot Reload and Load Order
@@ -79,7 +89,9 @@ Behavior scripts under a content root's `scripts/` directory load in **lexicogra
 
 ### Hot reload
 
-A file watcher monitors the scripts directory. Changed scripts re-run in the appropriate context on the next frame drain. Hot reload compiles in debug builds only. The drain call in the frame loop is unconditional — no-op in release. Reload errors are logged and swallowed; one failed reload does not kill the engine.
+A file watcher monitors the scripts directory. Changed scripts re-run in the behavior context on the next frame drain. Hot reload is debug-only. Reload sequence: clear level handlers → re-run all behavior scripts → if a level is currently loaded, re-fire `levelLoad` so newly registered handlers execute immediately. Reload errors are logged and swallowed; one failed reload does not kill the engine. The prelude is not reloaded — SDK library changes require an engine restart.
+
+`clear_level_handlers` is called on both level unload and hot reload.
 
 Entry point: `drain_reload_requests` on `ScriptRuntime`, called at the top of each frame.
 
@@ -87,13 +99,15 @@ Entry point: `drain_reload_requests` on `ScriptRuntime`, called at the top of ea
 
 ## 9. Compilation Tooling
 
-`.ts` scripts compile to `.js` via `scripts-build` (`postretro-script-compiler` crate). Bundles the entry file with its relative imports, strips TypeScript-only syntax, removes bare-specifier imports — engine APIs arrive as QuickJS globals, not module imports.
+`.ts` scripts compile to `.js` via `scripts-build` (`postretro-script-compiler` crate) — the sole TypeScript compiler. No tsc or npx dependency. `scripts-build` bundles the entry file with its relative imports, strips TypeScript-only syntax, and removes bare-specifier imports. Engine APIs and SDK library symbols arrive as QuickJS globals, not module imports.
 
 CLI: `scripts-build --in <entry.ts> --out <output.js>`
 
-Debug builds auto-compile at startup: any `.ts` with a same-stem `.js` sibling is recompiled before the engine loads it. Run the CLI directly for authoring workflows, CI, or when modifying scripts outside the engine.
+Debug builds auto-compile at startup: any `.ts` with a same-stem `.js` sibling is recompiled before the engine loads it. `prl-build` also compiles the map's entry script (worldspawn `script` KVP) at map compile time so distribution maps ship with compiled scripts.
 
 Does not type-check. Use `tsc --noEmit` separately.
+
+**`const enum` across file boundaries is unsupported.** SWC strips `const enum` declarations without inlining their values into consumers in other files, producing `undefined` at runtime. Use `enum` or `as const` objects instead. Enforce with `"isolatedModules": true` in `tsconfig.json`.
 
 ---
 

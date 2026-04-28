@@ -27,7 +27,9 @@ dependency and make content packaging coherent — compiling a map also compiles
 ### Out of scope
 
 - Luau SDK prelude (`sdk/lib/*.luau` equivalents compiled to a prelude). Luau SDK lib stays
-  as source files modders import directly for now.
+  as source files modders import directly for now. This asymmetry is intentional: TS authors use
+  `import { world } from "postretro"` (bare specifier, prelude-backed), while Luau authors
+  continue to use relative imports from `sdk/lib/` until a Luau prelude is added.
 - Embedding scripts-build into the engine binary. Sidecar model stays.
 - QuickJS bytecode compilation (separate optimization concern).
 - Type checking in scripts-build (`tsc --noEmit` remains the type-check path for authors).
@@ -77,11 +79,12 @@ dependency and make content packaging coherent — compiling a map also compiles
   logged as a warning, not fatal.
 - [ ] `drain_reload_requests` is called at the top of the frame loop (`RedrawRequested`) before
   game logic fires.
-- [ ] On reload, `clear_level_handlers()` is called before re-running scripts; no handler
-  duplication after N hot reloads.
+- [ ] On reload, `clear_level_handlers()` is called before re-running scripts; after 3 hot
+  reloads, the number of registered handlers matches the count after a single cold load
+  (verifiable via `HandlerTable::len()` in tests).
 - [ ] Reload re-evaluates behavior scripts in the behavior context (not the definition context).
-- [ ] `compiled_output_path` in `ReloadRequest` is either used to target only the changed file,
-  or the field is removed and the full-reload approach is made explicit.
+- [ ] `compiled_output_path` is removed from `ReloadRequest`; `drain_reload_requests` has a
+  comment noting that every reload re-runs all behavior scripts.
 - [ ] Editing `arena-wave.ts` (or any `.luau` script) while the engine runs causes the new
   handler logic to fire on the next `levelLoad` event without restarting the engine.
 
@@ -103,6 +106,9 @@ bodies resolve correctly.
 
 Update `sdk/types/postretro.d.ts` to export all sdk/lib public symbols alongside the existing
 primitive declarations. Update `arena-wave.ts` to `import { world } from "postretro"`.
+`content/tests/scripts/arena-wave.js` is a committed compiled artifact; after changing the
+import path in `arena-wave.ts`, the existing `.js` is stale and must be deleted and regenerated
+by running scripts-build against the updated source as part of completing this task.
 
 Document prelude regeneration: when `sdk/lib/*.ts` changes, run
 `cargo run -p postretro-script-compiler -- --prelude --sdk-root sdk/lib --out sdk/lib/prelude.js`
@@ -121,7 +127,9 @@ Parse worldspawn `scripts_dir` property in `parse.rs` using the existing `get_pr
 In `main.rs`, add a script compilation step after map parsing: locate scripts-build using the
 same cascade as the engine (next to the compiler binary, then on PATH), enumerate `.ts` files in
 the resolved `scripts_dir`, invoke scripts-build per file, and collect errors. Apply the
-missing-compiler / stale-js fallback logic from the acceptance criteria. Update the FGD
+missing-compiler / stale-js fallback logic from the acceptance criteria. `prl-build` should skip
+recompiling a `.ts` file if a `.js` sibling already exists with a newer mtime, so repeated
+`prl-build` runs on an unchanged map don't recompile scripts unnecessarily. Update the FGD
 `worldspawn` definition to document `scripts_dir`.
 
 ### Task 4: Fix hot reload wiring
@@ -137,11 +145,15 @@ Four problems found by audit — all in the engine crate, no compiler changes ne
    behavior context and re-run all behavior script files.
 
 3. **Handler duplication:** `HandlerTable` appends on every `registerHandler` call with no
-   deduplication. Reload must call `clear_level_handlers()` before re-running scripts.
+   deduplication. Reload must call `clear_level_handlers()` before re-running scripts. Note:
+   `clear_level_handlers()`'s existing doc comment says "called on level unload"; `scripting.md
+   §8` will need updating in the same change to reflect that it is also called during hot reload.
+   That doc update is in scope for this task.
 
 4. **Dead field:** `compiled_output_path` on `ReloadRequest` is `#[allow(dead_code)]` and
-   discarded in `drain_reload_requests`. Either use it for targeted single-file reload, or remove
-   it and document the full-reload approach explicitly.
+   discarded in `drain_reload_requests`. Remove `compiled_output_path` from `ReloadRequest`
+   entirely. Add a comment in `drain_reload_requests` noting that every reload re-runs all
+   behavior scripts (full rebuild; targeted single-file reload is not implemented).
 
 The correct reload sequence: receive `ReloadRequest` → clear level handlers → re-run all
 behavior scripts from disk → log result.
@@ -173,9 +185,8 @@ QuickJS context rather than as a module export).
 
 ### Prelude regeneration in CI
 
-A CI step (or a `cargo xtask` alias) runs `scripts-build --prelude` and diffs the output against
-the committed file. Fails if they diverge. This keeps the committed prelude honest without
-requiring a custom build.rs.
+A CI step runs `scripts-build --prelude` and diffs the output against the committed file. Fails
+if they diverge. This keeps the committed prelude honest without requiring a custom build.rs.
 
 ## Open questions
 

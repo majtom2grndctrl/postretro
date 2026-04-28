@@ -70,9 +70,13 @@ fn resolve_map_path(args: &[String]) -> String {
 /// For `content/tests/maps/test-3.prl`, returns `content/tests/`.
 /// For `content/base/maps/e1m1.prl`, returns `content/base/`.
 fn content_root_from_map(map_path: &str) -> PathBuf {
+    // `Path::new("maps/test.prl").parent()` returns `Some("maps")`, and
+    // `"maps".parent()` returns `Some("")` — an empty path, not `None`. Filter
+    // out the empty case so the `unwrap_or` fallback to `"."` actually fires.
     Path::new(map_path)
         .parent()
         .and_then(|maps_dir| maps_dir.parent())
+        .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
         .to_path_buf()
 }
@@ -274,7 +278,7 @@ fn build_demo_emitters(spawn_demo: bool, camera_pos: Vec3) -> Vec<fx::smoke::Smo
 
 /// Load every behavior script under `<content_root>/scripts/` in
 /// lexicographic order. The sort order defines cross-file `registerHandler`
-/// invocation order per Sub-plan 5. Missing directory: no-op. Per-file
+/// invocation order per context/lib/scripting.md §8. Missing directory: no-op. Per-file
 /// failures are logged and swallowed — one bad script must not kill the
 /// engine.
 ///
@@ -350,7 +354,8 @@ fn load_behavior_scripts(runtime: &ScriptRuntime, content_root: &Path) {
         })
         .collect();
 
-    // Sort by UTF-8 byte order — matches Sub-plan 5's fixed ordering.
+    // Sort by UTF-8 byte order — see context/lib/scripting.md §8 for the
+    // ordering contract.
     paths.sort();
 
     // In debug builds, compile `.ts` → `.js` before loading. The watcher
@@ -1147,6 +1152,35 @@ mod tests {
              baseline={:?} rotated={:?}",
             baseline_cols, rotated_cols,
         );
+    }
+
+    #[test]
+    fn content_root_from_map_returns_grandparent_for_standard_path() {
+        assert_eq!(
+            content_root_from_map("content/tests/maps/test-3.prl"),
+            PathBuf::from("content/tests"),
+        );
+    }
+
+    #[test]
+    fn content_root_from_map_returns_grandparent_for_mod_path() {
+        assert_eq!(
+            content_root_from_map("content/base/maps/e1m1.prl"),
+            PathBuf::from("content/base"),
+        );
+    }
+
+    // Regression: `Path::new("maps/test.prl").parent().and_then(parent)` returns
+    // `Some("")` (an empty path), not `None`, so the prior `unwrap_or` fallback
+    // was bypassed and the function returned `""` instead of `"."`.
+    #[test]
+    fn content_root_from_map_returns_dot_for_single_segment_parent() {
+        assert_eq!(content_root_from_map("maps/test.prl"), PathBuf::from("."));
+    }
+
+    #[test]
+    fn content_root_from_map_returns_dot_for_bare_filename() {
+        assert_eq!(content_root_from_map("test.prl"), PathBuf::from("."));
     }
 
     /// Regression: on a multi-tick frame, look rotation must be applied

@@ -71,7 +71,13 @@ Files stay in sync automatically when primitives change. Scripts written against
 
 ---
 
-## 8. Hot Reload
+## 8. Hot Reload and Load Order
+
+### Load order
+
+Behavior scripts under a content root's `scripts/` directory load in **lexicographic (UTF-8 byte) order** of their path. The ordering is deliberate: it pins cross-file `registerHandler` invocation order to a stable, file-name-driven sequence so authors can predict registration order without runtime introspection. A missing `scripts/` directory is a no-op; per-file failures are logged and swallowed so one bad script cannot kill the engine.
+
+### Hot reload
 
 A file watcher monitors the scripts directory. Changed scripts re-run in the appropriate context on the next frame drain. Hot reload compiles in debug builds only. The drain call in the frame loop is unconditional — no-op in release. Reload errors are logged and swallowed; one failed reload does not kill the engine.
 

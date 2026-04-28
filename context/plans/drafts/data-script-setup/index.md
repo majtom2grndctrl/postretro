@@ -197,9 +197,11 @@ requirement.
   contains that string. Indirection is implicit: `spawnGroup "reactorWave1"`
   and `_tags "reactorMonster wave1"` let a single entity belong to multiple
   subscription groups without a separate alias table.
-- **`registerEntities` return shape:** single bulk descriptor or a list of
-  per-type handles? Affects the TypeScript signature and how Rust iterates the
-  return value.
+- **`registerEntities` return shape:** ~~bulk vs per-type handles~~
+  **Resolved:** single bulk descriptor. Effects reference entities by tag at
+  runtime; no use case for per-type handle references exists in the current
+  design. Behavior scripts will rely on `world.query()` for per-type access
+  when that layer lands.
 - **Setup failure policy:** log-and-continue is specified above, but a level
   with broken effects may behave confusingly. Consider a `--strict` prl-build
   flag that makes setup errors fatal.

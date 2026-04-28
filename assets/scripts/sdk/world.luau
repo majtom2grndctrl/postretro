@@ -59,7 +59,7 @@ export type LightEntityHandle = {
   id: EntityId,
   transform: EntityTransform,
   isDynamic: boolean,
-  tag: string?,
+  tags: {string},
   component: LightComponent,
 
   --- Replace the light's animation. Pass `nil` to clear it. Last call
@@ -99,12 +99,12 @@ export type LightEntityHandle = {
 }
 
 --- Base entity handle returned by `world:query` when the component type
---- is not "light". Carries id, transform, and tag; use `get_component`
+--- is not "light". Carries id, transform, and tags; use `get_component`
 --- to access the component data for non-light entities.
 export type EntityHandle = {
   id: EntityId,
   transform: EntityTransform,
-  tag: string?,
+  tags: {string},
 }
 
 --- Typed vocabulary object returned from `world:query`.
@@ -244,7 +244,7 @@ local function wrapLightEntity(snapshot: LightEntity): LightEntityHandle
     id = id,
     transform = snapshot.transform,
     isDynamic = isDynamic,
-    tag = snapshot.tag,
+    tags = snapshot.tags,
     component = snapshot.component,
 
     setAnimation = function(self: LightEntityHandle, anim: LightAnimation?)
@@ -309,7 +309,7 @@ local world: World = {
     -- that are supersets of `Entity`, so individual field access is safe.
     local snapshots = raw :: {any}
     for i, snapshot in ipairs(snapshots) do
-      out[i] = { id = snapshot.id, transform = snapshot.transform, tag = snapshot.tag }
+      out[i] = { id = snapshot.id, transform = snapshot.transform, tags = snapshot.tags }
     end
     return out
   end,

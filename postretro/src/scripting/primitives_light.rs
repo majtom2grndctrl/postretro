@@ -319,7 +319,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Generic entity handle returned by `world.query` when the component type is not known at compile time.")
         .field("id", "EntityId", "")
         .field("transform", "EntityTransform", "Entity position at query time.")
-        .field("tag", "Option<String>", "The entity's tag at query time, if any.")
+        .field("tags", "Vec<String>", "The entity's tags at query time. Empty array if untagged.")
         .finish();
     registry
         .register_type("LightEntity")
@@ -332,9 +332,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation.",
         )
         .field(
-            "tag",
-            "Option<String>",
-            "The entity's tag at query time, if any.",
+            "tags",
+            "Vec<String>",
+            "The entity's tags at query time. Empty array if untagged.",
         )
         .field(
             "component",

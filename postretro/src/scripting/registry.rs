@@ -337,7 +337,7 @@ impl EntityRegistry {
         for column in &mut self.components {
             column[index] = None;
         }
-        self.tags[index] = None;
+        self.tags[index].clear();
         slot.live = false;
 
         // Generation-wrap retirement: reusing the slot after wrap would let a

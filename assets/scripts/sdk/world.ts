@@ -149,7 +149,7 @@ export const world: World = {
     const entities: Entity[] = raw.map((s) => ({
       id: s.id,
       transform: s.transform,
-      tag: s.tag ?? null,
+      tags: s.tags,
     }));
     return entities as EntityForComponent<T>[];
   },

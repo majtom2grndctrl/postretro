@@ -71,7 +71,10 @@ dependency and make content packaging coherent — compiling a map also compiles
   not found, and any `.ts` file lacks a `.js` sibling.
 - [ ] `prl-build` succeeds with a warning if scripts-build is not found but all `.ts` files
   already have up-to-date `.js` siblings.
-- [ ] FGD `worldspawn` entity updated with `scripts_dir` property.
+- [ ] FGD `worldspawn` entity created (no `@SolidClass worldspawn` entry exists today)
+  with `scripts_dir`, `ambient_color`, and `fog_pixel_scale` properties — all three are
+  documented in `build_pipeline.md` but missing from the FGD; including them together avoids
+  leaving the FGD half-done.
 
 ### Hot reload wiring
 
@@ -125,12 +128,25 @@ tsc/npx detection paths. Set `"isolatedModules": true` in `content/tests/scripts
 
 Parse worldspawn `scripts_dir` property in `parse.rs` using the existing `get_property` pattern.
 In `main.rs`, add a script compilation step after map parsing: locate scripts-build using the
-same cascade as the engine (next to the compiler binary, then on PATH), enumerate `.ts` files in
-the resolved `scripts_dir`, invoke scripts-build per file, and collect errors. Apply the
-missing-compiler / stale-js fallback logic from the acceptance criteria. `prl-build` should skip
-recompiling a `.ts` file if a `.js` sibling already exists with a newer mtime, so repeated
-`prl-build` runs on an unchanged map don't recompile scripts unnecessarily. Update the FGD
-`worldspawn` definition to document `scripts_dir`.
+same two-step cascade as the engine (next to the compiler binary, then on PATH), enumerate `.ts`
+files in the resolved `scripts_dir`, invoke scripts-build per file, and collect errors. Apply
+the missing-compiler / stale-js fallback logic from the acceptance criteria. `prl-build` should
+skip recompiling a `.ts` file if a `.js` sibling already exists with a newer mtime, so repeated
+`prl-build` runs on an unchanged map don't recompile scripts unnecessarily.
+
+**Detection cascade — duplication, not sharing.** `watcher.rs` is gated on
+`#[cfg(debug_assertions)]`, so the level-compiler crate cannot import `TsCompilerPath` from it.
+Add a small private `fn find_scripts_build() -> Option<PathBuf>` in
+`crates/level-compiler/src/main.rs` that re-implements the two-step cascade — the same ~20 lines
+as `detect_with` in `watcher.rs`. Add a comment in both locations noting the duplication and
+pointing to the other file. Don't try to share `watcher::TsCompilerPath` across crates today;
+two simple functions is the right tradeoff. If the cascade logic grows in the future, factor it
+into a shared utility crate then.
+
+Create the FGD `worldspawn` entry from scratch (no `@SolidClass worldspawn` exists in
+`sdk/TrenchBroom/postretro.fgd` today). Include `scripts_dir`, `ambient_color`, and
+`fog_pixel_scale` — all three are already documented in `build_pipeline.md` but missing from the
+FGD, and adding them together avoids a half-done FGD.
 
 ### Task 4: Fix hot reload wiring
 
@@ -156,7 +172,13 @@ Four problems found by audit — all in the engine crate, no compiler changes ne
    behavior scripts (full rebuild; targeted single-file reload is not implemented).
 
 The correct reload sequence: receive `ReloadRequest` → clear level handlers → re-run all
-behavior scripts from disk → log result.
+behavior scripts from disk → if a level is currently loaded (i.e. `level_load_fired` is `true`),
+immediately re-fire `levelLoad` so authors see results without restarting → log result.
+
+`level_load_fired` is a one-shot flag set after the first fire in `main.rs`'s `RedrawRequested`
+handler; it must **not** be reset by hot reload. The re-fire on reload is a dev-iteration
+convenience (so newly registered handlers see a `levelLoad` event), not a level reload — leaving
+the flag set preserves the "fire once per level lifetime" contract for the cold-load path.
 
 ## Sequencing
 
@@ -177,11 +199,48 @@ pre-warm so pooled contexts don't accumulate mutations from script runs.
 
 ### scripts-build --prelude mode
 
-The bundler already handles a single entry file with relative imports. A `--prelude` flag
-changes the output pass: instead of `StripExternalImports` only removing bare-specifier
-declarations, also replace surviving `export` declarations with bare assignments to the global
-scope (so `export const world = ...` becomes `world = ...` — the symbol lands as a global in the
-QuickJS context rather than as a module export).
+The bundler already handles a single entry file with relative imports. A `--prelude` flag adds a
+second AST visitor pass before the existing one.
+
+**Two-visitor approach:**
+
+1. **`ExportToGlobal` (new, runs first):** rewrites `export const x = expr` (and other named
+   `ExportDecl` forms) into a bare `ExprStmt` containing `globalThis.x = expr`. For declarations
+   that get inlined from relative imports and surface as `export` keywords on `var`/`let`/`const`
+   /`function`/`class`, the visitor drops the `export` keyword and emits a trailing
+   `globalThis.x = x` assignment so the binding lands as a global. Re-exports
+   (`export { x } from "./y"`) and default exports (`export default ...`) need explicit handling
+   too — the visitor enumerates the named symbols expected from `sdk/lib/index.ts` and asserts
+   on unsupported forms rather than silently dropping them.
+
+2. **`StripExternalImports` (existing, runs second):** continues to do its job —
+   `items.retain(|item| !matches!(item, ModuleItem::ModuleDecl(_)))` cleans up any remaining
+   `ModuleDecl` nodes (bare-specifier imports, leftover re-exports `ExportToGlobal` chose not to
+   handle inline). The current sketch was wrong about this visitor preserving exports: it
+   removes ALL `ModuleDecl` nodes, both imports and exports. By the time the prelude output is
+   emitted, exports would already be gone — hence the need for `ExportToGlobal` to run first.
+
+`globalThis` is available in QuickJS and is the right target for making symbols available
+across script evaluations sharing the same context. The prelude is evaluated once per context
+construction; user scripts loaded afterward see `world`, `flicker`, etc. on `globalThis`.
+
+### Detection cascade — engine + level compiler
+
+Both the engine watcher (`crates/postretro/src/scripting/watcher.rs`) and the level compiler
+(`crates/level-compiler/src/main.rs`) need to locate `scripts-build` using the same two-step
+cascade: next to the current binary, then on `PATH`. The watcher's `TsCompilerPath::detect_with`
+can't be reused because `watcher.rs` is gated on `#[cfg(debug_assertions)]` and lives in a
+different crate. Duplicate the ~20 lines as a private `find_scripts_build()` in level-compiler
+and leave a comment in both files pointing at the other. If the cascade ever grows (e.g.
+add a `POSTRETRO_SCRIPTS_BUILD` env var override), promote it to a shared crate then.
+
+### Hot reload: levelLoad re-fire
+
+After clearing handlers and re-running behavior scripts, check `level_load_fired` (the one-shot
+flag in `main.rs`'s `RedrawRequested` handler). If it's `true`, immediately re-fire `levelLoad`
+so newly registered handlers run without restarting the engine. Don't reset the flag — the
+re-fire is a dev-iteration convenience, not a level reload, and resetting would break the
+"fire once per level lifetime" contract for the cold-load path.
 
 ### Prelude regeneration in CI
 
@@ -195,11 +254,12 @@ if they diverge. This keeps the committed prelude honest without requiring a cus
   optimizing; the simple path is evaluate-on-warmup.
 - **Luau SDK prelude:** `sdk/lib/*.luau` equivalents don't exist yet. Should this plan stub them
   or defer entirely? The Luau SDK surface is currently weaker than the TS one anyway.
-- **scripts-build --prelude export rewriting:** the "replace `export const` with global
-  assignment" approach is simple but fragile for complex export patterns (re-exports, default
-  exports). An alternative is to wrap the bundled output in a self-invoking function and assign
-  each named export to `globalThis`. Either way, the approach should be verified against the full
-  sdk/lib surface before landing.
+- **scripts-build --prelude export coverage:** `ExportToGlobal` handles named `ExportDecl` and
+  inlined `export` keywords cleanly. Re-exports (`export { x } from "./y"`) and default exports
+  are out of scope for the initial sdk/lib surface (`world.ts` and `light_animation.ts` use only
+  named `export const`/`export function`). Verify against the full sdk/lib surface before
+  landing — if a re-export form is needed, extend the visitor; don't fall back to the
+  self-invoking-function alternative without justification.
 - **Level compiler: scripts_dir or explicit list?** The spec uses a directory (`scripts_dir`)
   because it's simpler and matches the engine's existing "load everything in scripts/" behavior.
   An explicit list (`scripts`) would give authors more control but requires a list parser. If

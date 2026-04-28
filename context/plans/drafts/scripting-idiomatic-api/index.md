@@ -81,13 +81,26 @@ Affected registrations:
 Update the assertion in `primitives.rs::tests::register_all_installs_expected_primitives`
 to use the new names. Update any other tests that call primitives by name
 (e.g. JS/Lua `eval` strings that invoke `entity_exists`, `world_query`, etc.)
-across `primitives.rs`, `primitives_light.rs`, and `event_dispatch.rs` test
-suites.
+across `primitives.rs`, `primitives_light.rs`, `event_dispatch.rs`, `quickjs.rs`,
+`luau.rs`, `pool.rs`, and `runtime.rs` test suites — all of which contain inline
+JS/Lua eval strings calling snake_case primitive names.
 
-Update `sdk/types/postretro.d.ts` and `sdk/types/postretro.d.luau` — the
-`declare function` lines for each renamed primitive. (If these files are
-auto-generated at runtime from the registry, just confirm the generator picks
-up the new names; if they are hand-maintained, update them directly.)
+Also update `typedef.rs` — specifically the `EXPECTED_TS`/`EXPECTED_LUAU`
+snapshot string constants and the `day_one_primitives_all_appear_in_both_outputs`
+test, which loop over snake_case names. The mini-registry fixture registers
+primitives by name and the snapshot strings embed the old names.
+
+Update error strings that reference snake_case primitive names (e.g.
+`"world_query: unknown component"` in `parse_query_filter`, `"set_component:"`
+etc.) to use the new camelCase name so script authors see the correct primitive
+name in console errors.
+
+Underscore-prefixed engine-internal names (e.g. `__collect_definitions` if any)
+stay unchanged — they are not script-visible.
+
+`sdk/types/postretro.d.ts` and `sdk/types/postretro.d.luau` are auto-generated
+and will pick up new names automatically if type generation runs. The task is to
+ensure they are regenerated and committed — not hand-edited.
 
 ### Task 2: Fix serde wire format for LightAnimation and LightComponent
 
@@ -111,7 +124,9 @@ declarations that were already promised to modders.
 Remove `camel_to_snake`, `snake_to_camel`, and `rename_json_keys`. Remove
 the rename wrapper calls from `FromJs`/`IntoJs`/`FromLua`/`IntoLua` impls for
 `LightAnimation` and `LightComponent`. Those impls become straightforward
-serde round-trips through JSON with no key rewriting needed.
+serde round-trips through JSON with no key rewriting needed. Note: the
+`FromJs`/`FromLua` impls keep the `js_to_json` / `lua_to_json` bridge step;
+only the `rename_json_keys(json, camel_to_snake)` line is removed.
 
 **`primitives_light.rs` cleanup:**
 
@@ -121,7 +136,14 @@ directly and get correctly-cased keys.
 
 Update tests that assert on raw JSON wire keys (e.g. any test that checks for
 `period_ms` or `play_count` in a serialized value) to expect the camelCase
-spelling.
+spelling. This includes `crates/postretro/src/scripting/components/light.rs` —
+specifically the `light_animation_defaults_accept_missing_optional_fields` test,
+whose JSON literal uses `"period_ms"` and will fail after `rename_all` lands.
+
+Add a test that reads `h.component.lightType` (or `falloffModel`) from a light
+entity handle in both QuickJS and Luau and asserts the value is correct
+(non-undefined/non-nil). This is the crux of the latent wire-format bug being
+fixed.
 
 ### Task 3: Add build.rs for compile-time type generation
 
@@ -156,22 +178,21 @@ an explicit invocation.
 
 ### Task 4: Update SDK library call sites
 
-**`sdk/lib/world.ts`:**
-
-Change imports from `get_component`, `set_light_animation`, `world_query` to
-`getComponent`, `setLightAnimation`, `worldQuery`. Update every call site.
-
-**`sdk/lib/world.luau`:**
-
-Change calls from `get_component(...)`, `set_light_animation(...)`,
-`world_query(...)` to `getComponent(...)`, `setLightAnimation(...)`,
-`worldQuery(...)`. Update the file-level comment that names the primitives.
+Grep `sdk/lib/` for every snake_case primitive name (`get_component`,
+`set_light_animation`, `world_query`, `set_component`, `entity_exists`,
+`spawn_entity`, `despawn_entity`, `emit_event`, `send_event`) and update all
+call sites found. Do not assume `world.ts` and `world.luau` are the only
+consumers.
 
 Regenerate `sdk/lib/prelude.js` from the updated TypeScript SDK:
 
 ```bash
 cargo run -p postretro-script-compiler -- --prelude --sdk-root sdk/lib --out sdk/lib/prelude.js
 ```
+
+Also rebuild `content/tests/scripts/arena-wave.js` from the updated
+`arena-wave.ts` via the script compiler and commit the updated `.js` alongside
+the source.
 
 ## Sequencing
 
@@ -201,7 +222,10 @@ goes through `serde_json::to_value`; once `LightComponent` carries
 
 The manual field for `isDynamic` in the top-level object (not the component
 sub-object) is built from `h.component.is_dynamic` directly and inserted with
-the string key `"isDynamic"` — that stays unchanged.
+the string key `"isDynamic"` — that stays unchanged. To be explicit: the
+top-level `isDynamic` on the handle is duplicated by design and MUST remain
+hand-inserted; the change only removes the camel-rename pass on the nested
+`component` value. An implementer must not remove it.
 
 ## Open questions
 

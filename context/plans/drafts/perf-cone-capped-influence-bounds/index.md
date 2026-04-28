@@ -158,7 +158,7 @@ Ordering: sphere test first, cone test second. Sphere rejects most fragments wit
 1. `cargo test -p postretro-level-format` and `cargo test -p postretro` pass. New format tests cover v1→v2 forward compatibility and spot/non-spot mixing.
 2. **Pixel output bit-identical** on every test map, spot-light-heavy or not. The cone test is a strict superset of the cone-attenuation zero region; any pixel change means the test is too tight.
 3. Loading a pre-Task-A `.prl` (stride=16, version=1) succeeds without warning — the runtime fills sentinels and the cone test no-ops.
-4. On a spot-light-heavy test map (`assets/maps/occlusion-test.map` or equivalent with ≥8 spot lights), `POSTRETRO_GPU_TIMING=1` shows **≥10% drop in forward-pass time** vs. the sphere-only baseline. On a spot-light-free map, no regression.
+4. On a spot-light-heavy test map (`content/base/maps/occlusion-test.map` or equivalent with ≥8 spot lights), `POSTRETRO_GPU_TIMING=1` shows **≥10% drop in forward-pass time** vs. the sphere-only baseline. On a spot-light-free map, no regression.
 5. No new `unsafe`.
 6. `cargo clippy` clean across all three crates at `-D warnings`.
 
@@ -185,4 +185,4 @@ All design questions are resolved:
 4. **Sentinel value for non-spot `cos_half_angle`.** → **`pub const NON_SPOT_COS_SENTINEL: f32 = -2.0;`** in `influence.rs`. Gate in shader: `cos_ha > -1.5`.
 5. **Section-version negotiation logging.** → **Always log at `debug`** when loading a v1 section: `"LightInfluence v=1, cone data not present — treating all lights as non-spot-bounded"`.
 
-**Remaining acceptance question:** target map for the ≥10% GPU timing threshold is a spot-light-heavy scene. If `assets/maps/occlusion-test.map` does not contain enough spots (≥8), build a minimal test variant before running the timing gate.
+**Remaining acceptance question:** target map for the ≥10% GPU timing threshold is a spot-light-heavy scene. If `content/base/maps/occlusion-test.map` does not contain enough spots (≥8), build a minimal test variant before running the timing gate.

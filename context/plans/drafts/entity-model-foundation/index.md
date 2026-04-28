@@ -158,7 +158,7 @@ Two concrete types exercise the whole stack.
 
 ### `RotatorDriver`
 
-29. **Classname:** `game_rotator_driver`. FGD entry added in `assets/postretro.fgd`. Properties: `rate_yaw` (deg/s, default 30), `rate_pitch` (deg/s, default 0), `rate_roll` (deg/s, default 0), `targetname` (string, optional — for M9 integration: the cluster whose transform this entity drives).
+29. **Classname:** `game_rotator_driver`. FGD entry added in `sdk/TrenchBroom/postretro.fgd`. Properties: `rate_yaw` (deg/s, default 30), `rate_pitch` (deg/s, default 0), `rate_roll` (deg/s, default 0), `targetname` (string, optional — for M9 integration: the cluster whose transform this entity drives).
 
 30. **Behavior.** Each tick, advances its own orientation by `rates × tick_dt`. Emits a `TransformEvent { source: EntityId, transform: Transform }` that downstream consumers (kinematic clusters in M9) will subscribe to. In M7, nothing consumes the event — the test is that it fires at the fixed tick rate.
 
@@ -196,7 +196,7 @@ Two concrete types exercise the whole stack.
 5. A test map with a `game_damage_source` entity plus a subscriber (test-only plain-function subscriber) logs the correct `DamageEvent` payload when the debug keybind fires.
 6. Scripting-exposure audit (Task 5) complete. The API enumeration and scripting-binding sketch are included in the PR description. `context/lib/entity_model.md` updated with the `§ Scripting-facing surface` reference section.
 7. `context/lib/entity_model.md` §4 updated: the "BSP entity lump" language is replaced with the PRL entity section. The key-value parsing contract documented here is summarized there.
-8. `assets/postretro.fgd` extended with `game_rotator_driver` and `game_damage_source` entries.
+8. `sdk/TrenchBroom/postretro.fgd` extended with `game_rotator_driver` and `game_damage_source` entries.
 
 ---
 

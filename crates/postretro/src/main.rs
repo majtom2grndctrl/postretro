@@ -1,5 +1,5 @@
-// Postretro engine entry point.
-// See: context/lib/rendering_pipeline.md
+// Postretro engine entry point and level-load orchestration.
+// See: context/lib/index.md (routes to rendering_pipeline.md, scripting.md, etc.)
 
 mod camera;
 mod compute_cull;
@@ -299,6 +299,8 @@ fn build_demo_emitters(spawn_demo: bool, camera_pos: Vec3) -> Vec<fx::smoke::Smo
 /// QuickJS can evaluate. Until `scripts-build` is the active compiler,
 /// TypeScript files that use `import`/`export` will fail to load even after
 /// successful compilation.
+///
+/// This applies only when `tsc` or `npx` is the detected compiler; `scripts-build` produces QuickJS-compatible output directly.
 fn load_behavior_scripts(runtime: &ScriptRuntime, content_root: &Path) {
     let root_buf = content_root.join("scripts");
     let root = root_buf.as_path();

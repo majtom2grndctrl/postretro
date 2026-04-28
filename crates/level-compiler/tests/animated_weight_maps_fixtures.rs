@@ -10,7 +10,7 @@
 //! baker in isolation; the runtime validator is unit-tested under
 //! `postretro/src/render/animated_lightmap.rs`.
 //!
-//! See: context/plans/in-progress/animated-light-weight-maps/index.md §Task 8.
+//! See: context/plans/done/animated-light-weight-maps/index.md §Task 8.
 
 use std::io::Cursor;
 use std::path::PathBuf;

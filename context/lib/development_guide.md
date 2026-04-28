@@ -15,6 +15,7 @@ Three crates in a Cargo workspace:
 | `postretro` | binary | Engine / game runtime |
 | `postretro-level-format` | library | Shared PRL binary format types. Depended on by both engine and compiler. |
 | `postretro-level-compiler` | binary | Offline level compiler. TrenchBroom `.map` → `.prl` binary. |
+| `postretro-script-compiler` | binary | Script bundler sidecar. Bundles TS/JS/Luau into QuickJS-compatible output. |
 
 ## Stack
 

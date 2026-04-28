@@ -12,8 +12,8 @@
 
 Required before promotion out of drafts:
 
-1. Run `POSTRETRO_GPU_TIMING=1 cargo run --release -p postretro -- assets/maps/occlusion-test.map` and capture per-pass GPU time for the cull compute shader.
-2. Same measurement on `assets/maps/test.prl` (or the current representative small-map baseline).
+1. Run `POSTRETRO_GPU_TIMING=1 cargo run --release -p postretro -- content/base/maps/occlusion-test.map` and capture per-pass GPU time for the cull compute shader.
+2. Same measurement on `content/base/maps/test.prl` (or the current representative small-map baseline).
 3. Promote only if the cull shader exceeds **0.5 ms per frame** on either map. Below that, global BVH is paying its way; per-region is premature optimization.
 
 Record the measurements (numbers + adapter + build) in this file before moving out of `drafts/`.

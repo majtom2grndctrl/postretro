@@ -89,7 +89,7 @@ Leak detection runs early (right after flood-fill), so downstream stages (PVS, B
 2. **Flood-fill upgrade.** Change the current warn path in `visibility/mod.rs` to return a `LeakReport { seed_leaf, void_leaf, portal_path }` when no interior remains. The caller in `main.rs` decides whether to error or warn based on `--allow-leaks`.
 3. **Pointfile writer.** New module `postretro-level-compiler/src/leak_report.rs`. Takes a `LeakReport` and writes the `.pts` file. Path reconstruction: walk portals backward from the first void-adjacent empty leaf to the seed leaf, emit portal centroids as vertices.
 4. **SDF baker seed.** Thread the same player-start origin into `SdfBakeInputs`; replace `parity_inside`'s +Y ray with a ray from the brick center to the seed, counting intersections.
-5. **Test fixture.** Add `assets/maps/test_leak.map` — a simple room with one missing brush face. Assert compilation fails with exit code 1 and produces `test_leak.pts`.
+5. **Test fixture.** Add `content/base/maps/test_leak.map` — a simple room with one missing brush face. Assert compilation fails with exit code 1 and produces `test_leak.pts`.
 
 ---
 

@@ -168,7 +168,7 @@ fn load_png(path: &Path, texture_name: &str) -> LoadedTexture {
 /// corresponds to BSP miptexture index `i`.
 ///
 /// `texture_root` is the directory to search for PNG files, typically
-/// `<asset_root>/textures/`.
+/// `<content_root>/textures/`.
 pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> TextureSet {
     let name_to_path = build_name_to_path_map(texture_root);
 

@@ -52,8 +52,9 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
         .load(WORLD_LUAU_SRC)
         .set_name("postretro/sdk/world.luau")
         .eval()
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to evaluate SDK prelude `world.luau`: {e}"),
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `world.luau`: {e}"),
+            source_name: "sdk/lib/world.luau".to_string(),
         })?;
     lua.globals()
         .set("world", world)
@@ -65,8 +66,9 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
         .load(LIGHT_ANIMATION_LUAU_SRC)
         .set_name("postretro/sdk/light_animation.luau")
         .eval()
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to evaluate SDK prelude `light_animation.luau`: {e}"),
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `light_animation.luau`: {e}"),
+            source_name: "sdk/lib/light_animation.luau".to_string(),
         })?;
     let globals = lua.globals();
     for field in LIGHT_ANIMATION_FIELDS {
@@ -198,23 +200,10 @@ impl LuauSubsystem {
         &self.archetypes
     }
 
-    /// Drop the current definition state and rebuild it. Dev-mode hot-reload
-    /// path. The archetype `Rc` is cleared in place so outside handles remain
-    /// valid.
-    pub(crate) fn reload_definition_context(&mut self) -> Result<(), ScriptError> {
-        self.archetypes.borrow_mut().clear();
-        self.definition_lua = build_lua_state(
-            &self.primitives,
-            ContextScope::DefinitionOnly,
-            Some(&self.archetypes),
-        )?;
-        Ok(())
-    }
-
     /// Drop the current behavior Lua state and rebuild it. Dev-mode hot-reload
-    /// path counterpart to `reload_definition_context`: ensures re-running
-    /// behavior scripts always sees a fresh global table, so top-level
-    /// declarations from a previous load can't conflict with the next.
+    /// path: ensures re-running behavior scripts always sees a fresh global
+    /// table, so top-level declarations from a previous load can't conflict
+    /// with the next.
     pub(crate) fn reload_behavior_context(&mut self) -> Result<(), ScriptError> {
         self.behavior_lua = build_lua_state(&self.primitives, ContextScope::BehaviorOnly, None)?;
         Ok(())
@@ -796,30 +785,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reload_definition_context_rebuilds_and_clears_accumulator() {
-        let (mut subsys, _ctx) = setup();
-        let archetypes = subsys.archetypes().clone();
-
-        archetypes.borrow_mut().push(ArchetypeDescriptor {
-            name: "stale".into(),
-        });
-        assert_eq!(archetypes.borrow().len(), 1);
-
-        subsys.reload_definition_context().unwrap();
-        assert!(
-            archetypes.borrow().is_empty(),
-            "reload must drain accumulator"
-        );
-
-        // Fresh state must still have the sink.
-        let len: usize = subsys
-            .run_source(
-                Which::Definition,
-                "return #__collect_definitions()",
-                "reload.luau",
-            )
-            .unwrap();
-        assert_eq!(len, 0);
-    }
 }

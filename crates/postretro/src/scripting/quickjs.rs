@@ -42,8 +42,9 @@ const SDK_PRELUDE_JS: &str = include_str!("../../../../sdk/lib/prelude.js");
 /// loaded into the same context later.
 pub(crate) fn evaluate_prelude(ctx: &Ctx<'_>) -> Result<(), ScriptError> {
     ctx.eval::<(), _>(SDK_PRELUDE_JS)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to evaluate SDK prelude: {e}"),
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude: {e}"),
+            source_name: "sdk/lib/prelude.js".to_string(),
         })?;
     Ok(())
 }
@@ -89,7 +90,7 @@ pub(crate) struct QuickJsSubsystem {
     runtime: Runtime,
     definition_ctx: Context,
     behavior_ctx: Context,
-    /// Kept so `reload_definition_context` can reinstall primitives without
+    /// Kept so `reload_behavior_context` can reinstall primitives without
     /// requiring the caller to pass the registry back in. Each `ScriptPrimitive`
     /// is `Clone` with `Arc`-backed closures — cheap shallow copy.
     primitives: Vec<ScriptPrimitive>,
@@ -155,19 +156,6 @@ impl QuickJsSubsystem {
     /// the caller that drains it after evaluating definition scripts.
     pub(crate) fn archetypes(&self) -> &ArchetypeAccumulator {
         &self.archetypes
-    }
-
-    /// Drop the current definition context and build a fresh one. Used by the
-    /// dev-mode hot-reload path. Primitives are reinstalled from the snapshot;
-    /// the accumulator is cleared in place so outside handles remain valid.
-    pub(crate) fn reload_definition_context(&mut self) -> Result<(), ScriptError> {
-        self.archetypes.borrow_mut().clear();
-        self.definition_ctx = build_definition_context_from_snapshot(
-            &self.runtime,
-            &self.primitives,
-            &self.archetypes,
-        )?;
-        Ok(())
     }
 
     /// Drop the current behavior context and build a fresh one. Used by the
@@ -660,28 +648,4 @@ mod tests {
         });
     }
 
-    #[test]
-    fn reload_definition_context_rebuilds_and_clears_accumulator() {
-        let (mut subsys, _ctx) = setup();
-        let archetypes = subsys.archetypes().clone();
-
-        // Seed the accumulator directly — simulates a definition pass that
-        // registered some archetypes.
-        archetypes.borrow_mut().push(ArchetypeDescriptor {
-            name: "stale".into(),
-        });
-        assert_eq!(archetypes.borrow().len(), 1);
-
-        subsys.reload_definition_context().unwrap();
-        assert!(
-            archetypes.borrow().is_empty(),
-            "reload must drain accumulator"
-        );
-
-        // The fresh context must still have primitives and the sink.
-        subsys.definition_ctx().with(|ctx| {
-            let len: usize = ctx.eval("__collect_definitions().length").unwrap();
-            assert_eq!(len, 0);
-        });
-    }
 }

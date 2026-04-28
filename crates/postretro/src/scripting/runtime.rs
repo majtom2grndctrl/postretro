@@ -180,13 +180,6 @@ impl ScriptRuntime {
         &self.luau
     }
 
-    /// Reload both definition contexts. Called from the dev-mode hot-reload path.
-    pub(crate) fn reload_definition_context(&mut self) -> Result<(), ScriptError> {
-        self.quickjs.reload_definition_context()?;
-        self.luau.reload_definition_context()?;
-        Ok(())
-    }
-
     /// Reload both behavior contexts. Called from the dev-mode hot-reload path
     /// before re-running behavior scripts. Rebuilding the contexts means
     /// top-level `const`/`let` (JS) or `local` (Luau) declarations in user
@@ -314,12 +307,6 @@ mod tests {
     #[test]
     fn new_constructs_both_subsystems() {
         let (_rt, _ctx) = runtime();
-    }
-
-    #[test]
-    fn reload_forwards_to_both_subsystems() {
-        let (mut rt, _ctx) = runtime();
-        rt.reload_definition_context().unwrap();
     }
 
     #[test]

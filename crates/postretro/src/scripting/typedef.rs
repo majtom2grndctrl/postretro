@@ -88,7 +88,7 @@ fn rust_to_ts(ty_name: &str) -> String {
         // Rust side uses the placeholder `HandlerFn` type name rather than
         // trying to spell a generic callable through the trait plumbing.
         "HandlerFn" => "(ctx?: ScriptCallContext) => void".to_string(),
-        // `world_query` returns a JSON-shaped array of entity handles. The
+        // `worldQuery` returns a JSON-shaped array of entity handles. The
         // Rust return type is an opaque wrapper; the declared script surface
         // is `Entity[]` — the SDK layer narrows to a specific entity type
         // (e.g. `LightEntity`) based on the query's component filter.
@@ -372,7 +372,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     }): EntityForComponent<T>[];
   }
 
-  /** `world` vocabulary global. Wraps `world_query` with a typed handle. */
+  /** `world` vocabulary global. Wraps `worldQuery` with a typed handle. */
   export const world: World;
 
   /** Per-channel keyframe accepted by `timeline` / `sequence`. */
@@ -580,14 +580,14 @@ export type LightEntityHandle = {
 }
 
 --- Generic entity handle returned by `world:query` when the component is
---- not "light". Use `get_component` for component data.
+--- not "light". Use `getComponent` for component data.
 export type EntityHandle = {
   id: EntityId,
   transform: EntityTransform,
   tag: string?,
 }
 
---- `world` vocabulary global. Wraps `world_query` with a typed handle.
+--- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
 export type World = {
   query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
        & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
@@ -664,7 +664,7 @@ mod tests {
         let mut r = PrimitiveRegistry::new();
         register_shared_types(&mut r);
         r.register(
-            "entity_exists",
+            "entityExists",
             |_id: EntityId| -> Result<bool, ScriptError> { Ok(true) },
         )
         .scope(ContextScope::Both)
@@ -673,7 +673,7 @@ mod tests {
         .finish();
 
         r.register(
-            "spawn_entity",
+            "spawnEntity",
             |_t: Transform| -> Result<EntityId, ScriptError> { Ok(EntityId::from_raw(0)) },
         )
         .scope(ContextScope::BehaviorOnly)
@@ -712,10 +712,10 @@ declare module \"postretro\" {
   export type ScriptEvent = { kind: string; payload: unknown };
 
   /** Returns true if the entity id refers to a live entity. */
-  export function entity_exists(id: EntityId): boolean;
+  export function entityExists(id: EntityId): boolean;
 
   /** Spawns a new entity with the given transform. */
-  export function spawn_entity(transform: Transform): EntityId;
+  export function spawnEntity(transform: Transform): EntityId;
 }
 ";
 
@@ -736,10 +736,10 @@ export type ComponentValue = { kind: \"Transform\", value: Transform } | { kind:
 export type ScriptEvent = { kind: string, payload: any }
 
 --- Returns true if the entity id refers to a live entity.
-declare function entity_exists(id: EntityId): boolean
+declare function entityExists(id: EntityId): boolean
 
 --- Spawns a new entity with the given transform.
-declare function spawn_entity(transform: Transform): EntityId
+declare function spawnEntity(transform: Transform): EntityId
 ";
 
     /// Exercises every doc-emission path and the `"Any"` sentinel.
@@ -939,13 +939,13 @@ export type Event = {
         let ts = generate_typescript(&r);
         let luau = generate_luau(&r);
         for name in [
-            "entity_exists",
-            "spawn_entity",
-            "despawn_entity",
-            "get_component",
-            "set_component",
-            "emit_event",
-            "send_event",
+            "entityExists",
+            "spawnEntity",
+            "despawnEntity",
+            "getComponent",
+            "setComponent",
+            "emitEvent",
+            "sendEvent",
         ] {
             assert!(ts.contains(name), "ts missing primitive {name}:\n{ts}");
             assert!(
@@ -986,5 +986,42 @@ export type Event = {
         assert_eq!(rust_to_luau("bool"), "boolean");
         assert_eq!(rust_to_luau("core::option::Option<u32>"), "number?");
         assert_eq!(rust_to_luau("alloc::vec::Vec<u32>"), "{number}");
+    }
+
+    /// Guard against drift between the registry-driven type generator and the
+    /// committed SDK type files. Runs unconditionally so CI catches a missed
+    /// `gen-script-types` regeneration. Paths are resolved relative to
+    /// `CARGO_MANIFEST_DIR` so the test works from any CWD.
+    #[test]
+    fn committed_sdk_types_match_current_registry() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let luau = generate_luau(&r);
+
+        let ts_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../sdk/types/postretro.d.ts"
+        );
+        let luau_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../sdk/types/postretro.d.luau"
+        );
+
+        let committed_ts = fs::read_to_string(ts_path).expect("read committed postretro.d.ts");
+        let committed_luau =
+            fs::read_to_string(luau_path).expect("read committed postretro.d.luau");
+
+        assert_eq!(
+            committed_ts, ts,
+            "sdk/types/postretro.d.ts is out of date — re-run `cargo run -p postretro --bin gen-script-types` and commit the result"
+        );
+        assert_eq!(
+            committed_luau, luau,
+            "sdk/types/postretro.d.luau is out of date — re-run `cargo run -p postretro --bin gen-script-types` and commit the result"
+        );
     }
 }

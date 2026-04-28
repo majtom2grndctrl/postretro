@@ -1,5 +1,5 @@
 --!strict
--- World-query vocabulary: typed wrapper around `world_query` plus the
+-- World-query vocabulary: typed wrapper around `worldQuery` plus the
 -- `LightEntity` handle methods. The primitive does the actual work;
 -- this file exists so modders import `world` and call `:setAnimation`
 -- /`:setIntensity`/`:setColor` on the returned handles the same way
@@ -44,7 +44,7 @@
 
 -- `EntityId`, `LightAnimation`, `LightComponent`, `LightEntity` (the
 -- generated snapshot shape), `Vec3`, `WorldQueryFilter` and the
--- `get_component`/`set_light_animation`/`world_query` primitives are
+-- `getComponent`/`setLightAnimation`/`worldQuery` primitives are
 -- provided ambiently by the generated `sdk/types/postretro.d.luau`
 -- definitions file.
 
@@ -99,7 +99,7 @@ export type LightEntityHandle = {
 }
 
 --- Base entity handle returned by `world:query` when the component type
---- is not "light". Carries id, transform, and tag; use `get_component`
+--- is not "light". Carries id, transform, and tag; use `getComponent`
 --- to access the component data for non-light entities.
 export type EntityHandle = {
   id: EntityId,
@@ -229,7 +229,7 @@ local function idDebug(id: EntityId): string
 end
 
 local function readLightComponent(id: EntityId): LightComponent
-  local c = get_component(id, "Light")
+  local c = getComponent(id, "Light")
   if c.kind ~= "Light" then
     error(`expected Light component on entity {idDebug(id)}, got {c.kind}`)
   end
@@ -251,7 +251,7 @@ local function wrapLightEntity(snapshot: LightEntity): LightEntityHandle
       if anim ~= nil and anim.color ~= nil and not isDynamic then
         error(`setAnimation: light {idDebug(id)} is not dynamic; color animation is only valid on dynamic lights`)
       end
-      set_light_animation(id, anim)
+      setLightAnimation(id, anim)
     end,
 
     setIntensity = function(
@@ -263,7 +263,7 @@ local function wrapLightEntity(snapshot: LightEntity): LightEntityHandle
       local ms = transitionMs or 0
       local live = readLightComponent(id)
       local anim = buildIntensityAnimation(live.intensity, target, ms, easing)
-      set_light_animation(id, anim)
+      setLightAnimation(id, anim)
     end,
 
     setColor = function(
@@ -279,7 +279,7 @@ local function wrapLightEntity(snapshot: LightEntity): LightEntityHandle
       local live = readLightComponent(id)
       local to: Vec3 = { x = target[1], y = target[2], z = target[3] }
       local anim = buildColorAnimation(live.color, to, ms, easing)
-      set_light_animation(id, anim)
+      setLightAnimation(id, anim)
     end,
   }
 
@@ -296,7 +296,7 @@ local world: World = {
       component = filter.component,
       tag = filter.tag,
     }
-    local raw = world_query(normalized)
+    local raw = worldQuery(normalized)
     if filter.component == "light" then
       local out: {LightEntityHandle} = {}
       for i, snapshot in ipairs(raw) do

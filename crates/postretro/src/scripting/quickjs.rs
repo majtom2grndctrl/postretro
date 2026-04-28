@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn definition_context_rejects_behavior_only_primitive() {
-        // `emit_event` is BehaviorOnly — in the definition context it must
+        // `emitEvent` is BehaviorOnly — in the definition context it must
         // exist as a stub that throws WrongContext.
         let (subsys, _ctx) = setup();
         subsys.definition_ctx().with(|ctx| {
@@ -433,15 +433,15 @@ mod tests {
                 .eval(
                     r#"
                     try {
-                        emit_event({ kind: "boom", payload: {} });
+                        emitEvent({ kind: "boom", payload: {} });
                         "no-throw"
                     } catch (e) { String(e.message || e) }
                     "#,
                 )
                 .unwrap();
             assert!(
-                msg.contains("emit_event") && msg.contains("not available"),
-                "expected WrongContext message mentioning emit_event, got: {msg}",
+                msg.contains("emitEvent") && msg.contains("not available"),
+                "expected WrongContext message mentioning emitEvent, got: {msg}",
             );
         });
     }
@@ -531,7 +531,7 @@ mod tests {
     #[test]
     fn end_to_end_transform_component_round_trip() {
         // Behavior script spawns an entity, writes a fully-populated Transform
-        // via set_component, reads it back via get_component, and asserts the
+        // via setComponent, reads it back via getComponent, and asserts the
         // round-trip holds within float tolerance.
         //
         // `ComponentKind` crosses as a bare string (`"Transform"`) per
@@ -541,7 +541,7 @@ mod tests {
             let out: rquickjs::Object = ctx
                 .eval(
                     r#"
-                    const id = spawn_entity({
+                    const id = spawnEntity({
                         position: { x: 0, y: 0, z: 0 },
                         rotation: { pitch: 0, yaw: 0, roll: 0 },
                         scale:    { x: 1, y: 1, z: 1 },
@@ -552,8 +552,8 @@ mod tests {
                         rotation: { pitch: 15.0, yaw: 45.0, roll: -30.0 },
                         scale:    { x: 2.0, y: 2.0, z: 2.0 },
                     };
-                    set_component(id, "Transform", input);
-                    const out = get_component(id, "Transform");
+                    setComponent(id, "Transform", input);
+                    const out = getComponent(id, "Transform");
                     out
                     "#,
                 )
@@ -647,5 +647,4 @@ mod tests {
             ctx.eval::<(), _>(script).unwrap();
         });
     }
-
 }

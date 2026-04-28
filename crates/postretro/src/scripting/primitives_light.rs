@@ -1,5 +1,5 @@
-// Scripting primitives: `set_light_animation` (behavior-only).
-// `world_query` lives in `primitives.rs` — it is a generic ECS primitive
+// Scripting primitives: `setLightAnimation` (behavior-only).
+// `worldQuery` lives in `primitives.rs` — it is a generic ECS primitive
 // that happens to support lights; keeping it with the other entity primitives
 // means adding a second queryable component only requires editing that file.
 // See: context/lib/scripting.md
@@ -11,10 +11,10 @@ use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, PrimitiveRegistry};
 use super::registry::{Component, ComponentKind, EntityId};
 
-// --- Shared logic: set_light_animation --------------------------------------
+// --- Shared logic: setLightAnimation ----------------------------------------
 //
 // Both runtimes go through these so behavior stays identical across QuickJS
-// and Luau (see plan-2, settled-decisions: "no runtime gets a superset").
+// and Luau — no runtime gets a superset of the other's primitives.
 
 /// A single entity-handle snapshot produced by `world.query`. Carries the
 /// `EntityId` plus a read-only copy of the live component data at query time.
@@ -52,9 +52,10 @@ pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Val
     let arr: Vec<Value> = handles
         .into_iter()
         .map(|h| {
-            // Component serializes with snake_case; rename only the well-known
-            // scripting-facing keys to match SP7's external API spec.
-            let comp = serialize_light_component_camel(&h.component);
+            // `LightComponent` carries `#[serde(rename_all = "camelCase")]`,
+            // so direct serialization yields the script-facing key shape.
+            let comp =
+                serde_json::to_value(&h.component).expect("LightComponent always serializes");
             let mut obj = Map::with_capacity(5);
             obj.insert("id".to_string(), Value::from(h.id.to_raw()));
             let mut transform = Map::with_capacity(1);
@@ -80,39 +81,7 @@ pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Val
     Value::Array(arr)
 }
 
-/// Serialize a `LightComponent` into serde_json with `camelCase` for the
-/// script-facing keys on the `animation` sub-object. Mirrors the renames in
-/// the `LightAnimation` FFI impl in `conv.rs`.
-fn serialize_light_component_camel(light: &LightComponent) -> serde_json::Value {
-    let raw = serde_json::to_value(light).expect("LightComponent always serializes");
-    rename_animation_keys(raw)
-}
-
-fn rename_animation_keys(mut value: serde_json::Value) -> serde_json::Value {
-    if let serde_json::Value::Object(ref mut obj) = value
-        && let Some(anim) = obj.remove("animation")
-    {
-        let renamed = match anim {
-            serde_json::Value::Object(inner) => {
-                let mut out = serde_json::Map::with_capacity(inner.len());
-                for (k, v) in inner {
-                    let new_k = match k.as_str() {
-                        "period_ms" => "periodMs".to_string(),
-                        "play_count" => "playCount".to_string(),
-                        _ => k,
-                    };
-                    out.insert(new_k, v);
-                }
-                serde_json::Value::Object(out)
-            }
-            other => other,
-        };
-        obj.insert("animation".to_string(), renamed);
-    }
-    value
-}
-
-// --- Validation for set_light_animation -------------------------------------
+// --- Validation for setLightAnimation ---------------------------------------
 
 /// Validate and normalize an incoming `LightAnimation` against the spec's
 /// error table. On success returns the animation with any non-unit direction
@@ -165,8 +134,8 @@ fn validate_and_normalize(
                 });
             }
             let len = len_sq.sqrt();
-            // Silently normalize. Matches "unit-length invariant authoritatively
-            // enforced here" from plan-2 §Sub-plan 6 error cases.
+            // Silently normalize. Unit-length invariant enforced here —
+            // GPU evaluator assumes normalized direction.
             *sample = Vec3Lit([x / len, y / len, z / len]);
         }
     }
@@ -184,7 +153,7 @@ fn validate_and_normalize(
 }
 
 /// Apply a validated animation (or `None` to clear) to the entity's existing
-/// `LightComponent`. Returns the error-mapping spec'd in plan-2 §Sub-plan 6.
+/// `LightComponent`. Errors: `EntityNotFound`, `ComponentNotFound`, `InvalidArgument`.
 fn apply_light_animation(
     ctx: &ScriptCtx,
     id: EntityId,
@@ -216,14 +185,16 @@ const SET_LIGHT_ANIM_DOC: &str = "Overwrite the LightComponent.animation on the 
      and color animations on non-dynamic lights error with InvalidArgument. \
      Behavior context only.";
 
+/// Register light-entity primitives (`setLightAnimation`, `worldQuery` light path)
+/// into the given registry with the supplied behavior context.
 #[allow(clippy::arc_with_non_send_sync)]
-pub(crate) fn register_sp6_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
+pub(crate) fn register_light_entity_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_set_light_animation(registry, ctx);
 }
 
 fn register_set_light_animation(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     registry
-        .register("set_light_animation", {
+        .register("setLightAnimation", {
             let ctx = ctx.clone();
             move |id: EntityId, animation: Option<LightAnimation>| -> Result<(), ScriptError> {
                 apply_light_animation(&ctx, id, animation)
@@ -399,7 +370,7 @@ mod tests {
 
     fn registry_for(ctx: ScriptCtx) -> PrimitiveRegistry {
         let mut r = PrimitiveRegistry::new();
-        register_sp6_primitives(&mut r, ctx.clone());
+        register_light_entity_primitives(&mut r, ctx.clone());
         crate::scripting::primitives::register_world_query(&mut r, ctx);
         r
     }
@@ -463,7 +434,7 @@ mod tests {
         jsctx.with(|qjs| {
             install_all(&r, &qjs);
             let script = r#"
-                const hs = world_query({ component: "light", tag: "foo" });
+                const hs = worldQuery({ component: "light", tag: "foo" });
                 JSON.stringify(hs.map(h => ({
                     id: h.id,
                     x: h.transform.position.x,
@@ -486,7 +457,7 @@ mod tests {
         let count: i64 = lua
             .load(
                 r#"
-                local hs = world_query({ component = "light" })
+                local hs = worldQuery({ component = "light" })
                 return #hs
             "#,
             )
@@ -516,7 +487,7 @@ mod tests {
             let json: String = qjs
                 .eval(
                     r#"
-                    const hs = world_query({ component: "light", tag: "hallway_wave" });
+                    const hs = worldQuery({ component: "light", tag: "hallway_wave" });
                     JSON.stringify(hs.map(h => ({
                         id: h.id,
                         isDynamic: h.isDynamic,
@@ -540,7 +511,7 @@ mod tests {
         let (got_id, is_dynamic, tag, x, y, z): (i64, bool, String, f64, f64, f64) = lua
             .load(
                 r#"
-                local hs = world_query({ component = "light", tag = "hallway_wave" })
+                local hs = worldQuery({ component = "light", tag = "hallway_wave" })
                 local h = hs[1]
                 return h.id, h.isDynamic, h.tag, h.transform.position.x,
                        h.transform.position.y, h.transform.position.z
@@ -557,6 +528,61 @@ mod tests {
     }
 
     #[test]
+    fn world_query_handle_component_exposes_camel_case_keys() {
+        // Regression: `LightComponent` is serialized straight through serde
+        // (with `rename_all = "camelCase"`) into the script-facing handle's
+        // `component` field. The TypeScript / Luau type declarations promise
+        // `lightType`, `falloffModel`, etc — if the wire shape were ever
+        // reverted to `light_type`/`falloff_model`, scripts would silently see
+        // `undefined` / `nil` here. This test pins the camelCase contract.
+        let (ctx, _id) = test_ctx_with_light(true, Some("alpha"));
+        let r = registry_for(ctx);
+
+        // QuickJS: `lightType` and `falloffModel` must be present strings.
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const hs = worldQuery({ component: "light", tag: "alpha" });
+                    const c = hs[0].component;
+                    JSON.stringify({
+                        lightType: c.lightType,
+                        falloffModel: c.falloffModel,
+                        falloffRange: c.falloffRange,
+                        castShadows: c.castShadows,
+                    })
+                    "#,
+                )
+                .unwrap();
+            assert_eq!(
+                json,
+                r#"{"lightType":"Point","falloffModel":"InverseSquared","falloffRange":10,"castShadows":true}"#
+            );
+        });
+
+        // Luau: same fields read off the table.
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        let (light_type, falloff_model, falloff_range, cast_shadows): (String, String, f64, bool) =
+            lua.load(
+                r#"
+                local hs = worldQuery({ component = "light", tag = "alpha" })
+                local c = hs[1].component
+                return c.lightType, c.falloffModel, c.falloffRange, c.castShadows
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(light_type, "Point");
+        assert_eq!(falloff_model, "InverseSquared");
+        assert!((falloff_range - 10.0).abs() < 1e-5);
+        assert!(cast_shadows);
+    }
+
+    #[test]
     fn world_query_unknown_component_errors() {
         let (ctx, _id) = test_ctx_with_light(true, None);
         let r = registry_for(ctx);
@@ -568,7 +594,7 @@ mod tests {
             install_all(&r, &qjs);
             let msg: String = qjs
                 .eval::<String, _>(
-                    r#"try { world_query({ component: "decal" }); "no-throw" }
+                    r#"try { worldQuery({ component: "decal" }); "no-throw" }
                        catch (e) { String(e.message || e) }"#,
                 )
                 .unwrap();
@@ -585,7 +611,7 @@ mod tests {
             .load(
                 r#"
                 local ok, err = pcall(function()
-                    return world_query({ component = "decal" })
+                    return worldQuery({ component = "decal" })
                 end)
                 return ok, tostring(err)
                 "#,
@@ -639,14 +665,14 @@ mod tests {
             let filtered: String = qjs
                 .eval(
                     r#"
-                    const hs = world_query({ component: "light", tag: "alpha" });
+                    const hs = worldQuery({ component: "light", tag: "alpha" });
                     JSON.stringify(hs.map(h => h.id))
                     "#,
                 )
                 .unwrap();
             assert_eq!(filtered, format!("[{first_raw}]"));
             let total: i32 = qjs
-                .eval(r#"world_query({ component: "light" }).length"#)
+                .eval(r#"worldQuery({ component: "light" }).length"#)
                 .unwrap();
             assert_eq!(total, 2);
         });
@@ -657,8 +683,8 @@ mod tests {
         let (filtered_count, filtered_id, total_count): (i64, i64, i64) = lua
             .load(
                 r#"
-                local hs = world_query({ component = "light", tag = "alpha" })
-                local all = world_query({ component = "light" })
+                local hs = worldQuery({ component = "light", tag = "alpha" })
+                local all = worldQuery({ component = "light" })
                 return #hs, hs[1].id, #all
                 "#,
             )
@@ -683,7 +709,7 @@ mod tests {
             install_all(&r, &qjs);
             let result: String = qjs
                 .eval::<String, _>(
-                    r#"try { world_query({ component: "light", tag: 42 }); "no-throw" }
+                    r#"try { worldQuery({ component: "light", tag: 42 }); "no-throw" }
                        catch (e) { "threw" }"#,
                 )
                 .unwrap();
@@ -705,7 +731,7 @@ mod tests {
             .load(
                 r#"
                 local ok, val = pcall(function()
-                    return world_query({ component = "light", tag = 42 })
+                    return worldQuery({ component = "light", tag = 42 })
                 end)
                 if ok then
                     return #val
@@ -968,7 +994,7 @@ mod tests {
             }
             let msg: String = qjs
                 .eval::<String, _>(
-                    r#"try { world_query({component:"light"}); "no-throw" }
+                    r#"try { worldQuery({component:"light"}); "no-throw" }
                        catch (e) { String(e.message || e) }"#,
                 )
                 .unwrap();
@@ -995,7 +1021,7 @@ mod tests {
             install_all(&r, &qjs);
             let script = format!(
                 r#"
-                set_light_animation({raw}, {{
+                setLightAnimation({raw}, {{
                     periodMs: 500,
                     phase: 0.25,
                     playCount: 4,
@@ -1032,7 +1058,7 @@ mod tests {
         install_all_lua(&r, &lua);
         lua.load(format!(
             r#"
-            set_light_animation({raw}, {{
+            setLightAnimation({raw}, {{
                 periodMs = 500,
                 phase = 0.25,
                 playCount = 4,

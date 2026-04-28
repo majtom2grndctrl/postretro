@@ -44,7 +44,7 @@ const LIGHT_ANIMATION_FIELDS: &[&str] = &[
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed (the prelude
-/// references `world_query`, `set_light_animation`, `get_component`) and
+/// references `worldQuery`, `setLightAnimation`, `getComponent`) and
 /// before `sandbox(true)` (which freezes `_G`).
 /// The prelude source uses type annotations declared in postretro.d.luau (luau-lsp only); the runtime evaluates the .luau source without loading the declaration file.
 pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
@@ -525,13 +525,13 @@ mod tests {
 
     #[test]
     fn definition_context_rejects_behavior_only_primitive() {
-        // `emit_event` is BehaviorOnly — in the definition state it's a stub.
+        // `emitEvent` is BehaviorOnly — in the definition state it's a stub.
         let (subsys, _ctx) = setup();
         let (ok, msg): (bool, String) = subsys
             .run_source(
                 Which::Definition,
                 r#"
-                local ok, err = pcall(emit_event, { kind = "boom", payload = {} })
+                local ok, err = pcall(emitEvent, { kind = "boom", payload = {} })
                 return ok, tostring(err)
                 "#,
                 "wc.luau",
@@ -539,7 +539,7 @@ mod tests {
             .unwrap();
         assert!(!ok);
         assert!(
-            msg.contains("emit_event") && msg.contains("not available"),
+            msg.contains("emitEvent") && msg.contains("not available"),
             "unexpected: {msg}",
         );
     }
@@ -660,7 +660,7 @@ mod tests {
             .run_source(
                 Which::Behavior,
                 r#"
-                local id = spawn_entity({
+                local id = spawnEntity({
                     position = { x = 0, y = 0, z = 0 },
                     rotation = { pitch = 0, yaw = 0, roll = 0 },
                     scale    = { x = 1, y = 1, z = 1 },
@@ -671,8 +671,8 @@ mod tests {
                     rotation = { pitch = 15.0, yaw = 45.0, roll = -30.0 },
                     scale    = { x = 2.0, y = 2.0, z = 2.0 },
                 }
-                set_component(id, "Transform", input)
-                local out = get_component(id, "Transform")
+                setComponent(id, "Transform", input)
+                local out = getComponent(id, "Transform")
                 return
                   out.position.x, out.position.y, out.position.z,
                   out.rotation.pitch, out.rotation.yaw, out.rotation.roll,
@@ -784,5 +784,4 @@ mod tests {
             assert_eq!(sequence_ty, "function", "{which:?}: sequence");
         }
     }
-
 }

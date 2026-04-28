@@ -28,7 +28,7 @@
 //
 // Pooled contexts are NOT isolation boundaries. Scripts writing to `globalThis`
 // (QuickJS) can leave state for the next acquirer. All persistent entity state
-// must flow through Rust via `set_component`/`get_component`. Luau's
+// must flow through Rust via `setComponent`/`getComponent`. Luau's
 // `sandbox(true)` already blocks new global writes at the VM level.
 
 use std::cell::RefCell;
@@ -488,11 +488,11 @@ mod tests {
         assert_eq!(pool.idle_len(), 3);
         assert_eq!(pool.in_flight(), 1);
 
-        // Primitives must already be installed — `entity_exists(0)` should
+        // Primitives must already be installed — `entityExists(0)` should
         // evaluate without throwing and return `false` against a fresh
         // registry.
         handle.context().with(|ctx| {
-            let v: bool = ctx.eval("entity_exists(0)").unwrap();
+            let v: bool = ctx.eval("entityExists(0)").unwrap();
             assert!(!v);
         });
     }
@@ -514,7 +514,7 @@ mod tests {
         // primitives still execute correctly after the reset-on-release pass.
         let h2 = pool.acquire().unwrap();
         h2.context().with(|ctx| {
-            let v: bool = ctx.eval("entity_exists(0)").unwrap();
+            let v: bool = ctx.eval("entityExists(0)").unwrap();
             assert!(!v);
         });
     }
@@ -584,7 +584,7 @@ mod tests {
         assert_eq!(pool.idle_len(), 3);
         assert_eq!(pool.in_flight(), 1);
 
-        let v: bool = handle.lua().load("return entity_exists(0)").eval().unwrap();
+        let v: bool = handle.lua().load("return entityExists(0)").eval().unwrap();
         assert!(!v);
     }
 
@@ -600,7 +600,7 @@ mod tests {
 
         // Re-acquire and verify still usable.
         let h2 = pool.acquire().unwrap();
-        let v: bool = h2.lua().load("return entity_exists(0)").eval().unwrap();
+        let v: bool = h2.lua().load("return entityExists(0)").eval().unwrap();
         assert!(!v);
     }
 
@@ -616,7 +616,7 @@ mod tests {
         assert_eq!(pool.capacity(), 3);
 
         // Fallback Lua state must be fully wired (deny-list, primitives).
-        let v: bool = h3.lua().load("return entity_exists(0)").eval().unwrap();
+        let v: bool = h3.lua().load("return entityExists(0)").eval().unwrap();
         assert!(!v);
         drop(h3);
         assert_eq!(pool.capacity(), 3);

@@ -15,10 +15,10 @@ use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
 use mlua::{FromLua, IntoLua, Lua, Value as LuaValue};
 use rquickjs::{Ctx, FromJs, IntoJs, Value as JsValue};
 
-// --- world_query ------------------------------------------------------------
+// --- worldQuery -------------------------------------------------------------
 //
-// `world_query` is a generic ECS query primitive. It lives here alongside the
-// other entity primitives (`entity_exists`, `spawn_entity`, `get_component`)
+// `worldQuery` is a generic ECS query primitive. It lives here alongside the
+// other entity primitives (`entityExists`, `spawnEntity`, `getComponent`)
 // so that adding a second queryable component type only requires editing this
 // file, not the light-specific one.
 
@@ -75,13 +75,13 @@ impl FromLua for WorldQueryFilterInput {
     }
 }
 
-/// Parsed and validated form of the filter passed to `world_query`. Extend
+/// Parsed and validated form of the filter passed to `worldQuery`. Extend
 /// with new variants as additional queryable component types are added.
 enum QueryFilter {
     Light { tag: Option<String> },
 }
 
-/// Parse the filter object passed to `world_query`. Returns the component
+/// Parse the filter object passed to `worldQuery`. Returns the component
 /// kind and the optional tag string. Unknown component names surface as
 /// `InvalidArgument`.
 fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilter, ScriptError> {
@@ -89,7 +89,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "light" => Ok(QueryFilter::Light { tag }),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
-                "world_query: unknown component `{other}`; supported components: \"light\""
+                "worldQuery: unknown component `{other}`; supported components: \"light\""
             ),
         }),
     }
@@ -108,7 +108,7 @@ pub(crate) fn register_world_query(registry: &mut PrimitiveRegistry, ctx: Script
     // That side-steps the `'_`-inside-closure lifetime problem writing a raw
     // `rquickjs::Ctx<'_> -> Value<'_>` closure would hit.
     registry
-        .register("world_query", {
+        .register("worldQuery", {
             let ctx = ctx.clone();
             move |filter: WorldQueryFilterInput| -> Result<JsonValue, ScriptError> {
                 let filter = parse_query_filter(&filter.component, filter.tag)?;
@@ -175,12 +175,12 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     super::event_dispatch::register_shared_types(registry);
     super::event_dispatch::register_register_handler(registry, ctx.handlers.clone());
     super::primitives_light::register_shared_types(registry);
-    super::primitives_light::register_sp6_primitives(registry, ctx.clone());
+    super::primitives_light::register_light_entity_primitives(registry, ctx.clone());
     register_world_query(registry, ctx.clone());
 
-    // entity_exists --------------------------------------------------------
+    // entityExists ---------------------------------------------------------
     registry
-        .register("entity_exists", {
+        .register("entityExists", {
             let ctx = ctx.clone();
             move |id: EntityId| -> Result<bool, ScriptError> {
                 Ok(ctx.registry.borrow().exists(id))
@@ -191,9 +191,9 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .param("id", "EntityId")
         .finish();
 
-    // spawn_entity ---------------------------------------------------------
+    // spawnEntity ----------------------------------------------------------
     registry
-        .register("spawn_entity", {
+        .register("spawnEntity", {
             let ctx = ctx.clone();
             move |transform: Transform| -> Result<EntityId, ScriptError> {
                 ctx.registry
@@ -209,9 +209,9 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .param("transform", "Transform")
         .finish();
 
-    // despawn_entity -------------------------------------------------------
+    // despawnEntity --------------------------------------------------------
     registry
-        .register("despawn_entity", {
+        .register("despawnEntity", {
             let ctx = ctx.clone();
             move |id: EntityId| -> Result<(), ScriptError> {
                 ctx.registry.borrow_mut().despawn(id)?;
@@ -223,9 +223,9 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .param("id", "EntityId")
         .finish();
 
-    // get_component --------------------------------------------------------
+    // getComponent ---------------------------------------------------------
     registry
-        .register("get_component", {
+        .register("getComponent", {
             let ctx = ctx.clone();
             move |id: EntityId, kind: ComponentKind| -> Result<ComponentValue, ScriptError> {
                 let reg = ctx.registry.borrow();
@@ -247,9 +247,9 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .param("kind", "ComponentKind")
         .finish();
 
-    // set_component --------------------------------------------------------
+    // setComponent ---------------------------------------------------------
     registry
-        .register("set_component", {
+        .register("setComponent", {
             let ctx = ctx.clone();
             move |id: EntityId,
                   kind: ComponentKind,
@@ -264,7 +264,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                     _ => {
                         return Err(ScriptError::InvalidArgument {
                             reason: format!(
-                                "set_component: kind {:?} does not match value discriminant",
+                                "setComponent: kind {:?} does not match value discriminant",
                                 kind
                             ),
                         });
@@ -285,9 +285,9 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .param("value", "ComponentValue")
         .finish();
 
-    // emit_event (broadcast) ----------------------------------------------
+    // emitEvent (broadcast) -----------------------------------------------
     registry
-        .register("emit_event", {
+        .register("emitEvent", {
             let ctx = ctx.clone();
             move |event: ScriptEvent| -> Result<(), ScriptError> {
                 ctx.events.borrow_mut().broadcast.push_back(event);
@@ -299,9 +299,9 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
         .param("event", "ScriptEvent")
         .finish();
 
-    // send_event (targeted) -----------------------------------------------
+    // sendEvent (targeted) ------------------------------------------------
     registry
-        .register("send_event", {
+        .register("sendEvent", {
             let ctx = ctx.clone();
             move |target: EntityId, event: ScriptEvent| -> Result<(), ScriptError> {
                 ctx.events.borrow_mut().targeted.push_back((target, event));
@@ -330,21 +330,21 @@ mod tests {
     #[test]
     fn register_all_installs_expected_primitives() {
         let (r, _ctx) = registry_with_day_one();
-        // 7 day-one primitives + `registerHandler` (SP5) + `world_query` and
-        // `set_light_animation` (SP6).
+        // 7 day-one primitives + `registerHandler` (SP5) + `worldQuery` and
+        // `setLightAnimation` (SP6).
         assert_eq!(r.len(), 10);
         let names: Vec<_> = r.iter().map(|p| p.name).collect();
         for expected in [
-            "entity_exists",
-            "spawn_entity",
-            "despawn_entity",
-            "get_component",
-            "set_component",
-            "emit_event",
-            "send_event",
+            "entityExists",
+            "spawnEntity",
+            "despawnEntity",
+            "getComponent",
+            "setComponent",
+            "emitEvent",
+            "sendEvent",
             "registerHandler",
-            "world_query",
-            "set_light_animation",
+            "worldQuery",
+            "setLightAnimation",
         ] {
             assert!(names.contains(&expected), "missing primitive {expected}");
         }
@@ -363,11 +363,11 @@ mod tests {
             for p in r.iter() {
                 (p.quickjs_installer)(&jsctx).unwrap();
             }
-            let got_live: bool = jsctx.eval(format!("entity_exists({raw})")).unwrap();
+            let got_live: bool = jsctx.eval(format!("entityExists({raw})")).unwrap();
             assert!(got_live);
 
             let got_bogus: bool = jsctx
-                .eval(format!("entity_exists({})", raw.wrapping_add(1)))
+                .eval(format!("entityExists({})", raw.wrapping_add(1)))
                 .unwrap();
             // raw+1 changes the low-16 index bits — a different, unallocated slot.
             assert!(!got_bogus);
@@ -385,7 +385,7 @@ mod tests {
             (p.luau_installer)(&lua).unwrap();
         }
         let got_live: bool = lua
-            .load(format!("return entity_exists({raw})"))
+            .load(format!("return entityExists({raw})"))
             .eval()
             .unwrap();
         assert!(got_live);

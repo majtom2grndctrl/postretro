@@ -1,10 +1,10 @@
 // Script-facing light component. Mirrors `MapLight` minus compiler-only
 // concerns (`bake_only`, `is_dynamic`). Populated by the light bridge at
 // level load from `LevelWorld.lights`; scripts mutate it through
-// `LightEntity.setAnimation` (Sub-plan 6) and the bridge syncs the result
-// into the renderer's GPU light buffer each frame.
+// `LightEntity.setAnimation` and the bridge syncs the result into the
+// renderer's GPU light buffer each frame.
 //
-// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 3
+// See: context/lib/scripting.md §10
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,7 @@ pub(crate) enum FalloffKind {
 ///   and clears `animation`. The GPU descriptor itself never carries `play_count`;
 ///   completion is CPU-side.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct LightAnimation {
     pub(crate) period_ms: f32,
     /// `None` = 0.0. Stored in `[0.0, 1.0)`; the bridge `fract`s any larger
@@ -71,6 +72,7 @@ pub(crate) struct LightAnimation {
 /// bridge casts at the population seam. Script-facing position is single
 /// precision; the baker retains double precision upstream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct LightComponent {
     pub(crate) origin: [f32; 3],
     pub(crate) light_type: LightKind,
@@ -83,11 +85,12 @@ pub(crate) struct LightComponent {
     pub(crate) cone_direction: Option<[f32; 3]>,
     pub(crate) cast_shadows: bool,
     /// Whether the source `MapLight.is_dynamic` flag was set. Script handles
-    /// read this as `_isDynamic` to gate `color` animation: color animation on
+    /// read this as `isDynamic` to gate `color` animation: color animation on
     /// a baked light would produce a direct/indirect mismatch (SH indirect was
     /// baked at compile-time color). The Rust primitive enforces this at
-    /// `set_light_animation`; SP7 vocabulary layers pre-check the handle's
-    /// snapshot and throw a descriptive error before the primitive call.
+    /// `setLightAnimation`; `sdk/lib/world.ts` / `world.luau` `wrapLightEntity`
+    /// pre-checks the handle snapshot and throws a descriptive error before the
+    /// primitive call.
     #[serde(default)]
     pub(crate) is_dynamic: bool,
     #[serde(default)]
@@ -132,7 +135,7 @@ mod tests {
         // A scripted animation with only `period_ms` + `brightness` should
         // deserialize without requiring `phase`, `play_count`, `color`, or
         // `direction` keys.
-        let json = r#"{"period_ms": 500.0, "brightness": [0.1, 1.0]}"#;
+        let json = r#"{"periodMs": 500.0, "brightness": [0.1, 1.0]}"#;
         let anim: LightAnimation = serde_json::from_str(json).unwrap();
         assert_eq!(anim.period_ms, 500.0);
         assert_eq!(anim.phase, None);

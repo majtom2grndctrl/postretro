@@ -315,7 +315,7 @@ mod tests {
         let path = temp_script(
             "dispatch.luau",
             r#"
-            spawn_entity({
+            spawnEntity({
                 position = { x = 0, y = 0, z = 0 },
                 rotation = { pitch = 0, yaw = 0, roll = 0 },
                 scale    = { x = 1, y = 1, z = 1 },
@@ -379,7 +379,7 @@ mod tests {
         let path = temp_script(
             "dispatch.js",
             r#"
-            spawn_entity({
+            spawnEntity({
                 position: { x: 0, y: 0, z: 0 },
                 rotation: { pitch: 0, yaw: 0, roll: 0 },
                 scale:    { x: 1, y: 1, z: 1 },
@@ -430,7 +430,7 @@ mod tests {
         let (rt, _ctx) = runtime();
         let handle = rt.quickjs_pool().acquire().unwrap();
         handle.context().with(|ctx| {
-            let v: bool = ctx.eval("entity_exists(0)").unwrap();
+            let v: bool = ctx.eval("entityExists(0)").unwrap();
             assert!(!v);
         });
     }
@@ -439,7 +439,7 @@ mod tests {
     fn pooled_luau_context_calls_entity_exists() {
         let (rt, _ctx) = runtime();
         let handle = rt.luau_pool().acquire().unwrap();
-        let v: bool = handle.lua().load("return entity_exists(0)").eval().unwrap();
+        let v: bool = handle.lua().load("return entityExists(0)").eval().unwrap();
         assert!(!v);
     }
 
@@ -488,7 +488,7 @@ mod tests {
             ctx.eval::<(), _>(
                 r#"
                 for (let i = 0; i < 1000; i++) {
-                    entity_exists(i);
+                    entityExists(i);
                 }
                 "#,
             )

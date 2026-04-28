@@ -1,4 +1,4 @@
-// World-query vocabulary: typed wrapper around `world_query` plus the
+// World-query vocabulary: typed wrapper around `worldQuery` plus the
 // `LightEntity` handle methods. The primitive does the actual work; this
 // file exists so modders import `world` and `LightEntity` the same way
 // they import other vocabulary helpers, and so the handle's convenience
@@ -39,9 +39,9 @@
 // ---------------------------------------------------------------------------
 
 import {
-  get_component,
-  set_light_animation,
-  world_query,
+  getComponent,
+  setLightAnimation,
+  worldQuery,
 } from "postretro";
 import type {
   Entity,
@@ -117,7 +117,7 @@ export interface World {
    * the literal `component` string: `"light"` yields `LightEntity[]`
    * (with convenience methods `setAnimation`, `setIntensity`,
    * `setColor`); any other component name yields base `Entity[]`
-   * (id, transform, tag) — use `get_component` to access component data.
+   * (id, transform, tag) — use `getComponent` to access component data.
    *
    * **Note:** Unknown `component` strings (e.g. typos like `"lights"`)
    * compile without error but throw `InvalidArgument` at runtime; only
@@ -136,7 +136,7 @@ export const world: World = {
       component: filter.component,
       tag: filter.tag ?? null,
     };
-    const raw = world_query(normalized);
+    const raw = worldQuery(normalized);
     if (filter.component === "light") {
       const lights = (raw as ReadonlyArray<GeneratedLightEntity>).map(
         wrapLightEntity,
@@ -171,7 +171,7 @@ function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntity {
           `setAnimation: light ${idDebug(id)} is not dynamic; color animation is only valid on dynamic lights`,
         );
       }
-      set_light_animation(id, anim);
+      setLightAnimation(id, anim);
     },
 
     setIntensity(
@@ -186,7 +186,7 @@ function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntity {
         transitionMs,
         easing,
       );
-      set_light_animation(id, anim);
+      setLightAnimation(id, anim);
     },
 
     setColor(
@@ -206,7 +206,7 @@ function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntity {
         transitionMs,
         easing,
       );
-      set_light_animation(id, anim);
+      setLightAnimation(id, anim);
     },
   };
 
@@ -214,7 +214,7 @@ function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntity {
 }
 
 function readLightComponent(id: EntityId): LightComponent {
-  const c = get_component(id, "Light");
+  const c = getComponent(id, "Light");
   if (c.kind !== "Light") {
     throw new Error(
       `expected Light component on entity ${idDebug(id)}, got ${c.kind}`,

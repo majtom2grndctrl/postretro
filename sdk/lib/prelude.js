@@ -4,7 +4,7 @@ const world = {
             component: filter.component,
             tag: filter.tag ?? null
         };
-        const raw = world_query(normalized);
+        const raw = worldQuery(normalized);
         if (filter.component === "light") {
             const lights = raw.map(wrapLightEntity);
             return lights;
@@ -25,12 +25,12 @@ function wrapLightEntity(snapshot) {
             if (anim && anim.color && !snapshot.isDynamic) {
                 throw new Error(`setAnimation: light ${idDebug(id)} is not dynamic; color animation is only valid on dynamic lights`);
             }
-            set_light_animation(id, anim);
+            setLightAnimation(id, anim);
         },
         setIntensity (target, transitionMs = 0, easing) {
             const live = readLightComponent(id);
             const anim = buildIntensityAnimation(live.intensity, target, transitionMs, easing);
-            set_light_animation(id, anim);
+            setLightAnimation(id, anim);
         },
         setColor (target, transitionMs = 0, easing) {
             if (!snapshot.isDynamic) {
@@ -42,13 +42,13 @@ function wrapLightEntity(snapshot) {
                 y: target[1],
                 z: target[2]
             }, transitionMs, easing);
-            set_light_animation(id, anim);
+            setLightAnimation(id, anim);
         }
     };
     return handle;
 }
 function readLightComponent(id) {
-    const c = get_component(id, "Light");
+    const c = getComponent(id, "Light");
     if (c.kind !== "Light") {
         throw new Error(`expected Light component on entity ${idDebug(id)}, got ${c.kind}`);
     }

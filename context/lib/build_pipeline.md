@@ -113,6 +113,7 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | Lightmap | 22 | Always (placeholder atlas when a map has no static lights) |
 | AnimatedLightChunks | 23 | When compiled with animated lights |
 | AnimatedLightWeightMaps | 25 | When compiled with animated lights; per-texel weight maps for the compose pass |
+| LightTags | 26 | When at least one light carries a tag; one space-delimited tag-list string per AlphaLight record (empty string = untagged) |
 
 ### Runtime visibility
 

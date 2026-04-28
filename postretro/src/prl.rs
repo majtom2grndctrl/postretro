@@ -316,6 +316,8 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 cone_direction: r.cone_direction,
                 cast_shadows: r.cast_shadows,
                 is_dynamic: r.is_dynamic,
+                // Tags are intentionally left empty here; they are populated in
+                // the separate LightTags section pass below.
                 tags: vec![],
                 leaf_index: r.leaf_index,
             }

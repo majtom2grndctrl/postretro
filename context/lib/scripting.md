@@ -42,6 +42,8 @@ Register primitives before constructing the runtime. Each registration captures 
 
 Once registered, the runtime installs each primitive into every context it creates — including pre-warmed pool contexts. Primitives cannot be added after construction.
 
+**Naming convention:** All primitive names are registered in camelCase (e.g., `spawnEntity`, `getComponent`, `worldQuery`), matching the idiom of the target languages (TypeScript, JavaScript, Luau). Internal Rust code uses snake_case field names and serde `rename_all = "camelCase"` to bridge the two conventions.
+
 Entry points: `postretro/src/scripting/primitives.rs` (day-one primitive set); `postretro/src/scripting/primitives_registry.rs` (builder and registry).
 
 ---
@@ -62,12 +64,12 @@ Wrap primitive closures in `catch_unwind` at the FFI boundary. Caught panics sur
 
 ## 7. SDK Type Definitions
 
-In debug builds, the runtime emits type-definition files at startup from registered primitive signatures:
+Type-definition files are generated from the primitive registry via `cargo run -p postretro --bin gen-script-types`:
 
 - `sdk/types/postretro.d.ts` — TypeScript declarations
 - `sdk/types/postretro.d.luau` — Luau type annotations
 
-Files stay in sync automatically when primitives change. Scripts written against the SDK get IDE completions and type checking. Not emitted in release builds.
+In debug builds, the runtime also emits these files at startup as a convenience for developers (so the working tree stays current while the engine is running). For CI and pre-commit checks, a `cargo test` drift-detection test (`committed_sdk_types_match_current_registry`) fails if the committed files do not match the current registry, catching stale type definitions. Scripts written against the SDK get IDE completions and type checking.
 
 ### SDK library globals
 

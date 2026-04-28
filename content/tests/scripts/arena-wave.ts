@@ -1,5 +1,5 @@
 import { registerHandler } from "postretro";
-import { world } from "./sdk/world";
+import { world } from "../../../sdk/lib/world";
 
 registerHandler("levelLoad", () => {
   setupArena1Wave();

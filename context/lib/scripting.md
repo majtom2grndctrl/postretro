@@ -42,7 +42,7 @@ Register primitives before constructing the runtime. Each registration captures 
 
 Once registered, the runtime installs each primitive into every context it creates — including pre-warmed pool contexts. Primitives cannot be added after construction.
 
-**Naming convention:** All primitive names are registered in camelCase (e.g., `spawnEntity`, `getComponent`, `worldQuery`), matching the idiom of the target languages (TypeScript, JavaScript, Luau). Internal Rust code uses snake_case field names and serde `rename_all = "camelCase"` to bridge the two conventions.
+**Naming convention:** Primitive names are camelCase, matching the idiom of the target languages (TypeScript, JavaScript, Luau). Wire format field names match the script-facing API; internal Rust representation may differ.
 
 Entry points: `postretro/src/scripting/primitives.rs` (day-one primitive set); `postretro/src/scripting/primitives_registry.rs` (builder and registry).
 
@@ -69,7 +69,7 @@ Type-definition files are generated from the primitive registry via `cargo run -
 - `sdk/types/postretro.d.ts` — TypeScript declarations
 - `sdk/types/postretro.d.luau` — Luau type annotations
 
-In debug builds, the runtime also emits these files at startup as a convenience for developers (so the working tree stays current while the engine is running). For CI and pre-commit checks, a `cargo test` drift-detection test (`committed_sdk_types_match_current_registry`) fails if the committed files do not match the current registry, catching stale type definitions. Scripts written against the SDK get IDE completions and type checking.
+In debug builds, the runtime also emits these files at startup as a convenience for developers (so the working tree stays current while the engine is running). For CI and pre-commit checks, a drift-detection test in `cargo test` fails if the committed files do not match the current registry, catching stale type definitions. Scripts written against the SDK get IDE completions and type checking.
 
 ### SDK library globals
 

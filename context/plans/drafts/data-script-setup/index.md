@@ -40,7 +40,9 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
 - Vue-style compiler transformation of `setup()` return (future — hides the
   explicit `return` from the author; current visible form stays until API
   shape is settled)
-- `ctx` parameter contents — placeholder only; nothing meaningful passed yet
+- `ctx` parameter contents — placeholder only; nothing meaningful passed yet.
+  `ctx` carries above-level data only (campaign save, global flags); level
+  entity query access is a separate future concern
 - Individual effect primitive implementations (moveGeometry, activateGroup,
   spawnGroup, setLightAnimation, etc.) — dispatch mechanism is in scope;
   each primitive is a follow-on task
@@ -182,6 +184,13 @@ export function setup(ctx) {
 No Rust call occurs. The `return` is the FFI boundary — Rust calls `setup()`,
 receives the object, deserializes it in one pass.
 
+**Computation before return:** `setup()` may do real work before returning —
+query entities, sort by position, derive timing from counts, build descriptor
+chains programmatically. The constraint is on the *return value*, not on what
+happens inside `setup()`. As long as the return is a descriptor bundle, the VM
+context is released cleanly after return regardless of how the bundle was
+computed.
+
 **Hot reload readiness:** effect and entity type registries must be clearable
 without touching behavior script handlers. Teardown path when hot reload lands:
 clear data registries → re-run `setup()` → repopulate. No behavior restart
@@ -220,3 +229,11 @@ requirement.
   path open for hot reload: a broken data script can be fixed and
   re-executed without restarting the level. No `--strict` flag — not worth
   the surface area before hot reload exists.
+- **ID-based effect targeting:** tag-only descriptors cover group-oriented
+  primitives (`moveGeometry`, `activateGroup`, `spawnGroup`) where acting on
+  all entities sharing a tag is the right semantic. Sequenced primitives (light
+  wave order, ordered geometry reveals) computed inside `setup()` may need to
+  target specific entities rather than a whole tag group. Two options: dynamic
+  tag assignment from `setup()` (setup writes tags back to entities before
+  returning), or entity-ID-based descriptor fields alongside the existing tag
+  field. Resolve when the first sequencing primitive is specced.

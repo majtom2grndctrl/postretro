@@ -729,7 +729,7 @@ impl ApplicationHandler for App {
                             if self.level_load_fired {
                                 self.script_runtime.fire_level_load();
                             }
-                            log::info!("[Scripting] hot reload complete");
+                            log::info!("[Scripting] hot reload finished (check earlier output for per-file errors)");
                         }
                     }
                     Ok(false) => {}

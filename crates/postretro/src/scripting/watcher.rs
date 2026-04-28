@@ -236,7 +236,7 @@ impl ScriptWatcher {
         // Spawn the compile-worker. This thread runs the slow path.
         let compile_worker = std::thread::Builder::new()
             .name("postretro-scripting-compile-worker".to_string())
-            .spawn(move || compile_worker_loop(event_rx, reload_tx, ts_compiler, &script_root))
+            .spawn(move || compile_worker_loop(event_rx, reload_tx, ts_compiler))
             .map_err(|e| ScriptError::InvalidArgument {
                 reason: format!("failed to spawn compile-worker thread: {e}"),
             })?;
@@ -278,11 +278,7 @@ fn compile_worker_loop(
     event_rx: Receiver<DebouncedEvent>,
     reload_tx: Sender<ReloadRequest>,
     ts_compiler: Option<TsCompilerPath>,
-    script_root: &Path,
 ) {
-    // `script_root` is kept here (and passed to `handle_path`) for potential
-    // future use (e.g. computing relative paths for error messages).
-    let _ = script_root;
     while let Ok(ev) = event_rx.recv() {
         // Filter out event kinds that can't represent a content edit. Modify
         // and Create are the interesting ones. `Remove` is ignored — a file

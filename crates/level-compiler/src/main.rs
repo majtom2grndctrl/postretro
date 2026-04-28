@@ -553,6 +553,9 @@ where
 /// If it grows (e.g. add POSTRETRO_SCRIPTS_BUILD env var), promote to a
 /// shared crate.
 fn find_scripts_build() -> Option<PathBuf> {
+    // In dev, `cargo run` places all workspace binaries in the same
+    // `target/debug/` (or `target/release/`) directory, so `scripts-build`
+    // will be a sibling of the level-compiler binary — step 1 finds it.
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
@@ -671,7 +674,7 @@ fn compile_worldspawn_script(
             if js_path.is_file() {
                 log::warn!(
                     "[prl-build] scripts-build not found; using existing compiled artifact {} \
-                     (mtime >= source). Install scripts-build or ship it next to prl-build to recompile.",
+                     (mtime > source). Install scripts-build or ship it next to prl-build to recompile.",
                     js_path.display()
                 );
                 Ok(())
@@ -684,17 +687,22 @@ fn compile_worldspawn_script(
     }
 }
 
-/// Returns `Some(true)` when the `.js` sibling exists with mtime >= the `.ts`,
-/// `Some(false)` when the `.js` is stale or missing, `None` if either mtime
-/// cannot be read (treated as "unknown — recompile").
+/// Returns `Some(true)` when the `.js` sibling exists with mtime strictly
+/// greater than the `.ts`, `Some(false)` when the `.js` is stale or missing,
+/// `None` if either mtime cannot be read (treated as "unknown — recompile").
+///
+/// Using `>` (not `>=`): a `.ts` and `.js` written in the same second have
+/// equal mtimes, which should trigger recompilation. `>=` would falsely treat
+/// that as fresh.
+/// mtime is unreliable after `git checkout` and on network filesystems — this
+/// is best-effort, not a correctness gate.
 fn js_is_fresh(ts_path: &std::path::Path, js_path: &std::path::Path) -> Option<bool> {
     if !js_path.is_file() {
         return Some(false);
     }
     let ts_mtime = std::fs::metadata(ts_path).ok()?.modified().ok()?;
     let js_mtime = std::fs::metadata(js_path).ok()?.modified().ok()?;
-    // mtime is unreliable after `git checkout` and on network filesystems — this is best-effort, not a correctness gate.
-    Some(js_mtime >= ts_mtime)
+    Some(js_mtime > ts_mtime)
 }
 
 #[cfg(test)]

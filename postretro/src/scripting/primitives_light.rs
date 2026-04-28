@@ -23,7 +23,7 @@ use super::registry::{Component, ComponentKind, EntityId};
 pub(super) struct LightQueryHandle {
     id: EntityId,
     component: LightComponent,
-    tag: Option<String>,
+    tags: Vec<String>,
 }
 
 /// Build every light-entity handle that matches the supplied `tag` filter.
@@ -35,11 +35,11 @@ pub(super) fn collect_light_handles(ctx: &ScriptCtx, tag: Option<&str>) -> Vec<L
         let Some(light) = LightComponent::from_value(value) else {
             continue;
         };
-        let tag_copy = reg.get_tag(id).ok().flatten().map(|s| s.to_string());
+        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
         out.push(LightQueryHandle {
             id,
             component: light.clone(),
-            tag: tag_copy,
+            tags,
         });
     }
     out
@@ -67,11 +67,8 @@ pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Val
             obj.insert("transform".to_string(), Value::Object(transform));
             obj.insert("isDynamic".to_string(), Value::from(h.component.is_dynamic));
             obj.insert(
-                "tag".to_string(),
-                match h.tag {
-                    Some(t) => Value::String(t),
-                    None => Value::Null,
-                },
+                "tags".to_string(),
+                Value::Array(h.tags.into_iter().map(Value::String).collect()),
             );
             obj.insert("component".to_string(), comp);
             Value::Object(obj)
@@ -379,7 +376,7 @@ mod tests {
             )
             .unwrap();
             if let Some(t) = tag {
-                reg.set_tag(id, Some(t.to_string())).unwrap();
+                reg.set_tags(id, vec![t.to_string()]).unwrap();
             }
         }
         (ctx, id)
@@ -467,12 +464,12 @@ mod tests {
                 JSON.stringify(hs.map(h => ({
                     id: h.id,
                     x: h.transform.position.x,
-                    tag: h.tag,
+                    tags: h.tags,
                     dyn: h.isDynamic,
                 })))
             "#;
             let got: String = qjs.eval(script).unwrap();
-            let expected = format!(r#"[{{"id":{},"x":1,"tag":"foo","dyn":true}}]"#, id.to_raw());
+            let expected = format!(r#"[{{"id":{},"x":1,"tags":["foo"],"dyn":true}}]"#, id.to_raw());
             assert_eq!(got, expected);
         });
     }
@@ -508,7 +505,7 @@ mod tests {
         let r = registry_for(ctx);
         let raw = id.to_raw();
 
-        // QuickJS: assert id, isDynamic, tag, transform.position.
+        // QuickJS: assert id, isDynamic, tags, transform.position.
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
         jsctx.with(|qjs| {
@@ -520,7 +517,7 @@ mod tests {
                     JSON.stringify(hs.map(h => ({
                         id: h.id,
                         isDynamic: h.isDynamic,
-                        tag: h.tag,
+                        tags: h.tags,
                         x: h.transform.position.x,
                         y: h.transform.position.y,
                         z: h.transform.position.z,
@@ -529,7 +526,7 @@ mod tests {
                 )
                 .unwrap();
             let expected = format!(
-                r#"[{{"id":{raw},"isDynamic":true,"tag":"hallway_wave","x":1,"y":2,"z":3}}]"#
+                r#"[{{"id":{raw},"isDynamic":true,"tags":["hallway_wave"],"x":1,"y":2,"z":3}}]"#
             );
             assert_eq!(json, expected);
         });
@@ -537,12 +534,12 @@ mod tests {
         // Luau: assert the same fields via separate return values.
         let lua = mlua::Lua::new();
         install_all_lua(&r, &lua);
-        let (got_id, is_dynamic, tag, x, y, z): (i64, bool, String, f64, f64, f64) = lua
+        let (got_id, is_dynamic, first_tag, x, y, z): (i64, bool, String, f64, f64, f64) = lua
             .load(
                 r#"
                 local hs = world_query({ component = "light", tag = "hallway_wave" })
                 local h = hs[1]
-                return h.id, h.isDynamic, h.tag, h.transform.position.x,
+                return h.id, h.isDynamic, h.tags[1], h.transform.position.x,
                        h.transform.position.y, h.transform.position.z
                 "#,
             )
@@ -550,7 +547,7 @@ mod tests {
             .unwrap();
         assert_eq!(got_id as u32, raw);
         assert!(is_dynamic);
-        assert_eq!(tag, "hallway_wave");
+        assert_eq!(first_tag, "hallway_wave");
         assert!((x - 1.0).abs() < 1e-5);
         assert!((y - 2.0).abs() < 1e-5);
         assert!((z - 3.0).abs() < 1e-5);
@@ -626,7 +623,7 @@ mod tests {
                 },
             )
             .unwrap();
-            reg.set_tag(second, Some("beta".to_string())).unwrap();
+            reg.set_tags(second, vec!["beta".to_string()]).unwrap();
         }
         let r = registry_for(ctx);
         let first_raw = first.to_raw();

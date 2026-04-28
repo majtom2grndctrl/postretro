@@ -178,8 +178,8 @@ impl LightBridge {
             // `set_component` can only fail on a stale ID; the ID was just
             // returned by `try_spawn` on this same borrow so it must be live.
             let _ = registry.set_component(id, component);
-            if let Some(tag) = &light.tag {
-                let _ = registry.set_tag(id, Some(tag.clone()));
+            if !light.tags.is_empty() {
+                let _ = registry.set_tags(id, light.tags.clone());
             }
             self.entity_ids.push(id);
             self.shape.push(MapLightShape {
@@ -473,7 +473,7 @@ fn component_to_map_light(
         cast_shadows: component.cast_shadows,
         is_dynamic,
         // Tag is not used by `pack_light`; script mutations don't touch it.
-        tag: None,
+        tags: vec![],
         leaf_index,
     }
 }
@@ -672,7 +672,7 @@ mod tests {
             cone_direction: [0.0, 0.0, 0.0],
             cast_shadows: false,
             is_dynamic: false,
-            tag: None,
+            tags: vec![],
             leaf_index: 0,
         }
     }
@@ -690,7 +690,7 @@ mod tests {
             cone_direction: [0.0, -1.0, 0.0],
             cast_shadows: true,
             is_dynamic: true,
-            tag: None,
+            tags: vec![],
             leaf_index: 0,
         }
     }
@@ -700,14 +700,14 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         let mut tagged = sample_point_light();
-        tagged.tag = Some("hallway_wave".to_string());
+        tagged.tags = vec!["hallway_wave".to_string()];
         let untagged = sample_spot_light();
         bridge.populate_from_level(&[tagged, untagged], &mut registry, 0);
 
         let tagged_id = bridge.entity_for_map_index(0).unwrap();
         let untagged_id = bridge.entity_for_map_index(1).unwrap();
-        assert_eq!(registry.get_tag(tagged_id).unwrap(), Some("hallway_wave"));
-        assert_eq!(registry.get_tag(untagged_id).unwrap(), None);
+        assert_eq!(registry.get_tags(tagged_id).unwrap(), &["hallway_wave"]);
+        assert!(registry.get_tags(untagged_id).unwrap().is_empty());
     }
 
     #[test]

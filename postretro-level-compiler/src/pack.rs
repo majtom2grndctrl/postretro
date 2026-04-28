@@ -125,13 +125,13 @@ pub fn encode_alpha_lights(lights: &AlphaLightsNs<'_>, tree: &BspTree) -> AlphaL
 /// the caller omits the section entirely in that case so tag-less maps add
 /// zero bytes.
 pub fn encode_light_tags(lights: &AlphaLightsNs<'_>) -> Option<LightTagsSection> {
-    if lights.entries().iter().all(|e| e.light.tag.is_none()) {
+    if lights.entries().iter().all(|e| e.light.tags.is_empty()) {
         return None;
     }
     let tags = lights
         .entries()
         .iter()
-        .map(|e| e.light.tag.clone().unwrap_or_default())
+        .map(|e| e.light.tags.join(" "))
         .collect();
     Some(LightTagsSection { tags })
 }
@@ -1218,7 +1218,7 @@ mod tests {
                 cast_shadows: false,
                 bake_only: false,
                 is_dynamic: false,
-                tag: None,
+                tags: vec![],
             },
             MapLight {
                 origin: DVec3::new(-4.0, 1.0, 0.5),
@@ -1234,7 +1234,7 @@ mod tests {
                 cast_shadows: true,
                 bake_only: false,
                 is_dynamic: false,
-                tag: None,
+                tags: vec![],
             },
             MapLight {
                 origin: DVec3::new(0.0, 100.0, 0.0),
@@ -1250,7 +1250,7 @@ mod tests {
                 cast_shadows: false,
                 bake_only: false,
                 is_dynamic: false,
-                tag: None,
+                tags: vec![],
             },
         ];
 
@@ -1316,7 +1316,7 @@ mod tests {
             cast_shadows: false,
             bake_only: false,
             is_dynamic: false,
-            tag: None,
+            tags: vec![],
         };
 
         let lights = vec![

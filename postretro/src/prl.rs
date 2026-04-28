@@ -147,11 +147,11 @@ pub struct MapLight {
     /// format. `pack_spec_lights` filters on `!is_dynamic` so dynamic lights
     /// are driven by the dynamic `GpuLight` loop, not the static spec buffer.
     pub is_dynamic: bool,
-    /// Optional author-supplied script tag loaded from the `LightTags`
-    /// section (ID 26). Consumed by the scripting bridge at level load to
-    /// populate the entity registry's tag column so scripts can call
-    /// `world.query({ component: "light", tag: "<tag>" })`.
-    pub tag: Option<String>,
+    /// Author-supplied script tags loaded from the `LightTags` section (ID
+    /// 26). Space-delimited in the PRL wire format; split here into a
+    /// `Vec<String>`. An entity matches `world.query({ tag: "t" })` when any
+    /// tag equals `"t"`. Empty means untagged.
+    pub tags: Vec<String>,
     /// BSP leaf index containing the light origin, baked at compile time.
     /// `u32::MAX` (`ALPHA_LIGHT_LEAF_UNASSIGNED`) means the light could not
     /// be assigned to a non-solid leaf and is permanently culled by the
@@ -316,7 +316,7 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 cone_direction: r.cone_direction,
                 cast_shadows: r.cast_shadows,
                 is_dynamic: r.is_dynamic,
-                tag: None,
+                tags: vec![],
                 leaf_index: r.leaf_index,
             }
         })
@@ -538,10 +538,12 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             )));
         }
         let mut tagged = 0usize;
-        for (light, tag) in lights.iter_mut().zip(section.tags.into_iter()) {
-            if !tag.is_empty() {
+        for (light, tag_str) in lights.iter_mut().zip(section.tags.into_iter()) {
+            let tag_list: Vec<String> =
+                tag_str.split_whitespace().map(|t| t.to_string()).collect();
+            if !tag_list.is_empty() {
                 tagged += 1;
-                light.tag = Some(tag);
+                light.tags = tag_list;
             }
         }
         log::info!("[PRL] LightTags: {tagged} tagged lights");

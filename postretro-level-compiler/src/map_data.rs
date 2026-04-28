@@ -246,11 +246,12 @@ pub struct MapLight {
     /// See `context/plans/ready/lighting-dynamic-flag/index.md`.
     pub is_dynamic: bool,
 
-    /// Optional author-supplied tag (FGD `_tag`). Carried through the PRL
-    /// `LightTags` section so the runtime can register each light with the
-    /// scripting entity registry's tag column, enabling
-    /// `world.query({ component: "light", tag: "<tag>" })`.
-    pub tag: Option<String>,
+    /// Author-supplied script tags (FGD `_tags`, space-delimited). Carried
+    /// through the PRL `LightTags` section so the runtime can register each
+    /// light with the scripting entity registry. An entity matches
+    /// `world.query({ component: "light", tag: "t" })` when any of its tags
+    /// equals `"t"`. Empty means untagged.
+    pub tags: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

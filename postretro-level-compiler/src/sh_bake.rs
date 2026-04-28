@@ -911,7 +911,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
-            tag: None,
+            tags: vec![],
         }
     }
 
@@ -1163,7 +1163,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
-            tag: None,
+            tags: vec![],
         };
         let exterior: HashSet<usize> = HashSet::new();
         let lights = std::slice::from_ref(&light);
@@ -1209,7 +1209,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
-            tag: None,
+            tags: vec![],
         };
         let exterior: HashSet<usize> = HashSet::new();
         let lights = std::slice::from_ref(&animated);
@@ -1264,7 +1264,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
-            tag: None,
+            tags: vec![],
         };
         let exterior: HashSet<usize> = HashSet::new();
         let lights = std::slice::from_ref(&light);
@@ -1508,7 +1508,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
-            tag: None,
+            tags: vec![],
         };
         dyn_light.is_dynamic = true;
 

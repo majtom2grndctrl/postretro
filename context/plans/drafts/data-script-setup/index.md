@@ -190,10 +190,13 @@ requirement.
   compiled bytes in PRL. The section also carries a source path metadata field
   (even though it is not consumed yet) so the hot reload watcher can reference
   the original file without a recompile.
-- **Kill counter tag resolution:** does the spawn tag on an entity in the map
-  (`spawnGroup "reactorWave1"`) match directly against the `tag` field in the
-  effect descriptor, or is there an indirection layer? Direct match is simpler;
-  indirection enables aliasing.
+- **Kill counter tag resolution:** ~~direct vs indirection~~ **Resolved:**
+  entities carry a space-delimited `_tags` list (system-wide change —
+  `_tag` → `_tags`, `Option<String>` → `Vec<String>` throughout the scripting
+  registry). An effect's `tag` field matches any entity whose tag list
+  contains that string. Indirection is implicit: `spawnGroup "reactorWave1"`
+  and `_tags "reactorMonster wave1"` let a single entity belong to multiple
+  subscription groups without a separate alias table.
 - **`registerEntities` return shape:** single bulk descriptor or a list of
   per-type handles? Affects the TypeScript signature and how Rust iterates the
   return value.

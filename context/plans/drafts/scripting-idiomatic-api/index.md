@@ -25,10 +25,9 @@ that accesses `component.lightType` or `component.falloffModel` directly.
   (`world.ts`) to call the new primitive names.
 - Update all Rust tests referencing the old primitive names or the old wire
   shape.
-- Add a `build.rs` to the `postretro` crate that regenerates
-  `sdk/types/postretro.d.ts` and `sdk/types/postretro.d.luau` during `cargo
-  build`, replacing the debug-only runtime emission. Type files are always
-  current after any build.
+- Add a drift-detection test that fails if the committed
+  `sdk/types/postretro.d.ts` or `sdk/types/postretro.d.luau` does not match
+  the current registry output, so `cargo test` catches stale type files.
 
 ### Out of scope
 
@@ -49,10 +48,12 @@ that accesses `component.lightType` or `component.falloffModel` directly.
 - [ ] Accessing `component.lightType`, `component.falloffModel`,
   `component.castShadows`, etc. on a light entity handle returned by
   `worldQuery` returns the correct value in both QuickJS and Luau.
-- [ ] `cargo build` (any profile) regenerates `sdk/types/postretro.d.ts` and
-  `sdk/types/postretro.d.luau` with the new camelCase names. Verified by
-  deleting the files, running `cargo build`, and confirming they reappear with
-  correct content.
+- [ ] `sdk/types/postretro.d.ts` and `sdk/types/postretro.d.luau` are committed
+  with the new camelCase names. `cargo run -p postretro --bin gen-script-types`
+  produces no diff against the committed files.
+- [ ] `cargo test -p postretro` includes a drift-detection test that fails when
+  the committed type files do not match the current registry output, with a
+  failure message instructing the developer to re-run `gen-script-types`.
 - [ ] `cargo test` passes across all affected crates.
 
 ## Tasks
@@ -145,36 +146,52 @@ entity handle in both QuickJS and Luau and asserts the value is correct
 (non-undefined/non-nil). This is the crux of the latent wire-format bug being
 fixed.
 
-### Task 3: Add build.rs for compile-time type generation
+### Task 3: Drift-detection test for committed SDK type files
 
-Add `build.rs` at the root of the `postretro` crate. Mirror the `#[path]`
-include pattern already used by `src/bin/gen_script_types.rs`:
+Keep `gen-script-types` as the sole type generator (no `build.rs`). Add a
+`#[test]` in `typedef.rs` that:
 
-```rust
-#[path = "src/scripting/mod.rs"]
-mod scripting;
-```
+1. Builds a full registry via `ScriptCtx::new()` + `register_all`.
+2. Generates the TS and Luau strings via `generate_typescript` /
+   `generate_luau` into memory.
+3. Reads the committed
+   `concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/types/postretro.d.ts")`
+   and `postretro.d.luau` from disk.
+4. Asserts byte-equal match. On mismatch, the failure message names the file
+   and instructs:
+   `re-run \`cargo run -p postretro --bin gen-script-types\` and commit the result`.
 
-Build the primitive registry via `register_all`, call `write_type_definitions`
-targeting `concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/types")`.
+Test name: `committed_sdk_types_match_current_registry`. Gated by no `cfg`;
+runs in every `cargo test` invocation. The test only reads files relative to
+`CARGO_MANIFEST_DIR`, so it works from any CWD and in CI.
 
-Add `cargo:rerun-if-changed` entries for every source file that contributes to
-primitive registration: `src/scripting/primitives.rs`,
-`src/scripting/primitives_light.rs`, `src/scripting/event_dispatch.rs`,
-`src/scripting/primitives_registry.rs`, `src/scripting/typedef.rs`, and
-`build.rs` itself.
+`emit_sdk_types_in_debug` stays as-is — the debug-only runtime emission
+remains the convenience that keeps a developer's working tree current while
+the engine is running. The drift test is the safety net for CI and for cases
+where the engine has not been launched between a registry change and a
+commit.
 
-Add the scripting module's transitive dependencies to `[build-dependencies]` in
-`Cargo.toml` — these are the same workspace crates the scripting module
-imports: `mlua`, `rquickjs`, `serde`, `serde_json`, `glam`, `log`,
-`thiserror`, `anyhow`. Because they are workspace deps compiled for the host
-platform, Cargo shares artifacts with the main crate on native (non-cross)
-builds; no significant compile-time overhead is introduced.
+No changes to `Cargo.toml` (no `[build-dependencies]`, no `build.rs`). The
+existing `gen-script-types` binary already shares the main crate's compiled
+scripting module via `#[path]` from a `[[bin]]` target, so it has zero
+duplicate-compilation cost. A `build.rs` would not — Cargo compiles
+`[build-dependencies]` in a separate graph from `[dependencies]`, and pulling
+`mod.rs` into a build script via `#[path]` would force `mlua`, `rquickjs`,
+`notify`, and `notify-debouncer-full` to be compiled a second time on every
+clean build. The drift test sidesteps that entire problem.
 
-Remove `emit_sdk_types_in_debug` from `typedef.rs` and its call site in
-`runtime.rs` — the build-time path supersedes it. The `gen-script-types`
-binary remains; it provides a manual escape hatch for CI or tooling that needs
-an explicit invocation.
+**Secondary option, not chosen:** split `mod.rs` into a "core" subset
+(registry + typedef + primitives metadata) free of `mlua` / `rquickjs`, and
+include only that core from a `build.rs`. This is feasible but requires
+non-trivial refactoring (the `RegisterablePrimitive` impls in
+`primitives_registry.rs` reference `rquickjs::FromJs` / `mlua::FromLuaMulti`
+in their bounds, so the registry itself currently depends on both runtimes).
+Worth revisiting only if drift-test ergonomics prove painful.
+
+**Longer-term option, out of scope:** factor type-gen into a separate
+`postretro-script-types` lib crate that the engine and a future `build.rs`
+both depend on. Defer until the registry/runtime split above is desirable
+for other reasons.
 
 ### Task 4: Update SDK library call sites
 
@@ -199,13 +216,17 @@ the source.
 **Phase 1 (sequential):** Task 2 — serde rename_all lands first. No scripting
 surface change; purely internal. Confirms tests pass before touching names.
 
-**Phase 2 (concurrent):** Task 1 (primitive renames) and Task 3 (build.rs) —
-independent changes, can land in either order. SDK library call sites are
-broken after Task 1 until Task 4 lands.
+**Phase 2 (sequential):** Task 1 (primitive renames). Re-run
+`gen-script-types` and commit the regenerated `sdk/types/postretro.d.ts` and
+`sdk/types/postretro.d.luau`. SDK library call sites are broken after Task 1
+until Task 4 lands.
 
-**Phase 3 (sequential):** Task 4 — SDK library call sites updated, prelude
-regenerated. Restores end-to-end tests. Run `cargo build` to confirm
-`sdk/types/` is regenerated with the new names.
+**Phase 3 (sequential):** Task 3 (drift-detection test) — added after the
+type files are regenerated so the test passes on first run. Independent of
+Task 4 and may also land before it.
+
+**Phase 4 (sequential):** Task 4 — SDK library call sites updated, prelude
+regenerated. Restores end-to-end tests.
 
 ## Rough sketch
 
@@ -229,4 +250,11 @@ hand-inserted; the change only removes the camel-rename pass on the nested
 
 ## Open questions
 
-None — scope is fully resolved.
+None. Compile-time regeneration via `build.rs` was rejected because
+`scripting/mod.rs` declares `quickjs`, `luau`, `pool`, `runtime`, and
+`watcher`, which transitively pull `mlua`, `rquickjs`, `notify`, and
+`notify-debouncer-full`. `[build-dependencies]` compile in a separate graph
+from `[dependencies]`, so a `build.rs` that includes `mod.rs` via `#[path]`
+would compile those heavy crates twice on every clean build. The
+drift-detection test gives the same guarantee (committed files match the
+registry) without touching the build graph.

@@ -38,7 +38,7 @@ at both compile time and runtime.
 
 ## Acceptance criteria
 
-- [ ] `prl-build` with a `scripts_dir` KVP executes behavior scripts in a compile-time QuickJS
+- [ ] `prl-build` with a `script` KVP executes behavior scripts in a compile-time QuickJS
   context before the lightmap bake step.
 - [ ] `world.query({ component: "light", tag: "arena_1_light" })` in a compiled script returns
   handle objects for all static lights in the map with that tag.

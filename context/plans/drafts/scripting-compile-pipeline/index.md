@@ -17,8 +17,9 @@ dependency and make content packaging coherent — compiling a map also compiles
   "postretro"` replaces `import { world } from "../../../sdk/lib/world"`.
 - **scripts-build only:** remove `tsc`/`npx` fallback detection from the hot-reload watcher;
   scripts-build is the sole TS compiler path.
-- **Level compiler script compilation:** worldspawn `scripts_dir` KVP triggers script
-  compilation in `prl-build`; compiled `.js` files land beside their `.ts` sources.
+- **Level compiler script compilation:** worldspawn `script` KVP names a single `.ts` entry
+  point; `prl-build` compiles it via scripts-build. Convention: one script per map, shared
+  helpers imported from it rather than listed separately.
 - **Hot reload wiring:** connect the watcher to the frame loop and fix the reload path so it
   actually re-evaluates changed scripts in the correct context without duplicating handlers.
 - `const enum` usage across file boundaries documented as unsupported and flagged in
@@ -64,17 +65,16 @@ dependency and make content packaging coherent — compiling a map also compiles
 
 ### Level compiler script compilation
 
-- [ ] worldspawn `scripts_dir` KVP accepted; value is a path relative to the `.map` file.
-- [ ] `prl-build` compiles all `.ts` files in that directory via scripts-build; compiled `.js`
-  files land beside their `.ts` sources.
-- [ ] `prl-build` exits non-zero with a clear error if `scripts_dir` is set, scripts-build is
-  not found, and any `.ts` file lacks a `.js` sibling.
-- [ ] `prl-build` succeeds with a warning if scripts-build is not found but all `.ts` files
-  already have up-to-date `.js` siblings.
-- [ ] FGD `worldspawn` entity created (no `@SolidClass worldspawn` entry exists today)
-  with `scripts_dir`, `ambient_color`, and `fog_pixel_scale` properties — all three are
-  documented in `build_pipeline.md` but missing from the FGD; including them together avoids
-  leaving the FGD half-done.
+- [ ] worldspawn `script` KVP accepted; value is a path to a single `.ts` file, relative to
+  the `.map` file.
+- [ ] `prl-build` compiles that file via scripts-build; compiled `.js` lands beside the `.ts`.
+- [ ] `prl-build` exits non-zero with a clear error if `script` is set, scripts-build is not
+  found, and no `.js` sibling exists.
+- [ ] `prl-build` succeeds with a warning if scripts-build is not found but a `.js` sibling
+  already exists.
+- [ ] FGD `worldspawn` entry created from scratch (no entry exists today) with `script`,
+  `ambient_color`, and `fog_pixel_scale` — all three documented in `build_pipeline.md` but
+  missing from the FGD.
 
 ### Hot reload wiring
 
@@ -126,27 +126,28 @@ tsc/npx detection paths. Set `"isolatedModules": true` in `content/tests/scripts
 
 ### Task 3: Level compiler script compilation
 
-Parse worldspawn `scripts_dir` property in `parse.rs` using the existing `get_property` pattern.
+Parse worldspawn `script` property in `parse.rs` using the existing `get_property` pattern.
 In `main.rs`, add a script compilation step after map parsing: locate scripts-build using the
-same two-step cascade as the engine (next to the compiler binary, then on PATH), enumerate `.ts`
-files in the resolved `scripts_dir`, invoke scripts-build per file, and collect errors. Apply
-the missing-compiler / stale-js fallback logic from the acceptance criteria. `prl-build` should
-skip recompiling a `.ts` file if a `.js` sibling already exists with a newer mtime, so repeated
-`prl-build` runs on an unchanged map don't recompile scripts unnecessarily.
+same two-step cascade as the engine (next to the compiler binary, then on PATH), resolve the
+`script` path relative to the `.map` file, and invoke scripts-build on that single file. Apply
+the missing-compiler / stale-js fallback logic from the acceptance criteria. Skip recompiling if
+a `.js` sibling already exists with a newer mtime.
+
+**Convention note for the FGD:** `script` names one entry-point file. Shared helpers are
+imported from it. Maps do not list multiple scripts; if behavior is complex, it is organized into
+modules that a single entry point imports. Document this convention in the FGD property
+description and in `context/lib/scripting.md §9` (Compilation Tooling).
 
 **Detection cascade — duplication, not sharing.** `watcher.rs` is gated on
 `#[cfg(debug_assertions)]`, so the level-compiler crate cannot import `TsCompilerPath` from it.
 Add a small private `fn find_scripts_build() -> Option<PathBuf>` in
 `crates/level-compiler/src/main.rs` that re-implements the two-step cascade — the same ~20 lines
 as `detect_with` in `watcher.rs`. Add a comment in both locations noting the duplication and
-pointing to the other file. Don't try to share `watcher::TsCompilerPath` across crates today;
-two simple functions is the right tradeoff. If the cascade logic grows in the future, factor it
-into a shared utility crate then.
+pointing to the other file.
 
 Create the FGD `worldspawn` entry from scratch (no `@SolidClass worldspawn` exists in
-`sdk/TrenchBroom/postretro.fgd` today). Include `scripts_dir`, `ambient_color`, and
-`fog_pixel_scale` — all three are already documented in `build_pipeline.md` but missing from the
-FGD, and adding them together avoids a half-done FGD.
+`sdk/TrenchBroom/postretro.fgd` today). Include `script`, `ambient_color`, and
+`fog_pixel_scale` — all three documented in `build_pipeline.md` but missing from the FGD.
 
 ### Task 4: Fix hot reload wiring
 
@@ -260,7 +261,5 @@ if they diverge. This keeps the committed prelude honest without requiring a cus
   named `export const`/`export function`). Verify against the full sdk/lib surface before
   landing — if a re-export form is needed, extend the visitor; don't fall back to the
   self-invoking-function alternative without justification.
-- **Level compiler: scripts_dir or explicit list?** The spec uses a directory (`scripts_dir`)
-  because it's simpler and matches the engine's existing "load everything in scripts/" behavior.
-  An explicit list (`scripts`) would give authors more control but requires a list parser. If
-  the single-directory approach doesn't cover real needs, switch before implementation.
+- **Level compiler: single entry point** — resolved. `script` names one `.ts` file. Shared
+  helpers are imported from it; the map does not list multiple scripts.

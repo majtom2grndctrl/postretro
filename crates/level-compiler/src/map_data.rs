@@ -403,6 +403,11 @@ pub struct MapData {
     /// the SH baker (sub-plan 2) and the runtime direct-lighting path
     /// (sub-plan 3) via the AlphaLights PRL section.
     pub lights: Vec<MapLight>,
+    /// Optional path to the entry-point `.ts` script, taken verbatim from the
+    /// `script` worldspawn KVP. Resolved relative to the `.map` file's
+    /// directory by the compile pipeline. `None` when the worldspawn entity
+    /// has no `script` property. See `context/lib/scripting.md`.
+    pub script: Option<String>,
 }
 
 #[cfg(test)]

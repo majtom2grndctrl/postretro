@@ -2,6 +2,19 @@
 // Parsed by postretro-level-compiler.
 // See: context/lib/build_pipeline.md §Custom FGD
 
+@SolidClass = worldspawn : "World"
+[
+    // Entry-point TypeScript for the level. Resolved relative to the .map
+    // file's directory. Shared helpers are imported from this single file —
+    // do not list multiple scripts. Example: scripts/main.ts.
+    script(string) : "Entry-point .ts script (relative to .map)" : ""
+    // Ambient light color (linear sRGB, 0-255 per channel). Applied as a flat
+    // additive term in the lighting pipeline.
+    ambient_color(color255) : "Ambient light color" : "0 0 0"
+    // Fog density scale. See context/lib/build_pipeline.md for full semantics.
+    fog_pixel_scale(float) : "Fog density scale" : "1.0"
+]
+
 @BaseClass = Light
 [
     light(integer) : "Intensity" : 300

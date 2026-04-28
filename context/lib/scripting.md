@@ -24,9 +24,14 @@ Each runtime maintains two **shared contexts** (long-lived, level-scoped) and a 
 |---------|---------|----------|
 | Definition | Cross-script data declarations | Level lifetime |
 | Behavior | Cross-script global runtime logic | Level lifetime |
+| Data | One-time level descriptor registration (`setup()` only) | Level load only — created once, dropped after `setup()` returns |
 | Pooled (ephemeral) | Per-entity or per-call isolation | Returned to pool after use |
 
 Shared contexts accumulate definitions across calls — cross-script globals are intentional. Pooled contexts are recycled and must be isolated: QuickJS pools freeze the global object on construction; Luau pools use the sandbox flag. All persistent state flows through Rust primitives, not script globals.
+
+**Data context lifecycle.** At level load, after geometry and entities are ready but before `levelLoad` behavior handlers fire, the engine creates a short-lived VM context, calls the exported `setup(ctx)` function once, deserializes the return bundle into the effect registry and entity type registry, then drops the context. No live reference to the data VM remains after `setup()` returns. The effect and entity type registries are separate Rust structures from behavior script state — they can be cleared and repopulated independently (hot reload path).
+
+`registerHandler` is behavior-only; calling it from a data context returns a `WrongContext` error.
 
 ---
 

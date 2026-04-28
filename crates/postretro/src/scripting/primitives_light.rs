@@ -66,6 +66,7 @@ pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Val
             position.insert("z".to_string(), Value::from(z as f64));
             transform.insert("position".to_string(), Value::Object(position));
             obj.insert("transform".to_string(), Value::Object(transform));
+            // Duplicated at the top level so scripts can gate animation without unpacking component.
             obj.insert("isDynamic".to_string(), Value::from(h.component.is_dynamic));
             obj.insert(
                 "tag".to_string(),

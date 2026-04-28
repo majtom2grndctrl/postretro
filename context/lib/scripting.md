@@ -129,7 +129,7 @@ The Luau prelude is not pre-bundled — `world.luau` and `light_animation.luau` 
 
 External scripting APIs stay close to internal data shapes by default. When internal naming, hardware constraints, or usability concerns diverge, the external API simplifies rather than exposes the constraint. The mapping should be traceable, not required to be identical. Examples: a `[f32; 3]` origin field becomes `transform.position` on an entity handle; a GPU loop-count convention (`0` = infinite) becomes `playCount` where omitting the field means forever.
 
-Light entity handles expose `isDynamic` at the top level of the handle object **and** inside the nested `component` sub-object. The top-level copy is hand-inserted in `handles_to_json` by design — scripts gate animation on it without unpacking the component. Do not remove it when refactoring serialization of the `component` sub-object.
+Light entity handles expose `isDynamic` at the top level of the handle object and inside the nested `component` sub-object. The top-level copy is intentional — scripts gate animation on it without unpacking the component.
 
 ---
 

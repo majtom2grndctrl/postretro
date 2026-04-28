@@ -556,6 +556,59 @@ mod tests {
     }
 
     #[test]
+    fn query_by_component_and_tag_matches_first_tag_of_multi_tag_entity() {
+        // Regression: tag migration from `Option<String>` to `Vec<String>` —
+        // an entity with multiple tags must independently match a query for
+        // any one of them.
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        reg.set_tags(id, vec!["wave1".into(), "reactorMonster".into()])
+            .unwrap();
+
+        let matches: Vec<EntityId> = reg
+            .query_by_component_and_tag(ComponentKind::Transform, Some("wave1"))
+            .map(|(eid, _)| eid)
+            .collect();
+        assert_eq!(matches, vec![id]);
+    }
+
+    #[test]
+    fn query_by_component_and_tag_matches_last_tag_of_multi_tag_entity() {
+        // Regression: tag migration from `Option<String>` to `Vec<String>` —
+        // membership match must work for any position in the tag list, not
+        // only the first.
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        reg.set_tags(id, vec!["wave1".into(), "reactorMonster".into()])
+            .unwrap();
+
+        let matches: Vec<EntityId> = reg
+            .query_by_component_and_tag(ComponentKind::Transform, Some("reactorMonster"))
+            .map(|(eid, _)| eid)
+            .collect();
+        assert_eq!(matches, vec![id]);
+    }
+
+    #[test]
+    fn query_by_component_and_tag_excludes_entity_when_no_tag_matches() {
+        // Regression: tag migration from `Option<String>` to `Vec<String>` —
+        // a multi-tag entity must NOT match a tag it doesn't carry.
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        reg.set_tags(id, vec!["wave1".into(), "reactorMonster".into()])
+            .unwrap();
+
+        let matches: Vec<EntityId> = reg
+            .query_by_component_and_tag(ComponentKind::Transform, Some("unrelated"))
+            .map(|(eid, _)| eid)
+            .collect();
+        assert!(
+            matches.is_empty(),
+            "entity {id} matched tag 'unrelated' it does not carry"
+        );
+    }
+
+    #[test]
     fn spawn_despawn_10k_cycles_under_10ms_release_sanity() {
         // Sanity check — not a strict perf target. In debug this runs
         // slower; we assert only on release builds so CI debug runs don't

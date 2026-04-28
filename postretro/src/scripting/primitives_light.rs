@@ -667,6 +667,36 @@ mod tests {
     }
 
     #[test]
+    fn world_query_returns_both_tags_for_multi_tagged_entity() {
+        // Regression: tag migration from `Option<String>` to `Vec<String>` —
+        // a query that matches one tag must still surface every tag the
+        // entity carries in its `tags` array on the JS-facing handle.
+        let (ctx, id) = test_ctx_with_light(true, None);
+        {
+            let mut reg = ctx.registry.borrow_mut();
+            reg.set_tags(id, vec!["a".into(), "b".into()]).unwrap();
+        }
+        let r = registry_for(ctx);
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const hs = world_query({ component: "light", tag: "a" });
+                    JSON.stringify(hs.map(h => ({ id: h.id, tags: h.tags })))
+                    "#,
+                )
+                .unwrap();
+            assert!(
+                json.contains(r#""tags":["a","b"]"#),
+                "expected handle JSON to contain both tags, got: {json}"
+            );
+        });
+    }
+
+    #[test]
     fn world_query_tag_wrong_type_errors() {
         // Regression: numeric `tag` previously fell through `Option::ok()` and
         // returned all lights; now it must surface a conversion error so

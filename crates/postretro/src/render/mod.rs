@@ -2118,6 +2118,7 @@ impl Renderer {
         visible_leaf_mask: &[bool],
         view_proj: Mat4,
         emitters: &[&SmokeEmitter],
+        particle_collections: &[(&str, &[u8])],
     ) -> Result<()> {
         self.debug_frame = self.debug_frame.wrapping_add(1);
         let output = match self.surface.get_current_texture() {
@@ -2409,11 +2410,16 @@ impl Renderer {
             }
         }
 
-        // --- Billboard sprite pass (env_smoke_emitter) ---
+        // --- Billboard sprite pass (env_smoke_emitter + scripted particles) ---
         // After the opaque forward pass, before the wireframe overlay. Alpha
         // additive; depth test enabled, depth write disabled. Batched by
         // sprite-sheet collection: one draw per collection. See §7.4.
-        if self.smoke_pass.has_any_sheet() && !emitters.is_empty() {
+        // The particle collector (Plan 3 sub-plan 4) feeds prepackaged
+        // `(collection, bytes)` slices into the same pass so particle entities
+        // and legacy `SmokeEmitter`s share the billboard pipeline.
+        if self.smoke_pass.has_any_sheet()
+            && (!emitters.is_empty() || !particle_collections.is_empty())
+        {
             let mut collections: Vec<String> = emitters
                 .iter()
                 .map(|e| e.collection().to_string())
@@ -2456,6 +2462,13 @@ impl Renderer {
                 }
                 self.smoke_pass
                     .record_draw(&self.queue, &mut smoke_pass_enc, collection, scratch);
+            }
+            for (collection, bytes) in particle_collections {
+                if bytes.is_empty() {
+                    continue;
+                }
+                self.smoke_pass
+                    .record_draw(&self.queue, &mut smoke_pass_enc, collection, bytes);
             }
         }
 

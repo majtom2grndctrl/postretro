@@ -223,6 +223,8 @@ fn main() -> Result<()> {
         sequence_registry,
         progress_tracker: ProgressTracker::new(),
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
+        emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
+        particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
         level_load_fired: false,
         script_time: 0.0,
     };
@@ -535,6 +537,19 @@ struct App {
     /// `GpuLight` bytes which the renderer uploads via `upload_bridge_lights`.
     /// See: context/lib/scripting.md
     light_bridge: scripting_systems::light_bridge::LightBridge,
+
+    /// Emitter bridge state: per-emitter accumulators, spin-tween elapsed
+    /// time, and per-emitter LCG. Walks every `BillboardEmitterComponent`
+    /// each game-logic tick after script `on_tick` and before particle sim.
+    /// See: context/lib/scripting.md
+    emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
+
+    /// Particle render collector: walks `ParticleState` entities once per
+    /// frame in the Render stage, packs `SpriteInstance` bytes per sprite
+    /// collection, and hands the byte slices to `SmokePass::record_draw`
+    /// alongside the legacy `SmokeEmitter` path.
+    /// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 4
+    particle_render: scripting_systems::particle_render::ParticleRenderCollector,
 
     /// Set once the `levelLoad` event has fired. Gates the first-tick
     /// invocation so `levelLoad` handlers are guaranteed to run before the
@@ -955,6 +970,31 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(renderer) = self.renderer.as_mut() {
+                    // Emitter bridge — Game Logic stage, after script
+                    // `on_tick` and before particle sim. Walks every
+                    // `BillboardEmitterComponent`, handles burst/rate-based
+                    // emission, advances any active spin animation, and
+                    // spawns new particle entities into the registry. The
+                    // sim that runs immediately afterward is what advances
+                    // the just-spawned particles' first frame so they don't
+                    // appear stuck at origin.
+                    {
+                        let mut registry = self.script_ctx.registry.borrow_mut();
+                        self.emitter_bridge
+                            .update(&mut registry, frame_dt, self.script_time);
+                    }
+
+                    // Particle simulation — Game Logic stage, after the
+                    // emitter bridge (Plan 3 sub-plan 3) and before the
+                    // light bridge / render. Integrates velocity, applies
+                    // buoyancy/drag, advances curves, and despawns expired
+                    // particles. Pure Rust; scripts never observe
+                    // individual particles.
+                    {
+                        let mut registry = self.script_ctx.registry.borrow_mut();
+                        scripting_systems::particle_sim::tick(&mut registry, frame_dt);
+                    }
+
                     // Light bridge — between Game Logic and Render. Walks the
                     // scripting entity registry, detects mutated
                     // `LightComponent`s, handles `play_count` completion, and
@@ -981,11 +1021,23 @@ impl ApplicationHandler for App {
                     if renderer.is_ready() {
                         let emitter_refs: Vec<&fx::smoke::SmokeEmitter> =
                             self.smoke_emitters.iter().collect();
+                        // Particle render collector — Render stage. Walks the
+                        // entity registry once and packs `SpriteInstance`
+                        // bytes per sprite collection. The renderer consumes
+                        // byte slices; the collector never touches wgpu.
+                        // See: scripting-foundation plan-3 §Sub-plan 4.
+                        {
+                            let registry = self.script_ctx.registry.borrow();
+                            self.particle_render.collect(&registry);
+                        }
+                        let particle_collections: Vec<(&str, &[u8])> =
+                            self.particle_render.iter_collections().collect();
                         if let Err(err) = renderer.render_frame_indirect(
                             &visible_cells,
                             &visible_leaf_mask,
                             view_proj,
                             &emitter_refs,
+                            &particle_collections,
                         ) {
                             self.exit_result = Err(err);
                             event_loop.exit();

@@ -5,4 +5,7 @@
 //
 // See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 4
 
+pub(crate) mod emitter_bridge;
 pub(crate) mod light_bridge;
+pub(crate) mod particle_render;
+pub(crate) mod particle_sim;

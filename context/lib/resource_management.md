@@ -24,7 +24,7 @@ TrenchBroom requires the collection subdirectory structure for texture browsing.
 
 ### 1.2 PRL Texture References
 
-PRL files store a deduplicated texture name list (TextureNames section). No pixel data. At load time, the engine matches texture name strings from PRL face data against PNG filenames in the `textures/` tree. For each loaded diffuse, the loader also probes for `{name}_s.png` (specular) and `{name}_n.png` (normal-map) siblings in the same collection directory; missing or invalid siblings fall back to shared 1×1 placeholders (see §4). Missing diffuse at runtime falls back to a checkerboard placeholder and logs a warning; sibling probes are skipped when the diffuse itself is a placeholder.
+PRL files store a deduplicated texture name list (TextureNames section). No pixel data. At load time, the engine matches texture name strings from PRL face data against PNG filenames in the `textures/` tree. For each loaded diffuse, the loader also probes for `{name}_s.png` (specular), `{name}_n.png` (normal-map), and `{name}_e.png` (emissive mask) siblings in the same collection directory; missing or invalid siblings fall back to shared 1×1 placeholders (see §4). Missing diffuse at runtime falls back to a checkerboard placeholder and logs a warning; sibling probes are skipped when the diffuse itself is a placeholder.
 
 ### 1.3 Sprite Animations
 
@@ -62,6 +62,8 @@ Example prefixes (illustrative, not exhaustive):
 
 | Prefix | Material |
 |--------|----------|
+| `emissive` | Emissive — sole type with rendering bypass (see below) |
+| `neon` | Neon — aesthetic type (shininess, future audio behaviors); not emissive |
 | `metal` | Metal |
 | `concrete` | Concrete |
 | `grate` | Grate |
@@ -70,7 +72,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive flag** | Implemented — flag on enum variant. Rendering bypass planned. |
+| **Emissive rendering bypass** | Implemented — `emissive_` surfaces render at full albedo brightness, bypassing lightmap and dynamic light modulation. `emissive_intensity` controls per-surface bypass strength (1.0 = full bypass; values above 1.0 are bloom intensity targets for a future bloom pass). The `emissive_` prefix is the bloom opt-in signal — no threshold-driven framebuffer extraction. See §4.5. |
 | **Shininess** | Implemented (Milestone 5) — specular exponent on enum variant. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
@@ -129,6 +131,17 @@ Optional per-texture normal maps for fine surface detail.
 - **Usage:** `python3 tools/gen_normal.py --input <path> --recursive`.
 - **Fallback:** without `numpy`, emits flat `(127, 127, 255)` maps with no surface detail.
 - **Linear guarantee:** no `sRGB`, `gAMA`, or `iCCP` chunks — passes `prl-build` validation.
+
+### 4.5 Emissive Masks
+
+Per-texel emissive weight for `emissive_` prefixed surfaces. The mask blends each texel between normal lighting (weight 0.0) and the emissive bypass (weight 1.0). Non-emissive buckets bind the shared white placeholder at binding 5 without sampling it — the pipeline layout requires all bindings to be satisfied.
+
+- **Naming:** `{name}_e.png` suffix.
+- **Format:** R8Unorm (sampled as `.r` in shader). Must not be sRGB-tagged — sRGB-tagged files are rejected at load time and fall back to the white placeholder with a warning.
+- **Color Space:** Linear.
+- **Dimensions:** Must match the diffuse texture. Mismatch logs a warning and falls back to the white placeholder.
+- **Fallback:** Shared 1×1 white texture (entire surface emissive). Silent substitution for missing `_e.png`.
+- **Bloom opt-in:** The `emissive_` prefix is the bloom opt-in signal for a future bloom pass. `emissive_intensity > 1.0` sets per-surface bloom brightness. No threshold-driven framebuffer extraction.
 
 ---
 

@@ -76,9 +76,17 @@ fall back to the white placeholder, matching the behavior for `_s.png` and `_n.p
 If the diffuse resolved to a placeholder (missing diffuse), skip the `_e.png` probe entirely
 and bind the white placeholder directly. Validate that dimensions match the diffuse texture;
 on mismatch log a warning and substitute the shared 1×1 white placeholder. Missing `_e.png`
-silently substitutes the same placeholder. Bind the emissive mask at `@group(1) @binding(5)`
-in the per-bucket bind group. The existing `base_sampler` at binding 1 also samples the
-emissive mask — no new sampler binding required.
+silently substitutes the same placeholder. Non-emissive material buckets bind the same
+shared 1×1 white placeholder at binding 5 — the pipeline layout requires every binding to
+be satisfied for every draw call, matching how `spec_texture` (binding 2) and `t_normal`
+(binding 4) bind their neutral placeholders for materials that don't use them.
+
+Extend the group 1 `BindGroupLayout` in `render/mod.rs` with a new `BindGroupLayoutEntry`
+at binding 5 (texture_2d, float, non-filtering, fragment visibility) alongside the existing
+diffuse / sampler / spec / uniform / normal entries. Extend each per-bucket `BindGroup`
+assembly with a corresponding `BindGroupEntry` at binding 5 carrying either the loaded
+emissive mask view or the shared white placeholder view. The existing `base_sampler` at
+binding 1 also samples the emissive mask — no new sampler binding required.
 
 ### Task 3: Forward shader emissive bypass
 

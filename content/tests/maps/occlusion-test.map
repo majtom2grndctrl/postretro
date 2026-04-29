@@ -1235,7 +1235,7 @@
 "light" "0"
 "_color" "220 230 255"
 "delay" "0"
-"mangle" "0 0 -160"
+"angles" "0 0 -160"
 "_bake_only" "1"
 }
 // entity 5

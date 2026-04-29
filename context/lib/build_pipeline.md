@@ -49,8 +49,8 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | Entity | Type | Purpose | Key Properties |
 |--------|------|---------|----------------|
 | `light` | point | Omnidirectional light | `light` (intensity), `_color` (RGB), `_fade` (falloff distance, required), `delay` (falloff model), `style` (animation), `_phase` (style cycle offset), `_dynamic` (static-baked vs. runtime dynamic; default 0 = static) |
-| `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles), `mangle` (direction) |
-| `light_sun` | point | Directional sun light | + `mangle` (direction vector) |
+| `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles), `angles` (direction) |
+| `light_sun` | point | Directional sun light | + `angles` (direction vector) |
 | `env_fog_volume` | brush | Per-region fog | `color`, `density`, `falloff`, `scatter` (scatter fraction toward camera; default 0.6) |
 | `env_smoke_emitter` | point | Smoke/particle emitter | `rate` (sprites/sec; default 4), `lifetime` (seconds; default 3.0), `size` (world units; default 0.5), `speed` (drift velocity; default 0.3), `collection` (sprite sheet collection name), `spec_intensity` (Blinn-Phong specular scale; default 0.3) |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |

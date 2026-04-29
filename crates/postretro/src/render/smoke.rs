@@ -1,8 +1,9 @@
-// Billboard sprite rendering pass: camera-facing quads for env_smoke_emitter
-// entities, expanded in the vertex shader from a storage buffer of per-sprite
-// instance data. Lit by the full lighting stack (SH ambient + static
-// multi-source specular via the chunk list + dynamic diffuse). Alpha-additive
-// blend, depth test enabled, depth write disabled.
+// Billboard sprite rendering pass: camera-facing quads for scripted
+// `BillboardEmitterComponent` particles, expanded in the vertex shader from
+// a storage buffer of per-sprite instance data. Lit by the full lighting
+// stack (SH ambient + static multi-source specular via the chunk list +
+// dynamic diffuse). Alpha-additive blend, depth test enabled, depth write
+// disabled.
 //
 // See: context/lib/rendering_pipeline.md §7.4
 
@@ -394,8 +395,8 @@ impl SmokePass {
 
     /// Upload packed sprite instances for one collection and record the draw
     /// on the passed render pass. `packed_bytes` must contain
-    /// `live_count * SPRITE_INSTANCE_SIZE` bytes (see
-    /// [`crate::fx::smoke::SmokeEmitter::pack_instances`]).
+    /// `live_count * SPRITE_INSTANCE_SIZE` bytes (packed by
+    /// `scripting::systems::particle_render::pack_particle_instance`).
     ///
     /// This is a **per-collection** draw: the caller batches emitters sharing
     /// a collection into a single packed buffer and one call here.

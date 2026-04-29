@@ -78,7 +78,7 @@
     origin(origin)
     _cone(integer) : "Inner Cone Angle (degrees)" : 30
     _cone2(integer) : "Outer Cone Angle (degrees)" : 45
-    mangle(string) : "Direction (pitch yaw roll, degrees)" : ""
+    angles(angles) : "Direction (pitch yaw roll, degrees)" : "0 0 0"
     // target entity direction is deferred to Milestone 6 (requires entity system)
 ]
 
@@ -88,19 +88,26 @@
     = light_sun : "Directional Light"
 [
     origin(origin)
-    mangle(string) : "Direction (pitch yaw roll, degrees)" : "-90 0 0"
+    angles(angles) : "Direction (pitch yaw roll, degrees)" : "-90 0 0"
 ]
 
 @PointClass
     color(180 180 220)
     size(-8 -8 -8, 8 8 8)
-    = env_smoke_emitter : "Smoke / Particle Emitter"
+    = billboard_emitter : "Billboard Particle Emitter"
 [
     origin(origin)
-    rate(float) : "Sprites per second" : "4.0"
-    lifetime(float) : "Sprite lifetime (seconds)" : "3.0"
-    size(float) : "Sprite size (world units)" : "0.5"
-    speed(float) : "Drift velocity (m/s, upward)" : "0.3"
-    collection(string) : "Sprite sheet collection name" : "smoke"
-    spec_intensity(float) : "Blinn-Phong specular scale (0.0-1.0)" : "0.3"
+    rate(float) : "Particles per second (0 = dormant)" : "6.0"
+    lifetime(float) : "Particle lifetime (seconds)" : "3.0"
+    spread(float) : "Cone half-angle in radians" : "0.4"
+    buoyancy(float) : "Buoyancy (-1=falls, 0=floats, >0=rises)" : "0.2"
+    drag(float) : "Velocity damping per second" : "0.8"
+    sprite(string) : "Sprite sheet collection name" : "smoke"
+    initial_velocity_x(float) : "Initial velocity X" : "0.0"
+    initial_velocity_y(float) : "Initial velocity Y" : "0.8"
+    initial_velocity_z(float) : "Initial velocity Z" : "0.0"
+    color_r(float) : "Tint R (linear, 0-1)" : "1.0"
+    color_g(float) : "Tint G (linear, 0-1)" : "1.0"
+    color_b(float) : "Tint B (linear, 0-1)" : "1.0"
+    spin_rate(float) : "Spin rate (radians/sec)" : "0.0"
 ]

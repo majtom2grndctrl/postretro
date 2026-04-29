@@ -6,6 +6,7 @@
 "wad" ""
 "data_script" "../scripts/arena-lights.ts"
 "_tb_mod" "tests;base"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
 // brush 0
 {
 ( -16 1040 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
@@ -1417,4 +1418,10 @@
 "_bake_only" "0"
 "_tags" "arena_wave_2"
 "_dynamic" "1"
+}
+// entity 27
+{
+"classname" "light_spot"
+"origin" "-584 2312 72"
+"mangle" ""
 }

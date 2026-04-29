@@ -722,7 +722,7 @@
 "delay" "1"
 "_cone" "25"
 "_cone2" "40"
-"mangle" "-10 270 0"
+"angles" "-10 270 0"
 }
 // entity 4
 {
@@ -731,7 +731,7 @@
 "light" "180"
 "_color" "200 220 255"
 "delay" "0"
-"mangle" "-70 45 0"
+"angles" "-70 45 0"
 }
 // entity 5
 {
@@ -743,7 +743,7 @@
 "delay" "1"
 "_cone" "25"
 "_cone2" "40"
-"mangle" "-10 270 0"
+"angles" "-10 270 0"
 }
 // entity 6
 {
@@ -755,7 +755,7 @@
 "delay" "1"
 "_cone" "25"
 "_cone2" "40"
-"mangle" "-10 270 0"
+"angles" "-10 270 0"
 "style" "3"
 }
 // entity 7
@@ -804,6 +804,6 @@
 "delay" "1"
 "_cone" "25"
 "_cone2" "40"
-"mangle" "-10 90 0"
+"angles" "-10 90 0"
 "style" "2"
 }

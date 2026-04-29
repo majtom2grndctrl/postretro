@@ -28,3 +28,16 @@ export type {
   EntityTypeDescriptor,
 } from "./data_script";
 export { registerReaction, registerEntities } from "./data_script";
+
+export type {
+  BillboardEmitter,
+  SpinAnimation,
+  EmitterProps,
+  ComponentDescriptor,
+} from "./entities/emitters";
+export {
+  emitter,
+  smokeEmitter,
+  sparkEmitter,
+  dustEmitter,
+} from "./entities/emitters";

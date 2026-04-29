@@ -66,7 +66,7 @@ A cone-shaped light that points in a specific direction. Inherits all keys from 
 |-----|------|---------|-------------|
 | `_cone` | integer | `30` | Inner cone angle in degrees — the full-brightness region |
 | `_cone2` | integer | `45` | Outer cone angle in degrees — the edge where brightness fades to zero |
-| `mangle` | string | — | Direction as `"pitch yaw roll"` (e.g. `"-90 0 0"` points straight down) |
+| `angles` | angles | `"0 0 0"` | Direction as `"pitch yaw roll"` (e.g. `"-90 0 0"` points straight down) |
 
 ---
 
@@ -76,7 +76,7 @@ A single directional light that hits everything from the same angle, like sunlig
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `mangle` | string | `"-90 0 0"` | Direction as `"pitch yaw roll"` in degrees |
+| `angles` | angles | `"-90 0 0"` | Direction as `"pitch yaw roll"` in degrees |
 
 All shared `light` keys (`light`, `_color`, `_fade`, `delay`, `style`, `_phase`, `brightness_curve`, `color_curve`, `direction_curve`, `period_ms`, `_curve_phase`, `_start_inactive`, `_dynamic`, `_bake_only`) apply.
 

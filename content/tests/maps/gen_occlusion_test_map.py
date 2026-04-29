@@ -179,7 +179,7 @@ def generate_map():
     lines.append('"light" "200"')
     lines.append('"_color" "220 230 255"')
     lines.append('"delay" "0"')
-    lines.append('"mangle" "-75 0 0"')
+    lines.append('"angles" "-75 0 0"')
     lines.append("}")
 
     # Point light in the portal corridor (Corridor 1) — exercises falloff in

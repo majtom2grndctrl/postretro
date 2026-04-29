@@ -411,7 +411,7 @@
 {
 "classname" "light_sun"
 "origin" "192 128 200"
-"mangle" "-50 30 0"
+"angles" "-50 30 0"
 "light" "200"
 "_color" "200 220 255"
 "style" "0"

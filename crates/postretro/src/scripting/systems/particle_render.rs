@@ -32,10 +32,9 @@ impl ParticleRenderCollector {
     /// names. Caller is responsible for the matching `SmokePass::register_collection`
     /// upload — this collector only tracks bookkeeping.
     ///
-    /// Sub-plan 6 / 8 (level-loader integration) is the first production
-    /// caller; until then this is exercised by the unit tests and reachable
-    /// from a future definition-phase sweep.
-    #[allow(dead_code)]
+    /// Sub-plan 8 wires the level-load sweep to call this for every
+    /// `BillboardEmitterComponent.sprite` value present in the registry
+    /// after classname dispatch.
     pub(crate) fn register_sprite(&mut self, collection: &str) {
         if self.registered.insert(collection.to_string())
             && self.default_collection.is_none()
@@ -128,7 +127,7 @@ impl Default for ParticleRenderCollector {
 }
 
 /// Pack one particle into the `SPRITE_INSTANCE_SIZE = 32` byte layout shared
-/// with `SmokeEmitter::pack_instances` (see `crates/postretro/src/fx/smoke.rs`).
+/// matches the GPU-side `SpriteInstance` layout pinned in `crates/postretro/src/fx/smoke.rs`.
 ///
 /// Layout: `(position.xyz, age) + (size, rotation, opacity, _pad)`.
 /// `SpriteVisual.tint` is intentionally not packed — the current GPU layout

@@ -757,6 +757,7 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             data_script: None,
+            map_entities: Vec::new(),
         }
     }
 
@@ -800,6 +801,7 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             data_script: None,
+            map_entities: Vec::new(),
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();

@@ -44,7 +44,9 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, DiagnosticAction};
 use crate::render::Renderer;
-use crate::scripting::builtins::{ClassnameDispatch, register_builtins as register_builtin_classnames};
+use crate::scripting::builtins::{
+    ClassnameDispatch, apply_classname_dispatch, register_builtins as register_builtin_classnames,
+};
 use crate::scripting::call_context::ScriptCallContext;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::data_registry::DataRegistry;
@@ -129,7 +131,6 @@ fn main() -> Result<()> {
     let content_root = content_root_from_map(&map_path);
     log::info!("[Engine] Content root: {}", content_root.display());
     let mut level = load_level(&map_path)?;
-    let spawn_demo_smoke = args.iter().any(|a| a == "--demo-smoke");
 
     // Load textures for PRL levels.
     let texture_set = match &level {
@@ -234,7 +235,6 @@ fn main() -> Result<()> {
         frame_rate_meter: FrameRateMeter::new(),
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
-        smoke_emitters: build_demo_emitters(spawn_demo_smoke, initial_camera_pos),
         script_runtime,
         script_ctx,
         data_registry: DataRegistry::new(),
@@ -298,33 +298,6 @@ fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
             }
         }
     }
-}
-
-/// Build the initial smoke-emitter list. When `spawn_demo` is true (enabled
-/// via the `--demo-smoke` CLI flag), a single emitter is placed a few units
-/// in front of the camera spawn so the billboard pipeline has something to
-/// render without requiring a map with `env_smoke_emitter` entities yet.
-///
-/// Once the PRL entity-flow wire format carries `env_smoke_emitter`
-/// instances, this helper also folds in the level-derived emitters. Until
-/// then the `--demo-smoke` path is the only way to exercise the pass end
-/// to end.
-fn build_demo_emitters(spawn_demo: bool, camera_pos: Vec3) -> Vec<fx::smoke::SmokeEmitter> {
-    if !spawn_demo {
-        return Vec::new();
-    }
-    let origin = camera_pos + Vec3::new(0.0, 0.0, -3.0);
-    vec![fx::smoke::SmokeEmitter::new(
-        fx::smoke::SmokeEmitterParams {
-            origin,
-            rate: 4.0,
-            lifetime: 3.0,
-            size: 0.5,
-            speed: 0.3,
-            collection: "smoke".to_string(),
-            spec_intensity: 0.3,
-        },
-    )]
 }
 
 /// Load every behavior script under `<content_root>/scripts/` in
@@ -510,13 +483,6 @@ struct App {
     /// the OS may throttle rapid `set_title` calls.
     last_title_update: Instant,
 
-    /// Live smoke emitters, resolved at level load from `env_smoke_emitter`
-    /// point entities. Updated each game-logic tick; the packed instance
-    /// buffer is uploaded by the renderer in `render_frame_indirect`.
-    ///
-    /// See: context/lib/rendering_pipeline.md §7.4
-    smoke_emitters: Vec<fx::smoke::SmokeEmitter>,
-
     /// Script runtime. Holds both QuickJS and Luau subsystems and the
     /// per-level handler table populated by `registerHandler`.
     /// See: context/lib/scripting.md
@@ -563,11 +529,9 @@ struct App {
     /// `"billboard_emitter"`) to the engine handler that spawns the
     /// corresponding ECS entity from a map entity's KVPs. Built once at engine
     /// init; survives level unload — built-in handlers carry no per-level
-    /// state. Sub-plan 8 will wire the level loader to consult this table.
-    /// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 6
-    // Sub-plan 8 wires the level-loader sweep to consult this table; no read
-    // site exists yet, so silence the lint until that lands.
-    #[allow(dead_code)]
+    /// state. The level loader consults this table at level load via
+    /// `apply_classname_dispatch`.
+    /// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 6, §Sub-plan 8
     classname_dispatch: ClassnameDispatch,
 
     /// Light bridge state: per-entity dirty tracking and play_count clocks.
@@ -584,8 +548,9 @@ struct App {
 
     /// Particle render collector: walks `ParticleState` entities once per
     /// frame in the Render stage, packs `SpriteInstance` bytes per sprite
-    /// collection, and hands the byte slices to `SmokePass::record_draw`
-    /// alongside the legacy `SmokeEmitter` path.
+    /// collection, and hands the byte slices to `SmokePass::record_draw`.
+    /// The legacy CPU `SmokeEmitter` ring-buffer path was removed in
+    /// plan-3 sub-plan 8 — the billboard pass is now particle-only.
     /// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 4
     particle_render: scripting_systems::particle_render::ParticleRenderCollector,
 
@@ -658,41 +623,6 @@ impl ApplicationHandler for App {
                 }
             };
 
-        // Load and register smoke sprite sheets for every collection
-        // referenced by this level's emitters. Collections missing frames
-        // on disk register a single-frame checkerboard placeholder so the
-        // pipeline path is exercised regardless.
-        //
-        // Entity-resolution note: `env_smoke_emitter` entities do not yet
-        // flow through the PRL section wire format; the `smoke_emitters`
-        // Vec is populated by developer hook or future PRL section. This
-        // keeps the renderer + emitter update pipeline exercised while the
-        // cross-crate plumbing is staged. See the task deliverable notes.
-        let texture_root = self.content_root.join("textures");
-        let mut registered: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for emitter in &self.smoke_emitters {
-            let collection = emitter.collection().to_string();
-            if collection.is_empty() || !registered.insert(collection.clone()) {
-                continue;
-            }
-            let frames = fx::smoke::load_collection_frames(&texture_root, &collection)
-                .unwrap_or_else(|| {
-                    // Single-frame 1x1 white fallback — the pipeline stays
-                    // wired even when the collection has no PNG frames yet.
-                    vec![fx::smoke::SpriteFrame {
-                        data: vec![255, 255, 255, 255],
-                        width: 1,
-                        height: 1,
-                    }]
-                });
-            renderer.register_smoke_collection(
-                &collection,
-                &frames,
-                emitter.params.spec_intensity,
-                emitter.params.lifetime,
-            );
-        }
-
         let size = window.inner_size();
         self.camera.update_aspect(size.width, size.height);
 
@@ -712,6 +642,70 @@ impl ApplicationHandler for App {
                 &mut registry,
                 fgd_sample_float_count,
             );
+        }
+
+        // Sweep map entities through the built-in classname dispatch. Each
+        // matching `MapEntity` spawns an ECS entity with the configured
+        // components at its origin. Unregistered classnames are skipped at
+        // debug level. Currently the `map_entities` list is empty until the
+        // PRL wire format gains a generic map-entity section; the dispatch
+        // path is live so populating the list is the only future change.
+        // See: scripting-foundation plan-3 §Sub-plan 8
+        if let Some(world) = self.level.as_ref() {
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            let spawned = apply_classname_dispatch(
+                &world.map_entities,
+                &self.classname_dispatch,
+                &mut registry,
+            );
+            if !world.map_entities.is_empty() {
+                log::info!(
+                    "[Loader] dispatched {spawned}/{total} map entities through built-in handlers",
+                    total = world.map_entities.len(),
+                );
+            }
+        }
+
+        // Register a sprite-sheet collection for every distinct `sprite`
+        // value carried by a `BillboardEmitterComponent` in the registry.
+        // This covers both map-entity-spawned emitters (above) and any
+        // future script-spawned ones present at level-load time. Collections
+        // without PNG frames on disk register a single-frame white fallback
+        // so the billboard pipeline stays wired regardless.
+        let texture_root = self.content_root.join("textures");
+        {
+            use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+            use crate::scripting::registry::{ComponentKind, ComponentValue};
+            let registry = self.script_ctx.registry.borrow();
+            let mut registered: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for (_id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
+                let ComponentValue::BillboardEmitter(c) = value else {
+                    continue;
+                };
+                let _: &BillboardEmitterComponent = c; // type pin
+                let collection = c.sprite.clone();
+                if collection.is_empty() || !registered.insert(collection.clone()) {
+                    continue;
+                }
+                let frames = fx::smoke::load_collection_frames(&texture_root, &collection)
+                    .unwrap_or_else(|| {
+                        vec![fx::smoke::SpriteFrame {
+                            data: vec![255, 255, 255, 255],
+                            width: 1,
+                            height: 1,
+                        }]
+                    });
+                // `spec_intensity` and `lifetime` here drive per-collection
+                // billboard-pass uniforms; emitter components carry their own
+                // `lifetime` per-particle, but the pass needs a representative
+                // value for animation-frame stride. Use the spawning emitter's
+                // `lifetime` and a neutral `spec_intensity = 0.3` matching the
+                // legacy default — extending the per-emitter binding is future
+                // work tracked alongside per-particle tint in plan §Non-goals.
+                renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
+                self.particle_render.register_sprite(&collection);
+            }
         }
 
         self.renderer = Some(renderer);
@@ -936,12 +930,6 @@ impl ApplicationHandler for App {
                     // Push updated camera state for interpolation.
                     self.frame_timing
                         .push_state(InterpolableState::new(self.camera.position));
-
-                    // Advance smoke emitters on the fixed-timestep tick.
-                    // See: context/lib/rendering_pipeline.md §7.4
-                    for emitter in &mut self.smoke_emitters {
-                        emitter.tick(tick_dt);
-                    }
                 }
 
                 // Fire `tick` after game logic, before render. `delta` comes
@@ -1057,8 +1045,6 @@ impl ApplicationHandler for App {
                     renderer.update_per_frame_uniforms(view_proj, interp.position);
 
                     if renderer.is_ready() {
-                        let emitter_refs: Vec<&fx::smoke::SmokeEmitter> =
-                            self.smoke_emitters.iter().collect();
                         // Particle render collector — Render stage. Walks the
                         // entity registry once and packs `SpriteInstance`
                         // bytes per sprite collection. The renderer consumes
@@ -1074,7 +1060,6 @@ impl ApplicationHandler for App {
                             &visible_cells,
                             &visible_leaf_mask,
                             view_proj,
-                            &emitter_refs,
                             &particle_collections,
                         ) {
                             self.exit_result = Err(err);

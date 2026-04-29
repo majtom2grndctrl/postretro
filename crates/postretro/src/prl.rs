@@ -219,6 +219,14 @@ pub struct LevelWorld {
     /// lived data context at level load to populate the data registries.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     pub data_script: Option<DataScriptSection>,
+    /// FGD map entities awaiting classname dispatch. Currently always empty
+    /// at PRL load time — the wire format does not yet carry a generic
+    /// map-entity section. The level loader still walks this list through the
+    /// built-in classname-dispatch table so the route is exercised; once the
+    /// PRL section lands, populating this field is the only change needed
+    /// engine-side.
+    /// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 8
+    pub(crate) map_entities: Vec<crate::scripting::builtins::MapEntity>,
 }
 
 impl LevelWorld {
@@ -873,6 +881,10 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         animated_light_weight_maps,
         delta_sh_volumes,
         data_script,
+        // PRL has no generic map-entity section yet; populating this Vec is
+        // the next step once the wire format adds one. See `map_entities`
+        // doc on `LevelWorld`.
+        map_entities: Vec::new(),
     })
 }
 
@@ -963,6 +975,7 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             data_script: None,
+            map_entities: Vec::new(),
         }
     }
 
@@ -1013,6 +1026,7 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             data_script: None,
+            map_entities: Vec::new(),
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -1056,6 +1070,7 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             data_script: None,
+            map_entities: Vec::new(),
         };
 
         let spawn = world.spawn_position();
@@ -1088,6 +1103,7 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             data_script: None,
+            map_entities: Vec::new(),
         };
 
         let indices = face_leaf_indices(&world);

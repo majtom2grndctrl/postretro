@@ -377,7 +377,7 @@ def generate_map():
     lines.append('"_cone2" "40"')
     # mangle: pitch=-10 (slight downward), yaw=270 (facing south in Quake),
     # roll=0. Quake yaw convention: 0=+X, 90=+Y, 180=-X, 270=-Y.
-    lines.append('"mangle" "-10 270 0"')
+    lines.append('"angles" "-10 270 0"')
     lines.append("}")
 
     # Entity 4: directional (sun) light — cool overhead ambient. Origin is
@@ -391,7 +391,7 @@ def generate_map():
     lines.append('"_color" "200 220 255"')
     lines.append('"delay" "0"')
     # Sun from roughly overhead, angled slightly forward.
-    lines.append('"mangle" "-70 45 0"')
+    lines.append('"angles" "-70 45 0"')
     lines.append("}")
 
     return "\n".join(lines)

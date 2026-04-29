@@ -37,7 +37,7 @@ use sh_compose::ShComposeResources;
 use sh_volume::ShVolumeResources;
 use smoke::SmokePass;
 
-use crate::fx::smoke::{SmokeEmitter, SpriteFrame};
+use crate::fx::smoke::SpriteFrame;
 
 // --- WGSL Shaders ---
 
@@ -529,10 +529,6 @@ pub struct Renderer {
     /// via `register_smoke_collection`. Draw ordering: after opaque forward
     /// pass, before wireframe overlay. See §7.4.
     smoke_pass: SmokePass,
-
-    /// Scratch buffer reused each frame when packing sprite instance bytes
-    /// for the GPU upload. Owns its capacity across frames.
-    smoke_pack_scratch: Vec<u8>,
 }
 
 impl Renderer {
@@ -1658,7 +1654,7 @@ impl Renderer {
             None
         };
 
-        // --- Billboard sprite pipeline (env_smoke_emitter pass) ---
+        // --- Billboard sprite pipeline (scripted particles pass) ---
         // See: context/lib/rendering_pipeline.md §7.4
         let smoke_pass = SmokePass::new(
             &device,
@@ -1733,12 +1729,11 @@ impl Renderer {
             debug_prev_visible: ("init", usize::MAX),
             app_start: Instant::now(),
             smoke_pass,
-            smoke_pack_scratch: Vec::new(),
         })
     }
 
     /// Register a smoke sprite sheet collection. Called once per unique
-    /// `env_smoke_emitter.collection` at level load. `frames` is the list of
+    /// `BillboardEmitterComponent.sprite` at level load. `frames` is the list of
     /// `smoke_NN.png` animation frames in order. `spec_intensity` and
     /// `lifetime` are the emitter's per-collection lighting and timing
     /// parameters — when multiple emitters share a collection the first
@@ -2117,7 +2112,6 @@ impl Renderer {
         visible: &VisibleCells,
         visible_leaf_mask: &[bool],
         view_proj: Mat4,
-        emitters: &[&SmokeEmitter],
         particle_collections: &[(&str, &[u8])],
     ) -> Result<()> {
         self.debug_frame = self.debug_frame.wrapping_add(1);
@@ -2410,23 +2404,14 @@ impl Renderer {
             }
         }
 
-        // --- Billboard sprite pass (env_smoke_emitter + scripted particles) ---
+        // --- Billboard sprite pass (scripted particles) ---
         // After the opaque forward pass, before the wireframe overlay. Alpha
         // additive; depth test enabled, depth write disabled. Batched by
         // sprite-sheet collection: one draw per collection. See §7.4.
-        // The particle collector (Plan 3 sub-plan 4) feeds prepackaged
-        // `(collection, bytes)` slices into the same pass so particle entities
-        // and legacy `SmokeEmitter`s share the billboard pipeline.
-        if self.smoke_pass.has_any_sheet()
-            && (!emitters.is_empty() || !particle_collections.is_empty())
-        {
-            let mut collections: Vec<String> = emitters
-                .iter()
-                .map(|e| e.collection().to_string())
-                .collect();
-            collections.sort();
-            collections.dedup();
-
+        // The particle collector (plan-3 sub-plan 4) packs `(collection,
+        // bytes)` slices off the entity registry and feeds them straight in;
+        // the legacy `SmokeEmitter` path was removed in plan-3 sub-plan 8.
+        if self.smoke_pass.has_any_sheet() && !particle_collections.is_empty() {
             let mut smoke_pass_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Billboard Sprite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2451,18 +2436,6 @@ impl Renderer {
             smoke_pass_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
             smoke_pass_enc.set_bind_group(2, &self.lighting_bind_group, &[]);
             smoke_pass_enc.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
-            for collection in &collections {
-                let scratch = &mut self.smoke_pack_scratch;
-                scratch.clear();
-                for e in emitters.iter().filter(|e| e.collection() == collection) {
-                    e.pack_instances(scratch);
-                }
-                if scratch.is_empty() {
-                    continue;
-                }
-                self.smoke_pass
-                    .record_draw(&self.queue, &mut smoke_pass_enc, collection, scratch);
-            }
             for (collection, bytes) in particle_collections {
                 if bytes.is_empty() {
                     continue;

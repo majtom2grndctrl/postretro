@@ -14,9 +14,10 @@ pub(crate) mod billboard_emitter;
 /// the FGD KVP shape: a flat string→string map plus an origin and an optional
 /// `_tags` list (data-script-setup convention).
 ///
-/// The runtime side of the engine doesn't yet have its own `MapEntity` struct;
-/// this is the shape sub-plan 8 will populate from the level-load sweep. Until
-/// then, this type also drives the unit tests for sub-plan 6.
+/// Sub-plan 8 walks `LevelWorld.map_entities` (a `Vec<MapEntity>`) at level
+/// load and dispatches each one through [`apply_classname_dispatch`]. Until the
+/// PRL wire format gains a generic map-entity section the runtime list is
+/// populated by future code and tests; the dispatch surface itself is live.
 #[derive(Debug, Clone)]
 pub(crate) struct MapEntity {
     pub(crate) classname: String,
@@ -87,8 +88,9 @@ impl ClassnameDispatch {
 }
 
 /// Populate `dispatch` with every built-in classname handler. Called once at
-/// engine init, before any level loads. Sub-plan 8 will wire the level loader
-/// to consult the resulting dispatch table when sweeping map entities.
+/// engine init, before any level loads. The level loader consults the
+/// resulting dispatch table via [`apply_classname_dispatch`] when sweeping
+/// map entities.
 pub(crate) fn register_builtins(dispatch: &mut ClassnameDispatch) {
     dispatch.register(
         billboard_emitter::CLASSNAME,
@@ -96,9 +98,43 @@ pub(crate) fn register_builtins(dispatch: &mut ClassnameDispatch) {
     );
 }
 
+/// Walk `entities` and dispatch each one through the built-in classname
+/// handler table. Unregistered classnames are skipped with a `log::debug!` —
+/// not an error: a level legitimately may carry classnames the engine
+/// doesn't handle natively (mod-defined types, future engine types). Per the
+/// data-script-setup error policy, the loader logs and continues; bad data
+/// in one entity must not fail the level load.
+///
+/// Returns the count of successfully dispatched entities (handler returned
+/// `Some(EntityId)`), for diagnostics.
+pub(crate) fn apply_classname_dispatch(
+    entities: &[MapEntity],
+    dispatch: &ClassnameDispatch,
+    registry: &mut EntityRegistry,
+) -> usize {
+    let mut spawned = 0usize;
+    for entity in entities {
+        match dispatch.lookup(&entity.classname) {
+            Some(handler) => {
+                if handler(entity, registry).is_some() {
+                    spawned += 1;
+                }
+            }
+            None => {
+                log::debug!(
+                    "[Loader] unknown classname '{}', skipping",
+                    entity.classname,
+                );
+            }
+        }
+    }
+    spawned
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scripting::registry::ComponentKind;
 
     #[test]
     fn register_builtins_registers_billboard_emitter() {
@@ -118,6 +154,63 @@ mod tests {
         let mut dispatch = ClassnameDispatch::new();
         register_builtins(&mut dispatch);
         assert!(dispatch.lookup("never_registered").is_none());
+    }
+
+    #[test]
+    fn apply_classname_dispatch_routes_known_classnames() {
+        use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+
+        let mut dispatch = ClassnameDispatch::new();
+        register_builtins(&mut dispatch);
+
+        let mut kv = HashMap::new();
+        kv.insert("rate".to_string(), "9.5".to_string());
+        let entities = vec![MapEntity {
+            classname: "billboard_emitter".to_string(),
+            origin: Vec3::new(1.0, 2.0, 3.0),
+            key_values: kv,
+            tags: vec!["fx".into()],
+        }];
+
+        let mut registry = EntityRegistry::new();
+        let spawned = apply_classname_dispatch(&entities, &dispatch, &mut registry);
+        assert_eq!(spawned, 1);
+
+        // Confirm the entity actually landed with the configured component.
+        let found = registry
+            .iter_with_kind(ComponentKind::BillboardEmitter)
+            .next();
+        let (id, _) = found.expect("a billboard_emitter entity should exist");
+        let component = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .expect("component should be readable");
+        assert_eq!(component.rate, 9.5);
+        let tags = registry.get_tags(id).expect("tags should be set");
+        assert_eq!(tags, &["fx".to_string()]);
+    }
+
+    #[test]
+    fn apply_classname_dispatch_skips_unregistered_classnames() {
+        let mut dispatch = ClassnameDispatch::new();
+        register_builtins(&mut dispatch);
+
+        let entities = vec![MapEntity {
+            classname: "never_registered".to_string(),
+            origin: Vec3::ZERO,
+            key_values: HashMap::new(),
+            tags: vec![],
+        }];
+
+        let mut registry = EntityRegistry::new();
+        let spawned = apply_classname_dispatch(&entities, &dispatch, &mut registry);
+        // No handler ran; no entity was spawned. Logged at debug level.
+        assert_eq!(spawned, 0);
+        assert!(
+            registry
+                .iter_with_kind(ComponentKind::BillboardEmitter)
+                .next()
+                .is_none()
+        );
     }
 
     #[test]

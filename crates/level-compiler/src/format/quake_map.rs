@@ -49,7 +49,7 @@ pub enum TranslateError {
     },
 
     #[error(
-        "light_spot has 'target' set but named-entity targeting is not supported until Milestone 6; use 'mangle' for spotlight direction"
+        "light_spot has 'target' set but named-entity targeting is not supported until Milestone 6; use 'angles' for spotlight direction"
     )]
     TargetNotSupported,
 
@@ -195,12 +195,12 @@ pub fn translate_light(
             cone_angle_outer = Some(outer_deg.to_radians());
 
             let mangle_str = props
-                .get("mangle")
+                .get("angles")
                 .filter(|s| !s.trim().is_empty())
-                .ok_or(TranslateError::MissingProperty("mangle"))?;
+                .ok_or(TranslateError::MissingProperty("angles"))?;
             let dir = parse_mangle_direction(mangle_str).ok_or_else(|| {
                 TranslateError::InvalidProperty {
-                    key: "mangle",
+                    key: "angles",
                     value: mangle_str.clone(),
                     reason: "expected three numeric values: pitch yaw roll (degrees)",
                 }
@@ -208,19 +208,19 @@ pub fn translate_light(
             cone_direction = Some(dir);
         }
         LightType::Directional => {
-            let dir = if let Some(mangle_str) = props.get("mangle").filter(|s| !s.trim().is_empty())
+            let dir = if let Some(mangle_str) = props.get("angles").filter(|s| !s.trim().is_empty())
             {
                 parse_mangle_direction(mangle_str).ok_or_else(|| {
                     TranslateError::InvalidProperty {
-                        key: "mangle",
+                        key: "angles",
                         value: mangle_str.clone(),
                         reason: "expected three numeric values: pitch yaw roll (degrees)",
                     }
                 })?
             } else {
-                log::warn!("light_sun missing 'mangle'; defaulting to straight down (-90 0 0)");
+                log::warn!("light_sun missing 'angles'; defaulting to straight down (-90 0 0)");
                 // "-90 0 0" → engine (0, -1, 0), matching sub-plan 1.
-                parse_mangle_direction("-90 0 0").expect("built-in default mangle must parse")
+                parse_mangle_direction("-90 0 0").expect("built-in default angles must parse")
             };
             cone_direction = Some(dir);
         }
@@ -519,7 +519,7 @@ fn parse_color255(s: &str) -> Option<[f32; 3]> {
     Some(out)
 }
 
-/// Parse a Quake `mangle` string "pitch yaw roll" (degrees) into an
+/// Parse an `angles` string "pitch yaw roll" (degrees) into an
 /// engine-space normalized aim vector.
 ///
 /// Convention (per sub-plan 1): `"-90 0 0"` → `(0, -1, 0)` in engine space
@@ -830,14 +830,14 @@ mod tests {
     }
 
     #[test]
-    fn translates_valid_spot_light_via_mangle() {
+    fn translates_valid_spot_light_via_angles() {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
             ("_fade", "2048"),
             ("_cone", "20"),
             ("_cone2", "40"),
-            ("mangle", "-90 0 0"),
+            ("angles", "-90 0 0"),
         ]);
         let light =
             translate_light(&p, DVec3::ZERO, "light_spot").expect("spot light should translate");
@@ -857,7 +857,7 @@ mod tests {
         let p = props(&[
             ("light", "200"),
             ("_color", "180 200 255"),
-            ("mangle", "-45 0 0"),
+            ("angles", "-45 0 0"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light_sun")
             .expect("directional light should translate");
@@ -886,14 +886,14 @@ mod tests {
             ("light", "300"),
             ("_cone", "30"),
             ("_cone2", "45"),
-            ("mangle", "0 0 0"),
+            ("angles", "0 0 0"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light_spot").expect_err("should error");
         assert!(matches!(err, TranslateError::MissingProperty("_fade")));
     }
 
     #[test]
-    fn spot_missing_mangle_errors() {
+    fn spot_missing_angles_errors() {
         let p = props(&[
             ("light", "300"),
             ("_fade", "2048"),
@@ -901,15 +901,15 @@ mod tests {
             ("_cone2", "45"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light_spot").expect_err("should error");
-        assert!(matches!(err, TranslateError::MissingProperty("mangle")));
+        assert!(matches!(err, TranslateError::MissingProperty("angles")));
     }
 
     #[test]
-    fn spot_with_target_errors_pointing_to_mangle() {
+    fn spot_with_target_errors_pointing_to_angles() {
         let p = props(&[
             ("light", "300"),
             ("_fade", "2048"),
-            ("mangle", "-45 0 0"),
+            ("angles", "-45 0 0"),
             ("target", "some_entity"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light_spot").expect_err("should error");
@@ -917,18 +917,18 @@ mod tests {
     }
 
     #[test]
-    fn mangle_non_numeric_errors() {
+    fn angles_non_numeric_errors() {
         let p = props(&[
             ("light", "300"),
             ("_fade", "2048"),
             ("_cone", "30"),
             ("_cone2", "45"),
-            ("mangle", "down 0 banana"),
+            ("angles", "down 0 banana"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light_spot").expect_err("should error");
         assert!(matches!(
             err,
-            TranslateError::InvalidProperty { key: "mangle", .. }
+            TranslateError::InvalidProperty { key: "angles", .. }
         ));
     }
 
@@ -1056,7 +1056,7 @@ mod tests {
     // -- Defaults and warnings --
 
     #[test]
-    fn directional_missing_mangle_defaults_to_down() {
+    fn directional_missing_angles_defaults_to_down() {
         let p = props(&[("light", "200"), ("_color", "255 255 255")]);
         let light =
             translate_light(&p, DVec3::ZERO, "light_sun").expect("should translate with default");
@@ -1072,7 +1072,7 @@ mod tests {
             ("_fade", "2048"),
             ("_cone", "50"),
             ("_cone2", "30"),
-            ("mangle", "-45 0 0"),
+            ("angles", "-45 0 0"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light_spot").expect("should translate");
         let inner = light.cone_angle_inner.unwrap();
@@ -1230,7 +1230,7 @@ mod tests {
             ("_fade", "1024"),
             ("_cone", "20"),
             ("_cone2", "40"),
-            ("mangle", "-90 0 0"),
+            ("angles", "-90 0 0"),
             ("direction_curve", "[0, 1, 0, 0] [1000, 0, 0, 1]"),
             ("period_ms", "1000"),
         ]);

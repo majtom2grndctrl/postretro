@@ -64,8 +64,8 @@ impl EmitterBridgeState {
     }
 
     /// LCG advance — Park-Miller / Numerical Recipes constants. Lifted from
-    /// `fx::smoke::SmokeEmitter::rand_u32` but per-emitter (not global) so two
-    /// emitters never share a stream.
+    /// the retired `fx::smoke` ring-buffer emitter but per-emitter (not
+    /// global) so two emitters never share a stream.
     fn next_u32(&mut self) -> u32 {
         self.rand_state = self
             .rand_state
@@ -223,7 +223,7 @@ impl EmitterBridge {
                             ),
                         );
                         // Drain the accumulator to 1.0 so we don't carry an
-                        // unbounded backlog. Mirrors the SmokeEmitter policy.
+                        // unbounded backlog. Mirrors the retired SmokeEmitter policy.
                         state.accumulator = 1.0;
                         break;
                     }
@@ -782,5 +782,60 @@ mod tests {
             bridge.update(&mut registry, 0.05, cycle as f32 + 0.05);
         }
         assert_eq!(bridge.tracked_count(), 0);
+    }
+
+    /// Sub-plan 8 acceptance: an FGD `billboard_emitter` map entity flows
+    /// through `apply_classname_dispatch`, the bridge ticks once, and at
+    /// least one particle lands at the map entity's origin. End-to-end
+    /// coverage of the dispatch + spawn + bridge path stitched up in this
+    /// sub-plan; lives here (not under `scripting::builtins`) because the
+    /// `scripting_systems` mount only exists in the binary crate root, so
+    /// integration tests that touch the bridge belong inside the systems
+    /// tree itself.
+    #[test]
+    fn dispatch_then_bridge_tick_produces_particle_at_map_origin() {
+        use std::collections::HashMap;
+
+        use crate::scripting::builtins::{
+            ClassnameDispatch, MapEntity, apply_classname_dispatch, register_builtins,
+        };
+
+        let mut dispatch = ClassnameDispatch::new();
+        register_builtins(&mut dispatch);
+
+        let mut kv = HashMap::new();
+        // High rate guarantees at least one spawn within a 0.5 s tick window.
+        kv.insert("rate".to_string(), "60".to_string());
+        let entities = vec![MapEntity {
+            classname: "billboard_emitter".to_string(),
+            origin: Vec3::new(10.0, 20.0, 30.0),
+            key_values: kv,
+            tags: vec![],
+        }];
+
+        let mut registry = EntityRegistry::new();
+        let spawned = apply_classname_dispatch(&entities, &dispatch, &mut registry);
+        assert_eq!(spawned, 1, "billboard_emitter should dispatch successfully");
+
+        let mut bridge = EmitterBridge::new();
+        bridge.update(&mut registry, 0.5, 0.0);
+
+        let mut found_at_origin = false;
+        for (id, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
+            if !matches!(value, ComponentValue::ParticleState(_)) {
+                continue;
+            }
+            let transform = registry
+                .get_component::<Transform>(id)
+                .expect("particle should have a Transform");
+            if (transform.position - Vec3::new(10.0, 20.0, 30.0)).length() < 1.0e-3 {
+                found_at_origin = true;
+                break;
+            }
+        }
+        assert!(
+            found_at_origin,
+            "expected at least one particle spawned at the map entity origin",
+        );
     }
 }

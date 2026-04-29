@@ -64,10 +64,10 @@ scripts onto data scripts and retire the behavior-script implementation.
 - [ ] A stale `EntityId` (entity destroyed between `registerLevelManifest()`
   and event dispatch) logs a warning and continues with remaining steps — not
   fatal
-- [ ] A `sequence` step naming an unknown primitive fails the data-script
-  registration in `registerLevelManifest()` with a clear diagnostic naming the
-  step index and offending primitive name (level loads with no registered
-  reactions for that handler)
+- [ ] A `sequence` step naming an unknown primitive causes that reaction to be
+  dropped from the manifest at `registerLevelManifest()` time, with a clear
+  diagnostic naming the step index and offending primitive name. The level
+  loads; other reactions in the manifest are unaffected.
 - [ ] Rust unit test covers stale-`EntityId` skip-and-log behavior across a
   multi-step sequence — surviving steps still execute
 - [ ] The arena 1 and arena 2 light waves render identically before and after
@@ -160,18 +160,21 @@ type declarations live in different files.
 // level-data.ts — proposed authoring shape
 import { registerReaction } from "postretro";
 import { world } from "./sdk/world";
-import { lightWave } from "./sdk/light_animation";
 
 export function registerLevelManifest(ctx) {
     const arena1 = world
         .query({ component: "light", tag: "arena_1_light" })
         .sort(/* angle around centroid, anchored NW — sort stays in script */);
 
+    const steps = arena1.map((light, i) => ({
+        id: light.id,
+        primitive: "setLightAnimation",
+        args: { periodMs, phase: (i * lightSpacingMs) / periodMs, /* ... */ },
+    }));
+
     return {
         reactions: [
-            registerReaction("levelLoad", {
-                sequence: lightWave(arena1, { periodMs, brightness, /* ... */ }),
-            }),
+            registerReaction("levelLoad", { sequence: steps }),
         ],
     };
 }
@@ -205,7 +208,4 @@ keeps live steps unaffected.
   Does each step need its own, the whole sequence need one at the end, or both?
   Pick when a sequenced primitive with an asynchronous completion (not
   `setLightAnimation`) is specced.
-- **Stagger-helper signature:** naming and exact signature of the helper
-  exported from `sdk/lib/light_animation.ts` (or a new sibling) is left to the
-  implementer; prefer a name parallel to existing helpers (`flicker`, `pulse`),
-  e.g. `lightWave(entities: LightHandle[], opts: WaveOpts): SequenceStep[]`.
+- **Stagger-helper:** a generic `lightWave` helper was explored and rejected — the phase formula (`i * spacingMs / periodMs`) is specific enough to the arena-wave use case that inlining it in the script is clearer than a helper with bespoke parameters. Future authors with different stagger needs should inline their own formula.

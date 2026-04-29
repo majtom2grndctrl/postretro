@@ -58,8 +58,8 @@ export type SequenceStep = SetLightAnimationStep;
 
 /**
  * Sequence reaction: ordered per-entity primitive invocations. Steps run in
- * array order at dispatch time. Use `lightWave` and friends from the SDK lib
- * to build the step array; this descriptor is just a thin wrapper around it.
+ * array order at dispatch time. Build the step array inline at the call site;
+ * this descriptor is just a thin wrapper around it.
  */
 export type SequenceReactionDescriptor = {
   sequence: SequenceStep[];

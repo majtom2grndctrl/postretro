@@ -7,11 +7,7 @@
 export type { EasingCurve, LightEntity, EntityForComponent, World } from "./world";
 export { world } from "./world";
 
-export type {
-  Keyframe,
-  LightHandleLike,
-  LightWaveOptions,
-} from "./light_animation";
+export type { Keyframe } from "./light_animation";
 export {
   flicker,
   pulse,
@@ -19,7 +15,6 @@ export {
   sweep,
   timeline,
   sequence,
-  lightWave,
 } from "./light_animation";
 
 export type {

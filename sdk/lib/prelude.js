@@ -268,26 +268,6 @@ function sequence(keyframes) {
     validateKeyframes(out, true);
     return out;
 }
-function lightWave(lights, opts) {
-    const n = lights.length;
-    const steps = new Array(n);
-    for(let i = 0; i < n; i++){
-        steps[i] = {
-            id: lights[i].id,
-            primitive: "setLightAnimation",
-            args: {
-                periodMs: opts.periodMs,
-                phase: n > 0 ? i / n : 0,
-                playCount: opts.playCount,
-                startActive: opts.startActive,
-                brightness: opts.brightness,
-                color: opts.color,
-                direction: opts.direction
-            }
-        };
-    }
-    return steps;
-}
 function validateKeyframes(keyframes, isSequence) {
     const label = isSequence ? "sequence" : "timeline";
     if (!Array.isArray(keyframes) || keyframes.length === 0) {
@@ -337,6 +317,5 @@ globalThis["colorShift"] = colorShift;
 globalThis["sweep"] = sweep;
 globalThis["timeline"] = timeline;
 globalThis["sequence"] = sequence;
-globalThis["lightWave"] = lightWave;
 globalThis["registerReaction"] = registerReaction;
 globalThis["registerEntities"] = registerEntities;

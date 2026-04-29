@@ -213,14 +213,10 @@ export type SequenceReactionDescriptor = {
 --- Descriptor produced by `registerReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
-export type NamedReactionDescriptor = {
-  name: string,
-  progress: { tag: string, at: number, fire: string }?,
-  primitive: string?,
-  tag: string?,
-  onComplete: string?,
-  sequence: {SequenceStep}?,
-}
+export type ProgressNamedReactionDescriptor = { name: string, progress: { tag: string, at: number, fire: string } }
+export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string, tag: string, onComplete: string? }
+export type SequenceNamedReactionDescriptor = { name: string, sequence: {SequenceStep} }
+export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 
 --- Descriptor produced by `registerEntities` -- one entry per registered class.
 export type EntityTypeDescriptor = { classname: string }

@@ -62,7 +62,10 @@ impl SequencedPrimitiveRegistry {
     {
         let name = name.into();
         if self.handlers.contains_key(&name) {
-            log::warn!("[Scripting] SequencedPrimitiveRegistry: overwriting existing handler for '{name}'");
+            debug_assert!(false, "duplicate sequenced primitive registration: {name}");
+            log::warn!(
+                "[Scripting] SequencedPrimitiveRegistry: overwriting existing handler for '{name}'"
+            );
         }
         self.handlers.insert(name, Box::new(handler));
     }

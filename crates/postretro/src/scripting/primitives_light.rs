@@ -224,6 +224,8 @@ pub(crate) fn register_sequenced_light_primitives(
     registry: &mut SequencedPrimitiveRegistry,
     ctx: ScriptCtx,
 ) {
+    // Sequenced-primitive names intentionally mirror script-facing primitive names so
+    // authors see one vocabulary — the script registry and sequenced registry are otherwise independent.
     registry.register("setLightAnimation", move |id, args| {
         let animation: Option<LightAnimation> =
             serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
@@ -236,6 +238,8 @@ pub(crate) fn register_sequenced_light_primitives(
 fn script_to_sequence_error(err: ScriptError) -> SequenceError {
     match err {
         ScriptError::InvalidArgument { reason } => SequenceError::InvalidArgument { reason },
+        // EntityNotFound is pre-filtered by dispatch_sequence before the handler is called;
+        // reaching this arm is a defensive path for unexpected engine-state inconsistency.
         other => SequenceError::ExecutionFailed {
             reason: other.to_string(),
         },

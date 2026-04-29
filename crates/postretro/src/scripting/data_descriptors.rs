@@ -327,6 +327,8 @@ fn get_required_u32_js<'js>(
         }
         return Ok(i as u32);
     }
+    // Entity IDs are safe as f64: they use `index << 16 | generation`, keeping
+    // the high bits clear and well within the 2^53 integer-exact range of f64.
     if let Some(f) = raw.as_float() {
         if !f.is_finite() || f < 0.0 || f > u32::MAX as f64 || f.fract() != 0.0 {
             return Err(DescriptorError::InvalidShape {

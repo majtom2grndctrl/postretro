@@ -246,7 +246,7 @@ fn dispatch_sequence(
             // Validation at registration time should make this unreachable
             // for properly-loaded manifests; defensive log keeps a runtime
             // primitive-table mutation from silently corrupting dispatch.
-            log::warn!(
+            log::error!(
                 "[Scripting] sequence step {i}: unknown primitive '{}', skipping",
                 step.primitive
             );
@@ -785,6 +785,43 @@ mod tests {
                     SequenceStep {
                         id: bogus_id,
                         primitive: "ghost".into(),
+                        args: serde_json::Value::Null,
+                    },
+                ],
+            ),
+        ];
+
+        let surviving = validate_sequence_primitives(reactions, &seq_reg);
+        assert_eq!(surviving.len(), 1);
+        assert_eq!(surviving[0].name, "valid");
+    }
+
+    #[test]
+    fn validate_sequence_primitives_drops_reaction_when_bad_step_is_at_index_0() {
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        seq_reg.register("known", |_id, _args| Ok(()));
+
+        let bogus_id = EntityId::from_raw(0x0001_0000);
+        let reactions = vec![
+            sequence_reaction(
+                "valid",
+                vec![SequenceStep {
+                    id: bogus_id,
+                    primitive: "known".into(),
+                    args: serde_json::Value::Null,
+                }],
+            ),
+            sequence_reaction(
+                "invalid_at_zero",
+                vec![
+                    SequenceStep {
+                        id: bogus_id,
+                        primitive: "ghost".into(),
+                        args: serde_json::Value::Null,
+                    },
+                    SequenceStep {
+                        id: bogus_id,
+                        primitive: "known".into(),
                         args: serde_json::Value::Null,
                     },
                 ],

@@ -1,6 +1,6 @@
 // Tag-targeted reaction primitives invoked by `Primitive` reactions at
 // dispatch time. Distinct from the per-step `SequencedPrimitiveRegistry`.
-// See: context/lib/scripting.md §2 (Data context lifecycle)
+// See: context/lib/scripting.md §4 (Primitive Registration)
 
 use thiserror::Error;
 

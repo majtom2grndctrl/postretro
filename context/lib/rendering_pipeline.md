@@ -121,7 +121,9 @@ Depth testing and back-face culling are permanent from this pass forward.
 
 ### 7.4 Billboard Sprite Pass
 
-Camera-facing quads emitted from `env_smoke_emitter` point entities. Alpha-blended additive pass; depth write disabled, depth test enabled. Quads are expanded in the vertex shader using the view-space right and up vectors — no geometry shader. Lit by the full stack: SH ambient, multi-source static specular via the chunk light list, and dynamic direct (diffuse only). Batched by sprite-sheet collection — all emitters sharing a collection issue one draw call per frame. Bind group 6 carries the sprite instance storage buffer.
+Camera-facing quads driven by the particle system. Alpha-blended additive pass; depth write disabled, depth test enabled. Quads are expanded in the vertex shader using the view-space right and up vectors — no geometry shader. Lit by the full stack: SH ambient, multi-source static specular via the chunk light list, and dynamic direct (diffuse only). Batched by sprite-sheet collection — all particles sharing a collection issue one draw call per frame.
+
+Billboard instances come from `BillboardEmitterComponent` particles packed by `ParticleRenderCollector` each frame. The collector walks `ParticleState` entities in the entity registry, buckets them by `SpriteVisual.sprite`, and hands the packed byte slices to `SmokePass::record_draw`. Bind group 6 carries the sprite instance storage buffer.
 
 ### 7.5 Fog Volume Composite
 

@@ -1,6 +1,6 @@
 // Built-in classname dispatch: map FGD `classname` → handler that spawns an
 // engine-native entity with components configured from FGD KVPs.
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 6
+// See: context/lib/scripting.md
 
 use std::collections::HashMap;
 
@@ -14,10 +14,10 @@ pub(crate) mod billboard_emitter;
 /// the FGD KVP shape: a flat string→string map plus an origin and an optional
 /// `_tags` list (data-script-setup convention).
 ///
-/// Sub-plan 8 walks `LevelWorld.map_entities` (a `Vec<MapEntity>`) at level
-/// load and dispatches each one through [`apply_classname_dispatch`]. Until the
-/// PRL wire format gains a generic map-entity section the runtime list is
-/// populated by future code and tests; the dispatch surface itself is live.
+/// The level loader calls [`apply_classname_dispatch`] on this list at level
+/// load. Until the PRL wire format gains a generic map-entity section, this
+/// list is always empty at load time — populating it is the only remaining
+/// step.
 #[derive(Debug, Clone)]
 pub(crate) struct MapEntity {
     pub(crate) classname: String,

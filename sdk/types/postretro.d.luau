@@ -7,9 +7,9 @@ export type EulerDegrees = { pitch: number, yaw: number, roll: number }
 
 export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 
-export type ComponentKind = "Transform" | "Light"
+export type ComponentKind = "Transform" | "Light" | "BillboardEmitter" | "ParticleState" | "SpriteVisual"
 
-export type ComponentValue = { kind: "Transform", value: Transform } | { kind: "Light", value: LightComponent }
+export type ComponentValue = { kind: "Transform", value: Transform } | { kind: "Light", value: LightComponent } | { kind: "BillboardEmitter", value: BillboardEmitterComponent } | { kind: "ParticleState", value: ParticleState } | { kind: "SpriteVisual", value: SpriteVisual }
 
 export type ScriptEvent = { kind: string, payload: any }
 

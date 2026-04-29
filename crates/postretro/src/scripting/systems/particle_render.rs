@@ -1,5 +1,5 @@
 // Particle render collector: walks ParticleState entities and packs SpriteInstance bytes per collection.
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 4
+// See: context/lib/scripting.md
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,14 +27,13 @@ impl ParticleRenderCollector {
         }
     }
 
-    /// Pre-register a sprite collection sweep at level load. The first
-    /// registered collection becomes the fallback for unregistered runtime
-    /// names. Caller is responsible for the matching `SmokePass::register_collection`
-    /// upload — this collector only tracks bookkeeping.
+    /// Pre-register a sprite collection at level load. The first registered
+    /// collection becomes the fallback for unregistered runtime names. Caller
+    /// is responsible for the matching `SmokePass::register_collection` upload
+    /// — this collector only tracks bookkeeping.
     ///
-    /// Sub-plan 8 wires the level-load sweep to call this for every
-    /// `BillboardEmitterComponent.sprite` value present in the registry
-    /// after classname dispatch.
+    /// Called at level load for every distinct `BillboardEmitterComponent.sprite`
+    /// value in the registry after classname dispatch.
     pub(crate) fn register_sprite(&mut self, collection: &str) {
         if self.registered.insert(collection.to_string()) && self.default_collection.is_none() {
             self.default_collection = Some(collection.to_string());
@@ -108,8 +107,8 @@ impl ParticleRenderCollector {
     }
 
     /// Iterate `(collection, bytes)` pairs with non-empty payloads. Order is
-    /// HashMap-iteration order; the smoke pass is order-independent under
-    /// additive blending (see plan §Research finding 2).
+    /// HashMap-iteration order; under additive blending, draw order does not
+    /// affect the composited result — contributions are commutative.
     pub(crate) fn iter_collections(&self) -> impl Iterator<Item = (&str, &[u8])> + '_ {
         self.buffers
             .iter()
@@ -124,7 +123,7 @@ impl Default for ParticleRenderCollector {
     }
 }
 
-/// Pack one particle into the `SPRITE_INSTANCE_SIZE = 32` byte layout shared
+/// Pack one particle into the `SPRITE_INSTANCE_SIZE = 32` byte layout that
 /// matches the GPU-side `SpriteInstance` layout pinned in `crates/postretro/src/fx/smoke.rs`.
 ///
 /// Layout: `(position.xyz, age) + (size, rotation, opacity, _pad)`.

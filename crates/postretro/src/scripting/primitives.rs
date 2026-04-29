@@ -158,11 +158,17 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .register_enum("ComponentKind")
         .variant("Transform", "")
         .variant("Light", "")
+        .variant("BillboardEmitter", "")
+        .variant("ParticleState", "")
+        .variant("SpriteVisual", "")
         .finish();
     registry
         .register_tagged_union("ComponentValue")
         .variant("Transform", "Transform", "")
         .variant("Light", "LightComponent", "")
+        .variant("BillboardEmitter", "BillboardEmitterComponent", "")
+        .variant("ParticleState", "ParticleState", "")
+        .variant("SpriteVisual", "SpriteVisual", "")
         .finish();
     registry
         .register_type("ScriptEvent")

@@ -1,7 +1,7 @@
 // Named reaction-primitive lookup table. Mirrors `SequencedPrimitiveRegistry`
 // in shape, but each handler receives the tag-resolved target list rather
 // than a single entity id.
-// See: context/lib/scripting.md §2 (Data context lifecycle)
+// See: context/lib/scripting.md §4 (Primitive Registration)
 
 use std::collections::HashMap;
 

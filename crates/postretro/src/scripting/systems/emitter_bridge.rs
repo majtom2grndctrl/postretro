@@ -1,6 +1,6 @@
 // Emitter bridge: walks `BillboardEmitterComponent` entities each tick, spawns
 // particle entities (Transform + ParticleState + SpriteVisual) into the registry.
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 3
+// See: context/lib/scripting.md
 
 use std::collections::HashMap;
 
@@ -13,6 +13,8 @@ use crate::scripting::components::sprite_visual::SpriteVisual;
 use crate::scripting::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
+
+use super::eval_curve;
 
 /// Per-emitter transient state held bridge-side. Mirrors Plan 2's
 /// `LightSnapshot` pattern: insert on first-seen, remove on emitter despawn (or
@@ -395,24 +397,6 @@ fn sample_cone_direction(axis: Vec3, spread: f32, state: &mut EmitterBridgeState
     // `local` is a sum of three unit-scaled orthogonal components; should be
     // unit-length to within float epsilon. Normalize defensively.
     local.normalize_or_zero()
-}
-
-/// Linear-interpolated curve evaluation. Same shape as the particle-sim curve
-/// helper (sub-plan 2). Empty curves default to `1.0` — unreachable from the
-/// FFI boundary but kept for Rust-side defaulting.
-fn eval_curve(curve: &[f32], t: f32) -> f32 {
-    if curve.is_empty() {
-        return 1.0;
-    }
-    if curve.len() == 1 {
-        return curve[0];
-    }
-    let s = t * (curve.len() - 1) as f32;
-    let i = s.floor() as usize;
-    let frac = s - i as f32;
-    let a = curve[i];
-    let b = curve[(i + 1).min(curve.len() - 1)];
-    a * (1.0 - frac) + b * frac
 }
 
 /// Throttle `log::warn!` to at most once per second per emitter. Updates

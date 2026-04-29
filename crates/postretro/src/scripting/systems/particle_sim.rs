@@ -1,5 +1,5 @@
 // CPU particle simulation: integrates ParticleState entities each game-logic tick.
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 2
+// See: context/lib/scripting.md
 
 use glam::Vec3;
 
@@ -10,35 +10,21 @@ use crate::scripting::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
 
+use super::eval_curve;
+
 /// World gravity in m/s². Negative is "down" by convention. Combined with
 /// `BillboardEmitterComponent::buoyancy` per the plan's sign convention:
 /// `vertical_accel = WORLD_GRAVITY * -buoyancy`. So `buoyancy = -1` falls at
 /// `-9.81 m/s²`, `buoyancy = 0` floats, `buoyancy > 0` rises.
 pub(crate) const WORLD_GRAVITY: f32 = -9.81;
 
-/// Linear-interpolated curve evaluation over `[0, 1]`. Empty curve defaults to
-/// `1.0` (unreachable from script — reserved for Rust-side defaulting).
-fn eval_curve(curve: &[f32], t: f32) -> f32 {
-    if curve.is_empty() {
-        return 1.0;
-    }
-    if curve.len() == 1 {
-        return curve[0];
-    }
-    let s = t * (curve.len() - 1) as f32;
-    let i = s.floor() as usize;
-    let frac = s - i as f32;
-    let a = curve[i];
-    let b = curve[(i + 1).min(curve.len() - 1)];
-    a * (1.0 - frac) + b * frac
-}
-
 /// Advance every `ParticleState` entity by `delta` seconds. Two-pass: collect
 /// snapshots, mutate, then despawn expired particles after the iteration so
 /// the registry is never mutated mid-walk.
 ///
-/// Frame ordering: this runs after the emitter bridge (Sub-plan 3) and before
-/// the light bridge, so newly spawned particles tick once before render.
+/// Frame ordering: runs after the emitter bridge and before the light bridge —
+/// ensures newly-spawned particles are integrated at least once before the
+/// render stage reads their state.
 pub(crate) fn tick(registry: &mut EntityRegistry, delta: f32) {
     // Pass 1: gather (id, snapshot) so we drop the immutable iterator borrow
     // before issuing the mutating writes below. ParticleState clones are

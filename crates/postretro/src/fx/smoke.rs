@@ -60,7 +60,7 @@ pub struct SpriteFrame {
     pub height: u32,
 }
 
-/// Load all frames for a smoke collection (e.g., `smoke_00.png`, `smoke_01.png`, …)
+/// Load all frames for a sprite collection (e.g., `smoke_00.png`, `spark_01.png`, …)
 /// from `textures/<collection>/`. Returns `None` if no frames are found; in that
 /// case the renderer falls back to the checkerboard placeholder.
 pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<Vec<SpriteFrame>> {
@@ -80,7 +80,8 @@ pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<V
         }
     };
 
-    // Collect all `smoke_NN.png` paths and sort by numeric suffix.
+    // Collect all `<collection>_NN.png` paths and sort by numeric suffix.
+    let prefix = format!("{collection}_");
     let mut frame_paths: Vec<(u32, std::path::PathBuf)> = Vec::new();
     for entry in read_dir.flatten() {
         let path = entry.path();
@@ -92,7 +93,7 @@ pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<V
         if !ext.eq_ignore_ascii_case("png") {
             continue;
         }
-        if let Some(suffix) = stem.strip_prefix("smoke_") {
+        if let Some(suffix) = stem.strip_prefix(prefix.as_str()) {
             if let Ok(n) = suffix.parse::<u32>() {
                 frame_paths.push((n, path));
             }
@@ -101,7 +102,7 @@ pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<V
 
     if frame_paths.is_empty() {
         log::warn!(
-            "[Smoke] No smoke_NN.png frames found in '{}'",
+            "[Smoke] No {collection}_NN.png frames found in '{}'",
             collection_dir.display()
         );
         return None;

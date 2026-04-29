@@ -201,8 +201,9 @@ fn main() -> Result<()> {
 
     // Built-in FGD-classname dispatch table. Engine-init-once: handlers
     // survive level unload because they describe engine types, not per-level
-    // state. Sub-plan 8 will wire the level loader to consult this table.
-    // See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 6
+    // state. The level loader calls `apply_classname_dispatch` at level load
+    // (see the `resumed` handler below).
+    // See: context/lib/scripting.md
     let mut classname_dispatch = ClassnameDispatch::new();
     register_builtin_classnames(&mut classname_dispatch);
 
@@ -514,7 +515,10 @@ struct App {
     /// Tag-targeted reaction-primitive handlers (e.g. `setEmitterRate`,
     /// `setSpinRate`). Populated once at startup; resolved by name when a
     /// `Primitive` reaction fires.
-    /// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 5
+    ///
+    /// `#[allow(dead_code)]`: the dispatch call site in `reaction_dispatch.rs`
+    /// is not yet connected; this field is reserved for the upcoming wiring.
+    /// See: context/lib/scripting.md §4 (Primitive Registration)
     #[allow(dead_code)]
     reaction_registry: ReactionPrimitiveRegistry,
 
@@ -531,7 +535,7 @@ struct App {
     /// init; survives level unload — built-in handlers carry no per-level
     /// state. The level loader consults this table at level load via
     /// `apply_classname_dispatch`.
-    /// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 6, §Sub-plan 8
+    /// See: context/lib/scripting.md
     classname_dispatch: ClassnameDispatch,
 
     /// Light bridge state: per-entity dirty tracking and play_count clocks.

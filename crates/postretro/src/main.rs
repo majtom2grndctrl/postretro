@@ -50,7 +50,7 @@ use crate::scripting::data_registry::DataRegistry;
 use crate::scripting::primitives::register_all;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
 use crate::scripting::primitives_light::register_sequenced_light_primitives;
-use crate::scripting::reaction_dispatch::ProgressTracker;
+use crate::scripting::reaction_dispatch::{fire_named_event_with_sequences, validate_sequence_primitives, ProgressTracker};
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig, Which as ScriptWhich};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::texture::TextureSet;
@@ -519,7 +519,6 @@ struct App {
     /// entities through `ScriptCtx`'s shared `EntityRegistry`, which the
     /// level-unload path clears separately.
     /// See: context/lib/scripting.md §4 (primitives), §5 (shared engine state)
-    #[allow(dead_code)] // Wired into `fire_named_event_with_sequences` in a follow-on task.
     sequence_registry: SequencedPrimitiveRegistry,
 
     /// Per-tag kill-count subscriptions derived from the data script's
@@ -804,7 +803,12 @@ impl ApplicationHandler for App {
                     // failing. See: context/lib/scripting.md §2
                     if let Some(world) = &self.level {
                         if let Some(data_script) = &world.data_script {
-                            let manifest = self.script_runtime.run_data_script(data_script);
+                            let mut manifest = self.script_runtime.run_data_script(data_script);
+                            // Drop sequence reactions that name an unknown primitive before storing.
+                            manifest.reactions = validate_sequence_primitives(
+                                manifest.reactions,
+                                &self.sequence_registry,
+                            );
                             self.data_registry.populate_from_manifest(manifest);
                             // Walk progress reactions and seed per-tag kill
                             // counters from the live entity set. Independent
@@ -819,6 +823,15 @@ impl ApplicationHandler for App {
                     }
                     load_behavior_scripts(&self.script_runtime, &self.content_root);
                     self.script_runtime.fire_level_load();
+                    // Fire data-script sequence reactions for levelLoad after
+                    // behavior handlers run. Entity registry is populated by
+                    // this point (level geometry loaded before the event loop).
+                    fire_named_event_with_sequences(
+                        "levelLoad",
+                        &self.data_registry,
+                        &self.sequence_registry,
+                        &self.script_ctx.registry.borrow(),
+                    );
                     self.level_load_fired = true;
                     self.script_time = 0.0;
                 }

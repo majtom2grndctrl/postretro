@@ -441,7 +441,10 @@ mod tests {
                 })))
             "#;
             let got: String = qjs.eval(script).unwrap();
-            let expected = format!(r#"[{{"id":{},"x":1,"tags":["foo"],"dyn":true}}]"#, id.to_raw());
+            let expected = format!(
+                r#"[{{"id":{},"x":1,"tags":["foo"],"dyn":true}}]"#,
+                id.to_raw()
+            );
             assert_eq!(got, expected);
         });
     }

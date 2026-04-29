@@ -209,9 +209,7 @@ fn named_reaction_from_js<'js>(
             let progress_obj: Object = obj.get("progress").map_err(js_err)?;
             ReactionDescriptor::Progress(progress_descriptor_from_js(ctx, &progress_obj)?)
         }
-        (false, true) => {
-            ReactionDescriptor::Primitive(primitive_descriptor_from_js(ctx, &obj)?)
-        }
+        (false, true) => ReactionDescriptor::Primitive(primitive_descriptor_from_js(ctx, &obj)?),
         (false, false) => return Err(DescriptorError::UnknownShape),
     };
 
@@ -401,10 +399,7 @@ fn entity_descriptor_from_lua(value: LuaValue) -> Result<EntityTypeDescriptor, D
     Ok(EntityTypeDescriptor { classname })
 }
 
-fn get_required_string_lua(
-    table: &Table,
-    field: &'static str,
-) -> Result<String, DescriptorError> {
+fn get_required_string_lua(table: &Table, field: &'static str) -> Result<String, DescriptorError> {
     if !table.contains_key(field).map_err(lua_err)? {
         return Err(DescriptorError::MissingField { field });
     }
@@ -510,7 +505,9 @@ mod tests {
             entities: [],
             reactions: [{ name: "x", progress: { tag: "t", at: 0.5 } }]
         })"#;
-        let err = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap_err());
+        let err = eval_js(src, |ctx, v| {
+            LevelManifest::from_js_value(ctx, v).unwrap_err()
+        });
         assert_eq!(err, DescriptorError::MissingField { field: "fire" });
     }
 
@@ -520,7 +517,9 @@ mod tests {
             entities: [],
             reactions: [{ progress: { tag: "t", at: 0.5, fire: "f" } }]
         })"#;
-        let err = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap_err());
+        let err = eval_js(src, |ctx, v| {
+            LevelManifest::from_js_value(ctx, v).unwrap_err()
+        });
         assert_eq!(err, DescriptorError::MissingField { field: "name" });
     }
 
@@ -530,7 +529,9 @@ mod tests {
             entities: [],
             reactions: [{ name: "x", tag: "t" }]
         })"#;
-        let err = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap_err());
+        let err = eval_js(src, |ctx, v| {
+            LevelManifest::from_js_value(ctx, v).unwrap_err()
+        });
         assert_eq!(err, DescriptorError::UnknownShape);
     }
 
@@ -540,7 +541,9 @@ mod tests {
             entities: [],
             reactions: [{ name: "x", primitive: "", tag: "t" }]
         })"#;
-        let err = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap_err());
+        let err = eval_js(src, |ctx, v| {
+            LevelManifest::from_js_value(ctx, v).unwrap_err()
+        });
         assert_eq!(err, DescriptorError::EmptyPrimitiveName);
     }
 
@@ -550,7 +553,9 @@ mod tests {
             entities: [],
             reactions: [{ name: "x", progress: { tag: "t", at: 1.5, fire: "f" } }]
         })"#;
-        let err = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap_err());
+        let err = eval_js(src, |ctx, v| {
+            LevelManifest::from_js_value(ctx, v).unwrap_err()
+        });
         assert_eq!(err, DescriptorError::AtThresholdOutOfRange { value: 1.5 });
     }
 
@@ -560,7 +565,9 @@ mod tests {
             entities: [],
             reactions: [{ name: "x", progress: { tag: "t", at: -0.1, fire: "f" } }]
         })"#;
-        let err = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap_err());
+        let err = eval_js(src, |ctx, v| {
+            LevelManifest::from_js_value(ctx, v).unwrap_err()
+        });
         match err {
             DescriptorError::AtThresholdOutOfRange { value } => {
                 assert!((value + 0.1).abs() < 1e-6);

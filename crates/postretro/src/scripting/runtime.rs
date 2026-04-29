@@ -9,7 +9,10 @@ use std::fs;
 use std::path::Path;
 
 use postretro_level_format::data_script::DataScriptSection;
-use rquickjs::{CatchResultExt, Context as JsContext, Function as JsFunction, Object as JsObject, Value as JsValue};
+use rquickjs::{
+    CatchResultExt, Context as JsContext, Function as JsFunction, Object as JsObject,
+    Value as JsValue,
+};
 
 use super::call_context::ScriptCallContext;
 use super::ctx::ScriptCtx;
@@ -218,13 +221,13 @@ impl ScriptRuntime {
             .unwrap_or(false);
 
         let result = if is_luau {
-            run_data_script_luau(self.luau.primitives(), &section.compiled_bytes, &section.source_path)
-        } else {
-            run_data_script_quickjs(
-                &self.quickjs,
+            run_data_script_luau(
+                self.luau.primitives(),
                 &section.compiled_bytes,
                 &section.source_path,
             )
+        } else {
+            run_data_script_quickjs(&self.quickjs, &section.compiled_bytes, &section.source_path)
         };
 
         match result {
@@ -331,10 +334,9 @@ fn run_data_script_quickjs(
 
     let primitives = subsys.primitives();
 
-    let mut manifest_out: Result<LevelManifest, ScriptError> =
-        Err(ScriptError::InvalidArgument {
-            reason: "data script did not produce a manifest".to_string(),
-        });
+    let mut manifest_out: Result<LevelManifest, ScriptError> = Err(ScriptError::InvalidArgument {
+        reason: "data script did not produce a manifest".to_string(),
+    });
 
     ctx.with(|ctx| {
         // Install primitives with definition-context scope: BehaviorOnly

@@ -154,10 +154,7 @@ fn count_entities_with_tag(entity_registry: &EntityRegistry, tag: &str) -> u32 {
 /// (Primitives are not actually executed here, so `onComplete` events are
 /// returned but typically would not fire until the primitive completes — for
 /// now we surface them so test coverage can observe the routing.)
-pub(crate) fn fire_named_event(
-    event_name: &str,
-    data_registry: &DataRegistry,
-) -> Vec<String> {
+pub(crate) fn fire_named_event(event_name: &str, data_registry: &DataRegistry) -> Vec<String> {
     let mut chained = Vec::new();
     for named in &data_registry.reactions {
         if named.name != event_name {
@@ -337,8 +334,7 @@ mod tests {
         assert_eq!(tracker.subscription_count("reactorMonster"), 1);
 
         // A single death carrying both tags should fire both events.
-        let fired = tracker
-            .on_entity_killed(&["wave1".to_string(), "reactorMonster".to_string()]);
+        let fired = tracker.on_entity_killed(&["wave1".to_string(), "reactorMonster".to_string()]);
         assert!(fired.contains(&"powerOn".to_string()));
         assert!(fired.contains(&"reactorOff".to_string()));
         assert_eq!(fired.len(), 2);

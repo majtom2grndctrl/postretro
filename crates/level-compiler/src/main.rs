@@ -1039,10 +1039,9 @@ mod tests {
         let luau_source = "return { foo = 1 }";
         std::fs::write(&luau_path, luau_source).unwrap();
 
-        let section =
-            compile_worldspawn_data_script(&map_path, Some("level-data.luau"))
-                .expect("luau data_script should compile")
-                .expect("section must be emitted");
+        let section = compile_worldspawn_data_script(&map_path, Some("level-data.luau"))
+            .expect("luau data_script should compile")
+            .expect("section must be emitted");
 
         assert_eq!(section.compiled_bytes, luau_source.as_bytes());
         assert!(

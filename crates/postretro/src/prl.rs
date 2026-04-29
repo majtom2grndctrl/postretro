@@ -534,8 +534,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
         let mut tagged = 0usize;
         for (light, tag_str) in lights.iter_mut().zip(section.tags.into_iter()) {
-            let tag_list: Vec<String> =
-                tag_str.split_whitespace().map(|t| t.to_string()).collect();
+            let tag_list: Vec<String> = tag_str.split_whitespace().map(|t| t.to_string()).collect();
             if !tag_list.is_empty() {
                 tagged += 1;
                 light.tags = tag_list;

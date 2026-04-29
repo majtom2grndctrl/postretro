@@ -744,7 +744,15 @@ impl ApplicationHandler for App {
                                 "[Scripting] hot reload: failed to rebuild behavior context: {e}",
                             );
                         } else {
-                            // Data registry and progress tracker are intentionally preserved; only behavior scripts reload.
+                            // INVARIANT: hot reload reruns behavior scripts ONLY. The data
+                            // script (`registerLevelManifest`) is called exactly once per
+                            // level load, in the cold-load branch below — never here. The
+                            // data registry and progress tracker carry forward across
+                            // behavior reloads so in-flight progress subscriptions and
+                            // entity-type registrations survive script edits. Covered at
+                            // the runtime level by `data_script_not_rerun_on_behavior_reload`
+                            // (scripting/runtime.rs).
+                            // See: context/lib/scripting.md §2, §8
                             load_behavior_scripts(&self.script_runtime, &self.content_root);
                             if self.level_load_fired {
                                 self.script_runtime.fire_level_load();

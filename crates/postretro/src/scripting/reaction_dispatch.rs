@@ -128,14 +128,16 @@ impl Default for ProgressTracker {
 fn count_entities_with_tag(entity_registry: &EntityRegistry, tag: &str) -> u32 {
     use super::registry::ComponentKind;
 
-    // We intentionally walk both component columns — a "tagged entity" need
-    // not carry a Light component to participate in a progress subscription.
-    // Using `query_by_component_and_tag` for each kind and unioning the
-    // matched ids would risk double-counting when an entity carries multiple
-    // components. Instead, count distinct entities that carry ANY component
-    // and match the tag. The Transform column is populated for every spawned
-    // entity (see `EntityRegistry::spawn`), so a single Transform-keyed query
-    // produces the live entity set.
+    // INVARIANT: every spawned entity carries a Transform component.
+    // `EntityRegistry::spawn` writes the Transform column unconditionally, so a
+    // single Transform-keyed query enumerates the entire live entity set. If
+    // that invariant ever breaks (e.g., a spawn path skips Transform), this
+    // count silently underreports — so the invariant is load-bearing for
+    // progress-tracker correctness, not just an implementation detail.
+    //
+    // We intentionally walk just the Transform column rather than unioning
+    // matches across every `ComponentKind`: a union query risks double-counting
+    // entities that carry multiple components.
     entity_registry
         .query_by_component_and_tag(ComponentKind::Transform, Some(tag))
         .count() as u32
@@ -334,6 +336,33 @@ mod tests {
         assert_eq!(tracker.subscription_count("reactorMonster"), 1);
 
         // A single death carrying both tags should fire both events.
+        let fired = tracker.on_entity_killed(&["wave1".to_string(), "reactorMonster".to_string()]);
+        assert!(fired.contains(&"powerOn".to_string()));
+        assert!(fired.contains(&"reactorOff".to_string()));
+        assert_eq!(fired.len(), 2);
+    }
+
+    #[test]
+    fn multi_tag_entity_fires_both_subscriptions() {
+        // Acceptance: a single entity carrying both `wave1` and
+        // `reactorMonster` is counted toward each tag's progress subscription
+        // independently. With `at: 0.5` and exactly one entity per tag, that
+        // one death satisfies the threshold for both subscriptions.
+        let mut data = DataRegistry::new();
+        data.populate_from_manifest(LevelManifest {
+            reactions: vec![
+                progress_reaction("waveDone", "wave1", 0.5, "powerOn"),
+                progress_reaction("reactorDown", "reactorMonster", 0.5, "reactorOff"),
+            ],
+            entities: vec![],
+        });
+
+        let mut entities = EntityRegistry::new();
+        spawn_with_tags(&mut entities, &["wave1", "reactorMonster"]);
+
+        let mut tracker = ProgressTracker::new();
+        tracker.initialize(&data, &entities);
+
         let fired = tracker.on_entity_killed(&["wave1".to_string(), "reactorMonster".to_string()]);
         assert!(fired.contains(&"powerOn".to_string()));
         assert!(fired.contains(&"reactorOff".to_string()));

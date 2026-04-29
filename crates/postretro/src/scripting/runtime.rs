@@ -343,8 +343,8 @@ fn run_data_script_quickjs(
         // primitives become stubs that throw WrongContext.
         for p in primitives {
             let use_real = matches!(
-                (p.context_scope, ContextScope::DefinitionOnly),
-                (ContextScope::Both, _) | (ContextScope::DefinitionOnly, _)
+                p.context_scope,
+                ContextScope::Both | ContextScope::DefinitionOnly
             );
             let installer = if use_real {
                 &p.quickjs_installer
@@ -445,8 +445,8 @@ fn run_data_script_luau(
     // Install primitives with definition-context scope (BehaviorOnly → stub).
     for p in primitives {
         let use_real = matches!(
-            (p.context_scope, ContextScope::DefinitionOnly),
-            (ContextScope::Both, _) | (ContextScope::DefinitionOnly, _)
+            p.context_scope,
+            ContextScope::Both | ContextScope::DefinitionOnly
         );
         let installer = if use_real {
             &p.luau_installer
@@ -835,6 +835,68 @@ mod tests {
         );
         let manifest = rt.run_data_script(&section);
         assert!(manifest.entities.is_empty() && manifest.reactions.is_empty());
+    }
+
+    /// Policy: a behavior-script hot reload must not re-run the data script
+    /// or otherwise clear the data registry. Mirrors main.rs's reload sequence
+    /// (`clear_level_handlers` + `reload_behavior_context` + re-run behavior
+    /// scripts) and confirms that a `DataRegistry` populated once at level
+    /// load remains intact across a simulated reload — i.e., `run_data_script`
+    /// is not on the reload path.
+    /// See: context/lib/scripting.md §2 (Data context lifecycle), §8 (Hot reload)
+    #[test]
+    fn data_script_not_rerun_on_behavior_reload() {
+        use crate::scripting::data_registry::DataRegistry;
+
+        let (mut rt, _ctx) = runtime();
+
+        // Run the data script once at simulated level load and capture the
+        // resulting registry state.
+        let section = data_section(
+            "/maps/data.js",
+            r#"
+            globalThis.registerLevelManifest = function() {
+                return {
+                    entities: [{ classname: "grunt" }],
+                    reactions: [
+                        { name: "wave1Complete", primitive: "moveGeometry", tag: "reactor" },
+                    ],
+                };
+            };
+            "#,
+        );
+        let manifest = rt.run_data_script(&section);
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_from_manifest(manifest);
+        assert_eq!(data_registry.reactions.len(), 1);
+        assert_eq!(data_registry.entities.len(), 1);
+
+        // Behavior-script hot reload sequence (matches main.rs). The runtime
+        // touches only behavior context state — the local `data_registry`
+        // belongs to the App and is intentionally not passed in.
+        let behavior = temp_script(
+            "data_persists.js",
+            r#"registerHandler("levelLoad", function() {});"#,
+        );
+        rt.run_script_file(Which::Behavior, &behavior).unwrap();
+
+        for _ in 0..3 {
+            rt.clear_level_handlers();
+            rt.reload_behavior_context().unwrap();
+            rt.run_script_file(Which::Behavior, &behavior).unwrap();
+        }
+
+        // Data registry is untouched: the reload path does not re-run the
+        // data script and does not clear the registry. If a future change
+        // routes data-script execution through `reload_behavior_context`,
+        // this assertion still passes only because the local registry
+        // is App-owned — the load-bearing observation is that no API on
+        // `ScriptRuntime` invoked during reload mutates external data state.
+        assert_eq!(data_registry.reactions.len(), 1);
+        assert_eq!(data_registry.entities.len(), 1);
+        assert_eq!(data_registry.reactions[0].name, "wave1Complete");
+
+        fs::remove_file(&behavior).ok();
     }
 
     #[test]

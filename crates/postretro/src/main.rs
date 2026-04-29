@@ -46,6 +46,7 @@ use crate::input::{Action, DiagnosticAction};
 use crate::render::Renderer;
 use crate::scripting::call_context::ScriptCallContext;
 use crate::scripting::ctx::ScriptCtx;
+use crate::scripting::data_registry::DataRegistry;
 use crate::scripting::primitives::register_all;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig, Which as ScriptWhich};
@@ -205,6 +206,7 @@ fn main() -> Result<()> {
         smoke_emitters: build_demo_emitters(spawn_demo_smoke, initial_camera_pos),
         script_runtime,
         script_ctx,
+        data_registry: DataRegistry::new(),
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
         level_load_fired: false,
         script_time: 0.0,
@@ -490,6 +492,13 @@ struct App {
     /// See: context/lib/scripting.md
     script_ctx: ScriptCtx,
 
+    /// Reaction and entity-type registries populated from the level's
+    /// `registerLevelManifest()` data script. Cleared on level unload but
+    /// independent from the behavior `HandlerTable` — clearing one does not
+    /// touch the other.
+    /// See: context/lib/scripting.md §2 (Data context lifecycle)
+    data_registry: DataRegistry,
+
     /// Light bridge state: per-entity dirty tracking and play_count clocks.
     /// Runs once per frame between game logic and render; produces repacked
     /// `GpuLight` bytes which the renderer uploads via `upload_bridge_lights`.
@@ -748,6 +757,17 @@ impl ApplicationHandler for App {
                 // order.
                 // See: context/lib/scripting.md
                 if !self.level_load_fired {
+                    // Data context fires once per level load, before behavior
+                    // handlers register. Errors are logged inside
+                    // `run_data_script` and surface here as an empty manifest;
+                    // the level loads with empty registries rather than
+                    // failing. See: context/lib/scripting.md §2
+                    if let Some(world) = &self.level {
+                        if let Some(data_script) = &world.data_script {
+                            let manifest = self.script_runtime.run_data_script(data_script);
+                            self.data_registry.populate_from_manifest(manifest);
+                        }
+                    }
                     load_behavior_scripts(&self.script_runtime, &self.content_root);
                     self.script_runtime.fire_level_load();
                     self.level_load_fired = true;

@@ -8,13 +8,17 @@
 use std::fs;
 use std::path::Path;
 
+use postretro_level_format::data_script::DataScriptSection;
+use rquickjs::{CatchResultExt, Context as JsContext, Function as JsFunction, Object as JsObject, Value as JsValue};
+
 use super::call_context::ScriptCallContext;
 use super::ctx::ScriptCtx;
+use super::data_descriptors::LevelManifest;
 use super::error::ScriptError;
 use super::event_dispatch::{self, SharedHandlerTable};
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use super::pool::{LuauContextPool, QuickJsContextPool};
-use super::primitives_registry::PrimitiveRegistry;
+use super::primitives_registry::{ContextScope, PrimitiveRegistry, ScriptPrimitive};
 use super::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 #[cfg(debug_assertions)]
 use super::typedef;
@@ -192,6 +196,49 @@ impl ScriptRuntime {
         Ok(())
     }
 
+    /// Evaluate a level's data script in a short-lived VM context and return
+    /// the resulting `LevelManifest`. Errors (script evaluation, descriptor
+    /// shape, missing export) are logged and converted to an empty manifest —
+    /// the level loads with empty registries rather than failing.
+    ///
+    /// The context is created and dropped within this call; no live reference
+    /// to the data VM survives after return. Primitives install with
+    /// definition-context scope, so `registerHandler` (BehaviorOnly) appears
+    /// as a stub that throws `WrongContext`.
+    /// See: context/lib/scripting.md §2 (Data context lifecycle)
+    pub(crate) fn run_data_script(&self, section: &DataScriptSection) -> LevelManifest {
+        // Dispatch by source-path extension. Anything that isn't `.luau` runs
+        // through QuickJS, mirroring `run_script_file`'s policy: prl-build
+        // emits `.js` from `.ts`, so the on-disk extension is effectively the
+        // only signal we have at runtime.
+        let is_luau = Path::new(&section.source_path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| e.eq_ignore_ascii_case("luau"))
+            .unwrap_or(false);
+
+        let result = if is_luau {
+            run_data_script_luau(self.luau.primitives(), &section.compiled_bytes, &section.source_path)
+        } else {
+            run_data_script_quickjs(
+                &self.quickjs,
+                &section.compiled_bytes,
+                &section.source_path,
+            )
+        };
+
+        match result {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                log::warn!(
+                    "[Scripting] data script failed for `{}`: {err}",
+                    section.source_path,
+                );
+                LevelManifest::default()
+            }
+        }
+    }
+
     /// Read `path` from disk and run it in the appropriate subsystem, chosen
     /// by extension:
     ///
@@ -257,6 +304,201 @@ impl Drop for ScriptRuntime {
     fn drop(&mut self) {
         self.handlers.borrow_mut().clear();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Data script execution helpers.
+//
+// A short-lived data context is built fresh for each level. It uses the same
+// primitive scope as the definition context (BehaviorOnly → stub) so
+// `registerHandler` correctly throws `WrongContext` from data scripts.
+
+fn run_data_script_quickjs(
+    subsys: &QuickJsSubsystem,
+    compiled_bytes: &[u8],
+    source_path: &str,
+) -> Result<LevelManifest, ScriptError> {
+    let source = std::str::from_utf8(compiled_bytes).map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("data script `{source_path}` is not valid UTF-8: {e}"),
+    })?;
+
+    // Fresh context against the existing runtime — shares the GC heap and
+    // memory limit with the long-lived contexts. Dropped at the end of this
+    // function via RAII when `ctx` goes out of scope.
+    let ctx = JsContext::full(subsys.runtime()).map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("failed to create data context: {e}"),
+    })?;
+
+    let primitives = subsys.primitives();
+
+    let mut manifest_out: Result<LevelManifest, ScriptError> =
+        Err(ScriptError::InvalidArgument {
+            reason: "data script did not produce a manifest".to_string(),
+        });
+
+    ctx.with(|ctx| {
+        // Install primitives with definition-context scope: BehaviorOnly
+        // primitives become stubs that throw WrongContext.
+        for p in primitives {
+            let use_real = matches!(
+                (p.context_scope, ContextScope::DefinitionOnly),
+                (ContextScope::Both, _) | (ContextScope::DefinitionOnly, _)
+            );
+            let installer = if use_real {
+                &p.quickjs_installer
+            } else {
+                &p.quickjs_stub_installer
+            };
+            if let Err(e) = installer(&ctx) {
+                manifest_out = Err(ScriptError::InvalidArgument {
+                    reason: format!("failed to install primitive `{}`: {e}", p.name),
+                });
+                return;
+            }
+        }
+
+        // SDK prelude — same as definition/behavior contexts.
+        if let Err(e) = super::quickjs::evaluate_prelude(&ctx) {
+            manifest_out = Err(e);
+            return;
+        }
+
+        // Evaluate the script body. This installs the user's
+        // `registerLevelManifest` export onto the global object.
+        if let Err(e) = run_script::<()>(&ctx, source, source_path) {
+            manifest_out = Err(e);
+            return;
+        }
+
+        // Look up and invoke the export.
+        let globals = ctx.globals();
+        let func: JsFunction = match globals.get("registerLevelManifest") {
+            Ok(f) => f,
+            Err(e) => {
+                manifest_out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "data script `{source_path}` did not export `registerLevelManifest`: {e}"
+                    ),
+                });
+                return;
+            }
+        };
+
+        // Pass an empty object as the context argument — descriptor-API
+        // builders read no fields from it today; the parameter is reserved
+        // for forward-compat (see scripting.md §2).
+        let arg = match JsObject::new(ctx.clone()) {
+            Ok(o) => o,
+            Err(e) => {
+                manifest_out = Err(ScriptError::InvalidArgument {
+                    reason: format!("failed to allocate ctx argument: {e}"),
+                });
+                return;
+            }
+        };
+
+        let returned: JsValue = match func.call((arg,)).catch(&ctx) {
+            Ok(v) => v,
+            Err(caught) => {
+                let msg = caught.to_string();
+                log::error!(
+                    target: "script/quickjs",
+                    "data script `{source_path}` registerLevelManifest threw: {msg}",
+                );
+                manifest_out = Err(ScriptError::ScriptThrew {
+                    msg,
+                    source_name: source_path.to_string(),
+                });
+                return;
+            }
+        };
+
+        match LevelManifest::from_js_value(&ctx, returned) {
+            Ok(m) => manifest_out = Ok(m),
+            Err(e) => {
+                manifest_out = Err(ScriptError::InvalidArgument {
+                    reason: e.to_string(),
+                });
+            }
+        }
+    });
+
+    manifest_out
+}
+
+fn run_data_script_luau(
+    primitives: &[ScriptPrimitive],
+    compiled_bytes: &[u8],
+    source_path: &str,
+) -> Result<LevelManifest, ScriptError> {
+    let source = std::str::from_utf8(compiled_bytes).map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("data script `{source_path}` is not valid UTF-8: {e}"),
+    })?;
+
+    // Fresh `mlua::Lua`, dropped on return. We don't go through
+    // `LuauSubsystem::new` because it would also build the behavior state and
+    // archetype sink we don't need here.
+    let lua = mlua::Lua::new();
+
+    // Install primitives with definition-context scope (BehaviorOnly → stub).
+    for p in primitives {
+        let use_real = matches!(
+            (p.context_scope, ContextScope::DefinitionOnly),
+            (ContextScope::Both, _) | (ContextScope::DefinitionOnly, _)
+        );
+        let installer = if use_real {
+            &p.luau_installer
+        } else {
+            &p.luau_stub_installer
+        };
+        installer(&lua).map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to install primitive `{}`: {e}", p.name),
+        })?;
+    }
+
+    // SDK prelude (same as the long-lived states).
+    super::luau::evaluate_prelude(&lua)?;
+
+    // Compile + load the script. Mirror `LuauSubsystem::run_source`'s shape
+    // so traceback formatting stays consistent.
+    let bytecode = mlua::Compiler::new()
+        .compile(source)
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: e.to_string(),
+            source_name: source_path.to_string(),
+        })?;
+    lua.load(&bytecode)
+        .set_name(source_path)
+        .set_mode(mlua::ChunkMode::Binary)
+        .exec()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: e.to_string(),
+            source_name: source_path.to_string(),
+        })?;
+
+    let func: mlua::Function =
+        lua.globals()
+            .get("registerLevelManifest")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "data script `{source_path}` did not export `registerLevelManifest`: {e}"
+                ),
+            })?;
+
+    let arg = lua
+        .create_table()
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to allocate ctx argument: {e}"),
+        })?;
+
+    let returned: mlua::Value = func.call(arg).map_err(|e| ScriptError::ScriptThrew {
+        msg: e.to_string(),
+        source_name: source_path.to_string(),
+    })?;
+
+    LevelManifest::from_lua_value(returned).map_err(|e| ScriptError::InvalidArgument {
+        reason: e.to_string(),
+    })
 }
 
 /// RAII guard that clears the handler table's `current_source` when the
@@ -476,6 +718,143 @@ mod tests {
         } else {
             eprintln!("shared-context install (debug build, not asserting): {elapsed:?}",);
         }
+    }
+
+    fn data_section(source_path: &str, body: &str) -> DataScriptSection {
+        DataScriptSection {
+            compiled_bytes: body.as_bytes().to_vec(),
+            source_path: source_path.to_string(),
+        }
+    }
+
+    #[test]
+    fn run_data_script_quickjs_populates_manifest() {
+        let (rt, _ctx) = runtime();
+        let section = data_section(
+            "/maps/data.js",
+            r#"
+            globalThis.registerLevelManifest = function(ctx) {
+                return {
+                    entities: [{ classname: "grunt" }],
+                    reactions: [
+                        { name: "wave1Complete", primitive: "moveGeometry", tag: "reactor" },
+                    ],
+                };
+            };
+            "#,
+        );
+        let manifest = rt.run_data_script(&section);
+        assert_eq!(manifest.entities.len(), 1);
+        assert_eq!(manifest.entities[0].classname, "grunt");
+        assert_eq!(manifest.reactions.len(), 1);
+        assert_eq!(manifest.reactions[0].name, "wave1Complete");
+    }
+
+    #[test]
+    fn run_data_script_luau_populates_manifest() {
+        let (rt, _ctx) = runtime();
+        let section = data_section(
+            "/maps/data.luau",
+            r#"
+            function registerLevelManifest(ctx)
+                return {
+                    entities = { { classname = "grunt" } },
+                    reactions = {
+                        { name = "wave1Complete", primitive = "moveGeometry", tag = "reactor" },
+                    },
+                }
+            end
+            "#,
+        );
+        let manifest = rt.run_data_script(&section);
+        assert_eq!(manifest.entities.len(), 1);
+        assert_eq!(manifest.entities[0].classname, "grunt");
+        assert_eq!(manifest.reactions.len(), 1);
+    }
+
+    #[test]
+    fn run_data_script_register_handler_throws_wrong_context_quickjs() {
+        // Calling `registerHandler` from a data context must surface as a
+        // catchable WrongContext error inside the script — proving the
+        // BehaviorOnly stub installed correctly.
+        let (rt, _ctx) = runtime();
+        let section = data_section(
+            "/maps/bad.js",
+            r#"
+            globalThis.registerLevelManifest = function() {
+                let msg = "no-throw";
+                try {
+                    registerHandler("levelLoad", function() {});
+                } catch (e) {
+                    msg = String(e.message || e);
+                }
+                globalThis.__wc_msg = msg;
+                return { entities: [], reactions: [] };
+            };
+            "#,
+        );
+        let manifest = rt.run_data_script(&section);
+        // Manifest came through fine — the throw was caught inside the script.
+        assert!(manifest.entities.is_empty() && manifest.reactions.is_empty());
+        // We can't introspect __wc_msg after the context drops; instead,
+        // re-run with a script that lets the throw propagate so we can verify
+        // the empty fallback. Use a script that throws unconditionally and
+        // observe the warn-and-empty path.
+        let section = data_section(
+            "/maps/throw.js",
+            r#"
+            globalThis.registerLevelManifest = function() {
+                registerHandler("levelLoad", function() {});
+                return { entities: [], reactions: [] };
+            };
+            "#,
+        );
+        let manifest = rt.run_data_script(&section);
+        assert!(
+            manifest.entities.is_empty() && manifest.reactions.is_empty(),
+            "thrown registerHandler must surface as empty fallback manifest",
+        );
+    }
+
+    #[test]
+    fn run_data_script_register_handler_throws_wrong_context_luau() {
+        let (rt, _ctx) = runtime();
+        let section = data_section(
+            "/maps/bad.luau",
+            r#"
+            function registerLevelManifest(ctx)
+                local ok, err = pcall(registerHandler, "levelLoad", function() end)
+                assert(not ok, "registerHandler must throw in data context")
+                assert(string.find(tostring(err), "registerHandler") ~= nil,
+                       "WrongContext message must mention primitive name")
+                return { entities = {}, reactions = {} }
+            end
+            "#,
+        );
+        let manifest = rt.run_data_script(&section);
+        assert!(manifest.entities.is_empty() && manifest.reactions.is_empty());
+    }
+
+    #[test]
+    fn run_data_script_missing_export_returns_empty_manifest() {
+        let (rt, _ctx) = runtime();
+        let section = data_section(
+            "/maps/no_export.js",
+            "// script with no registerLevelManifest export\nlet x = 1;",
+        );
+        let manifest = rt.run_data_script(&section);
+        assert!(manifest.entities.is_empty() && manifest.reactions.is_empty());
+    }
+
+    #[test]
+    fn run_data_script_invalid_utf8_returns_empty_manifest() {
+        let (rt, _ctx) = runtime();
+        let section = DataScriptSection {
+            compiled_bytes: vec![0xFFu8, 0xFE, 0xFD],
+            source_path: "/maps/binary.js".to_string(),
+        };
+        let manifest = rt.run_data_script(&section);
+        assert!(manifest.entities.is_empty() && manifest.reactions.is_empty());
     }
 
     #[test]

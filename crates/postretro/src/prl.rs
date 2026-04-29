@@ -12,6 +12,7 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
+use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::light_influence::LightInfluenceSection;
@@ -213,6 +214,11 @@ pub struct LevelWorld {
     /// `None` when the map has no animated lights — the compose pass falls
     /// back to a base→total copy.
     pub delta_sh_volumes: Option<DeltaShVolumesSection>,
+    /// Compiled data-script payload (ID 28). `None` when the level has no
+    /// `data_script` worldspawn KVP. The runtime evaluates this in a short-
+    /// lived data context at level load to populate the data registries.
+    /// See: context/lib/scripting.md §2 (Data context lifecycle)
+    pub data_script: Option<DataScriptSection>,
 }
 
 impl LevelWorld {
@@ -711,6 +717,23 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
 
+    // DataScript section (ID 28, optional). Compiled bytes plus original
+    // source path; the runtime evaluates these in a short-lived data context
+    // at level load. Absence means the map authored no `data_script` KVP.
+    let data_script: Option<DataScriptSection> =
+        match prl_format::read_section_data(&mut cursor, &meta, SectionId::DataScript as u32)? {
+            Some(data) => {
+                let section = DataScriptSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] DataScript: {} bytes from `{}`",
+                    section.compiled_bytes.len(),
+                    section.source_path,
+                );
+                Some(section)
+            }
+            None => None,
+        };
+
     let has_portals = portals_section.is_some();
 
     // Build runtime nodes from the nodes section.
@@ -850,6 +873,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         animated_light_chunks,
         animated_light_weight_maps,
         delta_sh_volumes,
+        data_script,
     })
 }
 
@@ -939,6 +963,7 @@ mod tests {
             animated_light_chunks: None,
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
+            data_script: None,
         }
     }
 
@@ -988,6 +1013,7 @@ mod tests {
             animated_light_chunks: None,
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
+            data_script: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -1030,6 +1056,7 @@ mod tests {
             animated_light_chunks: None,
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
+            data_script: None,
         };
 
         let spawn = world.spawn_position();
@@ -1061,6 +1088,7 @@ mod tests {
             animated_light_chunks: None,
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
+            data_script: None,
         };
 
         let indices = face_leaf_indices(&world);

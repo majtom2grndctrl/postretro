@@ -113,6 +113,19 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         }
     });
 
+    // Read the optional worldspawn `data_script` KVP. The level compiler
+    // resolves this relative to the `.map` file's directory, compiles `.ts`
+    // sources via scripts-build (Luau passes through), and embeds the bytes as
+    // the PRL `DataScript` section. See `context/lib/scripting.md`.
+    let data_script = get_property(&geo_map, &worldspawn_id, "data_script").and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
     // Classify brushes: world vs entity
     let world_brush_ids: Vec<BrushId> = geo_map
         .entity_brushes
@@ -366,6 +379,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         entities,
         lights,
         script,
+        data_script,
     })
 }
 

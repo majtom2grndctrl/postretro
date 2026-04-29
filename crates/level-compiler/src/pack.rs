@@ -14,6 +14,7 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
+use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::light_tags::LightTagsSection;
@@ -159,6 +160,17 @@ pub fn encode_light_influence(lights: &AlphaLightsNs<'_>) -> LightInfluenceSecti
     LightInfluenceSection { records }
 }
 
+/// Build a `DataScriptSection` from already-compiled bytes and the resolved
+/// source path. The compiler reads the source, runs `scripts-build` for `.ts`
+/// inputs (or passes Luau through unchanged), then hands the result here for
+/// embedding in the PRL.
+pub fn encode_data_script(compiled_bytes: Vec<u8>, source_path: String) -> DataScriptSection {
+    DataScriptSection {
+        compiled_bytes,
+        source_path,
+    }
+}
+
 /// Convert compiler portal data into a `PortalsSection` for the format crate.
 pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
     let mut vertices = Vec::new();
@@ -208,6 +220,7 @@ pub fn pack_and_write_portals(
     animated_light_weight_maps: Option<&AnimatedLightWeightMapsSection>,
     light_tags: Option<&LightTagsSection>,
     delta_sh_volumes: Option<&DeltaShVolumesSection>,
+    data_script: Option<&DataScriptSection>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -224,6 +237,7 @@ pub fn pack_and_write_portals(
     let animated_light_weight_maps_bytes = animated_light_weight_maps.map(|s| s.to_bytes());
     let light_tags_bytes = light_tags.map(|s| s.to_bytes());
     let delta_sh_volumes_bytes = delta_sh_volumes.map(|s| s.to_bytes());
+    let data_script_bytes = data_script.map(|s| s.to_bytes());
 
     let mut sections = vec![
         SectionBlob {
@@ -310,6 +324,13 @@ pub fn pack_and_write_portals(
             data: bytes.clone(),
         });
     }
+    if let Some(ref bytes) = data_script_bytes {
+        sections.push(SectionBlob {
+            section_id: SectionId::DataScript as u32,
+            version: 1,
+            data: bytes.clone(),
+        });
+    }
 
     write_and_validate_sections(output, &sections)?;
 
@@ -374,6 +395,14 @@ pub fn pack_and_write_portals(
             section.chunk_rects.len(),
             section.offset_counts.len(),
             section.texel_lights.len(),
+        );
+    }
+    if let (Some(section), Some(bytes)) = (data_script, &data_script_bytes) {
+        log::info!(
+            "  DataScript: {} bytes ({} compiled bytes, source: {})",
+            bytes.len(),
+            section.compiled_bytes.len(),
+            section.source_path,
         );
     }
 
@@ -616,6 +645,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -669,6 +699,7 @@ mod tests {
             &empty_sh_volume(),
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
             None,
             None,
             None,
@@ -741,6 +772,7 @@ mod tests {
             &sh_volume,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
             None,
             None,
             None,

@@ -7,6 +7,7 @@ pub mod animated_light_weight_maps;
 pub mod bsp;
 pub mod bvh;
 pub mod chunk_light_list;
+pub mod data_script;
 pub mod delta_sh_volumes;
 pub mod geometry;
 pub mod light_influence;
@@ -133,6 +134,12 @@ pub enum SectionId {
     /// compose pass that blends animated lights into the SH irradiance volume.
     /// See `delta_sh_volumes::DeltaShVolumesSection`.
     DeltaShVolumes = 27,
+
+    /// Compiled data-script bytes (QuickJS-compatible JS for `.ts`/`.js` source,
+    /// raw Luau for `.luau` source) plus the original source path for future
+    /// hot-reload support. Present only when the worldspawn `data_script` KVP
+    /// is set. See `data_script::DataScriptSection`.
+    DataScript = 28,
 }
 
 impl SectionId {
@@ -153,6 +160,7 @@ impl SectionId {
             25 => Some(Self::AnimatedLightWeightMaps),
             26 => Some(Self::LightTags),
             27 => Some(Self::DeltaShVolumes),
+            28 => Some(Self::DataScript),
             _ => None,
         }
     }

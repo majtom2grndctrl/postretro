@@ -48,6 +48,7 @@ use crate::scripting::call_context::ScriptCallContext;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::data_registry::DataRegistry;
 use crate::scripting::primitives::register_all;
+use crate::scripting::reaction_dispatch::ProgressTracker;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig, Which as ScriptWhich};
 use crate::texture::TextureSet;
@@ -207,6 +208,7 @@ fn main() -> Result<()> {
         script_runtime,
         script_ctx,
         data_registry: DataRegistry::new(),
+        progress_tracker: ProgressTracker::new(),
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
         level_load_fired: false,
         script_time: 0.0,
@@ -499,6 +501,15 @@ struct App {
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     data_registry: DataRegistry,
 
+    /// Per-tag kill-count subscriptions derived from the data script's
+    /// `progress` reactions. Initialized at level load from the data registry
+    /// and the entity registry; cleared on level unload independently of the
+    /// behavior `HandlerTable`.
+    /// See: context/lib/scripting.md §2 (Data context lifecycle)
+    // TODO: call progress_tracker.on_entity_killed(tags) when entity dies —
+    // wired in once the entity death system lands.
+    progress_tracker: ProgressTracker,
+
     /// Light bridge state: per-entity dirty tracking and play_count clocks.
     /// Runs once per frame between game logic and render; produces repacked
     /// `GpuLight` bytes which the renderer uploads via `upload_bridge_lights`.
@@ -766,6 +777,15 @@ impl ApplicationHandler for App {
                         if let Some(data_script) = &world.data_script {
                             let manifest = self.script_runtime.run_data_script(data_script);
                             self.data_registry.populate_from_manifest(manifest);
+                            // Walk progress reactions and seed per-tag kill
+                            // counters from the live entity set. Independent
+                            // of the behavior HandlerTable — a behavior
+                            // hot-reload (which clears handlers) leaves these
+                            // subscriptions intact.
+                            self.progress_tracker.initialize(
+                                &self.data_registry,
+                                &self.script_ctx.registry.borrow(),
+                            );
                         }
                     }
                     load_behavior_scripts(&self.script_runtime, &self.content_root);

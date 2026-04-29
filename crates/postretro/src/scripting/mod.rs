@@ -23,6 +23,7 @@ pub(crate) mod primitives;
 pub(crate) mod primitives_light;
 pub(crate) mod primitives_registry;
 pub(crate) mod quickjs;
+pub(crate) mod reaction_dispatch;
 pub(crate) mod registry;
 pub(crate) mod runtime;
 pub(crate) mod typedef;

@@ -192,6 +192,24 @@ export type PrimitiveReactionDescriptor = {
   onComplete: string?,
 }
 
+--- One step in a `sequence` reaction body: invokes the named sequenced
+--- primitive against the given entity with `args`.
+export type SetLightAnimationStep = {
+  id: EntityId,
+  primitive: "setLightAnimation",
+  args: LightAnimation,
+}
+
+--- Union of every supported sequence step shape. New sequenced primitives
+--- extend this union.
+export type SequenceStep = SetLightAnimationStep
+
+--- Sequence reaction body: ordered per-entity primitive invocations. Steps
+--- run in array order at dispatch.
+export type SequenceReactionDescriptor = {
+  sequence: {SequenceStep},
+}
+
 --- Descriptor produced by `registerReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
@@ -201,6 +219,7 @@ export type NamedReactionDescriptor = {
   primitive: string?,
   tag: string?,
   onComplete: string?,
+  sequence: {SequenceStep}?,
 }
 
 --- Descriptor produced by `registerEntities` -- one entry per registered class.
@@ -216,7 +235,7 @@ export type LevelManifest = {
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
 declare function registerReaction(
   name: string,
-  descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor
+  descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor
 ): NamedReactionDescriptor
 
 --- Build the entity-type descriptor list for `LevelManifest.entities`.

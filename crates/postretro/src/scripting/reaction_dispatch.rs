@@ -12,9 +12,10 @@
 
 use std::collections::HashMap;
 
-use super::data_descriptors::{EntityTypeDescriptor, ReactionDescriptor};
+use super::data_descriptors::{EntityTypeDescriptor, NamedReaction, ReactionDescriptor, SequenceStep};
 use super::data_registry::DataRegistry;
 use super::registry::EntityRegistry;
+use super::sequence::SequencedPrimitiveRegistry;
 
 /// Per-subscription kill-count state for a single progress reaction.
 ///
@@ -178,10 +179,124 @@ pub(crate) fn fire_named_event(event_name: &str, data_registry: &DataRegistry) -
                     chained.push(on_complete.clone());
                 }
             }
+            ReactionDescriptor::Sequence(_) => {
+                // Sequence dispatch needs the entity registry and sequenced-
+                // primitive table — see [`fire_named_event_with_sequences`].
+                // Reaching this branch via the registry-only path is silent
+                // intentionally: callers that don't supply a sequence registry
+                // (most don't yet) get a no-op rather than a panic.
+            }
         }
     }
     chained
 }
+
+/// Dispatch variant that also runs `sequence` reactions through the supplied
+/// [`SequencedPrimitiveRegistry`]. Behavior matches [`fire_named_event`] for
+/// the `Progress` and `Primitive` variants; sequences iterate their steps
+/// here.
+///
+/// Per-step semantics:
+/// - Stale [`EntityId`] (not present in `entity_registry`): log a warning and
+///   continue with the next step. Not fatal.
+/// - Unknown primitive name: validated at registration time (see
+///   [`validate_sequence_primitives`]). At dispatch time, defensively log a
+///   warning and continue.
+/// - Handler returns `Err`: log a warning and continue.
+pub(crate) fn fire_named_event_with_sequences(
+    event_name: &str,
+    data_registry: &DataRegistry,
+    sequence_registry: &SequencedPrimitiveRegistry,
+    entity_registry: &EntityRegistry,
+) -> Vec<String> {
+    let mut chained = Vec::new();
+    for named in &data_registry.reactions {
+        if named.name != event_name {
+            continue;
+        }
+        match &named.descriptor {
+            ReactionDescriptor::Progress(_) => {}
+            ReactionDescriptor::Primitive(p) => {
+                log::info!(
+                    "[Scripting] dispatch primitive '{}' on tag '{}'",
+                    p.primitive,
+                    p.tag,
+                );
+                if let Some(on_complete) = &p.on_complete {
+                    chained.push(on_complete.clone());
+                }
+            }
+            ReactionDescriptor::Sequence(steps) => {
+                dispatch_sequence(steps, sequence_registry, entity_registry);
+            }
+        }
+    }
+    chained
+}
+
+fn dispatch_sequence(
+    steps: &[SequenceStep],
+    sequence_registry: &SequencedPrimitiveRegistry,
+    entity_registry: &EntityRegistry,
+) {
+    for (i, step) in steps.iter().enumerate() {
+        if !entity_registry.exists(step.id) {
+            log::warn!(
+                "[Scripting] sequence step {i}: entity {:?} not found, skipping",
+                step.id
+            );
+            continue;
+        }
+        let Some(handler) = sequence_registry.get(&step.primitive) else {
+            // Validation at registration time should make this unreachable
+            // for properly-loaded manifests; defensive log keeps a runtime
+            // primitive-table mutation from silently corrupting dispatch.
+            log::warn!(
+                "[Scripting] sequence step {i}: unknown primitive '{}', skipping",
+                step.primitive
+            );
+            continue;
+        };
+        if let Err(e) = handler(step.id, &step.args) {
+            log::warn!(
+                "[Scripting] sequence step {i}: primitive '{}' on entity {:?} failed: {e}",
+                step.primitive,
+                step.id
+            );
+        }
+    }
+}
+
+/// Walk a slice of reactions and drop any whose `Sequence` body references a
+/// primitive name not present in `sequence_registry`. Logs an error per
+/// rejected reaction and returns the surviving set in original order.
+///
+/// Called at `registerLevelManifest()` time after the script's return value
+/// has been deserialized but before it lands in [`DataRegistry`].
+pub(crate) fn validate_sequence_primitives(
+    reactions: Vec<NamedReaction>,
+    sequence_registry: &SequencedPrimitiveRegistry,
+) -> Vec<NamedReaction> {
+    reactions
+        .into_iter()
+        .filter(|named| {
+            let ReactionDescriptor::Sequence(steps) = &named.descriptor else {
+                return true;
+            };
+            for (i, step) in steps.iter().enumerate() {
+                if !sequence_registry.contains(&step.primitive) {
+                    log::error!(
+                        "[Scripting] registerLevelManifest: sequence step {i} names unknown primitive \"{}\"",
+                        step.primitive
+                    );
+                    return false;
+                }
+            }
+            true
+        })
+        .collect()
+}
+
 
 /// Resolve an entity type by classname from the data registry. Returns `None`
 /// when the classname is not registered.
@@ -494,5 +609,196 @@ mod tests {
         let data = DataRegistry::new();
         let chained = fire_named_event("nothingHere", &data);
         assert!(chained.is_empty());
+    }
+
+    // --- sequence dispatch --------------------------------------------------
+
+    use crate::scripting::data_descriptors::SequenceStep;
+    use crate::scripting::registry::EntityId;
+    use crate::scripting::sequence::{SequenceError, SequencedPrimitiveRegistry};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    fn sequence_reaction(name: &str, steps: Vec<SequenceStep>) -> NamedReaction {
+        NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Sequence(steps),
+        }
+    }
+
+    #[test]
+    fn sequence_dispatch_runs_each_step_in_order() {
+        let mut entities = EntityRegistry::new();
+        let id_a = entities.spawn(Transform::default());
+        let id_b = entities.spawn(Transform::default());
+
+        let calls: Arc<std::sync::Mutex<Vec<(u32, i64)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        let calls_cl = Arc::clone(&calls);
+        seq_reg.register("noteValue", move |id, args| {
+            let v = args["v"].as_i64().unwrap_or(-1);
+            calls_cl.lock().unwrap().push((id.to_raw(), v));
+            Ok(())
+        });
+
+        let mut data = DataRegistry::new();
+        data.populate_from_manifest(LevelManifest {
+            reactions: vec![sequence_reaction(
+                "go",
+                vec![
+                    SequenceStep {
+                        id: id_a,
+                        primitive: "noteValue".into(),
+                        args: serde_json::json!({ "v": 1 }),
+                    },
+                    SequenceStep {
+                        id: id_b,
+                        primitive: "noteValue".into(),
+                        args: serde_json::json!({ "v": 2 }),
+                    },
+                ],
+            )],
+            entities: vec![],
+        });
+
+        let chained = fire_named_event_with_sequences("go", &data, &seq_reg, &entities);
+        assert!(chained.is_empty());
+        let observed = calls.lock().unwrap().clone();
+        assert_eq!(observed, vec![(id_a.to_raw(), 1), (id_b.to_raw(), 2)]);
+    }
+
+    #[test]
+    fn sequence_dispatch_skips_stale_entity_and_continues() {
+        // Acceptance: multi-step sequence where one step has a stale ID — the
+        // surviving steps still execute.
+        let mut entities = EntityRegistry::new();
+        let id_a = entities.spawn(Transform::default());
+        let id_b = entities.spawn(Transform::default());
+
+        // Stale ID: reuse a slot that was despawned (mismatched generation).
+        let id_dead = entities.spawn(Transform::default());
+        entities.despawn(id_dead).unwrap();
+        assert!(!entities.exists(id_dead));
+
+        let count = Arc::new(AtomicU32::new(0));
+        let count_cl = Arc::clone(&count);
+
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        seq_reg.register("tick", move |_id, _args| {
+            count_cl.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+
+        let mut data = DataRegistry::new();
+        data.populate_from_manifest(LevelManifest {
+            reactions: vec![sequence_reaction(
+                "go",
+                vec![
+                    SequenceStep {
+                        id: id_a,
+                        primitive: "tick".into(),
+                        args: serde_json::Value::Null,
+                    },
+                    SequenceStep {
+                        id: id_dead,
+                        primitive: "tick".into(),
+                        args: serde_json::Value::Null,
+                    },
+                    SequenceStep {
+                        id: id_b,
+                        primitive: "tick".into(),
+                        args: serde_json::Value::Null,
+                    },
+                ],
+            )],
+            entities: vec![],
+        });
+
+        fire_named_event_with_sequences("go", &data, &seq_reg, &entities);
+        // Two surviving steps fired; the stale step was skipped.
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn sequence_dispatch_continues_after_handler_error() {
+        let mut entities = EntityRegistry::new();
+        let id_a = entities.spawn(Transform::default());
+        let id_b = entities.spawn(Transform::default());
+
+        let count = Arc::new(AtomicU32::new(0));
+        let count_cl = Arc::clone(&count);
+
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        seq_reg.register("ok", move |_id, _args| {
+            count_cl.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+        seq_reg.register("boom", |_id, _args| {
+            Err(SequenceError::ExecutionFailed {
+                reason: "intentional".into(),
+            })
+        });
+
+        let mut data = DataRegistry::new();
+        data.populate_from_manifest(LevelManifest {
+            reactions: vec![sequence_reaction(
+                "go",
+                vec![
+                    SequenceStep {
+                        id: id_a,
+                        primitive: "boom".into(),
+                        args: serde_json::Value::Null,
+                    },
+                    SequenceStep {
+                        id: id_b,
+                        primitive: "ok".into(),
+                        args: serde_json::Value::Null,
+                    },
+                ],
+            )],
+            entities: vec![],
+        });
+
+        fire_named_event_with_sequences("go", &data, &seq_reg, &entities);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn validate_sequence_primitives_drops_reaction_with_unknown_primitive() {
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        seq_reg.register("known", |_id, _args| Ok(()));
+
+        let bogus_id = EntityId::from_raw(0x0001_0000);
+        let reactions = vec![
+            sequence_reaction(
+                "valid",
+                vec![SequenceStep {
+                    id: bogus_id,
+                    primitive: "known".into(),
+                    args: serde_json::Value::Null,
+                }],
+            ),
+            sequence_reaction(
+                "invalid",
+                vec![
+                    SequenceStep {
+                        id: bogus_id,
+                        primitive: "known".into(),
+                        args: serde_json::Value::Null,
+                    },
+                    SequenceStep {
+                        id: bogus_id,
+                        primitive: "ghost".into(),
+                        args: serde_json::Value::Null,
+                    },
+                ],
+            ),
+        ];
+
+        let surviving = validate_sequence_primitives(reactions, &seq_reg);
+        assert_eq!(surviving.len(), 1);
+        assert_eq!(surviving[0].name, "valid");
     }
 }

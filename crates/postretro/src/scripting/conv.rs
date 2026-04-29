@@ -522,7 +522,7 @@ pub(crate) fn json_to_js<'js>(
 // clippy::only_used_in_recursion: `ctx` threads through for symmetry with
 // `json_to_js` and reserves the hook for primitives that need it later.
 #[allow(clippy::only_used_in_recursion)]
-fn js_to_json<'js>(ctx: &Ctx<'js>, v: JsValue<'js>) -> rquickjs::Result<serde_json::Value> {
+pub(super) fn js_to_json<'js>(ctx: &Ctx<'js>, v: JsValue<'js>) -> rquickjs::Result<serde_json::Value> {
     if v.is_null() || v.is_undefined() {
         return Ok(serde_json::Value::Null);
     }
@@ -591,7 +591,7 @@ pub(crate) fn json_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<LuaV
     }
 }
 
-fn lua_to_json(value: LuaValue) -> mlua::Result<serde_json::Value> {
+pub(super) fn lua_to_json(value: LuaValue) -> mlua::Result<serde_json::Value> {
     match value {
         LuaValue::Nil => Ok(serde_json::Value::Null),
         LuaValue::Boolean(b) => Ok(serde_json::Value::Bool(b)),

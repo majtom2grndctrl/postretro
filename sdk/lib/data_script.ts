@@ -43,6 +43,29 @@ export type PrimitiveReactionDescriptor = {
 };
 
 /**
+ * One step in a `sequence` reaction body: invokes the named sequenced
+ * primitive against the given entity with `args`. The primitive name is a
+ * narrowed string literal; `args` is the payload shape that primitive expects.
+ */
+export type SetLightAnimationStep = {
+  id: import("postretro").EntityId;
+  primitive: "setLightAnimation";
+  args: import("postretro").LightAnimation;
+};
+
+/** Union of every supported sequence step shape. Add new step types here as more sequenced primitives land. */
+export type SequenceStep = SetLightAnimationStep;
+
+/**
+ * Sequence reaction: ordered per-entity primitive invocations. Steps run in
+ * array order at dispatch time. Use `lightWave` and friends from the SDK lib
+ * to build the step array; this descriptor is just a thin wrapper around it.
+ */
+export type SequenceReactionDescriptor = {
+  sequence: SequenceStep[];
+};
+
+/**
  * Descriptor produced by `registerReaction`. The `name` field is merged into
  * the descriptor at the top level so the Rust deserializer can read both the
  * event name and the descriptor body from a single flat object.
@@ -50,6 +73,7 @@ export type PrimitiveReactionDescriptor = {
 export type NamedReactionDescriptor = { name: string } & (
   | ProgressReactionDescriptor
   | PrimitiveReactionDescriptor
+  | SequenceReactionDescriptor
 );
 
 /** Descriptor produced by `registerEntities` — one entry per registered class. */
@@ -72,7 +96,10 @@ export type LevelManifest = {
  */
 export function registerReaction(
   name: string,
-  descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor,
+  descriptor:
+    | ProgressReactionDescriptor
+    | PrimitiveReactionDescriptor
+    | SequenceReactionDescriptor,
 ): NamedReactionDescriptor {
   return { name, ...descriptor } as NamedReactionDescriptor;
 }

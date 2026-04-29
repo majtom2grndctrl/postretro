@@ -10,12 +10,26 @@ use mlua::{Table, Value as LuaValue};
 use rquickjs::{Array, Ctx, Object, Value as JsValue};
 use thiserror::Error;
 
+use super::registry::EntityId;
+
 /// Variants of a single reaction's behavior body. The `name` lives on the
 /// wrapping [`NamedReaction`]; this enum captures only the descriptor shape.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ReactionDescriptor {
     Progress(ProgressDescriptor),
     Primitive(PrimitiveDescriptor),
+    /// Ordered list of (entity, sequenced-primitive, args) steps. Steps fire
+    /// in order at dispatch time; failures and stale entity IDs are logged as
+    /// warnings rather than aborting the sequence.
+    Sequence(Vec<SequenceStep>),
+}
+
+/// One step in a `sequence` reaction.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SequenceStep {
+    pub(crate) id: EntityId,
+    pub(crate) primitive: String,
+    pub(crate) args: serde_json::Value,
 }
 
 /// Threshold reaction: counts kills against a tag and fires an event when the
@@ -61,8 +75,10 @@ pub(crate) struct LevelManifest {
 pub(crate) enum DescriptorError {
     #[error("reaction descriptor missing required field '{field}'")]
     MissingField { field: &'static str },
-    #[error("reaction has no recognizable shape (expected 'progress' or 'primitive' key)")]
+    #[error("reaction has no recognizable shape (expected 'progress', 'primitive', or 'sequence' key)")]
     UnknownShape,
+    #[error("'sequence' field must be an array of step objects")]
+    InvalidSequenceShape { reason: String },
     #[error("'primitive' field must not be empty")]
     EmptyPrimitiveName,
     #[error("'at' threshold {value} is out of range [0.0, 1.0]")]
@@ -200,17 +216,25 @@ fn named_reaction_from_js<'js>(
 
     let name: String = get_required_string_js(&obj, "name")?;
 
-    // Discriminator: presence of `progress` (object) vs. `primitive` (string).
+    // Discriminator: presence of `progress` / `primitive` / `sequence` keys.
     let has_progress = obj.contains_key("progress").map_err(js_err)?;
     let has_primitive = obj.contains_key("primitive").map_err(js_err)?;
+    let has_sequence = obj.contains_key("sequence").map_err(js_err)?;
 
-    let descriptor = match (has_progress, has_primitive) {
-        (true, _) => {
-            let progress_obj: Object = obj.get("progress").map_err(js_err)?;
-            ReactionDescriptor::Progress(progress_descriptor_from_js(ctx, &progress_obj)?)
-        }
-        (false, true) => ReactionDescriptor::Primitive(primitive_descriptor_from_js(ctx, &obj)?),
-        (false, false) => return Err(DescriptorError::UnknownShape),
+    let descriptor = if has_progress {
+        let progress_obj: Object = obj.get("progress").map_err(js_err)?;
+        ReactionDescriptor::Progress(progress_descriptor_from_js(ctx, &progress_obj)?)
+    } else if has_sequence {
+        let arr: Array = obj.get("sequence").map_err(|e| {
+            DescriptorError::InvalidSequenceShape {
+                reason: e.to_string(),
+            }
+        })?;
+        ReactionDescriptor::Sequence(sequence_steps_from_js(ctx, &arr)?)
+    } else if has_primitive {
+        ReactionDescriptor::Primitive(primitive_descriptor_from_js(ctx, &obj)?)
+    } else {
+        return Err(DescriptorError::UnknownShape);
     };
 
     Ok(NamedReaction { name, descriptor })
@@ -250,6 +274,66 @@ fn primitive_descriptor_from_js<'js>(
         primitive,
         tag,
         on_complete,
+    })
+}
+
+fn sequence_steps_from_js<'js>(
+    ctx: &Ctx<'js>,
+    arr: &Array<'js>,
+) -> Result<Vec<SequenceStep>, DescriptorError> {
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let item: JsValue = arr.get(i).map_err(js_err)?;
+        let obj = Object::from_value(item).map_err(|_| DescriptorError::InvalidSequenceShape {
+            reason: format!("step {i} must be an object"),
+        })?;
+        let id_raw: u32 = get_required_u32_js(&obj, "id")?;
+        let primitive = get_required_string_js(&obj, "primitive")?;
+        let primitive = validate_primitive_name(primitive)?;
+        let args = if obj.contains_key("args").map_err(js_err)? {
+            let raw: JsValue = obj.get("args").map_err(js_err)?;
+            super::conv::js_to_json(ctx, raw).map_err(js_err)?
+        } else {
+            serde_json::Value::Null
+        };
+        out.push(SequenceStep {
+            id: EntityId::from_raw(id_raw),
+            primitive,
+            args,
+        });
+    }
+    Ok(out)
+}
+
+fn get_required_u32_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<u32, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Err(DescriptorError::MissingField { field });
+    }
+    if let Some(i) = raw.as_int() {
+        if i < 0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("'{field}' must be a non-negative integer"),
+            });
+        }
+        return Ok(i as u32);
+    }
+    if let Some(f) = raw.as_float() {
+        if !f.is_finite() || f < 0.0 || f > u32::MAX as f64 || f.fract() != 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("'{field}' must be an integer in u32 range"),
+            });
+        }
+        return Ok(f as u32);
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: format!("'{field}' must be a number"),
     })
 }
 
@@ -338,14 +422,22 @@ fn named_reaction_from_lua(value: LuaValue) -> Result<NamedReaction, DescriptorE
 
     let has_progress = table.contains_key("progress").map_err(lua_err)?;
     let has_primitive = table.contains_key("primitive").map_err(lua_err)?;
+    let has_sequence = table.contains_key("sequence").map_err(lua_err)?;
 
-    let descriptor = match (has_progress, has_primitive) {
-        (true, _) => {
-            let progress: Table = table.get("progress").map_err(lua_err)?;
-            ReactionDescriptor::Progress(progress_descriptor_from_lua(&progress)?)
-        }
-        (false, true) => ReactionDescriptor::Primitive(primitive_descriptor_from_lua(&table)?),
-        (false, false) => return Err(DescriptorError::UnknownShape),
+    let descriptor = if has_progress {
+        let progress: Table = table.get("progress").map_err(lua_err)?;
+        ReactionDescriptor::Progress(progress_descriptor_from_lua(&progress)?)
+    } else if has_sequence {
+        let arr: Table = table.get("sequence").map_err(|e| {
+            DescriptorError::InvalidSequenceShape {
+                reason: e.to_string(),
+            }
+        })?;
+        ReactionDescriptor::Sequence(sequence_steps_from_lua(&arr)?)
+    } else if has_primitive {
+        ReactionDescriptor::Primitive(primitive_descriptor_from_lua(&table)?)
+    } else {
+        return Err(DescriptorError::UnknownShape);
     };
 
     Ok(NamedReaction { name, descriptor })
@@ -384,6 +476,71 @@ fn primitive_descriptor_from_lua(table: &Table) -> Result<PrimitiveDescriptor, D
         tag,
         on_complete,
     })
+}
+
+fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, DescriptorError> {
+    let len = arr.raw_len();
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+        let step_table = match item {
+            LuaValue::Table(t) => t,
+            other => {
+                return Err(DescriptorError::InvalidSequenceShape {
+                    reason: format!(
+                        "step {i} must be a table, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        };
+        let id_raw = get_required_u32_lua(&step_table, "id")?;
+        let primitive = get_required_string_lua(&step_table, "primitive")?;
+        let primitive = validate_primitive_name(primitive)?;
+        let args = if step_table.contains_key("args").map_err(lua_err)? {
+            let raw: LuaValue = step_table.get("args").map_err(lua_err)?;
+            super::conv::lua_to_json(raw).map_err(lua_err)?
+        } else {
+            serde_json::Value::Null
+        };
+        out.push(SequenceStep {
+            id: EntityId::from_raw(id_raw),
+            primitive,
+            args,
+        });
+    }
+    Ok(out)
+}
+
+fn get_required_u32_lua(table: &Table, field: &'static str) -> Result<u32, DescriptorError> {
+    if !table.contains_key(field).map_err(lua_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Err(DescriptorError::MissingField { field }),
+        LuaValue::Integer(i) => {
+            if i < 0 || i > u32::MAX as i64 {
+                Err(DescriptorError::InvalidShape {
+                    reason: format!("'{field}' must be a non-negative integer in u32 range"),
+                })
+            } else {
+                Ok(i as u32)
+            }
+        }
+        LuaValue::Number(f) => {
+            if !f.is_finite() || f < 0.0 || f > u32::MAX as f64 || f.fract() != 0.0 {
+                Err(DescriptorError::InvalidShape {
+                    reason: format!("'{field}' must be an integer in u32 range"),
+                })
+            } else {
+                Ok(f as u32)
+            }
+        }
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("'{field}' must be a number, got {}", other.type_name()),
+        }),
+    }
 }
 
 fn entity_descriptor_from_lua(value: LuaValue) -> Result<EntityTypeDescriptor, DescriptorError> {
@@ -577,6 +734,52 @@ mod tests {
     }
 
     #[test]
+    fn js_sequence_reaction_deserializes() {
+        let src = r#"({
+            entities: [],
+            reactions: [{
+                name: "openVault",
+                sequence: [
+                    { id: 65536, primitive: "moveGeometry", args: { duration: 1.5 } },
+                    { id: 131072, primitive: "playSound", args: { clip: "vault" } }
+                ]
+            }]
+        })"#;
+        let m = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
+        match &m.reactions[0].descriptor {
+            ReactionDescriptor::Sequence(steps) => {
+                assert_eq!(steps.len(), 2);
+                assert_eq!(steps[0].id.to_raw(), 65536);
+                assert_eq!(steps[0].primitive, "moveGeometry");
+                assert_eq!(steps[0].args["duration"].as_f64(), Some(1.5));
+                assert_eq!(steps[1].id.to_raw(), 131072);
+                assert_eq!(steps[1].primitive, "playSound");
+                assert_eq!(steps[1].args["clip"], serde_json::json!("vault"));
+            }
+            other => panic!("expected sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn js_sequence_step_missing_args_defaults_to_null() {
+        let src = r#"({
+            entities: [],
+            reactions: [{
+                name: "x",
+                sequence: [{ id: 1, primitive: "ping" }]
+            }]
+        })"#;
+        let m = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
+        match &m.reactions[0].descriptor {
+            ReactionDescriptor::Sequence(steps) => {
+                assert_eq!(steps.len(), 1);
+                assert!(steps[0].args.is_null());
+            }
+            other => panic!("expected sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn js_empty_arrays_yield_empty_manifest() {
         let src = "({ entities: [], reactions: [] })";
         let m = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
@@ -682,6 +885,30 @@ mod tests {
         }"#;
         let err = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap_err());
         assert_eq!(err, DescriptorError::AtThresholdOutOfRange { value: 1.5 });
+    }
+
+    #[test]
+    fn lua_sequence_reaction_deserializes() {
+        let src = r#"return {
+            entities = {},
+            reactions = {
+                { name = "openVault",
+                  sequence = {
+                      { id = 65536, primitive = "moveGeometry", args = { duration = 1.5 } },
+                      { id = 131072, primitive = "playSound", args = { clip = "vault" } },
+                  } }
+            }
+        }"#;
+        let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
+        match &m.reactions[0].descriptor {
+            ReactionDescriptor::Sequence(steps) => {
+                assert_eq!(steps.len(), 2);
+                assert_eq!(steps[0].id.to_raw(), 65536);
+                assert_eq!(steps[0].primitive, "moveGeometry");
+                assert_eq!(steps[1].primitive, "playSound");
+            }
+            other => panic!("expected sequence, got {other:?}"),
+        }
     }
 
     #[test]

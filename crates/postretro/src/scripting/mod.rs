@@ -26,6 +26,7 @@ pub(crate) mod quickjs;
 pub(crate) mod reaction_dispatch;
 pub(crate) mod registry;
 pub(crate) mod runtime;
+pub(crate) mod sequence;
 pub(crate) mod typedef;
 
 // Dev-mode hot reload. Compiled in debug builds only; the module itself has a

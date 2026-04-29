@@ -7,7 +7,12 @@
 // None of the helpers below set `phase`. When staggering across a row of
 // lights, set `phase` at the call site (see `world.ts` for the wave example).
 
-import type { LightAnimation, Vec3 } from "postretro";
+import type {
+  EntityId,
+  LightAnimation,
+  SequenceStep,
+  Vec3,
+} from "postretro";
 
 /** Per-channel keyframe format accepted by `timeline` and `sequence`. */
 export type Keyframe<T extends number[]> = [number, ...T];
@@ -221,6 +226,56 @@ export function sequence<T extends number[]>(
   // fields being non-finite).
   validateKeyframes(out, /* isSequence */ true);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Sequence-reaction authoring helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimum shape `lightWave` needs from each input entry — just an `EntityId`.
+ * Both the typed `LightEntity` returned from `world.query` and any custom
+ * handle satisfy this, so the helper composes with whatever query the author
+ * uses to build the sorted row.
+ */
+export type LightHandleLike = { id: EntityId };
+
+/**
+ * Configuration accepted by `lightWave`. Mirrors `LightAnimation` minus
+ * `phase`, which the helper computes per-step from the entry's index.
+ */
+export type LightWaveOptions = Omit<LightAnimation, "phase">;
+
+/**
+ * Build a `SequenceStep[]` that staggers the same `LightAnimation` across the
+ * given (already-sorted) `lights`, setting `phase = i / lights.length` on
+ * each step so the wave travels along the row.
+ *
+ * Pure: returns a fresh array of plain step objects. Pair the result with
+ * `registerReaction(name, { sequence: lightWave(...) })`.
+ */
+export function lightWave(
+  lights: ReadonlyArray<LightHandleLike>,
+  opts: LightWaveOptions,
+): SequenceStep[] {
+  const n = lights.length;
+  const steps: SequenceStep[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    steps[i] = {
+      id: lights[i].id,
+      primitive: "setLightAnimation",
+      args: {
+        periodMs: opts.periodMs,
+        phase: n > 0 ? i / n : 0,
+        playCount: opts.playCount,
+        startActive: opts.startActive,
+        brightness: opts.brightness,
+        color: opts.color,
+        direction: opts.direction,
+      },
+    };
+  }
+  return steps;
 }
 
 function validateKeyframes<T extends number[]>(

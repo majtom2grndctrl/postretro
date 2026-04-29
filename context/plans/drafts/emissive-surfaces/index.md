@@ -53,19 +53,32 @@ in dark corridors. Completes the "rendering bypass" stub in `resource_management
 
 ### Task 1: Material system changes
 
-Add `Material::Emissive` with prefix `emissive_` and `emissive: true` in its properties.
-Strip `emissive: true` from `Material::Neon`. Extend `MaterialUniform` in `forward.wgsl`
-with `emissive_intensity: f32`; extend the matching CPU-side struct in `render/mod.rs`.
-Upload `1.0` for `Material::Emissive`, `0.0` for all others. Adjust struct padding to
-maintain 16-byte alignment. Update all affected tests.
+Add `Material::Emissive` with prefix `emissive_` and `emissive: true` in its properties;
+`shininess()` returns `0.0` for `Material::Emissive` — emissive surfaces bypass lighting
+and don't need specular highlights. Strip `emissive: true` from `Material::Neon`. Extend
+`MaterialUniform` in `forward.wgsl` with `emissive_intensity: f32`; extend the matching
+CPU-side struct in `render/mod.rs`. If the struct size changes, update `MATERIAL_UNIFORM_SIZE`
+in `render/mod.rs` to match. Upload `1.0` for `Material::Emissive`, `0.0` for all others.
+Adjust struct padding to maintain alignment. The following tests in `material.rs` test
+`Material::Neon`'s emissive behavior and must be updated when `emissive: true` is stripped
+from `Neon`:
+- `derive_material_maps_neon_prefix_with_emissive`
+- `neon_has_emissive`
+
+Post-implementation doc update: update `rendering_pipeline.md §9`'s group 1 bind-group
+slot table to add the emissive mask texture at binding 5.
 
 ### Task 2: Emissive mask texture loading
 
 At level load, probe for `{name}_e.png` alongside the diffuse load. Load as R8Unorm linear.
-Validate that dimensions match the diffuse texture; on mismatch log a warning and substitute
-the shared 1×1 white placeholder. Missing `_e.png` silently substitutes the same placeholder.
-Bind the emissive mask at `@group(1) @binding(5)` in the per-bucket bind group. The existing
-`base_sampler` at binding 1 also samples the emissive mask — no new sampler binding required.
+`_e.png` must not be sRGB-tagged — reject sRGB-tagged files at load time with a warning and
+fall back to the white placeholder, matching the behavior for `_s.png` and `_n.png` siblings.
+If the diffuse resolved to a placeholder (missing diffuse), skip the `_e.png` probe entirely
+and bind the white placeholder directly. Validate that dimensions match the diffuse texture;
+on mismatch log a warning and substitute the shared 1×1 white placeholder. Missing `_e.png`
+silently substitutes the same placeholder. Bind the emissive mask at `@group(1) @binding(5)`
+in the per-bucket bind group. The existing `base_sampler` at binding 1 also samples the
+emissive mask — no new sampler binding required.
 
 ### Task 3: Forward shader emissive bypass
 
@@ -86,8 +99,12 @@ the binding slot is established.
 
 ## Rough sketch
 
-`MaterialUniform` currently has `shininess: f32` + 12 bytes padding to 16 bytes. Adding
-`emissive_intensity: f32` fills 8 bytes of data, leaving 8 bytes padding — valid alignment.
+`MaterialUniform` currently has `shininess: f32` (4 bytes) at offset 0 followed by
+`_pad: vec3<f32>` (12 bytes) at offset 4. Because `vec3<f32>` has 16-byte alignment in the
+uniform address space, the struct rounds up to 32 bytes total — `MATERIAL_UNIFORM_SIZE = 32`.
+Adding `emissive_intensity: f32` replaces the first 4 bytes of the padding slot, giving
+`shininess: f32` + `emissive_intensity: f32` + `_pad: vec2<f32>` + 16 bytes trailing pad
+— still 32 bytes, alignment valid, `MATERIAL_UNIFORM_SIZE` unchanged.
 
 Shader formula with `emissive_intensity > 1.0`:
 - `emissive_weight = mask.r × clamp(emissive_intensity, 0.0, 1.0)` — blend weight stays [0, 1]

@@ -88,7 +88,7 @@ Internal types (`pub(crate)`, module-private) belong in code comments, not conte
 
 Context files describe what survives refactoring. Task descriptions describe what to change right now.
 
-**Litmus test:** "If we rewrote this module with a different approach, would this sentence still be true?" Yes → context file. No → task description or code comment.
+**Litmus test:** "If we rewrote this module with a different approach, would this sentence still be true?" "Does this sentence describe something I wouldn't find quickly by searching strings and rapidly reading code files?" Yes → context file. No → task description or code comment.
 
 **Belongs in context files (durable):**
 - Design principles and intent

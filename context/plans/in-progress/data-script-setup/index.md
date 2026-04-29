@@ -16,7 +16,7 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
 
 - `data_script` KVP on `worldspawn` recognized by prl-build; TS compiled to JS
   via `scripts-build`, Luau passed through; compiled output embedded in PRL
-- `setup(ctx)` as the script entry point: called once at level load, returns a
+- `registerLevelManifest(ctx)` as the script entry point: called once at level load, returns a
   typed descriptor bundle, VM context released after return
 - `registerReaction(name, descriptor)` and `registerEntities([...])` as pure
   script-side functions — build typed descriptor objects, no FFI
@@ -37,7 +37,7 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
 ### Out of scope
 
 - World state store, quest tracking, and stateful event chains (future)
-- Vue-style compiler transformation of `setup()` return (future — hides the
+- Vue-style compiler transformation of `registerLevelManifest()` return (future — hides the
   explicit `return` from the author; current visible form stays until API
   shape is settled)
 - `ctx` parameter contents — placeholder only; nothing meaningful passed yet.
@@ -57,9 +57,9 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
 - [ ] A `.map` file with `data_script "path/to/level-data.ts"` on `worldspawn`
   compiles via prl-build without error; a referenced file that does not exist
   fails compilation with a clear diagnostic
-- [ ] At level load, `setup()` is called exactly once; behavior `levelLoad`
+- [ ] At level load, `registerLevelManifest()` is called exactly once; behavior `levelLoad`
   handlers fire after data script setup completes
-- [ ] After `setup()` returns, no live reference to the data script VM context
+- [ ] After `registerLevelManifest()` returns, no live reference to the data script VM context
   remains; no further script execution occurs for the data script during the
   level
 - [ ] A data script that calls `registerHandler` receives a `WrongContext`
@@ -67,7 +67,7 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
 - [ ] `registerReaction("waveDone", { progress: { tag: "wave1", at: 1.0, fire:
   "powerOn" } })` registers a progress subscription; when all entities tagged
   `"wave1"` are dead, the `"powerOn"` event fires
-- [ ] `registerEntities([Grunt])` in `setup()` makes `"grunt"` resolvable as an
+- [ ] `registerEntities([Grunt])` in `registerLevelManifest()` makes `"grunt"` resolvable as an
   entity classname for the level; a map entity with classname `"grunt"` matches
   the registered descriptor
 - [ ] Clearing behavior script handlers (level unload path) does not clear
@@ -101,19 +101,19 @@ a hard compile error.
 
 ### Task 2: Reaction and entity descriptor types
 
-Define Rust types for the data that crosses the FFI boundary: the setup()
+Define Rust types for the data that crosses the FFI boundary: the `registerLevelManifest()`
 return bundle, reaction descriptors (`progress` and `primitive` shapes), and
 entity type descriptors. Implement deserialization from the JS/Luau return
 value into these types. Descriptor shape errors (unknown primitive name,
-missing required field) are reported at setup time — not deferred to dispatch.
+missing required field) are reported at level load time — not deferred to dispatch.
 
 ### Task 3: Data context lifecycle
 
 At level load, after geometry and entities are loaded but before `levelLoad`
 behavior handlers fire: create a short-lived VM context (QuickJS or Luau,
-inferred from compiled script extension), call `setup(ctx)` with an empty
+inferred from compiled script extension), call `registerLevelManifest(ctx)` with an empty
 context object, deserialize the return bundle, populate reaction and entity type
-registries, drop the context. Setup errors are logged and non-fatal — level
+registries, drop the context. Manifest errors are logged and non-fatal — level
 loads with no registered reactions rather than failing.
 
 The data context is a third context role alongside Definition and Behavior
@@ -137,7 +137,7 @@ registered descriptors, resolved when map entities are instantiated.
 Implement `registerReaction` and `registerEntities` as pure TypeScript/Luau
 functions in the SDK vocabulary layer — they build typed descriptor objects and
 return them, no FFI. Add declarations to `postretro.d.ts` and
-`postretro.d.luau`. Type the `setup()` return shape so the bundle structure is
+`postretro.d.luau`. Type the `registerLevelManifest()` return shape so the bundle structure is
 statically checkable.
 
 ---
@@ -159,7 +159,7 @@ load).
 import { Grunt, HeavyGunner } from 'entities'
 import { registerReaction, registerEntities } from 'postretro'
 
-export function setup(ctx) {
+export function registerLevelManifest(ctx) {
     return {
         entities: registerEntities([ Grunt, HeavyGunner ]),
         reactions: [
@@ -181,19 +181,19 @@ export function setup(ctx) {
 ```
 
 `registerReaction` and `registerEntities` return typed descriptor objects (no FFI).
-The `return` is the FFI boundary — Rust calls `setup()`,
+The `return` is the FFI boundary — Rust calls `registerLevelManifest()`,
 receives the object, deserializes it in one pass.
 
-**Computation before return:** `setup()` may do real work before returning —
+**Computation before return:** `registerLevelManifest()` may do real work before returning —
 query entities, sort by position, derive timing from counts, build descriptor
 chains programmatically. The constraint is on the *return value*, not on what
-happens inside `setup()`. As long as the return is a descriptor bundle, the VM
+happens inside `registerLevelManifest()`. As long as the return is a descriptor bundle, the VM
 context is released cleanly after return regardless of how the bundle was
 computed.
 
 **Hot reload readiness:** reaction and entity type registries must be clearable
 without touching behavior script handlers. Teardown path when hot reload lands:
-clear data registries → re-run `setup()` → repopulate. No behavior restart
+clear data registries → re-run `registerLevelManifest()` → repopulate. No behavior restart
 needed. Keeping these in separate Rust structs is the main structural
 requirement.
 
@@ -223,7 +223,7 @@ requirement.
   runtime; no use case for per-type handle references exists in the current
   design. Behavior scripts will rely on `world.query()` for per-type access
   when that layer lands.
-- **Setup failure policy:** ~~log-and-continue vs --strict~~ **Resolved:**
+- **Manifest failure policy:** ~~log-and-continue vs --strict~~ **Resolved:**
   log-and-continue. Errors print to terminal (no in-game UI yet). Level
   loads with no registered reactions rather than aborting. This keeps the
   path open for hot reload: a broken data script can be fixed and
@@ -232,8 +232,8 @@ requirement.
 - **ID-based reaction targeting:** tag-only descriptors cover group-oriented
   primitives (`moveGeometry`, `activateGroup`, `spawnGroup`) where acting on
   all entities sharing a tag is the right semantic. Sequenced primitives (light
-  wave order, ordered geometry reveals) computed inside `setup()` may need to
+  wave order, ordered geometry reveals) computed inside `registerLevelManifest()` may need to
   target specific entities rather than a whole tag group. Two options: dynamic
-  tag assignment from `setup()` (setup writes tags back to entities before
+  tag assignment from `registerLevelManifest()` (writes tags back to entities before
   returning), or entity-ID-based descriptor fields alongside the existing tag
   field. Resolve when the first sequencing primitive is specced.

@@ -249,7 +249,7 @@ wgpu uses explicit render pipelines and bind groups — there is no hidden globa
 
 - **Why, not what.** Explain rationale. The code shows behavior.
 - **Non-obvious context.** Why a capability lives in this module, ordering dependencies, wgpu quirks, performance-sensitive paths. Things a reader can't derive from the code alone.
-- **Spec pointers.** Brief reference to the governing context file or contract when code implements a specific architectural decision.
+- **Keep comments concise.** Follow the **"Direct and brief"** and **"Seamless"** principles from [Context Style Guide](./context_style_guide.md).
 
 ### 5.2 File headers
 

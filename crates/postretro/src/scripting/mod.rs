@@ -1,5 +1,5 @@
 // Scripting subsystem: the Rust-owned entity/component surface that scripts manipulate.
-// See: context/lib/index.md §4 Non-Goals (not ECS; scripting owns a narrow surface only).
+// See: context/lib/scripting.md (not ECS; scripting owns a narrow surface only).
 
 // Renderer, audio, and input own their own data structures and are unaffected
 // by anything in this module.

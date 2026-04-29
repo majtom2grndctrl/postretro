@@ -190,8 +190,8 @@ pub struct LightAnimation {
 /// bake only and is excluded from the runtime direct-lighting path (AlphaLights
 /// and LightInfluence PRL sections).
 ///
-/// See `context/plans/in-progress/lighting-foundation/1-fgd-canonical.md`
-/// §Map light format for the full design rationale.
+/// See `context/lib/build_pipeline.md` §Custom FGD for the light entity
+/// definitions and §PRL Compilation for the compile-time translation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapLight {
     /// Position in engine space (Y-up), meters. Directional lights still

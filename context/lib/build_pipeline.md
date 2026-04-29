@@ -109,7 +109,8 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | ShVolume | 20 | When compiled with lighting |
 | LightInfluence | 21 | When compiled with lighting |
 | Lightmap | 22 | Always (placeholder atlas when a map has no static lights) |
-| AnimatedLightChunks | 23 | When compiled with animated lights |
+| ChunkLightList | 23 | Always; per-chunk static-light index lists for specular culling |
+| AnimatedLightChunks | 24 | When compiled with animated lights |
 | AnimatedLightWeightMaps | 25 | When compiled with animated lights; per-texel weight maps for the compose pass |
 | LightTags | 26 | When at least one light carries a tag; one space-delimited tag-list string per AlphaLight record (empty string = untagged) |
 | DeltaShVolumes | 27 | When the map has at least one animated light; per-light delta SH probe grids |

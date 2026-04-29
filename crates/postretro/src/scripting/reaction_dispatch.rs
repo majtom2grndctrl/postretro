@@ -151,9 +151,9 @@ fn count_entities_with_tag(entity_registry: &EntityRegistry, tag: &str) -> u32 {
 ///
 /// Returns event names produced by primitive `onComplete` fields so callers
 /// can chain dispatches without needing to inspect descriptors themselves.
-/// (Primitives are not actually executed here, so `onComplete` events are
-/// returned but typically would not fire until the primitive completes — for
-/// now we surface them so test coverage can observe the routing.)
+/// (Primitives are not actually executed here — only logged; `onComplete`
+/// names are returned immediately rather than deferred, which will change
+/// once primitive bodies dispatch to behavior-script handlers.)
 pub(crate) fn fire_named_event(event_name: &str, data_registry: &DataRegistry) -> Vec<String> {
     let mut chained = Vec::new();
     for named in &data_registry.reactions {

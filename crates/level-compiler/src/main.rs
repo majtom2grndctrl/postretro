@@ -132,12 +132,13 @@ fn main() -> anyhow::Result<()> {
     compile_worldspawn_script(&args.input, map_data.script.as_deref())?;
     timings.push(("ScriptCompile", stage_start.elapsed()));
 
-    // Compile and embed the worldspawn `data_script` KVP, if present. Unlike
-    // the behavior `script`, the data script's bytes are embedded directly in
-    // the PRL `DataScript` section (the runtime evaluates them in a
-    // short-lived data context at level load), and a missing source file is
-    // a hard error — there is no `.js` fallback path because the data script
-    // ships inside the PRL, not as a sibling artifact.
+    // Compile and embed the worldspawn `data_script` KVP, if present.
+    // Absent KVP → `Ok(None)`, no DataScript section emitted.
+    // KVP set but source file missing → hard compile error.
+    // Unlike the behavior `script`, the compiled bytes are embedded directly
+    // in the PRL `DataScript` section (the runtime evaluates them in a
+    // short-lived data context at level load), so there is no sibling `.js`
+    // fallback path.
     progress.start_stage("Data script compilation...");
     let stage_start = Instant::now();
     let data_script_section =
@@ -559,11 +560,9 @@ where
 /// Locate the `scripts-build` sidecar for compiling worldspawn `.ts` scripts.
 ///
 /// Two-step detection cascade. Duplicated from
-/// `crates/postretro/src/scripting/watcher.rs` `TsCompilerPath::detect_with`;
+/// `crates/postretro/src/scripting/watcher.rs` `TsCompilerPath::detect`;
 /// `watcher.rs` is `cfg(debug_assertions)` so cannot be imported.
-///
-/// Detection cascade duplicated in `crates/postretro/src/scripting/watcher.rs`.
-/// If it grows (e.g. add POSTRETRO_SCRIPTS_BUILD env var), promote to a
+/// If the cascade grows (e.g. add POSTRETRO_SCRIPTS_BUILD env var), promote to a
 /// shared crate.
 fn find_scripts_build() -> Option<PathBuf> {
     // In dev, `cargo run` places all workspace binaries in the same

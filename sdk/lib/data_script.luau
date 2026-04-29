@@ -78,7 +78,7 @@ function DataScriptSdk.registerReaction(
   local out: NamedReactionDescriptor = { name = name }
   -- Copy fields from the descriptor into the flat shape the deserializer
   -- reads. Only the fields present on each variant are set; unused fields
-  -- stay nil.
+  -- are left absent.
   local d = descriptor :: any
   if d.progress ~= nil then
     out.progress = d.progress

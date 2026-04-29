@@ -506,8 +506,7 @@ struct App {
     /// and the entity registry; cleared on level unload independently of the
     /// behavior `HandlerTable`.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
-    // TODO: call progress_tracker.on_entity_killed(tags) when entity dies —
-    // wired in once the entity death system lands.
+    // `on_entity_killed` must be called here when an entity dies; not yet wired because the entity-death event system does not exist yet.
     progress_tracker: ProgressTracker,
 
     /// Light bridge state: per-entity dirty tracking and play_count clocks.
@@ -745,6 +744,7 @@ impl ApplicationHandler for App {
                                 "[Scripting] hot reload: failed to rebuild behavior context: {e}",
                             );
                         } else {
+                            // Data registry and progress tracker are intentionally preserved; only behavior scripts reload.
                             load_behavior_scripts(&self.script_runtime, &self.content_root);
                             if self.level_load_fired {
                                 self.script_runtime.fire_level_load();

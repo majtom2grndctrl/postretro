@@ -15,7 +15,9 @@ in dark corridors. Completes the "rendering bypass" stub in `resource_management
 - `Material::Neon` emissive flag stripped. `neon_` becomes a pure aesthetic type (shininess,
   future audio behaviors) with no rendering bypass.
 - `MaterialUniform` extended with `emissive_intensity: f32` (0.0 = non-emissive; values
-  above 0.0 drive the bypass, including above 1.0 for HDR intent ahead of a bloom pass).
+  above 0.0 drive the bypass; values above 1.0 set target brightness for a future bloom
+  pass). Negative values log a warning and clamp to 0.0 at upload time — treated as
+  authoring error, output equals the normal-lit path.
 - Emissive mask texture (`_e.png` sibling, R8Unorm linear). Per-texel weight: 1.0 = full
   bypass, 0.0 = normal lighting. Fallback: shared 1×1 white texture (entire surface
   emissive). Reuses base_sampler at binding 1.
@@ -26,7 +28,9 @@ in dark corridors. Completes the "rendering bypass" stub in `resource_management
 
 ### Out of scope
 
-- Post-process bloom / glow halo (separate plan; `emissive_intensity > 1.0` is the hook).
+- Post-process bloom / glow halo (separate plan). Bloom will be opt-in per surface — the
+  `emissive_` prefix is the opt-in signal; `emissive_intensity > 1.0` sets bloom brightness.
+  No threshold-driven framebuffer extraction.
 - Emissive surfaces contributing to baked or dynamic lighting (radiosity, light extraction).
 - Per-material emissive color tint (albedo controls color; mask controls intensity).
 - Animated emissive intensity (use animated light entities).
@@ -120,7 +124,7 @@ Shader formula with `emissive_intensity > 1.0`:
 - `total_with_emissive = mix(total_light, effective_target, emissive_weight)`
 - `rgb = base_color.rgb × total_with_emissive`
 - At `emissive_intensity = 1.0`: full emissive texels output `base_color × 1.0` (no change from before)
-- At `emissive_intensity = 2.0`: full emissive texels output `base_color × 2.0` (over-bright; bloom hook)
+- At `emissive_intensity = 2.0`: full emissive texels output `base_color × 2.0` (over-bright; bloom intensity target when bloom ships)
 - At `emissive_intensity = 0.0`: path is identical to today — zero regression risk
 
 Spec and normal maps already reuse `base_sampler` (binding 1). Emissive mask follows the

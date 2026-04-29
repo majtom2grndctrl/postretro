@@ -16,3 +16,12 @@ export {
   timeline,
   sequence,
 } from "./light_animation";
+
+export type {
+  LevelManifest,
+  NamedReactionDescriptor,
+  ProgressReactionDescriptor,
+  PrimitiveReactionDescriptor,
+  EntityTypeDescriptor,
+} from "./data_script";
+export { registerReaction, registerEntities } from "./data_script";

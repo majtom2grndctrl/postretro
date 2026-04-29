@@ -30,6 +30,12 @@ const WORLD_LUAU_SRC: &str = include_str!("../../../../sdk/lib/world.luau");
 /// destructured into globals so authors call them by bare name.
 const LIGHT_ANIMATION_LUAU_SRC: &str = include_str!("../../../../sdk/lib/light_animation.luau");
 
+/// SDK library prelude — `data_script.luau` returns a table whose fields
+/// (`registerReaction`, `registerEntities`) are destructured into globals so
+/// data-script authors call them by bare name. Pure descriptor builders;
+/// no FFI happens until `registerLevelManifest` returns.
+const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
+
 /// Light-animation SDK fields lifted to globals after evaluating
 /// `light_animation.luau`. Order is informational; iteration order is the
 /// same.
@@ -41,6 +47,10 @@ const LIGHT_ANIMATION_FIELDS: &[&str] = &[
     "timeline",
     "sequence",
 ];
+
+/// Data-script SDK fields lifted to globals after evaluating
+/// `data_script.luau`.
+const DATA_SCRIPT_FIELDS: &[&str] = &["registerReaction", "registerEntities"];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed (the prelude
@@ -75,6 +85,28 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
         let value: mlua::Value = sdk.get(*field).map_err(|e| ScriptError::InvalidArgument {
             reason: format!("light_animation.luau missing `{field}`: {e}"),
         })?;
+        globals
+            .set(*field, value)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to install global `{field}`: {e}"),
+            })?;
+    }
+
+    let data_sdk: Table = lua
+        .load(DATA_SCRIPT_LUAU_SRC)
+        .set_name("postretro/sdk/data_script.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `data_script.luau`: {e}"),
+            source_name: "sdk/lib/data_script.luau".to_string(),
+        })?;
+    for field in DATA_SCRIPT_FIELDS {
+        let value: mlua::Value =
+            data_sdk
+                .get(*field)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("data_script.luau missing `{field}`: {e}"),
+                })?;
         globals
             .set(*field, value)
             .map_err(|e| ScriptError::InvalidArgument {

@@ -173,3 +173,53 @@ declare function timeline(keyframes: {Keyframe}): {Keyframe}
 
 --- Convert `{delta_ms, ...value}` keyframes to absolute-time form.
 declare function sequence(keyframes: {Keyframe}): {Keyframe}
+
+-- ---------------------------------------------------------------------------
+-- Data script vocabulary — pure descriptor builders consumed by the engine
+-- when `registerLevelManifest` returns. See: context/lib/scripting.md §2.
+
+--- Progress-subscription reaction body: fires `fire` when entities tagged
+--- `tag` cross kill ratio `at` (0.0–1.0).
+export type ProgressReactionDescriptor = {
+  progress: { tag: string, at: number, fire: string },
+}
+
+--- Primitive reaction body: invokes the named Rust primitive on entities
+--- tagged `tag`, optionally firing `onComplete` when it finishes.
+export type PrimitiveReactionDescriptor = {
+  primitive: string,
+  tag: string,
+  onComplete: string?,
+}
+
+--- Descriptor produced by `registerReaction`. The `name` field is merged
+--- into the descriptor at the top level so the Rust deserializer reads
+--- both fields from one flat table.
+export type NamedReactionDescriptor = {
+  name: string,
+  progress: { tag: string, at: number, fire: string }?,
+  primitive: string?,
+  tag: string?,
+  onComplete: string?,
+}
+
+--- Descriptor produced by `registerEntities` -- one entry per registered class.
+export type EntityTypeDescriptor = { classname: string }
+
+--- Bundle returned from `registerLevelManifest`. The engine deserializes
+--- this shape in one pass at level load.
+export type LevelManifest = {
+  entities: {EntityTypeDescriptor},
+  reactions: {NamedReactionDescriptor},
+}
+
+--- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
+declare function registerReaction(
+  name: string,
+  descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor
+): NamedReactionDescriptor
+
+--- Build the entity-type descriptor list for `LevelManifest.entities`.
+declare function registerEntities(
+  types: {{ classname: string }}
+): {EntityTypeDescriptor}

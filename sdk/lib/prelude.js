@@ -12,7 +12,7 @@ const world = {
         const entities = raw.map((s)=>({
                 id: s.id,
                 transform: s.transform,
-                tag: s.tag ?? null
+                tags: s.tags
             }));
         return entities;
     }
@@ -299,6 +299,17 @@ function validateKeyframes(keyframes, isSequence) {
         prevT = t;
     }
 }
+function registerReaction(name, descriptor) {
+    return {
+        name,
+        ...descriptor
+    };
+}
+function registerEntities(types) {
+    return types.map((t)=>({
+            classname: t.classname
+        }));
+}
 globalThis["world"] = world;
 globalThis["flicker"] = flicker;
 globalThis["pulse"] = pulse;
@@ -306,3 +317,5 @@ globalThis["colorShift"] = colorShift;
 globalThis["sweep"] = sweep;
 globalThis["timeline"] = timeline;
 globalThis["sequence"] = sequence;
+globalThis["registerReaction"] = registerReaction;
+globalThis["registerEntities"] = registerEntities;

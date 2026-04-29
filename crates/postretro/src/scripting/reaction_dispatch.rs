@@ -5,10 +5,6 @@
 // Lives separate from the behavior `HandlerTable`. Clearing behavior handlers
 // does not touch [`ProgressTracker`] state and vice versa, so a behavior
 // hot-reload preserves in-flight progress subscriptions.
-//
-// Primitive reaction bodies (moveGeometry, activateGroup, ...) are out of
-// scope for this task — dispatch logs the attempt and the implementation lands
-// in follow-on work.
 
 use std::collections::HashMap;
 
@@ -156,9 +152,6 @@ fn count_entities_with_tag(entity_registry: &EntityRegistry, tag: &str) -> u32 {
 ///
 /// Returns event names produced by primitive `onComplete` fields so callers
 /// can chain dispatches without needing to inspect descriptors themselves.
-/// (Primitives are not actually executed here — only logged; `onComplete`
-/// names are returned immediately rather than deferred, which will change
-/// once primitive bodies dispatch to behavior-script handlers.)
 pub(crate) fn fire_named_event(event_name: &str, data_registry: &DataRegistry) -> Vec<String> {
     let mut chained = Vec::new();
     for named in &data_registry.reactions {
@@ -185,8 +178,8 @@ pub(crate) fn fire_named_event(event_name: &str, data_registry: &DataRegistry) -
                 // Sequence dispatch needs the entity registry and sequenced-
                 // primitive table — see [`fire_named_event_with_sequences`].
                 // Reaching this branch via the registry-only path is silent
-                // intentionally: callers that don't supply a sequence registry
-                // (most don't yet) get a no-op rather than a panic.
+                // intentionally: callers without a sequence registry
+                // (e.g., progress-chain dispatches) get a no-op rather than a panic.
             }
         }
     }
@@ -269,9 +262,9 @@ fn dispatch_sequence(
     }
 }
 
-/// Walk a slice of reactions and drop any whose `Sequence` body references a
-/// primitive name not present in `sequence_registry`. Logs an error per
-/// rejected reaction and returns the surviving set in original order.
+/// Walk a slice of reactions and drop each reaction whose `Sequence` steps
+/// name an unknown primitive; the rest of the manifest is unaffected. Logs an
+/// error per rejected reaction and returns the surviving set in original order.
 ///
 /// Called at `registerLevelManifest()` time after the script's return value
 /// has been deserialized but before it lands in [`DataRegistry`].

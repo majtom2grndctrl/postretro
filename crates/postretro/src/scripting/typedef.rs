@@ -341,7 +341,7 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
 /// etc.) installed by the prelude. The block is appended verbatim inside
 /// `declare module "postretro" { ... }` so authors can `import { world }
 /// from "postretro"`. See: context/lib/scripting.md §7.
-// Source of truth for these declarations: sdk/lib/index.ts — drift there causes IDE types that don't match what scripts actually receive.
+// Source of truth: sdk/lib/world.ts, sdk/lib/light_animation.ts, sdk/lib/data_script.ts (re-exported via index.ts). Drift causes IDE types that don't match runtime behavior.
 const TS_SDK_LIB_BLOCK: &str = r#"
   // -------------------------------------------------------------------------
   // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.

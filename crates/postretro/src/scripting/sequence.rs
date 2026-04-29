@@ -37,6 +37,7 @@ pub(crate) enum SequenceError {
 /// closure), and the reaction dispatcher runs on the main thread alongside
 /// the rest of the frame loop. Adding cross-thread bounds here would force
 /// every handler to give up its `Rc`-shared engine state.
+// Not Clone — handlers capture Rc<RefCell<_>> state.
 pub(crate) type SequencedPrimitiveFn =
     Box<dyn Fn(EntityId, &serde_json::Value) -> Result<(), SequenceError>>;
 
@@ -59,7 +60,11 @@ impl SequencedPrimitiveRegistry {
     where
         F: Fn(EntityId, &serde_json::Value) -> Result<(), SequenceError> + 'static,
     {
-        self.handlers.insert(name.into(), Box::new(handler));
+        let name = name.into();
+        if self.handlers.contains_key(&name) {
+            log::warn!("[Scripting] SequencedPrimitiveRegistry: overwriting existing handler for '{name}'");
+        }
+        self.handlers.insert(name, Box::new(handler));
     }
 
     pub(crate) fn contains(&self, name: &str) -> bool {
@@ -86,7 +91,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
-    fn register_and_lookup() {
+    fn registry_register_stores_and_retrieves_handler() {
         let mut r = SequencedPrimitiveRegistry::new();
         r.register("noop", |_id, _args| Ok(()));
         assert!(r.contains("noop"));
@@ -95,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn handler_receives_entity_and_args() {
+    fn registry_handler_receives_entity_id_and_args() {
         let mut r = SequencedPrimitiveRegistry::new();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_cl = Arc::clone(&counter);

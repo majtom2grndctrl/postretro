@@ -2,8 +2,9 @@
 // bundles after they cross the script FFI boundary.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
-// Validation (unknown shapes, empty primitive names, out-of-range thresholds)
-// runs at deserialization time so descriptor errors surface during level load
+// Validation on the three discriminator keys ('progress', 'primitive',
+// 'sequence') — unknown shapes, empty primitive names, out-of-range thresholds
+// — runs at deserialization time so descriptor errors surface during level load
 // rather than being deferred to dispatch.
 
 use mlua::{Table, Value as LuaValue};

@@ -179,10 +179,6 @@ fn main() -> Result<()> {
     )
     .context("failed to construct script runtime")?;
 
-    // Start the dev-mode hot-reload watcher rooted at the same `scripts/`
-    // directory `load_behavior_scripts` reads from. No-op in release builds.
-    // Failure is logged and swallowed — a missing or unwatchable directory
-    // must not prevent engine startup.
     // Sequenced-primitive table: Rust-only handlers consulted by
     // `fire_named_event_with_sequences` when a `Sequence` reaction step fires.
     // Distinct from the script-facing primitive registry — these handlers run
@@ -191,6 +187,10 @@ fn main() -> Result<()> {
     let mut sequence_registry = SequencedPrimitiveRegistry::new();
     register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
 
+    // Start the dev-mode hot-reload watcher rooted at the same `scripts/`
+    // directory `load_behavior_scripts` reads from. No-op in release builds.
+    // Failure is logged and swallowed — a missing or unwatchable directory
+    // must not prevent engine startup.
     let scripts_root = content_root.join("scripts");
     if let Err(err) = script_runtime.start_watcher(&scripts_root) {
         log::warn!(
@@ -528,7 +528,6 @@ struct App {
     /// and the entity registry; cleared on level unload independently of the
     /// behavior `HandlerTable`.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
-    // `on_entity_killed` must be called here when an entity dies; not yet wired because the entity-death event system does not exist yet.
     progress_tracker: ProgressTracker,
 
     /// Light bridge state: per-entity dirty tracking and play_count clocks.

@@ -49,8 +49,10 @@ use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::data_registry::DataRegistry;
 use crate::scripting::primitives::register_all;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
+use crate::scripting::primitives_light::register_sequenced_light_primitives;
 use crate::scripting::reaction_dispatch::ProgressTracker;
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig, Which as ScriptWhich};
+use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::texture::TextureSet;
 use crate::visibility::{VisibilityPath, VisibilityStats, VisibleCells};
 
@@ -179,6 +181,14 @@ fn main() -> Result<()> {
     // directory `load_behavior_scripts` reads from. No-op in release builds.
     // Failure is logged and swallowed — a missing or unwatchable directory
     // must not prevent engine startup.
+    // Sequenced-primitive table: Rust-only handlers consulted by
+    // `fire_named_event_with_sequences` when a `Sequence` reaction step fires.
+    // Distinct from the script-facing primitive registry — these handlers run
+    // on the dispatch path, not from inside QuickJS/Luau. Populated once at
+    // startup; survives level reloads and behavior hot-reloads.
+    let mut sequence_registry = SequencedPrimitiveRegistry::new();
+    register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
+
     let scripts_root = content_root.join("scripts");
     if let Err(err) = script_runtime.start_watcher(&scripts_root) {
         log::warn!(
@@ -208,6 +218,7 @@ fn main() -> Result<()> {
         script_runtime,
         script_ctx,
         data_registry: DataRegistry::new(),
+        sequence_registry,
         progress_tracker: ProgressTracker::new(),
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
         level_load_fired: false,
@@ -500,6 +511,16 @@ struct App {
     /// touch the other.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     data_registry: DataRegistry,
+
+    /// Rust-only handler table consulted by
+    /// `fire_named_event_with_sequences` when a `Sequence` reaction step
+    /// fires. Populated once at engine startup; does not need clearing on
+    /// level unload because handlers carry no per-level state — they look up
+    /// entities through `ScriptCtx`'s shared `EntityRegistry`, which the
+    /// level-unload path clears separately.
+    /// See: context/lib/scripting.md §4 (primitives), §5 (shared engine state)
+    #[allow(dead_code)] // Wired into `fire_named_event_with_sequences` in a follow-on task.
+    sequence_registry: SequencedPrimitiveRegistry,
 
     /// Per-tag kill-count subscriptions derived from the data script's
     /// `progress` reactions. Initialized at level load from the data registry

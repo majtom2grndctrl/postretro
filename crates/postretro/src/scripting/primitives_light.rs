@@ -10,6 +10,7 @@ use super::ctx::ScriptCtx;
 use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, PrimitiveRegistry};
 use super::registry::{Component, ComponentKind, EntityId};
+use super::sequence::{SequenceError, SequencedPrimitiveRegistry};
 
 // --- Shared logic: setLightAnimation ----------------------------------------
 //
@@ -203,6 +204,42 @@ fn register_set_light_animation(registry: &mut PrimitiveRegistry, ctx: ScriptCtx
         .param("id", "EntityId")
         .param("animation", "LightAnimation | null")
         .finish();
+}
+
+// --- Sequenced-primitive registration ---------------------------------------
+//
+// `SequencedPrimitiveRegistry` is the Rust-only dispatch table consulted by
+// `fire_named_event_with_sequences` when a `Sequence` reaction step fires.
+// The handler registered here shares `apply_light_animation` and
+// `validate_and_normalize` with the script-facing `setLightAnimation` —
+// validation rules and registry-write semantics stay identical across the
+// two entry points.
+
+/// Register `setLightAnimation` as a sequenced primitive. The handler
+/// deserializes the step's `serde_json::Value` payload as
+/// `Option<LightAnimation>` (a JSON `null` clears the entity's animation,
+/// matching the script-facing primitive) and applies it via the same
+/// `apply_light_animation` path the behavior primitive uses.
+pub(crate) fn register_sequenced_light_primitives(
+    registry: &mut SequencedPrimitiveRegistry,
+    ctx: ScriptCtx,
+) {
+    registry.register("setLightAnimation", move |id, args| {
+        let animation: Option<LightAnimation> = serde_json::from_value(args.clone())
+            .map_err(|e| SequenceError::InvalidArgument {
+                reason: format!("setLightAnimation: failed to deserialize args: {e}"),
+            })?;
+        apply_light_animation(&ctx, id, animation).map_err(script_to_sequence_error)
+    });
+}
+
+fn script_to_sequence_error(err: ScriptError) -> SequenceError {
+    match err {
+        ScriptError::InvalidArgument { reason } => SequenceError::InvalidArgument { reason },
+        other => SequenceError::ExecutionFailed {
+            reason: other.to_string(),
+        },
+    }
 }
 
 /// Register the shared types referenced by SP6 primitive signatures into the
@@ -1031,6 +1068,122 @@ mod tests {
                 .unwrap();
             assert!(msg.contains("not available"), "got: {msg}");
         });
+    }
+
+    // --- Sequenced-primitive variant ----------------------------------------
+
+    #[test]
+    fn sequenced_set_light_animation_registers_under_expected_name() {
+        let ctx = ScriptCtx::new();
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        register_sequenced_light_primitives(&mut seq_reg, ctx);
+        assert!(seq_reg.contains("setLightAnimation"));
+    }
+
+    #[test]
+    fn sequenced_set_light_animation_applies_animation() {
+        let (ctx, id) = test_ctx_with_light(true, None);
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        register_sequenced_light_primitives(&mut seq_reg, ctx.clone());
+
+        let handler = seq_reg.get("setLightAnimation").unwrap();
+        let args = serde_json::json!({
+            "periodMs": 250.0,
+            "brightness": [0.0, 1.0],
+        });
+        handler(id, &args).unwrap();
+
+        let reg = ctx.registry.borrow();
+        let stored = reg
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert_eq!(stored.period_ms, 250.0);
+        assert_eq!(stored.brightness.as_ref().unwrap(), &vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn sequenced_set_light_animation_null_clears_animation() {
+        let (ctx, id) = test_ctx_with_light(true, None);
+        // Seed an animation so we can observe the clear.
+        apply_light_animation(
+            &ctx,
+            id,
+            Some(LightAnimation {
+                period_ms: 100.0,
+                phase: None,
+                play_count: None,
+                start_active: None,
+                brightness: Some(vec![0.0, 1.0]),
+                color: None,
+                direction: None,
+            }),
+        )
+        .unwrap();
+
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        register_sequenced_light_primitives(&mut seq_reg, ctx.clone());
+        let handler = seq_reg.get("setLightAnimation").unwrap();
+        handler(id, &serde_json::Value::Null).unwrap();
+
+        let reg = ctx.registry.borrow();
+        assert!(
+            reg.get_component::<LightComponent>(id)
+                .unwrap()
+                .animation
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sequenced_set_light_animation_rejects_zero_length_direction() {
+        let (ctx, id) = test_ctx_with_light(true, None);
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        register_sequenced_light_primitives(&mut seq_reg, ctx);
+        let handler = seq_reg.get("setLightAnimation").unwrap();
+        let args = serde_json::json!({
+            "periodMs": 100.0,
+            "direction": [{ "x": 0.0, "y": 0.0, "z": 0.0 }],
+        });
+        let err = handler(id, &args).unwrap_err();
+        assert!(
+            matches!(err, SequenceError::InvalidArgument { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn sequenced_set_light_animation_rejects_color_on_non_dynamic() {
+        let (ctx, id) = test_ctx_with_light(false, None);
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        register_sequenced_light_primitives(&mut seq_reg, ctx);
+        let handler = seq_reg.get("setLightAnimation").unwrap();
+        let args = serde_json::json!({
+            "periodMs": 100.0,
+            "color": [{ "x": 1.0, "y": 0.0, "z": 0.0 }],
+        });
+        let err = handler(id, &args).unwrap_err();
+        assert!(
+            matches!(err, SequenceError::InvalidArgument { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn sequenced_set_light_animation_rejects_malformed_args() {
+        let (ctx, id) = test_ctx_with_light(true, None);
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        register_sequenced_light_primitives(&mut seq_reg, ctx);
+        let handler = seq_reg.get("setLightAnimation").unwrap();
+        // `periodMs` is required and numeric — a string fails deserialization.
+        let args = serde_json::json!({ "periodMs": "fast" });
+        let err = handler(id, &args).unwrap_err();
+        assert!(
+            matches!(err, SequenceError::InvalidArgument { .. }),
+            "got: {err:?}"
+        );
     }
 
     #[test]

@@ -31,8 +31,14 @@ pub(crate) enum SequenceError {
 
 /// Boxed handler for a sequenced primitive. Receives the resolved entity ID
 /// and a serde_json payload carrying primitive-specific arguments.
+///
+/// No `Send + Sync` bound: the scripting subsystem is single-threaded by
+/// design (`ScriptCtx` captures `Rc<RefCell<_>>` into every primitive
+/// closure), and the reaction dispatcher runs on the main thread alongside
+/// the rest of the frame loop. Adding cross-thread bounds here would force
+/// every handler to give up its `Rc`-shared engine state.
 pub(crate) type SequencedPrimitiveFn =
-    Box<dyn Fn(EntityId, &serde_json::Value) -> Result<(), SequenceError> + Send + Sync>;
+    Box<dyn Fn(EntityId, &serde_json::Value) -> Result<(), SequenceError>>;
 
 /// Lookup table: primitive name → handler. Populated before level load and
 /// consulted by both the registration-time validator (to reject sequences
@@ -51,7 +57,7 @@ impl SequencedPrimitiveRegistry {
     /// caller is responsible for ensuring names are unique.
     pub(crate) fn register<F>(&mut self, name: impl Into<String>, handler: F)
     where
-        F: Fn(EntityId, &serde_json::Value) -> Result<(), SequenceError> + Send + Sync + 'static,
+        F: Fn(EntityId, &serde_json::Value) -> Result<(), SequenceError> + 'static,
     {
         self.handlers.insert(name.into(), Box::new(handler));
     }

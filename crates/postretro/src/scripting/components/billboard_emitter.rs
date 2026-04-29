@@ -82,7 +82,10 @@ impl SpinAnimationLit {
     fn validate_into(self) -> Result<SpinAnimation, ScriptError> {
         if !self.duration.is_finite() || self.duration <= 0.0 {
             return Err(ScriptError::InvalidArgument {
-                reason: format!("spin_animation.duration must be > 0 (got {})", self.duration),
+                reason: format!(
+                    "spin_animation.duration must be > 0 (got {})",
+                    self.duration
+                ),
             });
         }
         if self.rate_curve.is_empty() {

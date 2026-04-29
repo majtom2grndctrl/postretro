@@ -6,7 +6,9 @@ use glam::Vec3;
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::particle::ParticleState;
 use crate::scripting::components::sprite_visual::SpriteVisual;
-use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
+use crate::scripting::registry::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
+};
 
 /// World gravity in m/s². Negative is "down" by convention. Combined with
 /// `BillboardEmitterComponent::buoyancy` per the plan's sign convention:

@@ -36,9 +36,7 @@ impl ParticleRenderCollector {
     /// `BillboardEmitterComponent.sprite` value present in the registry
     /// after classname dispatch.
     pub(crate) fn register_sprite(&mut self, collection: &str) {
-        if self.registered.insert(collection.to_string())
-            && self.default_collection.is_none()
-        {
+        if self.registered.insert(collection.to_string()) && self.default_collection.is_none() {
             self.default_collection = Some(collection.to_string());
         }
         self.buffers.entry(collection.to_string()).or_default();
@@ -157,12 +155,7 @@ mod tests {
     use crate::scripting::registry::{EntityRegistry, Transform};
     use glam::Vec3;
 
-    fn spawn_particle(
-        registry: &mut EntityRegistry,
-        position: Vec3,
-        sprite: &str,
-        age: f32,
-    ) {
+    fn spawn_particle(registry: &mut EntityRegistry, position: Vec3, sprite: &str, age: f32) {
         let id = registry.spawn(Transform {
             position,
             ..Transform::default()

@@ -106,12 +106,7 @@ impl EmitterBridge {
     ///
     /// `current_time` is seconds since level load (matches the engine frame
     /// clock). Used for rate-limited cap warnings.
-    pub(crate) fn update(
-        &mut self,
-        registry: &mut EntityRegistry,
-        delta: f32,
-        current_time: f32,
-    ) {
+    pub(crate) fn update(&mut self, registry: &mut EntityRegistry, delta: f32, current_time: f32) {
         if delta <= 0.0 {
             // Defensive: a zero / negative delta should not advance accumulators
             // or animations. Still purge stale entries below.
@@ -391,17 +386,12 @@ fn sample_cone_direction(axis: Vec3, spread: f32, state: &mut EmitterBridgeState
 
     // Build an orthonormal frame around `axis`. Pick a helper not parallel to
     // `axis`; a small ε guard keeps us off the degenerate case.
-    let helper = if axis.x.abs() < 0.9 {
-        Vec3::X
-    } else {
-        Vec3::Y
-    };
+    let helper = if axis.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
     let tangent = axis.cross(helper).normalize_or_zero();
     let bitangent = axis.cross(tangent);
 
-    let local = tangent * (sin_theta * phi.cos())
-        + bitangent * (sin_theta * phi.sin())
-        + axis * cos_theta;
+    let local =
+        tangent * (sin_theta * phi.cos()) + bitangent * (sin_theta * phi.sin()) + axis * cos_theta;
     // `local` is a sum of three unit-scaled orthogonal components; should be
     // unit-length to within float epsilon. Normalize defensively.
     local.normalize_or_zero()
@@ -471,7 +461,10 @@ mod tests {
             .count()
     }
 
-    fn spawn_emitter(registry: &mut EntityRegistry, component: BillboardEmitterComponent) -> EntityId {
+    fn spawn_emitter(
+        registry: &mut EntityRegistry,
+        component: BillboardEmitterComponent,
+    ) -> EntityId {
         let id = registry.spawn(Transform::default());
         registry.set_component(id, component).unwrap();
         id
@@ -507,7 +500,9 @@ mod tests {
         bridge.update(&mut registry, 1.0 / 60.0, 0.0);
         let total = count_particles_for(&registry, id);
         assert_eq!(total, 20);
-        let after = registry.get_component::<BillboardEmitterComponent>(id).unwrap();
+        let after = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap();
         assert_eq!(after.burst, None);
     }
 
@@ -587,7 +582,9 @@ mod tests {
 
         let total = count_particles_for(&registry, id);
         assert_eq!(total, MAX_SPRITES);
-        let after = registry.get_component::<BillboardEmitterComponent>(id).unwrap();
+        let after = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap();
         assert_eq!(after.burst, None);
     }
 

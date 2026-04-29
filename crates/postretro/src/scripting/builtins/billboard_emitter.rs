@@ -248,11 +248,8 @@ mod tests {
     #[test]
     fn color_split_kvps_assemble_into_color() {
         let mut reg = EntityRegistry::new();
-        let entity = entity_with_kvps(&[
-            ("color_r", "0.25"),
-            ("color_g", "0.5"),
-            ("color_b", "0.75"),
-        ]);
+        let entity =
+            entity_with_kvps(&[("color_r", "0.25"), ("color_g", "0.5"), ("color_b", "0.75")]);
 
         let id = handle(&entity, &mut reg).expect("spawn should succeed");
         let stored = reg.get_component::<BillboardEmitterComponent>(id).unwrap();

@@ -25,9 +25,11 @@ impl SetSpinRateArgs {
     /// the same way the FFI lit shape does so dispatch-time errors mirror
     /// definition-time errors.
     pub(crate) fn from_json(value: &serde_json::Value) -> Result<Self, ReactionError> {
-        let obj = value.as_object().ok_or_else(|| ReactionError::InvalidArgument {
-            reason: "setSpinRate args must be an object".into(),
-        })?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| ReactionError::InvalidArgument {
+                reason: "setSpinRate args must be an object".into(),
+            })?;
         let has_rate = obj.contains_key("rate");
         let has_anim = obj.contains_key("animation");
         match (has_rate, has_anim) {
@@ -40,11 +42,9 @@ impl SetSpinRateArgs {
                 Ok(SetSpinRateArgs::Rate(rate))
             }
             (false, true) => {
-                let lit: SpinAnimationLit =
-                    serde_json::from_value(obj["animation"].clone()).map_err(|e| {
-                        ReactionError::InvalidArgument {
-                            reason: format!("setSpinRate.animation: {e}"),
-                        }
+                let lit: SpinAnimationLit = serde_json::from_value(obj["animation"].clone())
+                    .map_err(|e| ReactionError::InvalidArgument {
+                        reason: format!("setSpinRate.animation: {e}"),
                     })?;
                 let anim = lit
                     .validate_into_public()
@@ -52,8 +52,7 @@ impl SetSpinRateArgs {
                 Ok(SetSpinRateArgs::Animation(anim))
             }
             (true, true) => Err(ReactionError::InvalidArgument {
-                reason: "setSpinRate args must contain exactly one of `rate` or `animation`"
-                    .into(),
+                reason: "setSpinRate args must contain exactly one of `rate` or `animation`".into(),
             }),
             (false, false) => Err(ReactionError::InvalidArgument {
                 reason: "setSpinRate args missing `rate` or `animation`".into(),
@@ -214,10 +213,8 @@ mod tests {
             2.0
         );
         assert!(
-            captured
-                .iter()
-                .any(|(lvl, msg)| *lvl == log::Level::Warn
-                    && msg.contains("no BillboardEmitterComponent")),
+            captured.iter().any(|(lvl, msg)| *lvl == log::Level::Warn
+                && msg.contains("no BillboardEmitterComponent")),
             "expected a warn-level log naming the missing component, got: {captured:?}"
         );
     }

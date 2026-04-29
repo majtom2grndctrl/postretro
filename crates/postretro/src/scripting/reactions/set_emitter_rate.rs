@@ -165,10 +165,8 @@ mod tests {
             0.0
         );
         assert!(
-            captured
-                .iter()
-                .any(|(lvl, msg)| *lvl == log::Level::Warn
-                    && msg.contains("no BillboardEmitterComponent")),
+            captured.iter().any(|(lvl, msg)| *lvl == log::Level::Warn
+                && msg.contains("no BillboardEmitterComponent")),
             "expected a warn-level log naming the missing component, got: {captured:?}"
         );
     }

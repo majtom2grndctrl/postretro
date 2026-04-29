@@ -263,13 +263,7 @@ impl EntityRegistry {
         Self {
             slots: Vec::new(),
             free_list: Vec::new(),
-            components: [
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ],
+            components: [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             tags: Vec::new(),
         }
     }
@@ -702,9 +696,7 @@ mod tests {
             }),
         };
         reg.set_component(id, value.clone()).unwrap();
-        let back = reg
-            .get_component::<BillboardEmitterComponent>(id)
-            .unwrap();
+        let back = reg.get_component::<BillboardEmitterComponent>(id).unwrap();
         assert_eq!(*back, value);
     }
 

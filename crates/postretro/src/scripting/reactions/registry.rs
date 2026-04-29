@@ -9,9 +9,8 @@ use crate::scripting::registry::{EntityId, EntityRegistry};
 
 use super::ReactionError;
 
-pub(crate) type ReactionPrimitiveFn = Box<
-    dyn Fn(&mut EntityRegistry, &[EntityId], &serde_json::Value) -> Result<(), ReactionError>,
->;
+pub(crate) type ReactionPrimitiveFn =
+    Box<dyn Fn(&mut EntityRegistry, &[EntityId], &serde_json::Value) -> Result<(), ReactionError>>;
 
 #[derive(Default)]
 pub(crate) struct ReactionPrimitiveRegistry {
@@ -59,12 +58,10 @@ impl std::fmt::Debug for ReactionPrimitiveRegistry {
 /// `setSpinRate`) into the supplied registry.
 pub(crate) fn register_emitter_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
     registry.register("setEmitterRate", |reg, targets, args| {
-        let parsed: super::set_emitter_rate::SetEmitterRateArgs = serde_json::from_value(
-            args.clone(),
-        )
-        .map_err(|e| ReactionError::InvalidArgument {
-            reason: format!("setEmitterRate: failed to deserialize args: {e}"),
-        })?;
+        let parsed: super::set_emitter_rate::SetEmitterRateArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("setEmitterRate: failed to deserialize args: {e}"),
+            })?;
         super::set_emitter_rate::dispatch(reg, targets, &parsed)
     });
     registry.register("setSpinRate", |reg, targets, args| {

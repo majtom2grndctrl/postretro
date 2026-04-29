@@ -225,8 +225,8 @@ pub(crate) fn register_sequenced_light_primitives(
     ctx: ScriptCtx,
 ) {
     registry.register("setLightAnimation", move |id, args| {
-        let animation: Option<LightAnimation> = serde_json::from_value(args.clone())
-            .map_err(|e| SequenceError::InvalidArgument {
+        let animation: Option<LightAnimation> =
+            serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
                 reason: format!("setLightAnimation: failed to deserialize args: {e}"),
             })?;
         apply_light_animation(&ctx, id, animation).map_err(script_to_sequence_error)

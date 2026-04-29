@@ -75,7 +75,9 @@ pub(crate) struct LevelManifest {
 pub(crate) enum DescriptorError {
     #[error("reaction descriptor missing required field '{field}'")]
     MissingField { field: &'static str },
-    #[error("reaction has no recognizable shape (expected 'progress', 'primitive', or 'sequence' key)")]
+    #[error(
+        "reaction has no recognizable shape (expected 'progress', 'primitive', or 'sequence' key)"
+    )]
     UnknownShape,
     #[error("'sequence' field must be an array of step objects")]
     InvalidSequenceShape { reason: String },
@@ -225,11 +227,11 @@ fn named_reaction_from_js<'js>(
         let progress_obj: Object = obj.get("progress").map_err(js_err)?;
         ReactionDescriptor::Progress(progress_descriptor_from_js(ctx, &progress_obj)?)
     } else if has_sequence {
-        let arr: Array = obj.get("sequence").map_err(|e| {
-            DescriptorError::InvalidSequenceShape {
-                reason: e.to_string(),
-            }
-        })?;
+        let arr: Array =
+            obj.get("sequence")
+                .map_err(|e| DescriptorError::InvalidSequenceShape {
+                    reason: e.to_string(),
+                })?;
         ReactionDescriptor::Sequence(sequence_steps_from_js(ctx, &arr)?)
     } else if has_primitive {
         ReactionDescriptor::Primitive(primitive_descriptor_from_js(ctx, &obj)?)
@@ -428,11 +430,12 @@ fn named_reaction_from_lua(value: LuaValue) -> Result<NamedReaction, DescriptorE
         let progress: Table = table.get("progress").map_err(lua_err)?;
         ReactionDescriptor::Progress(progress_descriptor_from_lua(&progress)?)
     } else if has_sequence {
-        let arr: Table = table.get("sequence").map_err(|e| {
-            DescriptorError::InvalidSequenceShape {
-                reason: e.to_string(),
-            }
-        })?;
+        let arr: Table =
+            table
+                .get("sequence")
+                .map_err(|e| DescriptorError::InvalidSequenceShape {
+                    reason: e.to_string(),
+                })?;
         ReactionDescriptor::Sequence(sequence_steps_from_lua(&arr)?)
     } else if has_primitive {
         ReactionDescriptor::Primitive(primitive_descriptor_from_lua(&table)?)
@@ -487,10 +490,7 @@ fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, DescriptorE
             LuaValue::Table(t) => t,
             other => {
                 return Err(DescriptorError::InvalidSequenceShape {
-                    reason: format!(
-                        "step {i} must be a table, got {}",
-                        other.type_name()
-                    ),
+                    reason: format!("step {i} must be a table, got {}", other.type_name()),
                 });
             }
         };

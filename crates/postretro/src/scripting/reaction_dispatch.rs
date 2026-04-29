@@ -12,7 +12,9 @@
 
 use std::collections::HashMap;
 
-use super::data_descriptors::{EntityTypeDescriptor, NamedReaction, ReactionDescriptor, SequenceStep};
+use super::data_descriptors::{
+    EntityTypeDescriptor, NamedReaction, ReactionDescriptor, SequenceStep,
+};
 use super::data_registry::DataRegistry;
 use super::registry::EntityRegistry;
 use super::sequence::SequencedPrimitiveRegistry;
@@ -296,7 +298,6 @@ pub(crate) fn validate_sequence_primitives(
         })
         .collect()
 }
-
 
 /// Resolve an entity type by classname from the data registry. Returns `None`
 /// when the classname is not registered.
@@ -616,8 +617,8 @@ mod tests {
     use crate::scripting::data_descriptors::SequenceStep;
     use crate::scripting::registry::EntityId;
     use crate::scripting::sequence::{SequenceError, SequencedPrimitiveRegistry};
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     fn sequence_reaction(name: &str, steps: Vec<SequenceStep>) -> NamedReaction {
         NamedReaction {

@@ -68,6 +68,17 @@ pub(crate) struct BillboardEmitterComponentLit {
 }
 
 impl SpinAnimationLit {
+    /// Validate-and-convert path used by reaction-side dispatchers that read
+    /// JSON descriptors. Returns a plain `String` reason rather than the
+    /// scripting-layer `ScriptError` because the reaction surface is its own
+    /// error type ([`crate::scripting::reactions::ReactionError`]).
+    pub(crate) fn validate_into_public(self) -> Result<SpinAnimation, String> {
+        self.validate_into().map_err(|e| match e {
+            ScriptError::InvalidArgument { reason } => reason,
+            other => other.to_string(),
+        })
+    }
+
     fn validate_into(self) -> Result<SpinAnimation, ScriptError> {
         if !self.duration.is_finite() || self.duration <= 0.0 {
             return Err(ScriptError::InvalidArgument {

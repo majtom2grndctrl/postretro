@@ -44,6 +44,7 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, DiagnosticAction};
 use crate::render::Renderer;
+use crate::scripting::builtins::{ClassnameDispatch, register_builtins as register_builtin_classnames};
 use crate::scripting::call_context::ScriptCallContext;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::data_registry::DataRegistry;
@@ -52,6 +53,9 @@ use crate::scripting::primitives_light::register_sequenced_light_primitives;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
 use crate::scripting::reaction_dispatch::{
     ProgressTracker, fire_named_event_with_sequences, validate_sequence_primitives,
+};
+use crate::scripting::reactions::registry::{
+    ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
 };
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig, Which as ScriptWhich};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
@@ -187,6 +191,20 @@ fn main() -> Result<()> {
     let mut sequence_registry = SequencedPrimitiveRegistry::new();
     register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
 
+    // Tag-targeted reaction-primitive table: handlers invoked by `Primitive`
+    // reactions whose `primitive` field matches a registered name. Populated
+    // once at startup; survives level reloads. See:
+    // context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 5
+    let mut reaction_registry = ReactionPrimitiveRegistry::new();
+    register_emitter_reaction_primitives(&mut reaction_registry);
+
+    // Built-in FGD-classname dispatch table. Engine-init-once: handlers
+    // survive level unload because they describe engine types, not per-level
+    // state. Sub-plan 8 will wire the level loader to consult this table.
+    // See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 6
+    let mut classname_dispatch = ClassnameDispatch::new();
+    register_builtin_classnames(&mut classname_dispatch);
+
     // Start the dev-mode hot-reload watcher rooted at the same `scripts/`
     // directory `load_behavior_scripts` reads from. No-op in release builds.
     // Failure is logged and swallowed — a missing or unwatchable directory
@@ -221,7 +239,9 @@ fn main() -> Result<()> {
         script_ctx,
         data_registry: DataRegistry::new(),
         sequence_registry,
+        reaction_registry,
         progress_tracker: ProgressTracker::new(),
+        classname_dispatch,
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
         emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
@@ -525,12 +545,30 @@ struct App {
     /// See: context/lib/scripting.md §4 (primitives), §5 (shared engine state)
     sequence_registry: SequencedPrimitiveRegistry,
 
+    /// Tag-targeted reaction-primitive handlers (e.g. `setEmitterRate`,
+    /// `setSpinRate`). Populated once at startup; resolved by name when a
+    /// `Primitive` reaction fires.
+    /// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 5
+    #[allow(dead_code)]
+    reaction_registry: ReactionPrimitiveRegistry,
+
     /// Per-tag kill-count subscriptions derived from the data script's
     /// `progress` reactions. Initialized at level load from the data registry
     /// and the entity registry; cleared on level unload independently of the
     /// behavior `HandlerTable`.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     progress_tracker: ProgressTracker,
+
+    /// Built-in FGD-classname dispatch table: maps `classname` strings (e.g.
+    /// `"billboard_emitter"`) to the engine handler that spawns the
+    /// corresponding ECS entity from a map entity's KVPs. Built once at engine
+    /// init; survives level unload — built-in handlers carry no per-level
+    /// state. Sub-plan 8 will wire the level loader to consult this table.
+    /// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 6
+    // Sub-plan 8 wires the level-loader sweep to consult this table; no read
+    // site exists yet, so silence the lint until that lands.
+    #[allow(dead_code)]
+    classname_dispatch: ClassnameDispatch,
 
     /// Light bridge state: per-entity dirty tracking and play_count clocks.
     /// Runs once per frame between game logic and render; produces repacked

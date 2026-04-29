@@ -192,6 +192,13 @@ export type PrimitiveReactionDescriptor = {
   onComplete: string?,
 }
 
+--- Tween shape used by `setSpinRate`. Mirrors the Rust `SpinAnimation`
+--- storage struct.
+export type SpinAnimation = {
+  duration: number,
+  rate_curve: {number},
+}
+
 --- One step in a `sequence` reaction body: invokes the named sequenced
 --- primitive against the given entity with `args`.
 export type SetLightAnimationStep = {
@@ -200,9 +207,25 @@ export type SetLightAnimationStep = {
   args: LightAnimation,
 }
 
+--- Tag-targeted reaction step: zero or modulate emission rate on every
+--- emitter matching `tag`.
+export type SetEmitterRateStep = {
+  tag: string,
+  primitive: "setEmitterRate",
+  args: { rate: number },
+}
+
+--- Tag-targeted reaction step: set the spin rate immediately, or tween it
+--- via `SpinAnimation`, on every emitter matching `tag`.
+export type SetSpinRateStep = {
+  tag: string,
+  primitive: "setSpinRate",
+  args: { rate: number } | { animation: SpinAnimation },
+}
+
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep
+export type SequenceStep = SetLightAnimationStep | SetEmitterRateStep | SetSpinRateStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.

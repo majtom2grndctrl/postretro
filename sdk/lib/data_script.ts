@@ -53,8 +53,25 @@ export type SetLightAnimationStep = {
   args: import("postretro").LightAnimation;
 };
 
+/** Tag-targeted reaction step: zero or modulate emission rate on every emitter matching `tag`. */
+export type SetEmitterRateStep = {
+  tag: string;
+  primitive: "setEmitterRate";
+  args: { rate: number };
+};
+
+/** Tag-targeted reaction step: set the spin rate immediately, or tween it via `SpinAnimation`, on every emitter matching `tag`. */
+export type SetSpinRateStep = {
+  tag: string;
+  primitive: "setSpinRate";
+  args: { rate: number } | { animation: import("postretro").SpinAnimation };
+};
+
 /** Union of every supported sequence step shape. Add new step types here as more sequenced primitives land. */
-export type SequenceStep = SetLightAnimationStep;
+export type SequenceStep =
+  | SetLightAnimationStep
+  | SetEmitterRateStep
+  | SetSpinRateStep;
 
 /**
  * Sequence reaction: ordered per-entity primitive invocations. Steps run in

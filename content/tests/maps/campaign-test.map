@@ -5,6 +5,7 @@
 "classname" "worldspawn"
 "wad" ""
 "data_script" "../scripts/arena-lights.ts"
+"_tb_mod" "tests;base"
 // brush 0
 {
 ( -16 1040 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use glam::Vec3;
 
 use crate::fx::smoke::MAX_SPRITES;
-use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+use crate::scripting::components::billboard_emitter::{BillboardEmitterComponent, SpinAnimation};
 use crate::scripting::components::particle::ParticleState;
 use crate::scripting::components::sprite_visual::SpriteVisual;
 use crate::scripting::registry::{
@@ -43,6 +43,12 @@ struct EmitterBridgeState {
     /// level load. Used to throttle `log::warn!` to at most once per second
     /// per emitter (spec §"Budget enforcement").
     last_warn_time: f32,
+    /// Last spin animation observed on the component. Used to detect external
+    /// mutations (e.g. a `setSpinRate` reaction installing a new tween or
+    /// clearing one mid-flight) so [`spin_elapsed`] can be reset on transition.
+    /// Without this, a mid-tween cancellation would leak elapsed time into the
+    /// next tween.
+    last_spin_animation: Option<SpinAnimation>,
 }
 
 impl EmitterBridgeState {
@@ -53,6 +59,7 @@ impl EmitterBridgeState {
             rand_state: seed,
             step: 0,
             last_warn_time: f32::NEG_INFINITY,
+            last_spin_animation: None,
         }
     }
 
@@ -231,7 +238,15 @@ impl EmitterBridge {
             }
 
             // --- 3. Spin animation tween. Runs after emission per spec
-            // ("After emission: if spin_animation.is_some() …").
+            // ("After emission: if spin_animation.is_some() …"). When the
+            // component's `spin_animation` differs from what the bridge saw
+            // last frame (external mutation via `setSpinRate`), reset
+            // `spin_elapsed` so a new tween starts at t = 0 and a cleared
+            // tween does not leak elapsed time into a later install.
+            if state.last_spin_animation != component.spin_animation {
+                state.spin_elapsed = 0.0;
+                state.last_spin_animation = component.spin_animation.clone();
+            }
             if let Some(anim) = component.spin_animation.clone() {
                 state.spin_elapsed += delta;
                 let duration = anim.duration.max(f32::EPSILON);
@@ -248,6 +263,7 @@ impl EmitterBridge {
                     }
                     component.spin_animation = None;
                     state.spin_elapsed = 0.0;
+                    state.last_spin_animation = None;
                     component_changed = true;
                 }
             }

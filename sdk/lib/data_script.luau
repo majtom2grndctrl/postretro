@@ -42,6 +42,35 @@ export type PrimitiveReactionDescriptor = {
   onComplete: string?,
 }
 
+--- Tween shape used by `setSpinRate`. Mirrors the Rust
+--- `SpinAnimation` storage struct.
+export type SpinAnimation = {
+  duration: number,
+  rate_curve: {number},
+}
+
+--- One step in a `sequence` reaction body. Each variant pins the primitive
+--- name to a literal so the args shape can be discriminated.
+export type SetLightAnimationStep = {
+  id: number,
+  primitive: "setLightAnimation",
+  args: any,
+}
+
+export type SetEmitterRateStep = {
+  tag: string,
+  primitive: "setEmitterRate",
+  args: { rate: number },
+}
+
+export type SetSpinRateStep = {
+  tag: string,
+  primitive: "setSpinRate",
+  args: { rate: number } | { animation: SpinAnimation },
+}
+
+export type SequenceStep = SetLightAnimationStep | SetEmitterRateStep | SetSpinRateStep
+
 --- Descriptor produced by `registerReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read
 --- both the event name and the descriptor body from a single flat table.
@@ -53,6 +82,8 @@ export type NamedReactionDescriptor = {
   primitive: string?,
   tag: string?,
   onComplete: string?,
+  -- sequence shape
+  sequence: {SequenceStep}?,
 }
 
 --- Descriptor produced by `registerEntities` -- one entry per registered class.

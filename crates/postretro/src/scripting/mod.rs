@@ -9,6 +9,7 @@
 // than sprinkling `#[allow]` on every item.
 #![allow(dead_code)]
 
+pub(crate) mod builtins;
 pub(crate) mod call_context;
 pub(crate) mod components;
 pub(crate) mod conv;
@@ -24,6 +25,7 @@ pub(crate) mod primitives_light;
 pub(crate) mod primitives_registry;
 pub(crate) mod quickjs;
 pub(crate) mod reaction_dispatch;
+pub(crate) mod reactions;
 pub(crate) mod registry;
 pub(crate) mod runtime;
 pub(crate) mod sequence;

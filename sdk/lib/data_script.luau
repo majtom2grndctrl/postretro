@@ -35,10 +35,13 @@ export type ProgressReactionDescriptor = {
 }
 
 --- Primitive reaction body: invokes the named Rust primitive on entities
---- tagged `tag`, optionally firing `onComplete` when it finishes.
+--- tagged `tag`, optionally firing `onComplete` when it finishes. `args`
+--- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
+--- `setEmitterRate`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
   tag: string,
+  args: { [string]: any }?,
   onComplete: string?,
 }
 
@@ -49,27 +52,16 @@ export type SpinAnimation = {
   rate_curve: {number},
 }
 
---- One step in a `sequence` reaction body. Each variant pins the primitive
---- name to a literal so the args shape can be discriminated.
+--- One step in a `sequence` reaction body. Sequence steps target a single
+--- `EntityId`; tag-targeted primitives (`setEmitterRate`, `setSpinRate`)
+--- belong on the `reactions:` -> `Primitive` path, not on `sequence`.
 export type SetLightAnimationStep = {
   id: number,
   primitive: "setLightAnimation",
   args: any,
 }
 
-export type SetEmitterRateStep = {
-  tag: string,
-  primitive: "setEmitterRate",
-  args: { rate: number },
-}
-
-export type SetSpinRateStep = {
-  tag: string,
-  primitive: "setSpinRate",
-  args: { rate: number } | { animation: SpinAnimation },
-}
-
-export type SequenceStep = SetLightAnimationStep | SetEmitterRateStep | SetSpinRateStep
+export type SequenceStep = SetLightAnimationStep
 
 --- Descriptor produced by `registerReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read
@@ -81,6 +73,7 @@ export type NamedReactionDescriptor = {
   -- primitive shape
   primitive: string?,
   tag: string?,
+  args: { [string]: any }?,
   onComplete: string?,
   -- sequence shape
   sequence: {SequenceStep}?,
@@ -119,6 +112,9 @@ function DataScriptSdk.registerReaction(
   end
   if d.tag ~= nil then
     out.tag = d.tag
+  end
+  if d.args ~= nil then
+    out.args = d.args
   end
   if d.onComplete ~= nil then
     out.onComplete = d.onComplete

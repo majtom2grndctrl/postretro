@@ -219,9 +219,11 @@ impl EmitterBridge {
                                 "[EmitterBridge] emitter {id} at cap {MAX_SPRITES}, dropping rate-based spawn"
                             ),
                         );
-                        // Drain the accumulator to 1.0 so we don't carry an
-                        // unbounded backlog. Mirrors the retired SmokeEmitter policy.
-                        state.accumulator = 1.0;
+                        // Preserve fractional progress so resumption is smooth
+                        // — don't carry the integer portion that would grant a
+                        // free spawn the moment a slot frees up. Drops the
+                        // backlog without erasing in-flight sub-tick progress.
+                        state.accumulator = state.accumulator.fract();
                         break;
                     }
                     spawn_one(registry, &component, origin, id, state);

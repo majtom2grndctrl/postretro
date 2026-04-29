@@ -42,7 +42,12 @@ pub(crate) fn tick(registry: &mut EntityRegistry, delta: f32) {
     for (id, mut state) in snapshots {
         state.age += delta;
 
-        // Position integration: read the live Transform, advance, write back.
+        // Explicit Euler integration: position advances using the previous
+        // tick's velocity, then velocity is updated below for the next tick.
+        // Simple and sufficient for visual particle effects at game framerates.
+        // At 1/60 dt, vertical drift from the analytic solution is ~0.25 m
+        // over a 3 s lifetime — imperceptible for smoke / sparks / dust and
+        // not worth the cost of a higher-order integrator at particle counts.
         let mut position = match registry.get_component::<Transform>(id) {
             Ok(t) => t.position,
             Err(_) => continue,
@@ -186,9 +191,11 @@ mod tests {
     #[test]
     fn parabolic_trajectory_under_normal_gravity() {
         // velocity = (0, 5, 0), buoyancy = -1 → vertical_accel = WORLD_GRAVITY.
-        // y(t) = 5t + 0.5 * WORLD_GRAVITY * t^2 (semi-implicit Euler at fixed
-        // step matches the analytic curve up to O(dt) integration error; we
-        // use a small step and a generous tolerance).
+        // y(t) = 5t + 0.5 * WORLD_GRAVITY * t^2. The sim uses explicit Euler
+        // (see `tick`); to keep the analytic comparison meaningful we run at
+        // 1/240 dt (4× game rate) and tolerate ~0.05 m. At game-rate 1/60 dt
+        // the drift over 3 s is ~0.25 m — fine for the visual target but too
+        // loose for an analytic check.
         let mut reg = EntityRegistry::new();
         let id = spawn_particle(
             &mut reg,

@@ -9,10 +9,11 @@
 use std::collections::HashMap;
 
 use super::data_descriptors::{
-    EntityTypeDescriptor, NamedReaction, ReactionDescriptor, SequenceStep,
+    EntityTypeDescriptor, NamedReaction, PrimitiveDescriptor, ReactionDescriptor, SequenceStep,
 };
 use super::data_registry::DataRegistry;
-use super::registry::EntityRegistry;
+use super::reactions::registry::ReactionPrimitiveRegistry;
+use super::registry::{ComponentKind, EntityId, EntityRegistry};
 use super::sequence::SequencedPrimitiveRegistry;
 
 /// Per-subscription kill-count state for a single progress reaction.
@@ -202,7 +203,8 @@ pub(crate) fn fire_named_event_with_sequences(
     event_name: &str,
     data_registry: &DataRegistry,
     sequence_registry: &SequencedPrimitiveRegistry,
-    entity_registry: &EntityRegistry,
+    reaction_registry: &ReactionPrimitiveRegistry,
+    entity_registry: &mut EntityRegistry,
 ) -> Vec<String> {
     let mut chained = Vec::new();
     for named in &data_registry.reactions {
@@ -212,21 +214,57 @@ pub(crate) fn fire_named_event_with_sequences(
         match &named.descriptor {
             ReactionDescriptor::Progress(_) => {}
             ReactionDescriptor::Primitive(p) => {
-                log::info!(
-                    "[Scripting] dispatch primitive '{}' on tag '{}'",
-                    p.primitive,
-                    p.tag,
-                );
+                dispatch_primitive(p, reaction_registry, entity_registry);
                 if let Some(on_complete) = &p.on_complete {
                     chained.push(on_complete.clone());
                 }
             }
             ReactionDescriptor::Sequence(steps) => {
-                dispatch_sequence(steps, sequence_registry, entity_registry);
+                dispatch_sequence(steps, sequence_registry, &*entity_registry);
             }
         }
     }
     chained
+}
+
+/// Resolve `descriptor.tag` to live entity IDs and invoke the named handler.
+///
+/// Targeting walks the Transform column, the universal index established in
+/// [`count_entities_with_tag`]. Empty target sets are passed through to the
+/// handler — handlers decide whether an empty set is a no-op or warn-worthy.
+fn dispatch_primitive(
+    descriptor: &PrimitiveDescriptor,
+    reaction_registry: &ReactionPrimitiveRegistry,
+    entity_registry: &mut EntityRegistry,
+) {
+    let targets: Vec<EntityId> = entity_registry
+        .query_by_component_and_tag(ComponentKind::Transform, Some(&descriptor.tag))
+        .map(|(id, _)| id)
+        .collect();
+
+    log::info!(
+        "[Scripting] dispatch primitive '{}' on tag '{}' ({} targets)",
+        descriptor.primitive,
+        descriptor.tag,
+        targets.len(),
+    );
+
+    match reaction_registry.dispatch(
+        &descriptor.primitive,
+        entity_registry,
+        &targets,
+        &descriptor.args,
+    ) {
+        Ok(true) => {}
+        Ok(false) => log::warn!(
+            "[Scripting] primitive '{}' is not registered; reaction had no effect",
+            descriptor.primitive,
+        ),
+        Err(e) => log::warn!(
+            "[Scripting] primitive '{}' dispatch failed: {e:?}",
+            descriptor.primitive,
+        ),
+    }
 }
 
 fn dispatch_sequence(
@@ -341,6 +379,7 @@ mod tests {
                 primitive: primitive.to_string(),
                 tag: tag.to_string(),
                 on_complete: on_complete.map(|s| s.to_string()),
+                args: serde_json::Value::Object(Default::default()),
             }),
         }
     }
@@ -657,7 +696,9 @@ mod tests {
             entities: vec![],
         });
 
-        let chained = fire_named_event_with_sequences("go", &data, &seq_reg, &entities);
+        let reaction_reg = ReactionPrimitiveRegistry::new();
+        let chained =
+            fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &mut entities);
         assert!(chained.is_empty());
         let observed = calls.lock().unwrap().clone();
         assert_eq!(observed, vec![(id_a.to_raw(), 1), (id_b.to_raw(), 2)]);
@@ -710,7 +751,8 @@ mod tests {
             entities: vec![],
         });
 
-        fire_named_event_with_sequences("go", &data, &seq_reg, &entities);
+        let reaction_reg = ReactionPrimitiveRegistry::new();
+        fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &mut entities);
         // Two surviving steps fired; the stale step was skipped.
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
@@ -755,7 +797,8 @@ mod tests {
             entities: vec![],
         });
 
-        fire_named_event_with_sequences("go", &data, &seq_reg, &entities);
+        let reaction_reg = ReactionPrimitiveRegistry::new();
+        fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &mut entities);
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 

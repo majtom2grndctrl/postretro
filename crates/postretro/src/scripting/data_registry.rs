@@ -63,6 +63,7 @@ mod tests {
                     primitive: "moveGeometry".to_string(),
                     tag: "reactorChambers".to_string(),
                     on_complete: None,
+                    args: serde_json::Value::Object(Default::default()),
                 }),
             }],
             entities: vec![EntityTypeDescriptor {

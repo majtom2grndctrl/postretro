@@ -35,17 +35,23 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Primitive reaction: invokes the named Rust primitive on entities tagged `tag`, optionally firing `onComplete` when it finishes. */
+/**
+ * Primitive reaction: invokes the named Rust primitive on entities tagged `tag`,
+ * optionally firing `onComplete` when it finishes. `args` carries the
+ * primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`).
+ */
 export type PrimitiveReactionDescriptor = {
   primitive: string;
   tag: string;
+  args?: Record<string, unknown>;
   onComplete?: string;
 };
 
 /**
  * One step in a `sequence` reaction body: invokes the named sequenced
- * primitive against the given entity with `args`. The primitive name is a
- * narrowed string literal; `args` is the payload shape that primitive expects.
+ * primitive against the given entity with `args`. Sequence steps target a
+ * single `EntityId`; tag-targeted primitives (`setEmitterRate`, `setSpinRate`)
+ * belong on the `reactions:` → `Primitive` path, not on `sequence`.
  */
 export type SetLightAnimationStep = {
   id: import("postretro").EntityId;
@@ -53,25 +59,8 @@ export type SetLightAnimationStep = {
   args: import("postretro").LightAnimation;
 };
 
-/** Tag-targeted reaction step: zero or modulate emission rate on every emitter matching `tag`. */
-export type SetEmitterRateStep = {
-  tag: string;
-  primitive: "setEmitterRate";
-  args: { rate: number };
-};
-
-/** Tag-targeted reaction step: set the spin rate immediately, or tween it via `SpinAnimation`, on every emitter matching `tag`. */
-export type SetSpinRateStep = {
-  tag: string;
-  primitive: "setSpinRate";
-  args: { rate: number } | { animation: import("postretro").SpinAnimation };
-};
-
 /** Union of every supported sequence step shape. Add new step types here as more sequenced primitives land. */
-export type SequenceStep =
-  | SetLightAnimationStep
-  | SetEmitterRateStep
-  | SetSpinRateStep;
+export type SequenceStep = SetLightAnimationStep;
 
 /**
  * Sequence reaction: ordered per-entity primitive invocations. Steps run in

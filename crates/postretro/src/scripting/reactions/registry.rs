@@ -44,6 +44,25 @@ impl ReactionPrimitiveRegistry {
     pub(crate) fn get(&self, name: &str) -> Option<&ReactionPrimitiveFn> {
         self.handlers.get(name)
     }
+
+    /// Resolve `name` and run its handler against `targets` and `args`.
+    ///
+    /// Returns `Ok(false)` when no handler is registered under `name` —
+    /// callers log this defensively. Per-target failures inside the handler
+    /// are logged as warnings by the handler itself; this method only
+    /// surfaces invariant violations such as `InvalidArgument`.
+    pub(crate) fn dispatch(
+        &self,
+        name: &str,
+        registry: &mut EntityRegistry,
+        targets: &[EntityId],
+        args: &serde_json::Value,
+    ) -> Result<bool, ReactionError> {
+        let Some(handler) = self.handlers.get(name) else {
+            return Ok(false);
+        };
+        handler(registry, targets, args).map(|_| true)
+    }
 }
 
 impl std::fmt::Debug for ReactionPrimitiveRegistry {

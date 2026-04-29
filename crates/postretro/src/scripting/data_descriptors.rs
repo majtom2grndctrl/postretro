@@ -44,11 +44,16 @@ pub(crate) struct ProgressDescriptor {
 
 /// Primitive-action reaction: invokes a named Rust primitive on entities
 /// matching `tag`, optionally firing `on_complete` when the primitive finishes.
+///
+/// `args` carries the primitive-specific payload (e.g. `{ "rate": 0.0 }` for
+/// `setEmitterRate`). Defaults to an empty JSON object when the descriptor
+/// omits the field, so primitives that take no args parse cleanly.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PrimitiveDescriptor {
     pub(crate) primitive: String,
     pub(crate) tag: String,
     pub(crate) on_complete: Option<String>,
+    pub(crate) args: serde_json::Value,
 }
 
 /// A reaction descriptor paired with the event name it is registered under.
@@ -255,7 +260,7 @@ fn progress_descriptor_from_js<'js>(
 }
 
 fn primitive_descriptor_from_js<'js>(
-    _ctx: &Ctx<'js>,
+    ctx: &Ctx<'js>,
     obj: &Object<'js>,
 ) -> Result<PrimitiveDescriptor, DescriptorError> {
     let primitive = get_required_string_js(obj, "primitive")?;
@@ -273,10 +278,24 @@ fn primitive_descriptor_from_js<'js>(
         None
     };
 
+    // `args` is the primitive's typed payload. Absent / null defaults to an
+    // empty object so primitives that take no arguments still deserialize.
+    let args = if obj.contains_key("args").map_err(js_err)? {
+        let raw: JsValue = obj.get("args").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            serde_json::Value::Object(Default::default())
+        } else {
+            super::conv::js_to_json(ctx, raw).map_err(js_err)?
+        }
+    } else {
+        serde_json::Value::Object(Default::default())
+    };
+
     Ok(PrimitiveDescriptor {
         primitive,
         tag,
         on_complete,
+        args,
     })
 }
 
@@ -477,10 +496,23 @@ fn primitive_descriptor_from_lua(table: &Table) -> Result<PrimitiveDescriptor, D
         None
     };
 
+    // `args` carries the primitive's payload. Absent / nil defaults to an
+    // empty object so primitives that take no arguments still deserialize.
+    let args = if table.contains_key("args").map_err(lua_err)? {
+        let raw: LuaValue = table.get("args").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => serde_json::Value::Object(Default::default()),
+            other => super::conv::lua_to_json(other).map_err(lua_err)?,
+        }
+    } else {
+        serde_json::Value::Object(Default::default())
+    };
+
     Ok(PrimitiveDescriptor {
         primitive,
         tag,
         on_complete,
+        args,
     })
 }
 

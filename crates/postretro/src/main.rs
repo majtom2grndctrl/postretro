@@ -514,12 +514,8 @@ struct App {
 
     /// Tag-targeted reaction-primitive handlers (e.g. `setEmitterRate`,
     /// `setSpinRate`). Populated once at startup; resolved by name when a
-    /// `Primitive` reaction fires.
-    ///
-    /// `#[allow(dead_code)]`: the dispatch call site in `reaction_dispatch.rs`
-    /// is not yet connected; this field is reserved for the upcoming wiring.
+    /// `Primitive` reaction fires inside `fire_named_event_with_sequences`.
     /// See: context/lib/scripting.md §4 (Primitive Registration)
-    #[allow(dead_code)]
     reaction_registry: ReactionPrimitiveRegistry,
 
     /// Per-tag kill-count subscriptions derived from the data script's
@@ -651,10 +647,14 @@ impl ApplicationHandler for App {
         // Sweep map entities through the built-in classname dispatch. Each
         // matching `MapEntity` spawns an ECS entity with the configured
         // components at its origin. Unregistered classnames are skipped at
-        // debug level. Currently the `map_entities` list is empty until the
-        // PRL wire format gains a generic map-entity section; the dispatch
-        // path is live so populating the list is the only future change.
-        // See: scripting-foundation plan-3 §Sub-plan 8
+        // debug level.
+        //
+        // DEFERRED: `world.map_entities` is currently always empty. The PRL
+        // wire format does not yet carry a generic map-entity section; once
+        // that section ships, `billboard_emitter` (and any other built-in
+        // classname) will resolve from map files through this exact call —
+        // the dispatch path is wired and ready, only the data is missing.
+        // See: scripting-foundation plan-3 §Sub-plan 8 and `prl.rs` LevelWorld.
         if let Some(world) = self.level.as_ref() {
             let mut registry = self.script_ctx.registry.borrow_mut();
             let spawned = apply_classname_dispatch(
@@ -882,7 +882,8 @@ impl ApplicationHandler for App {
                         "levelLoad",
                         &self.data_registry,
                         &self.sequence_registry,
-                        &self.script_ctx.registry.borrow(),
+                        &self.reaction_registry,
+                        &mut self.script_ctx.registry.borrow_mut(),
                     );
                     self.level_load_fired = true;
                     self.script_time = 0.0;

@@ -423,10 +423,11 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive on entities tagged `tag`, optionally firing `onComplete` when it finishes. */
+  /** Primitive reaction body: invokes the named Rust primitive on entities tagged `tag`, optionally firing `onComplete` when it finishes. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag: string;
+    args?: Record<string, unknown>;
     onComplete?: string;
   };
 
@@ -436,32 +437,15 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     rate_curve: ReadonlyArray<number>;
   };
 
-  /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. */
+  /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. Sequence steps target a single `EntityId`; tag-targeted primitives belong on the `Primitive` reaction path. */
   export type SetLightAnimationStep = {
     id: EntityId;
     primitive: "setLightAnimation";
     args: LightAnimation;
   };
 
-  /** Tag-targeted reaction step: zero or modulate emission rate on every emitter matching `tag`. */
-  export type SetEmitterRateStep = {
-    tag: string;
-    primitive: "setEmitterRate";
-    args: { rate: number };
-  };
-
-  /** Tag-targeted reaction step: set the spin rate immediately, or tween it via `SpinAnimation`, on every emitter matching `tag`. */
-  export type SetSpinRateStep = {
-    tag: string;
-    primitive: "setSpinRate";
-    args: { rate: number } | { animation: SpinAnimation };
-  };
-
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
-  export type SequenceStep =
-    | SetLightAnimationStep
-    | SetEmitterRateStep
-    | SetSpinRateStep;
+  export type SequenceStep = SetLightAnimationStep;
 
   /** Sequence reaction body: ordered per-entity primitive invocations. Steps run in array order at dispatch. */
   export type SequenceReactionDescriptor = {
@@ -711,10 +695,13 @@ export type ProgressReactionDescriptor = {
 }
 
 --- Primitive reaction body: invokes the named Rust primitive on entities
---- tagged `tag`, optionally firing `onComplete` when it finishes.
+--- tagged `tag`, optionally firing `onComplete` when it finishes. `args`
+--- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
+--- `setEmitterRate`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
   tag: string,
+  args: { [string]: any }?,
   onComplete: string?,
 }
 
@@ -726,32 +713,18 @@ export type SpinAnimation = {
 }
 
 --- One step in a `sequence` reaction body: invokes the named sequenced
---- primitive against the given entity with `args`.
+--- primitive against the given entity with `args`. Sequence steps target a
+--- single `EntityId`; tag-targeted primitives belong on the `Primitive`
+--- reaction path.
 export type SetLightAnimationStep = {
   id: EntityId,
   primitive: "setLightAnimation",
   args: LightAnimation,
 }
 
---- Tag-targeted reaction step: zero or modulate emission rate on every
---- emitter matching `tag`.
-export type SetEmitterRateStep = {
-  tag: string,
-  primitive: "setEmitterRate",
-  args: { rate: number },
-}
-
---- Tag-targeted reaction step: set the spin rate immediately, or tween it
---- via `SpinAnimation`, on every emitter matching `tag`.
-export type SetSpinRateStep = {
-  tag: string,
-  primitive: "setSpinRate",
-  args: { rate: number } | { animation: SpinAnimation },
-}
-
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetEmitterRateStep | SetSpinRateStep
+export type SequenceStep = SetLightAnimationStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.
@@ -763,7 +736,7 @@ export type SequenceReactionDescriptor = {
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
 export type ProgressNamedReactionDescriptor = { name: string, progress: { tag: string, at: number, fire: string } }
-export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string, tag: string, onComplete: string? }
+export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string, tag: string, args: { [string]: any }?, onComplete: string? }
 export type SequenceNamedReactionDescriptor = { name: string, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 

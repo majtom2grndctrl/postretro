@@ -43,7 +43,7 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
 - `ctx` parameter contents — placeholder only; nothing meaningful passed yet.
   `ctx` carries above-level data only (campaign save, global flags); level
   entity query access is a separate future concern
-- Individual effect primitive implementations (moveGeometry, activateGroup,
+- Individual reaction primitive implementations (moveGeometry, activateGroup,
   spawnGroup, setLightAnimation, etc.) — dispatch mechanism is in scope;
   each primitive is a follow-on task
 - Hot reload of data scripts — architecture must leave the door open (see
@@ -71,10 +71,10 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
   entity classname for the level; a map entity with classname `"grunt"` matches
   the registered descriptor
 - [ ] Clearing behavior script handlers (level unload path) does not clear
-  effect or entity type registrations — they are separate Rust structures
+  reaction or entity type registrations — they are separate Rust structures
 - [ ] `postretro.d.ts` and `postretro.d.luau` include typed declarations for
   `registerReaction` and `registerEntities`, including the `progress` and
-  `primitive` effect shapes
+  `primitive` reaction shapes
 - [ ] An entity carrying `_tags "wave1 reactorMonster"` in the map matches
   `world.query({ component: "light", tag: "wave1" })` AND
   `world.query({ component: "light", tag: "reactorMonster" })` independently —
@@ -99,10 +99,10 @@ future hot reload — not consumed at runtime yet). Absent KVP emits no
 section; the engine skips the data script path at load time. Missing file is
 a hard compile error.
 
-### Task 2: Effect and entity descriptor types
+### Task 2: Reaction and entity descriptor types
 
 Define Rust types for the data that crosses the FFI boundary: the setup()
-return bundle, effect descriptors (`progress` and `primitive` shapes), and
+return bundle, reaction descriptors (`progress` and `primitive` shapes), and
 entity type descriptors. Implement deserialization from the JS/Luau return
 value into these types. Descriptor shape errors (unknown primitive name,
 missing required field) are reported at setup time — not deferred to dispatch.
@@ -112,9 +112,9 @@ missing required field) are reported at setup time — not deferred to dispatch.
 At level load, after geometry and entities are loaded but before `levelLoad`
 behavior handlers fire: create a short-lived VM context (QuickJS or Luau,
 inferred from compiled script extension), call `setup(ctx)` with an empty
-context object, deserialize the return bundle, populate effect and entity type
+context object, deserialize the return bundle, populate reaction and entity type
 registries, drop the context. Setup errors are logged and non-fatal — level
-loads with no registered effects rather than failing.
+loads with no registered reactions rather than failing.
 
 The data context is a third context role alongside Definition and Behavior
 (see `scripting.md` §2). It is distinct from the context pool: one context,
@@ -123,11 +123,11 @@ created and dropped once per level load.
 This task does NOT wire up a file watcher — the architecture is structured to
 support hot reload, but the watcher itself is a follow-on task.
 
-### Task 4: Effect registry and dispatch
+### Task 4: Reaction registry and dispatch
 
-Rust-side effect registry maps event name strings to lists of effect
+Rust-side reaction registry maps event name strings to lists of reaction
 descriptors. `fire_named_event` walks the registry and evaluates matching
-effects. Progress subscription tracking: per-effect kill counter keyed to the
+reactions. Progress subscription tracking: per-reaction kill counter keyed to the
 spawn tag, decremented on entity death, fires the named event when the ratio
 crosses the `at` threshold. Entity type registry: maps classname strings to
 registered descriptors, resolved when map entities are instantiated.
@@ -199,7 +199,7 @@ requirement.
 
 **Map entity convention for spawn waves:**
 - Entities carry `spawnGroup "<name>"` and `spawnSkill "<skill> <skill>"` KVPs
-- Effect descriptors reference groups by tag — they do not enumerate monsters
+- Reaction descriptors reference groups by tag — they do not enumerate monsters
 - Skill variants are curated per wave (author-designed compositions), not
   derived from a multiplier
 
@@ -219,7 +219,7 @@ requirement.
   and `_tags "reactorMonster wave1"` let a single entity belong to multiple
   subscription groups without a separate alias table.
 - **`registerEntities` return shape:** ~~bulk vs per-type handles~~
-  **Resolved:** single bulk descriptor. Reactions reference entities by tag at
+  **Resolved:** single bulk descriptor. Reaction descriptors reference entities by tag at
   runtime; no use case for per-type handle references exists in the current
   design. Behavior scripts will rely on `world.query()` for per-type access
   when that layer lands.

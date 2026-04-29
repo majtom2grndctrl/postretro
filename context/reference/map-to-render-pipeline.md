@@ -35,7 +35,7 @@ TrenchBroom (.map + textures/)
 Binary name: `prl-build`. Invoked as:
 
 ```
-prl-build input.map -o output.prl [--pvs] [--format idtech2]
+prl-build input.map -o output.prl [--format idtech2]
 ```
 
 Entry point: `src/main.rs`. Stages run sequentially; each stage's output feeds the next.
@@ -110,15 +110,9 @@ The portal graph is what the engine uses at runtime to traverse from the camera'
 
 **Crates:** `rayon` (parallel iteration), `postretro-level-format`
 
-Two outputs are possible, controlled by the `--pvs` flag.
+The portal list from Stage 4 is encoded directly into the PRL file. The engine performs visibility traversal at runtime each frame — portal traversal is the sole visibility path. See the engine section for how this works.
 
-**Default (portal graph mode):** The portal list from Stage 4 is encoded directly into the PRL file. The engine performs visibility traversal at runtime each frame. See the engine section for how this works.
-
-**`--pvs` mode:** For each empty leaf, the compiler performs a **BFS flood-fill** through the portal graph, accumulating all reachable leaves into a bitset. This runs in parallel across all leaves via `rayon`. The resulting per-leaf bitsets are compressed with **Quake standard RLE** (a run-length encoding where a zero byte introduces a run of zero bytes; non-zero bytes encode 8 bits directly). These precomputed sets — called the Potentially Visible Set (PVS) — are stored in the PRL file and decompressed at runtime.
-
-In practice, portal traversal mode is preferred; it handles curved view through portals more accurately than PVS.
-
-**Output:** Encoded `BspNodesSection`, `BspLeavesSection`, and either `PortalsSection` or `LeafPvsSection`.
+**Output:** Encoded `BspNodesSection`, `BspLeavesSection`, and `PortalsSection`.
 
 ---
 
@@ -154,9 +148,8 @@ Five sections are written:
 |----|---------|---------|
 | 3  | GeometryV2 | Vertex buffer (position + UV), index buffer, face metadata |
 | 12 | BspNodes | Splitting planes, front/back child references |
-| 13 | BspLeaves | Face ranges, AABB bounds, PVS offsets, solid flag |
-| 14 | LeafPvs | RLE-compressed PVS bitsets (--pvs mode only) |
-| 15 | Portals | Portal polygon vertices + leaf adjacency records (default mode) |
+| 13 | BspLeaves | Face ranges, AABB bounds, solid flag |
+| 15 | Portals | Portal polygon vertices + leaf adjacency records |
 | 16 | TextureNames | Length-prefixed UTF-8 strings |
 
 ---
@@ -195,7 +188,7 @@ Reads each section by ID. For a file with `GeometryV2` and `TextureNames` sectio
 2. Reads face metadata, maps each `texture_index` to the corresponding texture name.
 3. Calls `derive_material()` per face using the texture name prefix (e.g. `metal/` → metal material enum).
 4. Reads BSP nodes and leaves.
-5. Reads either the portal list or the PVS bitsets.
+5. Reads the portal list.
 6. Sorts the index buffer by `(leaf_index, texture_index)` — this ordering is required for the draw call batching strategy.
 7. Builds `TextureSubRange` lists per leaf: contiguous index ranges that share a texture.
 
@@ -209,7 +202,7 @@ For legacy files with `Geometry` (ID 1) instead of `GeometryV2`, UVs are filled 
 
 **Crates:** `qbsp` (Quake BSP2 parser), `glam`
 
-Uses the `qbsp` crate to parse `.bsp` files compiled by ericw-tools. The same coordinate transform (Quake Z-up → engine Y-up, scale 0.0254) is applied at load time. UV computation uses the same projection logic as the compiler. The BSP path also extracts PVS data from the BSP's VISDATA lump.
+Uses the `qbsp` crate to parse `.bsp` files compiled by ericw-tools. The same coordinate transform (Quake Z-up → engine Y-up, scale 0.0254) is applied at load time. UV computation uses the same projection logic as the compiler.
 
 ---
 
@@ -248,13 +241,11 @@ Audio is stubbed (step 3 in the intended order, skipped in practice).
 
 **Point-in-leaf lookup.** Before visibility can be determined, the engine finds which BSP leaf the camera is in. It descends the BSP node tree: at each node, dot-product the camera position against the splitting plane, go left (front) or right (back) based on sign. O(log n) for the tree height.
 
-**Two visibility paths:**
+**Visibility path.** Portal traversal (`portal_vis.rs`) is the sole path. A BFS from the camera's leaf through the portal graph. At each portal, the engine clips the current view frustum to the portal's polygon, producing a narrower frustum for the next leaf. This naturally handles around-the-corner visibility without any precomputed data.
 
-1. **Portal traversal** (default, `portal_vis.rs`). A BFS from the camera's leaf through the portal graph. At each portal, the engine clips the current view frustum to the portal's polygon, producing a narrower frustum for the next leaf. This naturally handles around-the-corner visibility without any precomputed data. Used when the PRL file contains a Portals section.
+**Fallbacks.** Solid-leaf camera, exterior-camera, and missing-portals cases fall back to per-leaf AABB frustum culling against all leaves.
 
-2. **PVS lookup** (when the PRL has a LeafPvs section or the BSP has VISDATA). RLE-decompress the bitset for the camera's leaf. The result is a boolean array indexed by leaf: `true` means potentially visible.
-
-**Frustum culling.** Regardless of which visibility path ran, each candidate leaf is then tested against the view frustum. The frustum is 6 planes extracted from the view-projection matrix (**Griess-Hartmann method**: add or subtract the projection matrix rows). Each plane is tested against the leaf's AABB using the **positive vertex (p-vertex) test**: find the AABB corner that lies farthest along the plane's normal; if that corner is behind the plane, the entire box is outside the frustum.
+**Frustum culling.** Each candidate leaf is tested against the view frustum. The frustum is 6 planes extracted from the view-projection matrix (**Griess-Hartmann method**: add or subtract the projection matrix rows). Each plane is tested against the leaf's AABB using the **positive vertex (p-vertex) test**: find the AABB corner that lies farthest along the plane's normal; if that corner is behind the plane, the entire box is outside the frustum.
 
 **Output:** A list of draw ranges — index buffer regions to draw this frame.
 

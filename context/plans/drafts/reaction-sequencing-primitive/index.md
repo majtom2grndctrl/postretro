@@ -3,7 +3,7 @@
 ## Goal
 
 Extend the data-script reaction system with ordered, per-entity sequenced
-operations. Add a `sequence` effect shape that targets specific entity IDs
+operations. Add a `sequence` reaction shape that targets specific entity IDs
 computed inside `setup()`, and ship `setLightAnimation` as the first concrete
 sequenced primitive. Migrate the existing light-wave behavior scripts onto data
 scripts and retire the behavior-script implementation.
@@ -14,7 +14,7 @@ scripts and retire the behavior-script implementation.
 
 ### In scope
 
-- A `sequence` effect descriptor shape: an ordered list of per-entity
+- A `sequence` reaction descriptor shape: an ordered list of per-entity
   operations, each carrying an `EntityId` and primitive-specific arguments
 - ID-based targeting on the new `sequence` shape — pure declarative payload,
   no tag writebacks from `setup()`
@@ -25,7 +25,7 @@ scripts and retire the behavior-script implementation.
 - SDK type declarations for the `sequence` shape and `setLightAnimation` arg
   payload in `postretro.d.ts` and `postretro.d.luau`
 - Migration of the two existing arena light-wave scripts
-  (`assets/scripts/arena-wave.ts`) to data-script descriptors
+  (`content/tests/scripts/arena-wave.ts`) to data-script descriptors
 - Retirement of the behavior-script light-wave path: delete
   `arena-wave.ts`/`.js` and confirm the data-script path produces the same
   visual outcome
@@ -60,7 +60,7 @@ scripts and retire the behavior-script implementation.
   dispatch) logs a warning and continues with remaining steps — not fatal
 - [ ] The arena 1 and arena 2 light waves render identically before and after
   migration: same period, same pulse shape, same per-light phase ordering
-- [ ] `assets/scripts/arena-wave.ts` and its compiled `.js` are deleted; the
+- [ ] `content/tests/scripts/arena-wave.ts` and its compiled `.js` are deleted; the
   test map's `worldspawn` references the new data script via `data_script`
 - [ ] `postretro.d.ts` and `postretro.d.luau` declare the `sequence` shape on
   the reaction descriptor union and the `setLightAnimation` step payload
@@ -74,7 +74,7 @@ scripts and retire the behavior-script implementation.
 
 ### Task 1: Sequence descriptor type and dispatch
 
-Extend the effect descriptor union in Rust with a `sequence` variant — an
+Extend the reaction descriptor union in Rust with a `sequence` variant — an
 ordered `Vec` of step records. Each step carries an `EntityId`, a primitive
 name, and a primitive-specific argument payload. Dispatch evaluates steps in
 order, resolves each ID against the entity registry, and invokes the named
@@ -102,10 +102,10 @@ pattern from the existing scripts.
 ### Task 4: Migrate arena light waves
 
 Rewrite both arena waves as a data script returning two `sequence` reactions
-keyed to `levelLoad`. Each effect's steps come from `world.query()` →
+keyed to `levelLoad`. Each reaction's steps come from `world.query()` →
 sort by position → map to `{ id, primitive: "setLightAnimation", args: {
 periodMs, phase, brightness, ... } }`. Delete the behavior-script
-implementation (`assets/scripts/arena-wave.ts` and the compiled `.js`).
+implementation (`content/tests/scripts/arena-wave.ts` and the compiled `.js`).
 Wire the new data script into the test map's `worldspawn`.
 
 ---

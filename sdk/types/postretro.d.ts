@@ -60,7 +60,7 @@ declare module "postretro" {
     /** Entity position at query time. */
     transform: EntityTransform;
     /** The entity's tags at query time. Empty array if untagged. */
-    tags: string[];
+    tags: ReadonlyArray<string>;
   };
 
   /** Entity handle returned by `world.query` when filtering for light entities. */
@@ -71,38 +71,109 @@ declare module "postretro" {
     /** Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation. */
     isDynamic: boolean;
     /** The entity's tags at query time. Empty array if untagged. */
-    tags: string[];
+    tags: ReadonlyArray<string>;
     /** Full component snapshot at query time. */
     component: LightComponent;
   };
 
   /** Despawns a previously-spawned entity. Errors if the id is stale. */
-  export function despawn_entity(id: EntityId): void;
+  export function despawnEntity(id: EntityId): void;
 
   /** Broadcasts an event to all listeners; drains at end of game logic. */
-  export function emit_event(event: ScriptEvent): void;
+  export function emitEvent(event: ScriptEvent): void;
 
   /** Returns true if the entity id refers to a live entity. */
-  export function entity_exists(id: EntityId): boolean;
+  export function entityExists(id: EntityId): boolean;
 
   /** Reads a component of the given kind from an entity. */
-  export function get_component(id: EntityId, kind: ComponentKind): ComponentValue;
+  export function getComponent(id: EntityId, kind: ComponentKind): ComponentValue;
 
   /** Register a handler for an engine event. Currently accepts "levelLoad" or "tick". */
   export function registerHandler(event: string, handler: (ctx?: ScriptCallContext) => void): void;
 
   /** Sends an event to a single entity; drains at end of game logic. */
-  export function send_event(target: EntityId, event: ScriptEvent): void;
+  export function sendEvent(target: EntityId, event: ScriptEvent): void;
 
   /** Writes a component of the given kind onto an entity. */
-  export function set_component(id: EntityId, kind: ComponentKind, value: ComponentValue): void;
+  export function setComponent(id: EntityId, kind: ComponentKind, value: ComponentValue): void;
 
   /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only. */
-  export function set_light_animation(id: EntityId, animation: LightAnimation | null): void;
+  export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
 
   /** Spawns a new entity with the given transform and returns its id. */
-  export function spawn_entity(transform: Transform): EntityId;
+  export function spawnEntity(transform: Transform): EntityId;
 
   /** Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: string, tag?: string } where `component` names the component type to query. Only "light" is supported in the current build; other values return an InvalidArgument error. The `world.ts` vocabulary module wraps this as `world.query`. */
-  export function world_query(filter: WorldQueryFilter): ReadonlyArray<Entity>;
+  export function worldQuery(filter: WorldQueryFilter): ReadonlyArray<Entity>;
+
+  // -------------------------------------------------------------------------
+  // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.
+
+  /** Easing family used by `LightEntityHandle.setIntensity` / `setColor`. */
+  export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut";
+
+  /** Typed light handle returned by `world.query({ component: "light" })`. */
+  export interface LightEntityHandle extends LightEntity {
+    setAnimation(anim: LightAnimation | null): void;
+    setIntensity(target: number, transitionMs?: number, easing?: EasingCurve): void;
+    setColor(
+      target: [number, number, number],
+      transitionMs?: number,
+      easing?: EasingCurve,
+    ): void;
+  }
+
+  /** Maps a component-name literal to the rich entity handle type. */
+  export type EntityForComponent<T extends string> =
+    T extends "light" ? LightEntityHandle : Entity;
+
+  /** Vocabulary object installed as `globalThis.world`. */
+  export interface World {
+    query<T extends string>(filter: {
+      component: T;
+      tag?: string | null;
+    }): EntityForComponent<T>[];
+  }
+
+  /** `world` vocabulary global. Wraps `worldQuery` with a typed handle. */
+  export const world: World;
+
+  /** Per-channel keyframe accepted by `timeline` / `sequence`. */
+  export type Keyframe<T extends number[]> = [number, ...T];
+
+  /** Returns an 8-sample irregular flicker brightness curve. */
+  export function flicker(
+    minBrightness: number,
+    maxBrightness: number,
+    rate: number,
+  ): LightAnimation;
+
+  /** Returns a 16-sample sine pulse brightness curve. */
+  export function pulse(
+    minBrightness: number,
+    maxBrightness: number,
+    periodMs: number,
+  ): LightAnimation;
+
+  /** Cycles uniformly through the given RGB colors. Dynamic lights only. */
+  export function colorShift(
+    colors: [number, number, number][],
+    periodMs: number,
+  ): LightAnimation;
+
+  /** Sweeps the light's `direction` through the given normalized vectors. */
+  export function sweep(
+    directions: [number, number, number][],
+    periodMs: number,
+  ): LightAnimation;
+
+  /** Validate `[absolute_ms, ...value]` keyframes; pass-through on success. */
+  export function timeline<T extends number[]>(
+    keyframes: [number, ...T][],
+  ): [number, ...T][];
+
+  /** Convert `[delta_ms, ...value]` keyframes to absolute-time form. */
+  export function sequence<T extends number[]>(
+    keyframes: [number, ...T][],
+  ): [number, ...T][];
 }

@@ -29,11 +29,11 @@ Game logic runs at a fixed timestep decoupled from render rate. Renderer interpo
 
 Visibility is computed per frame from baked portal geometry — the id Tech 4 approach. Precomputed PVS lengthens compile cycles and fights dynamic geometry; per-frame portal traversal is cheap at modern leaf counts.
 
-Portal traversal is the primary path. The `--pvs` fallback is deprecated; do not extend it.
+Portal traversal is the sole visibility path.
 
 **Portal traversal.** CPU flood-fill. At each portal, clip the portal polygon against the current frustum. A non-empty clip result confirms visibility and narrows the frustum for the next hop. Produces a visible-cell bitmask consumed by the BVH traversal compute pass (§5).
 
-**Fallback paths.** PVS, missing visibility data, and exterior-camera cases all fall back to per-leaf AABB frustum culling. See `build_pipeline.md` §Runtime visibility for the compile-side picture.
+**Fallback paths.** Solid-leaf camera, exterior-camera, and no-portals cases fall back to per-leaf AABB frustum culling against all leaves. See `build_pipeline.md` §Runtime visibility for the compile-side picture.
 
 ---
 
@@ -174,7 +174,7 @@ Right-handed, Y-up. Forward is −Z. Matches glam defaults and wgpu NDC.
 
 Camera position and orientation produce a view matrix each frame, feeding:
 
-- Visibility (§2) — camera position seeds the portal flood-fill or PVS lookup
+- Visibility (§2) — camera position seeds the portal flood-fill
 - Frustum culling — view-projection matrix defines the clip volume
 - All draw calls — view-projection uniform uploaded once per frame
 

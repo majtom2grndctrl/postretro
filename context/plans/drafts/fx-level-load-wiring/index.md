@@ -137,7 +137,7 @@ if let Some(level) = &self.level {
 
 - `env_fog_volume` brush in a test map compiles; the resulting `.prl` has a `FogVolumes` section with one record per brush. Unit test on `FogVolumesSection` round-trip passes.
 - `worldspawn` with `fog_pixel_scale 2` in the `.map` produces `LevelWorld.worldspawn.fog_pixel_scale == 2`; `renderer.set_fog_pixel_scale(2)` is called at startup.
-- `cargo run -p postretro -- assets/maps/test.prl` shows the fog pass active inside the brush volume: visible pixelated haze, spot-beam shafts, SH tint.
+- `cargo run -p postretro -- content/base/maps/test.prl` shows the fog pass active inside the brush volume: visible pixelated haze, spot-beam shafts, SH tint.
 - Maps with no `env_fog_volume` entities produce no fog pass work — `renderer.set_fog_volumes(&[])` is a no-op; `FogPass::active()` returns false.
 - Compiler warns on `env_fog_volume` with no brushes; errors on out-of-range `scatter`.
 

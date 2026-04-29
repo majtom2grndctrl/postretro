@@ -55,7 +55,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | `env_smoke_emitter` | point | Smoke/particle emitter | `rate` (sprites/sec; default 4), `lifetime` (seconds; default 3.0), `size` (world units; default 0.5), `speed` (drift velocity; default 0.3), `collection` (sprite sheet collection name), `spec_intensity` (Blinn-Phong specular scale; default 0.3) |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
-| `worldspawn` | special | Scene-wide render settings | `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8), `data_script` (path to data script file; TS compiled to JS via scripts-build, Luau passed through; absent = no data script) |
+| `worldspawn` | special | Scene-wide render settings | `script` (path to entry `.ts` script, relative to `.map` file; compiled by `prl-build`), `data_script` (path to data script file; TS compiled to JS via scripts-build, Luau passed through; absent = no data script), `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8) |
 
 ### Entity resolution
 
@@ -82,19 +82,18 @@ Unknown prefix falls back to a default material with a warning at load time.
 ### Compiler pipeline
 
 ```
-parse .map → BSP construction → brush-side projection → portal generation → exterior leaf culling → portal vis → geometry → BVH → lightmap bake → SH volume bake → pack .prl
+parse .map → BSP construction → brush-side projection → portal generation → exterior leaf culling → geometry → BVH → lightmap bake → SH volume bake → pack .prl
 ```
 
 1. **Parse.** Extracts brush volumes, brush sides, and entities. Applies coordinate transform (Quake Z-up → engine Y-up) and unit scale. Light entities route to FGD translation and validation; they don't participate in BSP construction.
 2. **BSP construction.** Partitions world space into solid and empty leaves using brush-derived planes. Leaf solidity is established during construction from the brush half-space intersection — not inferred from face positions afterward.
 3. **Brush-side projection.** Derives visible world faces from brush sides. Produces triangulated geometry per empty leaf; faces in solid space are discarded.
-4. **Portal generation.** Clips splitting-plane polygons against ancestor planes to produce convex portals connecting adjacent empty leaves. Stored in PRL for runtime traversal (default) or consumed by vis (`--pvs` mode) and discarded.
+4. **Portal generation.** Clips splitting-plane polygons against ancestor planes to produce convex portals connecting adjacent empty leaves. Always runs; portals are stored in every PRL for runtime traversal.
 5. **Exterior leaf culling.** Flood-fills through the portal graph from outside the map boundary. Exterior-reachable leaves produce no geometry. A map with a leak has interior leaves incorrectly classified as exterior.
-6. **Portal vis** (`--pvs` mode only). Computes per-leaf PVS bitsets by flooding through the portal graph. Output: RLE-compressed bitsets.
-7. **Geometry.** Fan-triangulates faces into a global vertex/index buffer. Associates each face with a material bucket and cell ID.
-8. **BVH.** Builds a global SAH BVH over all static geometry organized by `(face, material_bucket)` pair. Flattens to dense arrays; leaves sorted by material bucket for contiguous per-bucket indirect draw slots.
-9. **Lightmap bake.** UV-unwraps world geometry into a lightmap atlas. Ray-casts per-texel irradiance and dominant incoming light direction from all static lights against the global BVH. Atlas dimensions are bounded; on overflow the baker retries at a coarser texel density (halving resolution) a bounded number of times before failing the build. Each retry emits a warning — the fallback is visible in logs, not silent. Skipped when the map has no static lights.
-10. **Pack.** Writes all sections to the `.prl` binary format.
+6. **Geometry.** Fan-triangulates faces into a global vertex/index buffer. Associates each face with a material bucket and cell ID.
+7. **BVH.** Builds a global SAH BVH over all static geometry organized by `(face, material_bucket)` pair. Flattens to dense arrays; leaves sorted by material bucket for contiguous per-bucket indirect draw slots.
+8. **Lightmap bake.** UV-unwraps world geometry into a lightmap atlas. Ray-casts per-texel irradiance and dominant incoming light direction from all static lights against the global BVH. Atlas dimensions are bounded; on overflow the baker retries at a coarser texel density (halving resolution) a bounded number of times before failing the build. Each retry emits a warning — the fallback is visible in logs, not silent. Skipped when the map has no static lights.
+9. **Pack.** Writes all sections to the `.prl` binary format.
 
 ### PRL section IDs
 
@@ -102,8 +101,7 @@ parse .map → BSP construction → brush-side projection → portal generation 
 |---------|-----|-------------|
 | BspNodes | 12 | Always |
 | BspLeaves | 13 | Always |
-| LeafPvs | 14 | `--pvs` mode only |
-| Portals | 15 | Default mode |
+| Portals | 15 | Always |
 | TextureNames | 16 | Always |
 | Geometry | 17 | Always |
 | AlphaLights | 18 | Always |
@@ -118,14 +116,7 @@ parse .map → BSP construction → brush-side projection → portal generation 
 
 ### Runtime visibility
 
-Two paths, selected by which PRL section is present:
-
-| PRL section present | Runtime path |
-|---------------------|--------------|
-| Portals (15) | Per-frame portal flood-fill with frustum narrowing |
-| LeafPvs (14) | Precomputed PVS bitset lookup |
-
-Portal traversal is the default and preferred path. See `rendering_pipeline.md` §2.
+Portal traversal is the sole visibility path: per-frame flood-fill from the camera leaf with frustum narrowing at each portal. The runtime falls back to per-leaf AABB frustum culling for solid-leaf, exterior-camera, and no-portals cases. See `rendering_pipeline.md` §2.
 
 ---
 

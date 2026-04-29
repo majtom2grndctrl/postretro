@@ -138,7 +138,7 @@ This is a Cargo workspace with multiple crates.
 
 ```bash
 cargo run -p postretro                                          # engine (debug)
-cargo run -p postretro -- assets/maps/test.prl                 # load a PRL map
+cargo run -p postretro -- content/tests/maps/test-3.prl       # load a PRL map
 cargo run -p postretro-level-compiler -- input.map -o out.prl  # compile a level
 cargo run --release -p postretro                               # optimized build
 RUST_LOG=info cargo run -p postretro                           # with logging

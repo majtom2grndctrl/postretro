@@ -41,7 +41,7 @@ This plan also lays the substrate (deterministic stage outputs, serializable int
 - [ ] `--no-cache` flag: cache is neither read nor written; build behaves as if cache directory is empty; no `.prl-cache/` is created or modified.
 - [ ] `--cache-dir <path>` flag: cache reads and writes are confined to the supplied path.
 - [ ] Bumping a stage's version constant in source invalidates only that stage's entries on the next build (verified by inspecting which entries the next build writes).
-- [ ] Two clean builds of every fixture in `assets/maps/` produce byte-identical cache entries for every cached stage. (Determinism gate.)
+- [ ] Two clean builds of every fixture in `content/base/maps/` produce byte-identical cache entries for every cached stage. (Determinism gate.)
 - [ ] Cache directory is safe to delete at any time; the next build succeeds and rebuilds all entries.
 - [ ] A corrupted or truncated cache entry is detected (length or hash mismatch), discarded with a warning, and the stage re-runs.
 - [ ] `context/lib/build_pipeline.md` documents the cache: where it lives, how keys are derived, when to bump a stage version, the determinism invariant.

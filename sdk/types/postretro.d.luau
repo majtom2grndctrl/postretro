@@ -76,31 +76,100 @@ export type LightEntity = {
 }
 
 --- Despawns a previously-spawned entity. Errors if the id is stale.
-declare function despawn_entity(id: EntityId): ()
+declare function despawnEntity(id: EntityId): ()
 
 --- Broadcasts an event to all listeners; drains at end of game logic.
-declare function emit_event(event: ScriptEvent): ()
+declare function emitEvent(event: ScriptEvent): ()
 
 --- Returns true if the entity id refers to a live entity.
-declare function entity_exists(id: EntityId): boolean
+declare function entityExists(id: EntityId): boolean
 
 --- Reads a component of the given kind from an entity.
-declare function get_component(id: EntityId, kind: ComponentKind): ComponentValue
+declare function getComponent(id: EntityId, kind: ComponentKind): ComponentValue
 
 --- Register a handler for an engine event. Currently accepts "levelLoad" or "tick".
 declare function registerHandler(event: string, handler: (ctx: ScriptCallContext?) -> ()): ()
 
 --- Sends an event to a single entity; drains at end of game logic.
-declare function send_event(target: EntityId, event: ScriptEvent): ()
+declare function sendEvent(target: EntityId, event: ScriptEvent): ()
 
 --- Writes a component of the given kind onto an entity.
-declare function set_component(id: EntityId, kind: ComponentKind, value: ComponentValue): ()
+declare function setComponent(id: EntityId, kind: ComponentKind, value: ComponentValue): ()
 
 --- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only.
-declare function set_light_animation(id: EntityId, animation: LightAnimation | null): ()
+declare function setLightAnimation(id: EntityId, animation: LightAnimation | null): ()
 
 --- Spawns a new entity with the given transform and returns its id.
-declare function spawn_entity(transform: Transform): EntityId
+declare function spawnEntity(transform: Transform): EntityId
 
 --- Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: string, tag?: string } where `component` names the component type to query. Only "light" is supported in the current build; other values return an InvalidArgument error. The `world.ts` vocabulary module wraps this as `world.query`.
-declare function world_query(filter: WorldQueryFilter): {Entity}
+declare function worldQuery(filter: WorldQueryFilter): {Entity}
+
+-- ---------------------------------------------------------------------------
+-- SDK library — embedded into every Luau context via `include_str!` and
+-- evaluated during state construction. `world.luau`'s return value becomes
+-- global `world`; `light_animation.luau`'s return value is destructured into
+-- globals `flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`.
+
+--- Easing family used by `LightEntityHandle:setIntensity` / `:setColor`.
+export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
+
+--- Typed light handle returned by `world:query({ component = "light" })`.
+export type LightEntityHandle = {
+  id: EntityId,
+  transform: EntityTransform,
+  isDynamic: boolean,
+  tag: string?,
+  component: LightComponent,
+
+  setAnimation: (self: LightEntityHandle, anim: LightAnimation?) -> (),
+  setIntensity: (
+    self: LightEntityHandle,
+    target: number,
+    transitionMs: number?,
+    easing: EasingCurve?
+  ) -> (),
+  setColor: (
+    self: LightEntityHandle,
+    target: {number},
+    transitionMs: number?,
+    easing: EasingCurve?
+  ) -> (),
+}
+
+--- Generic entity handle returned by `world:query` when the component is
+--- not "light". Use `getComponent` for component data.
+export type EntityHandle = {
+  id: EntityId,
+  transform: EntityTransform,
+  tag: string?,
+}
+
+--- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
+export type World = {
+  query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
+       & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
+}
+
+--- Per-channel keyframe accepted by `timeline` / `sequence`.
+export type Keyframe = {number}
+
+declare world: World
+
+--- 8-sample irregular flicker brightness curve.
+declare function flicker(minBrightness: number, maxBrightness: number, rate: number): LightAnimation
+
+--- 16-sample sine pulse brightness curve.
+declare function pulse(minBrightness: number, maxBrightness: number, periodMs: number): LightAnimation
+
+--- Cycles uniformly through the given RGB colors. Dynamic lights only.
+declare function colorShift(colors: {{number}}, periodMs: number): LightAnimation
+
+--- Sweeps the light's `direction` through normalized vectors over `periodMs`.
+declare function sweep(directions: {{number}}, periodMs: number): LightAnimation
+
+--- Validate `{absolute_ms, ...value}` keyframes; pass-through on success.
+declare function timeline(keyframes: {Keyframe}): {Keyframe}
+
+--- Convert `{delta_ms, ...value}` keyframes to absolute-time form.
+declare function sequence(keyframes: {Keyframe}): {Keyframe}

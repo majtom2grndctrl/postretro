@@ -27,16 +27,16 @@ No new features. No new primitives. Cleanup only.
 
 ### 1. FGD Removal
 
-**Scope.** Remove `style` from the Light base class in `assets/postretro.fgd`. Update the `build_pipeline.md` entity table.
+**Scope.** Remove `style` from the Light base class in `sdk/TrenchBroom/postretro.fgd`. Update the `build_pipeline.md` entity table.
 
 | File | Change |
 |------|--------|
-| `assets/postretro.fgd` | Delete the `style(integer)` line from the `Light` base class. |
+| `sdk/TrenchBroom/postretro.fgd` | Delete the `style(integer)` line from the `Light` base class. |
 | `context/lib/build_pipeline.md` | Remove `style` from the `light` entity row in the Custom FGD table. |
 
 **Acceptance criteria**
 
-- [ ] `style` does not appear in `assets/postretro.fgd`.
+- [ ] `style` does not appear in `sdk/TrenchBroom/postretro.fgd`.
 - [ ] TrenchBroom no longer shows an "Animation Style" field on any light entity.
 - [ ] `build_pipeline.md` entity table reflects the removal.
 
@@ -70,17 +70,17 @@ Maps that currently use `style`:
 
 | Map file | `style` values in use |
 |----------|-----------------------|
-| `assets/maps/test_animated_weight_maps_single.map` | `"2"` |
-| `assets/maps/test_animated_weight_maps_occluded.map` | `"2"` |
-| `assets/maps/test_animated_weight_maps_cap.map` | `"1"`, `"2"`, `"3"`, `"5"` |
-| `assets/maps/test_animated_weight_maps_mixed.map` | `"2"` |
-| `assets/maps/test-3.map` | `"3"` (four lights) |
+| `content/base/maps/test_animated_weight_maps_single.map` | `"2"` |
+| `content/base/maps/test_animated_weight_maps_occluded.map` | `"2"` |
+| `content/base/maps/test_animated_weight_maps_cap.map` | `"1"`, `"2"`, `"3"`, `"5"` |
+| `content/base/maps/test_animated_weight_maps_mixed.map` | `"2"` |
+| `content/base/maps/test-3.map` | `"3"` (four lights) |
 
 Each `style` value maps to the Quake pattern string documented in `quake_style_animation`. Translate each to an equivalent `brightness_curve` keyframe sequence that preserves the animation intent at 10 Hz sampling (10 samples per second, period = sample count × 0.1 s). Exact sample fidelity is not required — a representative curve that exercises the same code path is sufficient for test maps.
 
 **Acceptance criteria**
 
-- [ ] `grep -r '"style"' assets/maps/` returns no matches.
+- [ ] `grep -r '"style"' content/base/maps/` returns no matches.
 - [ ] Each updated map compiles without errors or warnings related to unknown entity keys.
 - [ ] `test_animated_weight_maps_*` maps produce animated lights when compiled with `prl-build`.
 
@@ -107,6 +107,6 @@ If `style` appears in any other `context/lib/` file, remove or update the refere
 - Removing `_phase`. It is promoted to a first-class field by Plan 2 and stays.
 - Removing any other light entity keys (`_color`, `_fade`, `delay`, `_dynamic`, `_bake_only`).
 - Adding a compiler error for unknown entity keys. Useful but out of scope for this plan.
-- Updating autosave map files under `assets/maps/autosave/`. Autosaves are not source assets; they can be left as-is or deleted as part of normal autosave rotation.
+- Updating autosave map files under `content/base/maps/autosave/`. Autosaves are not source assets; they can be left as-is or deleted as part of normal autosave rotation.
 - Updating `plans/done/` documents. Frozen at ship time; do not touch.
 - Providing any tooling to convert existing `style` maps to `brightness_curve` format.

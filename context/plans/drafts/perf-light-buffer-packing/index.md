@@ -135,7 +135,7 @@ Extensive test coverage already exists in `postretro/src/lighting/mod.rs:141–2
 
 **Visual validation:** there is no automated golden-image harness in `postretro/tests/`. Use a manual visual diff: screenshot the same scene before and after the change (Alt+Shift+screenshot chord or equivalent) and compare. f16 color introduces ~0.001-magnitude quantization; expect sub-LSB pixel differences on 8-bit output for most fragments. HDR-bright emissive lights specifically checked — f16 clips at ~65504, above any reasonable intensity after the 1000× cap, so overflow should not occur.
 
-**Performance measurement:** `POSTRETRO_GPU_TIMING=1` forward-pass time, targeting a ≥5% drop on a dense-light scene. If a 500-light test map does not exist at validation time, authoring one is a prerequisite step — add `assets/maps/dense-light-500.map` (or equivalent) as a blocking sub-task before closing Task C. On a sparse map, expect no regression (unpack cost is real but tiny per light).
+**Performance measurement:** `POSTRETRO_GPU_TIMING=1` forward-pass time, targeting a ≥5% drop on a dense-light scene. If a 500-light test map does not exist at validation time, authoring one is a prerequisite step — add `content/base/maps/dense-light-500.map` (or equivalent) as a blocking sub-task before closing Task C. On a sparse map, expect no regression (unpack cost is real but tiny per light).
 
 ---
 
@@ -179,7 +179,7 @@ No changes to `postretro-level-format` or `postretro-level-compiler`. On-disk PR
 ## Open Questions
 
 1. **Intensity cap value.** Plan calls for clamping `color × intensity` to 1000× unit intensity at pack time. Confirm this ceiling fits the level-design intent (e.g., are any existing authored lights expected to exceed it?). If 1000× is too low, raise the constant — but do not restore the `color_exposure` per-light escape hatch.
-2. **Dense-light test map.** Does `assets/maps/` already contain a 500-light interior test level suitable for GPU timing? If not, authoring one is a prerequisite for Task C's acceptance measurement.
+2. **Dense-light test map.** Does `content/base/maps/` already contain a 500-light interior test level suitable for GPU timing? If not, authoring one is a prerequisite for Task C's acceptance measurement.
 3. **Bitfield layout for the type+model+shadow-kind word.** `u32` bitfield layouts in WGSL are done via shift-and-mask. Pin the bit assignments explicitly (e.g., `[0..2]` light_type, `[2..4]` falloff_model, `[4..6]` shadow_kind, `[6..16]` shadow_slot_index, `[16]` cast_shadows, `[17..32]` reserved). Document at the binding site in `forward.wgsl`.
 4. **Octahedral encoding precision.** Default 16-bit-per-axis octahedral gives ~0.001 radian error — fine for Lambert and cone attenuation. If banding appears on directional-light Lambert near grazing angles, fall back to f32 for directional lights only (there are few; cheap branch).
 

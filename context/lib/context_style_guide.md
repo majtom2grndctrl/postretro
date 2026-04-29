@@ -135,7 +135,7 @@ Define what you're defining, completely. A spec with scattered "TBD" markers pus
 | | Before | After |
 |---|---|---|
 | **In scope** | "Error handling TBD" | "Missing lightmap section falls back to white lightmap, logs warning at load time" |
-| **Out of scope** | "PVS optimization (future)" buried in the renderer section | Non-goals: "PVS-based occlusion culling" |
+| **Out of scope** | "Clustered forward+ binning (future)" buried in the renderer section | Non-goals: "Clustered forward+ light binning" |
 
 **The spec is where scope decisions happen.** Implementation inherits those decisions. If a spec is vague, the agent guesses — and guesses compound.
 

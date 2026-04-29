@@ -436,18 +436,13 @@ pub fn translate_light(
         );
     }
 
-    // -- Author-supplied script tag --
-    // Opaque string; the runtime uses it as-is for `world.query({ tag: ... })`.
-    // Treat whitespace-only as absent so a TrenchBroom default of "" doesn't
-    // pollute the registry's tag column.
-    let tag = props.get("_tag").and_then(|s| {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
+    // -- Author-supplied script tags --
+    // Space-delimited list. An entity matches `world.query({ tag: "t" })` when
+    // any of its tags equals "t". Whitespace-only values yield an empty list.
+    let tags: Vec<String> = props
+        .get("_tags")
+        .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
+        .unwrap_or_default();
 
     Ok(MapLight {
         origin,
@@ -463,7 +458,7 @@ pub fn translate_light(
         cast_shadows: true,
         bake_only,
         is_dynamic,
-        tag,
+        tags,
     })
 }
 
@@ -1383,38 +1378,50 @@ mod tests {
     }
 
     #[test]
-    fn tag_property_round_trips_on_light() {
+    fn tags_single_round_trips_on_light() {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
             ("_fade", "1024"),
-            ("_tag", "hallway_wave"),
+            ("_tags", "hallway_wave"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
-        assert_eq!(light.tag.as_deref(), Some("hallway_wave"));
+        assert_eq!(light.tags, vec!["hallway_wave"]);
     }
 
     #[test]
-    fn tag_absent_yields_none() {
+    fn tags_multi_round_trips_on_light() {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
             ("_fade", "1024"),
+            ("_tags", "ambientFill warm"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
-        assert!(light.tag.is_none());
+        assert_eq!(light.tags, vec!["ambientFill", "warm"]);
     }
 
     #[test]
-    fn tag_whitespace_only_yields_none() {
+    fn tags_absent_yields_empty() {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
             ("_fade", "1024"),
-            ("_tag", "   "),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
-        assert!(light.tag.is_none());
+        assert!(light.tags.is_empty());
+    }
+
+    #[test]
+    fn tags_whitespace_only_yields_empty() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_tags", "   "),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(light.tags.is_empty());
     }
 
     #[test]

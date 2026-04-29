@@ -191,11 +191,11 @@ pub(crate) struct EntityRegistry {
     free_list: Vec<u16>,
     /// One component column per `ComponentKind`, indexed by slot index.
     components: [Vec<Option<ComponentValue>>; ComponentKind::COUNT],
-    /// Parallel column of optional per-entity string tags. Authored at level
-    /// load (e.g. from the `targetname` FGD key on map lights) and consumed by
-    /// `world.query({..., tag })` to narrow results. One `String` per slot; the
-    /// column is resized in lockstep with `components`.
-    tags: Vec<Option<String>>,
+    /// Parallel column of per-entity tag lists. Space-delimited in the PRL
+    /// wire format; stored here as pre-split `Vec<String>` per slot. An entity
+    /// matches `world.query({ tag: "t" })` when any of its tags equals `"t"`.
+    /// Empty vec means untagged. Column is resized in lockstep with `components`.
+    tags: Vec<Vec<String>>,
 }
 
 impl EntityRegistry {
@@ -208,27 +208,27 @@ impl EntityRegistry {
         }
     }
 
-    /// Attach (or overwrite) a tag on an entity. `None` clears. Tags are
-    /// opaque to the registry; `world.query` compares them for exact-string
-    /// equality.
-    pub(crate) fn set_tag(
+    /// Attach (or overwrite) the tag list on an entity. An empty vec clears
+    /// all tags. `world.query` checks membership: an entity matches filter
+    /// tag `"t"` when any of its tags equals `"t"`.
+    pub(crate) fn set_tags(
         &mut self,
         id: EntityId,
-        tag: Option<String>,
+        tags: Vec<String>,
     ) -> Result<(), RegistryError> {
         let index = self.validate(id)?;
-        self.tags[index] = tag;
+        self.tags[index] = tags;
         Ok(())
     }
 
-    pub(crate) fn get_tag(&self, id: EntityId) -> Result<Option<&str>, RegistryError> {
+    pub(crate) fn get_tags(&self, id: EntityId) -> Result<&[String], RegistryError> {
         let index = self.validate(id)?;
-        Ok(self.tags[index].as_deref())
+        Ok(&self.tags[index])
     }
 
     /// Iterate every live entity whose component column of `kind` is populated
-    /// and whose tag (if `tag_filter` is `Some`) matches by string equality.
-    /// When `tag_filter` is `None`, any tag (including `None`) matches.
+    /// and whose tag list (if `tag_filter` is `Some`) contains the filter tag.
+    /// When `tag_filter` is `None`, every entity with the component matches.
     ///
     /// Yields `(EntityId, &ComponentValue)` pairs in slot-index order. Used by
     /// the `world.query` primitive (Sub-plan 6).
@@ -246,9 +246,9 @@ impl EntityRegistry {
                     return None;
                 }
                 if let Some(want) = tag_filter {
-                    match self.tags.get(idx).and_then(|t| t.as_deref()) {
-                        Some(have) if have == want => {}
-                        _ => return None,
+                    let entity_tags = self.tags.get(idx).map(|v| v.as_slice()).unwrap_or(&[]);
+                    if !entity_tags.iter().any(|t| t == want) {
+                        return None;
                     }
                 }
                 let cell = column.get(idx).and_then(|c| c.as_ref())?;
@@ -308,7 +308,7 @@ impl EntityRegistry {
             for column in &mut self.components {
                 column.push(None);
             }
-            self.tags.push(None);
+            self.tags.push(vec![]);
             i
         };
 
@@ -337,7 +337,7 @@ impl EntityRegistry {
         for column in &mut self.components {
             column[index] = None;
         }
-        self.tags[index] = None;
+        self.tags[index].clear();
         slot.live = false;
 
         // Generation-wrap retirement: reusing the slot after wrap would let a
@@ -553,6 +553,59 @@ mod tests {
         // Any fresh spawn must land on a brand-new slot, not the retired one.
         let fresh = reg.spawn(Transform::default());
         assert_ne!(fresh.index(), index, "retired index must not be reused");
+    }
+
+    #[test]
+    fn query_by_component_and_tag_matches_first_tag_of_multi_tag_entity() {
+        // Regression: tag migration from `Option<String>` to `Vec<String>` —
+        // an entity with multiple tags must independently match a query for
+        // any one of them.
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        reg.set_tags(id, vec!["wave1".into(), "reactorMonster".into()])
+            .unwrap();
+
+        let matches: Vec<EntityId> = reg
+            .query_by_component_and_tag(ComponentKind::Transform, Some("wave1"))
+            .map(|(eid, _)| eid)
+            .collect();
+        assert_eq!(matches, vec![id]);
+    }
+
+    #[test]
+    fn query_by_component_and_tag_matches_last_tag_of_multi_tag_entity() {
+        // Regression: tag migration from `Option<String>` to `Vec<String>` —
+        // membership match must work for any position in the tag list, not
+        // only the first.
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        reg.set_tags(id, vec!["wave1".into(), "reactorMonster".into()])
+            .unwrap();
+
+        let matches: Vec<EntityId> = reg
+            .query_by_component_and_tag(ComponentKind::Transform, Some("reactorMonster"))
+            .map(|(eid, _)| eid)
+            .collect();
+        assert_eq!(matches, vec![id]);
+    }
+
+    #[test]
+    fn query_by_component_and_tag_excludes_entity_when_no_tag_matches() {
+        // Regression: tag migration from `Option<String>` to `Vec<String>` —
+        // a multi-tag entity must NOT match a tag it doesn't carry.
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        reg.set_tags(id, vec!["wave1".into(), "reactorMonster".into()])
+            .unwrap();
+
+        let matches: Vec<EntityId> = reg
+            .query_by_component_and_tag(ComponentKind::Transform, Some("unrelated"))
+            .map(|(eid, _)| eid)
+            .collect();
+        assert!(
+            matches.is_empty(),
+            "entity {id} matched tag 'unrelated' it does not carry"
+        );
     }
 
     #[test]

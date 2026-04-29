@@ -1159,7 +1159,7 @@
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_light"
+"_tags" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 -38.7 0"
 "_light_radius" "800"
@@ -1181,7 +1181,7 @@
 "_color" "220 220 255"
 "_fade" "325"
 "_bake_only" "0"
-"_tag" "arena_wave_2"
+"_tags" "arena_wave_2"
 "_dynamic" "1"
 }
 // entity 7
@@ -1201,7 +1201,7 @@
 "_color" "220 220 255"
 "_fade" "325"
 "_bake_only" "0"
-"_tag" "arena_wave_2"
+"_tags" "arena_wave_2"
 "_dynamic" "1"
 }
 // entity 9
@@ -1212,7 +1212,7 @@
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_light"
+"_tags" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 -60.6 0"
 "_light_radius" "800"
@@ -1225,7 +1225,7 @@
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_light"
+"_tags" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 -130.6 0"
 "_light_radius" "800"
@@ -1238,7 +1238,7 @@
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_light"
+"_tags" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 -100.3 0"
 "_light_radius" "800"
@@ -1251,7 +1251,7 @@
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_light"
+"_tags" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 -154.7 0"
 "_light_radius" "800"
@@ -1264,7 +1264,7 @@
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_light"
+"_tags" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 159.6 0"
 "_light_radius" "800"
@@ -1277,7 +1277,7 @@
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_light"
+"_tags" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 131.7 0"
 "_light_radius" "800"
@@ -1290,7 +1290,7 @@
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_light"
+"_tags" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 44.0 0"
 "_light_radius" "800"
@@ -1303,7 +1303,7 @@
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_light"
+"_tags" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 66.5 0"
 "_light_radius" "800"
@@ -1316,7 +1316,7 @@
 "_color" "200 220 255"
 "_fade" "1024"
 "_bake_only" "0"
-"_tag" "arena_1_light"
+"_tags" "arena_1_light"
 "_dynamic" "1"
 "mangle" "-15 106.1 0"
 "_light_radius" "800"
@@ -1369,7 +1369,7 @@
 "_color" "220 220 255"
 "_fade" "325"
 "_bake_only" "0"
-"_tag" "arena_wave_2"
+"_tags" "arena_wave_2"
 "_dynamic" "1"
 }
 // entity 23
@@ -1380,7 +1380,7 @@
 "_color" "220 220 255"
 "_fade" "325"
 "_bake_only" "0"
-"_tag" "arena_wave_2"
+"_tags" "arena_wave_2"
 "_dynamic" "1"
 }
 // entity 24
@@ -1391,7 +1391,7 @@
 "_color" "220 220 255"
 "_fade" "325"
 "_bake_only" "0"
-"_tag" "arena_wave_2"
+"_tags" "arena_wave_2"
 "_dynamic" "1"
 }
 // entity 25
@@ -1402,7 +1402,7 @@
 "_color" "220 220 255"
 "_fade" "325"
 "_bake_only" "0"
-"_tag" "arena_wave_2"
+"_tags" "arena_wave_2"
 "_dynamic" "1"
 }
 // entity 26
@@ -1413,6 +1413,6 @@
 "_color" "220 220 255"
 "_fade" "325"
 "_bake_only" "0"
-"_tag" "arena_wave_2"
+"_tags" "arena_wave_2"
 "_dynamic" "1"
 }

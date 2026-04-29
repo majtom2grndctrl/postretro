@@ -56,10 +56,10 @@
         0 : "Static (baked)"
         1 : "Dynamic"
     ]
-    // Author-supplied tag. Exposed to scripts via
-    // `world.query({ component: "light", tag: "<tag>" })`. Leave blank for
-    // no tag. Whitespace-only values are treated as absent.
-    _tag(string) : "Script tag" : ""
+    // Space-delimited list of script tags. An entity matches
+    // `world.query({ component: "light", tag: "t" })` when any tag equals
+    // `"t"`. Leave blank for no tags. Example: "ambientFill warm"
+    _tags(string) : "Script tags" : ""
 ]
 
 @PointClass base(Light)

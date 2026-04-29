@@ -1108,7 +1108,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
-            tag: None,
+            tags: vec![],
         }
     }
 
@@ -1481,7 +1481,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
-            tag: None,
+            tags: vec![],
         };
         let lights = vec![light];
         let static_lights = StaticBakedLights::from_lights(&lights);

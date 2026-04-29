@@ -1,10 +1,19 @@
-// LightTags PRL section (ID 26): per-light author-supplied script tag.
+// LightTags PRL section (ID 26): per-light author-supplied script tag list.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use crate::FormatError;
 
-/// One tag per AlphaLights record, in the same order. An empty string means
-/// "no tag" so every on-disk entry is length-prefixed + UTF-8 bytes.
+/// Each entry is a space-delimited list of tags for the corresponding
+/// AlphaLights record (same index order). An empty string means no tags are
+/// assigned to that light. The runtime splits each entry on whitespace to
+/// reconstruct the `Vec<String>` of tags. Tags must not contain whitespace —
+/// the space character is the delimiter.
+///
+/// Space-delimited joining was chosen over separate per-tag entries because it
+/// preserves the one-entry-per-light count invariant (`tag_count ==
+/// light_count`), keeping section length validation simple — the loader just
+/// checks that `tag_count` matches `AlphaLights.light_count` and errors on any
+/// mismatch, with no secondary per-tag bookkeeping required.
 ///
 /// On-disk layout (little-endian):
 ///   u32  tag_count

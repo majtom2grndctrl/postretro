@@ -58,8 +58,8 @@ export type Entity = {
   id: EntityId,
   --- Entity position at query time.
   transform: EntityTransform,
-  --- The entity's tag at query time, if any.
-  tag: string?,
+  --- The entity's tags at query time. Empty array if untagged.
+  tags: {string},
 }
 
 --- Entity handle returned by `world.query` when filtering for light entities.
@@ -69,8 +69,8 @@ export type LightEntity = {
   transform: EntityTransform,
   --- Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation.
   isDynamic: boolean,
-  --- The entity's tag at query time, if any.
-  tag: string?,
+  --- The entity's tags at query time. Empty array if untagged.
+  tags: {string},
   --- Full component snapshot at query time.
   component: LightComponent,
 }

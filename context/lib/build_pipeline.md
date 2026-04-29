@@ -55,7 +55,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | `env_smoke_emitter` | point | Smoke/particle emitter | `rate` (sprites/sec; default 4), `lifetime` (seconds; default 3.0), `size` (world units; default 0.5), `speed` (drift velocity; default 0.3), `collection` (sprite sheet collection name), `spec_intensity` (Blinn-Phong specular scale; default 0.3) |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
-| `worldspawn` | special | Scene-wide render settings | `script` (path to entry `.ts` script, relative to `.map` file; compiled by `prl-build`), `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8) |
+| `worldspawn` | special | Scene-wide render settings | `script` (path to entry `.ts` script, relative to `.map` file; compiled by `prl-build`), `data_script` (path to data script file; TS compiled to JS via scripts-build, Luau passed through; absent = no data script), `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8) |
 
 ### Entity resolution
 
@@ -111,6 +111,8 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | Lightmap | 22 | Always (placeholder atlas when a map has no static lights) |
 | AnimatedLightChunks | 23 | When compiled with animated lights |
 | AnimatedLightWeightMaps | 25 | When compiled with animated lights; per-texel weight maps for the compose pass |
+| LightTags | 26 | When at least one light carries a tag; one space-delimited tag-list string per AlphaLight record (empty string = untagged) |
+| DataScript | 27 | When `data_script` KVP present on `worldspawn`; compiled script bytes + original source path |
 
 ### Runtime visibility
 

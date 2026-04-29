@@ -117,7 +117,7 @@ export interface World {
    * the literal `component` string: `"light"` yields `LightEntity[]`
    * (with convenience methods `setAnimation`, `setIntensity`,
    * `setColor`); any other component name yields base `Entity[]`
-   * (id, transform, tag) — use `getComponent` to access component data.
+   * (id, transform, tags) — use `getComponent` to access component data.
    *
    * **Note:** Unknown `component` strings (e.g. typos like `"lights"`)
    * compile without error but throw `InvalidArgument` at runtime; only
@@ -149,7 +149,7 @@ export const world: World = {
     const entities: Entity[] = raw.map((s) => ({
       id: s.id,
       transform: s.transform,
-      tag: s.tag ?? null,
+      tags: s.tags,
     }));
     return entities as EntityForComponent<T>[];
   },

@@ -23,7 +23,7 @@ use super::registry::{Component, ComponentKind, EntityId};
 pub(super) struct LightQueryHandle {
     id: EntityId,
     component: LightComponent,
-    tag: Option<String>,
+    tags: Vec<String>,
 }
 
 /// Build every light-entity handle that matches the supplied `tag` filter.
@@ -35,11 +35,11 @@ pub(super) fn collect_light_handles(ctx: &ScriptCtx, tag: Option<&str>) -> Vec<L
         let Some(light) = LightComponent::from_value(value) else {
             continue;
         };
-        let tag_copy = reg.get_tag(id).ok().flatten().map(|s| s.to_string());
+        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
         out.push(LightQueryHandle {
             id,
             component: light.clone(),
-            tag: tag_copy,
+            tags,
         });
     }
     out
@@ -69,11 +69,8 @@ pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Val
             // Duplicated at the top level so scripts can gate animation without unpacking component.
             obj.insert("isDynamic".to_string(), Value::from(h.component.is_dynamic));
             obj.insert(
-                "tag".to_string(),
-                match h.tag {
-                    Some(t) => Value::String(t),
-                    None => Value::Null,
-                },
+                "tags".to_string(),
+                Value::Array(h.tags.into_iter().map(Value::String).collect()),
             );
             obj.insert("component".to_string(), comp);
             Value::Object(obj)
@@ -294,7 +291,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Generic entity handle returned by `world.query` when the component type is not known at compile time.")
         .field("id", "EntityId", "")
         .field("transform", "EntityTransform", "Entity position at query time.")
-        .field("tag", "Option<String>", "The entity's tag at query time, if any.")
+        .field("tags", "Vec<String>", "The entity's tags at query time. Empty array if untagged.")
         .finish();
     registry
         .register_type("LightEntity")
@@ -307,9 +304,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation.",
         )
         .field(
-            "tag",
-            "Option<String>",
-            "The entity's tag at query time, if any.",
+            "tags",
+            "Vec<String>",
+            "The entity's tags at query time. Empty array if untagged.",
         )
         .field(
             "component",
@@ -351,7 +348,7 @@ mod tests {
             )
             .unwrap();
             if let Some(t) = tag {
-                reg.set_tag(id, Some(t.to_string())).unwrap();
+                reg.set_tags(id, vec![t.to_string()]).unwrap();
             }
         }
         (ctx, id)
@@ -439,12 +436,12 @@ mod tests {
                 JSON.stringify(hs.map(h => ({
                     id: h.id,
                     x: h.transform.position.x,
-                    tag: h.tag,
+                    tags: h.tags,
                     dyn: h.isDynamic,
                 })))
             "#;
             let got: String = qjs.eval(script).unwrap();
-            let expected = format!(r#"[{{"id":{},"x":1,"tag":"foo","dyn":true}}]"#, id.to_raw());
+            let expected = format!(r#"[{{"id":{},"x":1,"tags":["foo"],"dyn":true}}]"#, id.to_raw());
             assert_eq!(got, expected);
         });
     }
@@ -480,7 +477,7 @@ mod tests {
         let r = registry_for(ctx);
         let raw = id.to_raw();
 
-        // QuickJS: assert id, isDynamic, tag, transform.position.
+        // QuickJS: assert id, isDynamic, tags, transform.position.
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
         jsctx.with(|qjs| {
@@ -492,7 +489,7 @@ mod tests {
                     JSON.stringify(hs.map(h => ({
                         id: h.id,
                         isDynamic: h.isDynamic,
-                        tag: h.tag,
+                        tags: h.tags,
                         x: h.transform.position.x,
                         y: h.transform.position.y,
                         z: h.transform.position.z,
@@ -501,7 +498,7 @@ mod tests {
                 )
                 .unwrap();
             let expected = format!(
-                r#"[{{"id":{raw},"isDynamic":true,"tag":"hallway_wave","x":1,"y":2,"z":3}}]"#
+                r#"[{{"id":{raw},"isDynamic":true,"tags":["hallway_wave"],"x":1,"y":2,"z":3}}]"#
             );
             assert_eq!(json, expected);
         });
@@ -509,12 +506,12 @@ mod tests {
         // Luau: assert the same fields via separate return values.
         let lua = mlua::Lua::new();
         install_all_lua(&r, &lua);
-        let (got_id, is_dynamic, tag, x, y, z): (i64, bool, String, f64, f64, f64) = lua
+        let (got_id, is_dynamic, first_tag, x, y, z): (i64, bool, String, f64, f64, f64) = lua
             .load(
                 r#"
                 local hs = worldQuery({ component = "light", tag = "hallway_wave" })
                 local h = hs[1]
-                return h.id, h.isDynamic, h.tag, h.transform.position.x,
+                return h.id, h.isDynamic, h.tags[1], h.transform.position.x,
                        h.transform.position.y, h.transform.position.z
                 "#,
             )
@@ -522,7 +519,7 @@ mod tests {
             .unwrap();
         assert_eq!(got_id as u32, raw);
         assert!(is_dynamic);
-        assert_eq!(tag, "hallway_wave");
+        assert_eq!(first_tag, "hallway_wave");
         assert!((x - 1.0).abs() < 1e-5);
         assert!((y - 2.0).abs() < 1e-5);
         assert!((z - 3.0).abs() < 1e-5);
@@ -653,7 +650,7 @@ mod tests {
                 },
             )
             .unwrap();
-            reg.set_tag(second, Some("beta".to_string())).unwrap();
+            reg.set_tags(second, vec!["beta".to_string()]).unwrap();
         }
         let r = registry_for(ctx);
         let first_raw = first.to_raw();
@@ -694,6 +691,36 @@ mod tests {
         assert_eq!(filtered_count, 1);
         assert_eq!(filtered_id as u32, first_raw);
         assert_eq!(total_count, 2);
+    }
+
+    #[test]
+    fn world_query_returns_both_tags_for_multi_tagged_entity() {
+        // Regression: tag migration from `Option<String>` to `Vec<String>` —
+        // a query that matches one tag must still surface every tag the
+        // entity carries in its `tags` array on the JS-facing handle.
+        let (ctx, id) = test_ctx_with_light(true, None);
+        {
+            let mut reg = ctx.registry.borrow_mut();
+            reg.set_tags(id, vec!["a".into(), "b".into()]).unwrap();
+        }
+        let r = registry_for(ctx);
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const hs = worldQuery({ component: "light", tag: "a" });
+                    JSON.stringify(hs.map(h => ({ id: h.id, tags: h.tags })))
+                    "#,
+                )
+                .unwrap();
+            assert!(
+                json.contains(r#""tags":["a","b"]"#),
+                "expected handle JSON to contain both tags, got: {json}"
+            );
+        });
     }
 
     #[test]

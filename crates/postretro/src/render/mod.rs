@@ -3055,7 +3055,7 @@ mod tests {
                 cone_direction: [0.0, 0.0, -1.0],
                 cast_shadows: false,
                 is_dynamic,
-                tag: None,
+                tags: vec![],
                 leaf_index: 0,
             }
         }

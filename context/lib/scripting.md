@@ -47,7 +47,7 @@ Register primitives before constructing the runtime. Each registration captures 
 
 Once registered, the runtime installs each primitive into every context it creates — including pre-warmed pool contexts. Primitives cannot be added after construction.
 
-**Naming convention:** Primitive names are camelCase, matching the idiom of the target languages (TypeScript, JavaScript, Luau). Wire format field names match the script-facing API; internal Rust representation may differ.
+**Naming convention:** Primitive names are camelCase, matching the idiom of the target languages (TypeScript, JavaScript, Luau). Wire format field names match the script-facing API; internal Rust representation may differ. Named entity instance constants in user scripts follow the same camelCase rule (`const exhaustPort = defineEntity({...})`, `const campfire = defineEntity({...})`). PascalCase is reserved for types and interfaces only.
 
 Entry points: `postretro/src/scripting/primitives.rs` (day-one primitive set); `postretro/src/scripting/primitives_registry.rs` (builder and registry).
 

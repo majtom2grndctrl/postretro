@@ -11,7 +11,10 @@ use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::components::billboard_emitter::BillboardEmitterComponent;
 use super::components::light::LightComponent;
+use super::components::particle::ParticleState;
+use super::components::sprite_visual::SpriteVisual;
 
 /// Packed entity identifier: `index: 16 | generation: 16`.
 ///
@@ -80,6 +83,9 @@ impl fmt::Display for EntityId {
 pub(crate) enum ComponentKind {
     Transform = 0,
     Light = 1,
+    BillboardEmitter = 2,
+    ParticleState = 3,
+    SpriteVisual = 4,
 }
 
 impl ComponentKind {
@@ -88,7 +94,13 @@ impl ComponentKind {
     /// so we list every variant once; the compiler enforces exhaustiveness in
     /// match arms that touch `ComponentKind` elsewhere.
     pub(crate) const COUNT: usize = {
-        const VARIANTS: &[ComponentKind] = &[ComponentKind::Transform, ComponentKind::Light];
+        const VARIANTS: &[ComponentKind] = &[
+            ComponentKind::Transform,
+            ComponentKind::Light,
+            ComponentKind::BillboardEmitter,
+            ComponentKind::ParticleState,
+            ComponentKind::SpriteVisual,
+        ];
         VARIANTS.len()
     };
 }
@@ -124,6 +136,9 @@ impl Default for Transform {
 pub(crate) enum ComponentValue {
     Transform(Transform),
     Light(LightComponent),
+    BillboardEmitter(BillboardEmitterComponent),
+    ParticleState(ParticleState),
+    SpriteVisual(SpriteVisual),
 }
 
 /// Trait implemented by concrete component structs so they can be stored
@@ -166,6 +181,51 @@ impl Component for LightComponent {
     }
 }
 
+impl Component for BillboardEmitterComponent {
+    const KIND: ComponentKind = ComponentKind::BillboardEmitter;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::BillboardEmitter(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::BillboardEmitter(self)
+    }
+}
+
+impl Component for ParticleState {
+    const KIND: ComponentKind = ComponentKind::ParticleState;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::ParticleState(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::ParticleState(self)
+    }
+}
+
+impl Component for SpriteVisual {
+    const KIND: ComponentKind = ComponentKind::SpriteVisual;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::SpriteVisual(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::SpriteVisual(self)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum RegistryError {
     #[error("entity {0} does not exist")]
@@ -203,7 +263,13 @@ impl EntityRegistry {
         Self {
             slots: Vec::new(),
             free_list: Vec::new(),
-            components: [Vec::new(), Vec::new()],
+            components: [
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ],
             tags: Vec::new(),
         }
     }
@@ -410,6 +476,11 @@ impl EntityRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scripting::components::billboard_emitter::{
+        BillboardEmitterComponent, SpinAnimation,
+    };
+    use crate::scripting::components::particle::ParticleState;
+    use crate::scripting::components::sprite_visual::SpriteVisual;
 
     fn sample_transform() -> Transform {
         Transform {
@@ -606,6 +677,71 @@ mod tests {
             matches.is_empty(),
             "entity {id} matched tag 'unrelated' it does not carry"
         );
+    }
+
+    #[test]
+    fn billboard_emitter_set_get_round_trip() {
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        let value = BillboardEmitterComponent {
+            rate: 6.0,
+            burst: Some(3),
+            spread: 0.4,
+            lifetime: 3.0,
+            initial_velocity: [0.0, 1.5, 0.0],
+            buoyancy: 0.2,
+            drag: 0.5,
+            size_over_lifetime: vec![0.3, 1.0, 0.5],
+            opacity_over_lifetime: vec![0.0, 0.8, 0.0],
+            color: [1.0, 0.6, 0.2],
+            sprite: "smoke".into(),
+            spin_rate: 1.2,
+            spin_animation: Some(SpinAnimation {
+                duration: 2.0,
+                rate_curve: vec![0.0, 3.14, 0.0],
+            }),
+        };
+        reg.set_component(id, value.clone()).unwrap();
+        let back = reg
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap();
+        assert_eq!(*back, value);
+    }
+
+    #[test]
+    fn particle_state_set_get_round_trip() {
+        let mut reg = EntityRegistry::new();
+        let parent = reg.spawn(Transform::default());
+        let id = reg.spawn(Transform::default());
+        let value = ParticleState {
+            velocity: [0.5, 1.5, -0.25],
+            age: 0.4,
+            lifetime: 2.5,
+            buoyancy: -1.0,
+            drag: 0.3,
+            size_curve: vec![0.2, 1.0, 0.5],
+            opacity_curve: vec![0.0, 1.0, 0.0],
+            emitter: Some(parent),
+        };
+        reg.set_component(id, value.clone()).unwrap();
+        let back = reg.get_component::<ParticleState>(id).unwrap();
+        assert_eq!(*back, value);
+    }
+
+    #[test]
+    fn sprite_visual_set_get_round_trip() {
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        let value = SpriteVisual {
+            sprite: "smoke".into(),
+            size: 1.25,
+            opacity: 0.5,
+            rotation: 0.75,
+            tint: [1.0, 0.6, 0.2],
+        };
+        reg.set_component(id, value.clone()).unwrap();
+        let back = reg.get_component::<SpriteVisual>(id).unwrap();
+        assert_eq!(*back, value);
     }
 
     #[test]

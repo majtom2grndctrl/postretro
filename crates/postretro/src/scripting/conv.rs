@@ -313,6 +313,9 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
     match k {
         ComponentKind::Transform => "Transform",
         ComponentKind::Light => "Light",
+        ComponentKind::BillboardEmitter => "BillboardEmitter",
+        ComponentKind::ParticleState => "ParticleState",
+        ComponentKind::SpriteVisual => "SpriteVisual",
     }
 }
 
@@ -320,6 +323,9 @@ fn component_kind_from_name(name: &str) -> Option<ComponentKind> {
     match name {
         "Transform" => Some(ComponentKind::Transform),
         "Light" => Some(ComponentKind::Light),
+        "BillboardEmitter" => Some(ComponentKind::BillboardEmitter),
+        "ParticleState" => Some(ComponentKind::ParticleState),
+        "SpriteVisual" => Some(ComponentKind::SpriteVisual),
         _ => None,
     }
 }
@@ -382,6 +388,20 @@ impl<'js> FromJs<'js> for ComponentValue {
                      use a LightEntity handle's setAnimation method instead",
                 ))
             }
+            "BillboardEmitter" | "ParticleState" | "SpriteVisual" => {
+                // These components are populated by Rust bridges (emitter
+                // bridge, particle simulation) — scripts read them but never
+                // write through `setComponent`. Configuration changes go
+                // through the dedicated reaction primitives instead.
+                let _ = o;
+                Err(rquickjs::Exception::throw_type(
+                    ctx,
+                    &format!(
+                        "{kind} is bridge-managed; setComponent is not supported \
+                         (use the dedicated reaction primitives instead)"
+                    ),
+                ))
+            }
             other => Err(rquickjs::Exception::throw_type(
                 ctx,
                 &format!("unknown ComponentValue kind `{other}`"),
@@ -412,6 +432,17 @@ impl<'js> IntoJs<'js> for ComponentValue {
                     rquickjs::Exception::throw_type(
                         ctx,
                         &format!("LightComponent serialization failed: {e}"),
+                    )
+                })?;
+                json_to_js(ctx, &json)
+            }
+            other @ (ComponentValue::BillboardEmitter(_)
+            | ComponentValue::ParticleState(_)
+            | ComponentValue::SpriteVisual(_)) => {
+                let json = serde_json::to_value(&other).map_err(|e| {
+                    rquickjs::Exception::throw_type(
+                        ctx,
+                        &format!("ComponentValue serialization failed: {e}"),
                     )
                 })?;
                 json_to_js(ctx, &json)
@@ -449,6 +480,13 @@ impl FromLua for ComponentValue {
                         .to_string(),
                 ))
             }
+            "BillboardEmitter" | "ParticleState" | "SpriteVisual" => {
+                let _ = t;
+                Err(mlua::Error::RuntimeError(format!(
+                    "{kind} is bridge-managed; setComponent is not supported \
+                     (use the dedicated reaction primitives instead)"
+                )))
+            }
             other => Err(mlua::Error::RuntimeError(format!(
                 "unknown ComponentValue kind `{other}`"
             ))),
@@ -472,6 +510,14 @@ impl IntoLua for ComponentValue {
                 // see identical structural shapes from `getComponent`.
                 let json = serde_json::to_value(ComponentValue::Light(light)).map_err(|e| {
                     mlua::Error::RuntimeError(format!("LightComponent serialization failed: {e}"))
+                })?;
+                json_to_lua(lua, &json)
+            }
+            other @ (ComponentValue::BillboardEmitter(_)
+            | ComponentValue::ParticleState(_)
+            | ComponentValue::SpriteVisual(_)) => {
+                let json = serde_json::to_value(&other).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("ComponentValue serialization failed: {e}"))
                 })?;
                 json_to_lua(lua, &json)
             }

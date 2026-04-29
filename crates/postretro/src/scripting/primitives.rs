@@ -6,7 +6,10 @@
 // new subsystem to the scripting surface: add one field to `ScriptCtx` and a
 // few `.register(...)` lines here.
 
+use super::components::billboard_emitter::BillboardEmitterComponent;
 use super::components::light::LightComponent;
+use super::components::particle::ParticleState;
+use super::components::sprite_visual::SpriteVisual;
 use super::conv::{json_to_js, json_to_lua};
 use super::ctx::{ScriptCtx, ScriptEvent};
 use super::error::ScriptError;
@@ -238,6 +241,18 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                         let l = reg.get_component::<LightComponent>(id)?;
                         Ok(ComponentValue::Light(l.clone()))
                     }
+                    ComponentKind::BillboardEmitter => {
+                        let e = reg.get_component::<BillboardEmitterComponent>(id)?;
+                        Ok(ComponentValue::BillboardEmitter(e.clone()))
+                    }
+                    ComponentKind::ParticleState => {
+                        let p = reg.get_component::<ParticleState>(id)?;
+                        Ok(ComponentValue::ParticleState(p.clone()))
+                    }
+                    ComponentKind::SpriteVisual => {
+                        let s = reg.get_component::<SpriteVisual>(id)?;
+                        Ok(ComponentValue::SpriteVisual(s.clone()))
+                    }
                 }
             }
         })
@@ -261,6 +276,9 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                 match (kind, &value) {
                     (ComponentKind::Transform, ComponentValue::Transform(_)) => {}
                     (ComponentKind::Light, ComponentValue::Light(_)) => {}
+                    (ComponentKind::BillboardEmitter, ComponentValue::BillboardEmitter(_)) => {}
+                    (ComponentKind::ParticleState, ComponentValue::ParticleState(_)) => {}
+                    (ComponentKind::SpriteVisual, ComponentValue::SpriteVisual(_)) => {}
                     _ => {
                         return Err(ScriptError::InvalidArgument {
                             reason: format!(
@@ -274,6 +292,9 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                 match value {
                     ComponentValue::Transform(t) => reg.set_component(id, t)?,
                     ComponentValue::Light(l) => reg.set_component(id, l)?,
+                    ComponentValue::BillboardEmitter(e) => reg.set_component(id, e)?,
+                    ComponentValue::ParticleState(p) => reg.set_component(id, p)?,
+                    ComponentValue::SpriteVisual(s) => reg.set_component(id, s)?,
                 }
                 Ok(())
             }

@@ -4,4 +4,7 @@
 //
 // See: context/plans/ready/scripting-foundation/plan-2-light-entity.md
 
+pub(crate) mod billboard_emitter;
 pub(crate) mod light;
+pub(crate) mod particle;
+pub(crate) mod sprite_visual;

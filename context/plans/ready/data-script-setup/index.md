@@ -3,7 +3,7 @@
 ## Goal
 
 Introduce a "data script" execution path distinct from behavior scripts. A data
-script runs once at level load, registers named effects and entity types into
+script runs once at level load, registers named reactions and entity types into
 Rust, then releases its VM context. Level authors express spawn waves, geometry
 reactions, and light state changes as pure data descriptors. All runtime
 dispatch runs natively in Rust — no ongoing FFI overhead after level load.
@@ -18,25 +18,25 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
   via `scripts-build`, Luau passed through; compiled output embedded in PRL
 - `setup(ctx)` as the script entry point: called once at level load, returns a
   typed descriptor bundle, VM context released after return
-- `registerEffect(name, descriptor)` and `registerEntities([...])` as pure
+- `registerReaction(name, descriptor)` and `registerEntities([...])` as pure
   script-side functions — build typed descriptor objects, no FFI
-- Rust-side effect registry, separate from behavior script state
+- Rust-side reaction registry, separate from behavior script state
 - Rust-side entity type registry keyed by classname string
-- Two effect descriptor shapes:
+- Two reaction descriptor shapes:
   - `progress`: kill-count subscription — tag, percentage threshold (0.0–1.0),
     event name to fire when threshold is crossed
   - `primitive`: invoke a named Rust primitive on tagged entities, optional
     event to fire on completion
-- Named event dispatch: when an event fires, Rust evaluates all effects
+- Named event dispatch: when an event fires, Rust evaluates all reactions
   registered for that name
 - `registerHandler` (behavior-only) throws `WrongContext` when called from the
   data script context
-- SDK type declarations for `registerEffect` and `registerEntities` in
+- SDK type declarations for `registerReaction` and `registerEntities` in
   `postretro.d.ts` and `postretro.d.luau`
 
 ### Out of scope
 
-- World state store, quest tracking, and stateful world reactions (future)
+- World state store, quest tracking, and stateful event chains (future)
 - Vue-style compiler transformation of `setup()` return (future — hides the
   explicit `return` from the author; current visible form stays until API
   shape is settled)
@@ -64,7 +64,7 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
   level
 - [ ] A data script that calls `registerHandler` receives a `WrongContext`
   error at setup time
-- [ ] `registerEffect("waveDone", { progress: { tag: "wave1", at: 1.0, fire:
+- [ ] `registerReaction("waveDone", { progress: { tag: "wave1", at: 1.0, fire:
   "powerOn" } })` registers a progress subscription; when all entities tagged
   `"wave1"` are dead, the `"powerOn"` event fires
 - [ ] `registerEntities([Grunt])` in `setup()` makes `"grunt"` resolvable as an
@@ -73,7 +73,7 @@ dispatch runs natively in Rust — no ongoing FFI overhead after level load.
 - [ ] Clearing behavior script handlers (level unload path) does not clear
   effect or entity type registrations — they are separate Rust structures
 - [ ] `postretro.d.ts` and `postretro.d.luau` include typed declarations for
-  `registerEffect` and `registerEntities`, including the `progress` and
+  `registerReaction` and `registerEntities`, including the `progress` and
   `primitive` effect shapes
 - [ ] An entity carrying `_tags "wave1 reactorMonster"` in the map matches
   `world.query({ component: "light", tag: "wave1" })` AND
@@ -134,7 +134,7 @@ registered descriptors, resolved when map entities are instantiated.
 
 ### Task 5: SDK stubs
 
-Implement `registerEffect` and `registerEntities` as pure TypeScript/Luau
+Implement `registerReaction` and `registerEntities` as pure TypeScript/Luau
 functions in the SDK vocabulary layer — they build typed descriptor objects and
 return them, no FFI. Add declarations to `postretro.d.ts` and
 `postretro.d.luau`. Type the `setup()` return shape so the bundle structure is
@@ -157,21 +157,21 @@ load).
 ```typescript
 // level-data.ts — authored by level designer (proposed design)
 import { Grunt, HeavyGunner } from 'entities'
-import { registerEffect, registerEntities } from 'postretro'
+import { registerReaction, registerEntities } from 'postretro'
 
 export function setup(ctx) {
     return {
         entities: registerEntities([ Grunt, HeavyGunner ]),
-        effects: [
-            registerEffect("reactorWave1", {
+        reactions: [
+            registerReaction("reactorWave1", {
                 progress: { tag: "reactorWave1Monsters", at: 1.0, fire: "wave1Complete" },
             }),
-            registerEffect("wave1Complete", {
+            registerReaction("wave1Complete", {
                 primitive: "moveGeometry",
                 tag: "reactorChambers",
                 onComplete: "wave2Revealed",
             }),
-            registerEffect("wave2Revealed", {
+            registerReaction("wave2Revealed", {
                 primitive: "activateGroup",
                 tag: "reactorWave2Monsters",
             }),
@@ -180,8 +180,8 @@ export function setup(ctx) {
 }
 ```
 
-`registerEffect` and `registerEntities` return typed descriptor objects.
-No Rust call occurs. The `return` is the FFI boundary — Rust calls `setup()`,
+`registerReaction` and `registerEntities` return typed descriptor objects (no FFI).
+The `return` is the FFI boundary — Rust calls `setup()`,
 receives the object, deserializes it in one pass.
 
 **Computation before return:** `setup()` may do real work before returning —
@@ -191,7 +191,7 @@ happens inside `setup()`. As long as the return is a descriptor bundle, the VM
 context is released cleanly after return regardless of how the bundle was
 computed.
 
-**Hot reload readiness:** effect and entity type registries must be clearable
+**Hot reload readiness:** reaction and entity type registries must be clearable
 without touching behavior script handlers. Teardown path when hot reload lands:
 clear data registries → re-run `setup()` → repopulate. No behavior restart
 needed. Keeping these in separate Rust structs is the main structural
@@ -214,22 +214,22 @@ requirement.
 - **Kill counter tag resolution:** ~~direct vs indirection~~ **Resolved:**
   entities carry a space-delimited `_tags` list (system-wide change —
   `_tag` → `_tags`, `Option<String>` → `Vec<String>` throughout the scripting
-  registry). An effect's `tag` field matches any entity whose tag list
+  registry). A reaction's `tag` field matches any entity whose tag list
   contains that string. Indirection is implicit: `spawnGroup "reactorWave1"`
   and `_tags "reactorMonster wave1"` let a single entity belong to multiple
   subscription groups without a separate alias table.
 - **`registerEntities` return shape:** ~~bulk vs per-type handles~~
-  **Resolved:** single bulk descriptor. Effects reference entities by tag at
+  **Resolved:** single bulk descriptor. Reactions reference entities by tag at
   runtime; no use case for per-type handle references exists in the current
   design. Behavior scripts will rely on `world.query()` for per-type access
   when that layer lands.
 - **Setup failure policy:** ~~log-and-continue vs --strict~~ **Resolved:**
   log-and-continue. Errors print to terminal (no in-game UI yet). Level
-  loads with no registered effects rather than aborting. This keeps the
+  loads with no registered reactions rather than aborting. This keeps the
   path open for hot reload: a broken data script can be fixed and
   re-executed without restarting the level. No `--strict` flag — not worth
   the surface area before hot reload exists.
-- **ID-based effect targeting:** tag-only descriptors cover group-oriented
+- **ID-based reaction targeting:** tag-only descriptors cover group-oriented
   primitives (`moveGeometry`, `activateGroup`, `spawnGroup`) where acting on
   all entities sharing a tag is the right semantic. Sequenced primitives (light
   wave order, ordered geometry reveals) computed inside `setup()` may need to

@@ -1,8 +1,8 @@
-# Effect Sequencing Primitive
+# Reaction Sequencing Primitive
 
 ## Goal
 
-Extend the data-script effect system with ordered, per-entity sequenced
+Extend the data-script reaction system with ordered, per-entity sequenced
 operations. Add a `sequence` effect shape that targets specific entity IDs
 computed inside `setup()`, and ship `setLightAnimation` as the first concrete
 sequenced primitive. Migrate the existing light-wave behavior scripts onto data
@@ -47,7 +47,7 @@ scripts and retire the behavior-script implementation.
 
 ## Acceptance criteria
 
-- [ ] A data script that returns `registerEffect("levelLoad", { sequence:
+- [ ] A data script that returns `registerReaction("levelLoad", { sequence:
   [...] })` with a list of `{ id, primitive: "setLightAnimation", args: {...} }`
   entries fires each operation in list order when the named event dispatches
 - [ ] `world.query({ component: "light", tag: ... })` inside `setup()` returns
@@ -63,7 +63,7 @@ scripts and retire the behavior-script implementation.
 - [ ] `assets/scripts/arena-wave.ts` and its compiled `.js` are deleted; the
   test map's `worldspawn` references the new data script via `data_script`
 - [ ] `postretro.d.ts` and `postretro.d.luau` declare the `sequence` shape on
-  the effect descriptor union and the `setLightAnimation` step payload
+  the reaction descriptor union and the `setLightAnimation` step payload
 - [ ] After `setup()` returns, the data-script VM context is released — no
   per-frame VM cost for the wave (validated by absence of a behavior handler
   on `levelLoad` for arena lights)
@@ -91,9 +91,9 @@ validation, same errors. Difference is only the registration surface.
 ### Task 3: SDK types and authoring helpers
 
 Add the `sequence` shape and `setLightAnimation` step payload to the SDK
-type declarations. Update the `registerEffect` overload set so authors get
+type declarations. Update the `registerReaction` overload set so authors get
 type checking on `sequence` step entries. The `sequence` field is always an
-array — no single-step sugar form; `effects: []` is the only supported
+array — no single-step sugar form; `reactions: []` is the only supported
 syntax regardless of list length. Provide a thin authoring helper (matching
 the `light_animation.ts` style) for building a step list from a sorted
 `LightEntity[]` and a stagger function — encapsulates the "phase = i / N"
@@ -101,7 +101,7 @@ pattern from the existing scripts.
 
 ### Task 4: Migrate arena light waves
 
-Rewrite both arena waves as a data script returning two `sequence` effects
+Rewrite both arena waves as a data script returning two `sequence` reactions
 keyed to `levelLoad`. Each effect's steps come from `world.query()` →
 sort by position → map to `{ id, primitive: "setLightAnimation", args: {
 periodMs, phase, brightness, ... } }`. Delete the behavior-script
@@ -125,7 +125,7 @@ type declarations live in different files.
 
 ```typescript
 // level-data.ts — proposed authoring shape
-import { registerEffect } from "postretro";
+import { registerReaction } from "postretro";
 import { world } from "./sdk/world";
 
 export function setup() {
@@ -134,8 +134,8 @@ export function setup() {
         .sort(/* angle around centroid, anchored NW */);
 
     return {
-        effects: [
-            registerEffect("levelLoad", {
+        reactions: [
+            registerReaction("levelLoad", {
                 sequence: arena1.map((light, i) => ({
                     id: light.id,
                     primitive: "setLightAnimation",
@@ -160,7 +160,7 @@ data-script surface and breaking the "descriptors only" boundary.
 covers operations that act uniformly on a group (`moveGeometry`,
 `activateGroup`). `sequence` covers operations where the *order* and
 *per-entity argument* matter. Same dispatch event name can fire both
-shapes — they coexist in one effect list.
+shapes — they coexist in one reaction list.
 
 **Stale IDs:** an entity destroyed between `setup()` and dispatch is not a
 fatal error. Most use cases fire `levelLoad` once on a freshly populated

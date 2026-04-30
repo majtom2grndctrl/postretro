@@ -17,13 +17,8 @@ mod scripting;
 mod texture;
 mod visibility;
 
-// Per-frame systems that bridge the scripting surface to other engine
-// subsystems. Intentionally rooted at the main-binary crate level (not under
-// `scripting/`) so that `src/bin/gen_script_types.rs` — which re-uses the
-// `scripting` module tree via `#[path]` without the engine's renderer/prl
-// modules — does not pull in wgpu/engine-dependent code.
-//
-// See: context/lib/scripting.md
+// Rooted here (not under `scripting/`) so `gen_script_types.rs` can reuse the
+// `scripting` tree via `#[path]` without pulling in wgpu/engine-dependent code.
 #[path = "scripting/systems/mod.rs"]
 mod scripting_systems;
 
@@ -74,13 +69,6 @@ fn resolve_map_path(args: &[String]) -> String {
         .unwrap_or_else(|| DEFAULT_MAP_PATH.to_string())
 }
 
-/// Derive the content root directory from a map file path. The content root
-/// is the parent of the `maps/` directory containing the map; sibling
-/// directories such as `textures/` and `scripts/` live alongside `maps/`
-/// under this root.
-///
-/// For `content/tests/maps/test-3.prl`, returns `content/tests/`.
-/// For `content/base/maps/e1m1.prl`, returns `content/base/`.
 fn content_root_from_map(map_path: &str) -> PathBuf {
     // `Path::new("maps/test.prl").parent()` returns `Some("maps")`, and
     // `"maps".parent()` returns `Some("")` — an empty path, not `None`. Filter
@@ -132,7 +120,6 @@ fn main() -> Result<()> {
     log::info!("[Engine] Content root: {}", content_root.display());
     let mut level = load_level(&map_path)?;
 
-    // Load textures for PRL levels.
     let texture_set = match &level {
         Some(world) if !world.texture_names.is_empty() => {
             let texture_root = content_root.join("textures");
@@ -155,7 +142,6 @@ fn main() -> Result<()> {
         normalize_prl_uvs(world, tex_set);
     }
 
-    // Position camera inside the level geometry.
     let initial_camera_pos = match &level {
         Some(world) => world.spawn_position(),
         None => Vec3::new(0.0, 200.0, 500.0),
@@ -165,15 +151,10 @@ fn main() -> Result<()> {
 
     let initial_state = InterpolableState::new(initial_camera_pos);
 
-    // --- Scripting bootstrap.
-    //
-    // One `ScriptRuntime` per engine instance. Behavior scripts load from
-    // `<content_root>/scripts/` (if present) sorted lexicographically by
-    // UTF-8 byte order — this fixes `registerHandler` invocation order
-    // across files.
-    // `fire_level_load` runs after world population but before the first
-    // frame renders; `fire_tick` runs each frame after game logic. See
-    // context/lib/scripting.md.
+    // Scripting bootstrap. Behavior scripts load lexicographically so
+    // cross-file `registerHandler` order is deterministic. `fire_level_load`
+    // runs after world population but before the first frame; `fire_tick`
+    // each frame after game logic. See: context/lib/scripting.md
     let script_ctx = ScriptCtx::new();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
@@ -184,33 +165,23 @@ fn main() -> Result<()> {
     )
     .context("failed to construct script runtime")?;
 
-    // Sequenced-primitive table: Rust-only handlers consulted by
-    // `fire_named_event_with_sequences` when a `Sequence` reaction step fires.
-    // Distinct from the script-facing primitive registry — these handlers run
-    // on the dispatch path, not from inside QuickJS/Luau. Populated once at
-    // startup; survives level reloads and behavior hot-reloads.
+    // Rust-only handlers on the sequence-dispatch path — distinct from the
+    // script-facing primitive registry (these never run inside QuickJS/Luau).
     let mut sequence_registry = SequencedPrimitiveRegistry::new();
     register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
 
-    // Tag-targeted reaction-primitive table: handlers invoked by `Primitive`
-    // reactions whose `primitive` field matches a registered name. Populated
-    // once at startup; survives level reloads. See:
-    // context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 5
+    // Reaction-primitive handlers invoked by name when a `Primitive` reaction
+    // fires. Populated once at startup; survives level reloads.
     let mut reaction_registry = ReactionPrimitiveRegistry::new();
     register_emitter_reaction_primitives(&mut reaction_registry);
 
-    // Built-in FGD-classname dispatch table. Engine-init-once: handlers
-    // survive level unload because they describe engine types, not per-level
-    // state. The level loader calls `apply_classname_dispatch` at level load
-    // (see the `resumed` handler below).
-    // See: context/lib/scripting.md
+    // Built-in classname dispatch — survives level unload because handlers
+    // describe engine types, not per-level state. See: context/lib/scripting.md
     let mut classname_dispatch = ClassnameDispatch::new();
     register_builtin_classnames(&mut classname_dispatch);
 
-    // Start the dev-mode hot-reload watcher rooted at the same `scripts/`
-    // directory `load_behavior_scripts` reads from. No-op in release builds.
-    // Failure is logged and swallowed — a missing or unwatchable directory
-    // must not prevent engine startup.
+    // Failure to start the watcher is logged and swallowed — a missing or
+    // unwatchable scripts directory must not prevent engine startup.
     let scripts_root = content_root.join("scripts");
     if let Err(err) = script_runtime.start_watcher(&scripts_root) {
         log::warn!(
@@ -257,20 +228,6 @@ fn main() -> Result<()> {
     app.exit_result
 }
 
-/// Normalize PRL texel-space UVs by dividing by texture dimensions. Called
-/// after `load_textures()` provides actual dimensions. BVH leaves own the
-/// index ranges now, so we walk the leaf array and use each leaf's
-/// `material_bucket_id` — which is the texture index for this face — to
-/// pick the correct texture's (w, h).
-///
-/// Invariant: the compiler emits a fresh copy of every face's vertices
-/// (`extract_geometry` appends to `vertices` at the start of each face's
-/// emit loop), so no vertex is shared between any two leaf `index_offset`
-/// ranges at all. That makes the one-pass `normalized[vi]` guard a pure
-/// defensive check — it would only trip on future pipeline changes that
-/// begin deduplicating vertices across faces, at which point sharing
-/// between different textures would become possible and this function
-/// would need revisiting.
 fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
     let mut normalized = vec![false; world.vertices.len()];
 
@@ -289,6 +246,9 @@ fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
         for i in start..start + count {
             if let Some(&idx) = world.indices.get(i) {
                 let vi = idx as usize;
+                // The compiler emits a fresh vertex copy per face, so sharing
+                // across leaves is not expected — this guard is defensive
+                // against future vertex deduplication.
                 if vi < normalized.len() && !normalized[vi] {
                     if let Some(vert) = world.vertices.get_mut(vi) {
                         vert.base_uv[0] /= w as f32;
@@ -301,22 +261,6 @@ fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
     }
 }
 
-/// Load every behavior script under `<content_root>/scripts/` in
-/// lexicographic order. The sort order defines cross-file `registerHandler`
-/// invocation order per context/lib/scripting.md §8. Missing directory: no-op. Per-file
-/// failures are logged and swallowed — one bad script must not kill the
-/// engine.
-///
-/// # TypeScript compilation
-///
-/// `.ts` files are compiled to `.js` before loading (debug builds only, where
-/// the watcher module is available). The compiled `.js` artifact lands next to
-/// the source; any bare `.js` that already has a same-stem `.ts` sibling is
-/// treated as a compiler artifact and skipped to avoid running the script twice.
-///
-/// If `scripts-build` is not found at startup, `.ts` files are passed directly
-/// to QuickJS, which will fail with "Unexpected token" errors for any
-/// TS-specific syntax. A warning is logged in that case.
 fn load_behavior_scripts(runtime: &ScriptRuntime, content_root: &Path) {
     let root_buf = content_root.join("scripts");
     let root = root_buf.as_path();
@@ -438,14 +382,11 @@ fn window_attributes() -> WindowAttributes {
 struct App {
     renderer: Option<Renderer>,
     window_state: Option<WindowState>,
-    /// Loaded level data (PRL), held for the lifetime of the app.
     level: Option<prl::LevelWorld>,
-    /// CPU-side textures loaded from disk, consumed by renderer during init.
     texture_set: Option<TextureSet>,
 
-    /// Content root for the active level — derived once from the map path at
-    /// startup. Sibling directories (`textures/`, `scripts/`) live under this
-    /// root; both texture loading and behavior-script discovery read from it.
+    /// Derived from the map path at startup. `textures/` and `scripts/`
+    /// sibling directories are resolved relative to this root.
     content_root: PathBuf,
 
     exit_result: Result<()>,
@@ -455,113 +396,76 @@ struct App {
     gamepad_system: Option<input::gamepad::GamepadSystem>,
     frame_timing: FrameTiming,
 
-    /// Diagnostic chord resolver. Parallel to `input_system`; consumes the
-    /// same key events but produces engine debug actions, not gameplay
-    /// actions. See: context/lib/input.md §7
+    /// Parallel to `input_system`; same key events, debug actions only.
+    /// See: context/lib/input.md §7
     diagnostic_inputs: input::DiagnosticInputs,
 
-    /// One-shot flag set by the `DumpPortalWalk` diagnostic chord. The next
-    /// redraw consumes it, passes it into `determine_visible_cells`, and
-    /// clears it. The visibility module emits per-portal trace lines under
-    /// the `postretro::portal_trace` log target for that one frame only.
+    /// One-shot flag: set by `DumpPortalWalk`, consumed and cleared on the
+    /// next redraw. Visibility emits per-portal traces under
+    /// `postretro::portal_trace` for that one frame only.
     capture_portal_walk_next_frame: bool,
 
-    /// Persistent scratch buffer for per-frame visible cell ID collection.
     scratch_cells: Vec<u32>,
 
-    /// Rolling ring buffer of per-frame CPU work durations. Sampled every
-    /// frame, read at title-update cadence. Reports min/avg/max so hitches
-    /// don't vanish into the average. See `frame_timing::FrameRateMeter`.
+    /// Ring buffer of per-frame CPU durations. Reports min/avg/max so
+    /// hitches don't vanish into the average.
     frame_rate_meter: FrameRateMeter,
 
-    /// Persistent string used to build the window title each update. Cleared
-    /// and rewritten with `write!` to avoid the per-frame allocation a
-    /// `format!` would do. Owns its capacity across frames.
+    /// Reused across frames to avoid a per-frame `format!` allocation.
     title_buffer: String,
 
-    /// Last time the window title was written. Title updates are rate-limited
-    /// to ~4Hz — at 60fps the title would otherwise flicker unreadably and
-    /// the OS may throttle rapid `set_title` calls.
+    /// Rate-limits title writes to ~4Hz — at 60fps rapid `set_title` is
+    /// unreadable and the OS may throttle it.
     last_title_update: Instant,
 
-    /// Script runtime. Holds both QuickJS and Luau subsystems and the
-    /// per-level handler table populated by `registerHandler`.
-    /// See: context/lib/scripting.md
     script_runtime: ScriptRuntime,
 
-    /// Shared scripting context. Holds the entity registry that the light
-    /// bridge and the script runtime both share. Populated at level load;
-    /// outlives the renderer so reloads / device resets preserve scripted
-    /// light state.
-    /// See: context/lib/scripting.md
+    /// Holds the entity registry shared by the light bridge and the script
+    /// runtime. Outlives the renderer so device resets preserve scripted
+    /// light state. See: context/lib/scripting.md
     script_ctx: ScriptCtx,
 
-    /// Reaction and entity-type registries populated from the level's
-    /// `registerLevelManifest()` data script. Cleared on level unload but
-    /// independent from the behavior `HandlerTable` — clearing one does not
-    /// touch the other.
-    /// See: context/lib/scripting.md §2 (Data context lifecycle)
+    /// Populated from `registerLevelManifest()`. Cleared on level unload
+    /// independently of the behavior `HandlerTable`. See: context/lib/scripting.md §2
     data_registry: DataRegistry,
 
-    /// Rust-only handler table consulted by
-    /// `fire_named_event_with_sequences` when a `Sequence` reaction step
-    /// fires. Populated once at engine startup; does not need clearing on
-    /// level unload because handlers carry no per-level state — they look up
-    /// entities through `ScriptCtx`'s shared `EntityRegistry`, which the
-    /// level-unload path clears separately.
-    /// See: context/lib/scripting.md §4 (primitives), §5 (shared engine state)
+    /// Consulted by `fire_named_event_with_sequences` for `Sequence` steps.
+    /// No per-level state — entity lookups go through `ScriptCtx`, which the
+    /// level-unload path clears separately. See: context/lib/scripting.md §4
     sequence_registry: SequencedPrimitiveRegistry,
 
-    /// Tag-targeted reaction-primitive handlers (e.g. `setEmitterRate`,
-    /// `setSpinRate`). Populated once at startup; resolved by name when a
-    /// `Primitive` reaction fires inside `fire_named_event_with_sequences`.
-    /// See: context/lib/scripting.md §4 (Primitive Registration)
+    /// Resolved by name when a `Primitive` reaction fires.
+    /// See: context/lib/scripting.md §4
     reaction_registry: ReactionPrimitiveRegistry,
 
-    /// Per-tag kill-count subscriptions derived from the data script's
-    /// `progress` reactions. Initialized at level load from the data registry
-    /// and the entity registry; cleared on level unload independently of the
-    /// behavior `HandlerTable`.
-    /// See: context/lib/scripting.md §2 (Data context lifecycle)
+    /// Per-tag kill-count subscriptions. Cleared on level unload
+    /// independently of the behavior `HandlerTable`.
+    /// See: context/lib/scripting.md §2
     progress_tracker: ProgressTracker,
 
-    /// Built-in FGD-classname dispatch table: maps `classname` strings (e.g.
-    /// `"billboard_emitter"`) to the engine handler that spawns the
-    /// corresponding ECS entity from a map entity's KVPs. Built once at engine
-    /// init; survives level unload — built-in handlers carry no per-level
-    /// state. The level loader consults this table at level load via
-    /// `apply_classname_dispatch`.
+    /// Maps `classname` strings to engine spawn handlers. Survives level
+    /// unload — built-in handlers carry no per-level state.
     /// See: context/lib/scripting.md
     classname_dispatch: ClassnameDispatch,
 
-    /// Light bridge state: per-entity dirty tracking and play_count clocks.
-    /// Runs once per frame between game logic and render; produces repacked
-    /// `GpuLight` bytes which the renderer uploads via `upload_bridge_lights`.
-    /// See: context/lib/scripting.md
+    /// Runs between Game Logic and Render; uploads repacked GpuLight bytes
+    /// when any `LightComponent` is dirty. See: context/lib/scripting.md
     light_bridge: scripting_systems::light_bridge::LightBridge,
 
-    /// Emitter bridge state: per-emitter accumulators, spin-tween elapsed
-    /// time, and per-emitter LCG. Walks every `BillboardEmitterComponent`
-    /// each game-logic tick after script `on_tick` and before particle sim.
-    /// See: context/lib/scripting.md
+    /// Walks every `BillboardEmitterComponent` after script `on_tick` and
+    /// before particle sim. See: context/lib/scripting.md
     emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
 
-    /// Particle render collector: walks `ParticleState` entities once per
-    /// frame in the Render stage, packs `SpriteInstance` bytes per sprite
-    /// collection, and hands the byte slices to `SmokePass::record_draw`.
-    /// The legacy CPU `SmokeEmitter` ring-buffer path was removed in
-    /// plan-3 sub-plan 8 — the billboard pass is now particle-only.
-    /// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 4
+    /// Packs `SpriteInstance` bytes per collection in the Render stage;
+    /// never touches wgpu directly. See: context/lib/scripting.md
     particle_render: scripting_systems::particle_render::ParticleRenderCollector,
 
-    /// Set once the `levelLoad` event has fired. Gates the first-tick
-    /// invocation so `levelLoad` handlers are guaranteed to run before the
-    /// first `tick` handler and before the first render frame.
+    /// Gates first-frame work: ensures `levelLoad` handlers run before the
+    /// first `tick` and before the first render.
     level_load_fired: bool,
 
-    /// Seconds since level load. Fed into `ScriptCallContext::time` each
-    /// tick; resets to zero on level unload. Accumulates from the engine
-    /// frame timer, not a wall clock.
+    /// Seconds since level load, not wall clock. Resets to zero on level
+    /// unload; fed into `ScriptCallContext::time` each tick.
     script_time: f32,
 }
 
@@ -582,8 +486,8 @@ impl ApplicationHandler for App {
             }
         };
 
-        // Derive per-texture material from texture names so the renderer can
-        // populate per-material uniforms (shininess) without re-parsing.
+        // Derive material properties from texture names once so the renderer
+        // can populate per-material uniforms (shininess) without re-parsing.
         let texture_materials: Vec<crate::material::Material> = self
             .level
             .as_ref()
@@ -597,7 +501,6 @@ impl ApplicationHandler for App {
             })
             .unwrap_or_default();
 
-        // Build geometry for the renderer.
         let geometry = self.level.as_ref().map(|world| render::LevelGeometry {
             vertices: &world.vertices,
             indices: &world.indices,
@@ -628,11 +531,8 @@ impl ApplicationHandler for App {
 
         input::cursor::capture_cursor(&window);
 
-        // Populate the scripting entity registry with one `LightComponent`
-        // entity per map-authored light. Mirrors `LevelWorld.lights` one-to-one
-        // and assigns stable `EntityId`s for the lifetime of the level; the
-        // bridge's dirty tracker hangs its snapshots off those IDs.
-        // See: context/lib/scripting.md
+        // One `LightComponent` entity per map-authored light; stable `EntityId`s
+        // the bridge's dirty tracker keys off for the level's lifetime.
         {
             let level_lights = renderer.level_lights().to_vec();
             let fgd_sample_float_count = (renderer.scripted_sample_byte_offset() / 4) as u32;
@@ -644,17 +544,10 @@ impl ApplicationHandler for App {
             );
         }
 
-        // Sweep map entities through the built-in classname dispatch. Each
-        // matching `MapEntity` spawns an ECS entity with the configured
-        // components at its origin. Unregistered classnames are skipped at
-        // debug level.
-        //
-        // DEFERRED: `world.map_entities` is currently always empty. The PRL
-        // wire format does not yet carry a generic map-entity section; once
-        // that section ships, `billboard_emitter` (and any other built-in
-        // classname) will resolve from map files through this exact call —
-        // the dispatch path is wired and ready, only the data is missing.
-        // See: scripting-foundation plan-3 §Sub-plan 8 and `prl.rs` LevelWorld.
+        // Sweep map entities through classname dispatch. `world.map_entities`
+        // is currently always empty — the PRL wire format doesn't carry a
+        // generic map-entity section yet. The dispatch path is wired; only the
+        // data is missing.
         if let Some(world) = self.level.as_ref() {
             let mut registry = self.script_ctx.registry.borrow_mut();
             let spawned = apply_classname_dispatch(
@@ -670,12 +563,9 @@ impl ApplicationHandler for App {
             }
         }
 
-        // Register a sprite-sheet collection for every distinct `sprite`
-        // value carried by a `BillboardEmitterComponent` in the registry.
-        // This covers both map-entity-spawned emitters (above) and any
-        // future script-spawned ones present at level-load time. Collections
-        // without PNG frames on disk register a single-frame white fallback
-        // so the billboard pipeline stays wired regardless.
+        // Register sprite collections for every distinct `sprite` name in the
+        // registry. Covers both map-spawned and future script-spawned emitters.
+        // Missing frames register a 1×1 white fallback so the pipeline stays wired.
         let texture_root = self.content_root.join("textures");
         {
             use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
@@ -700,13 +590,9 @@ impl ApplicationHandler for App {
                             height: 1,
                         }]
                     });
-                // `spec_intensity` and `lifetime` here drive per-collection
-                // billboard-pass uniforms; emitter components carry their own
-                // `lifetime` per-particle, but the pass needs a representative
-                // value for animation-frame stride. Use the spawning emitter's
-                // `lifetime` and a neutral `spec_intensity = 0.3` matching the
-                // legacy default — extending the per-emitter binding is future
-                // work tracked alongside per-particle tint in plan §Non-goals.
+                // The pass needs a representative `lifetime` for animation-frame
+                // stride; `spec_intensity = 0.3` matches the legacy default.
+                // Per-emitter binding is future work.
                 renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
                 self.particle_render.register_sprite(&collection);
             }
@@ -765,9 +651,8 @@ impl ApplicationHandler for App {
                 if let PhysicalKey::Code(code) = key_event.physical_key {
                     let pressed = key_event.state.is_pressed();
 
-                    // Diagnostic chord resolver runs first. It owns modifier
-                    // tracking for the Alt+Shift+ namespace and emits a
-                    // diagnostic action only on a clean rising edge.
+                    // Chord resolver runs first: owns Alt+Shift+ modifier
+                    // tracking and fires only on a clean rising edge.
                     if let Some(action) =
                         self.diagnostic_inputs
                             .handle_key(code, pressed, key_event.repeat)
@@ -801,12 +686,8 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
-                // Hot reload (debug builds only). Drain pending watcher
-                // requests; if any landed, rebuild the behavior surface from
-                // disk and re-fire `levelLoad` so newly registered handlers
-                // execute immediately. `level_load_fired` is intentionally NOT
-                // reset — it gates the first-frame `levelLoad` fire, not
-                // subsequent reloads.
+                // Hot reload (debug builds only). `level_load_fired` is NOT
+                // reset — it gates first-frame init, not subsequent reloads.
                 // See: context/lib/scripting.md §8
                 match self.script_runtime.drain_reload_requests() {
                     Ok(true) => {
@@ -816,14 +697,9 @@ impl ApplicationHandler for App {
                                 "[Scripting] hot reload: failed to rebuild behavior context: {e}",
                             );
                         } else {
-                            // INVARIANT: hot reload reruns behavior scripts ONLY. The data
-                            // script (`registerLevelManifest`) is called exactly once per
-                            // level load, in the cold-load branch below — never here. The
-                            // data registry and progress tracker carry forward across
-                            // behavior reloads so in-flight progress subscriptions and
-                            // entity-type registrations survive script edits. Covered at
-                            // the runtime level by `data_script_not_rerun_on_behavior_reload`
-                            // (scripting/runtime.rs).
+                            // Data script runs exactly once per level load (cold path
+                            // below), never here. The data registry and progress tracker
+                            // carry forward so in-flight subscriptions survive edits.
                             // See: context/lib/scripting.md §2, §8
                             load_behavior_scripts(&self.script_runtime, &self.content_root);
                             if self.level_load_fired {
@@ -841,32 +717,22 @@ impl ApplicationHandler for App {
                 }
 
                 // Fire `levelLoad` once, before the first frame renders. The
-                // world is already populated (load_level ran before the event
-                // loop started). Script files load from
-                // `<content_root>/scripts/` sorted lexicographically — the
-                // sort order pins cross-file `registerHandler` registration
-                // order.
+                // world is already populated (load_level ran before the event loop).
                 // See: context/lib/scripting.md
                 if !self.level_load_fired {
-                    // Data context fires once per level load, before behavior
-                    // handlers register. Errors are logged inside
-                    // `run_data_script` and surface here as an empty manifest;
-                    // the level loads with empty registries rather than
-                    // failing. See: context/lib/scripting.md §2
+                    // Data script fires before behavior handlers register. Errors
+                    // surface as an empty manifest so the level still loads.
+                    // See: context/lib/scripting.md §2
                     if let Some(world) = &self.level {
                         if let Some(data_script) = &world.data_script {
                             let mut manifest = self.script_runtime.run_data_script(data_script);
-                            // Drop sequence reactions that name an unknown primitive before storing.
                             manifest.reactions = validate_sequence_primitives(
                                 manifest.reactions,
                                 &self.sequence_registry,
                             );
                             self.data_registry.populate_from_manifest(manifest);
-                            // Walk progress reactions and seed per-tag kill
-                            // counters from the live entity set. Independent
-                            // of the behavior HandlerTable — a behavior
-                            // hot-reload (which clears handlers) leaves these
-                            // subscriptions intact.
+                            // Independent of the behavior HandlerTable — a
+                            // hot-reload leaves these subscriptions intact.
                             self.progress_tracker.initialize(
                                 &self.data_registry,
                                 &self.script_ctx.registry.borrow(),
@@ -875,9 +741,6 @@ impl ApplicationHandler for App {
                     }
                     load_behavior_scripts(&self.script_runtime, &self.content_root);
                     self.script_runtime.fire_level_load();
-                    // Fire data-script sequence reactions for levelLoad after
-                    // behavior handlers run. Entity registry is populated by
-                    // this point (level geometry loaded before the event loop).
                     fire_named_event_with_sequences(
                         "levelLoad",
                         &self.data_registry,
@@ -889,7 +752,6 @@ impl ApplicationHandler for App {
                     self.script_time = 0.0;
                 }
 
-                // Poll gamepad before taking the snapshot.
                 if let Some(gp) = &mut self.gamepad_system {
                     gp.update(&mut self.input_system);
                 }
@@ -899,15 +761,12 @@ impl ApplicationHandler for App {
                 let look = self.input_system.drain_look_inputs();
                 let snapshot = self.input_system.snapshot();
 
-                // Apply look rotation once per render frame, before the tick
-                // loop. At render rate (not tick rate) mouse motion accumulated
-                // on a zero-tick frame is still consumed this frame.
+                // Apply look rotation once at render rate, not once per tick —
+                // so zero-tick frames still consume accumulated mouse motion.
                 self.camera
                     .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
 
-                // Run fixed-rate game logic ticks.
                 for _ in 0..ticks {
-                    // Movement from action snapshot.
                     let forward_axis = snapshot.axis_value(Action::MoveForward);
                     let right_axis = snapshot.axis_value(Action::MoveRight);
                     let up_axis = snapshot.axis_value(Action::MoveUp);
@@ -932,7 +791,6 @@ impl ApplicationHandler for App {
 
                     self.camera.position += move_dir * speed * tick_dt;
 
-                    // Push updated camera state for interpolation.
                     self.frame_timing
                         .push_state(InterpolableState::new(self.camera.position));
                 }
@@ -946,10 +804,9 @@ impl ApplicationHandler for App {
                     time: self.script_time,
                 });
 
-                // Interpolate between previous and current state for rendering.
-                // Position comes from the tick-state slots; yaw/pitch come from
-                // `self.camera` directly so zero-tick frames still reflect this
-                // frame's look input.
+                // Position interpolated from tick-state slots; yaw/pitch from
+                // `self.camera` directly so zero-tick frames still see this
+                // frame's look rotation.
                 let interp = self.frame_timing.interpolated_state();
                 let view_proj = interp.view_projection(
                     self.camera.aspect(),
@@ -959,9 +816,7 @@ impl ApplicationHandler for App {
 
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 
-                // GPU-driven path: portal DFS produces visible cell IDs; the
-                // BVH traversal compute shader consumes them via the
-                // visible-cell bitmask and writes the indirect draw buffer.
+                // Portal DFS → cell IDs → visible-cell bitmask → indirect draw buffer.
                 let (visible_cells, stats, _frustum) = match self.level.as_ref() {
                     Some(world) => visibility::determine_visible_cells(
                         interp.position,
@@ -982,10 +837,8 @@ impl ApplicationHandler for App {
                     ),
                 };
 
-                // Build the per-leaf visibility bitmask the renderer needs to
-                // cull dynamic lights against the visible cell set. Empty slice
-                // is the DrawAll sentinel (`update_dynamic_light_slots` keeps
-                // every leaf-assigned light eligible on that path).
+                // Empty slice = DrawAll sentinel: `update_dynamic_light_slots`
+                // keeps every leaf-assigned light eligible on that path.
                 let visible_leaf_mask: Vec<bool> = match (&visible_cells, self.level.as_ref()) {
                     (VisibleCells::DrawAll, _) | (_, None) => Vec::new(),
                     (VisibleCells::Culled(cell_ids), Some(world)) => {
@@ -1001,38 +854,25 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(renderer) = self.renderer.as_mut() {
-                    // Emitter bridge — Game Logic stage, after script
-                    // `on_tick` and before particle sim. Walks every
-                    // `BillboardEmitterComponent`, handles burst/rate-based
-                    // emission, advances any active spin animation, and
-                    // spawns new particle entities into the registry. The
-                    // sim that runs immediately afterward is what advances
-                    // the just-spawned particles' first frame so they don't
-                    // appear stuck at origin.
+                    // Emitter bridge — after script `on_tick`, before particle
+                    // sim. Spawns new particles; the sim advances them the same
+                    // frame so they don't appear stuck at origin.
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
                         self.emitter_bridge
                             .update(&mut registry, frame_dt, self.script_time);
                     }
 
-                    // Particle simulation — Game Logic stage, after the
-                    // emitter bridge (Plan 3 sub-plan 3) and before the
-                    // light bridge / render. Integrates velocity, applies
-                    // buoyancy/drag, advances curves, and despawns expired
-                    // particles. Pure Rust; scripts never observe
-                    // individual particles.
+                    // Particle sim — after emitter bridge, before light bridge.
+                    // Pure Rust; scripts never observe individual particles.
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
                         scripting_systems::particle_sim::tick(&mut registry, frame_dt);
                     }
 
-                    // Light bridge — between Game Logic and Render. Walks the
-                    // scripting entity registry, detects mutated
-                    // `LightComponent`s, handles `play_count` completion, and
-                    // hands repacked GpuLight bytes to the renderer's upload
-                    // seam. `update_dynamic_light_slots` runs later inside
-                    // `render_frame_indirect` so scripted lights participate
-                    // in slot allocation with their post-mutation state.
+                    // Light bridge — between Game Logic and Render. Uploads
+                    // mutated `LightComponent` data before `render_frame_indirect`
+                    // allocates slots, so scripted lights reflect their new state.
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
                         if let Some(update) =
@@ -1050,11 +890,8 @@ impl ApplicationHandler for App {
                     renderer.update_per_frame_uniforms(view_proj, interp.position);
 
                     if renderer.is_ready() {
-                        // Particle render collector — Render stage. Walks the
-                        // entity registry once and packs `SpriteInstance`
-                        // bytes per sprite collection. The renderer consumes
-                        // byte slices; the collector never touches wgpu.
-                        // See: scripting-foundation plan-3 §Sub-plan 4.
+                        // Particle render — packs `SpriteInstance` bytes per
+                        // collection; the collector never touches wgpu directly.
                         {
                             let registry = self.script_ctx.registry.borrow();
                             self.particle_render.collect(&registry);
@@ -1073,7 +910,6 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Reclaim scratch buffer.
                 if let VisibleCells::Culled(mut cells) = visible_cells {
                     cells.clear();
                     self.scratch_cells = cells;
@@ -1102,16 +938,8 @@ impl ApplicationHandler for App {
                     pos.z,
                 );
 
-                // Window title update is rate-limited to ~4Hz; the sample
-                // recording below happens every frame. A 60Hz title is
-                // unreadable and the OS may throttle rapid `set_title`.
-                //
-                // The vsync state must always be visible in the title so
-                // the diagnostic toggle's effect is self-evident. The
-                // `vsync:on|off` segment sits adjacent to `frame:` because
-                // they're read together, and in a fixed position so it's
-                // grep-able (the label is always present, not only in
-                // one state).
+                // `vsync:` label always present (not toggled) so it's grep-able
+                // and the diagnostic toggle's effect is immediately visible.
                 let vsync_label = self
                     .renderer
                     .as_ref()
@@ -1144,13 +972,9 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Record the CPU-side frame span. Measured from the `now`
-                // captured at the top of the handler to this point — covers
-                // input polling, fixed-timestep game logic, visibility
-                // determination, title update, render, and scratch reclaim.
-                // Wall-clock tick-to-tick is useless under vsync (pinned to
-                // ~16.6ms regardless of work); this span shows actual load.
-                // See: context/lib/rendering_pipeline.md §1 (frame ordering)
+                // Measure from `now` at handler entry so the sample spans all
+                // CPU work. Wall-clock tick-to-tick is useless under vsync
+                // (pinned to ~16.6ms); this shows actual load.
                 let frame_cpu = Instant::now().duration_since(now);
                 self.frame_rate_meter.record(frame_cpu);
             }
@@ -1183,8 +1007,6 @@ impl ApplicationHandler for App {
 }
 
 impl App {
-    /// Dispatch a diagnostic action emitted by the chord resolver.
-    /// See: context/lib/input.md §7
     fn handle_diagnostic_action(&mut self, action: DiagnosticAction) {
         match action {
             DiagnosticAction::ToggleWireframe => {

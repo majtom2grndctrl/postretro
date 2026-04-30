@@ -6,7 +6,7 @@
     "isolatedModules": true,
     "moduleResolution": "bundler",
     "paths": {
-      "postretro": ["../../sdk/types/postretro.d.ts"]
+      "postretro": ["../../../sdk/types/postretro.d.ts"]
     }
   },
   "include": ["./**/*.ts"]

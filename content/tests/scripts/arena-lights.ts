@@ -1,5 +1,4 @@
-import { registerReaction } from "postretro";
-import { world } from "postretro";
+import { registerReaction, world } from "postretro";
 
 export function registerLevelManifest(_ctx: unknown) {
   const reactions = [];

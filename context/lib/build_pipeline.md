@@ -134,6 +134,7 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | LightTags | 26 | When at least one light carries a tag; one space-delimited tag-list string per AlphaLight record (empty string = untagged) |
 | DeltaShVolumes | 27 | When the map has at least one animated light; per-light delta SH probe grids |
 | DataScript | 28 | When `data_script` KVP present on `worldspawn`; compiled script bytes + original source path |
+| MapEntity | 29 | When the map has at least one non-light, non-worldspawn entity; per-entity classname, origin, angles, tags, and KVP bag for runtime classname dispatch |
 
 ### Runtime visibility
 

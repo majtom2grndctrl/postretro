@@ -38,6 +38,8 @@ Load relevant library files:
 
 Use subagents for exploration — codebase reading, pattern discovery, doc lookup. Target 80% confidence. Stop when you have enough to spec the work.
 
+**Code-grounding is non-negotiable.** Every Rust/TS/Lua identifier the spec will name — function, struct, type, field, enum variant — must be confirmed against current source before the spec asserts anything about it. Don't write "X returns Y" or "X has fields A, B" from memory. Open the file, read the signature, then write. Memory drift is the largest single source of spec inaccuracy.
+
 **Research notes stay out of the spec.** If findings are useful but don't drive decisions, put them in a sibling `research.md` in the plan folder. The spec captures decisions and behavior, not the investigation that produced them.
 
 ### 3. Write the spec
@@ -80,11 +82,27 @@ One paragraph. What to build.
 ## Rough sketch
 (Optional.) Implementation direction, key modules, algorithm hints. Named types and functions live here, not in AC.
 
+## Boundary inventory
+(Required when the plan crosses Rust ↔ JS/Lua ↔ wire ↔ FGD KVP boundaries. Skip otherwise.)
+
+Pin casing and encoding once for every cross-boundary name. Reference this inventory throughout the spec instead of re-deciding inline.
+
+| Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
+|---|---|---|---|---|---|
+| (example) `BillboardEmitter` | `ComponentValue::BillboardEmitter` | `"billboard_emitter"` | `"billboard_emitter"` | `"billboard_emitter"` | n/a |
+
+## Wire format
+(Required when the plan adds a binary or PRL section. Skip otherwise.)
+
+For each new binary surface, pin: endianness, integer signedness, length-prefix integer width, entry-count placement, per-entry field order, empty-list encoding, sentinel/null representation per runtime. State explicitly which existing section the new layout mirrors.
+
 ## Open questions
 Unresolved items, risks, alternatives considered.
 ```
 
 **Length smell:** most plans land at 50–200 lines. Past 250 lines usually means the spec carries research notes (→ `research.md`) or scope should split into multiple plans.
+
+**Plumbing rule.** Every "edit X to do Y" instruction must say how X gets access to what it needs. New side-tables need owners. New struct fields need writer call-sites. Function signature changes need their callers enumerated. Don't punt access plumbing to the implementer — the implementer has less context than the spec author.
 
 ### 4. Acceptance criteria
 
@@ -110,13 +128,22 @@ Rules:
 
 One phase per line. No per-task sub-bullets unless a dependency needs calling out.
 
-### 6. Commit
+### 6. Cross-check
+
+Before committing, walk the spec twice:
+
+- **Task → AC.** For every task line item, ask: "What AC verifies this behavior?" If nothing does, either the AC is missing or the task should drop.
+- **AC → task.** For every AC, ask: "Which task produces the behavior this verifies?" If nothing does, either the task is missing or the AC is aspirational.
+
+Both directions must close. Gaps signal that something was assumed without being written down.
+
+### 7. Commit
 
 Stage and commit the plan folder (`index.md` + optional `research.md`).
 
 **Do not update `context/lib/` during drafting.** Durable capture happens at promotion — after review. Reviewer agents often reshape the spec; library updates should land once, against the final shape.
 
-### 7. Report
+### 8. Report
 
 - What was planned, or if the session produced no plan (scope already covered, etc.)
 - Task count and phase summary
@@ -132,6 +159,7 @@ A draft is ready when:
 - AC is verifiable by someone who didn't write the plan
 - Open questions are resolved, or explicitly scoped as decisions-during-implementation
 - User signs off (reviewer agents may run first)
+- A reviewer agent (or panel) can only find issues by reading source code, not by reading the spec. Issues that surface only at code-anchor depth signal the spec has hit diminishing returns — promotion is appropriate.
 
 At promotion:
 1. Capture durable decisions in `context/lib/` — new architectural constraints, subsystem contracts, pipeline topology. Agents working the plan find full context in the library, not in the plan document.

@@ -1,5 +1,4 @@
-// Compiler data types shared across parse, partition, and pack stages:
-// BrushVolume, BrushSide, BrushPlane, Face, TextureProjection, EntityInfo, MapData.
+// Compiler data types shared across parse, partition, and pack stages.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use glam::DVec3;
@@ -16,11 +15,11 @@ impl Default for TextureProjection {
     }
 }
 
-/// Texture projection data extracted from the .map file, stored in Quake space.
+/// Texture projection extracted from the .map file.
 ///
-/// Two variants match the .map format (Standard vs Valve). UV computation in
-/// `geometry.rs` handles both. Stored in Quake-space coordinates because the
-/// projection math depends on matching the original axis convention.
+/// Stored in Quake-space coordinates because the projection math depends on
+/// matching the original axis convention. UV computation in `geometry.rs`
+/// converts engine-space vertices back to Quake space before applying these.
 #[derive(Debug, Clone)]
 pub enum TextureProjection {
     /// Standard (idTech2) format: project onto closest axis-aligned plane,
@@ -45,28 +44,22 @@ pub enum TextureProjection {
 
 /// A convex world face polygon emitted by brush-side projection.
 ///
-/// Faces are produced at the tail of the partition stage by clipping each
-/// brush side against the BSP tree, then routing the surviving fragments
-/// into empty leaves. The face stores its plane, vertices, and source-brush
-/// attribution for the coplanar tiebreaker that runs at leaf emission.
+/// Produced by clipping each brush side against the BSP tree and routing
+/// surviving fragments into empty leaves. Carries source-brush attribution for
+/// the coplanar tiebreaker at leaf emission.
 #[derive(Debug, Clone)]
 pub struct Face {
     /// Vertex positions in winding order (engine space, Y-up, meters).
     pub vertices: Vec<DVec3>,
-    /// Face plane normal (unit length, engine space). Points outward from
-    /// the source brush — same orientation as the brush side it came from.
+    /// Face plane normal (unit length, engine space). Points outward from the source brush.
     pub normal: DVec3,
     /// Face plane distance from origin (engine space).
     pub distance: f64,
-    /// Texture name from the .map file.
     pub texture: String,
-    /// Texture projection parameters from the .map file (Quake space).
-    /// `geometry.rs` converts engine-space vertices back to Quake space
-    /// before applying these parameters during UV bake.
     pub tex_projection: TextureProjection,
     /// Index of the source brush in `MapData::brush_volumes`. Used by the
-    /// coplanar dedup rule in brush-side projection: when two brushes share
-    /// the same oriented plane in the same leaf, the lower index wins.
+    /// coplanar dedup rule: when two brushes share the same oriented plane
+    /// in the same leaf, the lower index wins.
     pub brush_index: usize,
 }
 
@@ -92,17 +85,11 @@ pub struct BrushVolume {
 /// A single bounding half-plane of a brush volume.
 #[derive(Debug, Clone)]
 pub struct BrushPlane {
-    /// Outward-facing normal.
     pub normal: DVec3,
-    /// Plane distance from origin.
     pub distance: f64,
 }
 
-/// A textured polygon on one of a brush's bounding planes.
-///
-/// Brush sides are the input to brush-side projection: each side's polygon
-/// is walked through the BSP tree, accumulated into a visible hull, then
-/// distributed back into empty leaves as one or more world `Face`s.
+/// A textured polygon on one of a brush's bounding planes; input to brush-side projection.
 #[derive(Debug, Clone)]
 pub struct BrushSide {
     /// Vertex positions in winding order (engine space, Y-up, meters).
@@ -111,13 +98,10 @@ pub struct BrushSide {
     pub normal: DVec3,
     /// Plane distance from origin (engine space).
     pub distance: f64,
-    /// Texture name from the .map file.
     pub texture: String,
-    /// Texture projection parameters from the .map file (Quake space).
     pub tex_projection: TextureProjection,
 }
 
-/// Minimal entity info extracted from the .map file.
 #[derive(Debug, Clone)]
 pub struct EntityInfo {
     pub classname: String,
@@ -136,11 +120,10 @@ pub enum LightType {
     Directional,
 }
 
-/// How intensity falls off with distance. Applies to Point and Spot lights;
-/// Directional lights ignore this.
+/// How intensity falls off with distance. Directional lights ignore this.
 ///
-/// `falloff_range` is the distance at which the light reaches zero (Linear)
-/// or the clamp distance (InverseDistance / InverseSquared).
+/// `falloff_range` is the zero-intensity distance (Linear) or the clamp
+/// distance (InverseDistance / InverseSquared).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FalloffModel {
     /// `brightness = 1 - (distance / falloff_range)`, clamped at 0.
@@ -153,22 +136,18 @@ pub enum FalloffModel {
 
 /// Curve-based animation over a repeating cycle.
 ///
-/// Each channel is a `Vec` of samples distributed uniformly over the period.
-/// Runtime linearly interpolates between adjacent samples at the current
-/// cycle time. `None` channels hold constant for the cycle.
+/// Each channel holds uniform samples over `period`; runtime linearly
+/// interpolates between adjacent samples. `None` channels are constant.
 ///
-/// Format-agnostic — Quake light styles, Doom sector effects, UDMF curves,
-/// or hand-authored data all translate into this shape. Translators own
-/// their format's preset vocabulary and expand presets into sample curves.
+/// Format-agnostic: Quake light styles, Doom sector effects, UDMF curves,
+/// and hand-authored data all translate to this shape. Translators own their
+/// format's preset vocabulary and expand presets into sample curves.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LightAnimation {
-    /// Cycle duration in seconds.
     pub period: f32,
-    /// 0-1 offset within the cycle (desync identical presets).
+    /// 0-1 offset within the cycle — desync otherwise-identical presets.
     pub phase: f32,
-    /// Intensity multipliers, uniformly spaced over `period`.
     pub brightness: Option<Vec<f32>>,
-    /// Linear RGB overrides, uniformly spaced over `period`.
     pub color: Option<Vec<[f32; 3]>>,
     /// Animated spot-light aim vectors, uniformly spaced over `period`.
     /// Each sample must be unit length — the authoring seam (either the
@@ -176,22 +155,16 @@ pub struct LightAnimation {
     /// primitive) normalizes at write time. The GPU evaluator does not
     /// re-normalize. `None` means the light keeps its static `cone_direction`.
     pub direction: Option<Vec<[f32; 3]>>,
-    /// Initial runtime on/off state. `true` (the default) = lit at map load.
-    /// Authored via the `_start_inactive` FGD key: key absent or 0 → `true`,
-    /// key = 1 → `false`. Scripts toggle the GPU mirror at runtime; only the
-    /// initial value is baked.
+    /// Initial on/off state at map load. Authored via `_start_inactive` FGD key
+    /// (absent/0 → true, 1 → false). Scripts toggle the GPU mirror at runtime;
+    /// only this initial value is baked.
     pub start_active: bool,
 }
 
 /// Format-agnostic light record. The SH baker and runtime direct path both
 /// consume `Vec<MapLight>`; neither sees source-format vocabulary.
 ///
-/// When `bake_only` is true the light contributes to the SH irradiance volume
-/// bake only and is excluded from the runtime direct-lighting path (AlphaLights
-/// and LightInfluence PRL sections).
-///
-/// See `context/lib/build_pipeline.md` §Custom FGD for the light entity
-/// definitions and §PRL Compilation for the compile-time translation.
+/// See `context/lib/build_pipeline.md` §Custom FGD and §PRL Compilation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapLight {
     /// Position in engine space (Y-up), meters. Directional lights still
@@ -200,14 +173,10 @@ pub struct MapLight {
     pub origin: DVec3,
     pub light_type: LightType,
 
-    /// Linear brightness multiplier applied to `color`. Range 0–1+ (close-
-    /// range InverseSquared falloff legitimately exceeds 1.0). Format-
-    /// specific authoring conventions (Quake's 0–300 radiosity-energy scale,
-    /// etc.) are normalized at the translator boundary; downstream consumers
-    /// (SH baker, direct light shader) treat this as a plain linear scalar
-    /// with no further scaling.
+    /// Linear brightness multiplier, 0–1+ (InverseSquared close-range can
+    /// legitimately exceed 1.0). Format-specific scales (e.g. Quake's 0–300)
+    /// are normalized at the translator boundary; no further scaling downstream.
     pub intensity: f32,
-    /// Linear RGB, 0-1.
     pub color: [f32; 3],
 
     /// Falloff model for Point and Spot lights. Ignored for Directional.
@@ -225,16 +194,15 @@ pub struct MapLight {
     /// Directional lights; `None` for Point.
     pub cone_direction: Option<[f32; 3]>,
 
-    /// Animation curves. `None` means constant light.
     pub animation: Option<LightAnimation>,
 
-    /// All FGD-authored lights cast shadows by default. The flag exists so
-    /// transient gameplay lights (Milestone 6+) can opt out programmatically.
+    /// All FGD-authored lights cast shadows by default. The flag lets transient
+    /// gameplay lights opt out programmatically.
     pub cast_shadows: bool,
 
-    /// When true, the light participates only in the SH irradiance volume bake
-    /// and is excluded from the runtime direct-lighting path (AlphaLights PRL
-    /// section and LightInfluence PRL section). Defaults to false.
+    /// When true, participates only in the SH irradiance bake; excluded from
+    /// the runtime direct-lighting path (AlphaLights and LightInfluence PRL
+    /// sections). Defaults to false.
     pub bake_only: bool,
 
     /// When true, the light is treated as dynamic — evaluated at runtime via
@@ -261,19 +229,14 @@ pub struct MapLight {
 // `LightAnimation` stores uniform samples along `period_ms`. `resample_keyframes`
 // converts the former to the latter via Catmull-Rom over authored timestamps,
 // so the wire format and GPU evaluator stay unchanged.
-//
-// See: context/lib/build_pipeline.md
 
-/// Sample rate (per second of `period_ms`) used when resampling authored
-/// keyframes into uniform `LightAnimation` samples.
 pub const KEYFRAME_RESAMPLE_RATE_HZ: u32 = 32;
 
 /// Maximum number of samples in the resampled uniform curve regardless of
 /// period. Bounds descriptor buffer growth as authored maps scale.
 pub const KEYFRAME_RESAMPLE_MAX_SAMPLES: usize = 256;
 
-/// Values that participate in Catmull-Rom resampling. Implementors supply a
-/// scalar linear interpolation; Catmull-Rom composes four such lerps.
+/// Catmull-Rom resampling composes four scalar lerps; implementors supply the lerp.
 pub trait Lerp: Sized + Clone {
     fn lerp(a: &Self, b: &Self, t: f32) -> Self;
 }
@@ -315,20 +278,12 @@ fn catmull_rom<T: Lerp>(p0: &T, p1: &T, p2: &T, p3: &T, t: f32) -> T {
     T::lerp(&b1, &b2, t)
 }
 
-/// Resample timestamped keyframes into a uniformly-spaced sample buffer
-/// covering `[0, period_ms]`.
+/// Resample timestamped keyframes into a uniformly-spaced sample buffer.
 ///
-/// `keyframes` must be non-empty and monotonically increasing in timestamp
-/// (the caller enforces this during parsing). `period_ms` must be positive.
-/// Returns `round(period_ms / 1000.0 * samples_per_second)` samples, capped at
-/// `KEYFRAME_RESAMPLE_MAX_SAMPLES`. The sample at index `i` corresponds to
-/// time `i * period_ms / sample_count`.
-///
-/// The interior of the curve uses Catmull-Rom between consecutive keyframes;
-/// endpoints are reflected (first/last keyframe duplicated) so the spline is
-/// defined at the boundaries.
-///
-/// Times outside the authored keyframe range clamp to the nearest keyframe.
+/// `keyframes` must be non-empty with monotonically increasing timestamps.
+/// Output is capped at `KEYFRAME_RESAMPLE_MAX_SAMPLES`. Endpoints are reflected
+/// (first/last keyframe duplicated) so Catmull-Rom is defined at the boundaries.
+/// Times outside the authored range clamp to the nearest keyframe.
 pub fn resample_keyframes<T: Lerp>(
     keyframes: &[(f32, T)],
     period_ms: f32,
@@ -348,7 +303,6 @@ pub fn resample_keyframes<T: Lerp>(
     out
 }
 
-/// Evaluate the Catmull-Rom spline through `keyframes` at absolute time `t_ms`.
 fn sample_catmull_rom_at<T: Lerp>(keyframes: &[(f32, T)], t_ms: f32) -> T {
     // Single-keyframe curve is constant.
     if keyframes.len() == 1 {
@@ -391,18 +345,13 @@ fn sample_catmull_rom_at<T: Lerp>(keyframes: &[(f32, T)], t_ms: f32) -> T {
 /// Parsed and classified .map data for downstream compiler stages.
 #[derive(Debug)]
 pub struct MapData {
-    /// Convex brush volumes from worldspawn brushes. Each volume carries its
-    /// bounding planes, AABB, and textured sides — the BSP partition, face
+    /// Convex brush volumes from worldspawn brushes. BSP partition, face
     /// extraction, and portal stages all consume this representation.
     pub brush_volumes: Vec<BrushVolume>,
-    /// Brush count per non-worldspawn entity. Stored for diagnostics; entity
-    /// brushes do not flow into worldspawn BSP construction.
+    /// Brush count per non-worldspawn entity. Diagnostic only; entity brushes
+    /// do not flow into worldspawn BSP construction.
     pub entity_brushes: Vec<(String, usize)>,
-    /// Info for all entities (classnames, origins).
     pub entities: Vec<EntityInfo>,
-    /// Format-agnostic lights translated from source-format entities. Feeds
-    /// the SH baker (sub-plan 2) and the runtime direct-lighting path
-    /// (sub-plan 3) via the AlphaLights PRL section.
     pub lights: Vec<MapLight>,
     /// Optional path to the entry-point `.ts` script, taken verbatim from the
     /// `script` worldspawn KVP. Resolved relative to the `.map` file's
@@ -422,8 +371,6 @@ pub struct MapData {
 mod keyframe_resample_tests {
     use super::*;
 
-    /// Sample the resampled curve at the nearest uniform-sample index for
-    /// `t_ms` and return that sample. Used to check round-trip accuracy.
     fn sample_at(samples: &[f32], period_ms: f32, t_ms: f32) -> f32 {
         let idx = ((t_ms / period_ms) * samples.len() as f32).round() as usize;
         samples[idx.min(samples.len() - 1)]

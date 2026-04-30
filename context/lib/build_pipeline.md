@@ -26,6 +26,8 @@ prl-build accepts idTech2 `.map` files (Quake 1/2 dialect, parsed via shambler/s
 
 Both Standard (axis-aligned) and Valve 220 (explicit UV axes) texture projections are supported. Shalrath auto-detects per face; they can coexist in one `.map` file.
 
+> **Format adapter boundary:** PRL is the engine's internal coordinate standard; Quake convention is not. The `format/` layer in the level compiler is the adapter boundary — each input format translates its own coordinate axes, angle encoding, and units to engine convention before reaching shared compiler logic. Format-specific helpers belong in the format adapter, not shared code.
+
 ---
 
 ## PNG Texture Pipeline

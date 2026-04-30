@@ -8,37 +8,18 @@ use glam::Vec3;
 use crate::prl::LevelWorld;
 use crate::visibility::{Frustum, FrustumPlane};
 
-/// Half-space boundary epsilon for Sutherland-Hodgman.
-///
-/// Points within `CLIP_EPSILON` of a plane are treated as on the plane (kept as
-/// inside). Over-inclusion at the boundary cannot violate the strict-subset
-/// invariant — the next narrowing iteration will exclude any genuinely-outside
-/// slop introduced here.
+// Half-space boundary epsilon for Sutherland-Hodgman. Over-inclusion at the
+// boundary is safe: the next narrowing iteration will discard any slop, so the
+// strict-subset invariant holds.
 const CLIP_EPSILON: f32 = 1e-4;
 
-/// Maximum portal-chain depth allowed during per-chain DFS traversal.
-///
-/// Real-map chains typically run 5–10 deep, occasionally ~20. 256 is well
-/// above any realistic chain depth and well below stack-overflow territory.
-/// When a chain hits this limit the helper logs a warning (under the
-/// `postretro::portal_trace` target) and returns without recursing further —
-/// the visible set becomes conservative at that branch but no crash occurs.
-/// Tune upward only if a real map trips the guard.
+// Real maps run 5–10 deep, occasionally ~20. 256 is well above any realistic
+// chain depth and well below stack-overflow territory. Tune upward only if a
+// real map trips the guard; the visible set is conservative, not incorrect.
 const MAX_PORTAL_CHAIN_DEPTH: usize = 256;
 
-/// Per-recursion state shared by every branch of the DFS.
-///
-/// Kept in a single struct so the recursive helper has one `&mut` argument
-/// beyond the changing per-frame values (current leaf, current frustum, current
-/// path). Counters accumulate across all chains; the visible bitset is the
-/// union of every chain's reach.
-///
-/// `trace` holds the optional per-frame capture buffer. When the caller passes
-/// `capture: true` it starts as `Some(String)` and event sites append terse
-/// event lines into it; a single `log::info!` at the end of `portal_traverse`
-/// emits the buffer as one multi-line message. `None` means capture is off,
-/// and the event sites skip the writes entirely — no allocation on the hot
-/// path when diagnostics are disabled.
+// `trace` is `Some(String)` only when capture is armed; event sites check this
+// before every write so the hot path allocates nothing when diagnostics are off.
 struct DfsState<'a> {
     world: &'a LevelWorld,
     camera_position: Vec3,
@@ -57,41 +38,17 @@ struct DfsState<'a> {
     camera_leaf: usize,
 }
 
-/// Perform per-chain depth-first portal traversal to determine which leaves
-/// are visible from the camera's current leaf.
+/// Cycle prevention keys on *portals crossed in the current chain*, not on
+/// leaves reached globally — keying on leaves would silently drop every chain
+/// after the first to arrive at a leaf, losing whichever carried the widest
+/// sub-frustum. The visible set is the union across all chains.
 ///
-/// For each portal reached along a chain, the portal polygon is clipped
-/// against every plane of the current frustum (Sutherland-Hodgman). An empty
-/// clip output is the unified rejection signal — the portal is not visible
-/// through the current sight cone. The clipped polygon then feeds frustum
-/// narrowing, which builds a new cone strictly inside the current one.
+/// By induction, every narrowed frustum is a strict subset of the camera
+/// frustum, so a per-leaf AABB cull is redundant and omitted.
 ///
-/// Cycle prevention keys on portals crossed in the current chain, not on
-/// leaves reached globally. Keying on leaves would drop any chain after the
-/// first to arrive at a leaf — silently losing whichever carried the widest
-/// sub-frustum. The visible bitset is the union across all chains.
-///
-/// By induction from the camera's initial frustum, every narrowed frustum
-/// reachable through any portal chain is a strict subset of the camera
-/// frustum. A per-leaf AABB cull is therefore unnecessary on this path.
-///
-/// **Recursion depth.** Bounded by `MAX_PORTAL_CHAIN_DEPTH` (currently 256).
-/// Real maps run 5–10 deep. Beyond the bound, the current leaf is still
-/// marked visible (conservative) and a warning is emitted once per top-level
-/// walk. See [`MAX_PORTAL_CHAIN_DEPTH`].
-///
-/// **Per-path allocation.** The chain path is a single `Vec<usize>` of portal
-/// indices, allocated once at the top of the walk and reused via push/pop
-/// backtracking as the DFS descends and unwinds. The cycle-detection membership
-/// test remains a linear scan — correct and fast at realistic chain depths
-/// (5–20). Two `Vec<Vec3>` clip scratch buffers are allocated alongside the
-/// path and threaded through `flood` into every `clip_polygon_to_frustum`
-/// call, so the per-frame hot path performs no allocations.
-///
-/// When `capture` is true the walk emits one log line per portal touched
-/// (accept/reject + reason) plus a per-frame summary, all under the
-/// `postretro::portal_trace` target. Triggered by the `Alt+Shift+1`
-/// diagnostic chord; see `context/lib/input.md` §7.
+/// `capture: true` emits per-portal events to the `postretro::portal_trace`
+/// target as a single batched log message. Triggered by `Alt+Shift+1`; see
+/// `context/lib/input.md` §7.
 pub fn portal_traverse(
     camera_position: Vec3,
     camera_leaf: usize,
@@ -101,22 +58,16 @@ pub fn portal_traverse(
 ) -> Vec<bool> {
     let (visible, trace) =
         portal_traverse_inner(camera_position, camera_leaf, frustum, world, capture);
-    // Single log emission: every event written during the walk lives inside
-    // `trace`. One `log::info!` call means one timestamp/target prefix per
-    // traced frame instead of one per event. See the file's doc comment on
-    // `portal_traverse` for the target and the chord that arms capture.
+    // One `log::info!` call: one timestamp/target prefix per traced frame
+    // instead of one per event.
     if let Some(buf) = trace {
         log::info!(target: "postretro::portal_trace", "[portal_trace]\n{}", buf);
     }
     visible
 }
 
-/// Core walk shared by `portal_traverse` and the `#[cfg(test)]` helper that
-/// needs to inspect the formatted trace string directly. Returns the visible
-/// bitset and, when capture is on, the fully-formatted trace buffer (header +
-/// event lines + summary). The public entry point logs the buffer; tests read
-/// it as a string so they can assert format shape without wiring a test
-/// logger.
+// Split from `portal_traverse` so tests can inspect the formatted trace string
+// directly without wiring a test logger.
 fn portal_traverse_inner(
     camera_position: Vec3,
     camera_leaf: usize,
@@ -127,8 +78,6 @@ fn portal_traverse_inner(
     let leaf_count = world.leaves.len();
     let visible = vec![false; leaf_count];
 
-    // Allocate the trace buffer only when capture is armed — the disabled path
-    // must remain allocation-free.
     let mut trace = if capture {
         Some(String::with_capacity(512))
     } else {
@@ -149,10 +98,8 @@ fn portal_traverse_inner(
         return (visible, trace);
     }
 
-    // Header line: the camera-leaf diagnostic fields we need for the current
-    // flicker bug hunt. `solid` is intentionally omitted — solid leaves
-    // short-circuit in `determine_visible_cells` before they ever reach
-    // `portal_traverse`, so any leaf here is already known non-solid.
+    // `solid` is omitted from the header — solid leaves short-circuit in
+    // `determine_visible_cells` before reaching `portal_traverse`.
     if let Some(buf) = trace.as_mut() {
         let leaf = &world.leaves[camera_leaf];
         let _ = writeln!(
@@ -204,10 +151,6 @@ fn portal_traverse_inner(
     let mut visibility_frustum = frustum.clone();
     visibility_frustum.slide_near_plane_to(camera_position);
 
-    // Allocate the path and clip scratch buffers once and reuse them for the
-    // entire traversal. `flood` pushes/pops the path across recursive calls
-    // and passes the scratch buffers into each `clip_polygon_to_frustum`
-    // call, so per-frame portal walks allocate nothing on the hot path.
     let mut path: Vec<usize> = Vec::new();
     let mut clip_scratch_a: Vec<Vec3> = Vec::new();
     let mut clip_scratch_b: Vec<Vec3> = Vec::new();
@@ -255,18 +198,8 @@ fn portal_traverse_inner(
     (state.visible, state.trace)
 }
 
-/// Recursive per-chain flood-fill.
-///
-/// Marks the current leaf visible, then tries every outbound portal. A portal
-/// already on the current chain's path is skipped (would loop). Each surviving
-/// portal produces a narrowed sub-frustum and a recursive descent. `path`,
-/// `clip_scratch_a`, and `clip_scratch_b` are owned by `portal_traverse` and
-/// reused across every recursive call — the path tracks the current chain via
-/// push/pop backtracking, and the scratch Vecs are cleared and refilled inside
-/// `clip_polygon_to_frustum` on each call.
-///
-/// The algorithmic shape mirrors id Tech 4's `FloodViewThroughArea_r`
-/// (Doom 3, `neo/renderer/RenderWorld_portals.cpp`).
+// Recursive per-chain DFS. Mirrors id Tech 4's `FloodViewThroughArea_r`
+// (Doom 3, `neo/renderer/RenderWorld_portals.cpp`).
 fn flood(
     state: &mut DfsState,
     leaf: usize,
@@ -275,8 +208,7 @@ fn flood(
     clip_scratch_a: &mut Vec<Vec3>,
     clip_scratch_b: &mut Vec<Vec3>,
 ) {
-    // Mark the current leaf visible on entry. Every chain that reaches a leaf
-    // contributes to the visible union regardless of which portals it crossed.
+    // Every chain that reaches this leaf contributes to the visible union.
     state.visible[leaf] = true;
 
     if path.len() >= MAX_PORTAL_CHAIN_DEPTH {
@@ -296,10 +228,8 @@ fn flood(
                 leaf,
             );
         }
-        // Additionally append one compact event line to the trace buffer so
-        // the depth-limit hit appears inline with the rest of the frame's
-        // events (the `log::warn!` above fires once per walk; this fires
-        // every time the limit is hit during capture).
+        // The `log::warn!` fires once per walk; the trace line fires every
+        // time the limit is hit so the event appears inline in the capture.
         if let Some(buf) = state.trace.as_mut() {
             let _ = writeln!(buf, "  rej leaf={} depth", leaf);
         }
@@ -308,15 +238,12 @@ fn flood(
 
     let outbound_len = state.world.leaf_portals[leaf].len();
 
-    // Iterate by index into `world.leaf_portals[leaf]`. `leaf` is the caller's
-    // already-validated leaf index, so direct indexing is safe. Re-borrowing
-    // `state.world` per step avoids holding a long-lived borrow across the
-    // recursive call, which would conflict with `state` being `&mut`.
+    // Index rather than iterate: re-borrowing `state.world` each step avoids
+    // holding a long-lived borrow across the recursive call (`state` is `&mut`).
     for i in 0..outbound_len {
         let portal_idx = state.world.leaf_portals[leaf][i];
         let portal = &state.world.portals[portal_idx];
 
-        // Determine the neighbor leaf (the portal's other side).
         let neighbor = if portal.front_leaf == leaf {
             portal.back_leaf
         } else {
@@ -330,15 +257,12 @@ fn flood(
             continue;
         }
 
-        // Per-chain cycle check: if this portal is already on the current
-        // chain's path, taking it would form a loop. Linear scan over a small
-        // Vec beats HashSet hashing for typical chain depths (5–10).
+        // Linear scan beats HashSet hashing at typical chain depths (5–10).
         if path.contains(&portal_idx) {
             state.rejected_path_cycle += 1;
             continue;
         }
 
-        // Skip solid leaves.
         if state.world.leaves[neighbor].is_solid {
             state.rejected_solid += 1;
             // For `solid` rejects the clip hasn't run yet, so the "clipped
@@ -356,28 +280,13 @@ fn flood(
             continue;
         }
 
-        // Clip the portal polygon against the current frustum. An empty
-        // result unifies "portal entirely outside cone" and "portal
-        // degenerate after clipping" into one rejection path.
+        // When the camera sits on the portal's supporting plane, S-H crushes
+        // the polygon to a degenerate line (the view cone's cross-section at
+        // zero depth is a point). That's geometric truth, not a clipper bug:
+        // bypass S-H and feed the full polygon to narrow_frustum directly.
         //
-        // When the camera sits on the portal's supporting plane, the
-        // portal is at zero depth from the apex and the view frustum's
-        // cross-section there is a single point — Sutherland-Hodgman
-        // crushes the polygon to a degenerate line. That is geometric
-        // truth, not a clipper bug: side planes pass through the apex,
-        // so no slide fixes it. In that case the portal *is* the view,
-        // and `narrow_frustum` consumes the full polygon directly
-        // (edge_dir × to_camera stays non-degenerate because both
-        // vectors lie in the portal plane and their cross product is
-        // perpendicular to it). Gated on all vertices being within
-        // CLIP_EPSILON of the portal's supporting plane as seen from
-        // the apex — a pure geometric test independent of view angle.
-        //
-        // `narrowed` is computed inside an inner scope so that the borrows of
-        // `clip_scratch_a`/`clip_scratch_b` end before the recursive call
-        // below, which needs mutable access to both scratch buffers again.
-        // `clipped_len` is captured ahead of the scope so trace logging and
-        // path updates downstream can still read it.
+        // Inner scope: borrows of clip_scratch_a/b must end before the
+        // recursive call below re-takes &mut of both scratch buffers.
         let (narrowed_opt, clipped_len) = {
             let apex_on_portal_plane =
                 camera_on_polygon_plane(state.camera_position, &portal.polygon);
@@ -416,9 +325,6 @@ fn flood(
             continue;
         }
 
-        // Narrow the frustum through the clipped polygon. The clipped
-        // polygon lies entirely inside the current frustum, so the edge
-        // planes it produces form a cone strictly inside the current one.
         let Some(narrowed) = narrowed_opt else {
             state.rejected_narrow += 1;
             if let Some(buf) = state.trace.as_mut() {
@@ -439,10 +345,7 @@ fn flood(
             let _ = writeln!(buf, "  acc {}->{} v={}", leaf, neighbor, clipped_len);
         }
 
-        // Descend into the neighbor, reusing the shared path via push/pop
-        // backtracking. After the recursive call returns, `path` is restored
-        // to its pre-push state so sibling branches at this depth see an
-        // unchanged chain history.
+        // Push/pop so sibling branches at this depth see an unchanged path.
         path.push(portal_idx);
         flood(
             state,
@@ -456,34 +359,17 @@ fn flood(
     }
 }
 
-/// Clip a convex polygon against every plane of a frustum (Sutherland-Hodgman).
+/// Clip a convex polygon against every frustum plane (Sutherland-Hodgman).
 ///
-/// Writes the clipped polygon into one of the caller-provided scratch buffers
-/// and returns a slice borrowing from it. A result with fewer than 3 vertices
-/// means the polygon is entirely outside the frustum (or clipped down to a
-/// degenerate edge/point at a boundary).
+/// Returns a slice into whichever scratch buffer held the final output; the
+/// `'a` lifetime ties both scratch buffers to the return value so the borrow
+/// checker prevents reuse of either until the slice is dropped. Callers that
+/// recurse with the same scratches (e.g. `flood`) must confine this slice to
+/// an inner scope.
 ///
-/// `scratch_a` and `scratch_b` are ping-pong buffers: each Sutherland-Hodgman
-/// step reads from one and writes to the other, swapping roles between planes.
-/// Both buffers are cleared on entry and their pre-call contents are not
-/// preserved. The returned slice borrows from whichever buffer most-recently
-/// acted as the output pass; both buffers share the same `'a` lifetime in the
-/// signature, so the borrow checker will prevent the caller from reusing
-/// *either* scratch buffer until the returned slice is dropped. Callers that
-/// need to recurse with the same scratches (e.g., `flood`) must confine the
-/// returned slice to an inner scope so the borrows end before the recursive
-/// call re-takes `&mut` of the scratches.
-///
-/// Each frustum plane is in Hessian normal form pointing inward: a vertex `v`
-/// is inside when `plane.normal · v + plane.dist >= -CLIP_EPSILON`. The
-/// epsilon tilts boundary cases toward "inside". This cannot violate the
-/// strict-subset invariant — any slop kept at one hop becomes outside the
-/// next narrowing's edge planes and is discarded there.
-///
-/// Because every clipped vertex is either an original polygon vertex or an
-/// intersection of a polygon edge with a frustum plane (both on the polygon
-/// plane), the clipped polygon remains planar. This is required for
-/// `narrow_frustum` to produce meaningful edge planes.
+/// Planes use Hessian normal form pointing inward; `CLIP_EPSILON` tilts
+/// boundary cases toward "inside" without violating the strict-subset
+/// invariant — slop kept here is outside the next narrowing's edge planes.
 pub(crate) fn clip_polygon_to_frustum<'a>(
     polygon: &[Vec3],
     frustum: &Frustum,
@@ -499,9 +385,6 @@ pub(crate) fn clip_polygon_to_frustum<'a>(
 
     scratch_a.extend_from_slice(polygon);
 
-    // Ping-pong between `scratch_a` (current input) and `scratch_b` (current
-    // output). After each plane, swap roles by flipping `input_is_a`. The
-    // final result lives in whichever buffer most-recently acted as output.
     let mut input_is_a = true;
     for plane in &frustum.planes {
         let (input, output) = if input_is_a {
@@ -630,7 +513,6 @@ fn compute_split_point_on_plane(
          filter in clip_polygon_to_plane must guarantee this"
     );
 
-    // Direction-symmetric: always lerp FRONT → BACK.
     let (front, back, d_front, d_back) = if d1 >= 0.0 {
         (p1, p2, d1, d2)
     } else {
@@ -664,12 +546,8 @@ fn compute_split_point_on_plane(
 /// boundary" case without triggering on genuinely-frontal portals.
 const APEX_ON_PORTAL_PLANE_EPSILON: f32 = 1e-3;
 
-/// Return true when `apex` lies on (or within `APEX_ON_PORTAL_PLANE_EPSILON`
-/// of) the supporting plane of `polygon`.
-///
-/// Uses Newell's method for the polygon normal — robust against near-colinear
-/// or near-duplicate vertices that would collapse a simple `(v1−v0)×(v2−v0)`
-/// cross product.
+// Newell's method for the normal: robust against near-colinear leading
+// vertices that collapse a simple (v1-v0)×(v2-v0) cross product.
 fn camera_on_polygon_plane(apex: Vec3, polygon: &[Vec3]) -> bool {
     if polygon.len() < 3 {
         return false;
@@ -691,14 +569,7 @@ fn camera_on_polygon_plane(apex: Vec3, polygon: &[Vec3]) -> bool {
     normal.dot(apex - centroid).abs() < APEX_ON_PORTAL_PLANE_EPSILON
 }
 
-/// Narrow a frustum by constructing clip planes through the camera and the
-/// portal polygon edges.
-///
-/// For a portal polygon with N vertices, constructs N edge planes (each through
-/// the camera position and one edge of the portal) plus the portal's own plane
-/// as a near clip. The far plane is retained from the original frustum.
-///
-/// Returns None if the portal is behind the camera or degenerate.
+/// Returns None if the portal is degenerate or the normal collapses.
 pub fn narrow_frustum(
     camera_position: Vec3,
     portal_polygon: &[Vec3],
@@ -725,8 +596,7 @@ pub fn narrow_frustum(
     }
     let portal_normal = portal_normal.normalize();
 
-    // Orient the portal normal to face away from the camera.
-    // The near plane should clip away the side of the portal the camera is on.
+    // Orient normal away from the camera so the near plane clips the camera-side.
     let camera_side = portal_normal.dot(camera_position - centroid);
     let oriented_normal = if camera_side > 0.0 {
         -portal_normal
@@ -783,7 +653,6 @@ mod tests {
     use crate::visibility::{FrustumPlane, is_aabb_outside_frustum};
     use glam::Mat4;
 
-    /// Extract frustum from a view-projection matrix (reuse from visibility module).
     fn extract_test_frustum(view_proj: Mat4) -> Frustum {
         use glam::Vec4;
 
@@ -1467,8 +1336,6 @@ mod tests {
 
     // --- Polygon-vs-frustum clipping tests ---
 
-    /// Classify a polygon vertex as strictly inside every plane of a frustum
-    /// (within the clip epsilon).
     fn point_inside_frustum(point: Vec3, frustum: &Frustum) -> bool {
         frustum
             .planes
@@ -1651,13 +1518,9 @@ mod tests {
             Vec3::new(30.0, -2.0, 2.0),
         ];
 
-        // Tests construct scratch buffers locally; they are off the per-frame
-        // hot path. Clipped slices are copied into owned Vecs so all three
-        // hops' results can be compared simultaneously below.
         let mut scratch_a: Vec<Vec3> = Vec::new();
         let mut scratch_b: Vec<Vec3> = Vec::new();
 
-        // Hop 1.
         let clipped_a: Vec<Vec3> =
             clip_polygon_to_frustum(&portal_a, &parent, &mut scratch_a, &mut scratch_b).to_vec();
         assert!(clipped_a.len() >= 3);

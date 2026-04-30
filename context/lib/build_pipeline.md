@@ -52,7 +52,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles), `angles` (direction) |
 | `light_sun` | point | Directional sun light | + `angles` (direction vector) |
 | `env_fog_volume` | brush | Per-region fog | `color`, `density`, `falloff`, `scatter` (scatter fraction toward camera; default 0.6) |
-| `env_smoke_emitter` | point | Smoke/particle emitter | `rate` (sprites/sec; default 4), `lifetime` (seconds; default 3.0), `size` (world units; default 0.5), `speed` (drift velocity; default 0.3), `collection` (sprite sheet collection name), `spec_intensity` (Blinn-Phong specular scale; default 0.3) |
+| `billboard_emitter` | point | Billboard particle emitter | `rate` (particles/sec; default 6), `lifetime` (seconds; default 3), `spread` (cone half-angle radians; default 0.4), `buoyancy` (-1=falls, 0=floats, >0=rises; default 0.2), `drag` (velocity damping/sec; default 0.8), `sprite` (collection name; default "smoke"), `initial_velocity_x/y/z` (default 0/0.8/0), `color_r/g/b` (linear; default 1/1/1), `spin_rate` (radians/sec; default 0) |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
 | `worldspawn` | special | Scene-wide render settings | `script` (path to entry `.ts` script, relative to `.map` file; compiled by `prl-build`), `data_script` (path to data script file; TS compiled to JS via scripts-build, Luau passed through; absent = no data script), `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8) |
@@ -61,9 +61,26 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 
 - **`light`, `light_spot`, `light_sun`** — validated at compile time (falloff distance required, spotlight direction verified, intensity bounds checked). Static lights feed the SH irradiance volume baker and the directional lightmap baker. Dynamic lights feed the runtime direct lighting buffer. Compilation fails on validation errors.
 - **`env_fog_volume`** — resolved at load time to world-space AABBs and fog parameters. Uploaded as a compact storage buffer (up to 16 entries). Runtime uses point-in-AABB membership test per raymarch sample; no BSP traversal at runtime.
-- **`env_smoke_emitter`** — resolved at level load to emitter parameters. CPU maintains a ring-buffer of live sprites per emitter (max 512); sprite instances uploaded to GPU each frame.
+- **`billboard_emitter`** — resolved at level load via the built-in classname dispatch table. The engine spawns an ECS entity with a `BillboardEmitterComponent` configured from the map's KVPs. See §Built-in classname routing below.
 - **`env_cubemap`** — marks a position for offline cubemap baking. Bake tool is out of initial scope.
 - **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf gets spatial reverb parameters for the audio subsystem.
+
+---
+
+## Built-in Classname Routing
+
+The level loader resolves FGD `classname` values against an engine-side handler table (`ClassnameDispatch`) at level load. This table is populated once at engine init by `register_builtins()` and is never cleared on level unload — built-in handlers describe engine types, not per-level state.
+
+For each map entity:
+1. Look up `entity.classname` in the built-in handler table.
+2. If found: instantiate the configured components, apply the KVP map, spawn the ECS entity at `entity.origin`, copy `_tags`.
+3. If not found: `log::debug!` and skip — unregistered classnames are valid in maps that don't use them.
+
+Invalid KVP values log a warning naming the key and entity origin, fall back to the documented default, and load continues.
+
+**Current built-in types:** `billboard_emitter`.
+
+**Production status:** the PRL wire format does not yet carry a generic map-entity section. The `ClassnameDispatch` table and handlers are live and ready; once the section ships and `LevelWorld.map_entities` is populated at PRL load, the dispatch fires automatically with no further engine changes.
 
 ---
 

@@ -173,7 +173,17 @@ World collision resolves inline during each entity's movement — the entity sli
 
 ---
 
-## 8. Non-Goals
+## 8. Particles
+
+Each live particle is a full ECS entity in the scripting entity registry, carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge spawns and despawns particles each tick via `EntityRegistry::spawn` / `despawn` — scripts never observe or manipulate individual particles.
+
+The particle simulation runs in Rust every game-logic tick: velocity integration, buoyancy/drag, curve-evaluated size and opacity, spin rotation. Per-particle `on_tick` script callbacks are not supported. The particle render collector walks all `ParticleState` entities each render frame, buckets by sprite collection, and hands packed byte slices to the billboard pass.
+
+The parent emitter entity carries `BillboardEmitterComponent`. Particles back-reference their parent via `ParticleState.emitter` (for spin-rate lookup); orphaned particles (emitter despawned) complete their lifetime at their last rotation angle.
+
+---
+
+## 9. Non-Goals
 
 - ECS or component system
 - Entity inheritance hierarchies

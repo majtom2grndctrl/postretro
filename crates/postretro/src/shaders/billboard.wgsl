@@ -223,16 +223,13 @@ fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
 }
 
 fn falloff(distance: f32, range: f32, model: u32) -> f32 {
+    let r = max(range, 0.001);
     switch model {
-        case 0u: { return max(1.0 - distance / max(range, 0.001), 0.0); }
-        case 1u: {
-            if distance > range { return 0.0; }
-            return 1.0 / max(distance, 0.001);
-        }
+        case 0u: { return max(1.0 - distance / r, 0.0); }
+        case 1u: { return (1.0 / max(distance, 0.001)) * max(1.0 - distance / r, 0.0); }
         case 2u: {
-            if distance > range { return 0.0; }
             let d2 = max(distance * distance, 0.001);
-            return 1.0 / d2;
+            return (1.0 / d2) * max(1.0 - distance / r, 0.0);
         }
         default: { return 0.0; }
     }

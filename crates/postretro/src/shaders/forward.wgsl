@@ -259,22 +259,18 @@ fn decode_lightmap_direction(enc: vec4<f32>) -> vec3<f32> {
 
 // --- Falloff models ---
 fn falloff(distance: f32, range: f32, model: u32) -> f32 {
+    let r = max(range, 0.001);
     switch model {
         case 0u: {
-            return max(1.0 - distance / max(range, 0.001), 0.0);
+            return max(1.0 - distance / r, 0.0);
         }
         case 1u: {
-            if distance > range {
-                return 0.0;
-            }
-            return 1.0 / max(distance, 0.001);
+            // Linear window drives inverse-distance smoothly to 0 at range.
+            return (1.0 / max(distance, 0.001)) * max(1.0 - distance / r, 0.0);
         }
         case 2u: {
-            if distance > range {
-                return 0.0;
-            }
             let d2 = max(distance * distance, 0.001);
-            return 1.0 / d2;
+            return (1.0 / d2) * max(1.0 - distance / r, 0.0);
         }
         default: {
             return 0.0;

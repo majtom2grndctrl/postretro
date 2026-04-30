@@ -1,15 +1,8 @@
-// SH irradiance volume GPU resources: 3D texture upload, sampler, grid-info
-// uniform, and bind group (group 3).
-//
-// See: context/plans/in-progress/lighting-foundation/6-sh-volume.md
-//      context/lib/rendering_pipeline.md §4
+// SH irradiance volume GPU resources: 3D textures, sampler, grid-info uniform, bind group (group 3).
+// See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::sh_volume::{AnimationDescriptor, ShProbe, ShVolumeSection};
 
-/// Number of SH L2 bands (= number of 3D textures we bind). Each band stores
-/// its RGB coefficients in the `.rgb` channels of an `Rgba16Float` 3D texture
-/// sized to the probe grid. `.a` is unused padding.
-///
 /// 9 textures + 1 sampler + 1 uniform + 2 animation storage buffers
 /// = 13 bindings in group 3 (indices 0..=12), well under wgpu's default
 /// `max_sampled_textures_per_shader_stage` limit.
@@ -20,14 +13,9 @@ pub const SH_BAND_COUNT: usize = 9;
 /// (1 + SH_BAND_COUNT == 10).
 pub const BIND_ANIM_DESCRIPTORS: u32 = 11;
 pub const BIND_ANIM_SAMPLES: u32 = 12;
-/// Per-map-light scripted `AnimationDescriptor` buffer (Plan 2 Sub-plan 4).
-/// Populated by `LightBridge::update → Renderer::upload_bridge_descriptors`.
-/// Indexed in the forward shader's light loop by light index `i`; the
-/// descriptor's `is_active` flag gates whether the per-light curve is
-/// evaluated. Separate from `BIND_ANIM_DESCRIPTORS` (which carries baked
-/// animated-section descriptors for the compose pass) because the two
-/// consumers use different indexing schemes — section-indexed vs
-/// map-light-indexed.
+/// Separate from `BIND_ANIM_DESCRIPTORS` (baked section descriptors for the
+/// compose pass) because the two consumers use different indexing schemes —
+/// section-indexed vs map-light-indexed.
 pub const BIND_SCRIPTED_LIGHT_DESCRIPTORS: u32 = 13;
 
 /// Byte size of `ShGridInfo` — four `vec4` slots to satisfy std140 alignment
@@ -51,7 +39,7 @@ pub const SH_GRID_INFO_SIZE: usize = 48;
 ///   u32 color_offset       (28..32)
 ///   u32 color_count        (32..36)
 ///   u32 active             (36..40)  // runtime on/off; initialized from start_active
-///   u32 direction_offset   (40..44)  // Plan 2 Sub-plan 1: spot-aim curve
+///   u32 direction_offset   (40..44)
 ///   u32 direction_count    (44..48)  // 0 → shader uses static `cone_direction`
 ///
 /// `active` used to be an implicit 4-byte padding gap. It is now a real field —
@@ -64,11 +52,9 @@ pub const ANIMATION_DESCRIPTOR_SIZE: usize = 48;
 /// `AnimatedLightBuffers::set_active` to patch the CPU mirror in place.
 pub const ANIMATION_DESCRIPTOR_ACTIVE_OFFSET: usize = 36;
 
-/// Number of f32 slots reserved per map light in the scripted-animation
-/// region of the `anim_samples` buffer for brightness samples.
+/// f32 slots per map light for brightness samples in the scripted-animation region.
 pub const SCRIPTED_BRIGHTNESS_SLOT: usize = 128;
-/// Number of f32 slots reserved per map light in the scripted-animation
-/// region for color samples (interleaved RGB, so 128 / 3 ≈ 42 keyframes max).
+/// f32 slots per map light for color samples (interleaved RGB, so 128 / 3 ≈ 42 keyframes max).
 pub const SCRIPTED_COLOR_SLOT_F32: usize = 128;
 /// Total f32 slots per map light in the scripted-animation region.
 /// Layout within each slot: [0..SCRIPTED_BRIGHTNESS_SLOT) = brightness,
@@ -90,36 +76,22 @@ pub const SCRIPTED_FLOATS_PER_LIGHT: usize = SCRIPTED_BRIGHTNESS_SLOT + SCRIPTED
 pub struct ShVolumeResources {
     pub bind_group: wgpu::BindGroup,
     pub bind_group_layout: wgpu::BindGroupLayout,
-    /// Whether a real SH volume was uploaded (false => dummy / ambient fallback).
-    /// Read by the diagnostic logging path; kept public for future debug UI.
     #[allow(dead_code)]
     pub present: bool,
     /// Probe grid dimensions (in cells, x/y/z). Used by the compose pass to
     /// pick a dispatch shape that covers exactly one workgroup-thread per probe.
     pub grid_dimensions: [u32; 3],
-    /// Sampled views over the base SH band textures. Consumed by the compose
-    /// pass as `textureLoad` inputs. Length is always `SH_BAND_COUNT`.
+    /// Sampled views over the base SH band textures; consumed by the compose pass as `textureLoad` inputs.
     pub base_band_views: Vec<wgpu::TextureView>,
-    /// Storage-writeable views over the total SH band textures. Consumed by
-    /// the compose pass as `textureStore` outputs. Length is always
-    /// `SH_BAND_COUNT`.
+    /// Storage-writeable views over the total SH band textures; consumed by the compose pass as `textureStore` outputs.
     pub total_band_storage_views: Vec<wgpu::TextureView>,
-    /// Descriptor + sample buffers are owned here but also borrowed by the
-    /// compose pass (Task 5's `animated_lightmap.rs`). One upload, two bind
-    /// groups. The CPU mirror lives alongside so per-frame edits to `active`
-    /// (from scripting) can patch bytes and upload in one pass.
+    /// Owned here but shared with the compose pass — one upload, two bind groups.
+    /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
     pub animation: AnimatedLightBuffers,
-    /// Per-map-light scripted `AnimationDescriptor` buffer (Plan 2 Sub-plan 4).
-    /// Size is fixed at `max(map_light_count, 1) * ANIMATION_DESCRIPTOR_SIZE`
-    /// and zero-initialized — every light starts with the sentinel descriptor
-    /// (`is_active == 0`) so the forward shader reads the static `GpuLight`
-    /// color until the bridge writes a real animation. Bound at
-    /// `BIND_SCRIPTED_LIGHT_DESCRIPTORS`.
+    /// Size fixed at `max(map_light_count, 1) * ANIMATION_DESCRIPTOR_SIZE`, zero-initialized —
+    /// sentinel descriptor (`is_active == 0`) so the forward shader reads static `GpuLight` color
+    /// until the bridge writes a real animation.
     pub scripted_light_descriptors: wgpu::Buffer,
-    /// Number of real map lights this buffer was sized for. Retained for
-    /// diagnostic logging and future debug inspection; the upload path
-    /// validates against `Renderer::level_lights.len()` directly so this
-    /// field is not on the hot path.
     #[allow(dead_code)]
     pub scripted_light_count: u32,
     /// Byte offset within `anim_samples` where the scripted-animation region
@@ -129,20 +101,15 @@ pub struct ShVolumeResources {
     pub scripted_sample_byte_offset: usize,
 }
 
-/// Shared handle exposing the animated-light descriptor and sample buffers to
-/// both the SH-volume fragment path (group 3) and the compose pass (Task 5).
-/// Holds a CPU-side mirror of the descriptor bytes so `set_active` is cheap
-/// and the per-frame upload is a single `queue.write_buffer` call.
+/// Animated-light descriptor and sample buffers shared between group 3 and the compose pass.
+/// CPU mirror kept alongside so `set_active` is cheap and flushes in one `queue.write_buffer`.
 pub struct AnimatedLightBuffers {
     pub descriptors: wgpu::Buffer,
-    // Consumed by the compose pass (Task 5). Kept next to `descriptors` so
-    // one upload serves both bind groups.
+    // Kept next to `descriptors` so one upload serves both bind groups.
     #[allow(dead_code)]
     pub anim_samples: wgpu::Buffer,
-    /// CPU-side mirror of `descriptors`. One `ANIMATION_DESCRIPTOR_SIZE`
-    /// record per animated light, in the same order as the section's
-    /// `animation_descriptors`. Empty maps carry a single zeroed dummy record
-    /// (not exposed via `len()`); `animated_light_count` is the real count.
+    /// One `ANIMATION_DESCRIPTOR_SIZE` record per animated light. Empty maps
+    /// carry a single zeroed dummy record; `animated_light_count` is the real count.
     descriptor_mirror: Vec<u8>,
     animated_light_count: u32,
     /// Dirty bit set by `set_active`; cleared by `upload_descriptors_if_dirty`.
@@ -156,24 +123,16 @@ pub struct AnimatedLightBuffers {
 }
 
 impl AnimatedLightBuffers {
-    /// Number of animated lights in the live section. 0 when the map has none
-    /// (the buffers still hold a single dummy record so wgpu accepts the
-    /// binding — see `dummy_descriptor_buffer`).
+    /// 0 when the map has no animated lights (buffers still hold a single dummy record so wgpu accepts the binding).
     #[allow(dead_code)]
     pub fn animated_light_count(&self) -> u32 {
         self.animated_light_count
     }
 
-    /// Toggle the runtime `active` flag for an animated light. `slot` indexes
-    /// into the section's `animation_descriptors`. Marks the mirror dirty
-    /// **only when the state actually changes**; the next
-    /// `upload_descriptors_if_dirty` call flushes to the GPU.
-    ///
-    /// Out-of-range `slot` is a no-op that emits one warn-level log line on
-    /// first occurrence and stays silent thereafter (scripts may fire
-    /// `set_active` for a light that never made it into the bake). Kept
-    /// infallible because the scripting wiring isn't in place yet; promoting
-    /// the signature to `Result` is a scripting-era decision.
+    /// Toggle the runtime `active` flag for an animated light.
+    /// Marks the mirror dirty only when the state actually changes.
+    /// Out-of-range `slot` is a silent no-op after the first warn-level log line
+    /// (scripts may fire `set_active` for a light that never made it into the bake).
     pub fn set_active(&mut self, slot: usize, active: bool) {
         if slot >= self.animated_light_count as usize {
             if !self.oor_warned {
@@ -201,8 +160,7 @@ impl AnimatedLightBuffers {
     }
 
     /// Upload the CPU mirror to the GPU descriptor buffer. No-op when clean.
-    /// Called once per frame before the compose pass (Task 5) and the SH
-    /// sampling in the forward pass.
+    /// Must be called before the compose pass and forward pass each frame.
     pub fn upload_descriptors_if_dirty(&mut self, queue: &wgpu::Queue) {
         if !self.dirty {
             return;
@@ -239,8 +197,7 @@ impl ShVolumeResources {
             ..Default::default()
         });
 
-        // Decide whether we have a usable SH volume. A zero-dimension grid is
-        // treated the same as a missing section — nothing to sample.
+        // A zero-dimension grid is treated the same as a missing section.
         let usable = section.filter(|s| {
             s.grid_dimensions[0] > 0 && s.grid_dimensions[1] > 0 && s.grid_dimensions[2] > 0
         });
@@ -249,13 +206,10 @@ impl ShVolumeResources {
         let cell_size: [f32; 3];
         let grid_dimensions: [u32; 3];
         let present: bool;
-        // Base SH bands — uploaded from PRL data (or dummy zeros). Read-only
-        // sampled inputs to the compose pass.
+        // Base SH bands: uploaded from PRL data (or dummy zeros); read-only sampled inputs to the compose pass.
         let base_textures: Vec<wgpu::Texture>;
-        // Total SH bands — storage-writeable parallel set. Compose pass writes
-        // each frame; consumer bind group samples from these. Created with
-        // `STORAGE_BINDING | TEXTURE_BINDING` so a single texture serves both
-        // accesses.
+        // Total SH bands: storage-writeable parallel set the compose pass writes each frame;
+        // consumer bind group samples from these. STORAGE_BINDING | TEXTURE_BINDING so one texture serves both roles.
         let total_textures: Vec<wgpu::Texture>;
 
         if let Some(sec) = usable {
@@ -311,12 +265,8 @@ impl ShVolumeResources {
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
 
-        // Scripted per-map-light descriptor buffer. One 48-byte slot per map
-        // light, initialized to all zeros (sentinel — `is_active == 0`, all
-        // counts 0) so the forward shader's light loop reads the static
-        // `GpuLight` values until the bridge writes a real animation. wgpu
-        // rejects zero-sized storage buffers; pad to one slot for maps with
-        // zero lights (the forward loop bound is 0 so the dummy is never read).
+        // wgpu rejects zero-sized storage buffers; pad to one slot for empty maps.
+        // The forward loop bound is map_light_count so the dummy slot is never read.
         let scripted_descriptor_slots = map_light_count.max(1);
         let scripted_descriptor_bytes =
             vec![0u8; scripted_descriptor_slots * ANIMATION_DESCRIPTOR_SIZE];
@@ -326,7 +276,6 @@ impl ShVolumeResources {
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
 
-        // Upload grid-info uniform.
         let grid_info_bytes =
             build_grid_info_bytes(grid_origin, cell_size, grid_dimensions, present);
         let grid_info_buffer = device.create_buffer_init_helper(
@@ -335,17 +284,17 @@ impl ShVolumeResources {
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
 
-        // Base views: read-only sampled inputs to the compose pass.
+        // Sampled view of base bands: compose pass reads these as textureLoad inputs.
         let base_band_views: Vec<wgpu::TextureView> = base_textures
             .iter()
             .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
             .collect();
-        // Total views (sampled): bound on group 3 for forward/billboard/fog.
+        // Sampled view of total bands: bound on group 3 for forward/billboard/fog.
         let total_sampled_views: Vec<wgpu::TextureView> = total_textures
             .iter()
             .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
             .collect();
-        // Total views (storage write): consumed by the compose pass.
+        // Storage view of total bands: compose pass writes these as textureStore outputs.
         let total_band_storage_views: Vec<wgpu::TextureView> = total_textures
             .iter()
             .map(|t| {
@@ -393,8 +342,6 @@ impl ShVolumeResources {
             entries: &entries,
         });
 
-        // The textures/sampler/buffer are held alive via the bind group's
-        // internal Arc references (wgpu caches descriptor resources).
         let animation = AnimatedLightBuffers {
             descriptors: anim_descriptors_buffer,
             anim_samples: anim_samples_buffer,
@@ -453,11 +400,8 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         count: None,
     });
-    // Animation storage buffers. Always bound — with dummy single-element
-    // buffers when no animated lights exist — so the bind group layout never
-    // changes with map content. `BIND_SCRIPTED_LIGHT_DESCRIPTORS` carries the
-    // per-map-light scripted descriptor slots (Plan 2 Sub-plan 4), sized at
-    // level load to one slot per map light.
+    // Always bound with dummy single-element buffers when no animated lights exist —
+    // the bind group layout must not vary with map content.
     for binding in [
         BIND_ANIM_DESCRIPTORS,
         BIND_ANIM_SAMPLES,
@@ -624,9 +568,7 @@ pub(crate) fn build_animation_buffers(
         let direction_offset = samples.len() as u32;
         let direction_count = desc.direction.len() as u32;
         for dir in &desc.direction {
-            // Plan 2 Sub-plan 1: samples are normalized at write time
-            // (scripting primitive or FGD parser). The shader does not
-            // re-normalize per frame. Catch drift in debug builds.
+            // Samples are normalized at write time; the shader does not re-normalize per frame.
             debug_assert!(
                 (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2] - 1.0).abs() < 1.0e-4,
                 "AnimationDescriptor direction sample must be unit length; got {:?}",
@@ -677,11 +619,10 @@ fn write_descriptor_bytes(
     s[24..28].copy_from_slice(&desc.base_color[2].to_ne_bytes());
     s[28..32].copy_from_slice(&color_offset.to_ne_bytes());
     s[32..36].copy_from_slice(&color_count.to_ne_bytes());
-    // `active` initializes from the on-disk `start_active`. Scripts mutate
-    // the CPU mirror at runtime via `AnimatedLightBuffers::set_active`.
+    // `active` initializes from the on-disk `start_active`; scripts mutate it
+    // at runtime via `AnimatedLightBuffers::set_active`.
     s[36..40].copy_from_slice(&desc.start_active.to_ne_bytes());
-    // Plan 2 Sub-plan 1 direction channel. A `direction_count` of 0 signals
-    // "no animation — shader uses the static `cone_direction` on GpuLight."
+    // `direction_count == 0` signals no animation — shader uses the static `cone_direction` on GpuLight.
     s[40..44].copy_from_slice(&direction_offset.to_ne_bytes());
     s[44..48].copy_from_slice(&direction_count.to_ne_bytes());
 }
@@ -694,13 +635,9 @@ fn f32_slice_to_bytes(data: &[f32]) -> Vec<u8> {
     bytes
 }
 
-/// Minimum-size storage buffer payload for the `array<f32>` binding
-/// (`anim_samples`) when a map has no animated lights. Returns
-/// `ANIMATION_DESCRIPTOR_SIZE` (48) bytes — the same size as
-/// `dummy_descriptor_buffer` — so both dummies are produced by the same
-/// constant and stay in sync if the stride ever changes. wgpu only requires
-/// non-zero size for `array<f32>` bindings; the compose pass guards on
-/// `count == 0` before reading, so contents are irrelevant.
+/// Same size as `dummy_descriptor_buffer` so both dummies share the constant
+/// and stay in sync if the stride changes. Contents are irrelevant — the compose
+/// pass guards on `count == 0`.
 fn dummy_storage_buffer() -> Vec<u8> {
     vec![0u8; ANIMATION_DESCRIPTOR_SIZE]
 }
@@ -884,20 +821,12 @@ mod tests {
         assert_eq!(flag, 0);
     }
 
-    /// Plan 2 Sub-plan 4: the scripted-light descriptor buffer is sized at
-    /// level load to `max(map_light_count, 1) * ANIMATION_DESCRIPTOR_SIZE`
-    /// bytes. This mirrors the formula `LightBridge::update` uses when
-    /// emitting `descriptor_bytes`, so the renderer's defensive length
-    /// check (`expected = level_lights.len() * ANIMATION_DESCRIPTOR_SIZE`)
-    /// matches the buffer capacity exactly for any non-zero map-light
-    /// count. A CPU-only invariant — the buffer itself requires a wgpu
-    /// device we don't have in `cargo test`.
+    /// Pins the sizing formula shared by `ShVolumeResources::new` and
+    /// `Renderer::upload_bridge_descriptors`. Both must derive the same byte count
+    /// from the same `map_light_count` or the upload fails the length check on valid bridge output.
+    /// CPU-only — the actual buffer requires a wgpu device.
     #[test]
     fn scripted_descriptor_buffer_sizing_matches_bridge_payload_size() {
-        // Match the formula in `ShVolumeResources::new` and
-        // `Renderer::upload_bridge_descriptors`. Both must derive the same
-        // byte count from the same `map_light_count` input, or the upload
-        // will fail the length check even on valid bridge output.
         for map_light_count in [0usize, 1, 4, 17, 256] {
             let alloc_slots = map_light_count.max(1);
             let alloc_bytes = alloc_slots * ANIMATION_DESCRIPTOR_SIZE;
@@ -1043,7 +972,6 @@ mod tests {
         // spherical harmonic normalization for L0.
         const L0: f32 = 0.282095;
         let mut coeffs = [0.0f32; 27];
-        // band 0, all three channels
         coeffs[0] = 1.0;
         coeffs[1] = 1.0;
         coeffs[2] = 1.0;
@@ -1378,31 +1306,18 @@ mod tests {
         }
     }
 
-    /// CPU-side active-flag masking: construct an `AnimatedLightBuffers`
-    /// whose descriptor mirror starts with `active = 1`, toggle the flag off
-    /// via `set_active`, assert the mirror byte changes and the dirty bit is
-    /// set, then assert idempotence on a second toggle to the same value.
-    ///
-    /// Builds the mirror by hand — wgpu `Buffer` construction needs a real
-    /// `Device`, but the CPU mirror path doesn't touch the buffer. We
-    /// fabricate a dummy buffer through `wgpu::util::DeviceExt` when running
-    /// under a headless backend; the buffer is required only so the struct
-    /// literal type-checks — the test asserts only CPU-mirror side effects.
+    /// `AnimatedLightBuffers` requires a real `wgpu::Buffer` for the struct literal,
+    /// but `set_active` only touches the CPU mirror — a headless dummy buffer suffices.
     #[test]
     fn set_active_cpu_mirror_zeroes_flag_and_marks_dirty() {
-        // Build a two-light descriptor mirror by hand so this test doesn't
-        // need a wgpu device. The only method we exercise is `set_active`,
-        // which reads and writes the CPU mirror only.
         let mut mirror = vec![0u8; 2 * ANIMATION_DESCRIPTOR_SIZE];
-        // Both lights start active — write 1 into each descriptor's active
-        // slot. `set_active` flipping a slot to false must zero those bytes.
+        // Both lights start active; `set_active(0, false)` must zero the active bytes.
         for slot in 0..2 {
             let off = slot * ANIMATION_DESCRIPTOR_SIZE + ANIMATION_DESCRIPTOR_ACTIVE_OFFSET;
             mirror[off..off + 4].copy_from_slice(&1u32.to_ne_bytes());
         }
 
-        // Minimal buffer creation through a standalone instance. No queue
-        // interaction — we never call `upload_descriptors_if_dirty` here.
+        // No queue interaction — we never call `upload_descriptors_if_dirty` here.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..wgpu::InstanceDescriptor::new_without_display_handle()

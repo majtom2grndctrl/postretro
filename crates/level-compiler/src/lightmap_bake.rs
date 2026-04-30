@@ -1,19 +1,4 @@
 // Directional lightmap baker.
-//
-// UV-unwraps each world face onto a shared atlas using a planar per-face
-// projection, shelf-packs the charts, then ray-casts per-texel irradiance and
-// dominant incoming direction from all static (non-`is_dynamic`) lights
-// through the shared BVH. Writes lightmap UVs back into the geometry vertices.
-//
-// Deviation from the original plan: the spec requested `xatlas` for automatic
-// per-chart UV unwrapping. `xatlas` is a C library with no safe Rust binding
-// in the existing dependency tree, and Postretro forbids `unsafe` without
-// explicit approval (development_guide.md §3.5). Per-face planar unwrap is a
-// correct, simpler first pass: each face is already convex and coplanar, so
-// a single planar projection into its tangent/bitangent basis yields a valid
-// chart with no distortion. A future revision may introduce chart merging to
-// reduce atlas fragmentation — not required for the acceptance gates.
-//
 // See: context/plans/ready/lighting-lightmaps/index.md
 
 use std::collections::HashSet;
@@ -31,37 +16,25 @@ use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedLights;
 use crate::map_data::{FalloffModel, LightType, MapLight};
 
-/// Default atlas texel density: 4 cm per texel. Matches the plan's default
-/// and keeps the baker affordable on the hand-authored test maps.
+/// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 
-/// Atlas width/height when no face would fit otherwise. Must be a power of two
-/// so future GPU-side BC6H compression lands on a valid block size.
+/// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
 const MIN_ATLAS_DIMENSION: u32 = 64;
 
-/// Maximum atlas dimension. Beyond this the baker returns an error so the
-/// caller can retry at a coarser texel density. 4096 sits well under the
-/// 8192 `max_texture_dimension_2d` floor of `wgpu::Limits::default()` (the
-/// runtime's required limits) and fits a ~164 m axis at 4 cm/texel — enough
-/// headroom for realistic indoor maps while leaving the retry path available
-/// for anything larger.
+/// Maximum atlas dimension. Beyond this the baker returns an error so the caller can retry at a
+/// coarser density. 4096 is well under the 8192 `max_texture_dimension_2d` floor required by
+/// wgpu and fits ~164 m at 4 cm/texel.
 const MAX_ATLAS_DIMENSION: u32 = 4096;
 
-/// Tiny offset applied along the surface normal when launching shadow rays to
-/// avoid self-intersection with the face being shaded. `pub(crate)` so the
-/// animated weight-map baker can match the static bake's shadow epsilon
-/// exactly — the two bakers must agree on self-intersection tolerance or chunk
-/// boundaries will show seams.
+/// Shadow ray self-intersection offset. `pub(crate)` so the animated weight-map baker uses the
+/// same value — both bakers must agree or chunk boundaries show seams.
 pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
 
-/// Length of the shadow ray fired toward the sun for a directional light.
-/// Directional lights have no position, so we need an arbitrary far endpoint;
-/// anything larger than the world's diagonal is correct. 10 km comfortably
-/// exceeds the engine's 4096-unit far clip and any plausible world extent.
+/// Shadow ray length for directional lights (no position, so must exceed the world diagonal).
 const DIRECTIONAL_LIGHT_RAY_LENGTH_METERS: f32 = 10_000.0;
 
-/// Errors surfaced from the lightmap bake stage. Distinct from `anyhow` so the
-/// caller can decide whether to retry at a coarser texel density.
+/// Errors surfaced from the lightmap bake stage. Caller can retry at a coarser texel density.
 #[derive(Debug, Error)]
 pub enum LightmapBakeError {
     #[error(
@@ -90,35 +63,27 @@ pub enum LightmapBakeError {
     },
 }
 
-/// Inputs the lightmap baker pulls from the rest of the compile stages.
 pub struct LightmapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
-    /// Mutable because the baker writes per-vertex lightmap UVs back into
-    /// the geometry section after placing each face's chart in the atlas.
+    /// Mutable: baker writes per-vertex lightmap UVs back after atlas placement.
     pub geometry: &'a mut GeometryResult,
     pub lights: &'a StaticBakedLights<'a>,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
-/// `charts` + `placements` + `atlas_width` to resolve chunk atlas rects from
-/// their face-local UV sub-regions.
+/// `charts` + `placements` + `atlas_width` to resolve chunk atlas rects.
 #[derive(Debug)]
 pub struct LightmapBakeOutput {
     pub section: LightmapSection,
     pub charts: Vec<Chart>,
-    /// Per-face chart placement, parallel to `charts`. Empty when the bake
-    /// short-circuits (empty geometry, no static lights, or no charts packed).
+    /// Parallel to `charts`. Empty when the bake short-circuits.
     pub placements: Vec<ChartPlacement>,
     pub atlas_width: u32,
     pub atlas_height: u32,
 }
 
-/// Bake a directional lightmap.
-///
-/// Returns the placeholder section when there is no work to do (empty geometry
-/// or no static lights) and an error when the chart set cannot be represented
-/// within `MAX_ATLAS_DIMENSION`.
+/// Bake a directional lightmap. Returns a placeholder when there is nothing to bake.
 pub fn bake_lightmap(
     inputs: &mut LightmapInputs<'_>,
     texel_density: f32,
@@ -135,10 +100,8 @@ pub fn bake_lightmap(
 
     let static_lights: Vec<&MapLight> = inputs.lights.entries().iter().map(|e| e.light).collect();
     if static_lights.is_empty() {
-        // Still plan charts — the animated-light-chunks builder needs per-face
-        // UV bounds even when no static lights exist. Placements are likewise
-        // needed by the weight-map baker to resolve chunk atlas rects even in
-        // the all-animated case.
+        // Plan charts anyway — the animated-light-chunks builder needs per-face UV bounds and
+        // placements even when no static lights exist.
         let charts = plan_charts(inputs.geometry, texel_density);
         let (atlas_w, atlas_h, placements) = match shelf_pack(&charts, texel_density) {
             Ok(p) => p,
@@ -153,21 +116,11 @@ pub fn bake_lightmap(
         });
     }
 
-    // Split vertices shared across faces so each face owns its own per-vertex
-    // lightmap UVs. A vertex shared across two faces would otherwise pick up
-    // the first face's UV at assignment time (the duplicate-write guard in
-    // `assign_lightmap_uvs` skips it on the second face), producing a seam
-    // across the shared edge once normal maps or fine-grained atlas texels
-    // amplify the discrepancy. Geometry extraction today already emits
-    // per-face vertex ranges, so this is a defensive pass — but the contract
-    // that follows (no vertex index appears in more than one face's range)
-    // is what the baker needs, independent of upstream choices.
+    // Ensure no vertex index is shared across faces — each face must own its own lightmap UV slot.
     split_shared_vertices(inputs.geometry);
 
-    // --- UV unwrap: plan each face's chart ---
     let charts = plan_charts(inputs.geometry, texel_density);
 
-    // --- Validate individual charts against the atlas dimension limit. ---
     for (face_index, chart) in charts.iter().enumerate() {
         if chart.width_texels > MAX_ATLAS_DIMENSION || chart.height_texels > MAX_ATLAS_DIMENSION {
             return Err(LightmapBakeError::ChartTooLarge {
@@ -182,7 +135,6 @@ pub fn bake_lightmap(
         }
     }
 
-    // --- Pack charts into an atlas ---
     let (atlas_w, atlas_h, placements) = shelf_pack(&charts, texel_density)?;
     if placements.is_empty() {
         return Ok(LightmapBakeOutput {
@@ -194,10 +146,8 @@ pub fn bake_lightmap(
         });
     }
 
-    // --- Write lightmap UVs back into vertices ---
     assign_lightmap_uvs(inputs.geometry, &charts, &placements, atlas_w, atlas_h);
 
-    // --- Rasterize each chart and bake per-texel irradiance + direction ---
     let mut irradiance = vec![0f32; (atlas_w * atlas_h * 4) as usize];
     let mut direction = vec![Vec3::Y; (atlas_w * atlas_h) as usize];
     let mut coverage = vec![false; (atlas_w * atlas_h) as usize];
@@ -218,7 +168,6 @@ pub fn bake_lightmap(
         );
     }
 
-    // --- Edge dilation: extend coverage one texel outward ---
     dilate_edges(
         &mut irradiance,
         &mut direction,
@@ -227,7 +176,6 @@ pub fn bake_lightmap(
         atlas_h,
     );
 
-    // --- Encode to on-disk byte layout ---
     let irr_bytes = encode_irradiance_rgba16f(&irradiance);
     let dir_bytes = encode_direction_rgba8(&direction, &coverage);
 
@@ -246,22 +194,15 @@ pub fn bake_lightmap(
     })
 }
 
-/// Ensure no vertex index is referenced by more than one face's index range.
-/// Any vertex shared across faces is duplicated so each face gets its own copy
-/// (same position / UV / normal / tangent, distinct lightmap UV slot). Indices
-/// inside each face's range are rewritten to point at the face's own copies.
 fn split_shared_vertices(geom: &mut GeometryResult) {
     let face_count = geom.face_index_ranges.len();
     if face_count <= 1 {
         return;
     }
 
-    // First-seen face owner for each original vertex; subsequent faces remap.
+    // First-seen face owns the original vertex; subsequent faces get duplicates.
     let mut owner: Vec<u32> = vec![u32::MAX; geom.geometry.vertices.len()];
     let ranges = geom.face_index_ranges.clone();
-    // Remap table reused per-face: original_vertex_index -> duplicated_index.
-    // We key on original indices only — once a face is remapping, it never
-    // writes the original index back into its range.
     let mut face_remap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
 
     for (face_idx, range) in ranges.iter().enumerate() {
@@ -276,8 +217,6 @@ fn split_shared_vertices(geom: &mut GeometryResult) {
             if cur == u32::MAX {
                 owner[vi as usize] = face_idx_u32;
             } else if cur != face_idx_u32 {
-                // Shared with a different face — duplicate on first encounter,
-                // then reuse the same duplicate for the rest of this face.
                 let new_index = if let Some(&dup) = face_remap.get(&vi) {
                     dup
                 } else {
@@ -290,12 +229,10 @@ fn split_shared_vertices(geom: &mut GeometryResult) {
                 };
                 geom.geometry.indices[i] = new_index;
             }
-            // Same face re-using the vertex inside its own range: keep as-is.
         }
     }
 }
 
-/// Log bake statistics in the shape of the other compile stages.
 pub fn log_stats(section: &LightmapSection, static_light_count: usize) {
     log::info!(
         "Lightmap: {}x{} atlas, {} m/texel, {} static lights baked, irr={} B, dir={} B",
@@ -308,31 +245,17 @@ pub fn log_stats(section: &LightmapSection, static_light_count: usize) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Chart planning
-
-/// A face's chart plan: face-local 2D basis, origin, extent, and rectangle
-/// size in atlas texels.
-///
-/// Public because the animated-light-chunks builder needs per-face UV bounds
-/// in the same (origin, u_axis, v_axis) basis + world-meter UV extents that
-/// the lightmap bake already computes. Exposing `Chart` avoids duplicating the
-/// per-face projection logic; no new data is introduced.
+/// Face-local 2D chart plan. `pub` so the animated-light-chunks builder can reuse the same
+/// per-face projection without duplicating the unwrap logic.
 #[derive(Debug, Clone)]
 pub struct Chart {
-    /// Origin of the face-local (u, v) basis in world space.
     pub origin: Vec3,
-    /// Face-local u-axis (unit, world space).
     pub u_axis: Vec3,
-    /// Face-local v-axis (unit, world space).
     pub v_axis: Vec3,
-    /// World-space min corner of the face's bounding box in the (u, v) basis.
     pub uv_min: [f32; 2],
-    /// World-space extent (meters) along (u, v).
     pub uv_extent: [f32; 2],
-    /// Surface normal used to offset shadow-ray origins.
     pub normal: Vec3,
-    /// Chart size in atlas texels, including padding.
+    /// Includes padding.
     pub width_texels: u32,
     pub height_texels: u32,
 }
@@ -343,13 +266,8 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
 
     let mut charts = Vec::with_capacity(section.faces.len());
     for range in geom.face_index_ranges.iter() {
-        // Gather world positions for the face's vertices (derived from the
-        // first triangle of the fan — vertex 0 of the fan is always the
-        // chart origin's seed in `extract_geometry`).
         let start = range.index_offset as usize;
         if range.index_count < 3 {
-            // Degenerate chart — emit a 1x1 placeholder so the face still
-            // has a valid atlas slot.
             charts.push(empty_chart());
             continue;
         }
@@ -368,10 +286,8 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
             charts.push(empty_chart());
             continue;
         }
-        // Use the stored vertex normal as the authoritative face orientation;
-        // the fan-triangulation cross product can point the wrong way when
-        // the winding doesn't match the stored normal, which would invert the
-        // Lambert term and produce an all-zero chart.
+        // Prefer the stored vertex normal: the cross-product direction depends on winding and can
+        // invert the Lambert term if it disagrees with the stored normal.
         let stored_normal_raw = section.vertices[i0].decode_normal();
         let stored_normal = Vec3::new(
             stored_normal_raw[0],
@@ -384,7 +300,6 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
             normal_raw.normalize()
         };
 
-        // Face-local basis: u = normalized edge1; v = normal × u.
         let u_axis = edge1.normalize_or_zero();
         if u_axis.length_squared() < 0.5 {
             charts.push(empty_chart());
@@ -396,15 +311,11 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
             continue;
         }
 
-        // Project all face vertices into (u, v). Collect min/max.
         let mut u_min = f32::INFINITY;
         let mut u_max = f32::NEG_INFINITY;
         let mut v_min = f32::INFINITY;
         let mut v_max = f32::NEG_INFINITY;
 
-        // Every face-fan triangle reuses vertex 0 → we can walk the fan's
-        // unique vertices by stepping through the fan triangles' third
-        // index and include the seed and second vertex once.
         let mut seen_verts: Vec<usize> = Vec::new();
         let mut seen_set: HashSet<usize> = HashSet::new();
         let end = start + range.index_count as usize;
@@ -471,22 +382,9 @@ fn empty_chart() -> Chart {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shelf packing
-//
-// `ChartPlacement` is defined in `chart_raster` and re-used here so the
-// animated weight-map baker can consume the same placements without a
-// parallel type.
-
-/// Shelf-pack charts into an atlas. Charts are sorted by height descending,
-/// then placed row-by-row. Returns `(atlas_width, atlas_height, placements)`
-/// in the same order as `charts`.
-///
-/// Overflow policy: if the packed height would exceed `MAX_ATLAS_DIMENSION`,
-/// the width is grown to the next power of two and packing is retried. When
-/// `atlas_w == MAX_ATLAS_DIMENSION` and charts still overflow, an error is
-/// returned — silent clamping here would produce out-of-bounds texel writes
-/// in the bake loop and dilation pass.
+/// Shelf-pack charts into an atlas. Returns `(atlas_width, atlas_height, placements)` in the
+/// same order as `charts`. Grows width on overflow; errors when at `MAX_ATLAS_DIMENSION` —
+/// silent clamping would produce out-of-bounds texel writes in the bake and dilation loops.
 fn shelf_pack(
     charts: &[Chart],
     texel_density: f32,
@@ -495,11 +393,9 @@ fn shelf_pack(
         return Ok((MIN_ATLAS_DIMENSION, MIN_ATLAS_DIMENSION, Vec::new()));
     }
 
-    // Sort indices by height descending for a standard shelf packer.
     let mut order: Vec<usize> = (0..charts.len()).collect();
     order.sort_by(|&a, &b| charts[b].height_texels.cmp(&charts[a].height_texels));
 
-    // Estimate atlas width: start at the next power of two above sqrt(total area).
     let total_area: u64 = charts
         .iter()
         .map(|c| (c.width_texels as u64) * (c.height_texels as u64))
@@ -508,18 +404,14 @@ fn shelf_pack(
     let mut atlas_w = target_side.max(MIN_ATLAS_DIMENSION).next_power_of_two();
     atlas_w = atlas_w.min(MAX_ATLAS_DIMENSION);
 
-    // Grow the width if any individual chart is wider than the candidate.
-    // Chart widths were validated against MAX_ATLAS_DIMENSION by the caller,
-    // so this cannot exceed the cap.
+    // Widen if any individual chart is wider than the current estimate. Caller already validated
+    // charts against MAX_ATLAS_DIMENSION so this cannot exceed the cap.
     for c in charts {
         if c.width_texels > atlas_w {
             atlas_w = c.width_texels.next_power_of_two().min(MAX_ATLAS_DIMENSION);
         }
     }
 
-    // Try to pack. If the packed height overflows MAX_ATLAS_DIMENSION, grow
-    // the width (which lets more charts fit per shelf) and retry. Stop when
-    // we've already hit the width cap — return an error rather than clamp.
     loop {
         match try_shelf_pack(charts, &order, atlas_w) {
             Ok((atlas_h_raw, placements)) => {
@@ -539,7 +431,6 @@ fn shelf_pack(
                 return Ok((atlas_w, atlas_h, placements));
             }
             Err(()) => {
-                // A chart was wider than `atlas_w`. Grow or bail.
                 if atlas_w >= MAX_ATLAS_DIMENSION {
                     return Err(LightmapBakeError::AtlasOverflow {
                         max: MAX_ATLAS_DIMENSION,
@@ -554,9 +445,7 @@ fn shelf_pack(
     }
 }
 
-/// Run one shelf-packing attempt at a fixed `atlas_w`. Returns the packed
-/// height (unpadded) and placements on success, or `Err(())` if a chart is
-/// wider than the atlas.
+/// One shelf-packing attempt at a fixed width. `Err(())` if a chart is wider than `atlas_w`.
 fn try_shelf_pack(
     charts: &[Chart],
     order: &[usize],
@@ -575,7 +464,6 @@ fn try_shelf_pack(
             return Err(());
         }
         if shelf_x + w > atlas_w {
-            // New shelf.
             shelf_y += shelf_h;
             shelf_x = 0;
             shelf_h = 0;
@@ -592,9 +480,6 @@ fn try_shelf_pack(
 
     Ok((shelf_y + shelf_h, placements))
 }
-
-// ---------------------------------------------------------------------------
-// UV assignment
 
 fn assign_lightmap_uvs(
     geom: &mut GeometryResult,
@@ -613,11 +498,6 @@ fn assign_lightmap_uvs(
         let start = range.index_offset as usize;
         let end = start + range.index_count as usize;
         let padding = CHART_PADDING_TEXELS as f32;
-
-        // Chart-local to atlas conversion. The chart is placed at
-        // (placement.x + padding, placement.y + padding) in texels, with
-        // interior extent (chart.width_texels - 2*padding, chart.height_texels
-        // - 2*padding). Face-local UV range is `chart.uv_min` + `chart.uv_extent`.
         let interior_w = (chart.width_texels as f32) - 2.0 * padding;
         let interior_h = (chart.height_texels as f32) - 2.0 * padding;
         let interior_w = interior_w.max(1.0);
@@ -653,9 +533,6 @@ fn assign_lightmap_uvs(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Per-chart baking
-
 #[allow(clippy::too_many_arguments)]
 fn bake_face_chart(
     bvh: &Bvh<f32, 3>,
@@ -678,17 +555,14 @@ fn bake_face_chart(
 
     for ty in 0..interior_h {
         for tx in 0..interior_w {
-            // Atlas texel coordinate.
             let atlas_x = placement.x as i32 + padding + tx;
             let atlas_y = placement.y as i32 + padding + ty;
             let idx = (atlas_y as u32 * atlas_w + atlas_x as u32) as usize;
 
-            // Texel centre in world space (shared helper keeps the static and
-            // animated-weight bakers aligned at chunk boundaries).
+            // Shared helper keeps static and animated-weight bakers aligned at chunk boundaries.
             let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
             let surface_normal = chart.normal;
 
-            // Evaluate every static light.
             let mut irr = Vec3::ZERO;
             let mut weighted_dir = Vec3::ZERO;
             for light in static_lights {
@@ -701,7 +575,6 @@ fn bake_face_chart(
                     continue;
                 }
                 irr += contribution;
-                // Weight direction by luminance so bright lights dominate.
                 let lum = contribution.x + contribution.y + contribution.z;
                 weighted_dir += to_light * lum;
             }
@@ -714,8 +587,7 @@ fn bake_face_chart(
             let dir = if weighted_dir.length_squared() > 1.0e-8 {
                 weighted_dir.normalize()
             } else {
-                // No direct contribution — store the surface normal as a
-                // neutral fallback so bumped-Lambert degrades to flat Lambert.
+                // No contribution — surface normal degrades bumped-Lambert to flat Lambert.
                 surface_normal
             };
             direction[idx] = dir;
@@ -724,12 +596,9 @@ fn bake_face_chart(
     }
 }
 
-/// Lambert contribution from one light plus the unit vector from surface to light
-/// (for directional lights, the direction toward the light source).
-///
-/// `pub(crate)` so the animated weight-map baker computes identical Lambert
-/// irradiance at texel centres — chunk boundaries must agree with the static
-/// bake or seams appear where animated and static contributions meet.
+/// Lambert contribution from one light plus the unit vector toward the light.
+/// `pub(crate)` so the animated weight-map baker produces identical irradiance —
+/// chunk boundaries must agree with the static bake or seams appear.
 pub(crate) fn light_contribution_and_direction(
     light: &MapLight,
     surface_point: Vec3,
@@ -828,9 +697,8 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// `pub(crate)` so the animated weight-map baker shares the static bake's
-/// shadow-ray epsilon and traversal — both bakers must agree on occlusion at
-/// chunk boundaries.
+/// `pub(crate)` so the animated weight-map baker shares the same traversal and epsilon —
+/// both bakers must agree on occlusion at chunk boundaries.
 pub(crate) fn shadow_visible(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
@@ -901,7 +769,7 @@ fn segment_clear(
     true
 }
 
-/// Double-sided Möller-Trumbore intersection. Returns distance along ray.
+/// Double-sided Möller-Trumbore intersection.
 fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     let edge1 = b - a;
     let edge2 = c - a;
@@ -925,9 +793,6 @@ fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Optio
     if t <= 0.0 { None } else { Some(t) }
 }
 
-// ---------------------------------------------------------------------------
-// Edge dilation
-
 fn dilate_edges(
     irradiance: &mut [f32],
     direction: &mut [Vec3],
@@ -935,10 +800,6 @@ fn dilate_edges(
     atlas_w: u32,
     atlas_h: u32,
 ) {
-    // Single-pass dilation into the padding ring (1-2 texels). For each
-    // uncovered texel whose 8-neighbourhood contains a covered texel, copy
-    // the average of covered neighbours. The padding width is
-    // CHART_PADDING_TEXELS so we run the loop that many times.
     let w = atlas_w as i32;
     let h = atlas_h as i32;
 
@@ -995,11 +856,7 @@ fn dilate_edges(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Encoding
-
 fn encode_irradiance_rgba16f(data: &[f32]) -> Vec<u8> {
-    // RGBA16F: 8 bytes per texel. Input is interleaved RGBA.
     let texel_count = data.len() / 4;
     let mut out = Vec::with_capacity(texel_count * 8);
     for t in 0..texel_count {
@@ -1021,17 +878,13 @@ fn encode_direction_rgba8(direction: &[Vec3], coverage: &[bool]) -> Vec<u8> {
         let bytes = if coverage[i] {
             encode_direction_oct([d.x, d.y, d.z])
         } else {
-            // Uncovered texels: neutral up-pointing direction so any stray
-            // bilinear sampling returns a Lambert-valid vector.
+            // Neutral up-direction: stray bilinear samples return a Lambert-valid vector.
             [128u8, 255, 128, 255]
         };
         out.extend_from_slice(&bytes);
     }
     out
 }
-
-// ---------------------------------------------------------------------------
-// Tests
 
 #[cfg(test)]
 mod tests {
@@ -1043,7 +896,6 @@ mod tests {
     use postretro_level_format::texture_names::TextureNamesSection;
 
     fn unit_quad_geometry() -> GeometryResult {
-        // A 1m × 1m quad on the XZ plane at y=0, facing +Y.
         let v0 = Vertex::new(
             [0.0, 0.0, 0.0],
             [0.0, 0.0],
@@ -1136,7 +988,6 @@ mod tests {
         let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS)
             .unwrap()
             .section;
-        // Placeholder is 1x1.
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
     }
@@ -1173,8 +1024,6 @@ mod tests {
             lights: &static_lights,
         };
         let section = bake_lightmap(&mut inputs, 0.25).unwrap().section;
-        // Expect a > 1×1 atlas (real bake path) and at least one non-zero
-        // irradiance texel.
         assert!(section.width >= MIN_ATLAS_DIMENSION);
         assert!(section.height >= MIN_ATLAS_DIMENSION);
         assert_eq!(
@@ -1212,21 +1061,17 @@ mod tests {
         let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS)
             .unwrap()
             .section;
-        // Only a dynamic light → placeholder path.
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
     }
 
     #[test]
     fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
-        // The static atlas carries only non-animated static lights. `is_dynamic`
-        // lights contribute at runtime via the direct lighting loop; animated
-        // lights (including `bake_only`) contribute at runtime via the
-        // weight-map compose pass. Baking any of them into the static atlas
-        // would double-count once the runtime compose pass runs.
+        // The static atlas carries only non-animated static lights. Dynamic and animated lights
+        // are owned by the runtime direct-lighting and weight-map compose passes respectively;
+        // baking them here would double-count.
         use crate::map_data::LightAnimation;
 
-        // Baseline: plain static non-animated light → real bake.
         let mut geo_static = unit_quad_geometry();
         let (bvh, prims, _) = build_bvh(&geo_static).unwrap();
         let base = point_light_above();
@@ -1243,7 +1088,6 @@ mod tests {
             "non-animated static light must bake into a real atlas",
         );
 
-        // Case 1: `is_dynamic` light → placeholder (already-known behavior).
         let mut dyn_light = point_light_above();
         dyn_light.is_dynamic = true;
         let mut geo_dyn = unit_quad_geometry();
@@ -1258,8 +1102,6 @@ mod tests {
         let section_dyn = bake_lightmap(&mut inputs_d, 0.25).unwrap().section;
         assert_eq!(section_dyn.width, 1, "is_dynamic light must not bake");
 
-        // Case 2: animated (non-bake_only, non-dynamic) light → placeholder.
-        // The runtime weight-map compose pass owns this light's contribution.
         let mut anim_light = point_light_above();
         anim_light.animation = Some(LightAnimation {
             period: 1.0,
@@ -1284,8 +1126,6 @@ mod tests {
             "animated light must not contribute to the static atlas",
         );
 
-        // Case 3: `bake_only` animated light → placeholder. Same reason — the
-        // weight-map compose pass carries it at runtime.
         let mut bake_only_anim = anim_light.clone();
         bake_only_anim.bake_only = true;
         let mut geo_bo = unit_quad_geometry();
@@ -1432,10 +1272,7 @@ mod tests {
         ];
         let mut vertices = floor;
         vertices.extend(ceiling);
-        let indices = vec![
-            0, 1, 2, 0, 2, 3, // floor
-            4, 5, 6, 4, 6, 7, // ceiling
-        ];
+        let indices = vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
         let faces = vec![
             FaceMeta {
                 leaf_index: 0,
@@ -1468,7 +1305,7 @@ mod tests {
 
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let light = MapLight {
-            origin: DVec3::new(1.0, 2.0, 1.0), // above the ceiling
+            origin: DVec3::new(1.0, 2.0, 1.0),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],
@@ -1493,10 +1330,6 @@ mod tests {
         };
         let section = bake_lightmap(&mut inputs, 0.25).unwrap().section;
 
-        // Every irradiance texel in the floor's chart should be zero (or have
-        // leaked in only via edge-dilation into padding). Verify at least
-        // *some* texels are fully zero — the bake must produce an occluded
-        // region, not a uniformly-lit atlas.
         let mut zero_count = 0;
         for t in 0..(section.width * section.height) as usize {
             let r_bits =
@@ -1513,15 +1346,9 @@ mod tests {
 
     #[test]
     fn oversize_face_returns_error_rather_than_panicking() {
-        // Synthesize a single quad so large that even at the default texel
-        // density it exceeds MAX_ATLAS_DIMENSION on one axis. The baker must
-        // return ChartTooLarge (or AtlasOverflow) rather than silently
-        // clamping and panicking in the bake loop.
-        //
-        // Regression: the old path clamped atlas_h via `.min(MAX_ATLAS_DIMENSION)`
-        // but left chart placements at their pre-clamp y-coordinates, writing
-        // out of bounds during bake and dilation.
-        let size = 200.0; // metres — 5000 texels at 0.04 m/texel, beyond MAX_ATLAS_DIMENSION
+        // Regression: the old path clamped atlas_h but left chart placements at pre-clamp
+        // coordinates, causing out-of-bounds writes during bake and dilation.
+        let size = 200.0; // 5000 texels at 0.04 m/texel, beyond MAX_ATLAS_DIMENSION
         let v0 = Vertex::new(
             [0.0, 0.0, 0.0],
             [0.0, 0.0],
@@ -1588,10 +1415,6 @@ mod tests {
 
     #[test]
     fn shared_world_vertex_produces_two_distinct_records() {
-        // Two triangles that share a world-space vertex (index 0) across two
-        // separate faces. After the baker runs, each face must own its own
-        // vertex record so it can carry its own lightmap UV — otherwise one
-        // face's UV overwrites the other at the seam.
         let shared = Vertex::new(
             [0.0, 0.0, 0.0],
             [0.0, 0.0],
@@ -1632,8 +1455,6 @@ mod tests {
             true,
             [0.0, 0.0],
         );
-        // Face A: (shared=0, a1=1, a2=2) — triangle in +X,+Z quadrant.
-        // Face B: (shared=0, b1=3, b2=4) — triangle sharing vertex 0.
         let mut geo = GeometryResult {
             geometry: GeometrySection {
                 vertices: vec![shared, a1, a2, b1, b2],
@@ -1673,32 +1494,23 @@ mod tests {
         };
         let _ = bake_lightmap(&mut inputs, 0.25).unwrap();
 
-        // Vertex 0 should now belong to face A only; face B should reference a
-        // freshly-minted duplicate so its lightmap UV can differ.
         assert!(
             geo.geometry.vertices.len() > original_vertex_count,
             "expected at least one duplicated vertex after split, got {} (was {})",
             geo.geometry.vertices.len(),
             original_vertex_count,
         );
-        // Face B's first index must no longer be 0 (the original shared vertex).
         let face_b_start = geo.face_index_ranges[1].index_offset as usize;
         let face_b_first_vi = geo.geometry.indices[face_b_start];
         assert_ne!(
             face_b_first_vi, 0,
             "face B should reference a duplicated vertex, not the original shared one",
         );
-        // Confirm position, UV, normal, tangent are preserved across the split.
         let original = &geo.geometry.vertices[0];
         let duplicate = &geo.geometry.vertices[face_b_first_vi as usize];
         assert_eq!(original.position, duplicate.position);
         assert_eq!(original.uv, duplicate.uv);
         assert_eq!(original.normal_oct, duplicate.normal_oct);
         assert_eq!(original.tangent_packed, duplicate.tangent_packed);
-        // Lightmap UVs may differ between the two copies (different chart
-        // placements) — that's the whole point of the split. We do not assert
-        // inequality here because the two triangles' charts could coincidentally
-        // land on the same atlas texel; the structural guarantee (two distinct
-        // records) is what matters.
     }
 }

@@ -7,11 +7,8 @@ use std::path::{Path, PathBuf};
 /// A loaded texture's CPU-side data, ready for GPU upload by the renderer.
 #[derive(Debug, Clone)]
 pub struct LoadedTexture {
-    /// RGBA8 pixel data.
     pub data: Vec<u8>,
-    /// Texture width in pixels.
     pub width: u32,
-    /// Texture height in pixels.
     pub height: u32,
     /// True if this is a checkerboard placeholder (missing or corrupt source).
     #[allow(dead_code)]
@@ -22,35 +19,24 @@ pub struct LoadedTexture {
 /// Indexed by BSP miptexture array index for direct lookup.
 #[derive(Debug)]
 pub struct TextureSet {
-    /// One entry per BSP miptexture index. The Vec index matches the BSP texture index.
     pub textures: Vec<LoadedTexture>,
-    /// Optional per-texel specular intensity, sibling-loaded as `{name}_s.png`.
-    /// R8-equivalent data unpacked into the R channel of RGBA8 (G/B/A unused
-    /// by the shader). `None` when no `_s` sibling was present or when the
-    /// sibling's dimensions did not match the diffuse. Same indexing as
-    /// `textures`. See `context/lib/resource_management.md` §4.1.
+    /// Per-texel specular intensity (`{name}_s.png`). R channel of RGBA8; G/B/A unused by shader.
+    /// `None` when absent or dimensions mismatched. See `context/lib/resource_management.md` §4.1.
     pub specular: Vec<Option<LoadedTexture>>,
-    /// Optional tangent-space normal map, sibling-loaded as `{name}_n.png`.
-    /// Stored as RGBA8 and uploaded as `Rgba8Unorm` (linear, NOT sRGB). `None`
-    /// when no `_n` sibling was present, the sibling's dimensions did not
-    /// match the diffuse, or the sibling failed to decode. Same indexing as
-    /// `textures`. See `context/lib/resource_management.md` §4.3.
+    /// Tangent-space normal map (`{name}_n.png`). Uploaded as `Rgba8Unorm` (linear, NOT sRGB).
+    /// `None` when absent, mismatched, or decode failed. See `context/lib/resource_management.md` §4.3.
     pub normal: Vec<Option<LoadedTexture>>,
 }
-
-// --- Checkerboard placeholder ---
 
 const PLACEHOLDER_SIZE: u32 = 64;
 const CHECKER_SQUARE: u32 = 8;
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 
-/// Generate a 64x64 checkerboard placeholder for the renderer when no textures are available.
 pub fn generate_placeholder() -> LoadedTexture {
     generate_checkerboard()
 }
 
-/// Generate a 64x64 checkerboard placeholder (magenta/black, 8x8 squares).
 fn generate_checkerboard() -> LoadedTexture {
     let pixel_count = (PLACEHOLDER_SIZE * PLACEHOLDER_SIZE) as usize;
     let mut data = Vec::with_capacity(pixel_count * 4);
@@ -76,11 +62,8 @@ fn generate_checkerboard() -> LoadedTexture {
     }
 }
 
-// --- Texture name to file path resolution ---
-
-/// Build a map from lowercase texture name stem to file path by scanning the
-/// texture root directory. The texture root contains collection subdirectories,
-/// each holding PNG files: `<texture_root>/<collection>/<name>.png`.
+/// Build a map from lowercase texture name stem to file path.
+/// Layout: `<texture_root>/<collection>/<name>.png`.
 fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
     let mut map: HashMap<String, PathBuf> = HashMap::new();
 
@@ -109,7 +92,6 @@ fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
         for file_entry in files.flatten() {
             let file_path = file_entry.path();
 
-            // Only consider .png files.
             let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !ext.eq_ignore_ascii_case("png") {
                 continue;
@@ -135,7 +117,7 @@ fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
     map
 }
 
-/// Load a single PNG file and convert to RGBA8. Returns a placeholder on failure.
+/// Load a PNG file as RGBA8. Returns a checkerboard placeholder on failure.
 fn load_png(path: &Path, texture_name: &str) -> LoadedTexture {
     let img = match image::open(path) {
         Ok(img) => img,
@@ -160,15 +142,8 @@ fn load_png(path: &Path, texture_name: &str) -> LoadedTexture {
     }
 }
 
-/// Load all textures referenced by a BSP file.
-///
-/// `texture_names` is the list of texture names extracted from the BSP miptexture
-/// array. Each entry is `Option<String>` because BSP texture entries can be `None`.
-/// The returned `TextureSet` is indexed identically: index `i` in the result
-/// corresponds to BSP miptexture index `i`.
-///
-/// `texture_root` is the directory to search for PNG files, typically
-/// `<content_root>/textures/`.
+/// Load all textures referenced by a BSP file. The returned `TextureSet` is
+/// indexed identically to `texture_names` (BSP miptexture array order).
 pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> TextureSet {
     let name_to_path = build_name_to_path_map(texture_root);
 
@@ -202,12 +177,9 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
             }
         };
 
-        // Probe for `{name}_s.png` sibling. Absent → None → shader binds the
-        // shared 1×1 black fallback (zero specular). Size mismatch → warn +
-        // None. When the diffuse is itself a placeholder (load failed), skip
-        // the sibling probe — specular without a real diffuse is meaningless
-        // and could spuriously match a placeholder-sized sibling.
-        // See context/lib/resource_management.md §4.1.
+        // Skip sibling probes when diffuse failed: a placeholder's 64×64 dims
+        // could spuriously match a sibling, and sidecar data without a real
+        // diffuse is meaningless. See context/lib/resource_management.md §4.1.
         let spec_key = format!("{lookup_key}_s");
         let spec = if diffuse.is_placeholder {
             None
@@ -246,11 +218,8 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
             }
         };
 
-        // Probe for `{name}_n.png` sibling (tangent-space normal map). Absent
-        // → log info once and the renderer binds the shared neutral-normal
-        // placeholder. Dimension mismatch → warn + None. Decode failure →
-        // error + None. As with `_s`, skip the probe when the diffuse itself
-        // failed to load. See context/lib/resource_management.md §4.3.
+        // `_n.png` sibling (tangent-space normal map). See §4.3 — same skip
+        // contract as `_s` above.
         let normal_key = format!("{lookup_key}_n");
         let normal_loaded = if diffuse.is_placeholder {
             None
@@ -299,15 +268,8 @@ pub fn load_textures(texture_names: &[Option<String>], texture_root: &Path) -> T
     }
 }
 
-/// Strict variant of `load_png` that surfaces decode errors to the caller
-/// instead of substituting a checkerboard. Used for sidecar textures where the
-/// caller wants to log a sidecar-specific message and fall back to a shared
-/// placeholder rather than to a per-texture checkerboard.
-///
-/// Callers are responsible for uploading the result with the correct GPU format.
-/// Normal maps (`_n.png`) must be uploaded as `Rgba8Unorm` (linear, NOT sRGB) —
-/// this is the load-bearing invariant that the build-time validator enforces and
-/// what distinguishes them from diffuse textures (`Rgba8UnormSrgb`).
+/// Like `load_png` but surfaces errors instead of substituting a checkerboard.
+/// Callers must upload `_n.png` results as `Rgba8Unorm` (linear, NOT sRGB).
 fn load_png_strict(path: &Path) -> Result<LoadedTexture, image::ImageError> {
     let img = image::open(path)?;
     let rgba = img.to_rgba8();
@@ -320,14 +282,10 @@ fn load_png_strict(path: &Path) -> Result<LoadedTexture, image::ImageError> {
     })
 }
 
-// --- Tests ---
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-
-    // -- Checkerboard generation --
 
     #[test]
     fn checkerboard_has_correct_dimensions() {
@@ -341,25 +299,19 @@ mod tests {
     #[test]
     fn checkerboard_top_left_is_magenta() {
         let tex = generate_checkerboard();
-        // Pixel (0,0) is in checker square (0,0) which is even+even = magenta.
         assert_eq!(&tex.data[0..4], &MAGENTA);
     }
 
     #[test]
     fn checkerboard_alternates_correctly() {
         let tex = generate_checkerboard();
-        // Pixel (0,0) -> checker (0,0) -> magenta
         assert_eq!(&tex.data[0..4], &MAGENTA);
-        // Pixel (8,0) -> checker (1,0) -> black
         let offset_8_0 = (8 * 4) as usize;
         assert_eq!(&tex.data[offset_8_0..offset_8_0 + 4], &BLACK);
-        // Pixel (16,0) -> checker (2,0) -> magenta
         let offset_16_0 = (16 * 4) as usize;
         assert_eq!(&tex.data[offset_16_0..offset_16_0 + 4], &MAGENTA);
-        // Pixel (0,8) -> checker (0,1) -> black
         let offset_0_8 = (8 * 64 * 4) as usize;
         assert_eq!(&tex.data[offset_0_8..offset_0_8 + 4], &BLACK);
-        // Pixel (8,8) -> checker (1,1) -> magenta
         let offset_8_8 = ((8 * 64 + 8) * 4) as usize;
         assert_eq!(&tex.data[offset_8_8..offset_8_8 + 4], &MAGENTA);
     }
@@ -374,8 +326,6 @@ mod tests {
             );
         }
     }
-
-    // -- Name-to-path mapping --
 
     #[test]
     fn build_name_map_finds_pngs_in_collections() {
@@ -427,16 +377,12 @@ mod tests {
 
     #[test]
     fn build_name_map_ignores_files_at_root_level() {
-        // Files directly in the texture root (not in a collection subdirectory)
-        // should be ignored.
         let dir = tempdir("name_map_root_files");
         fs::write(dir.join("stray.png"), minimal_png()).unwrap();
 
         let map = build_name_to_path_map(&dir);
         assert!(map.is_empty());
     }
-
-    // -- load_textures integration --
 
     #[test]
     fn load_textures_loads_matching_pngs() {
@@ -452,7 +398,6 @@ mod tests {
         assert!(!result.textures[0].is_placeholder);
         assert_eq!(result.textures[0].width, 32);
         assert_eq!(result.textures[0].height, 32);
-        // RGBA8: 32 * 32 * 4 bytes
         assert_eq!(result.textures[0].data.len(), 32 * 32 * 4);
     }
 
@@ -463,7 +408,6 @@ mod tests {
         fs::create_dir(&collection).unwrap();
         write_test_png(&collection.join("metal_floor_01.png"), 16, 16);
 
-        // BSP name is uppercase; file is lowercase.
         let names = vec![Some("METAL_FLOOR_01".to_string())];
         let result = load_textures(&names, &dir);
 
@@ -502,7 +446,6 @@ mod tests {
         let dir = tempdir("load_corrupt");
         let collection = dir.join("broken");
         fs::create_dir(&collection).unwrap();
-        // Write invalid data as a "PNG" file.
         fs::write(collection.join("bad_texture.png"), b"this is not a PNG").unwrap();
 
         let names = vec![Some("bad_texture".to_string())];
@@ -529,12 +472,12 @@ mod tests {
         let result = load_textures(&names, &dir);
 
         assert_eq!(result.textures.len(), 4);
-        assert!(!result.textures[0].is_placeholder); // alpha found
+        assert!(!result.textures[0].is_placeholder);
         assert_eq!(result.textures[0].width, 16);
-        assert!(result.textures[1].is_placeholder); // None entry
-        assert!(!result.textures[2].is_placeholder); // beta found
+        assert!(result.textures[1].is_placeholder);
+        assert!(!result.textures[2].is_placeholder);
         assert_eq!(result.textures[2].width, 32);
-        assert!(result.textures[3].is_placeholder); // missing
+        assert!(result.textures[3].is_placeholder);
     }
 
     #[test]
@@ -548,22 +491,15 @@ mod tests {
         assert!(result.textures.is_empty());
     }
 
-    // -- Test helpers --
-
-    /// Create a temporary directory for tests. Uses the system temp dir to avoid
-    /// polluting the project tree.
     fn tempdir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir()
             .join("postretro_texture_tests")
             .join(label);
-        // Clean up any prior run.
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    /// Generate a minimal valid PNG in memory (1x1 red pixel). Used for
-    /// name-to-path mapping tests where actual pixel content doesn't matter.
     fn minimal_png() -> Vec<u8> {
         use image::{ImageBuffer, Rgba};
         let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
@@ -574,7 +510,6 @@ mod tests {
         buf
     }
 
-    /// Write a solid-color test PNG with the given dimensions.
     fn write_test_png(path: &Path, width: u32, height: u32) {
         use image::{ImageBuffer, Rgba};
         let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
@@ -582,24 +517,12 @@ mod tests {
         img.save(path).unwrap();
     }
 
-    /// Write a PNG with a specific solid color. Used to verify that sibling
-    /// data is preserved verbatim through the loader (e.g. that a normal-map
-    /// sibling's pixels reach the consumer unmodified).
     fn write_solid_png(path: &Path, width: u32, height: u32, color: [u8; 4]) {
         use image::{ImageBuffer, Rgba};
         let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
             ImageBuffer::from_pixel(width, height, Rgba(color));
         img.save(path).unwrap();
     }
-
-    // -- Sibling probe: `_n.png` (tangent-space normal map) --
-    //
-    // Contract (resource_management.md §4.3):
-    //   - Sibling absent              → `normal[i] == None`
-    //   - Sibling present + dims OK   → `normal[i] == Some(loaded)` with pixels preserved
-    //   - Dimension mismatch          → `normal[i] == None`
-    //   - Sibling decode failure      → `normal[i] == None` (strict path; no checkerboard substitution)
-    //   - Diffuse failed to load      → `normal[i] == None` (probe skipped entirely)
 
     #[test]
     fn normal_sibling_present_and_matching_produces_some() {
@@ -623,8 +546,8 @@ mod tests {
         assert_eq!(normal.width, 32);
         assert_eq!(normal.height, 32);
         assert!(!normal.is_placeholder);
-        // Pixel data must round-trip unmodified — normals are direction
-        // vectors, not colors; any silent transform would corrupt lighting.
+        // Pixel data must round-trip unmodified — normals are direction vectors;
+        // any silent transform would corrupt lighting.
         assert_eq!(&normal.data[0..4], &[128, 128, 255, 255]);
     }
 
@@ -638,7 +561,6 @@ mod tests {
         let result = load_textures(&[Some("brick".to_string())], &dir);
 
         assert!(result.normal[0].is_none());
-        // Diffuse still loads cleanly when the optional sibling is missing.
         assert!(!result.textures[0].is_placeholder);
     }
 
@@ -648,7 +570,6 @@ mod tests {
         let collection = dir.join("walls");
         fs::create_dir(&collection).unwrap();
         write_test_png(&collection.join("brick.png"), 32, 32);
-        // Wrong size — must not be silently rescaled or accepted.
         write_solid_png(
             &collection.join("brick_n.png"),
             16,
@@ -663,11 +584,8 @@ mod tests {
 
     #[test]
     fn normal_sibling_corrupt_produces_none_not_checkerboard() {
-        // The strict-load path is what distinguishes `_n` from the diffuse
-        // loader: a malformed normal map must NOT be substituted with a
-        // checkerboard placeholder (which would have valid 64x64 dims and
-        // could surface as broken lighting if it reached the GPU). It must
-        // become `None` so the renderer falls back to its neutral placeholder.
+        // A malformed normal map must become `None`, not a checkerboard —
+        // a 64×64 placeholder with valid dims would corrupt GPU lighting.
         let dir = tempdir("normal_corrupt");
         let collection = dir.join("walls");
         fs::create_dir(&collection).unwrap();
@@ -681,16 +599,9 @@ mod tests {
 
     #[test]
     fn normal_sibling_skipped_when_diffuse_is_placeholder() {
-        // Documents the current contract: when the diffuse fails to load and
-        // the loader substitutes a 64x64 checkerboard, the sibling probe is
-        // skipped even if a valid `_n.png` exists. Rationale (per the source
-        // comment): a normal map without a real diffuse is meaningless and
-        // could spuriously dimension-match the placeholder.
         let dir = tempdir("normal_skip_when_diffuse_placeholder");
         let collection = dir.join("walls");
         fs::create_dir(&collection).unwrap();
-        // No `brick.png` — diffuse will become a 64x64 checkerboard.
-        // A valid 64x64 `_n.png` would otherwise dimension-match.
         write_solid_png(
             &collection.join("brick_n.png"),
             64,
@@ -707,24 +618,12 @@ mod tests {
         );
     }
 
-    // -- Sibling probe: `_s.png` (specular intensity) --
-    //
-    // Contract (resource_management.md §4.1):
-    //   - Sibling absent              → `specular[i] == None`
-    //   - Sibling present + dims OK   → `specular[i] == Some(loaded)` with pixels preserved
-    //   - Dimension mismatch          → `specular[i] == None`
-    //   - Sibling decode failure      → `specular[i] == None` (loader uses non-strict
-    //                                    path, then converts the resulting placeholder
-    //                                    back to None — checkerboard must not leak through)
-    //   - Diffuse failed to load      → `specular[i] == None` (probe skipped entirely)
-
     #[test]
     fn specular_sibling_present_and_matching_produces_some() {
         let dir = tempdir("specular_present_match");
         let collection = dir.join("metal");
         fs::create_dir(&collection).unwrap();
         write_test_png(&collection.join("plate.png"), 32, 32);
-        // Specular intensity in R channel; G/B/A unused by the shader.
         write_solid_png(&collection.join("plate_s.png"), 32, 32, [200, 0, 0, 255]);
 
         let result = load_textures(&[Some("plate".to_string())], &dir);
@@ -766,10 +665,8 @@ mod tests {
 
     #[test]
     fn specular_sibling_corrupt_produces_none_not_checkerboard() {
-        // The diffuse loader substitutes a 64x64 checkerboard on PNG decode
-        // failure. The specular probe must recognize that placeholder and
-        // emit `None` rather than letting a magenta checker reach the shader
-        // as a "specular intensity map".
+        // A corrupt specular must emit `None`, not a checkerboard — a magenta
+        // checker must not reach the shader as a specular intensity map.
         let dir = tempdir("specular_corrupt");
         let collection = dir.join("metal");
         fs::create_dir(&collection).unwrap();
@@ -783,9 +680,6 @@ mod tests {
 
     #[test]
     fn specular_sibling_skipped_when_diffuse_is_placeholder() {
-        // Mirrors the `_n` contract: no real diffuse → no sibling probe, even
-        // when the sibling happens to be a valid 64x64 PNG that would
-        // dimension-match the checkerboard.
         let dir = tempdir("specular_skip_when_diffuse_placeholder");
         let collection = dir.join("metal");
         fs::create_dir(&collection).unwrap();
@@ -800,12 +694,8 @@ mod tests {
         );
     }
 
-    // -- Sibling independence --
-
     #[test]
     fn sibling_probes_are_independent() {
-        // A broken `_s.png` must not poison the `_n.png` slot, and vice versa.
-        // The two sibling channels are independent contracts.
         let dir = tempdir("sibling_independence");
         let collection = dir.join("mixed");
         fs::create_dir(&collection).unwrap();
@@ -816,7 +706,6 @@ mod tests {
             32,
             [128, 128, 255, 255],
         );
-        // Corrupt specular alongside a valid normal map.
         fs::write(collection.join("surface_s.png"), b"junk").unwrap();
 
         let result = load_textures(&[Some("surface".to_string())], &dir);

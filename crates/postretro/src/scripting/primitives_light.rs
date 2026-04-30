@@ -1,7 +1,4 @@
 // Scripting primitives: `setLightAnimation` (behavior-only).
-// `worldQuery` lives in `primitives.rs` — it is a generic ECS primitive
-// that happens to support lights; keeping it with the other entity primitives
-// means adding a second queryable component only requires editing that file.
 // See: context/lib/scripting.md
 
 use super::components::light::{LightAnimation, LightComponent};
@@ -11,11 +8,6 @@ use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, PrimitiveRegistry};
 use super::registry::{Component, ComponentKind, EntityId};
 use super::sequence::{SequenceError, SequencedPrimitiveRegistry};
-
-// --- Shared logic: setLightAnimation ----------------------------------------
-//
-// Both runtimes go through these so behavior stays identical across QuickJS
-// and Luau — no runtime gets a superset of the other's primitives.
 
 /// A single entity-handle snapshot produced by `world.query`. Carries the
 /// `EntityId` plus a read-only copy of the live component data at query time.
@@ -27,8 +19,6 @@ pub(super) struct LightQueryHandle {
     tags: Vec<String>,
 }
 
-/// Build every light-entity handle that matches the supplied `tag` filter.
-/// Returns an empty vec when no entities match.
 pub(super) fn collect_light_handles(ctx: &ScriptCtx, tag: Option<&str>) -> Vec<LightQueryHandle> {
     let reg = ctx.registry.borrow();
     let mut out = Vec::new();
@@ -46,8 +36,6 @@ pub(super) fn collect_light_handles(ctx: &ScriptCtx, tag: Option<&str>) -> Vec<L
     out
 }
 
-/// Serialize a query-handle list into a serde_json array the FFI layers
-/// forward to JS/Lua. Keeps the wire shape identical across runtimes.
 pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
     use serde_json::{Map, Value};
     let arr: Vec<Value> = handles
@@ -67,7 +55,6 @@ pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Val
             position.insert("z".to_string(), Value::from(z as f64));
             transform.insert("position".to_string(), Value::Object(position));
             obj.insert("transform".to_string(), Value::Object(transform));
-            // Duplicated at the top level so scripts can gate animation without unpacking component.
             obj.insert("isDynamic".to_string(), Value::from(h.component.is_dynamic));
             obj.insert(
                 "tags".to_string(),
@@ -80,11 +67,6 @@ pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Val
     Value::Array(arr)
 }
 
-// --- Validation for setLightAnimation ---------------------------------------
-
-/// Validate and normalize an incoming `LightAnimation` against the spec's
-/// error table. On success returns the animation with any non-unit direction
-/// samples normalized and `phase` normalized into `[0.0, 1.0)`.
 fn validate_and_normalize(
     mut anim: LightAnimation,
     target_is_dynamic: bool,
@@ -133,13 +115,11 @@ fn validate_and_normalize(
                 });
             }
             let len = len_sq.sqrt();
-            // Silently normalize. Unit-length invariant enforced here —
-            // GPU evaluator assumes normalized direction.
+            // Unit-length invariant enforced here — GPU evaluator assumes normalized direction.
             *sample = Vec3Lit([x / len, y / len, z / len]);
         }
     }
-    // Normalize phase into [0.0, 1.0) via rem_euclid, matching the GPU
-    // evaluator. `None` and `Some(0.0)` both mean "start at the period head".
+    // rem_euclid matches the GPU evaluator's phase wrap behavior.
     if let Some(p) = anim.phase {
         let normalized = if p.is_finite() {
             p.rem_euclid(1.0)
@@ -151,8 +131,6 @@ fn validate_and_normalize(
     Ok(anim)
 }
 
-/// Apply a validated animation (or `None` to clear) to the entity's existing
-/// `LightComponent`. Errors: `EntityNotFound`, `ComponentNotFound`, `InvalidArgument`.
 fn apply_light_animation(
     ctx: &ScriptCtx,
     id: EntityId,
@@ -162,9 +140,7 @@ fn apply_light_animation(
     apply_light_animation_inner(&mut reg, id, animation)
 }
 
-/// Inner logic shared by the script-facing FFI path (`apply_light_animation`)
-/// and the sequenced-primitive path. Takes the already-borrowed registry
-/// directly to avoid a second `borrow_mut` on the same `RefCell` guard.
+/// Takes an already-borrowed registry to avoid a second `borrow_mut` on the same `RefCell` guard.
 pub(crate) fn apply_light_animation_inner(
     registry: &mut super::registry::EntityRegistry,
     id: EntityId,
@@ -188,15 +164,11 @@ pub(crate) fn apply_light_animation_inner(
     Ok(())
 }
 
-// --- Primitive registration --------------------------------------------------
-
 const SET_LIGHT_ANIM_DOC: &str = "Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. \
      Non-unit direction samples are silently normalized; zero-length direction samples \
      and color animations on non-dynamic lights error with InvalidArgument. \
      Behavior context only.";
 
-/// Register light-entity primitives (`setLightAnimation`, `worldQuery` light path)
-/// into the given registry with the supplied behavior context.
 #[allow(clippy::arc_with_non_send_sync)]
 pub(crate) fn register_light_entity_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_set_light_animation(registry, ctx);
@@ -217,28 +189,10 @@ fn register_set_light_animation(registry: &mut PrimitiveRegistry, ctx: ScriptCtx
         .finish();
 }
 
-// --- Sequenced-primitive registration ---------------------------------------
-//
-// `SequencedPrimitiveRegistry` is the Rust-only dispatch table consulted by
-// `fire_named_event_with_sequences` when a `Sequence` reaction step fires.
-// The handler registered here shares `apply_light_animation` and
-// `validate_and_normalize` with the script-facing `setLightAnimation` —
-// validation rules and registry-write semantics stay identical across the
-// two entry points.
-
-/// Register `setLightAnimation` as a sequenced primitive. The handler
-/// deserializes the step's `serde_json::Value` payload as
-/// `Option<LightAnimation>` (a JSON `null` clears the entity's animation,
-/// matching the script-facing primitive) and applies it via the same
-/// `apply_light_animation` path the behavior primitive uses. `ctx` is
-/// captured so future sequenced primitives can reach audio, render, or other
-/// `ScriptCtx`-held state without a signature change.
 pub(crate) fn register_sequenced_light_primitives(
     registry: &mut SequencedPrimitiveRegistry,
     ctx: ScriptCtx,
 ) {
-    // Sequenced-primitive names intentionally mirror script-facing primitive names so
-    // authors see one vocabulary — the script registry and sequenced registry are otherwise independent.
     registry.register("setLightAnimation", move |id, args| {
         let animation: Option<LightAnimation> =
             serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
@@ -251,16 +205,14 @@ pub(crate) fn register_sequenced_light_primitives(
 fn script_to_sequence_error(err: ScriptError) -> SequenceError {
     match err {
         ScriptError::InvalidArgument { reason } => SequenceError::InvalidArgument { reason },
-        // EntityNotFound is pre-filtered by dispatch_sequence before the handler is called;
-        // reaching this arm is a defensive path for unexpected engine-state inconsistency.
+        // EntityNotFound is pre-filtered by dispatch_sequence; this arm is a defensive path.
         other => SequenceError::ExecutionFailed {
             reason: other.to_string(),
         },
     }
 }
 
-/// Register the shared types referenced by SP6 primitive signatures into the
-/// typedef generator. Complements `register_shared_types` in `primitives.rs`.
+/// Complements `register_shared_types` in `primitives.rs`.
 pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_enum("LightKind")
@@ -274,9 +226,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("InverseDistance", "")
         .variant("InverseSquared", "")
         .finish();
-    // Field type spellings use Rust-style Option / Vec so the typedef
-    // generator's `rust_to_ts` / `rust_to_luau` pass yields valid output
-    // (`T | null` in TS, `T?` in Luau).
     registry
         .register_type("LightAnimation")
         .field("periodMs", "f32", "Total period of the loop, in milliseconds.")
@@ -427,8 +376,6 @@ mod tests {
         r
     }
 
-    // --- world.query ---------------------------------------------------------
-
     #[test]
     fn world_query_returns_all_light_bearing_entities() {
         let (ctx, id) = test_ctx_with_light(true, None);
@@ -441,7 +388,6 @@ mod tests {
     #[test]
     fn world_query_tag_filter_narrows_result() {
         let (ctx, _) = test_ctx_with_light(true, Some("hallway_wave"));
-        // A second light without the tag must not appear.
         let other;
         {
             let mut reg = ctx.registry.borrow_mut();
@@ -521,20 +467,12 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    // --- world.query cross-runtime parity -----------------------------------
-    //
-    // The `set_light_animation_quickjs_and_luau_produce_identical_output` test
-    // covers the mutate path; these cover the dispatch (read) path: shape of
-    // the returned handles, error surface for unknown components, tag filter
-    // behavior, and the `tag: <wrong type>` conversion error.
-
     #[test]
     fn world_query_light_component_returns_light_handles() {
         let (ctx, id) = test_ctx_with_light(true, Some("hallway_wave"));
         let r = registry_for(ctx);
         let raw = id.to_raw();
 
-        // QuickJS: assert id, isDynamic, tags, transform.position.
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
         jsctx.with(|qjs| {
@@ -560,7 +498,6 @@ mod tests {
             assert_eq!(json, expected);
         });
 
-        // Luau: assert the same fields via separate return values.
         let lua = mlua::Lua::new();
         install_all_lua(&r, &lua);
         let (got_id, is_dynamic, first_tag, x, y, z): (i64, bool, String, f64, f64, f64) = lua
@@ -584,16 +521,11 @@ mod tests {
 
     #[test]
     fn world_query_handle_component_exposes_camel_case_keys() {
-        // Regression: `LightComponent` is serialized straight through serde
-        // (with `rename_all = "camelCase"`) into the script-facing handle's
-        // `component` field. The TypeScript / Luau type declarations promise
-        // `lightType`, `falloffModel`, etc — if the wire shape were ever
-        // reverted to `light_type`/`falloff_model`, scripts would silently see
-        // `undefined` / `nil` here. This test pins the camelCase contract.
+        // Regression: if `LightComponent`'s serde shape ever reverts to snake_case,
+        // scripts silently see `undefined`/`nil` for `lightType`, `falloffModel`, etc.
         let (ctx, _id) = test_ctx_with_light(true, Some("alpha"));
         let r = registry_for(ctx);
 
-        // QuickJS: `lightType` and `falloffModel` must be present strings.
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
         jsctx.with(|qjs| {
@@ -618,7 +550,6 @@ mod tests {
             );
         });
 
-        // Luau: same fields read off the table.
         let lua = mlua::Lua::new();
         install_all_lua(&r, &lua);
         let (light_type, falloff_model, falloff_range, cast_shadows): (String, String, f64, bool) =
@@ -642,7 +573,6 @@ mod tests {
         let (ctx, _id) = test_ctx_with_light(true, None);
         let r = registry_for(ctx);
 
-        // QuickJS: catch and surface the message.
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
         jsctx.with(|qjs| {
@@ -659,7 +589,6 @@ mod tests {
             );
         });
 
-        // Luau: pcall returns (ok, err); err stringifies to the same message.
         let lua = mlua::Lua::new();
         install_all_lua(&r, &lua);
         let (ok, err): (bool, String) = lua
@@ -682,8 +611,6 @@ mod tests {
 
     #[test]
     fn world_query_tag_filter_excludes_unmatched() {
-        // Two lights with distinct tags: tag filter must isolate one; querying
-        // without a tag must yield both.
         let (ctx, first) = test_ctx_with_light(true, Some("alpha"));
         let second;
         {
@@ -712,7 +639,6 @@ mod tests {
         let r = registry_for(ctx);
         let first_raw = first.to_raw();
 
-        // QuickJS: filtered → only "alpha"; unfiltered → both.
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
         jsctx.with(|qjs| {
@@ -732,7 +658,6 @@ mod tests {
             assert_eq!(total, 2);
         });
 
-        // Luau: same checks.
         let lua = mlua::Lua::new();
         install_all_lua(&r, &lua);
         let (filtered_count, filtered_id, total_count): (i64, i64, i64) = lua
@@ -752,9 +677,8 @@ mod tests {
 
     #[test]
     fn world_query_returns_both_tags_for_multi_tagged_entity() {
-        // Regression: tag migration from `Option<String>` to `Vec<String>` —
-        // a query that matches one tag must still surface every tag the
-        // entity carries in its `tags` array on the JS-facing handle.
+        // Regression: after `Option<String>` → `Vec<String>` migration, a query
+        // matching one tag must still surface all tags on the JS-facing handle.
         let (ctx, id) = test_ctx_with_light(true, None);
         {
             let mut reg = ctx.registry.borrow_mut();
@@ -782,9 +706,7 @@ mod tests {
 
     #[test]
     fn world_query_tag_wrong_type_errors() {
-        // Regression: numeric `tag` previously fell through `Option::ok()` and
-        // returned all lights; now it must surface a conversion error so
-        // typos / wrong-typed inputs are visible to script authors.
+        // Regression: numeric `tag` previously fell through `Option::ok()` and returned all lights.
         let (ctx, _id) = test_ctx_with_light(true, Some("alpha"));
         let r = registry_for(ctx);
 
@@ -804,12 +726,8 @@ mod tests {
             );
         });
 
-        // Luau: mlua coerces numbers to strings for `Option<String>`, so a
-        // numeric `tag` becomes the string `"42"`. The contract being tested
-        // is the same as the bug fix it covers: a wrong-typed tag must NOT
-        // silently fall through to "no filter" and return every light. Either
-        // erroring or treating the coerced string as a literal tag (which
-        // matches no entity) is acceptable.
+        // Luau: mlua coerces numbers to strings, so tag=42 becomes "42". Either
+        // erroring or matching no entity is acceptable — must not return all lights.
         let lua = mlua::Lua::new();
         install_all_lua(&r, &lua);
         let count: i64 = lua
@@ -832,14 +750,8 @@ mod tests {
             "Luau world_query with numeric tag must not silently return the tagged light \
              as if no filter were applied"
         );
-        // Defensive: the seeded fixture has exactly one light tagged \"alpha\".
-        // A return of 1 here would mean the numeric tag was dropped to None
-        // and all lights were returned (the original bug). 0 (no match) or
-        // -1 (error) are both acceptable.
         assert!(count == 0 || count == -1, "got unexpected count: {count}");
     }
-
-    // --- set_light_animation -------------------------------------------------
 
     #[test]
     fn set_light_animation_updates_registry() {
@@ -1051,8 +963,6 @@ mod tests {
         assert!(matches!(err, ScriptError::InvalidArgument { .. }));
     }
 
-    // --- Context-scope enforcement ------------------------------------------
-
     #[test]
     fn primitive_context_scopes() {
         let ctx = ScriptCtx::new();
@@ -1063,9 +973,7 @@ mod tests {
                 .map(|p| p.context_scope)
                 .unwrap_or_else(|| panic!("primitive {name} not found"))
         };
-        // worldQuery is read-only and valid in both behavior and data contexts.
         assert_eq!(scope_of("worldQuery"), ContextScope::Both);
-        // setLightAnimation mutates runtime light state — behavior context only.
         assert_eq!(scope_of("setLightAnimation"), ContextScope::BehaviorOnly);
     }
 
@@ -1088,8 +996,6 @@ mod tests {
             assert!(msg.contains("not available"), "got: {msg}");
         });
     }
-
-    // --- Sequenced-primitive variant ----------------------------------------
 
     #[test]
     fn sequenced_set_light_animation_registers_under_expected_name() {
@@ -1126,7 +1032,6 @@ mod tests {
     #[test]
     fn sequenced_set_light_animation_null_clears_animation() {
         let (ctx, id) = test_ctx_with_light(true, None);
-        // Seed an animation so we can observe the clear.
         apply_light_animation(
             &ctx,
             id,
@@ -1196,7 +1101,6 @@ mod tests {
         let mut seq_reg = SequencedPrimitiveRegistry::new();
         register_sequenced_light_primitives(&mut seq_reg, ctx.clone());
         let handler = seq_reg.get("setLightAnimation").unwrap();
-        // `periodMs` is required and numeric — a string fails deserialization.
         let args = serde_json::json!({ "periodMs": "fast" });
         let err = handler(id, &args).unwrap_err();
         assert!(
@@ -1207,16 +1111,11 @@ mod tests {
 
     #[test]
     fn set_light_animation_quickjs_and_luau_produce_identical_output() {
-        // Cross-runtime parity: the Luau SDK is a port of the TypeScript SDK.
-        // Running the same logical `set_light_animation` call through each
-        // runtime must yield bitwise-identical `LightAnimation` values in the
-        // registry. Exercises both the scalar (`brightness`) and `Vec3Lit`
-        // (`color`) paths so a regression in either deserializer surfaces
-        // here.
+        // Cross-runtime parity: same call through QuickJS and Luau must yield
+        // bitwise-identical LightAnimation in the registry.
         let (ctx, id) = test_ctx_with_light(true, None);
         let r = registry_for(ctx.clone());
 
-        // QuickJS run.
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
         let raw = id.to_raw();
@@ -1246,7 +1145,6 @@ mod tests {
             .clone()
             .expect("QuickJS set_light_animation must have populated animation");
 
-        // Reset and run the equivalent Luau script.
         apply_light_animation(&ctx, id, None).unwrap();
         assert!(
             ctx.registry

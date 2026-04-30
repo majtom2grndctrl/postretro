@@ -1,13 +1,4 @@
-// SH irradiance volume baker.
-//
-// Places L2 probes on a regular grid over the level AABB, traces stratified
-// spherical samples through the Milestone 4 BVH, and projects the radiance
-// reflected off each ray hit (irradiance × Lambertian albedo / π) into SH
-// coefficients — the indirect / bounced component only. Probes inside solid
-// or exterior geometry are flagged invalid. Animated lights produce
-// per-light animation descriptors; their indirect contribution is composed
-// at runtime via the lightmap weight maps.
-//
+// SH irradiance volume baker — indirect-only L2 probe grid over the level AABB.
 // See: context/plans/in-progress/lighting-foundation/2-sh-baker.md
 
 use std::collections::HashSet;
@@ -30,53 +21,34 @@ use crate::partition::{BspTree, find_leaf_for_point};
 /// Default grid cell size in meters. Overridden by `--probe-spacing`.
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
-/// Rays fired per valid probe. Fixed for determinism; a future revision may
-/// expose a CLI flag if bake-time budget becomes the bottleneck.
 const RAYS_PER_PROBE: u32 = 256;
 
-/// Constant Lambertian albedo used to weight reflected radiance at each ray
-/// hit. The base SH bake records only the indirect (bounced) component, so
-/// the irradiance evaluated at a hit surface is multiplied by this albedo
-/// before projection — the lightmap already carries the direct term, and
-/// folding direct into SH would double-count it at runtime. Per-face texture
-/// color is not accessible at bake time; a future revision may sample
-/// per-face albedo once the material system exposes it offline.
+/// Indirect-only: lightmap carries the direct term; folding direct into SH would double-count it at runtime.
 const BOUNCE_ALBEDO: f32 = 0.45;
 
-/// Sky / miss color. Rays that miss all geometry contribute this constant
-/// ambient.
 const SKY_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
 
-/// Tiny offset applied along the ray direction to avoid self-intersections at
-/// the probe origin and at shadow-ray hit points.
+/// Offset to avoid self-intersections at the probe origin and shadow-ray hit points.
 const RAY_EPSILON: f32 = 1.0e-3;
 
-/// Fixed rotation offset applied to the Fibonacci-lattice sample directions.
-/// The sampler is deterministic — there is no RNG — so two bakes of identical
-/// input produce byte-identical probe coefficients. The constant just rotates
-/// the lattice off the `(0, 0, 1)` axis so axis-aligned light directions
-/// don't land on a degenerate sample.
+/// Rotates the Fibonacci lattice off the (0,0,1) axis so axis-aligned light directions
+/// don't land on a degenerate sample. No RNG — identical input yields byte-identical output.
 const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 
-/// Ray-tracing context: the BVH plus the geometry it indexes. Shared between
-/// the base SH baker and the per-light delta SH baker (`delta_sh_bake.rs`) so
-/// neither has to duplicate ray traversal or shadow-test code.
+/// Shared between the base SH baker and per-light delta SH baker (`delta_sh_bake.rs`).
 pub(crate) struct RaytracingCtx<'a> {
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
 }
 
-/// Inputs the baker pulls together from the rest of the compile stages.
 pub struct BakeInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
     pub tree: &'a BspTree,
-    /// Leaves classified as "outside the playable volume" by the visibility
-    /// flood-fill. Probes that fall into these leaves are flagged invalid so
-    /// the SH volume doesn't carry radiance for out-of-map points — those
-    /// values pollute trilinear interpolation at the playable edge.
+    /// Probes in these leaves are flagged invalid — out-of-map radiance pollutes
+    /// trilinear interpolation at the playable edge.
     pub exterior_leaves: &'a HashSet<usize>,
     pub static_lights: &'a StaticBakedLights<'a>,
     pub animated_lights: &'a AnimatedBakedLights<'a>,
@@ -92,11 +64,8 @@ impl<'a> BakeInputs<'a> {
     }
 }
 
-/// Bake an SH irradiance volume over the level AABB at the requested spacing.
-///
-/// Returns an empty section (`grid_dimensions == [0,0,0]`) if the input
-/// geometry is empty — this keeps the degradation path the spec mandates
-/// identical to the "no SH section" case at runtime.
+/// Returns an empty section (`grid_dimensions == [0,0,0]`) for empty geometry,
+/// matching the "no SH section" degradation path at runtime.
 pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShVolumeSection {
     let geom = &inputs.geometry.geometry;
     if geom.vertices.is_empty() {
@@ -110,7 +79,6 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
         };
     }
 
-    // World AABB over the extracted geometry. Engine space, meters.
     let (world_min, world_max) = world_aabb(inputs);
     let dims = grid_dimensions(world_min, world_max, probe_spacing_meters);
     let total = dims[0] as usize * dims[1] as usize * dims[2] as usize;
@@ -128,7 +96,6 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
         .map(|e| e.light)
         .collect();
 
-    // Build probe list and flag validity against the BSP tree.
     let probe_positions: Vec<DVec3> = (0..total)
         .map(|i| probe_position(i, dims, world_min, probe_spacing_meters))
         .collect();
@@ -144,7 +111,6 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
         })
         .collect();
 
-    // Static-light base coefficients, parallelized per probe.
     let base_probes: Vec<ShProbe> = (0..total)
         .into_par_iter()
         .map(|i| {
@@ -160,9 +126,7 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
         })
         .collect();
 
-    // Build animation descriptors (one per animated light). The per-light
-    // monochrome SH layers have been removed; animated indirect is handled
-    // entirely by the lightmap compose pass (animated-light-weight-maps plan).
+    // Per-light monochrome SH layers removed; animated indirect is handled by the lightmap compose pass.
     let animation_descriptors: Vec<AnimationDescriptor> = animated_lights
         .iter()
         .map(|l| animation_descriptor_for(l))
@@ -178,7 +142,6 @@ pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShV
     }
 }
 
-/// Log bake statistics in the same shape as other compile stages.
 pub fn log_stats(section: &ShVolumeSection) {
     let dims = section.grid_dimensions;
     let total = section.total_probes();
@@ -193,9 +156,6 @@ pub fn log_stats(section: &ShVolumeSection) {
         section.animation_descriptors.len(),
     );
 }
-
-// ---------------------------------------------------------------------------
-// Grid layout
 
 fn world_aabb(inputs: &BakeInputs<'_>) -> (DVec3, DVec3) {
     let mut min = DVec3::splat(f64::INFINITY);
@@ -222,7 +182,7 @@ fn grid_dimensions(min: DVec3, max: DVec3, spacing: f32) -> [u32; 3] {
     ]
 }
 
-/// z-major then y, then x — matches the format crate's probe iteration order.
+/// z-major, then y, then x — matches the format crate's probe iteration order.
 fn probe_index_to_xyz(linear: usize, dims: [u32; 3]) -> (u32, u32, u32) {
     let nx = dims[0] as usize;
     let ny = dims[1] as usize;
@@ -250,9 +210,7 @@ fn probe_is_valid(tree: &BspTree, exterior: &HashSet<usize>, pos: DVec3) -> bool
     if tree.leaves[leaf].is_solid {
         return false;
     }
-    // Exterior-empty leaves sit outside the playable volume. Baking their
-    // probes would pour sky / out-of-map radiance into trilinear neighbors
-    // along the map boundary — see sub-plan 10 §"Fix D".
+    // Exterior leaves pour out-of-map radiance into trilinear neighbors — see sub-plan 10 §"Fix D".
     !exterior.contains(&leaf)
 }
 
@@ -260,21 +218,10 @@ fn vec3_from(v: DVec3) -> Vec3 {
     Vec3::new(v.x as f32, v.y as f32, v.z as f32)
 }
 
-// ---------------------------------------------------------------------------
-// Ray generation
-
-/// Deterministic, low-discrepancy unit-sphere directions.
-///
-/// The Fibonacci sphere produces an evenly-spaced direction set for any
-/// sample count, with no RNG state — identical input always yields identical
-/// rays. Combined with a fixed seed offset on the angle (a full-turn
-/// golden-angle rotation per sample), two bakes of the same map are
-/// byte-identical.
+/// Fibonacci-sphere directions: evenly-spaced, no RNG, identical input → identical output.
 fn sphere_directions(count: u32, seed: u64) -> Vec<Vec3> {
     let mut out = Vec::with_capacity(count as usize);
     let phi = std::f32::consts::PI * (3.0 - (5.0_f32).sqrt()); // golden angle
-    // Deterministic seed offset keeps the sequence stable across bakes while
-    // allowing a different pattern if we ever want to rotate the probe sphere.
     let seed_offset = ((seed & 0xFFFF_FFFF) as f32) / (u32::MAX as f32);
     for i in 0..count {
         let t = (i as f32 + 0.5) / count as f32;
@@ -288,18 +235,12 @@ fn sphere_directions(count: u32, seed: u64) -> Vec<Vec3> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Ray traversal
-
-/// One triangle hit: position, surface normal, signed distance along the ray.
 struct Hit {
     point: Vec3,
     normal: Vec3,
     distance: f32,
 }
 
-/// Closest-triangle hit along `ray`. `max_distance` clips the search. Uses
-/// the Milestone 4 BVH primitive set plus the shared geometry index buffer.
 fn closest_hit(
     ctx: &RaytracingCtx<'_>,
     ray_origin: Vec3,
@@ -348,7 +289,6 @@ fn closest_hit(
     }
 
     if let Some(h) = best.as_mut() {
-        // Clip by caller's max_distance to support shadow-ray early-outs.
         if h.distance >= max_distance {
             return None;
         }
@@ -356,15 +296,13 @@ fn closest_hit(
     best
 }
 
-/// Double-sided Möller-Trumbore intersection. Returns `(t, geometric_normal)`.
-/// The normal is flipped to face the incoming ray so indirect illumination
-/// does not vanish at back-facing walls.
+/// Double-sided Möller-Trumbore. Normal is flipped toward the incoming ray so
+/// indirect illumination does not vanish at back-facing walls.
 fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<(f32, Vec3)> {
     let edge1 = b - a;
     let edge2 = c - a;
     let h = dir.cross(edge2);
     let det = edge1.dot(h);
-    // Two-sided test — treat very small determinants as parallel.
     if det.abs() < 1.0e-8 {
         return None;
     }
@@ -390,8 +328,6 @@ fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Optio
     Some((t, normal))
 }
 
-/// True if the straight path from `from` to `to` is unoccluded. Used by
-/// shadow rays from hit points toward each map light.
 fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     let delta = to - from;
     let length = delta.length();
@@ -429,12 +365,7 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     true
 }
 
-// ---------------------------------------------------------------------------
-// Light evaluation
-
-/// Lambert contribution from one light at a surface point. Does not include
-/// visibility — shadow testing is done by the caller so the same path can be
-/// reused by both static and animated light bakes.
+/// Lambert contribution without visibility — caller handles shadow testing.
 fn light_contribution_lambert(light: &MapLight, surface_point: Vec3, surface_normal: Vec3) -> Vec3 {
     match light.light_type {
         LightType::Point => {
@@ -476,9 +407,7 @@ fn light_contribution_lambert(light: &MapLight, surface_point: Vec3, surface_nor
         }
         LightType::Directional => {
             let dir = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
-            // The map light `cone_direction` is the aim vector — the direction
-            // photons travel. The vector pointing from the surface toward the
-            // light is the negation.
+            // cone_direction is the photon travel vector; negate to get the surface-to-light vector.
             let l = (-dir).normalize_or_zero();
             let n_dot_l = surface_normal.dot(l).max(0.0);
             if n_dot_l <= 0.0 {
@@ -489,9 +418,6 @@ fn light_contribution_lambert(light: &MapLight, surface_point: Vec3, surface_nor
     }
 }
 
-/// Light-source position for shadow testing. For directional lights there is
-/// no true position — the caller must march a long distance along the aim
-/// vector.
 fn light_shadow_origin(light: &MapLight, surface_point: Vec3) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => Vec3::new(
@@ -502,24 +428,14 @@ fn light_shadow_origin(light: &MapLight, surface_point: Vec3) -> Vec3 {
         LightType::Directional => {
             let dir = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
             let to_light = (-dir).normalize_or_zero();
-            // 10 km along the aim vector is beyond any indoor map AABB.
-            surface_point + to_light * 10_000.0
+            surface_point + to_light * 10_000.0 // beyond any indoor map AABB
         }
     }
 }
 
-/// Distance attenuation for Point and Spot lights.
-///
-/// Must match `falloff` in `postretro/src/shaders/forward.wgsl` exactly —
-/// the runtime direct path and the bake-time indirect projection share one
-/// authored intensity, so any divergence here produces "ghost glow" or
-/// missing bounce light at the light's edge of influence.
-///
-/// - Linear: `1 - d/range`, clamped to `[0, 1]`.
-/// - InverseDistance: `1/d` with a hard zero past `range`. No upper clamp —
-///   close-range values may exceed 1.0, exactly as the shader allows.
-/// - InverseSquared: `1/d²` with a hard zero past `range`. Same no-upper-clamp
-///   convention as InverseDistance.
+/// Must match `falloff` in `forward.wgsl` exactly — divergence produces "ghost glow"
+/// or missing bounce light. InverseDistance/InverseSquared have no upper clamp past 1.0,
+/// matching the shader convention.
 fn falloff(light: &MapLight, distance: f32) -> f32 {
     let range = light.falloff_range.max(1.0e-4);
     match light.falloff_model {
@@ -540,11 +456,8 @@ fn falloff(light: &MapLight, distance: f32) -> f32 {
     }
 }
 
-/// Spot cone attenuation matching the shader's `cone_attenuation` in
-/// `forward.wgsl` — Hermite cubic smoothstep between `cos_outer` and
-/// `cos_inner`. The shader uses WGSL's built-in `smoothstep`, which is
-/// `t² × (3 - 2t)` over the unit interval; we reproduce that here so direct
-/// and indirect agree along the cone fringe.
+/// Must match `cone_attenuation` in `forward.wgsl` — Hermite cubic smoothstep
+/// so direct and indirect agree along the cone fringe.
 fn spot_cone_attenuation(light: &MapLight, light_to_surface: Vec3) -> f32 {
     let dir = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0])).normalize_or_zero();
     let inner = light.cone_angle_inner.unwrap_or(0.0);
@@ -555,31 +468,22 @@ fn spot_cone_attenuation(light: &MapLight, light_to_surface: Vec3) -> f32 {
     smoothstep(cos_outer, cos_inner, cos_theta)
 }
 
-/// Hermite cubic smoothstep matching WGSL's `smoothstep(edge0, edge1, x)`.
-/// Returns 0 below `edge0`, 1 above `edge1`, and `t² × (3 - 2t)` between.
+/// `t² × (3 - 2t)` — matches WGSL's `smoothstep(edge0, edge1, x)`.
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0).max(1.0e-4)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
-// ---------------------------------------------------------------------------
-// SH L2 projection
-
-/// Evaluate the first nine SH L2 basis functions at a unit-length direction.
-/// Standard Ramamoorthi-Hanrahan convention (Condon-Shortley phase omitted —
-/// we use the real-valued y basis).
+/// Real-valued L2 SH basis — Ramamoorthi-Hanrahan convention, Condon-Shortley phase omitted.
 fn sh_basis_l2(dir: Vec3) -> [f32; 9] {
     let x = dir.x;
     let y = dir.y;
     let z = dir.z;
     let mut b = [0f32; 9];
-    // l = 0
     b[0] = 0.282_094_8; // 0.5 * sqrt(1/pi)
-    // l = 1
     b[1] = -0.488_602_5 * y;
     b[2] = 0.488_602_5 * z;
     b[3] = -0.488_602_5 * x;
-    // l = 2
     b[4] = 1.092_548_4 * x * y;
     b[5] = -1.092_548_4 * y * z;
     b[6] = 0.315_391_6 * (3.0 * z * z - 1.0);
@@ -598,17 +502,13 @@ fn accumulate_sh_rgb(acc: &mut [f32; 27], dir: Vec3, value: Vec3, weight: f32) {
     }
 }
 
-// Cosine-lobe convolution coefficients (Ramamoorthi & Hanrahan 2001, eq. 11).
-// Convert L2 radiance projection coefficients into L2 irradiance coefficients
-// by multiplying each band by its zonal-harmonic cosine-lobe factor.
-const COSINE_LOBE_L0: f32 = std::f32::consts::PI; // π
-const COSINE_LOBE_L1: f32 = 2.0 * std::f32::consts::PI / 3.0; // 2π/3
-const COSINE_LOBE_L2: f32 = std::f32::consts::PI * 0.25; // π/4
+// Ramamoorthi & Hanrahan 2001, eq. 11 — zonal-harmonic cosine-lobe factors.
+// After convolution the coefficients reconstruct irradiance directly; the runtime shader
+// needs no per-fragment A_l multiply.
+const COSINE_LOBE_L0: f32 = std::f32::consts::PI;
+const COSINE_LOBE_L1: f32 = 2.0 * std::f32::consts::PI / 3.0;
+const COSINE_LOBE_L2: f32 = std::f32::consts::PI * 0.25;
 
-/// Fold the cosine-lobe convolution into the SH coefficients in-place. After
-/// this step the coefficients reconstruct irradiance (not radiance) when
-/// sampled in the shading-normal direction, so the runtime shader only
-/// applies the SH basis — no per-fragment A_l multiply.
 fn apply_cosine_lobe_rgb(acc: &mut [f32; 27]) {
     for band in 0..9 {
         let factor = cosine_lobe_factor(band);
@@ -628,12 +528,7 @@ fn cosine_lobe_factor(band: usize) -> f32 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Probe bakes
-
-/// Bake the indirect-only contribution of `lights` at a probe and project
-/// into SH L2 RGB. Shared between the base SH baker (static lights) and the
-/// per-light delta SH baker (one animated light at peak brightness).
+/// Indirect-only SH L2 RGB. Shared with the per-light delta SH baker.
 pub(crate) fn bake_probe_indirect_rgb(
     ctx: &RaytracingCtx<'_>,
     probe_pos: Vec3,
@@ -650,16 +545,9 @@ pub(crate) fn bake_probe_indirect_rgb(
     acc
 }
 
-/// Bake the direct contribution of a single light at a probe, projected into
-/// SH L2 RGB. Used by the delta SH baker so `compose(base, delta × 1) = base
-/// (indirect-only) + delta (direct + indirect)` covers a light's full peak
-/// contribution.
-///
-/// A point/spot/directional light delivers a delta-direction radiance pulse
-/// at the probe: project that pulse onto the SH basis with magnitude =
-/// visibility × color × intensity × falloff/cone. The cosine-lobe convolution
-/// applied at the end converts radiance projection to irradiance projection,
-/// matching the same convention `bake_probe_indirect_rgb` uses.
+/// Direct SH L2 RGB for a single light at a probe — used by the delta SH baker.
+/// Projects a delta-direction radiance pulse; cosine-lobe convolution at the end
+/// matches the irradiance convention of `bake_probe_indirect_rgb`.
 pub(crate) fn bake_probe_direct_rgb(
     ctx: &RaytracingCtx<'_>,
     probe_pos: Vec3,
@@ -677,16 +565,12 @@ pub(crate) fn bake_probe_direct_rgb(
     if to_light == Vec3::ZERO {
         return acc;
     }
-    // Project a delta-direction emitter onto SH bands. Weight = 1.0 because
-    // the radiance is concentrated in a single direction (no sphere
-    // integration); SH-reconstructed E(N) = sum coefs × Y(N) then yields the
-    // correct cos-weighted Lambert irradiance after `apply_cosine_lobe_rgb`.
+    // Delta-direction emitter: weight = 1.0 (no sphere integration needed).
     accumulate_sh_rgb(&mut acc, to_light, radiance, 1.0);
     apply_cosine_lobe_rgb(&mut acc);
     acc
 }
 
-/// Bake the static-light contribution at a probe and project into SH L2 RGB.
 fn bake_probe_rgb(
     inputs: &BakeInputs<'_>,
     probe_pos: Vec3,
@@ -695,11 +579,7 @@ fn bake_probe_rgb(
     bake_probe_indirect_rgb(&inputs.ray_ctx(), probe_pos, static_lights)
 }
 
-/// Trace a single ray from `origin` along `dir`, evaluate direct lighting at
-/// the closest hit (or sky), and return the RGB radiance reflected back
-/// toward `origin` after the Lambertian BRDF (albedo / π). This is the
-/// indirect (bounced) contribution only — the direct term is the lightmap's
-/// responsibility.
+/// Indirect (bounced) radiance along one ray — direct term is the lightmap's responsibility.
 fn sample_radiance_rgb(
     ctx: &RaytracingCtx<'_>,
     origin: Vec3,
@@ -731,16 +611,12 @@ fn shadow_visible(
         return true;
     }
     let shadow_origin = light_shadow_origin(light, surface_point);
-    // Nudge the surface sample a tiny bit along the normal so the first
-    // traversal step does not self-intersect the face that was just hit.
+    // Nudge along the normal to avoid self-intersection with the hit face.
     let probe_end = surface_point + surface_normal * RAY_EPSILON;
     segment_clear(ctx, probe_end, shadow_origin)
 }
 
-/// Like `shadow_visible` but with no surface to nudge off — used when the
-/// "surface" is the probe sample point itself (no host triangle to back away
-/// from). The probe is in empty space by construction (validity gate), so a
-/// straight shot to the light is the right test.
+/// Like `shadow_visible` but for probe sample points — no host triangle to nudge off.
 fn shadow_visible_at_point(ctx: &RaytracingCtx<'_>, point: Vec3, light: &MapLight) -> bool {
     if !light.cast_shadows {
         return true;
@@ -749,8 +625,6 @@ fn shadow_visible_at_point(ctx: &RaytracingCtx<'_>, point: Vec3, light: &MapLigh
     segment_clear(ctx, point, shadow_origin)
 }
 
-/// Unit vector from `point` toward `light`. For directional lights, the
-/// negation of the aim vector. Returns ZERO if the light is degenerate.
 fn light_direction_at_point(light: &MapLight, point: Vec3) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => {
@@ -768,9 +642,7 @@ fn light_direction_at_point(light: &MapLight, point: Vec3) -> Vec3 {
     }
 }
 
-/// Color × intensity × falloff (and cone, for spots) at `point`. Mirrors
-/// `light_contribution_lambert` minus the N·L term — that is reapplied per
-/// sample direction during SH projection.
+/// Color × intensity × falloff (± cone) without N·L — that is reapplied per sample during projection.
 fn light_radiance_at_point(light: &MapLight, point: Vec3) -> Vec3 {
     match light.light_type {
         LightType::Point => {
@@ -805,24 +677,12 @@ fn light_radiance_at_point(light: &MapLight, point: Vec3) -> Vec3 {
     }
 }
 
-/// Validity gate for delta-bake probes — same rules as the base bake (probes
-/// inside solid or exterior leaves are flagged invalid).
 pub(crate) fn probe_is_valid_pub(tree: &BspTree, exterior: &HashSet<usize>, pos: DVec3) -> bool {
     probe_is_valid(tree, exterior, pos)
 }
 
-// ---------------------------------------------------------------------------
-// Pack-time validation
-
-/// Validate animation data that can only be checked once all lights are
-/// collected. Currently enforces the Plan 2 Sub-plan 1 rule: color animation
-/// is only valid on `bake_only` lights or `is_dynamic` (scripted) lights. A
-/// color-animated baked light would produce a direct/indirect mismatch at
-/// runtime — the SH indirect was baked against a single compile-time color,
-/// so animating the direct term introduces a drift the bake cannot track.
-///
-/// Called from `main.rs` before `bake_sh_volume`. Returns an error naming the
-/// offending light (origin + classname, since lights have no unique id).
+/// Color animation is only valid on `bake_only` or `is_dynamic` lights — a color-animated
+/// baked light would produce direct/indirect mismatch since the SH indirect was baked at a fixed color.
 pub fn validate_light_animations(lights: &[MapLight]) -> Result<(), String> {
     for light in lights {
         let Some(anim) = light.animation.as_ref() else {
@@ -842,9 +702,6 @@ pub fn validate_light_animations(lights: &[MapLight]) -> Result<(), String> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Animation descriptor
-
 fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
     let anim: &LightAnimation = light
         .animation
@@ -853,11 +710,8 @@ fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
     AnimationDescriptor {
         period: anim.period.max(1.0e-6),
         phase: anim.phase,
-        // Bake `color × intensity` into `base_color` so the runtime compose
-        // shader sees the correct peak irradiance when the brightness curve
-        // reaches 1.0. The lightmap weight maps are baked at unit intensity /
-        // white, so the only place the authored `_light` value re-enters the
-        // pipeline is here.
+        // Bake color × intensity into base_color: weight maps are baked at unit intensity/white,
+        // so this is the only place the authored intensity re-enters the pipeline.
         base_color: [
             light.color[0] * light.intensity,
             light.color[1] * light.intensity,
@@ -869,9 +723,6 @@ fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
         start_active: if anim.start_active { 1 } else { 0 },
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
 
 #[cfg(test)]
 mod tests {
@@ -915,32 +766,23 @@ mod tests {
         }
     }
 
-    // --- falloff: shader parity ---
-    //
-    // These pin the contract that `sh_bake::falloff` mirrors `falloff` in
-    // `postretro/src/shaders/forward.wgsl`. A drift here produces "ghost
-    // glow" — probes pick up indirect contribution from lights that the
-    // direct pass has correctly culled — and that's exactly the bug the
-    // first review caught after sub-plan 3 landed.
+    // Pins the contract that `sh_bake::falloff` mirrors `falloff` in `forward.wgsl`.
+    // Drift here produces "ghost glow" (indirect picked up where direct is culled).
 
     #[test]
     fn linear_falloff_matches_shader_curve() {
         let light = point_light_with_falloff(FalloffModel::Linear, 10.0);
-        // f(0) = 1, f(range) = 0, f(range/2) = 0.5
         assert!((falloff(&light, 0.0) - 1.0).abs() < 1e-6);
         assert!((falloff(&light, 5.0) - 0.5).abs() < 1e-6);
         assert!(falloff(&light, 10.0).abs() < 1e-6);
-        // Past range stays clamped to zero.
         assert_eq!(falloff(&light, 15.0), 0.0);
     }
 
     #[test]
     fn inverse_distance_zeroes_past_range() {
         let light = point_light_with_falloff(FalloffModel::InverseDistance, 10.0);
-        // Inside range: 1/d, no upper clamp.
         assert!((falloff(&light, 1.0) - 1.0).abs() < 1e-6);
         assert!((falloff(&light, 5.0) - 0.2).abs() < 1e-6);
-        // Past range: hard zero — must match shader behavior.
         assert_eq!(falloff(&light, 10.001), 0.0);
         assert_eq!(falloff(&light, 50.0), 0.0);
     }
@@ -948,24 +790,20 @@ mod tests {
     #[test]
     fn inverse_squared_zeroes_past_range() {
         let light = point_light_with_falloff(FalloffModel::InverseSquared, 10.0);
-        // Inside range: 1/d², close-range exceeds 1.0 deliberately.
         assert!((falloff(&light, 1.0) - 1.0).abs() < 1e-6);
-        assert!((falloff(&light, 0.5) - 4.0).abs() < 1e-6);
-        // Past range: hard zero.
+        assert!((falloff(&light, 0.5) - 4.0).abs() < 1e-6); // close-range exceeds 1.0 deliberately
         assert_eq!(falloff(&light, 10.001), 0.0);
         assert_eq!(falloff(&light, 100.0), 0.0);
     }
 
     #[test]
     fn smoothstep_matches_wgsl_definition() {
-        // `t² × (3 - 2t)` over the unit interval, clamped at the edges.
         assert_eq!(smoothstep(0.0, 1.0, -0.5), 0.0);
         assert_eq!(smoothstep(0.0, 1.0, 1.5), 1.0);
-        assert!((smoothstep(0.0, 1.0, 0.5) - 0.5).abs() < 1e-6); // exact midpoint
-        // Symmetric around the midpoint.
+        assert!((smoothstep(0.0, 1.0, 0.5) - 0.5).abs() < 1e-6);
         let lower = smoothstep(0.0, 1.0, 0.25);
         let upper = smoothstep(0.0, 1.0, 0.75);
-        assert!((lower + upper - 1.0).abs() < 1e-6);
+        assert!((lower + upper - 1.0).abs() < 1e-6); // symmetric
     }
 
     fn tri_vertex(pos: [f32; 3]) -> Vertex {
@@ -998,9 +836,6 @@ mod tests {
     }
 
     fn tree_all_empty() -> BspTree {
-        // Single empty leaf tree: every point is classified as empty, so
-        // validity flags depend only on the point-in-leaf walk which returns
-        // leaf 0 for any input.
         BspTree {
             nodes: Vec::new(),
             leaves: vec![BspLeaf {
@@ -1048,8 +883,6 @@ mod tests {
 
     #[test]
     fn grid_dimensions_cover_world_aabb() {
-        // A triangle spanning 3 meters on x, 2 on z should need 4 x-cells,
-        // 1 y-cell (the face is flat), and 3 z-cells at 1m spacing.
         let min = DVec3::new(0.0, 0.0, 0.0);
         let max = DVec3::new(3.0, 0.0, 2.0);
         let dims = grid_dimensions(min, max, 1.0);
@@ -1060,15 +893,11 @@ mod tests {
     fn probe_iteration_matches_z_major_convention() {
         let dims = [2, 3, 4];
         let total = 2 * 3 * 4;
-        // The first probe is at grid origin; the last is at the far-corner.
         assert_eq!(probe_index_to_xyz(0, dims), (0, 0, 0));
         assert_eq!(probe_index_to_xyz(total - 1, dims), (1, 2, 3));
-        // Stepping x advances first.
-        assert_eq!(probe_index_to_xyz(1, dims), (1, 0, 0));
-        // After the x row we advance y.
-        assert_eq!(probe_index_to_xyz(2, dims), (0, 1, 0));
-        // After the y×x plane we advance z.
-        assert_eq!(probe_index_to_xyz(2 * 3, dims), (0, 0, 1));
+        assert_eq!(probe_index_to_xyz(1, dims), (1, 0, 0)); // x advances first
+        assert_eq!(probe_index_to_xyz(2, dims), (0, 1, 0)); // then y
+        assert_eq!(probe_index_to_xyz(2 * 3, dims), (0, 0, 1)); // then z
     }
 
     #[test]
@@ -1083,17 +912,14 @@ mod tests {
                 length
             );
         }
-        // Determinism: same input yields same output.
         let again = sphere_directions(32, 1);
         assert_eq!(dirs, again);
     }
 
     #[test]
     fn cosine_lobe_makes_constant_radiance_reconstruct_to_pi() {
-        // Identity: for constant incident radiance L = 1, the diffuse
-        // irradiance integral equals π. Project constant 1 onto signed L2
-        // basis, apply cosine-lobe convolution, reconstruct with the same
-        // signed basis — must land near π regardless of normal direction.
+        // For constant L=1, diffuse irradiance = π. Verify the cosine-lobe convolution
+        // produces this for any normal direction.
         let samples = 8192usize;
         let weight = 4.0 * std::f32::consts::PI / samples as f32;
         let mut coeffs = [0f32; 9];
@@ -1134,8 +960,6 @@ mod tests {
 
     #[test]
     fn sh_basis_band0_is_constant() {
-        // Band 0 is a constant over the sphere — every direction projects to
-        // the same value.
         let b0 = sh_basis_l2(Vec3::X)[0];
         let b1 = sh_basis_l2(Vec3::Y)[0];
         let b2 = sh_basis_l2(Vec3::new(0.3, 0.4, 0.5).normalize())[0];
@@ -1145,7 +969,6 @@ mod tests {
 
     #[test]
     fn bake_is_deterministic() {
-        // Two bakes of the same input must produce byte-identical sections.
         let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
@@ -1312,16 +1135,13 @@ mod tests {
         };
         let section = bake_sh_volume(&inputs, 1.0);
         assert!(section.animation_descriptors.is_empty());
-        // Round-trip the static-only layout just to be sure the header flag
-        // is zero. `animated_light_count` is the last u32 of the 48-byte
-        // header (bytes 44..48); bytes 0..4 are `SH_VOLUME_VERSION`.
+        // animated_light_count is the last u32 of the 48-byte header (bytes 44..48).
         let bytes = section.to_bytes();
         assert_eq!(&bytes[44..48], &0u32.to_le_bytes());
     }
 
     #[test]
     fn solid_probes_are_flagged_invalid() {
-        // Build a BSP tree where every point is classified into a solid leaf.
         let tree = BspTree {
             nodes: Vec::new(),
             leaves: vec![BspLeaf {
@@ -1356,15 +1176,8 @@ mod tests {
 
     #[test]
     fn exterior_leaf_probes_are_flagged_invalid() {
-        // Regression: sub-plan 10 Fix D — probes that fall into a leaf the
-        // visibility flood-fill classified as "outside the playable volume"
-        // must be marked invalid. Without this, out-of-map radiance leaks
-        // into trilinear interpolation at the playable boundary.
-        //
-        // Build a 3-leaf tree: one solid, one empty-interior, one empty-
-        // exterior. `find_leaf_for_point` walks `tree.nodes`; with no nodes
-        // it returns leaf 0. To exercise the three cases independently we
-        // verify `probe_is_valid` directly rather than through the full bake.
+        // Regression: sub-plan 10 Fix D — exercises probe_is_valid directly for
+        // solid, interior-empty, and exterior-empty leaves (no BSP nodes, so leaf 0 catches all).
         let solid_leaf = BspLeaf {
             face_indices: Vec::new(),
             bounds: CompilerAabb {
@@ -1390,7 +1203,6 @@ mod tests {
             is_solid: false,
         };
 
-        // Interior-leaf tree: leaf 0 is empty-interior, not in the exterior set.
         let tree_interior = BspTree {
             nodes: Vec::new(),
             leaves: vec![interior_leaf.clone()],
@@ -1402,8 +1214,6 @@ mod tests {
             DVec3::ZERO
         ));
 
-        // Solid-leaf tree: leaf 0 is solid. Must reject regardless of the
-        // exterior set.
         let tree_solid = BspTree {
             nodes: Vec::new(),
             leaves: vec![solid_leaf],
@@ -1414,8 +1224,6 @@ mod tests {
             DVec3::ZERO
         ));
 
-        // Exterior-leaf tree: leaf 0 is empty, but listed as exterior.
-        // Must reject.
         let tree_exterior = BspTree {
             nodes: Vec::new(),
             leaves: vec![exterior_leaf],
@@ -1430,15 +1238,9 @@ mod tests {
 
     #[test]
     fn bake_sh_volume_marks_exterior_leaf_probes_invalid() {
-        // Integration: close the "does BakeInputs silently drop exterior_leaves?"
-        // gap by running the full bake against a tree whose sole empty leaf is
-        // listed as exterior. The companion unit test above pokes
-        // `probe_is_valid` directly — this one exercises the wiring.
+        // Integration: verifies BakeInputs correctly wires exterior_leaves through the full bake.
         let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
-        // Single empty leaf (not solid), but the exterior set contains leaf 0 —
-        // every probe falls into leaf 0 via `find_leaf_for_point` (tree has no
-        // nodes), so every probe should end up invalid.
         let tree = tree_all_empty();
         let mut exterior: HashSet<usize> = HashSet::new();
         exterior.insert(0);
@@ -1469,10 +1271,7 @@ mod tests {
 
     #[test]
     fn is_dynamic_lights_skipped_by_bake() {
-        // Regression: a light flagged `is_dynamic` must be excluded from the
-        // SH bake so the runtime direct-lighting loop doesn't double-count it.
-        // Baking a scene with one dynamic light must match the no-light
-        // baseline within numerical noise.
+        // Regression: is_dynamic lights must be excluded so the runtime doesn't double-count them.
         let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
@@ -1543,9 +1342,6 @@ mod tests {
 
     #[test]
     fn sphere_directions_cover_sphere_integral() {
-        // Sanity check: the integral of 1 over the sphere is 4π. The Monte
-        // Carlo estimator at the sample count we use should converge on this
-        // value for a constant integrand.
         let dirs = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
         let weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
         let integral: f32 = dirs.iter().map(|_| 1.0 * weight).sum();
@@ -1558,9 +1354,6 @@ mod tests {
 
     #[test]
     fn build_bvh_traversal_interop() {
-        // Double-check that the live Bvh returned by build_bvh is traversable
-        // from our baker code, closing the loop on the "one BVH, two
-        // consumers" pattern from Milestone 4.
         let geo = one_triangle_geometry([[-1.0, 0.0, -1.0], [2.0, 0.0, -1.0], [0.0, 0.0, 2.0]]);
         let (bvh, _prims, _) = build_bvh(&geo).unwrap();
         let prims = collect_primitives(&geo);

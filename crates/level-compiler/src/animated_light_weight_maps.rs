@@ -1,16 +1,4 @@
 // Animated-light weight-map baker.
-//
-// For every chunk from `AnimatedLightChunksSection`, resolve the chunk's
-// atlas-texel rectangle from the owning face's chart placement and the
-// chunk's face-local UV sub-region, then bake per-texel per-animated-light
-// pre-shaded irradiance (Lambert × distance falloff × spotlight cone) with
-// shadow-ray occlusion through the shared BVH. Emits
-// `AnimatedLightWeightMapsSection` consumed by the runtime compose pass.
-//
-// Chunk-list `light_index` values directly reference `AnimationDescriptor`
-// buffer slots — this baker consumes the indices as given; it does not
-// re-filter or remap.
-//
 // See: context/plans/in-progress/animated-light-weight-maps/index.md
 
 use bvh::bvh::Bvh;
@@ -29,52 +17,31 @@ use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{Chart, light_contribution_and_direction, shadow_visible};
 use crate::map_data::MapLight;
 
-/// Weights below this threshold are dropped as numerical noise so per-texel
-/// lists do not inflate toward `MAX_ANIMATED_LIGHTS_PER_CHUNK` on contributions
-/// too dim to matter.
+/// Dropped as numerical noise; prevents per-texel lists from inflating on
+/// contributions too dim to matter.
 const WEIGHT_EPSILON: f32 = 1.0e-6;
 
-/// Inputs the weight-map baker pulls from the rest of the compile stages.
-/// All borrowed — this is a read-only pass over already-baked data.
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
     pub chunk_section: &'a AnimatedLightChunksSection,
-    /// Parallel to the chunk section's `light_indices` namespace. Chunk-list
-    /// indices are positions into this slice. `main.rs` hands
-    /// `build_animated_light_chunks` a list filtered by
-    /// `!is_dynamic && animation.is_some()` — the same filter `sh_bake.rs`
-    /// uses for `animation_descriptors`, so the descriptor buffer and this
-    /// baker agree without remap.
+    /// Filtered `!is_dynamic && animation.is_some()` — same filter as
+    /// `sh_bake.rs` for `animation_descriptors`, so indices agree without remap.
     pub lights: &'a [MapLight],
-    /// Per-face chart plan from `lightmap_bake`. Indexed by geometry face.
     pub face_charts: &'a [Chart],
-    /// Per-face chart placement from `lightmap_bake`. Parallel to
-    /// `face_charts`.
     pub face_placements: &'a [ChartPlacement],
     pub atlas_width: u32,
     pub atlas_height: u32,
 }
 
-/// Per-chunk bake result. Held briefly before the serial concatenation pass
-/// splices each chunk's local `texel_lights` block into the section's global
-/// flat pool.
 struct ChunkBakeResult {
     rect: ChunkAtlasRect, // texel_offset filled by concatenation
-    /// One entry per texel in the rect (row-major, `width × height` entries).
-    /// `offset` is chunk-local — relative to this chunk's `texel_lights` — and
-    /// the concatenation pass rewrites it to the global offset.
+    /// chunk-local offsets; concatenation pass rewrites to global offsets.
     offset_counts: Vec<TexelLightEntry>,
-    /// Flat `(light_index, weight)` pool for this chunk only.
     texel_lights: Vec<TexelLight>,
 }
 
-/// Bake weight maps for every chunk in `chunk_section`.
-///
-/// Parallelizes per-chunk work with rayon; output ordering is preserved via
-/// `par_iter().enumerate().map(...).collect::<Vec<_>>()` so `chunk_rects[i]`
-/// corresponds to `chunk_section.chunks[i]` regardless of scheduler.
 pub fn bake_animated_light_weight_maps(
     inputs: &WeightMapInputs<'_>,
 ) -> AnimatedLightWeightMapsSection {
@@ -90,14 +57,8 @@ pub fn bake_animated_light_weight_maps(
         .map(|chunk| bake_one_chunk(inputs, chunk, light_indices_pool))
         .collect();
 
-    // Asserts: no two chunks on the same face produce overlapping atlas rects
-    // after outward rounding. The UV chunk packer is the authority here —
-    // if this fires, the fix is in the packer, not this baker.
     assert_no_overlapping_rects_per_face(chunks, &per_chunk);
 
-    // Serial concatenation: rewrite chunk-local `offset` values to global
-    // offsets into the section-wide `texel_lights` pool and stamp each
-    // `ChunkAtlasRect.texel_offset` as the prefix sum over prior chunk areas.
     let mut chunk_rects: Vec<ChunkAtlasRect> = Vec::with_capacity(per_chunk.len());
     let mut offset_counts: Vec<TexelLightEntry> = Vec::new();
     let mut texel_lights: Vec<TexelLight> = Vec::new();
@@ -114,7 +75,6 @@ pub fn bake_animated_light_weight_maps(
         running_texel_offset += rect.width * rect.height;
 
         let light_base = texel_lights.len() as u32;
-        // Rewrite chunk-local offsets to global offsets.
         for entry in chunk_oc.into_iter() {
             offset_counts.push(TexelLightEntry {
                 offset: entry.offset + light_base,
@@ -125,8 +85,7 @@ pub fn bake_animated_light_weight_maps(
         chunk_rects.push(rect);
     }
 
-    // Compile-time log: byte size, coverage, mean lights per covered texel,
-    // peak per-chunk texels. Byte formula mirrors the section encoder.
+    // Byte formula mirrors the section encoder.
     const HEADER_SIZE: usize = 16;
     const CHUNK_RECT_SIZE: usize = 20;
     const OFFSET_ENTRY_SIZE: usize = 8;
@@ -165,8 +124,6 @@ pub fn bake_animated_light_weight_maps(
     }
 }
 
-/// Bake one chunk. Builds the chunk's atlas rect, iterates every texel, and
-/// for each texel evaluates every animated light in the chunk's light list.
 fn bake_one_chunk(
     inputs: &WeightMapInputs<'_>,
     chunk: &postretro_level_format::animated_light_chunks::AnimatedLightChunk,
@@ -204,11 +161,9 @@ fn bake_one_chunk(
 
     let padding = CHART_PADDING_TEXELS as i32;
 
-    // Degenerate chart (uv_extent ≤ 0 or interior ≤ 0) → everything is outside.
     let chart_usable = chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0;
 
-    // Iterate row-major (ty outer, tx inner) to match the section encoding
-    // `chunk_rect.texel_offset + ty * width + tx`.
+    // Row-major to match section encoding: chunk_rect.texel_offset + ty * width + tx.
     for ty in 0..height {
         for tx in 0..width {
             let ax = atlas_x + tx;
@@ -217,9 +172,7 @@ fn bake_one_chunk(
             let tx_interior = ax as i32 - placement.x as i32 - padding;
             let ty_interior = ay as i32 - placement.y as i32 - padding;
 
-            // Atlas texels that fall outside the face's UV chart (artifact of
-            // outward rounding) get a zero-count entry — no valid world
-            // position exists there so no Lambert is computed.
+            // Texels outside the chart (artifact of outward rounding): zero-count entry.
             if !chart_usable
                 || tx_interior < 0
                 || ty_interior < 0
@@ -243,10 +196,6 @@ fn bake_one_chunk(
                 let light = &inputs.lights[light_index as usize];
                 let (contribution, _dir) =
                     light_contribution_and_direction(light, world_p, surface_normal);
-                // Pre-shaded irradiance is monochrome per (texel, light) on
-                // the compose path — color is modulated at runtime by the
-                // descriptor. Strip the light's base color and intensity to
-                // keep the weight as a neutral Lambert × falloff × cone scalar.
                 let weight = contribution_to_weight(contribution, light.color, light.intensity);
                 if weight <= WEIGHT_EPSILON {
                     continue;
@@ -282,21 +231,10 @@ fn bake_one_chunk(
     }
 }
 
-/// Strip the light's base color and intensity from `contribution` so the
-/// stored weight is a pre-shaded Lambert × falloff × cone scalar. The runtime
-/// compose shader re-applies color and intensity from the descriptor's
-/// animated channels.
-///
-/// `light_contribution_and_direction` emits the product
-/// `color × intensity × ndotl × atten × cone`. Dividing by `color × intensity`
-/// yields `ndotl × atten × cone` directly. Monochrome scalar — the three
-/// channels are equal after the division and we pick the channel with the
-/// largest base color component for numerical stability (avoids
-/// divide-by-near-zero on black color channels).
+/// Strips base color and intensity so the weight is a neutral Lambert × falloff
+/// × cone scalar; runtime compose re-applies color/intensity from the descriptor.
+/// Picks the dominant color channel to avoid divide-by-near-zero on weak channels.
 fn contribution_to_weight(contribution: Vec3, color: [f32; 3], intensity: f32) -> f32 {
-    // Pick the dominant channel to invert. On the common case (white light)
-    // all three channels are equal and any choice works; on a magenta light
-    // the green channel is ~0 and picking it would produce NaN.
     let (c_contrib, c_color) = if color[0] >= color[1] && color[0] >= color[2] {
         (contribution.x, color[0])
     } else if color[1] >= color[2] {
@@ -311,9 +249,7 @@ fn contribution_to_weight(contribution: Vec3, color: [f32; 3], intensity: f32) -
     (c_contrib / denom).max(0.0)
 }
 
-/// Resolve the chunk's atlas-texel rectangle from the chart placement and the
-/// chunk's face-local UV sub-region. Outward-round (floor min, ceil max) so no
-/// covered texel is lost; clamp to the atlas extent defensively.
+/// Outward-round (floor min, ceil max) so no covered texel is lost; clamp to atlas extent.
 fn chunk_atlas_rect(
     chart: &Chart,
     placement: ChartPlacement,
@@ -325,8 +261,7 @@ fn chunk_atlas_rect(
     let (interior_w, interior_h) = chart_interior_dims(chart);
     let padding = CHART_PADDING_TEXELS as f32;
 
-    // Degenerate chart — one-texel rect at the placement anchor so downstream
-    // invariants (width × height ≥ 1) still hold.
+    // Degenerate chart — one-texel rect so downstream width × height ≥ 1.
     if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
         return (placement.x, placement.y, 1, 1);
     }
@@ -343,13 +278,9 @@ fn chunk_atlas_rect(
     let fy_max_unclamped =
         placement.y as f32 + padding + (chunk_uv_max[1] - chart.uv_min[1]) * scale_v;
 
-    // Clamp into `[0, atlas_dim]` before any `f32 as u32` cast. A misplaced
-    // chart can put `fx_max` below 0; `(-n as u32)` saturates to 0 (defined
-    // but wrong here), and the `.max(ax_min + 1)` guard below would then hand
-    // back a 1-texel rect at the atlas origin, silently overwriting whatever
-    // chart actually occupies (0, 0). Clamping first pins any rogue rect to
-    // the atlas edge; the interior-check loop in `bake_one_chunk` then skips
-    // every out-of-range texel.
+    // Clamp before `f32 as u32`: a misplaced chart can put coordinates below 0,
+    // and `(-n as u32)` saturates to 0 (wrong). Clamping pins rogue rects to
+    // the atlas edge; the interior-check loop in `bake_one_chunk` skips out-of-range texels.
     let atlas_w_f = atlas_width as f32;
     let atlas_h_f = atlas_height as f32;
     let fx_min = fx_min_unclamped.clamp(0.0, atlas_w_f);
@@ -362,13 +293,9 @@ fn chunk_atlas_rect(
     let ax_max_raw = (fx_max.ceil() as u32).max(ax_min_raw + 1);
     let ay_max_raw = (fy_max.ceil() as u32).max(ay_min_raw + 1);
 
-    // Clamp the min corner too so a chart placed past the atlas bound (a
-    // misplaced chart combined with outward rounding) does not underflow the
-    // `max - min` width computation. Without this clamp,
-    // `ax_max.saturating_sub(ax_min)` hit zero → `.max(1)` handed back a
-    // 1-texel rect at a coord beyond the atlas, which the runtime compose
-    // pass writes out-of-bounds with `textureStore`. Anchor any rogue rect to
-    // the last valid texel column/row.
+    // Clamp the min corner: without this, a chart past the atlas bound can make
+    // `ax_max - ax_min` underflow, handing a 1-texel rect to `textureStore` at
+    // an out-of-bounds coord. Pin to the last valid texel column/row.
     let ax_min = ax_min_raw.min(atlas_width.saturating_sub(1));
     let ay_min = ay_min_raw.min(atlas_height.saturating_sub(1));
     let ax_max = ax_max_raw.min(atlas_width).max(ax_min + 1);
@@ -379,15 +306,12 @@ fn chunk_atlas_rect(
     (ax_min, ay_min, width, height)
 }
 
-/// Assert no two chunks on the same face produce overlapping atlas rects
-/// after outward rounding. Spec 1's UV packer must leave a 1-atlas-texel gap
-/// between adjacent chunk UV boundaries within a face; if this assert fires,
-/// the fix is in the UV packer, not this baker.
+/// If this fires, the UV packer violated the required 1-atlas-texel gap between
+/// adjacent chunk boundaries within a face — fix the packer, not this baker.
 fn assert_no_overlapping_rects_per_face(
     chunks: &[postretro_level_format::animated_light_chunks::AnimatedLightChunk],
     per_chunk: &[ChunkBakeResult],
 ) {
-    // Group chunk indices by face, then pairwise-check within each face.
     use std::collections::HashMap;
     let mut by_face: HashMap<u32, Vec<usize>> = HashMap::new();
     for (i, c) in chunks.iter().enumerate() {
@@ -422,9 +346,6 @@ fn assert_no_overlapping_rects_per_face(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,10 +359,7 @@ mod tests {
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
 
-    // ---- fixture helpers -------------------------------------------------
-
     fn xz_quad_face(y: f32, normal_y: f32, vertex_base: f32) -> Vec<Vertex> {
-        // 1m × 1m quad on the XZ plane at height `y`, facing +Y or -Y.
         let n = [0.0, normal_y, 0.0];
         let t = [1.0, 0.0, 0.0];
         vec![
@@ -484,18 +402,10 @@ mod tests {
         }
     }
 
-    /// Floor at y=0 + ceiling blocker at y=0.5 between the light (at y=1) and
-    /// the floor. Floor owns face 0; ceiling owns face 1.
+    /// Floor (face 0) at y=0; ceiling blocker (face 1) at y=0.5 between light and floor.
     fn floor_plus_blocker_geometry() -> GeometryResult {
         let mut vertices = xz_quad_face(0.0, 1.0, 0.0);
-        // Ceiling slightly larger than the floor so no matter the jitter the
-        // shadow ray always hits it.
-        let mut ceiling = xz_quad_face(0.5, -1.0, -1.0);
-        // Translate ceiling so it spans [-1, 2] on X and [0, 1] on Z.
-        for v in &mut ceiling {
-            v.position[0] -= 0.0; // already [-1, 0] → shift to [-1, 2]
-        }
-        // Actually simpler: rebuild directly with bigger extent.
+        // Ceiling larger than the floor so the shadow ray always hits it.
         let ceiling = vec![
             Vertex::new(
                 [-1.0, 0.5, -1.0],
@@ -586,12 +496,6 @@ mod tests {
         }
     }
 
-    /// Build chunks that span each face's full UV chart, using the chart
-    /// data from the lightmap bake so synthetic chunk UVs match the chart's
-    /// actual world-meter UV range (not the [0,1] assumption).
-    ///
-    /// `build_chunks` receives the per-face `Chart` slice and returns the
-    /// chunk section to pass into the weight-map baker.
     fn bake_with_geometry_and_chunks<F>(
         mut geo: GeometryResult,
         lights: Vec<MapLight>,
@@ -626,7 +530,6 @@ mod tests {
         bake_animated_light_weight_maps(&inputs)
     }
 
-    /// Build a single chunk covering the full UV chart of `face_index`.
     fn full_face_chunk(
         charts: &[Chart],
         face_index: u32,
@@ -654,8 +557,6 @@ mod tests {
         }
     }
 
-    /// Acceptance criterion: single chunk / single light → every covered
-    /// texel carries exactly one light with Lambert-shaped (positive) weight.
     #[test]
     fn single_chunk_single_light_emits_one_light_per_covered_texel() {
         let section = bake_with_geometry_and_chunks(
@@ -669,8 +570,6 @@ mod tests {
         assert!(rect.width >= 1 && rect.height >= 1);
         assert!(section.is_consistent());
 
-        // At least one covered texel; every covered texel carries exactly one
-        // light with positive weight ≤ 1.0.
         let mut covered = 0;
         for entry in &section.offset_counts {
             if entry.count > 0 {
@@ -691,15 +590,11 @@ mod tests {
         assert!(covered > 0, "expected at least one covered texel");
     }
 
-    /// Acceptance criterion: parallel-plate occlusion → zero weight on
-    /// shadowed texels.
     #[test]
     fn parallel_plate_occluder_zeros_shadowed_texels() {
         let section = bake_with_geometry_and_chunks(
             floor_plus_blocker_geometry(),
             vec![animated_point_light_above()],
-            // Chunk covers the floor's full UV; the ceiling fully blocks the
-            // light from reaching the floor → zero weight on every texel.
             |charts| full_face_chunk(charts, 0, vec![0]),
         );
 
@@ -715,8 +610,6 @@ mod tests {
         );
     }
 
-    /// Acceptance criterion: determinism — two builds on identical input
-    /// produce byte-identical section output.
     #[test]
     fn determinism_two_builds_byte_identical() {
         let bytes_a = bake_with_geometry_and_chunks(
@@ -734,7 +627,6 @@ mod tests {
         assert_eq!(bytes_a, bytes_b);
     }
 
-    /// Empty chunk section → empty output section; no panic, no allocation.
     #[test]
     fn empty_chunk_section_yields_empty_output() {
         let section = bake_with_geometry_and_chunks(
@@ -747,13 +639,8 @@ mod tests {
         assert!(section.texel_lights.is_empty());
     }
 
-    /// The invariant: `chunk_rects[i].texel_offset` equals the prefix sum of
-    /// prior chunk areas, and `offset_counts.len()` equals the total area.
-    ///
-    /// Two chunks each covering part of the face's UV range. The chart packer
-    /// guarantees a 1-texel gap between adjacent UVs within a face; we
-    /// reproduce that gap here by leaving a thin slice between the two chunks
-    /// so their rounded atlas rects do not overlap.
+    /// Two chunks with a 1-texel UV gap (matching chart packer guarantee) so their
+    /// rounded rects don't overlap. Verifies prefix-sum texel_offset invariant.
     #[test]
     fn texel_offsets_form_prefix_sum_partition() {
         let section = bake_with_geometry_and_chunks(
@@ -803,10 +690,6 @@ mod tests {
         assert_eq!(section.offset_counts.len() as u32, running);
     }
 
-    /// Acceptance criterion: per-map byte-size budget of 8 MB. Asserted here
-    /// against a representative synthetic single-face / single-light fixture;
-    /// the bundled fixture maps repeat this check end-to-end in the
-    /// `animated_weight_maps_fixtures` integration test.
     #[test]
     fn byte_size_under_8_mib_budget() {
         let section = bake_with_geometry_and_chunks(
@@ -822,11 +705,6 @@ mod tests {
         );
     }
 
-    /// Acceptance criterion: mean animated lights per covered texel stays
-    /// ≤ 2.5 on representative fixtures. Asserted here on the single-chunk
-    /// single-light synthetic map (ratio = 1.0). Fixtures that explicitly
-    /// exercise the cap (e.g. `test_animated_weight_maps_cap.map`) are
-    /// by-design excluded from this bound.
     #[test]
     fn mean_lights_per_covered_texel_under_2_5() {
         let section = bake_with_geometry_and_chunks(
@@ -843,13 +721,9 @@ mod tests {
         );
     }
 
-    /// Regression: `chunk_atlas_rect` previously clamped only `ax_max` /
-    /// `ay_max` to the atlas extent. If a misplaced chart combined with
-    /// outward rounding put `ax_min >= atlas_width`, `ax_max - ax_min`
-    /// underflowed, `.max(1)` handed back a 1-texel rect beyond the atlas,
-    /// and the runtime compose's `textureStore` wrote past the atlas edge.
-    /// The fix clamps both corners; this test locks in the rect that comes
-    /// out of that fix.
+    /// Regression: previously only ax_max/ay_max were clamped; a misplaced chart
+    /// could put ax_min >= atlas_width, underflowing the width, and textureStore
+    /// wrote past the atlas edge. Both corners are now clamped.
     #[test]
     fn chunk_atlas_rect_handles_placement_at_and_beyond_atlas_bound() {
         let chart = Chart {
@@ -864,9 +738,7 @@ mod tests {
         };
         let atlas_size = 64u32;
 
-        // Case 1: placement exactly at the atlas edge — the rect must be
-        // anchored to the last valid texel column and width must be ≥ 1 and
-        // the rect must not extend past the atlas.
+        // Case 1: placement exactly at the atlas edge.
         let placement = ChartPlacement {
             x: atlas_size - 1,
             y: atlas_size - 1,
@@ -893,9 +765,7 @@ mod tests {
             ay + h
         );
 
-        // Case 2: placement intentionally placed past the atlas bound. The
-        // clamp must pin both corners inside the atlas rather than
-        // underflowing the width/height computation.
+        // Case 2: placement past the atlas bound; both corners must be pinned inside.
         let placement_past = ChartPlacement {
             x: atlas_size + 100,
             y: atlas_size + 100,

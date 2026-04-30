@@ -1,11 +1,4 @@
-// Global BVH construction over extracted geometry.
-//
-// Collects one BVH primitive per (face, material_bucket) pair, builds a SAH
-// BVH with the `bvh` crate, and flattens the tree into the on-disk `BvhSection`
-// shape. The live `bvh::Bvh` + primitive vector are returned alongside the
-// flattened section so Milestone 5's SH baker can reuse the same tree without
-// round-tripping through the PRL file.
-//
+// SAH BVH construction and flattening for the level compiler.
 // See: context/plans/in-progress/bvh-foundation/1-compile-bvh.md
 
 use bvh::aabb::{Aabb, Bounded};
@@ -19,14 +12,11 @@ use postretro_level_format::geometry::GeometrySection;
 
 use crate::geometry::GeometryResult;
 
-/// Maximum cell id the runtime can represent in its visible-cell bitmask.
-/// The runtime bitmask is a fixed 128-word (512-byte) storage buffer covering
-/// cell ids 0..4096. A map whose geometry extractor produced a leaf with a
-/// higher BSP leaf index cannot be rendered, so we surface it as a compile
-/// error rather than silently dropping the affected BVH leaves.
+/// Runtime visible-cell bitmask capacity. The bitmask is a fixed 4096-bit
+/// structure; any leaf with a higher cell id would be silently dropped by the
+/// traversal shader, so BVH construction rejects it at compile time.
 const MAX_CELL_ID_EXCLUSIVE: u32 = 4096;
 
-/// Error from BVH construction.
 #[derive(Debug, thiserror::Error)]
 pub enum BvhBuildError {
     #[error(
@@ -36,14 +26,9 @@ pub enum BvhBuildError {
     CellIdOutOfRange { cell_id: u32, max: u32 },
 }
 
-/// One primitive fed to the BVH builder. A primitive is the unit of index-range
-/// ownership in the final BVH: one contiguous slice of the shared index buffer
-/// covering all the triangles of a single `(face, material_bucket)` pair.
-///
-/// `material_bucket_id` is currently the face's texture index (each unique
-/// texture defines a bucket); when material buckets gain additional state
-/// (normal map, etc.) this mapping tightens but the primitive shape does not
-/// change.
+/// One primitive fed to the BVH builder: a contiguous index-buffer slice for a
+/// single `(face, material_bucket)` pair. `material_bucket_id` is currently
+/// the face's texture index; the struct shape is stable if bucket criteria expand.
 #[derive(Debug, Clone)]
 pub struct BvhPrimitive {
     pub aabb_min: [f32; 3],
@@ -52,10 +37,9 @@ pub struct BvhPrimitive {
     pub material_bucket_id: u32,
     pub index_offset: u32,
     pub index_count: u32,
-    /// Stable sort key used to feed primitives to the builder in a deterministic
-    /// order regardless of how the geometry extractor interleaved faces.
+    /// Stable sort key for deterministic builder input regardless of face interleaving order.
     pub sort_key: u64,
-    /// BVH crate bookkeeping — written by `Bvh::build`, not by our code.
+    /// Written by `Bvh::build`; not set by this module.
     node_index: usize,
 }
 
@@ -78,13 +62,9 @@ impl BHShape<f32, 3> for BvhPrimitive {
     }
 }
 
-/// Collect BVH primitives from the extracted geometry. One primitive per face
-/// (faces are already split at `(face, texture)` granularity — a face has a
-/// single texture, so `(face, material_bucket)` collapses to one primitive per
-/// face today).
-///
-/// Each primitive gets a stable sort key so the builder sees a deterministic
-/// input order regardless of the geometry extractor's internal iteration.
+/// Collect one `BvhPrimitive` per face and sort by stable key before returning.
+/// Sorting here guarantees deterministic SAH builder input regardless of geometry
+/// extractor iteration order.
 pub fn collect_primitives(geo: &GeometryResult) -> Vec<BvhPrimitive> {
     let section = &geo.geometry;
     let mut primitives: Vec<BvhPrimitive> = Vec::with_capacity(section.faces.len());
@@ -97,8 +77,6 @@ pub fn collect_primitives(geo: &GeometryResult) -> Vec<BvhPrimitive> {
 
         let (aabb_min, aabb_max) = face_aabb(section, range.index_offset, range.index_count);
 
-        // cell_id is the face's BSP leaf index, which is already the runtime
-        // cell id (find_leaf()). material_bucket_id == texture_index today.
         primitives.push(BvhPrimitive {
             aabb_min,
             aabb_max,
@@ -111,18 +89,14 @@ pub fn collect_primitives(geo: &GeometryResult) -> Vec<BvhPrimitive> {
         });
     }
 
-    // Deterministic feed: sort by (material_bucket, cell, index_offset) before
-    // the SAH build sees the slice. Any two compiler runs on identical
-    // geometry produce identical primitive order here.
     primitives.sort_by_key(|p| p.sort_key);
     primitives
 }
 
 fn primitive_sort_key(material_bucket_id: u32, cell_id: u32, index_offset: u32) -> u64 {
-    // Pack (material, cell) into the high bits so clustered materials stay
-    // together after sorting; index_offset breaks ties deterministically.
-    // A wider than 64-bit key isn't needed — texture indices and cell ids are
-    // both well under 2^20 for realistic maps.
+    // Material in high bits clusters same-bucket primitives after sort.
+    // index_offset breaks ties. Texture indices and cell ids are well under
+    // 2^20 for realistic maps so 64 bits is sufficient.
     ((material_bucket_id as u64) << 40)
         | ((cell_id as u64 & 0xF_FFFF) << 20)
         | (index_offset as u64 & 0xF_FFFF)
@@ -147,21 +121,17 @@ fn face_aabb(
     (min, max)
 }
 
-/// Build a global BVH over the geometry and flatten it into `BvhSection`.
+/// Build a SAH BVH and flatten it into `BvhSection`.
 ///
-/// The returned `(bvh::Bvh, Vec<BvhPrimitive>)` pair is live — suitable for the
-/// Milestone 5 SH baker to traverse on the CPU without rebuilding. The
-/// `BvhSection` contains the flattened GPU-facing representation sorted so
-/// each material bucket owns a contiguous leaf range.
+/// Returns the live `bvh::Bvh` and primitive vector alongside the flattened
+/// section so callers (e.g. SH baker) can traverse the tree on the CPU without
+/// rebuilding from the PRL file. Leaves in `BvhSection` are sorted so each
+/// material bucket owns a contiguous range.
 pub fn build_bvh(
     geo: &GeometryResult,
 ) -> Result<(Bvh<f32, 3>, Vec<BvhPrimitive>, BvhSection), BvhBuildError> {
     let mut primitives = collect_primitives(geo);
 
-    // Bounds-check cell_id against the runtime bitmask capacity. The runtime
-    // visible-cell bitmask is a fixed 4096-bit structure; any leaf with a
-    // larger id would be silently dropped by the traversal shader, so fail
-    // the compile loudly here instead.
     for prim in &primitives {
         if prim.cell_id >= MAX_CELL_ID_EXCLUSIVE {
             return Err(BvhBuildError::CellIdOutOfRange {
@@ -188,23 +158,20 @@ pub fn build_bvh(
     Ok((bvh, primitives, section))
 }
 
-/// Flatten a built `bvh::Bvh` into the dense `BvhSection` layout.
+/// Flatten `bvh::Bvh` into the dense `BvhSection` layout.
 ///
-/// Walks the tree in DFS order, emitting one flat node per bvh node. For leaf
-/// nodes we also emit a `BvhLeaf` entry. The resulting leaf array is then
-/// stable-sorted by `material_bucket_id`, and `left_child_or_leaf_index` on
-/// each leaf node is rewritten to point at the post-sort leaf slot.
+/// Emits one flat node per BVH node in DFS order. Leaf nodes also get a
+/// `BvhLeaf` entry. Leaves are stable-sorted by `material_bucket_id` so each
+/// bucket owns a contiguous range; `left_child_or_leaf_index` on each leaf
+/// node is patched to point at the post-sort slot.
 ///
-/// `skip_index` on every flat node points to the node slot at which DFS
-/// resumes after finishing this node's subtree — this is the "skip to next
-/// sibling" pointer the WGSL traversal shader uses to unwind the stack-free
-/// walk without a depth cap.
+/// `skip_index` is the "skip to next sibling" pointer used by the stack-free
+/// WGSL traversal shader: the flat slot at which DFS resumes after finishing
+/// the current subtree.
 fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
     let src_nodes = &bvh.nodes;
 
-    // Pre-walk the tree once to compute the DFS order and the map from bvh
-    // node index → flat node slot. The walk is iterative to avoid stack
-    // depth concerns on large maps.
+    // Iterative DFS to avoid stack overflow on deep trees.
     let mut flat_index_of: Vec<u32> = vec![u32::MAX; src_nodes.len()];
     let mut dfs_order: Vec<usize> = Vec::with_capacity(src_nodes.len());
     let mut stack: Vec<usize> = Vec::with_capacity(64);
@@ -218,18 +185,15 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
             ..
         } = src_nodes[src_idx]
         {
-            // Push right first so left is visited first on the next pop.
+            // Right pushed first so left is popped first.
             stack.push(child_r_index);
             stack.push(child_l_index);
         }
     }
 
-    // Build the flat node array and the unsorted leaf array in parallel. Leaf
-    // nodes point at unsorted-leaf slots for now; we fix them up after sorting.
+    // Leaf nodes point at unsorted-leaf slots; patched after the sort below.
     let mut flat_nodes: Vec<FlatNode> = Vec::with_capacity(src_nodes.len());
     let mut unsorted_leaves: Vec<BvhLeaf> = Vec::new();
-    // For each flat node, if it's a leaf, the unsorted leaf slot it refers to.
-    // None for internal nodes.
     let mut leaf_slot_for_flat: Vec<Option<u32>> = Vec::with_capacity(src_nodes.len());
 
     for (flat_idx, &src_idx) in dfs_order.iter().enumerate() {
@@ -244,17 +208,14 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
                     index_offset: prim.index_offset,
                     index_count: prim.index_count,
                     cell_id: prim.cell_id,
-                    // Default zero. The animated-light-chunks builder
-                    // returns a separate per-leaf range table; pack stamps it
-                    // onto these fields at serialization time (see
-                    // `pack::serialize_bvh_with_chunk_ranges`). Leaves on maps
-                    // without animated lights keep zeros.
+                    // Stamped at serialization time by the animated-light-chunks
+                    // builder; zero for maps without animated lights.
                     chunk_range_start: 0,
                     chunk_range_count: 0,
                 });
                 flat_nodes.push(FlatNode {
                     aabb_min: prim.aabb_min,
-                    skip_index: 0, // patched below
+                    skip_index: 0, // patched in subtree_end pass below
                     aabb_max: prim.aabb_max,
                     left_child_or_leaf_index: unsorted_slot,
                     flags: BVH_NODE_FLAG_LEAF,
@@ -268,7 +229,6 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
                 child_r_aabb,
                 ..
             } => {
-                // Internal node AABB = union of children.
                 let min_x = child_l_aabb.min.x.min(child_r_aabb.min.x);
                 let min_y = child_l_aabb.min.y.min(child_r_aabb.min.y);
                 let min_z = child_l_aabb.min.z.min(child_r_aabb.min.z);
@@ -277,7 +237,7 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
                 let max_z = child_l_aabb.max.z.max(child_r_aabb.max.z);
                 flat_nodes.push(FlatNode {
                     aabb_min: [min_x, min_y, min_z],
-                    skip_index: 0, // patched below
+                    skip_index: 0, // patched in subtree_end pass below
                     aabb_max: [max_x, max_y, max_z],
                     left_child_or_leaf_index: 0, // unused for internal nodes
                     flags: 0,
@@ -285,9 +245,7 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
                 });
                 leaf_slot_for_flat.push(None);
 
-                // Sanity: left child must be at flat_idx + 1 in DFS order.
-                // The right child is visited later via the `subtree_end`
-                // pass below, which reads it back off `src_nodes`.
+                // DFS invariant: left child immediately follows parent in flat order.
                 debug_assert_eq!(
                     flat_index_of[child_l_index],
                     flat_idx as u32 + 1,
@@ -297,21 +255,11 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
         }
     }
 
-    // Compute skip_index for every flat node. The skip target is the flat slot
-    // where the next sibling subtree starts — i.e. the subtree immediately
-    // following the current one in DFS order. We do a reverse pass to record
-    // "subtree end" per node: for every internal node at flat slot f,
-    // its right child lives at flat_index_of[child_r_index]. Its skip_index is
-    // whatever comes after its own subtree, which equals the parent's right
-    // child target, cascading upward. The simplest implementation is to record
-    // "subtree end" per node via an explicit iterative walk.
-    //
-    // Subtree end = flat index one past the last node in the subtree. For a
-    // leaf that's flat_idx + 1; for an internal node that's the subtree end
-    // of its right child.
+    // Compute subtree_end[f] = one past the last flat slot in f's subtree.
+    // Leaf: flat_idx + 1. Internal: subtree_end of right child.
+    // Reverse pass works because children always appear after their parent in
+    // flat order, so a child's subtree_end is already set when we reach the parent.
     let mut subtree_end = vec![0u32; flat_nodes.len()];
-    // Walk in reverse flat order — children are always after their parent, so
-    // by the time we reach slot f, slot f's right child's subtree_end is set.
     for flat_idx in (0..flat_nodes.len()).rev() {
         let src_idx = dfs_order[flat_idx];
         match src_nodes[src_idx] {
@@ -325,24 +273,17 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
         }
     }
 
-    // skip_index = subtree_end[flat_idx] for every node. This is the flat slot
-    // to visit after finishing the current subtree (or equal to `flat_nodes.len()`
-    // if the subtree is the last thing in the tree).
     for flat_idx in 0..flat_nodes.len() {
         flat_nodes[flat_idx].skip_index = subtree_end[flat_idx];
     }
 
-    // Stable-sort leaves by material_bucket_id so each bucket owns a
-    // contiguous range. Stable sort keeps determinism for leaves with the
-    // same bucket id (tie-broken by original DFS order).
+    // Stable sort by (bucket, cell, index_offset) so identical inputs produce
+    // identical output and each bucket owns a contiguous leaf range.
     let mut sorted_order: Vec<u32> = (0..unsorted_leaves.len() as u32).collect();
     sorted_order.sort_by_key(|&i| {
         let leaf = &unsorted_leaves[i as usize];
-        // Stable key: primary by bucket, secondary by cell_id, tertiary by
-        // index_offset — ensures identical input yields identical output.
         (leaf.material_bucket_id, leaf.cell_id, leaf.index_offset)
     });
-    // Build old_slot → new_slot map.
     let mut new_slot_of = vec![0u32; unsorted_leaves.len()];
     for (new_slot, &old_slot) in sorted_order.iter().enumerate() {
         new_slot_of[old_slot as usize] = new_slot as u32;
@@ -352,8 +293,7 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
         .map(|&old| unsorted_leaves[old as usize])
         .collect();
 
-    // Rewrite `left_child_or_leaf_index` on every flat leaf node to the new
-    // (sorted) leaf slot.
+    // Patch leaf nodes to point at their post-sort slot.
     for (flat_idx, maybe_slot) in leaf_slot_for_flat.iter().enumerate() {
         if let Some(old_slot) = maybe_slot {
             flat_nodes[flat_idx].left_child_or_leaf_index = new_slot_of[*old_slot as usize];
@@ -367,7 +307,6 @@ fn flatten(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) -> BvhSection {
     }
 }
 
-/// Log BVH statistics for compiler output.
 pub fn log_stats(section: &BvhSection) {
     let internal = section
         .nodes
@@ -383,9 +322,6 @@ pub fn log_stats(section: &BvhSection) {
         section.leaves.len()
     );
     if !section.leaves.is_empty() {
-        // Per-material-bucket contiguous range summary — derived via the
-        // shared format-crate helper so the compiler and engine agree on the
-        // bucket layout.
         let bucket_count = derive_bucket_ranges(&section.leaves).len();
         log::info!("  Material buckets: {bucket_count}");
     }
@@ -473,16 +409,13 @@ mod tests {
 
     #[test]
     fn deterministic_across_input_reorder() {
-        // Same primitives fed in reverse order must still produce the same
-        // flattened section byte-for-byte — primitive sort runs before the
-        // SAH builder sees them.
+        // Same primitives in reverse order must produce identical bytes.
+        // The reversed faces/face_index_ranges are consistent because each face
+        // still points at its original index slice.
         let geo_forward = multi_face_geometry();
         let mut geo_reverse = multi_face_geometry();
         geo_reverse.geometry.faces.reverse();
         geo_reverse.face_index_ranges.reverse();
-        // Note: the reversed `faces`/`face_index_ranges` are consistent even
-        // though `geometry.indices` stays in forward order, because each face
-        // still points at its original index slice.
         let (_, _, a) = build_bvh(&geo_forward).unwrap();
         let (_, _, b) = build_bvh(&geo_reverse).unwrap();
         assert_eq!(
@@ -514,7 +447,6 @@ mod tests {
         let leaf_indices: u32 = section.leaves.iter().map(|l| l.index_count).sum();
         assert_eq!(leaf_indices, total_indices, "leaf coverage mismatch");
 
-        // Check for overlap: every index-range slot appears in at most one leaf.
         let mut seen = vec![0u8; geo.geometry.indices.len()];
         for leaf in &section.leaves {
             for slot in leaf.index_offset..leaf.index_offset + leaf.index_count {
@@ -558,9 +490,6 @@ mod tests {
 
     #[test]
     fn build_bvh_rejects_cell_id_at_or_above_limit() {
-        // Forge a face whose leaf_index equals the bitmask limit. The BVH
-        // builder must reject it rather than silently dropping the resulting
-        // leaf at runtime.
         let geo = make_geometry(
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             &[(0, 3, MAX_CELL_ID_EXCLUSIVE, 0)],
@@ -605,15 +534,9 @@ mod tests {
 
     #[test]
     fn skip_index_past_subtree() {
-        // For any internal node the left child is at current+1; skip_index
-        // should equal the subtree end (i.e. first flat slot beyond the
-        // right subtree).
         let geo = multi_face_geometry();
         let (_, _, section) = build_bvh(&geo).unwrap();
 
-        // Walk nodes: every node's skip_index should be > its own index and
-        // <= nodes.len(); for leaves, skip_index should equal current + 1
-        // when there is a next sibling, or nodes.len() at the tree end.
         let total = section.nodes.len() as u32;
         for (idx, node) in section.nodes.iter().enumerate() {
             assert!(
@@ -626,8 +549,7 @@ mod tests {
     }
 
     fn multi_face_geometry() -> GeometryResult {
-        // 4 faces, 3 different material buckets, 2 different cells.
-        // Triangle vertices spread so the SAH has something to work with.
+        // 4 faces · 3 material buckets · 2 cells; vertices spread for SAH.
         let positions = vec![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],

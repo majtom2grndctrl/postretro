@@ -1,7 +1,5 @@
-// Brush-volume BSP builder: partitions space by brush-derived planes and
-// assigns leaf solidity structurally during construction. Each leaf carries
-// the inside-set rule's outcome (solid iff every candidate brush contains
-// the region) instead of relying on a post-pass classifier.
+// Brush-volume BSP builder. Leaf solidity assigned during construction via
+// the inside-set rule; no post-pass classifier needed.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use anyhow::{Result, bail};
@@ -10,37 +8,25 @@ use glam::DVec3;
 use super::types::*;
 use crate::map_data::BrushVolume;
 
-/// Tolerance for classifying AABB corners against brush-derived planes.
-/// Matches the BSP builder's `PLANE_EPSILON` so that a region is classified
-/// consistently regardless of which pass inspects it.
+/// Classification tolerance for AABB corners against brush-derived planes.
 const PLANE_EPSILON: f64 = 0.1;
 
-/// 1 m slack added on every axis when deriving the world AABB from the
-/// union of brush AABBs. Large enough to keep the splitter from producing
-/// degenerate sub-regions at the world boundary; small enough to keep the
-/// tree shallow.
+/// Slack added on every axis when deriving the world AABB from brush bounds.
+/// Keeps the splitter from producing degenerate sub-regions at the world boundary
+/// without making the tree unnecessarily deep.
 const WORLD_AABB_SLACK: f64 = 1.0;
 
-/// Splitter scoring constants. The cost of a candidate plane is
-/// `spanning * SPLIT_PENALTY + |front - back| * IMBALANCE_PENALTY`, where
-/// each count is measured in brush spans — a brush that crosses the plane
-/// adds one to the spanning count.
+/// Splitter scoring weights. Spanning brushes are penalized heavily because
+/// they increase candidate set size on both sides without reducing depth.
 const SPLIT_PENALTY: i32 = 8;
 const IMBALANCE_PENALTY: i32 = 1;
 
-/// Hard cap on recursion depth. 256 is comfortably above the depth our
-/// current test maps reach and acts as a failsafe against pathological input.
-/// Exceeding the cap returns a compiler error rather than stack-overflowing.
+/// Recursion depth cap. Guards against pathological input that would otherwise
+/// exhaust the stack; returns an error instead of overflowing.
 const MAX_RECURSION_DEPTH: usize = 256;
 
-/// Build a BSP tree by recursively partitioning space with brush-derived
-/// planes. Every leaf's `is_solid` flag is assigned during construction
-/// from the inside-set rule (solid iff every candidate brush contains the
-/// region), so no post-pass classifier is needed.
-///
-/// Leaves come back with empty `face_indices`. Face emission happens in a
-/// separate stage (`face_extract::extract_faces`), which mutates this tree
-/// in place to populate per-leaf face index lists.
+/// Build a BSP tree from brush volumes. Leaf solidity is assigned during
+/// construction; `face_extract::extract_faces` populates `face_indices` afterward.
 pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
     let mut tree = BspTree {
         nodes: Vec::new(),
@@ -70,9 +56,6 @@ pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
     Ok(tree)
 }
 
-/// World AABB = union of all brush AABBs, expanded by `WORLD_AABB_SLACK` on
-/// every axis. Derived from input rather than hardcoded so the builder
-/// works for any coordinate range without a fixed world-coord constant.
 fn world_aabb_from_brushes(brushes: &[BrushVolume]) -> Aabb {
     let mut bounds = Aabb::empty();
     for brush in brushes {
@@ -84,23 +67,18 @@ fn world_aabb_from_brushes(brushes: &[BrushVolume]) -> Aabb {
     }
 }
 
-/// Classification of an AABB relative to a plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AabbSide {
-    /// AABB lies entirely in the plane's front half-space
-    /// (`dot(p, normal) - distance >= -epsilon` for every corner).
+    /// Every corner satisfies `dot(p, normal) - distance >= -epsilon`.
     Front,
-    /// AABB lies entirely in the plane's back half-space.
     Back,
-    /// AABB crosses the plane.
     Spanning,
 }
 
-/// Classify an AABB against a plane using support-point tests along the
-/// plane's normal. Cheaper than iterating the 8 corners.
+/// Classify an AABB against a plane via support-point tests — cheaper than
+/// iterating all 8 corners.
 fn classify_aabb(bounds: &Aabb, normal: DVec3, distance: f64) -> AabbSide {
-    // Support points: max_support is the corner farthest in +normal direction,
-    // min_support is the corner farthest in -normal direction.
+    // max_support: corner farthest in +normal. min_support: corner farthest in -normal.
     let max_support = DVec3::new(
         if normal.x >= 0.0 {
             bounds.max.x
@@ -148,9 +126,8 @@ fn classify_aabb(bounds: &Aabb, normal: DVec3, distance: f64) -> AabbSide {
     }
 }
 
-/// A brush is structurally "inside" a region when every one of its planes
-/// has the region entirely on its back side — i.e., the brush's half-space
-/// intersection fully contains the region.
+/// True when every brush half-space has the region fully on its back side,
+/// meaning the brush's volume contains the entire region.
 fn brush_contains_region(brush: &BrushVolume, region: &Aabb) -> bool {
     for plane in &brush.planes {
         if classify_aabb(region, plane.normal, plane.distance) != AabbSide::Back {
@@ -160,8 +137,6 @@ fn brush_contains_region(brush: &BrushVolume, region: &Aabb) -> bool {
     true
 }
 
-/// Compute the inside set for a region: every candidate whose half-space
-/// intersection contains the region.
 fn compute_inside_set(brushes: &[BrushVolume], candidates: &[usize], region: &Aabb) -> Vec<usize> {
     candidates
         .iter()
@@ -170,11 +145,7 @@ fn compute_inside_set(brushes: &[BrushVolume], candidates: &[usize], region: &Aa
         .collect()
 }
 
-/// Partition candidate brushes across a plane.
-///
-/// Each returned vec holds the subset of candidates that need to appear
-/// on that side. A brush fully on one side only appears in that side's list;
-/// a spanning brush appears in both.
+/// Split candidates across a plane. Spanning brushes appear in both lists.
 fn partition_candidates(
     brushes: &[BrushVolume],
     candidates: &[usize],
@@ -196,8 +167,6 @@ fn partition_candidates(
     (front, back)
 }
 
-/// Count the partition that a plane would produce on the current candidate
-/// set. Returns (front, back, spanning) brush counts.
 fn count_partition(
     brushes: &[BrushVolume],
     candidates: &[usize],
@@ -221,16 +190,15 @@ fn count_partition(
     (front, back, spanning)
 }
 
-/// Squared L2 tolerance for ancestor-plane equivalence (effective L2 of 1e-3).
-/// Tight on purpose: ancestor entries are inserted from the same plane data
-/// the comparison reads back, so any mismatch indicates a different plane,
-/// not the same plane perturbed by float drift.
+/// Tight tolerances for ancestor-plane deduplication. Ancestor entries come
+/// from the same plane data they're compared against, so any mismatch is a
+/// different plane — not float drift.
 const ANCESTOR_PLANE_NORMAL_EPSILON_SQ: f64 = 1e-6;
 const ANCESTOR_PLANE_DISTANCE_EPSILON: f64 = 1e-4;
 
-/// Two planes are the same splitter when their oriented (normal, distance)
-/// pairs match. Used to dedup the ancestor stack so the recursive descent
-/// never picks the same plane twice on a single root-to-leaf path.
+/// True when two (normal, distance) pairs describe the same oriented plane.
+/// Used to prevent the recursive descent from selecting the same splitter twice
+/// on a root-to-leaf path, which would prevent termination.
 fn planes_equivalent(a: (DVec3, f64), b: (DVec3, f64)) -> bool {
     (a.0 - b.0).length_squared() < ANCESTOR_PLANE_NORMAL_EPSILON_SQ
         && (a.1 - b.1).abs() < ANCESTOR_PLANE_DISTANCE_EPSILON
@@ -238,22 +206,16 @@ fn planes_equivalent(a: (DVec3, f64), b: (DVec3, f64)) -> bool {
 
 /// Pick the best splitting plane from the candidate brushes' bounding planes.
 ///
-/// The candidate pool is every plane bounding at least one brush in the
-/// current candidate set — no "visible plane" filtering. Including planes
-/// that no world face sits on is the whole point: it lets the builder see
-/// air gaps and brush boundaries that a face-driven splitter would miss.
-/// (Mirrors id Tech 4 dmap's `SelectSplitPlaneNum` in `facebsp.cpp`.)
+/// Considers every plane bounding a candidate brush — no visible-face filter.
+/// This is intentional: brush planes that carry no world geometry still
+/// separate air gaps and solid regions that a face-driven splitter would miss.
+/// (Mirrors id Tech 4 dmap's `SelectSplitPlaneNum`.)
 ///
-/// A plane is a valid splitter iff:
-/// 1. It has not already been used as an ancestor on this root-to-leaf
-///    path. Dedup is what guarantees termination — without it the recursion
-///    could pick the same plane twice and never make progress.
-/// 2. The region itself is Spanning wrt the plane. Skipping non-spanning
-///    planes ensures both children get a strictly smaller region (for
-///    axis-aligned planes, exactly one face of the AABB shrinks).
+/// A plane qualifies iff:
+/// 1. Not already on the ancestor path — dedup is what guarantees termination.
+/// 2. Spans the current region — ensures both child regions are strictly smaller.
 ///
-/// Returns `Some((normal, distance))` on success, `None` when no plane
-/// produces a non-trivial partition.
+/// Returns `None` when no qualifying plane exists.
 fn select_splitter(
     brushes: &[BrushVolume],
     candidates: &[usize],
@@ -266,7 +228,6 @@ fn select_splitter(
         for plane in &brushes[idx].planes {
             let key = (plane.normal, plane.distance);
 
-            // Skip planes already used as ancestors.
             if ancestor_planes
                 .iter()
                 .any(|&anc| planes_equivalent(anc, key))
@@ -274,7 +235,6 @@ fn select_splitter(
                 continue;
             }
 
-            // Require the plane to actually cut the region.
             if classify_aabb(region, plane.normal, plane.distance) != AabbSide::Spanning {
                 continue;
             }
@@ -297,17 +257,13 @@ fn select_splitter(
     best.map(|(plane, _)| plane)
 }
 
-/// Tighten a region AABB along a splitting plane. Only effective for
-/// axis-aligned planes (which is the common case for brush-derived planes).
-/// For non-axis-aligned planes the region stays at the parent bounds —
-/// conservative but correct, since classification and containment tests all
-/// use AABB support points.
-///
-/// `side` selects which half-space we're descending into.
+/// Shrink a region AABB to the half-space selected by `side`. Only effective
+/// for axis-aligned planes; non-axis-aligned planes return the parent bounds
+/// unchanged (conservative, but correct — all classification tests use AABB
+/// support points, not the exact half-space boundary).
 fn tighten_region(region: &Aabb, normal: DVec3, distance: f64, side: AabbSide) -> Aabb {
     let mut child = region.clone();
-    // Detect axis-aligned planes. For a unit normal aligned with an axis,
-    // exactly one component is ±1 and the others are 0.
+    // A unit normal aligned to an axis has exactly one component ±1, others 0.
     let axis = if normal.x.abs() > 0.999 {
         Some(0)
     } else if normal.y.abs() > 0.999 {
@@ -322,9 +278,7 @@ fn tighten_region(region: &Aabb, normal: DVec3, distance: f64, side: AabbSide) -
         return child;
     };
 
-    // Plane equation: normal.{x|y|z} * coord = distance.
-    // For axis-aligned normal with component +1, coord == distance;
-    // for component -1, coord == -distance.
+    // Plane equation: axis_sign * coord = distance, so coord = distance / axis_sign.
     let axis_sign = match axis {
         0 => normal.x,
         1 => normal.y,
@@ -332,12 +286,9 @@ fn tighten_region(region: &Aabb, normal: DVec3, distance: f64, side: AabbSide) -
     };
     let plane_coord = distance / axis_sign;
 
-    // Front half-space: coord >= plane_coord (when axis_sign > 0) or
-    // coord <= plane_coord (when axis_sign < 0). Tighten the appropriate
-    // face of the AABB.
     match (side, axis_sign > 0.0) {
         (AabbSide::Front, true) | (AabbSide::Back, false) => {
-            // We're on the "coord >= plane_coord" side.
+            // coord >= plane_coord side: raise the min face.
             let v = plane_coord;
             match axis {
                 0 => child.min.x = child.min.x.max(v),
@@ -346,7 +297,7 @@ fn tighten_region(region: &Aabb, normal: DVec3, distance: f64, side: AabbSide) -
             }
         }
         (AabbSide::Back, true) | (AabbSide::Front, false) => {
-            // We're on the "coord <= plane_coord" side.
+            // coord <= plane_coord side: lower the max face.
             let v = plane_coord;
             match axis {
                 0 => child.max.x = child.max.x.min(v),
@@ -354,16 +305,12 @@ fn tighten_region(region: &Aabb, normal: DVec3, distance: f64, side: AabbSide) -
                 _ => child.max.z = child.max.z.min(v),
             }
         }
-        (AabbSide::Spanning, _) => {
-            // Spanning means neither child tightened — shouldn't be called.
-        }
+        (AabbSide::Spanning, _) => {}
     }
 
     child
 }
 
-/// Recursive builder. Returns the child handle (node or leaf) for the
-/// subtree built. Solidity is assigned when the leaf is created.
 #[allow(clippy::too_many_arguments)]
 fn build_recursive(
     tree: &mut BspTree,
@@ -382,21 +329,18 @@ fn build_recursive(
         );
     }
 
-    // Termination: no candidates left => fully empty.
+    // No candidates: region is outside all brushes — empty.
     if candidates.is_empty() {
         return Ok(make_leaf(tree, region, false));
     }
 
-    // Termination: every candidate is in the inside set => fully solid.
+    // All candidates contain the region: fully solid.
     if candidates.len() == inside.len() {
         return Ok(make_leaf(tree, region, true));
     }
 
-    // Pick a splitter. If none cuts the region we cannot make further
-    // progress on a mixed-candidate set: the empty and fully-inside cases
-    // were already short-circuited above, so this fall-through always lands
-    // on an empty leaf (mixed candidates with no progress => structural
-    // air rather than solid).
+    // Mixed candidates, no qualifying splitter: cannot separate solid from air.
+    // Treat as empty (structural air gap, not an error).
     let Some((normal, distance)) = select_splitter(brushes, candidates, region, ancestor_planes)
     else {
         return Ok(make_leaf(tree, region, false));
@@ -500,8 +444,6 @@ mod tests {
         }
     }
 
-    /// Build a hollow room from 6 wall brushes (floor, ceiling, 4 walls)
-    /// enclosing the AABB `[min, max]` with walls of thickness `wall`.
     fn hollow_room(min: DVec3, max: DVec3, wall: f64) -> Vec<BrushVolume> {
         vec![
             // Floor
@@ -551,8 +493,6 @@ mod tests {
 
     #[test]
     fn world_aabb_unions_brush_bounds_with_slack() {
-        // Two disjoint brushes: builder should derive a world AABB that
-        // covers both plus 1 m of slack on every axis.
         let brushes = vec![
             box_brush(DVec3::ZERO, DVec3::splat(10.0)),
             box_brush(DVec3::splat(50.0), DVec3::splat(60.0)),
@@ -572,7 +512,6 @@ mod tests {
             min: DVec3::new(0.0, 0.0, 0.0),
             max: DVec3::new(5.0, 5.0, 5.0),
         };
-        // Plane at X=10, normal +X. AABB is entirely at X <= 5 => back.
         assert_eq!(classify_aabb(&bounds, DVec3::X, 10.0), AabbSide::Back);
     }
 
@@ -582,7 +521,6 @@ mod tests {
             min: DVec3::new(0.0, 0.0, 0.0),
             max: DVec3::new(5.0, 5.0, 5.0),
         };
-        // Plane at X=-10, normal +X. AABB is entirely at X >= 0 => front.
         assert_eq!(classify_aabb(&bounds, DVec3::X, -10.0), AabbSide::Front);
     }
 
@@ -597,26 +535,22 @@ mod tests {
 
     #[test]
     fn hollow_room_interior_air_exterior_solid() {
-        // Room shell: outer 0..100, walls 4 thick, interior 4..96.
         let brushes = hollow_room(DVec3::ZERO, DVec3::splat(100.0), 4.0);
         let tree = build_bsp_from_brushes(&brushes).expect("hollow room should build");
 
-        // Interior point must land in an empty leaf.
         let interior = DVec3::splat(50.0);
         assert!(
             !leaf_at(&tree, interior).is_solid,
             "interior air point should land in an empty leaf"
         );
 
-        // Floor point must land in a solid leaf.
         let floor = DVec3::new(50.0, 2.0, 50.0);
         assert!(
             leaf_at(&tree, floor).is_solid,
             "floor-interior point should land in a solid leaf"
         );
 
-        // Exterior (outside the room shell) must land in an empty leaf —
-        // "no candidate brushes contain this region" => empty.
+        // Exterior is empty: no candidate brushes contain the region.
         let exterior = DVec3::new(50.0, 150.0, 50.0);
         assert!(
             !leaf_at(&tree, exterior).is_solid,
@@ -626,9 +560,7 @@ mod tests {
 
     #[test]
     fn hollow_room_with_central_pillar_pillar_is_solid() {
-        // Room 0..200 with walls of thickness 8, interior is 8..192.
         let mut brushes = hollow_room(DVec3::ZERO, DVec3::splat(200.0), 8.0);
-        // Pillar centered in the room, from floor (Y=8) to ceiling (Y=192).
         brushes.push(box_brush(
             DVec3::new(90.0, 8.0, 90.0),
             DVec3::new(110.0, 192.0, 110.0),
@@ -636,15 +568,12 @@ mod tests {
 
         let tree = build_bsp_from_brushes(&brushes).expect("pillar room should build");
 
-        // A point inside the pillar must be solid.
         let pillar_interior = DVec3::new(100.0, 100.0, 100.0);
         assert!(
             leaf_at(&tree, pillar_interior).is_solid,
             "pillar interior should be solid"
         );
 
-        // A point off to the side (still inside the room, away from the pillar)
-        // must be empty.
         let side_air = DVec3::new(50.0, 100.0, 50.0);
         assert!(
             !leaf_at(&tree, side_air).is_solid,
@@ -654,14 +583,10 @@ mod tests {
 
     #[test]
     fn room_with_doorway_has_connected_air() {
-        // Two rooms (A: X=0..200, B: X=300..500) joined by a doorway.
-        // We build a single hollow shell around X=0..500 then drop two
-        // vertical slabs at X=200..220 and X=280..300 to carve the dividing
-        // wall, leaving a doorway gap at X=220..280, Y=8..80, Z=80..120.
+        // Single shell (X=0..500) with a dividing wall at X=200..220 leaving a
+        // doorway gap at Y=8..80, Z=80..120. Wall built from two jambs + lintel.
         let mut brushes = hollow_room(DVec3::ZERO, DVec3::new(500.0, 200.0, 200.0), 8.0);
 
-        // Left dividing-wall chunk (entire room-height, leaves doorway in Y and Z).
-        // The wall is split into an upper lintel + two side jambs around the door.
         // Side jamb -Z:
         brushes.push(box_brush(
             DVec3::new(200.0, 8.0, 8.0),
@@ -680,68 +605,39 @@ mod tests {
 
         let tree = build_bsp_from_brushes(&brushes).expect("doorway room should build");
 
-        // Air on the left room side.
         let left_air = DVec3::new(100.0, 40.0, 100.0);
-        assert!(
-            !leaf_at(&tree, left_air).is_solid,
-            "left room interior should be empty"
-        );
-        // Air on the right room side.
+        assert!(!leaf_at(&tree, left_air).is_solid, "left room interior should be empty");
+
         let right_air = DVec3::new(400.0, 40.0, 100.0);
-        assert!(
-            !leaf_at(&tree, right_air).is_solid,
-            "right room interior should be empty"
-        );
-        // Point in the middle of the doorway opening — pure air at the
-        // jamb face — should also be empty.
+        assert!(!leaf_at(&tree, right_air).is_solid, "right room interior should be empty");
+
         let doorway = DVec3::new(210.0, 40.0, 100.0);
-        assert!(
-            !leaf_at(&tree, doorway).is_solid,
-            "doorway opening should be empty"
-        );
-        // Point inside one of the jambs should be solid.
+        assert!(!leaf_at(&tree, doorway).is_solid, "doorway opening should be empty");
+
         let jamb_interior = DVec3::new(210.0, 100.0, 50.0);
-        assert!(
-            leaf_at(&tree, jamb_interior).is_solid,
-            "jamb interior should be solid"
-        );
-        // Point inside the lintel should be solid.
+        assert!(leaf_at(&tree, jamb_interior).is_solid, "jamb interior should be solid");
+
         let lintel_interior = DVec3::new(210.0, 150.0, 100.0);
-        assert!(
-            leaf_at(&tree, lintel_interior).is_solid,
-            "lintel interior should be solid"
-        );
+        assert!(leaf_at(&tree, lintel_interior).is_solid, "lintel interior should be solid");
     }
 
     #[test]
     fn adjacent_brushes_with_narrow_air_gap_preserve_air() {
-        // Two brushes separated by a 2-unit air gap in Z. The splitter pool
-        // includes both brushes' adjacent planes, so the narrow gap must be
-        // represented as an empty leaf regardless of which plane is picked
-        // first. This is the failure mode the face-driven builder could not
-        // see — no face sits on the mid-gap planes, but both brush planes
-        // are splitter candidates.
+        // Validates that brush-plane splitting sees the gap even though no world
+        // face sits on the mid-gap planes (the failure mode of face-driven splitters).
         let brushes = vec![
             box_brush(DVec3::new(0.0, 0.0, 0.0), DVec3::new(20.0, 20.0, 10.0)),
-            // Gap: Z=10..12
-            box_brush(DVec3::new(0.0, 0.0, 12.0), DVec3::new(20.0, 20.0, 22.0)),
+            box_brush(DVec3::new(0.0, 0.0, 12.0), DVec3::new(20.0, 20.0, 22.0)), // gap Z=10..12
         ];
 
         let tree = build_bsp_from_brushes(&brushes).expect("narrow gap should build");
 
-        // Inside brush A.
         let a_interior = DVec3::new(10.0, 10.0, 5.0);
-        assert!(
-            leaf_at(&tree, a_interior).is_solid,
-            "brush A interior should be solid"
-        );
-        // Inside brush B.
+        assert!(leaf_at(&tree, a_interior).is_solid, "brush A interior should be solid");
+
         let b_interior = DVec3::new(10.0, 10.0, 17.0);
-        assert!(
-            leaf_at(&tree, b_interior).is_solid,
-            "brush B interior should be solid"
-        );
-        // Air gap between them.
+        assert!(leaf_at(&tree, b_interior).is_solid, "brush B interior should be solid");
+
         let gap = DVec3::new(10.0, 10.0, 11.0);
         assert!(
             !leaf_at(&tree, gap).is_solid,
@@ -763,20 +659,12 @@ mod tests {
 
     #[test]
     fn recursion_depth_cap_returns_error_on_overflow() {
-        // Construct a deliberately pathological configuration: many brushes
-        // stacked along a single axis with a tiny step, forcing the splitter
-        // to descend once per brush. With MAX_RECURSION_DEPTH clamped, the
-        // builder must error rather than stack-overflow. We test by wrapping
-        // the public entry point in a thin harness that halves the cap.
+        // 260 brushes along +X, each 1 unit wide with 1-unit gaps. Forces the
+        // splitter to descend once per brush, pushing depth past MAX_RECURSION_DEPTH.
+        // The builder must return an error rather than stack-overflow.
         //
-        // We cannot change the const from a test, so instead we construct a
-        // large stack and assert the builder either succeeds (depth still
-        // fits) or returns an error. Passing either outcome demonstrates the
-        // cap is enforced; to make the assertion meaningful we construct
-        // enough brushes that the depth naturally approaches the cap.
-        //
-        // 260 brushes along +X, each 1 unit wide with 1-unit gaps. The
-        // splitter cannot terminate before descending through each one.
+        // We can't lower the cap from a test, so we verify the outcome is either
+        // a clean error (depth exceeded) or a successful shallow tree — never a panic.
         let mut brushes = Vec::new();
         for i in 0..260 {
             let x = (i as f64) * 2.0;
@@ -786,9 +674,6 @@ mod tests {
             ));
         }
         let result = build_bsp_from_brushes(&brushes);
-        // Either the builder succeeds (if splitter selection happens to
-        // produce a shallower tree via axis-aligned groupings) or it errors
-        // cleanly. The forbidden outcome is a panic or stack overflow.
         if let Err(e) = result {
             let msg = format!("{e}");
             assert!(

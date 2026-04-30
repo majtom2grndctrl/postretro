@@ -1,7 +1,4 @@
 // Portal generation: emit portal polygons between adjacent BSP leaves.
-// Portals are always written to the PRL for runtime traversal and consumed by
-// chunk_light_list_bake for compile-time reachability filtering.
-// Algorithm: recursive portal distribution (ericw-tools shape).
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use glam::DVec3;
@@ -9,37 +6,27 @@ use glam::DVec3;
 use crate::geometry_utils::{clip_polygon_to_front, split_polygon};
 use crate::partition::{BspChild, BspTree};
 
-/// Tighter epsilon for portal clipping. Portals are clipped against many
-/// ancestor planes in sequence; the generous PLANE_EPSILON (0.1) used for
-/// BSP face classification would accumulate too much error. Consistent with
-/// ericw-tools' ON_EPSILON for winding operations.
+/// Tighter than BSP face classification (0.1). Portals are clipped against
+/// many ancestor planes in sequence, so a looser epsilon accumulates too much
+/// error. Matches ericw-tools' ON_EPSILON for winding operations.
 const PORTAL_EPSILON: f64 = 0.01;
 
-/// Half-extent of the initial portal winding. Large enough to cover any
-/// reasonable level geometry.
+/// Initial portal winding half-extent. Covers any reasonable level geometry.
 const WINDING_HALF_EXTENT: f64 = 16384.0;
 
-/// Minimum polygon area to keep a portal winding. Slivers below this
-/// threshold are discarded to prevent accumulation of degenerate geometry
-/// from numerical precision loss.
+/// Slivers below this area are discarded to prevent degenerate geometry
+/// from accumulating numerical precision loss during repeated clipping.
 const MIN_PORTAL_AREA_M2: f64 = 0.1;
 
 /// A portal connecting two adjacent BSP leaves through a splitting plane.
 pub struct Portal {
     /// Convex polygon in engine coordinates.
     pub polygon: Vec<DVec3>,
-    /// Index into `BspTree::leaves` for the front side.
     pub front_leaf: usize,
-    /// Index into `BspTree::leaves` for the back side.
     pub back_leaf: usize,
 }
 
 /// Generate portals for all adjacent empty leaf pairs in the BSP tree.
-///
-/// Walks the tree recursively, creating a portal winding at each internal
-/// node by clipping a large initial polygon against ancestor splitting planes,
-/// then distributing the surviving winding through both subtrees to find
-/// actual leaf pairs.
 pub fn generate_portals(tree: &BspTree) -> Vec<Portal> {
     if tree.nodes.is_empty() {
         return Vec::new();
@@ -53,11 +40,8 @@ pub fn generate_portals(tree: &BspTree) -> Vec<Portal> {
     portals
 }
 
-/// Plane representation for ancestor stack entries: (normal, distance).
 type PlaneEntry = (DVec3, f64);
 
-/// Phase 1: walk the BSP tree, generate portal windings at each node,
-/// then distribute them (Phase 2) to find leaf pairs.
 fn generate_recursive(
     tree: &BspTree,
     node_idx: usize,
@@ -68,14 +52,11 @@ fn generate_recursive(
     let plane_normal = node.plane_normal;
     let plane_distance = node.plane_distance;
 
-    // Phase 1: create initial winding on this node's splitting plane,
-    // clipped against all ancestor planes.
     if let Some(winding) = make_node_portal(plane_normal, plane_distance, ancestor_planes) {
-        // Phase 2: distribute the winding through both subtrees.
         distribute_portal(tree, &winding, &node.front, &node.back, portals);
     }
 
-    // Recurse into front child (plane as-is: normal points to front).
+    // Front child inherits the plane as-is; back child sees the negated plane.
     let mut front_ancestors = ancestor_planes.to_vec();
     front_ancestors.push((plane_normal, plane_distance));
 
@@ -83,7 +64,6 @@ fn generate_recursive(
         generate_recursive(tree, child_idx, &front_ancestors, portals);
     }
 
-    // Recurse into back child (negated plane: normal reversed, distance negated).
     let mut back_ancestors = ancestor_planes.to_vec();
     back_ancestors.push((-plane_normal, -plane_distance));
 
@@ -92,19 +72,15 @@ fn generate_recursive(
     }
 }
 
-/// Create a portal winding for a node's splitting plane, clipped against
-/// all ancestor splitting planes.
-///
-/// Returns `None` if the winding is clipped away entirely or becomes degenerate.
+/// Build a portal winding for a node's splitting plane, clipped against all
+/// ancestor planes. Returns `None` if the winding is fully clipped or degenerate.
 fn make_node_portal(
     plane_normal: DVec3,
     plane_distance: f64,
     ancestor_planes: &[PlaneEntry],
 ) -> Option<Vec<DVec3>> {
-    // Build an initial large quad on the splitting plane.
     let mut winding = make_base_winding(plane_normal, plane_distance);
 
-    // Clip against each ancestor plane, keeping the front (positive) side.
     for &(anc_normal, anc_distance) in ancestor_planes {
         winding = clip_polygon_to_front(&winding, anc_normal, anc_distance, PORTAL_EPSILON)?;
 
@@ -120,14 +96,9 @@ fn make_node_portal(
     Some(winding)
 }
 
-/// Construct a large quad centered on a plane, suitable for clipping down
-/// to the actual portal polygon.
-///
-/// Cross the plane normal with a reference axis to get basis vectors, then
-/// form a quad from +/-basis1 +/-basis2 offset to lie on the plane.
+/// Large quad on the splitting plane, to be clipped down to the portal shape.
 fn make_base_winding(normal: DVec3, distance: f64) -> Vec<DVec3> {
-    // Choose a reference axis that isn't near-parallel to the normal.
-    // If the normal is near +Z or -Z, use +X. Otherwise use +Z.
+    // Pick a reference axis not near-parallel to the normal to form a stable basis.
     let reference = if normal.z.abs() > 0.9 {
         DVec3::X
     } else {
@@ -140,7 +111,7 @@ fn make_base_winding(normal: DVec3, distance: f64) -> Vec<DVec3> {
     let center = normal * distance;
     let half = WINDING_HALF_EXTENT;
 
-    // Quad winding order: consistent CCW when viewed from the front (positive normal side).
+    // CCW when viewed from the front (positive normal side).
     vec![
         center - basis1 * half - basis2 * half,
         center + basis1 * half - basis2 * half,
@@ -149,8 +120,7 @@ fn make_base_winding(normal: DVec3, distance: f64) -> Vec<DVec3> {
     ]
 }
 
-/// Phase 2: distribute a portal winding through the BSP subtrees to find
-/// the leaf pairs it actually connects.
+/// Distribute a portal winding through the BSP subtrees to find the leaf pairs it connects.
 fn distribute_portal(
     tree: &BspTree,
     winding: &[DVec3],
@@ -159,7 +129,6 @@ fn distribute_portal(
     portals: &mut Vec<Portal>,
 ) {
     match (front_child, back_child) {
-        // Base case: both sides are leaves.
         (BspChild::Leaf(f), BspChild::Leaf(b)) => {
             let front_leaf = &tree.leaves[*f];
             let back_leaf = &tree.leaves[*b];
@@ -172,7 +141,6 @@ fn distribute_portal(
             }
         }
 
-        // Front is a node: split winding by that node's plane, recurse.
         (BspChild::Node(n), _) => {
             let split_node = &tree.nodes[*n];
             let (front_winding, back_winding) = split_polygon(
@@ -194,7 +162,6 @@ fn distribute_portal(
             }
         }
 
-        // Back is a node: split winding by that node's plane, recurse.
         (_, BspChild::Node(n)) => {
             let split_node = &tree.nodes[*n];
             let (front_winding, back_winding) = split_polygon(
@@ -218,7 +185,6 @@ fn distribute_portal(
     }
 }
 
-/// Compute the area of a convex polygon using the cross-product method.
 fn polygon_area(vertices: &[DVec3]) -> f64 {
     if vertices.len() < 3 {
         return 0.0;
@@ -239,8 +205,6 @@ mod tests {
     use super::*;
     use crate::map_data::{BrushPlane, BrushVolume, Face};
     use crate::partition::{self, BspTree};
-
-    // -- Helper: build a box room's faces and brush volumes --
 
     fn make_box_faces(min: DVec3, max: DVec3) -> Vec<Face> {
         let texture = "test".to_string();
@@ -436,46 +400,44 @@ mod tests {
         }
     }
 
-    /// Build a hollow room from 6 wall brushes (floor, ceiling, 4 walls).
-    ///
-    /// Returns both the outward-facing face list and the brush volumes that
-    /// own them. Tests that only need brushes (the new brush-volume partition
-    /// pipeline) can ignore the face list with `let (_, brushes) = ...`.
+    /// Hollow room from 6 wall brushes (floor, ceiling, 4 walls).
+    /// Returns (faces, brush volumes). Tests that only need brushes can ignore
+    /// the face list with `let (_, brushes) = ...`.
     fn hollow_room(min: DVec3, max: DVec3, wall: f64) -> (Vec<Face>, Vec<BrushVolume>) {
         let mut faces = Vec::new();
         let mut brushes = Vec::new();
 
-        // Floor slab
+        // floor slab
         let b_min = DVec3::new(min.x, min.y, min.z);
         let b_max = DVec3::new(max.x, min.y + wall, max.z);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
-        // Ceiling slab
+        // ceiling slab
         let b_min = DVec3::new(min.x, max.y - wall, min.z);
         let b_max = DVec3::new(max.x, max.y, max.z);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
-        // Wall -X
+        // wall -X
         let b_min = DVec3::new(min.x, min.y, min.z);
         let b_max = DVec3::new(min.x + wall, max.y, max.z);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
-        // Wall +X
+        // wall +X
         let b_min = DVec3::new(max.x - wall, min.y, min.z);
         let b_max = DVec3::new(max.x, max.y, max.z);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
-        // Wall -Z
+        // wall -Z
         let b_min = DVec3::new(min.x, min.y, min.z);
         let b_max = DVec3::new(max.x, max.y, min.z + wall);
         faces.extend(make_box_faces(b_min, b_max));
         brushes.push(box_brush(b_min, b_max));
 
-        // Wall +Z
+        // wall +Z
         let b_min = DVec3::new(min.x, min.y, max.z - wall);
         let b_max = DVec3::new(max.x, max.y, max.z);
         faces.extend(make_box_faces(b_min, b_max));
@@ -484,8 +446,6 @@ mod tests {
         (faces, brushes)
     }
 
-    // -- Unit test helpers --
-
     fn assert_portal_polygon_valid(portal: &Portal) {
         assert!(
             portal.polygon.len() >= 3,
@@ -493,19 +453,16 @@ mod tests {
             portal.polygon.len()
         );
 
-        // Compute portal plane from first 3 vertices.
         let v0 = portal.polygon[0];
         let v1 = portal.polygon[1];
         let v2 = portal.polygon[2];
         let normal = (v1 - v0).cross(v2 - v0);
         if normal.length() < 1e-6 {
-            // Degenerate triangle — skip planarity check.
-            return;
+            return; // degenerate triangle — skip planarity check
         }
         let normal = normal.normalize();
         let distance = v0.dot(normal);
 
-        // All vertices should be within epsilon of the portal plane.
         for (i, v) in portal.polygon.iter().enumerate() {
             let d = v.dot(normal) - distance;
             assert!(
@@ -514,8 +471,6 @@ mod tests {
             );
         }
     }
-
-    // -- Tests --
 
     #[test]
     fn base_winding_lies_on_plane() {
@@ -573,20 +528,13 @@ mod tests {
 
     #[test]
     fn single_box_room_produces_portals() {
-        // A box room is a single solid brush. The BSP tree classifies every
-        // sub-region of its interior as solid. Portal generation should find
-        // no portals (no adjacent empty leaves).
+        // A single solid brush has no empty leaves, so no portals should be emitted.
         let _faces = make_box_faces(DVec3::ZERO, DVec3::new(64.0, 64.0, 64.0));
         let brushes = vec![box_brush(DVec3::ZERO, DVec3::new(64.0, 64.0, 64.0))];
 
         let result = partition::partition(&brushes).expect("partition should succeed");
-
         let portals = generate_portals(&result.tree);
 
-        // With a single box, all leaves are likely solid (the box is a solid brush),
-        // so we expect 0 portals between empty leaves. This is correct behavior:
-        // a solid box has no air space.
-        // All portals (if any) should have valid polygons.
         for portal in &portals {
             assert_portal_polygon_valid(portal);
         }
@@ -594,7 +542,6 @@ mod tests {
 
     #[test]
     fn minimal_room_divided_by_one_plane_produces_one_portal() {
-        // Construct a minimal BSP tree manually: one node splitting two empty leaves.
         use crate::partition::{Aabb, BspChild, BspLeaf, BspNode};
 
         let tree = BspTree {
@@ -633,7 +580,6 @@ mod tests {
         );
         assert_portal_polygon_valid(&portals[0]);
 
-        // The portal should reference both leaves.
         let leaf_set = [portals[0].front_leaf, portals[0].back_leaf];
         assert!(leaf_set.contains(&0), "portal should reference leaf 0");
         assert!(leaf_set.contains(&1), "portal should reference leaf 1");
@@ -641,7 +587,6 @@ mod tests {
 
     #[test]
     fn solid_leaves_excluded_from_portals() {
-        // One node splitting a solid leaf and an empty leaf — no portal emitted.
         use crate::partition::{Aabb, BspChild, BspLeaf, BspNode};
 
         let tree = BspTree {
@@ -659,7 +604,7 @@ mod tests {
                         min: DVec3::new(32.0, 0.0, 0.0),
                         max: DVec3::new(64.0, 64.0, 64.0),
                     },
-                    is_solid: true, // solid
+                    is_solid: true,
                 },
                 BspLeaf {
                     face_indices: vec![1],
@@ -681,21 +626,21 @@ mod tests {
 
     #[test]
     fn portal_polygons_are_planar() {
-        // Three empty leaves in a chain: leaf0 | leaf1 | leaf2
+        // leaf0 | leaf1 | leaf2 — chain of three empty leaves
         use crate::partition::{Aabb, BspChild, BspLeaf, BspNode};
 
         let tree = BspTree {
             nodes: vec![
-                // Root: split at X=32
                 BspNode {
+                    // root: split at X=32
                     plane_normal: DVec3::X,
                     plane_distance: 32.0,
                     front: BspChild::Node(1),
                     back: BspChild::Leaf(0),
                     parent: None,
                 },
-                // Child: split at X=64
                 BspNode {
+                    // child: split at X=64
                     plane_normal: DVec3::X,
                     plane_distance: 64.0,
                     front: BspChild::Leaf(2),
@@ -743,10 +688,9 @@ mod tests {
     fn two_room_map_produces_portals_at_doorway() {
         let wall = 16.0;
 
-        // Room A
         let (_faces, mut brushes) = hollow_room(DVec3::ZERO, DVec3::splat(128.0), wall);
 
-        // Corridor connecting rooms
+        // corridor connecting the two rooms
         let (_corr_faces, corr_brushes) = hollow_room(
             DVec3::new(112.0, 0.0, 40.0),
             DVec3::new(272.0, 128.0, 88.0),
@@ -754,7 +698,6 @@ mod tests {
         );
         brushes.extend(corr_brushes);
 
-        // Room B
         let (_room_b_faces, room_b_brushes) = hollow_room(
             DVec3::new(256.0, 0.0, 0.0),
             DVec3::new(384.0, 128.0, 128.0),
@@ -766,18 +709,15 @@ mod tests {
 
         let portals = generate_portals(&result.tree);
 
-        // Should have at least 1 portal (doorway connections).
         assert!(
             !portals.is_empty(),
             "two-room map with corridor should produce at least 1 portal"
         );
 
-        // Every portal should be a valid polygon.
         for portal in &portals {
             assert_portal_polygon_valid(portal);
         }
 
-        // Every portal should connect two empty leaves.
         for portal in &portals {
             let fl = &result.tree.leaves[portal.front_leaf];
             let bl = &result.tree.leaves[portal.back_leaf];
@@ -819,30 +759,20 @@ mod tests {
 
     #[test]
     fn room_with_pillar_produces_portals_on_both_sides() {
-        // A hollow room divided by a wall with two doorways (one on each side
-        // of a central pillar). Portal generation must produce portals for BOTH
-        // doorways, not just one.
-        //
-        // Room interior: (16,16,16) to (240,112,112) — 224 wide x 96 tall x 96 deep.
-        // Dividing wall at X=120..136 with two doorways:
-        //   - Wall left section: Z=16..62 (blocks left part)
-        //   - LEFT DOORWAY: Z=62..64 (2 units wide)
-        //   - Central pillar: Z=64..66 (2 units wide)
-        //   - RIGHT DOORWAY: Z=66..68 (2 units wide)
-        //   - Wall right section: Z=68..112 (blocks right part)
+        // Hollow room with a dividing wall at X=120..136. Two doorways flank a
+        // central pillar: left gap Z=62..64, right gap Z=66..68. Both must produce
+        // portals — the pillar is the failure mode where adjacent solid leaves can
+        // collapse one gap's portal.
         let (_faces, mut brushes) = hollow_room(DVec3::ZERO, DVec3::new(256.0, 128.0, 128.0), 16.0);
 
-        // Wall left section: blocks Z=16..62
         let wall_left_min = DVec3::new(120.0, 16.0, 16.0);
         let wall_left_max = DVec3::new(136.0, 112.0, 62.0);
         brushes.push(box_brush(wall_left_min, wall_left_max));
 
-        // Central pillar: Z=64..66
         let pillar_min = DVec3::new(120.0, 16.0, 64.0);
         let pillar_max = DVec3::new(136.0, 112.0, 66.0);
         brushes.push(box_brush(pillar_min, pillar_max));
 
-        // Wall right section: blocks Z=68..112
         let wall_right_min = DVec3::new(120.0, 16.0, 68.0);
         let wall_right_max = DVec3::new(136.0, 112.0, 112.0);
         brushes.push(box_brush(wall_right_min, wall_right_max));
@@ -850,14 +780,8 @@ mod tests {
         let result = partition::partition(&brushes).expect("partition should succeed");
         let portals = generate_portals(&result.tree);
 
-        // The wall at X=120..136 has two doorways: left (Z=62..64) and right (Z=66..68).
-        // There must be portals through BOTH doorways — portals that cross the
-        // X=120..136 wall region. A portal crosses the wall if its polygon spans
-        // or lies within the X range and the Z range of either gap.
-        //
-        // We identify "wall-crossing" portals as portals whose polygon lies on a
-        // plane with X between 120 and 136 (inclusive) — these are the portals that
-        // pass through the wall.
+        // Portals crossing the wall lie in the X=120..136 band.
+        // Check that both gaps (left Z=62..64, right Z=66..68) produce a portal.
         let wall_x_min = 119.0;
         let wall_x_max = 137.0;
         let left_gap_z_min = 61.0;
@@ -869,7 +793,6 @@ mod tests {
         let mut has_right_gap_portal = false;
 
         for portal in &portals {
-            // Check if portal polygon is in the wall's X range.
             let all_in_wall_x = portal
                 .polygon
                 .iter()
@@ -878,11 +801,9 @@ mod tests {
                 continue;
             }
 
-            // Check which gap this portal corresponds to by its Z range.
             let z_min = portal.polygon.iter().map(|v| v.z).fold(f64::MAX, f64::min);
             let z_max = portal.polygon.iter().map(|v| v.z).fold(f64::MIN, f64::max);
 
-            // Check if this portal's Z range falls within a gap.
             if z_max > left_gap_z_min && z_min < left_gap_z_max && z_max <= left_gap_z_max {
                 has_left_gap_portal = true;
             }
@@ -891,53 +812,29 @@ mod tests {
             }
         }
 
-        assert!(
-            has_left_gap_portal,
-            "no portal found through the LEFT doorway (Z=62..64). \
-             The wall's BSP splits may have clipped away the left gap portal."
-        );
-        assert!(
-            has_right_gap_portal,
-            "no portal found through the RIGHT doorway (Z=66..68). \
-             The pillar's adjacent solid brush may have caused the right gap's \
-             BSP leaf to be misclassified as solid, preventing portal generation."
-        );
+        assert!(has_left_gap_portal, "no portal through left doorway (Z=62..64)");
+        assert!(has_right_gap_portal, "no portal through right doorway (Z=66..68)");
     }
 
-    /// Floating cube near the ceiling of a hollow room.
+    /// Regression guard for the "missing cube faces" bug: in the old face-driven
+    /// BSP, floating cube brushes near the ceiling were classified into solid
+    /// leaves and disappeared from compiled geometry. Under brush-volume
+    /// construction leaf solidity is authoritative by construction, so the bug
+    /// cannot form — but the test stays as a guard.
     ///
-    /// Originally a reproduction for the "missing cube faces" bug: faces of
-    /// floating cube brushes near the ceiling disappeared from the compiled
-    /// geometry when the face-driven BSP classified their containing leaves
-    /// as solid. Under brush-volume construction the bug cannot form — leaf
-    /// solidity is authoritative by construction — but the test is retained
-    /// as a regression guard on the new pipeline.
-    ///
-    /// Each emitted face is matched to its source cube by plane distance and
-    /// centroid footprint (room walls share cardinal normals, so normal alone
-    /// isn't enough).
+    /// Faces are matched to their source cube by plane distance + centroid
+    /// footprint because room walls share cardinal normals.
     #[test]
     fn floating_cube_near_ceiling_faces_survive_pipeline() {
         use crate::map_data::Face;
 
-        // Match map-2's actual compiled dimensions (in engine space):
-        //   room x=-32..32 (64), y=0..9 (interior 0..8, walls add 1 unit),
-        //   z=-29..29 (58). Cubes are 2x2x3 slabs at y=5..7 (top ~1 unit from
-        //   interior ceiling at y=8).
-        //
-        // This is the geometric configuration map-2 actually compiles down to,
-        // so if the bug reproduces anywhere programmatically it should be here.
+        // Matches map-2's compiled dimensions: room x=-32..32, y=0..9, z=-29..29.
+        // Cubes are 2x2x3 slabs at y=5..7 (top 1 unit below interior ceiling at y=8).
         let room_min = DVec3::new(-32.0, 0.0, -29.0);
         let room_max = DVec3::new(32.0, 9.0, 29.0);
         let wall = 1.0;
         let (_room_faces, mut brushes) = hollow_room(room_min, room_max, wall);
 
-        // Floating cube: 32x32x32 centered horizontally, top 8 units below ceiling.
-        // Interior ceiling plane is at y = room_max.y - wall = 112.
-        // Put cube_max.y = 104 so there's an 8-unit gap above.
-        // Match map-2's compiled cube geometry:
-        //   ~2-3 units in X/Z footprint, y=5..7 (2 units tall).
-        //   Top face at y=7, 1 unit below interior ceiling at y=8.
         let cube_xz_size = 3.0;
         let cube_y_min = 5.0;
         let cube_y_max = 7.0;
@@ -956,30 +853,20 @@ mod tests {
             cube_z_center + cube_xz_size * 0.5,
         );
 
-        // Collect (min, max) for every floating cube so we can check ALL of
-        // them, not just the first.
         let mut cube_bounds: Vec<(DVec3, DVec3)> = Vec::new();
         cube_bounds.push((cube_min, cube_max));
 
         brushes.push(box_brush(cube_min, cube_max));
 
-        // Add a second cube right next to the first with only a 2-unit X gap
-        // (matching the typical cube spacing in map-2). This gives the BSP
-        // tree a narrow-gap topology similar to what triggers the bug in the
-        // real map.
+        // Second cube with 2-unit gap — narrow-gap topology matching map-2.
         let cube2_dx = cube_xz_size + 2.0;
         let c2_min = DVec3::new(cube_min.x + cube2_dx, cube_min.y, cube_min.z);
         let c2_max = DVec3::new(cube_max.x + cube2_dx, cube_max.y, cube_max.z);
         brushes.push(box_brush(c2_min, c2_max));
         cube_bounds.push((c2_min, c2_max));
 
-        // Return (cube_index, normal_index 0..=5) if `face` is a face of one
-        // of the floating cubes, else None. A face belongs to cube i if:
-        //   - its normal is axis-aligned
-        //   - its plane distance matches cube i's bounding plane on that axis
-        //   - its centroid lies within cube i's horizontal footprint (and at
-        //     the cube's vertical extent for Y-axis faces) — this disambiguates
-        //     it from coincident room-wall faces.
+        // Returns (cube_idx, axis_idx) for faces belonging to a floating cube.
+        // Centroid check disambiguates from room-wall faces sharing the same cardinal normal.
         let axes: [(DVec3, usize); 6] = [
             (DVec3::X, 0),
             (DVec3::NEG_X, 1),
@@ -1019,9 +906,6 @@ mod tests {
                     continue;
                 }
 
-                // Centroid must lie within the cube's footprint on the other
-                // two axes. Slop is tight enough to exclude room-wall faces
-                // but loose enough to absorb brush-side projection splits.
                 let (mn, mx) = *bounds;
                 let slop = 0.5;
                 let inside = centroid.x >= mn.x - slop
@@ -1037,12 +921,10 @@ mod tests {
             None
         };
 
-        // Back-compat alias retained for the first cube's reporting path below.
         let is_cube_face =
             |face: &Face| -> bool { matches!(classify_cube_face(face), Some((0, _))) };
         let cube_centroid = (cube_min + cube_max) * 0.5;
 
-        // Track which cube normals we've seen at each stage (as a set).
         let normal_key = |n: DVec3| -> &'static str {
             if (n - DVec3::X).length() < 1e-6 {
                 "+X"
@@ -1061,7 +943,6 @@ mod tests {
             }
         };
 
-        // Stage 1: partition (brush-volume BSP + face extraction).
         let result = partition::partition(&brushes)
             .expect("partition should succeed on floating cube scene");
 
@@ -1070,7 +951,6 @@ mod tests {
             std::collections::BTreeSet::new();
         let mut cube_faces_in_solid_leaves = 0usize;
         let mut cube_faces_in_empty_leaves = 0usize;
-        // (leaf_idx, face_idx, normal_key, is_solid, centroid)
         let mut cube_face_locations: Vec<(usize, usize, &'static str, bool, DVec3)> = Vec::new();
 
         for (leaf_idx, leaf) in result.tree.leaves.iter().enumerate() {
@@ -1106,7 +986,6 @@ mod tests {
             );
         }
 
-        // Report which cube-1 normals are MISSING after partition.
         let all_keys: std::collections::BTreeSet<&'static str> =
             ["+X", "-X", "+Y (top)", "-Y (bottom)", "+Z", "-Z"]
                 .into_iter()
@@ -1118,8 +997,6 @@ mod tests {
             missing_after_partition
         );
 
-        // --- Per-cube coverage check across ALL cubes ---
-        // For every cube, count which of its 6 axis faces survived each stage.
         let num_cubes = cube_bounds.len();
         let mut stage2_per_cube: Vec<[usize; 6]> = vec![[0; 6]; num_cubes];
         let mut stage2_per_cube_solid: Vec<[usize; 6]> = vec![[0; 6]; num_cubes];
@@ -1135,17 +1012,14 @@ mod tests {
             }
         }
 
-        // Stage 3: geometry extraction. extract_geometry iterates only empty
-        // leaves; any face that lives solely in solid leaves is silently
-        // dropped. This is the stage where the visible bug surfaces.
+        // extract_geometry only visits empty leaves; faces in solid leaves are dropped.
+        // That is where the original bug surfaced.
         let geo = crate::geometry::extract_geometry(
             &result.faces,
             &result.tree,
             &std::collections::HashSet::new(),
         );
         let mut stage3_per_cube: Vec<[usize; 6]> = vec![[0; 6]; num_cubes];
-        // Classify a geometry face by axis: all vertices must lie on one of
-        // the cube's axis-aligned bounding planes within epsilon.
         for (face_idx, _meta) in geo.geometry.faces.iter().enumerate() {
             let range = geo.face_index_ranges[face_idx];
             let start = range.index_offset as usize;
@@ -1171,26 +1045,17 @@ mod tests {
             }
             let centroid: DVec3 =
                 unique_verts.iter().copied().sum::<DVec3>() / unique_verts.len() as f64;
-            // Check each cube and each axis-aligned face plane.
             for (ci, bounds) in cube_bounds.iter().enumerate() {
                 let (mn, mx) = *bounds;
-                // For each of the 6 planes, check if all vertices lie on it
-                // and the centroid is within the cube footprint.
                 let plane_eps = 0.05;
                 let footprint_slop = 0.5;
+                // (plane_value, axis_coord_index, axis_idx 0..5)
                 let planes: [(f64, f64, usize); 6] = [
-                    // (axis_value, plane_coord, axis_idx 0..5)
-                    // +X plane
                     (mx.x, 0.0, 0),
-                    // -X plane
                     (mn.x, 0.0, 1),
-                    // +Y plane (top)
                     (mx.y, 1.0, 2),
-                    // -Y plane (bot)
                     (mn.y, 1.0, 3),
-                    // +Z plane
                     (mx.z, 2.0, 4),
-                    // -Z plane
                     (mn.z, 2.0, 5),
                 ];
                 for (plane_val, axis, axis_idx) in planes {
@@ -1254,14 +1119,9 @@ mod tests {
         }
         let any_cube_missing_face = any_cube_missing_bsp || any_cube_missing_geometry;
 
-        // Stage 3: portal generation.
         let portals = generate_portals(&result.tree);
-        eprintln!(
-            "[STAGE 3] Portal count: {} (cube has 6 sides, each adjacent to an empty leaf)",
-            portals.len()
-        );
+        eprintln!("[STAGE 3] Portal count: {}", portals.len());
 
-        // Count portals adjacent to leaves that contain cube faces (empty-leaf only).
         let mut leaves_with_cube_faces: std::collections::BTreeSet<usize> =
             std::collections::BTreeSet::new();
         for (leaf_idx, _, _, is_solid, _) in &cube_face_locations {
@@ -1282,7 +1142,6 @@ mod tests {
             "[STAGE 3] Portals touching a leaf that owns a cube face: {portals_touching_cube_leaves}"
         );
 
-        // Also report the leaf the cube centroid lands in.
         fn find_leaf_for_point(tree: &BspTree, point: DVec3) -> usize {
             if tree.nodes.is_empty() {
                 return 0;
@@ -1313,10 +1172,6 @@ mod tests {
             result.tree.leaves[cube_centroid_leaf].is_solid
         );
 
-        // Probe the air-space leaves just outside each cube face and see whether
-        // there's a portal path from any of them back to the room's main air
-        // space. If there isn't, those faces will be invisible from the player's
-        // viewpoint (portal-vis culls them).
         let probe_offset = 2.0;
         let probes: [(DVec3, &'static str); 6] = [
             (
@@ -1344,7 +1199,7 @@ mod tests {
                 "-Z side",
             ),
         ];
-        // Also probe a point near the floor to represent "player starting position".
+        // player probe near the floor
         let player_probe = DVec3::new(
             (room_min.x + room_max.x) * 0.5,
             room_min.y + wall + 16.0,
@@ -1373,17 +1228,12 @@ mod tests {
             );
         }
 
-        // -- Assertions --
-        // Hard invariant: every face of every floating cube must appear at
-        // least once in the BSP output. If this fails, the bug has reproduced
-        // and the PER-CUBE diagnostic above shows which faces were lost.
         assert!(
             !any_cube_missing_face,
             "at least one floating-cube face is missing after partition — see [PER-CUBE] output"
         );
 
-        // All cube faces should live in empty leaves (the cube surface bounds
-        // the air space above/beside/below the cube, not the solid interior).
+        // Cube surfaces bound air space, not solid interior — all faces must be in empty leaves.
         assert_eq!(
             cube_faces_in_solid_leaves, 0,
             "no cube-0 face should live in a solid leaf; found {cube_faces_in_solid_leaves}"

@@ -1,36 +1,11 @@
 // GPU-driven BVH traversal compute pipeline and indirect draw dispatch.
 // See: context/lib/rendering_pipeline.md §7.1
-// See: context/plans/in-progress/bvh-foundation/2-runtime-bvh.md
-//
-// Fixed-slot design: each BVH leaf owns a permanent slot in the indirect
-// draw buffer, indexed by its position in the flat leaf array. Leaves are
-// sorted by `material_bucket_id` so each bucket's commands are contiguous.
-// At load time we derive per-bucket `(first_leaf, leaf_count)` ranges once
-// and issue one `multi_draw_indexed_indirect` per bucket.
-//
-// Each frame, the compute shader walks the BVH in DFS order using the
-// `skip_index` pointer to jump over rejected subtrees — no stack, no depth
-// cap, no abort path. For each leaf it hits:
-//   - The leaf's AABB is frustum-tested (parent AABB may be larger).
-//   - The leaf's `cell_id` is tested against the per-frame visible-cell
-//     bitmask produced by the portal DFS on the CPU side.
-//   - If both checks pass, a full `DrawIndexedIndirect` is written to the
-//     leaf's fixed slot; otherwise `index_count` is zeroed so the slot
-//     becomes a no-op GPU draw.
-//
-// This replaces the Milestone 3.5 per-cell chunk compute cull. Portal DFS
-// still runs on the CPU; it just feeds a bitmask instead of a flat cell id
-// list. See `determine_visible_cells` in `visibility.rs`.
 
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 
 use crate::geometry::{BVH_NODE_FLAG_LEAF, BucketRange, BvhTree};
 
-/// Callback used by `draw_indirect` to bind the per-bucket texture bind
-/// group before emitting that bucket's draws. Receives the active render
-/// pass and the bucket's `material_bucket_id`.
-///
 /// The `+ 'a` bound is required because type aliases default the trait
 /// object lifetime to `'static`, unlike an inline `&dyn Fn(...)` which
 /// picks up the outer reference's lifetime via elision.
@@ -46,39 +21,23 @@ const _: () = assert!(
     "postretro GPU upload path assumes little-endian; add a byte-swap layer before porting"
 );
 
-/// Size of a single DrawIndexedIndirect command in bytes.
-/// Layout: index_count(4) + instance_count(4) + first_index(4) +
-///         base_vertex(4) + first_instance(4) = 20 bytes.
 const DRAW_INDIRECT_SIZE: u64 = 20;
 
-/// Visible-cell bitmask: fixed 128-word (512-byte) storage buffer covering
-/// up to 4096 cell IDs (bit test `bitmask[cell_id >> 5] & (1 << (cell_id & 31))`).
-/// The fixed size matches the contract documented in the BVH foundation plan
-/// and removes any resize path from the hot frame loop.
+/// Fixed 128-word (512-byte) bitmask covering up to 4096 cell IDs. Fixed
+/// size removes any resize path from the hot frame loop.
 pub(crate) const VISIBLE_CELLS_WORDS: usize = 128;
 const VISIBLE_CELLS_BYTES: u64 = (VISIBLE_CELLS_WORDS * 4) as u64;
 pub(crate) const MAX_VISIBLE_CELLS: u32 = (VISIBLE_CELLS_WORDS as u32) * 32;
 
-// --- Compute Shader (WGSL) ---
-//
-// Shader source: `src/shaders/bvh_cull.wgsl`. The shader file's header
-// covers traversal, portal integration, and struct layout; the design
-// rationale for the WGSL struct shape (why scalar f32 fields instead of
-// `vec3<f32>`) lives alongside the struct definition there. The Rust-side
-// serializers below (`serialize_bvh_nodes`/`serialize_bvh_leaves`) write
-// the matching strides — 40 bytes for `BvhNode`, 48 bytes for `BvhLeaf`; the
-// `wgsl_bvh_struct_strides_match_spec` test pins the contract against naga.
+// Rust serializers write matching strides: 40 bytes for `BvhNode`, 48 for
+// `BvhLeaf`. `wgsl_bvh_struct_strides_match_spec` pins the contract against naga.
 const CULL_SHADER_SOURCE: &str = include_str!("shaders/bvh_cull.wgsl");
 
-/// Cull uniforms: 6 frustum planes.
-/// 6 * 16 = 96 bytes.
 #[derive(Debug, Clone, Copy)]
 struct CullUniforms {
     planes: [[f32; 4]; 6],
 }
 
-/// GPU-driven BVH traversal compute pipeline. Created at level load,
-/// dispatched each frame before the render pass.
 pub struct ComputeCullPipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -88,33 +47,25 @@ pub struct ComputeCullPipeline {
     visible_cells_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
 
-    /// Indirect draw buffer: one `DrawIndexedIndirect` per BVH leaf, indexed
-    /// by leaf array position. Leaves are sorted by `material_bucket_id` so
-    /// each bucket owns a contiguous slot range.
+    /// One `DrawIndexedIndirect` slot per leaf, indexed by leaf array position.
+    /// Leaves sorted by `material_bucket_id` so each bucket owns a contiguous range.
     indirect_buffer: wgpu::Buffer,
-    /// Total number of leaves (= total indirect draw slots).
     total_leaves: u32,
-    /// Per-bucket (first_leaf, leaf_count) ranges derived at load time.
     bucket_ranges: Vec<BucketRange>,
 
     has_multi_draw_indirect: bool,
 
-    /// Per-leaf cull status buffer for debug wireframe overlay. One u32 per
-    /// leaf: 0 = portal-culled, 1 = frustum-culled, 2 = visible/rendered.
+    /// Per-leaf: 0 = portal-culled, 1 = frustum-culled, 2 = visible/rendered.
     cull_status_buffer: wgpu::Buffer,
 
-    /// Scratch buffer used to construct the 128-word visible-cell bitmask
-    /// each frame. Reused to avoid a per-frame allocation.
     visible_bitmask_scratch: Vec<u32>,
 }
 
 impl ComputeCullPipeline {
-    /// Create the compute culling pipeline and upload the BVH to GPU.
     pub fn new(device: &wgpu::Device, bvh: &BvhTree, has_multi_draw_indirect: bool) -> Self {
         let total_leaves = bvh.leaves.len() as u32;
         let bucket_ranges = bvh.derive_bucket_ranges();
 
-        // Node storage buffer.
         let node_bytes = serialize_bvh_nodes(&bvh.nodes);
         let node_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BVH Node Storage"),
@@ -126,7 +77,6 @@ impl ComputeCullPipeline {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // Leaf storage buffer.
         let leaf_bytes = serialize_bvh_leaves(&bvh.leaves);
         let leaf_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BVH Leaf Storage"),
@@ -138,7 +88,6 @@ impl ComputeCullPipeline {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // Visible-cells bitmask buffer (fixed 512 bytes). Uploaded each frame.
         let visible_cells_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Visible Cells Bitmask"),
             size: VISIBLE_CELLS_BYTES,
@@ -146,7 +95,6 @@ impl ComputeCullPipeline {
             mapped_at_creation: false,
         });
 
-        // Cull uniforms buffer (6 planes = 96 bytes).
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Cull Uniforms"),
             size: CULL_UNIFORMS_SIZE as u64,
@@ -154,10 +102,6 @@ impl ComputeCullPipeline {
             mapped_at_creation: false,
         });
 
-        // Indirect draw buffer: one DrawIndexedIndirect slot per leaf. The
-        // compute shader writes each leaf's slot every frame (or zeroes
-        // index_count for culled slots), so no template or per-frame reset
-        // is required.
         let indirect_buffer_size = (total_leaves.max(1) as u64) * DRAW_INDIRECT_SIZE;
         let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Indirect Draw Buffer"),
@@ -168,7 +112,6 @@ impl ComputeCullPipeline {
             mapped_at_creation: false,
         });
 
-        // Per-leaf cull status buffer for debug wireframe overlay.
         let cull_status_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Cull Status Buffer"),
             size: (total_leaves.max(1) as u64) * 4,
@@ -184,7 +127,6 @@ impl ComputeCullPipeline {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("BVH Cull Bind Group Layout"),
             entries: &[
-                // binding 0: uniforms
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -195,7 +137,6 @@ impl ComputeCullPipeline {
                     },
                     count: None,
                 },
-                // binding 1: nodes
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -206,7 +147,6 @@ impl ComputeCullPipeline {
                     },
                     count: None,
                 },
-                // binding 2: leaves
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -217,7 +157,6 @@ impl ComputeCullPipeline {
                     },
                     count: None,
                 },
-                // binding 3: visible_cells bitmask
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -228,7 +167,6 @@ impl ComputeCullPipeline {
                     },
                     count: None,
                 },
-                // binding 4: indirect_draws (read-write)
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -239,7 +177,6 @@ impl ComputeCullPipeline {
                     },
                     count: None,
                 },
-                // binding 5: cull_status (read-write)
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -292,10 +229,6 @@ impl ComputeCullPipeline {
         }
     }
 
-    /// Build the visible-cell bitmask from a flat cell-id list. Cell IDs
-    /// outside the bitmask's range (0..4096) are clamped out with a
-    /// one-time warning log; sub-plan 1 already constrains cell IDs so this
-    /// should never fire in practice.
     fn write_bitmask_from_cells(&mut self, cells: &[u32]) {
         for w in &mut self.visible_bitmask_scratch {
             *w = 0;
@@ -321,9 +254,6 @@ impl ComputeCullPipeline {
         }
     }
 
-    /// Upload visible cell bitmask and frustum planes, then dispatch the
-    /// BVH traversal compute shader. After this call the indirect buffer
-    /// is ready for `draw_indexed_indirect` / `multi_draw_indexed_indirect`.
     pub fn dispatch(
         &mut self,
         device: &wgpu::Device,
@@ -333,9 +263,6 @@ impl ComputeCullPipeline {
         view_proj: &Mat4,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
-        // Build the visible-cell bitmask on CPU and upload to the fixed
-        // 512-byte storage buffer. This is the per-frame portal DFS
-        // handoff to the compute shader.
         match visible {
             crate::visibility::VisibleCells::Culled(cells) => {
                 self.write_bitmask_from_cells(cells);
@@ -347,28 +274,20 @@ impl ComputeCullPipeline {
         let bitmask_bytes = serialize_u32_slice(&self.visible_bitmask_scratch);
         queue.write_buffer(&self.visible_cells_buffer, 0, &bitmask_bytes);
 
-        // Upload frustum planes.
         let planes = extract_frustum_planes_for_gpu(view_proj);
         let uniforms = CullUniforms { planes };
         let uniforms_bytes = serialize_cull_uniforms(&uniforms);
         queue.write_buffer(&self.uniform_buffer, 0, &uniforms_bytes);
 
-        // Reset cull_status to 0 (portal-culled) before dispatch via
-        // `clear_buffer`, which zeros directly on the GPU and avoids a
-        // per-frame host-side allocation. The compute shader writes 1
-        // (frustum) or 2 (visible) for leaves it touches; untouched leaves
-        // (all of them are touched by the single DFS walk) retain 0.
+        // clear_buffer zeros on the GPU; compute shader then writes 1/2 for touched leaves.
         if self.total_leaves > 0 {
             encoder.clear_buffer(&self.cull_status_buffer, 0, None);
         }
 
-        // Early out: nothing to cull.
         if self.total_leaves == 0 {
             return;
         }
 
-        // Build the bind group each frame. Caching on buffer resize is a
-        // deferred perf follow-up — buffers here are sized once at level load.
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("BVH Cull Bind Group"),
             layout: &self.bind_group_layout,
@@ -410,18 +329,8 @@ impl ComputeCullPipeline {
         compute_pass.dispatch_workgroups(1, 1, 1);
     }
 
-    /// Issue indirect draw calls for the render pass. One call per
-    /// material bucket via `multi_draw_indexed_indirect` (or the
-    /// singular fallback).
-    ///
-    /// `set_texture_fn` binds the correct texture before each bucket's
-    /// draws. Pass `None` when the caller's pipeline layout has no
-    /// texture bind group (e.g. the depth pre-pass, whose layout binds
-    /// only group 0); calling `set_bind_group(1, …)` against a pipeline
-    /// without a group 1 slot would fail wgpu validation. Bucket
-    /// ordering is irrelevant for depth-only output so this still walks
-    /// `bucket_ranges` as a contiguous partition of the indirect
-    /// buffer.
+    /// Pass `set_texture_fn = None` for depth-only passes (e.g. depth pre-pass)
+    /// whose pipeline layout has no group 1 slot — binding one would fail wgpu validation.
     pub fn draw_indirect<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
@@ -452,13 +361,10 @@ impl ComputeCullPipeline {
         }
     }
 
-    /// Reference to the per-leaf cull status buffer for the wireframe overlay.
     pub fn cull_status_buffer(&self) -> &wgpu::Buffer {
         &self.cull_status_buffer
     }
 
-    /// Debug fingerprint of the current visible-cell bitmask scratch:
-    /// `(popcount, xor_hash_of_words)`. Call after `dispatch`.
     pub fn debug_bitmask_fingerprint(&self) -> (u32, u32) {
         let mut pop = 0u32;
         let mut hash = 0u32;
@@ -469,8 +375,6 @@ impl ComputeCullPipeline {
         (pop, hash)
     }
 }
-
-// --- GPU data serialization ---
 
 const CULL_UNIFORMS_SIZE: usize = 96;
 
@@ -492,15 +396,6 @@ fn serialize_u32_slice(slice: &[u32]) -> Vec<u8> {
     buf
 }
 
-/// Serialize BVH nodes to the 40-byte WGSL storage layout.
-///
-/// Written as `min.x, min.y, min.z, skip_index, max.x, max.y, max.z,
-/// left_child_or_leaf_index, flags, _pad` — six scalar f32s + four u32s.
-/// This matches the scalar-field WGSL struct shape on purpose: declaring
-/// the AABB corners as `vec3<f32>` on the shader side would push the
-/// struct stride from 40 to 48 (see the comment at the WGSL struct
-/// definition above and the `wgsl_struct_strides_are_40_bytes` regression
-/// test), silently garbling every node after index 0.
 fn serialize_bvh_nodes(nodes: &[crate::geometry::BvhNode]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(nodes.len() * 40);
     for node in nodes {
@@ -512,8 +407,6 @@ fn serialize_bvh_nodes(nodes: &[crate::geometry::BvhNode]) -> Vec<u8> {
             buf.extend_from_slice(&c.to_le_bytes());
         }
         buf.extend_from_slice(&node.left_child_or_leaf_index.to_le_bytes());
-        // Mask to the only flag bit we currently use; everything else is
-        // reserved and must be zero to match the WGSL struct expectation.
         let flags = node.flags & BVH_NODE_FLAG_LEAF;
         buf.extend_from_slice(&flags.to_le_bytes());
         buf.extend_from_slice(&0u32.to_le_bytes()); // _pad
@@ -521,7 +414,6 @@ fn serialize_bvh_nodes(nodes: &[crate::geometry::BvhNode]) -> Vec<u8> {
     buf
 }
 
-/// Serialize BVH leaves to the 48-byte WGSL storage layout.
 fn serialize_bvh_leaves(leaves: &[crate::geometry::BvhLeaf]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(leaves.len() * 48);
     for leaf in leaves {
@@ -641,8 +533,6 @@ mod tests {
 
     #[test]
     fn bitmask_round_trip_bit_math() {
-        // Independent re-derivation of the bitmask bit test used in the
-        // shader.
         fn is_visible(bitmask: &[u32], cell_id: u32) -> bool {
             let word = (cell_id >> 5) as usize;
             let bit = 1u32 << (cell_id & 31);
@@ -674,15 +564,8 @@ mod tests {
         assert_eq!(MAX_VISIBLE_CELLS, 4096);
     }
 
-    /// Regression: a WGSL `vec3<f32>` has alignment 16, so any struct that
-    /// contains one gets rounded up (e.g. `BvhNode` 40 → 48, `BvhLeaf`
-    /// 48 → 64) — silently shifting every node/leaf after index 0 in the GPU
-    /// storage buffers and reading garbage. The fix is to store the AABB
-    /// corners as six scalar `f32` fields. This test parses the live shader
-    /// source with naga and asserts `BvhNode` is 40 bytes and `BvhLeaf` is
-    /// 48 bytes. If someone re-vec3s either struct, or changes a field count
-    /// without updating serializers, this fails loudly before the breakage
-    /// reaches a GPU round-trip.
+    /// Guards against `vec3<f32>` creeping back into the WGSL structs: alignment 16
+    /// would silently shift every node/leaf after index 0 in the GPU storage buffers.
     #[test]
     fn wgsl_bvh_struct_strides_match_spec() {
         let module = naga::front::wgsl::parse_str(CULL_SHADER_SOURCE)
@@ -721,11 +604,6 @@ mod tests {
 
     #[test]
     fn unbalanced_bvh_skip_index_layout() {
-        // Simulate a deep right-leaning chain: every internal node's left
-        // child is a leaf, and `skip_index` must walk past the right subtree.
-        // This just exercises the Rust-side data model — the shader walks
-        // nodes in DFS order via `skip_index` and never indexes past the
-        // flat node array.
         let nodes = vec![
             BvhNode {
                 aabb_min: [0.0; 3],

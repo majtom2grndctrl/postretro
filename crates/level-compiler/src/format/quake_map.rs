@@ -1,10 +1,5 @@
-// Quake-family .map FGD light translation.
-// Converts a property bag (key-value pairs from shambler) plus origin and
-// classname into the canonical `MapLight`. Owns the Quake `style` preset
-// table and all degrees-to-radians / Quake-units-to-meters conversions at
-// the translation boundary.
+// Quake-family .map FGD light translation — owns the style preset table and unit conversions.
 // See: context/plans/in-progress/lighting-foundation/1-fgd-canonical.md
-// See: context/lib/build_pipeline.md §Custom FGD
 
 use std::collections::HashMap;
 
@@ -17,7 +12,6 @@ use crate::map_data::{
 };
 use crate::map_format::MapFormat;
 
-/// Quake-family light classnames recognised by the translator.
 pub const LIGHT_CLASSNAMES: &[&str] = &["light", "light_spot", "light_sun"];
 
 /// Quake authoring reference for the `light` property. A mapper-authored
@@ -28,7 +22,6 @@ pub const LIGHT_CLASSNAMES: &[&str] = &["light", "light_spot", "light_sun"];
 /// map values behaving as mappers expect.
 const QUAKE_INTENSITY_REFERENCE: f32 = 300.0;
 
-/// Returns true if the classname names a Quake-family light entity.
 pub fn is_light_classname(classname: &str) -> bool {
     LIGHT_CLASSNAMES.contains(&classname)
 }
@@ -53,8 +46,6 @@ pub enum TranslateError {
     )]
     TargetNotSupported,
 
-    /// Malformed keyframe in a `*_curve` FGD key. `light_ref` names the light
-    /// (classname + origin) so authors can locate it in TrenchBroom.
     #[error("light {light_ref}: '{key}' — {reason}")]
     InvalidKeyframeCurve {
         key: &'static str,
@@ -62,23 +53,13 @@ pub enum TranslateError {
         reason: String,
     },
 
-    /// `color_curve` authored on a light that is neither `_bake_only` nor
-    /// `_dynamic`. Animated direct color on a baked light would drift from the
-    /// SH indirect bake (Plan 2 Sub-plan 1 rule).
+    /// Animated direct color on a baked light drifts from the SH indirect bake (Plan 2 Sub-plan 1).
     #[error(
         "light {light_ref}: 'color_curve' — color animation is only valid on `_bake_only` or `_dynamic` lights. Either mark the light `_dynamic 1`, set `_bake_only 1`, or remove `color_curve`."
     )]
     ColorCurveOnBakedLight { light_ref: String },
 }
 
-/// Translate a Quake-family light entity into a canonical `MapLight`.
-///
-/// `props` is the raw property bag extracted by the parser. `origin` is the
-/// already-converted engine-space position (meters, Y-up). `classname` selects
-/// the light shape.
-///
-/// Validation errors block compilation; warnings log via `log::warn!` and
-/// proceed with defaults. See §Validation rules in sub-plan 1.
 pub fn translate_light(
     props: &HashMap<String, String>,
     origin: DVec3,
@@ -91,16 +72,8 @@ pub fn translate_light(
         other => return Err(TranslateError::UnknownClassname(other.to_string())),
     };
 
-    // -- Intensity (accept both "light" and "_light") --
-    //
-    // Quake authoring convention is a 0–300 "radiosity energy" scalar with
-    // 300 as the default "fully lit room" value. The canonical `MapLight`
-    // format is a modern 0–1+ linear multiplier on `color`, so we divide by
-    // `QUAKE_INTENSITY_REFERENCE` at the translation boundary. A mapper-
-    // authored `light 300` lands at `intensity 1.0` and multiplies its color
-    // at full strength; `light 180` lands at `0.6`, and so on. Consumers
-    // (direct light shader, SH baker) treat `intensity` as a straight
-    // linear factor with no further scaling.
+    // Accept both "light" and "_light"; divide by QUAKE_INTENSITY_REFERENCE so
+    // mappers' 0–300 radiosity scalar lands at 0–1+ linear intensity.
     let raw_intensity = parse_optional_int(props, "light")?
         .or(parse_optional_int(props, "_light")?)
         .map(|v| v as f32)
@@ -112,7 +85,6 @@ pub fn translate_light(
 
     let intensity = raw_intensity / QUAKE_INTENSITY_REFERENCE;
 
-    // -- Color --
     let color = if let Some(color_str) = props.get("_color") {
         parse_color255(color_str).ok_or_else(|| TranslateError::InvalidProperty {
             key: "_color",
@@ -124,7 +96,6 @@ pub fn translate_light(
         [1.0, 1.0, 1.0]
     };
 
-    // -- Falloff model --
     let falloff_model = match parse_optional_int(props, "delay")? {
         Some(0) | None => FalloffModel::Linear,
         Some(1) => FalloffModel::InverseDistance,
@@ -138,9 +109,7 @@ pub fn translate_light(
         }
     };
 
-    // -- Falloff range --
-    // `_fade` is authored in map units (Quake inches). Convert to engine
-    // meters here so the canonical format is always in engine units.
+    // `_fade` is authored in Quake units (inches); convert to engine meters at the translation boundary.
     let map_scale = MapFormat::IdTech2.units_to_meters() as f32;
     let falloff_range = match light_type {
         LightType::Point | LightType::Spot => {
@@ -155,13 +124,9 @@ pub fn translate_light(
             }
             fade_units as f32 * map_scale
         }
-        LightType::Directional => {
-            // Directional lights ignore `falloff_range`. Store 0.0 for clarity.
-            0.0
-        }
+        LightType::Directional => 0.0,
     };
 
-    // -- Cone angles and direction (Spot + Directional) --
     let mut cone_angle_inner = None;
     let mut cone_angle_outer = None;
     let mut cone_direction = None;
@@ -219,7 +184,7 @@ pub fn translate_light(
                 })?
             } else {
                 log::warn!("light_sun missing 'angles'; defaulting to straight down (-90 0 0)");
-                // "-90 0 0" → engine (0, -1, 0), matching sub-plan 1.
+                // "-90 0 0" → engine (0, -1, 0).
                 parse_mangle_direction("-90 0 0").expect("built-in default angles must parse")
             };
             cone_direction = Some(dir);
@@ -227,7 +192,6 @@ pub fn translate_light(
         LightType::Point => {}
     }
 
-    // -- Animation --
     let style = parse_optional_int(props, "style")?.unwrap_or_else(|| {
         log::warn!("light entity missing 'style'; defaulting to 0 (no animation)");
         0
@@ -248,10 +212,8 @@ pub fn translate_light(
         phase_raw
     };
 
-    // `_start_inactive = 1` spawns the light dark. Defaults to 0 (active).
-    // Only meaningful for animated lights — the flag rides on LightAnimation
-    // because static lights have no runtime on/off state. We still parse and
-    // warn on non-animated lights so authoring mistakes are visible.
+    // `_start_inactive` only has runtime effect on animated lights; we still
+    // parse and warn on static lights so authoring mistakes are visible.
     let start_inactive = match parse_optional_int(props, "_start_inactive")? {
         None | Some(0) => false,
         Some(1) => true,
@@ -264,7 +226,6 @@ pub fn translate_light(
         }
     };
 
-    // -- Bake only --
     let bake_only = match parse_optional_int(props, "_bake_only")? {
         None | Some(0) => false,
         Some(1) => true,
@@ -277,10 +238,8 @@ pub fn translate_light(
         }
     };
 
-    // -- Dynamic flag --
-    // Static (0) is the default: the light bakes into the lightmap + SH and
-    // has no runtime presence. Dynamic (1) opts into the runtime direct path
-    // with no bake contribution. Missing / non-integer values parse as static.
+    // Static (0): bakes into lightmap + SH, no runtime presence.
+    // Dynamic (1): runtime direct path only, no bake contribution.
     let is_dynamic = match parse_optional_int(props, "_dynamic")? {
         None | Some(0) => false,
         Some(1) => true,
@@ -293,12 +252,8 @@ pub fn translate_light(
         }
     };
 
-    // -- Animation (curves override legacy style) --
-    //
-    // Curve authoring path: any of `brightness_curve`, `color_curve`, or
-    // `direction_curve` present. These resample to uniform samples over
-    // `period_ms` at compile time. If both `style` and `brightness_curve` are
-    // present, the curve wins and `style` is ignored (warning emitted).
+    // Curves resample to uniform samples at compile time. When both `style` and
+    // `brightness_curve` are present, the curve wins and `style` is ignored.
     let has_any_curve = props.contains_key("brightness_curve")
         || props.contains_key("color_curve")
         || props.contains_key("direction_curve");
@@ -306,7 +261,6 @@ pub fn translate_light(
     let animation = if has_any_curve {
         let light_ref = format_light_ref(classname, origin);
 
-        // period_ms is required when curves are present.
         let period_ms_raw = props
             .get("period_ms")
             .ok_or(TranslateError::MissingProperty("period_ms"))?
@@ -327,7 +281,6 @@ pub fn translate_light(
             });
         }
 
-        // Curve phase (`_curve_phase`) is separate from the legacy `_phase`.
         let curve_phase = match props.get("_curve_phase") {
             Some(s) => {
                 let v = parse_f32(s).ok_or_else(|| TranslateError::InvalidProperty {
@@ -347,7 +300,6 @@ pub fn translate_light(
             None => 0.0,
         };
 
-        // Warn + ignore `style` when a brightness curve is authored.
         if props.contains_key("brightness_curve") && style != 0 {
             log::warn!(
                 "light {light_ref}: both 'brightness_curve' and 'style' set; \
@@ -367,7 +319,6 @@ pub fn translate_light(
         };
 
         let color = if let Some(raw) = props.get("color_curve") {
-            // Plan 2 Sub-plan 1 rule, surfaced here so the FGD key is named.
             if !bake_only && !is_dynamic {
                 return Err(TranslateError::ColorCurveOnBakedLight { light_ref });
             }
@@ -384,8 +335,7 @@ pub fn translate_light(
         let direction = if let Some(raw) = props.get("direction_curve") {
             let keyframes = parse_vec3_curve(raw, "direction_curve", &light_ref)?;
             let mut samples = resample_keyframes(&keyframes, period_ms, KEYFRAME_RESAMPLE_RATE_HZ);
-            // Direction samples are unit vectors at the authoring seam — the
-            // GPU evaluator does not re-normalize.
+            // Normalize here; the GPU evaluator does not re-normalize.
             for v in samples.iter_mut() {
                 let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
                 if len > 1e-6 {
@@ -436,9 +386,6 @@ pub fn translate_light(
         );
     }
 
-    // -- Author-supplied script tags --
-    // Space-delimited list. An entity matches `world.query({ tag: "t" })` when
-    // any of its tags equals "t". Whitespace-only values yield an empty list.
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -462,8 +409,6 @@ pub fn translate_light(
     })
 }
 
-// -- Property parsing helpers --
-
 fn parse_optional_int(
     props: &HashMap<String, String>,
     key: &'static str,
@@ -474,8 +419,7 @@ fn parse_optional_int(
             if trimmed.is_empty() {
                 Ok(None)
             } else {
-                // Accept integer-formatted floats as well ("30.0" → 30). FGD
-                // editors occasionally emit values with trailing decimals.
+                // FGD editors occasionally emit integer values with trailing decimals ("30.0").
                 match trimmed.parse::<i32>() {
                     Ok(v) => Ok(Some(v)),
                     Err(_) => match trimmed.parse::<f32>() {
@@ -498,11 +442,8 @@ fn parse_f32(s: &str) -> Option<f32> {
 }
 
 /// Parse a "R G B" triple (each 0-255) into linear RGB 0-1.
-///
-/// Conversion is direct division by 255 — no gamma correction. The FGD
-/// colour picker produces sRGB values, but the lighting pipeline currently
-/// treats authored colours as already linear. See sub-plan 2 for how this
-/// feeds the SH baker.
+/// Division by 255 only — no gamma correction. The FGD colour picker produces
+/// sRGB but the pipeline treats authored colours as linear (see sub-plan 2).
 fn parse_color255(s: &str) -> Option<[f32; 3]> {
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() != 3 {
@@ -519,20 +460,11 @@ fn parse_color255(s: &str) -> Option<[f32; 3]> {
     Some(out)
 }
 
-/// Parse an `angles` string "pitch yaw roll" (degrees) into an
-/// engine-space normalized aim vector.
-///
-/// Convention (per sub-plan 1): `"-90 0 0"` → `(0, -1, 0)` in engine space
-/// (straight down). Roll is ignored for a direction vector.
-///
-/// Derivation:
-/// 1. Quake forward vector from (pitch, yaw) — the convention that maps
-///    `pitch=-90, yaw=0` to Quake `(0, 0, -1)` (down in Quake Z-up):
-///    `qf_x = cos(pitch) * cos(yaw)`,
-///    `qf_y = cos(pitch) * sin(yaw)`,
-///    `qf_z = sin(pitch)`.
-/// 2. Swizzle to engine space (Y-up):
-///    `engine = (-qf_y, qf_z, -qf_x)`.
+/// Parse an `angles` "pitch yaw roll" string into a normalized engine-space direction.
+/// Roll is ignored. Quake forward from (pitch, yaw):
+///   qf = (cos(p)*cos(y), cos(p)*sin(y), sin(p))
+/// Swizzle to Y-up engine space: engine = (-qf_y, qf_z, -qf_x).
+/// So "-90 0 0" → engine (0, -1, 0) (straight down).
 fn parse_mangle_direction(s: &str) -> Option<[f32; 3]> {
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() != 3 {
@@ -540,8 +472,7 @@ fn parse_mangle_direction(s: &str) -> Option<[f32; 3]> {
     }
     let pitch_deg: f32 = parts[0].parse().ok()?;
     let yaw_deg: f32 = parts[1].parse().ok()?;
-    // Roll parsed for validation (must be numeric) but unused.
-    let _roll_deg: f32 = parts[2].parse().ok()?;
+    let _roll_deg: f32 = parts[2].parse().ok()?; // validated but unused
 
     let pitch = pitch_deg.to_radians();
     let yaw = yaw_deg.to_radians();
@@ -550,8 +481,6 @@ fn parse_mangle_direction(s: &str) -> Option<[f32; 3]> {
     let qf_y = pitch.cos() * yaw.sin();
     let qf_z = pitch.sin();
 
-    // Quake → engine swizzle (direction vector, no scale).
-    // engine_x = -quake_y, engine_y = quake_z, engine_z = -quake_x.
     let ex = -qf_y;
     let ey = qf_z;
     let ez = -qf_x;
@@ -563,14 +492,10 @@ fn parse_mangle_direction(s: &str) -> Option<[f32; 3]> {
     Some([ex / len, ey / len, ez / len])
 }
 
-// -- Keyframe curve parsing --
-//
-// Accepted syntax: space-separated bracketed entries, each a comma-separated
-// list of numbers. `brightness_curve` entries are `[t_ms, value]`;
-// `color_curve` and `direction_curve` entries are `[t_ms, a, b, c]`.
+// Curve syntax: space-separated bracketed entries, comma-separated floats.
+// `brightness_curve`: [t_ms, value]; `color_curve`/`direction_curve`: [t_ms, a, b, c].
 // Timestamps must be strictly monotonically increasing.
 
-/// Format a short "classname @ (x, y, z)" label for error messages.
 fn format_light_ref(classname: &str, origin: DVec3) -> String {
     format!(
         "{classname} @ ({:.3}, {:.3}, {:.3})",
@@ -578,10 +503,6 @@ fn format_light_ref(classname: &str, origin: DVec3) -> String {
     )
 }
 
-/// Split the curve value into individual bracketed entries.
-///
-/// Returns each entry's inner payload (without the brackets) as a `&str`.
-/// Rejects nested brackets, unclosed brackets, and content outside brackets.
 fn split_bracketed_entries<'a>(
     raw: &'a str,
     key: &'static str,
@@ -591,7 +512,6 @@ fn split_bracketed_entries<'a>(
     let mut rest = raw.trim();
     while !rest.is_empty() {
         let Some(open_rel) = rest.find('[') else {
-            // Trailing non-whitespace without an opening bracket.
             if !rest.is_empty() {
                 return Err(TranslateError::InvalidKeyframeCurve {
                     key,
@@ -601,7 +521,6 @@ fn split_bracketed_entries<'a>(
             }
             break;
         };
-        // Any non-whitespace before the opening bracket is junk.
         let before = &rest[..open_rel];
         if !before.trim().is_empty() {
             return Err(TranslateError::InvalidKeyframeCurve {
@@ -639,7 +558,6 @@ fn split_bracketed_entries<'a>(
     Ok(entries)
 }
 
-/// Parse a comma-separated list of floats from a bracketed entry's inner text.
 fn parse_entry_numbers(inner: &str) -> Option<Vec<f32>> {
     inner
         .split(',')
@@ -647,7 +565,6 @@ fn parse_entry_numbers(inner: &str) -> Option<Vec<f32>> {
         .collect()
 }
 
-/// Verify keyframe timestamps are strictly monotonically increasing.
 fn check_monotonic<T>(
     keyframes: &[(f32, T)],
     key: &'static str,
@@ -728,15 +645,10 @@ fn parse_vec3_curve(
     Ok(out)
 }
 
-// -- Quake style preset table --
-
-/// Map a Quake `style` integer (0-11) to a `LightAnimation`.
-///
-/// Classic brightness strings from Quake: each character `a`-`z` maps to
-/// 0.0-1.0 (26 levels), sampled at 10 Hz. Style 0 is constant (no animation,
-/// handled by the caller). Styles 12+ are reserved.
+/// Maps Quake `style` (1–11) to a `LightAnimation`. Style 0 is handled by the
+/// caller. Each character 'a'–'z' maps to 0.0–~2.0 brightness, sampled at 10 Hz.
+/// Strings are verbatim from Quake 1 `r_light.c` / `m_menu.c`.
 fn quake_style_animation(style: i32, phase: f32) -> Option<LightAnimation> {
-    // Source: Quake 1 `r_light.c` / `m_menu.c` classic style strings.
     let pattern = match style {
         1 => "mmnmmommommnonmmonqnmmo", // flicker (first variety)
         2 => "abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba", // slow strong pulse
@@ -752,19 +664,13 @@ fn quake_style_animation(style: i32, phase: f32) -> Option<LightAnimation> {
         _ => return None,
     };
 
+    // Classic mapping: (c - 'a') * 2/25, so 'a'=0.0, 'z'≈2.0, 'm'≈0.96 ("normal").
     let brightness: Vec<f32> = pattern
         .chars()
-        .map(|c| {
-            // 'a' → 0.0, 'z' → ~2.0 in Quake (each step = ~2/25 ≈ 0.08). The
-            // classic mapping is `(c - 'a') * 2 / 25`, where 'm' (0.96) is
-            // "normal" brightness. Normalised here so 'm' sits near 1.0.
-            let step = (c as u8).saturating_sub(b'a') as f32;
-            step * (2.0 / 25.0)
-        })
+        .map(|c| (c as u8).saturating_sub(b'a') as f32 * (2.0 / 25.0))
         .collect();
 
-    // Sampled at 10 Hz → period = samples * 0.1s.
-    let period = brightness.len() as f32 * 0.1;
+    let period = brightness.len() as f32 * 0.1; // 10 Hz
 
     Some(LightAnimation {
         period,
@@ -798,8 +704,6 @@ mod tests {
         }
     }
 
-    // -- Basic valid translations --
-
     #[test]
     fn translates_valid_point_light() {
         let p = props(&[
@@ -813,7 +717,7 @@ mod tests {
 
         assert_eq!(light.light_type, LightType::Point);
         // 250 / 300 (QUAKE_INTENSITY_REFERENCE)
-        assert!((light.intensity - (250.0 / 300.0)).abs() < 1e-6);
+        assert!((light.intensity - (250.0 / 300.0)).abs() < 1e-6); // 250 / QUAKE_INTENSITY_REFERENCE
         assert_vec_close(
             light.color,
             [1.0, 128.0 / 255.0, 64.0 / 255.0],
@@ -821,8 +725,7 @@ mod tests {
             "color",
         );
         assert_eq!(light.falloff_model, FalloffModel::InverseSquared);
-        // 4096 units * 0.0254 m/unit = 104.0384 m
-        assert!((light.falloff_range - 104.0384).abs() < 1e-3);
+        assert!((light.falloff_range - 104.0384).abs() < 1e-3); // 4096 * 0.0254
         assert!(light.cone_angle_inner.is_none());
         assert!(light.cone_direction.is_none());
         assert!(light.animation.is_none());
@@ -848,7 +751,6 @@ mod tests {
         assert!((inner - 20.0f32.to_radians()).abs() < 1e-5);
         assert!((outer - 40.0f32.to_radians()).abs() < 1e-5);
         let dir = light.cone_direction.expect("cone direction");
-        // -90 0 0 → straight down in engine space
         assert_vec_close(dir, [0.0, -1.0, 0.0], 1e-5, "spot direction");
     }
 
@@ -865,13 +767,10 @@ mod tests {
         assert_eq!(light.light_type, LightType::Directional);
         // Directional ignores _fade.
         assert_eq!(light.falloff_range, 0.0);
+        // -45 pitch, yaw 0 → engine (-qf_y, qf_z, -qf_x) = (0, -0.707, -0.707).
         let dir = light.cone_direction.expect("directional dir");
-        // -45 pitch, yaw 0: forward.y (Quake) = sin(-45) ≈ -0.707; forward.x (Quake) = cos(-45) ≈ 0.707.
-        // Engine = (-qf_y, qf_z, -qf_x) = (0, -0.707, -0.707) normalised.
         assert_vec_close(dir, [0.0, -0.70710677, -0.70710677], 1e-4, "directional");
     }
-
-    // -- Errors --
 
     #[test]
     fn point_missing_fade_errors() {
@@ -939,8 +838,6 @@ mod tests {
         assert!(matches!(err, TranslateError::UnknownClassname(_)));
     }
 
-    // -- Property-name variation --
-
     #[test]
     fn accepts_underscore_light_alias() {
         let p = props(&[
@@ -949,7 +846,6 @@ mod tests {
             ("_fade", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
-        // 200 / 300 (QUAKE_INTENSITY_REFERENCE)
         assert!((light.intensity - (200.0 / 300.0)).abs() < 1e-6);
     }
 
@@ -962,11 +858,8 @@ mod tests {
             ("_fade", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
-        // Authored 300 is the Quake reference value → normalized to 1.0.
         assert_eq!(light.intensity, 1.0);
     }
-
-    // -- Style and animation --
 
     #[test]
     fn style_one_produces_animation_with_brightness_curve() {
@@ -980,7 +873,6 @@ mod tests {
         let anim = light.animation.expect("style 1 should produce animation");
         let curve = anim.brightness.expect("brightness curve present");
         assert!(!curve.is_empty());
-        // Period = samples * 0.1s — style 1 has 23 samples → 2.3s.
         assert!(
             (anim.period - curve.len() as f32 * 0.1).abs() < 1e-5,
             "period should match sample count at 10 Hz"
@@ -1053,8 +945,6 @@ mod tests {
         assert!(light.animation.is_none());
     }
 
-    // -- Defaults and warnings --
-
     #[test]
     fn directional_missing_angles_defaults_to_down() {
         let p = props(&[("light", "200"), ("_color", "255 255 255")]);
@@ -1087,11 +977,9 @@ mod tests {
         assert_eq!(light.color, [1.0, 1.0, 1.0]);
     }
 
-    // -- Unit conversion sanity --
-
     #[test]
     fn falloff_range_converts_quake_units_to_meters() {
-        // 1000 Quake units at 0.0254 m/unit = 25.4 m.
+        // 1000 units * 0.0254 m/unit = 25.4 m
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
@@ -1100,8 +988,6 @@ mod tests {
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!((light.falloff_range - 25.4).abs() < 1e-4);
     }
-
-    // -- _bake_only property --
 
     #[test]
     fn bake_only_default_is_false() {
@@ -1137,8 +1023,6 @@ mod tests {
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!(light.bake_only);
     }
-
-    // -- _dynamic property --
 
     #[test]
     fn is_dynamic_default_is_false() {
@@ -1193,8 +1077,6 @@ mod tests {
         ));
     }
 
-    // -- *_curve keyframe authoring --
-
     #[test]
     fn brightness_curve_produces_animation_samples_in_expected_range() {
         let p = props(&[
@@ -1207,13 +1089,8 @@ mod tests {
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         let anim = light.animation.expect("animation present");
         let curve = anim.brightness.expect("brightness samples");
-        // 1000 ms at 32 Hz → 32 samples.
-        assert_eq!(curve.len(), 32);
-        // Period is stored in seconds.
-        assert!((anim.period - 1.0).abs() < 1e-6);
-        // All resampled values must fall inside the authored 0.1..1.0 range
-        // (Catmull-Rom with reflected endpoints on monotone endpoints stays
-        // within the convex hull of these three keyframes).
+        assert_eq!(curve.len(), 32); // 1000 ms at 32 Hz
+        assert!((anim.period - 1.0).abs() < 1e-6); // stored in seconds
         for v in &curve {
             assert!(
                 *v >= 0.05 && *v <= 1.05,
@@ -1253,8 +1130,7 @@ mod tests {
             ("light", "300"),
             ("_color", "255 255 255"),
             ("_fade", "1024"),
-            // brightness_curve expects [t, v]; this has 3 values.
-            ("brightness_curve", "[0, 0.5, 9] [500, 1.0]"),
+            ("brightness_curve", "[0, 0.5, 9] [500, 1.0]"), // 3 values instead of expected 2
             ("period_ms", "500"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
@@ -1345,8 +1221,7 @@ mod tests {
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         let anim = light.animation.expect("animation present");
-        // Style 1 would produce a 2.3s period; the curve's 1.0s period means
-        // the curve won.
+        // Style 1 period is 2.3 s; curve period is 1.0 s — curve wins.
         assert!((anim.period - 1.0).abs() < 1e-5);
     }
 

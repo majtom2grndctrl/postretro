@@ -1,30 +1,18 @@
-// Animated-lightmap compose compute pass: per-frame compose of the
-// animated-light contribution atlas. The atlas texture is zero-initialized
-// by wgpu at creation and the compose pass writes every texel the forward
-// pass samples, so no per-frame clear is needed. Samples the same
-// descriptor and `anim_samples` buffers as the SH path (`sh_volume.rs`) via
-// `AnimatedLightBuffers`, so scripting toggles to `is_active` affect both
-// consumers in one upload.
-//
-// Visibility invariant: `VisibleCells` is the single source of truth for
-// which tiles are dispatched each frame. The per-frame filter in
-// `dispatch()` pushes only tiles whose owning chunk belongs to a visible
-// cell; tiles belonging to invisible cells retain their prior-frame atlas
-// contents, which is fine because the forward pass will not sample them.
-// Any future pass that samples the animated lightmap atlas (reflection
-// probes, alternate cameras) must either share the same `VisibleCells` or
-// skip animated-lit chunks entirely — otherwise it will read stale
-// atlas contents for cells the current frame's visibility considers
-// invisible.
-//
+// Animated-lightmap compose compute pass.
 // See: context/lib/rendering_pipeline.md §4, §7.1
 //
-// Dispatch-limit choice: this module asserts at map load that the total
-// 8×8 tile count fits in `max_compute_workgroups_per_dimension` (65535 at
-// wgpu defaults). Bundled maps stay far below that; the 2D-dispatch
-// fallback described in the plan is intentionally not wired up. If a
-// future map trips the cap, extend the dispatch here and compute the flat
-// index in `animated_lightmap_compose.wgsl::compose_main`.
+// The atlas is zero-initialized by wgpu at creation; the compose pass writes
+// every texel the forward pass samples, so no per-frame clear is needed.
+//
+// Visibility: only tiles whose owning chunk belongs to a visible cell are
+// dispatched. Any future pass that samples this atlas (reflection probes,
+// alternate cameras) must share the same `VisibleCells` or skip animated-lit
+// chunks — otherwise it reads stale atlas contents for invisible cells.
+//
+// Dispatch limit: tile count is validated against
+// `max_compute_workgroups_per_dimension` (65535) at map load. The 2D-dispatch
+// fallback is not implemented — a map that trips the cap must be rebaked with
+// fewer/smaller animated chunks.
 
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
@@ -35,31 +23,24 @@ use crate::visibility::VisibleCells;
 
 use super::sh_volume::AnimatedLightBuffers;
 
-/// Animated-lightmap atlas resolution. Matches the static lightmap atlas
-/// (1024²); same UV drives both samples in the forward pass. A future
-/// halve-to-512 experiment would change this value and the compose
-/// dispatch shape — nothing else.
+/// Animated-lightmap atlas resolution. Matches the static lightmap atlas so
+/// both atlases share one UV in the forward pass. Changing this also changes
+/// the compose dispatch shape.
 pub const ANIMATED_ATLAS_SIZE: u32 = 1024;
 
-/// wgpu default `max_compute_workgroups_per_dimension`. The plan allows
-/// either a 2D dispatch fallback or an outright refusal when the tile
-/// count exceeds this; we pick refusal for simplicity.
+/// wgpu default `max_compute_workgroups_per_dimension`.
 const MAX_WORKGROUPS_PER_DIM: u32 = 65535;
 
-/// Matches `postretro_level_format::animated_light_chunks::MAX_ANIMATED_LIGHTS_PER_CHUNK = 4`.
-/// Used as the heatmap denominator in debug mode 1 — saturating at 1.0
-/// when a covered texel references the cap. Kept as a local `u32` constant
-/// because the exported symbol is `usize`; casting at every use site adds
-/// noise without benefit.
+/// Heatmap denominator for debug mode 1. Mirrors
+/// `animated_light_chunks::MAX_ANIMATED_LIGHTS_PER_CHUNK`; kept as a local
+/// `u32` to avoid casting at each use site (the exported symbol is `usize`).
 const DEBUG_MAX_LIGHTS_PER_CHUNK: u32 = 4;
 
-/// Env var selecting a compose-side debug visualization. Parsed once at
-/// renderer init; unset / empty → normal path.
+/// Env var selecting a compose-side debug visualization. Parsed once at renderer init.
 const DEBUG_ENV_VAR: &str = "POSTRETRO_ANIMATED_LM_DEBUG";
 
-/// CPU-side mirror of the `DebugConfig` uniform consumed by
-/// `animated_lightmap_compose.wgsl`. See the shader's `DebugConfig` struct
-/// for field semantics.
+/// CPU-side mirror of the `DebugConfig` uniform in
+/// `animated_lightmap_compose.wgsl`. See the shader struct for field semantics.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AnimatedLmDebugConfig {
     /// 0 = off, 1 = count heatmap, 2 = isolate a single descriptor slot.
@@ -70,12 +51,11 @@ pub struct AnimatedLmDebugConfig {
 
 impl AnimatedLmDebugConfig {
     /// Parse `POSTRETRO_ANIMATED_LM_DEBUG`. Recognized values:
-    /// - unset / empty → off.
-    /// - `count` → mode 1.
-    /// - `isolate=<u32>` → mode 2 with the given descriptor slot.
+    /// - unset / empty → off
+    /// - `count` → mode 1
+    /// - `isolate=<u32>` → mode 2 with the given descriptor slot
     ///
-    /// Anything else logs a warning and falls back to off so a typo doesn't
-    /// silently change rendering.
+    /// Anything else logs a warning and falls back to off.
     pub fn from_env() -> Self {
         let Ok(raw) = std::env::var(DEBUG_ENV_VAR) else {
             return Self::default();
@@ -125,8 +105,7 @@ impl AnimatedLmDebugConfig {
     }
 }
 
-/// One 8×8 atlas tile assigned to a chunk. `workgroup_id.x` indexes this
-/// array in the compose shader.
+/// One 8×8 atlas tile assigned to a chunk. Indexed by `workgroup_id.x` in the compose shader.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct DispatchTile {
@@ -136,8 +115,8 @@ struct DispatchTile {
     _pad: u32,
 }
 
-/// GPU storage-buffer layout for one `ChunkAtlasRect`. Matches the format
-/// crate's `ChunkAtlasRect` and the WGSL `ChunkAtlasRect` struct.
+/// GPU storage-buffer layout for `ChunkAtlasRect`. Must stay in sync with the
+/// format crate's `ChunkAtlasRect` and the WGSL struct of the same name.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuChunkRect {
@@ -148,7 +127,6 @@ struct GpuChunkRect {
     texel_offset: u32,
 }
 
-/// GPU storage-buffer layout for one `(offset, count)` pair.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuOffsetCount {
@@ -156,7 +134,6 @@ struct GpuOffsetCount {
     count: u32,
 }
 
-/// GPU storage-buffer layout for one `(light_index, weight)` pair.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuTexelLight {
@@ -164,81 +141,59 @@ struct GpuTexelLight {
     weight: f32,
 }
 
-/// Compose-pass resources. Always allocated — when the PRL has no
-/// `AnimatedLightWeightMaps` section (or zero animated lights) the module
-/// allocates a 1×1 zero dummy atlas and skips the per-frame dispatch.
+/// Compose-pass resources. Always allocated — maps with no
+/// `AnimatedLightWeightMaps` section get a 1×1 zero dummy atlas and skip the
+/// per-frame dispatch.
 pub struct AnimatedLightmapResources {
-    /// 1024² `Rgba16Float` storage texture the compose pass writes into.
-    /// Sampled by the forward pass through the lightmap bind group.
-    /// `None` when no weight-map section is present — the dummy 1×1 view
-    /// below is bound to group 4 instead.
+    /// `None` when no weight-map section is present; the dummy view is bound instead.
     #[allow(dead_code)]
     atlas_texture: Option<wgpu::Texture>,
-    /// 1×1 zero `Rgba16Float` texture used when no weight maps are present.
     #[allow(dead_code)]
     dummy_texture: wgpu::Texture,
-    /// Forward-pass-facing view. Points at `atlas_texture` when present,
-    /// otherwise at `dummy_texture` — the bind-group layout stays constant.
+    /// Bound to the forward-pass lightmap bind group. Points at `atlas_texture`
+    /// when present, otherwise at `dummy_texture` — keeps the bind-group layout constant.
     pub forward_view: wgpu::TextureView,
 
-    /// Present when we have real weight maps and a compute pipeline.
-    /// When `None`, `dispatch` is a no-op.
+    /// `None` on maps with no weight maps; `dispatch` is a no-op in that case.
     dispatch_state: Option<DispatchState>,
 }
 
 struct DispatchState {
     compose_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
-    /// GPU buffer holding the per-frame trimmed dispatch tile list. Sized
-    /// at creation to the master (unfiltered) tile count and updated each
-    /// frame via `queue.write_buffer` with the trimmed prefix.
-    /// `STORAGE | COPY_DST` so the per-frame upload is legal.
+    /// Sized to the master tile count; updated each frame with the
+    /// visibility-culled prefix via `queue.write_buffer`. Needs `COPY_DST`.
     dispatch_tiles_buffer: wgpu::Buffer,
-    /// Master (unfiltered) tile list, built once at load time. The
-    /// per-frame filter walks this and pushes tiles whose owning chunk's
-    /// cell is visible.
+    /// Full unfiltered tile list built at load time. Per-frame cull walks
+    /// this and pushes only tiles in visible cells.
     master_tiles: Vec<DispatchTile>,
-    /// One entry per animated chunk (same indexing as
-    /// `section.chunk_rects`): the `cell_id` of the BVH leaf that owns the
-    /// chunk. Derived from `BvhLeaf.chunk_range_start/count` at load time.
+    /// `cell_id` of the BVH leaf that owns each animated chunk (indexed
+    /// parallel to `section.chunk_rects`). Built from `BvhLeaf.chunk_range_*`
+    /// at load time; unreferenced chunks keep `u32::MAX` and are always culled.
     chunk_cell_ids: Vec<u32>,
-    /// Persistent scratch buffers reused each frame to avoid per-frame
-    /// allocation. `scratch_tiles` holds the filtered tile list;
-    /// `scratch_bytes` holds its packed GPU-layout bytes.
+    /// Reused each frame to avoid per-frame allocation.
     scratch_tiles: Vec<DispatchTile>,
     scratch_bytes: Vec<u8>,
-    /// Previous frame's trimmed tile count. Used by the debug-level
-    /// `kept/total` logger to deduplicate identical frames. Sentinel
-    /// `u32::MAX` forces the first frame to log.
+    /// Previous frame's kept-tile count. Deduplicates the debug log.
+    /// `u32::MAX` sentinel forces the first frame to log.
     prev_kept: u32,
-    /// Total (unfiltered) tile count. Cached so the logger and the
-    /// `DrawAll` fast path don't need to call `master_tiles.len()`.
+    /// Cached master tile count so the logger and `DrawAll` path skip `.len()`.
     total_tiles: u32,
 }
 
 impl AnimatedLightmapResources {
-    /// Build the compose pass. Inputs:
-    /// - `weight_maps`: the loaded `AnimatedLightWeightMaps` PRL section, or
-    ///   `None` when the map has no animated lights.
-    /// - `animated_chunks`: the loaded `AnimatedLightChunks` PRL section.
-    ///   Required for the `chunk_rects.len() == chunks.len()` cross-section
-    ///   check when `weight_maps` is `Some`. May be `None` only when
-    ///   `weight_maps` is also `None`.
-    /// - `animation`: shared animated-light buffers (descriptors +
-    ///   anim_samples). Borrowed — this module does not upload its own copy.
-    /// - `uniform_bind_group_layout`: group-0 layout from the renderer. **Must
-    ///   include `wgpu::ShaderStages::COMPUTE`** in its visibility flags — the
-    ///   compose pipeline below is a compute pipeline and will fail
-    ///   wgpu validation at `create_compute_pipeline` time otherwise. The
-    ///   canonical BGL in `render/mod.rs` (search for "Uniform Bind Group
-    ///   Layout") declares `VERTEX | FRAGMENT | COMPUTE` specifically so this
-    ///   pass can reuse it; if a future change drops COMPUTE there, either
-    ///   re-add it or switch this pass to its own BGL. `wgpu::BindGroupLayout`
-    ///   is opaque and does not expose its visibility flags, so this contract
-    ///   cannot be runtime-checked — it must be preserved at the call site.
+    /// Build the compose pass resources.
     ///
-    /// Returns an error string when cross-section validation fails; the
-    /// caller should log and refuse to load the map.
+    /// `uniform_bind_group_layout` must include `wgpu::ShaderStages::COMPUTE` —
+    /// the compose pipeline is a compute pipeline and wgpu validation fails at
+    /// `create_compute_pipeline` time otherwise. The canonical BGL in
+    /// `render/mod.rs` declares `VERTEX | FRAGMENT | COMPUTE` for this reason;
+    /// dropping COMPUTE there would break this pass. `wgpu::BindGroupLayout` is
+    /// opaque so this cannot be runtime-checked — it must be preserved at the
+    /// call site.
+    ///
+    /// Returns `Err` on cross-section validation failure; caller should log and
+    /// refuse to load the map.
     pub fn new(
         device: &wgpu::Device,
         weight_maps: Option<&AnimatedLightWeightMapsSection>,
@@ -248,13 +203,10 @@ impl AnimatedLightmapResources {
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
         debug_config: AnimatedLmDebugConfig,
     ) -> Result<Self, String> {
-        // 1×1 zero dummy used either as the sole binding (no weight maps
-        // present) or as a placeholder until the real atlas view is built.
         let dummy_texture = create_zero_texture(device, 1, 1, "Animated LM Dummy");
         let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let Some(section) = weight_maps else {
-            // No weight maps — forward pass sees the 1×1 zero atlas.
             return Ok(Self {
                 atlas_texture: None,
                 dummy_texture,
@@ -264,8 +216,7 @@ impl AnimatedLightmapResources {
         };
 
         if section.chunk_rects.is_empty() {
-            // Weight-maps section is present but empty (no covered chunks).
-            // Treat the same as missing — nothing to compose.
+            // Section present but empty — nothing to compose.
             return Ok(Self {
                 atlas_texture: None,
                 dummy_texture,
@@ -276,8 +227,6 @@ impl AnimatedLightmapResources {
 
         validate_cross_section(section, animated_chunks, animation.animated_light_count())?;
 
-        // Build the dispatch-tile list: one 8×8 tile per `ceil(w/8)*ceil(h/8)`
-        // slot inside each chunk rect.
         let dispatch_tiles = expand_dispatch_tiles(&section.chunk_rects);
         if dispatch_tiles.len() as u32 > MAX_WORKGROUPS_PER_DIM {
             return Err(format!(
@@ -291,9 +240,8 @@ impl AnimatedLightmapResources {
         }
         let compose_workgroup_count = dispatch_tiles.len() as u32;
 
-        // Real 1024² storage texture. `STORAGE_BINDING | TEXTURE_BINDING` —
-        // no `COPY_DST` because wgpu zero-initializes the texture at
-        // creation and the compose pass overwrites every sampled texel.
+        // No `COPY_DST` needed — wgpu zero-initializes and the compose pass
+        // overwrites every texel the forward pass will sample.
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Atlas"),
             size: wgpu::Extent3d {
@@ -318,10 +266,6 @@ impl AnimatedLightmapResources {
             ..Default::default()
         });
 
-        // Pack the three storage buffers. All three use `to_le_bytes` via
-        // the repr(C) `#[derive(Copy)]` structs above and the contents are
-        // bitcast-safe — same approach as the rest of the renderer's
-        // packing helpers (see `sh_volume::write_descriptor_bytes`).
         let chunk_rects_bytes = pack_chunk_rects(&section.chunk_rects);
         let offset_counts_bytes = pack_offset_counts(section);
         let texel_lights_bytes = pack_texel_lights(section);
@@ -333,12 +277,8 @@ impl AnimatedLightmapResources {
             create_storage_buffer(device, "Animated LM Offset Counts", &offset_counts_bytes);
         let texel_lights_buffer =
             create_storage_buffer(device, "Animated LM Texel Lights", &texel_lights_bytes);
-        // Dispatch tiles buffer is sized to the master (unfiltered) tile
-        // count at creation and only partially filled each frame. Needs
-        // `COPY_DST` so `queue.write_buffer` can upload the trimmed slice
-        // every frame. Seed it with the master tile bytes so the first
-        // frame's `DrawAll` path (same-count upload) is bitwise-identical
-        // to the pre-cull shape.
+        // Seeded with the full master list; the first frame's `DrawAll` path
+        // uploads an identical slice without needing a separate clear.
         let dispatch_tiles_buffer = {
             use wgpu::util::DeviceExt;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -348,16 +288,8 @@ impl AnimatedLightmapResources {
             })
         };
 
-        // Build the chunk → cell id table. One entry per animated chunk,
-        // populated by walking each BVH leaf's `chunk_range_start..start+count`
-        // and stamping the leaf's `cell_id`. Chunks not covered by any BVH
-        // leaf keep `u32::MAX` and are always filtered out by the per-frame
-        // cull — a defensive choice; in a valid bake every animated chunk
-        // belongs to exactly one leaf.
         let chunk_cell_ids = build_chunk_cell_ids(bvh_leaves, section.chunk_rects.len());
 
-        // Small uniform carrying the debug-viz selection. One-time upload;
-        // nothing reads or writes it after init.
         let debug_buffer = {
             use wgpu::util::DeviceExt;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -367,7 +299,6 @@ impl AnimatedLightmapResources {
             })
         };
 
-        // Pipeline + bind groups.
         let compute_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Animated LM Compute BGL"),
             entries: &compute_bgl_entries(),
@@ -379,8 +310,7 @@ impl AnimatedLightmapResources {
             immediate_size: 0,
         });
 
-        // Concatenate curve helpers after the compose shader, matching the
-        // pattern used for `forward.wgsl`.
+        // curve_eval.wgsl is appended rather than imported; matches the pattern in forward.wgsl.
         let shader_source = concat!(
             include_str!("../shaders/animated_lightmap_compose.wgsl"),
             "\n",
@@ -458,9 +388,7 @@ impl AnimatedLightmapResources {
                 dispatch_tiles_buffer,
                 master_tiles: dispatch_tiles,
                 chunk_cell_ids,
-                // Pre-size scratch buffers to the master count so the
-                // `DrawAll` path — which pushes every tile — doesn't
-                // realloc on the first frame.
+                // Pre-sized so `DrawAll` on the first frame doesn't realloc.
                 scratch_tiles: Vec::with_capacity(total_tiles as usize),
                 scratch_bytes: Vec::with_capacity(dispatch_tiles_bytes.len()),
                 prev_kept: u32::MAX,
@@ -469,36 +397,25 @@ impl AnimatedLightmapResources {
         })
     }
 
-    /// Whether a real compose dispatch will run. `false` for maps with no
-    /// animated weight maps — callers skip allocating a GPU timing pair in
-    /// that case so the timestamp slot isn't marked-but-unwritten.
+    /// Returns `false` on maps with no animated weight maps. Callers skip
+    /// allocating a GPU timing pair so the timestamp slot isn't left
+    /// marked-but-unwritten.
     pub fn is_active(&self) -> bool {
         self.dispatch_state.is_some()
     }
 
-    /// Dispatch the per-frame compose pass. No-op when the map carries no
-    /// animated weight maps (the forward pass reads the dummy zero texture
-    /// in that case). The atlas is zero-initialized by wgpu at creation and
-    /// the compose pass writes every texel the forward pass samples, so no
-    /// per-frame clear is required.
+    /// Dispatch the per-frame compose pass.
     ///
-    /// Before encoding, the master dispatch-tile list is filtered against
-    /// `visible`: tiles whose owning chunk belongs to an invisible cell are
-    /// skipped. When every animated chunk is off-screen the compute pass
-    /// is not encoded at all — the atlas keeps its prior-frame contents,
-    /// which is safe because the forward pass will not sample any tile
-    /// from an invisible cell this frame.
+    /// No-op when the map has no animated weight maps. Filters the master tile
+    /// list against `visible`; skips encoding entirely when all animated chunks
+    /// are off-screen (safe because the forward pass won't sample those texels).
     ///
-    /// `uniform_bind_group` must be the renderer's group-0 uniform bind
-    /// group; this pass consumes `uniforms.time` to drive the curves.
+    /// `uniform_bind_group` is the renderer's group-0 bind group; this pass
+    /// reads `uniforms.time` to drive animation curves.
     ///
-    /// `timestamp_writes`: single pair covering the compose dispatch,
-    /// allocated via `FrameTiming::compute_pass_writes`. When the dispatch
-    /// is skipped (all invisible) the caller's timing pair goes
-    /// marked-but-unwritten — that is acceptable because the higher-level
-    /// `is_active()` gate still reports the pass as active and the frame
-    /// may go several frames without a write; the timing window averages
-    /// over a rolling buffer and tolerates missing samples.
+    /// When the dispatch is skipped, `timestamp_writes` goes
+    /// marked-but-unwritten. The timing window averages over a rolling buffer
+    /// and tolerates missing samples.
     pub fn dispatch(
         &mut self,
         queue: &wgpu::Queue,
@@ -511,25 +428,17 @@ impl AnimatedLightmapResources {
             return;
         };
 
-        // Build the trimmed tile list. `DrawAll` pushes everything (same
-        // behavior as the pre-cull shape); `Culled` pushes only tiles
-        // whose owning chunk is in a visible cell.
         state.scratch_tiles.clear();
         match visible {
             VisibleCells::DrawAll => {
                 state.scratch_tiles.extend_from_slice(&state.master_tiles);
             }
             VisibleCells::Culled(cells) => {
-                // Build a local bitmask from the visible-cell list. For
-                // typical cell counts (dozens) this is cheaper than a
-                // HashSet lookup per tile and has no allocation.
+                // Local bitmask is cheaper than a HashSet for typical cell counts (dozens).
                 let mut bitmask = [0u32; VISIBLE_CELLS_WORDS];
                 for &cell in cells {
                     if cell >= MAX_VISIBLE_CELLS {
-                        // Out-of-range cell ids are silently skipped here;
-                        // `compute_cull::write_bitmask_from_cells` already
-                        // logs on the same condition so this path stays
-                        // quiet.
+                        // `compute_cull::write_bitmask_from_cells` already logs this; stay quiet.
                         continue;
                     }
                     let word = (cell >> 5) as usize;
@@ -559,15 +468,9 @@ impl AnimatedLightmapResources {
         }
 
         if kept == 0 {
-            // Nothing to compose — don't upload and don't begin a pass.
-            // The atlas keeps its prior-frame contents; the forward pass
-            // will not sample any of those texels this frame.
             return;
         }
 
-        // Pack the trimmed tile list into the reusable byte scratch and
-        // upload. Use `queue.write_buffer`; the dispatch-tiles buffer was
-        // created with `COPY_DST`.
         state.scratch_bytes.clear();
         pack_dispatch_tiles_into(&state.scratch_tiles, &mut state.scratch_bytes);
         queue.write_buffer(&state.dispatch_tiles_buffer, 0, &state.scratch_bytes);
@@ -579,18 +482,15 @@ impl AnimatedLightmapResources {
         pass.set_bind_group(0, uniform_bind_group, &[]);
         pass.set_bind_group(1, &state.compute_bind_group, &[]);
 
-        // Compose: one workgroup per kept dispatch tile, flat in x.
         pass.set_pipeline(&state.compose_pipeline);
         pass.dispatch_workgroups(kept, 1, 1);
     }
 }
 
-/// Walk the BVH leaves and stamp each chunk's owning cell id into
-/// `chunk_cell_ids`. Chunks never referenced by any leaf retain `u32::MAX`
-/// as a sentinel — those tiles can never be kept by the per-frame filter
-/// (the cap check in `dispatch()` rejects them). In a valid PRL every
-/// animated chunk belongs to exactly one BVH leaf's range, so the sentinel
-/// path is defensive only.
+/// Build the chunk → cell-id table from BVH leaf ranges. Chunks not covered
+/// by any leaf keep `u32::MAX` so the per-frame filter always rejects them.
+/// In a valid PRL every animated chunk belongs to exactly one leaf; the
+/// sentinel is a defensive fallback.
 fn build_chunk_cell_ids(bvh_leaves: &[BvhLeaf], chunk_count: usize) -> Vec<u32> {
     let mut chunk_cell_ids = vec![u32::MAX; chunk_count];
     for leaf in bvh_leaves {
@@ -687,9 +587,9 @@ fn create_zero_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba16Float,
-        // Dummy just needs to be bindable on the forward pass; no upload
-        // path is required because `Rgba16Float` zero-initializes to zero
-        // half-floats, which the forward shader reads as (0, 0, 0, 0).
+        // `Rgba16Float` zero-initializes to (0,0,0,0); no upload needed.
+        // `STORAGE_BINDING` required so the bind-group layout is compatible
+        // with the real atlas slot when weight maps are absent.
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
         view_formats: &[],
     })
@@ -697,11 +597,9 @@ fn create_zero_texture(
 
 fn create_storage_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wgpu::Buffer {
     use wgpu::util::DeviceExt;
-    // wgpu rejects zero-sized storage-buffer bindings. All callers pass
-    // at least one packed record (guaranteed by the dispatch-state path
-    // rejecting empty `chunk_rects`). Use assert! (not debug_assert!) so a
-    // future regression is caught in release builds before producing an
-    // invalid wgpu buffer.
+    // wgpu rejects zero-sized storage buffers. All callers are gated behind the
+    // non-empty `chunk_rects` check above. Use `assert!` (not `debug_assert!`)
+    // so a future regression surfaces in release builds.
     assert!(!bytes.is_empty(), "{label} storage buffer would be empty");
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),
@@ -710,10 +608,8 @@ fn create_storage_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wg
     })
 }
 
-/// Expand `chunk_rects` into a flat `Vec<DispatchTile>` covering every
-/// chunk rect with `ceil(w/8) × ceil(h/8)` 8×8 tiles. Tile iteration order
-/// is y-major, x-minor — doesn't affect correctness but keeps debugging
-/// predictable.
+/// Expand each chunk rect into `ceil(w/8) × ceil(h/8)` 8×8 dispatch tiles.
+/// Tile order is y-major, x-minor; order doesn't affect correctness.
 fn expand_dispatch_tiles(
     chunk_rects: &[postretro_level_format::animated_light_weight_maps::ChunkAtlasRect],
 ) -> Vec<DispatchTile> {
@@ -778,9 +674,7 @@ fn pack_dispatch_tiles(tiles: &[DispatchTile]) -> Vec<u8> {
     bytes
 }
 
-/// Same layout as `pack_dispatch_tiles`, but appends into a caller-owned
-/// buffer. Used by the per-frame filter path to avoid a `Vec` allocation
-/// every frame.
+/// Appends packed tile bytes into a caller-owned buffer to avoid per-frame allocation.
 fn pack_dispatch_tiles_into(tiles: &[DispatchTile], bytes: &mut Vec<u8>) {
     bytes.reserve(std::mem::size_of_val(tiles));
     for t in tiles {
@@ -791,18 +685,16 @@ fn pack_dispatch_tiles_into(tiles: &[DispatchTile], bytes: &mut Vec<u8>) {
     }
 }
 
-/// Run the spec's three cross-section invariants. Returns `Err` with a
-/// descriptive message on the first failure; the caller logs and refuses
-/// to load the map.
+/// Validate cross-section invariants. Returns `Err` on the first failure;
+/// caller logs and refuses to load the map.
 fn validate_cross_section(
     section: &AnimatedLightWeightMapsSection,
     animated_chunks: Option<&AnimatedLightChunksSection>,
     animated_light_count: u32,
 ) -> Result<(), String> {
     // Invariant 1: chunk_rects.len() == AnimatedLightChunks.chunks.len().
-    // The compiler emits weight-maps and chunks together (see `main.rs`), so
-    // a present weight-maps section with an absent chunks section is a
-    // malformed PRL — hard-error rather than quietly skipping this check.
+    // The compiler always emits both sections together, so a present
+    // weight-maps section paired with a missing chunks section is a malformed PRL.
     match animated_chunks {
         Some(chunks) => {
             if section.chunk_rects.len() != chunks.chunks.len() {
@@ -824,7 +716,7 @@ fn validate_cross_section(
         }
     }
 
-    // Invariant 2: texel_offset prefix-sum.
+    // Invariant 2: texel_offset is a prefix sum of width×height.
     let mut running: u32 = 0;
     for (i, rect) in section.chunk_rects.iter().enumerate() {
         if rect.texel_offset != running {
@@ -850,8 +742,7 @@ fn validate_cross_section(
         ));
     }
 
-    // Invariant 3: every light_index is < animated_light_count.
-    // Also verify each (offset, count) slice is in bounds.
+    // Invariant 3: all light_index values are in range; all (offset, count) slices are in bounds.
     for (i, tl) in section.texel_lights.iter().enumerate() {
         if tl.light_index >= animated_light_count {
             return Err(format!(
@@ -888,8 +779,6 @@ mod tests {
         ChunkAtlasRect, TexelLight, TexelLightEntry,
     };
 
-    /// Build a stub `AnimatedLightChunksSection` with `n` empty chunks, so
-    /// the validator's cross-section length check passes.
     fn mk_chunks(n: usize) -> AnimatedLightChunksSection {
         AnimatedLightChunksSection {
             chunks: (0..n)
@@ -920,9 +809,8 @@ mod tests {
 
     #[test]
     fn compose_shader_parses_and_declares_debug_binding() {
-        // Parse the concatenated compose + curve_eval source (same concat
-        // the runtime does) with naga so the debug binding addition stays
-        // syntactically sound without needing a GPU.
+        // Use naga to validate the same concatenated source the runtime builds,
+        // so shader changes are caught without a GPU.
         let src = concat!(
             include_str!("../shaders/animated_lightmap_compose.wgsl"),
             "\n",
@@ -930,9 +818,6 @@ mod tests {
         );
         let module =
             naga::front::wgsl::parse_str(src).expect("compose shader should parse as WGSL");
-        // Compose entry point exists; clear entry point has been removed
-        // (the atlas is zero-initialized by wgpu and fully overwritten each
-        // frame by the compose pass).
         let has_clear = module
             .entry_points
             .iter()
@@ -943,7 +828,6 @@ mod tests {
             .any(|ep| ep.name == "compose_main" && ep.stage == naga::ShaderStage::Compute);
         assert!(!has_clear, "clear_main should have been removed");
         assert!(has_compose, "compose_main missing");
-        // DebugConfig struct is declared.
         let has_debug_struct = module.types.iter().any(|(_, ty)| {
             matches!(&ty.inner, naga::TypeInner::Struct { .. })
                 && ty.name.as_deref() == Some("DebugConfig")
@@ -966,7 +850,6 @@ mod tests {
 
     #[test]
     fn dispatch_tile_expansion_small_rect() {
-        // 5×5 rect → single 8×8 tile.
         let tiles = expand_dispatch_tiles(&[mk_rect(5, 5, 0)]);
         assert_eq!(tiles.len(), 1);
         assert_eq!(tiles[0].chunk_idx, 0);
@@ -976,7 +859,6 @@ mod tests {
 
     #[test]
     fn dispatch_tile_expansion_exact_tile_boundary() {
-        // 16×8 rect → two tiles in a single row.
         let tiles = expand_dispatch_tiles(&[mk_rect(16, 8, 0)]);
         assert_eq!(tiles.len(), 2);
         assert_eq!(tiles[0].tile_origin_x, 0);
@@ -985,14 +867,12 @@ mod tests {
 
     #[test]
     fn dispatch_tile_expansion_partial_tile() {
-        // 9×9 rect → ceil(9/8) × ceil(9/8) = 4 tiles.
         let tiles = expand_dispatch_tiles(&[mk_rect(9, 9, 0)]);
         assert_eq!(tiles.len(), 4);
     }
 
     #[test]
     fn dispatch_tile_expansion_multiple_chunks_preserves_index() {
-        // Two rects — 8×8 (one tile) and 12×8 (two tiles).
         let tiles = expand_dispatch_tiles(&[mk_rect(8, 8, 0), mk_rect(12, 8, 64)]);
         assert_eq!(tiles.len(), 3);
         assert_eq!(tiles[0].chunk_idx, 0);
@@ -1004,7 +884,6 @@ mod tests {
     fn dispatch_tile_expansion_skips_zero_area() {
         let tiles = expand_dispatch_tiles(&[mk_rect(0, 8, 0), mk_rect(8, 0, 0), mk_rect(8, 8, 0)]);
         assert_eq!(tiles.len(), 1);
-        // Index survives the skip — the non-empty chunk keeps its input position.
         assert_eq!(tiles[0].chunk_idx, 2);
     }
 
@@ -1124,10 +1003,6 @@ mod tests {
         assert!(err.contains("offset_counts.len"), "unexpected error: {err}");
     }
 
-    /// Regression: a non-empty weight-map section with a missing chunks
-    /// section is a malformed PRL (`main.rs` emits the two together). The
-    /// validator must hard-error rather than quietly skipping the
-    /// cross-section length check.
     #[test]
     fn validator_rejects_missing_chunks_when_weight_maps_present() {
         let section = mk_section(
@@ -1145,9 +1020,6 @@ mod tests {
         );
     }
 
-    /// An empty weight-map section (no chunk rects) combined with a missing
-    /// chunks section is still valid — the degradation path for maps with
-    /// zero animated lights.
     #[test]
     fn validator_accepts_empty_weight_maps_without_chunks() {
         let section = mk_section(vec![], vec![], vec![]);
@@ -1169,8 +1041,6 @@ mod tests {
 
     #[test]
     fn build_chunk_cell_ids_stamps_each_leaf_range() {
-        // Two leaves covering 5 total chunks: leaf 0 cell 7 owns chunks
-        // 0..2, leaf 1 cell 9 owns chunks 2..5.
         let leaves = [mk_leaf(7, 0, 2), mk_leaf(9, 2, 3)];
         let ids = build_chunk_cell_ids(&leaves, 5);
         assert_eq!(ids, vec![7, 7, 9, 9, 9]);
@@ -1178,8 +1048,6 @@ mod tests {
 
     #[test]
     fn build_chunk_cell_ids_leaves_unreferenced_chunks_as_sentinel() {
-        // Leaf covers chunk 0 only; chunk 1 is unreferenced and must
-        // stay at the `u32::MAX` sentinel so the filter rejects it.
         let leaves = [mk_leaf(3, 0, 1)];
         let ids = build_chunk_cell_ids(&leaves, 2);
         assert_eq!(ids, vec![3, u32::MAX]);
@@ -1187,16 +1055,11 @@ mod tests {
 
     #[test]
     fn build_chunk_cell_ids_clamps_out_of_range_leaf() {
-        // Defensive: a malformed leaf claiming more chunks than exist
-        // must not panic or write out of bounds.
         let leaves = [mk_leaf(5, 0, 10)];
         let ids = build_chunk_cell_ids(&leaves, 3);
         assert_eq!(ids, vec![5, 5, 5]);
     }
 
-    /// Compose-pass output atlas dimensions match the static lightmap atlas.
-    /// Both atlases share one UV in the forward shader, so a mismatch would
-    /// silently corrupt sampling. No wgpu device required — compare constants.
     #[test]
     fn compose_atlas_dimensions_match_static_lightmap() {
         assert_eq!(

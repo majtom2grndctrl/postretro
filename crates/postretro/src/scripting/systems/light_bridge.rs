@@ -1,4 +1,4 @@
-// Light bridge: seam between the scripting entity registry and the renderer's GPU light buffer.
+// Scripting ↔ renderer bridge for map lights: entity registry → GPU light buffer.
 // See: context/lib/scripting.md
 
 use std::collections::HashMap;
@@ -21,13 +21,10 @@ use crate::scripting::registry::{EntityId, EntityRegistry};
 /// Dirty detection compares the live registry component against this value.
 ///
 /// `animation_start_time` is `Some(t)` while a `play_count`-bounded animation
-/// is running: `t` is the engine time (seconds since level load) when the
-/// animation was last (re)written. On each `update`, the bridge compares
-/// `current_time − t` against `play_count × period_ms / 1000.0`; when the
-/// elapsed time reaches the completion bound, the bridge samples the final
-/// keyframe value, writes a static `LightComponent` back to the registry,
-/// and clears this field. Any `setAnimation` call (including one that stores
-/// an identical animation value) must reset `animation_start_time` to the
+/// is running, where `t` is the engine time when the animation was last written.
+/// When `current_time − t` reaches `play_count × period_ms / 1000.0`, the bridge
+/// samples the final keyframe, writes a static `LightComponent` back to the registry,
+/// and clears this field. Any `setAnimation` call resets `animation_start_time` to the
 /// current frame time — "last call wins" always restarts the count from zero.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LightSnapshot {
@@ -35,74 +32,61 @@ pub(crate) struct LightSnapshot {
     pub(crate) animation_start_time: Option<f32>,
 }
 
-/// Payload handed back to the renderer after `update`. The GPU buffer fields
-/// (`lights_bytes`, `descriptor_bytes`, `samples_bytes`) are only populated
-/// when `has_dirty_data` is true; callers should skip `write_buffer` when it
-/// is false. `effective_brightness` is always populated — it is a time-varying
-/// value that must be re-evaluated every frame for correct shadow-slot ranking
-/// regardless of whether any component changed.
+/// Payload handed back to the renderer after `update`.
 ///
-/// - `lights_bytes` — packed `GpuLight` records for `queue.write_buffer` on
-///   the renderer's `lights_buffer`. Always sized to the authored-light count
-///   at level load.
-/// - `descriptor_bytes` — one `AnimationDescriptor` record per map light, in
-///   the same order as `lights_bytes`. Lights without an animation get the
-///   sentinel descriptor (all three counts zero) so `forward.wgsl` falls back
-///   to the static `intensity`/`color`/`cone_direction` path.
+/// GPU buffer fields (`lights_bytes`, `descriptor_bytes`, `samples_bytes`) are
+/// only populated when `has_dirty_data` is true; callers skip `write_buffer`
+/// otherwise. `effective_brightness` is always populated — it is time-varying
+/// and must be re-evaluated every frame for correct shadow-slot ranking.
+///
+/// - `lights_bytes` — packed `GpuLight` records; always sized to the
+///   authored-light count at level load.
+/// - `descriptor_bytes` — one `AnimationDescriptor` per map light, same order
+///   as `lights_bytes`. Lights without an animation get the sentinel descriptor
+///   (all counts zero) so `forward.wgsl` falls back to the static path.
 /// - `samples_bytes` — packed f32 samples for the scripted-animation region
 ///   of `anim_samples`. One `SCRIPTED_FLOATS_PER_LIGHT`-wide slot per map
-///   light; written to `anim_samples` at `scripted_sample_byte_offset` by
+///   light; written at `scripted_sample_byte_offset` by
 ///   `Renderer::upload_bridge_samples`.
 #[derive(Debug)]
 pub(crate) struct LightBridgeUpdate {
-    /// True when any `LightComponent` changed this frame; false when the GPU
-    /// buffers are unchanged and the caller should skip `write_buffer` calls.
     pub(crate) has_dirty_data: bool,
     pub(crate) lights_bytes: Vec<u8>,
     pub(crate) descriptor_bytes: Vec<u8>,
     pub(crate) samples_bytes: Vec<u8>,
-    /// Per-map-light current effective brightness (one f32 per map light, in
-    /// map-light-index order). Always evaluated at the current frame time —
-    /// not gated on dirty — so shadow-slot suppression tracks the live
-    /// animation curve every frame. Static lights (no animation) and
-    /// color-only animations report `1.0`. Lights with
-    /// `start_active: Some(false)` report `0.0`.
+    /// One f32 per map light (map-light-index order). Always evaluated at the
+    /// current frame time regardless of dirty state — shadow-slot suppression
+    /// must track the live animation curve every frame. Static lights and
+    /// color-only animations report `1.0`; `start_active: Some(false)` reports `0.0`.
     pub(crate) effective_brightness: Vec<f32>,
 }
 
-/// State carried across frames. Owned by the game layer (not the renderer) so
-/// the "renderer owns GPU" invariant holds.
+/// State carried across frames. Owned by the game layer so the renderer never
+/// holds component data.
 pub(crate) struct LightBridge {
-    /// Map-light index (in `LevelWorld.lights` order) → `EntityId` assigned at
-    /// `populate_from_level`. Fixed at level load; never grows or shrinks.
+    /// Map-light index → `EntityId`. Fixed at level load; never grows or shrinks.
     entity_ids: Vec<EntityId>,
-    /// Dirty-tracking snapshots. Populated lazily on the first frame an entity
-    /// is observed with a `LightComponent`. `None` for a `map_index` means the
-    /// slot has never been snapshotted — treated as "unconditionally dirty" on
-    /// first visit so the initial upload lands.
+    /// Dirty-tracking snapshots. `None` for an entry means the slot has never
+    /// been snapshotted — treated as unconditionally dirty on first visit so
+    /// the initial upload lands.
     snapshots: HashMap<EntityId, LightSnapshot>,
     /// Shape metadata needed to re-pack. Parallels `entity_ids`.
     shape: Vec<MapLightShape>,
-    /// `true` if at least one entity changed since the last `update` call.
-    /// Sticky across a frame until `update` returns the packed bytes.
     dirty: bool,
-    /// Scratch: captured at level load so `populate_from_level` can be called
-    /// without handing the raw `MapLight` list to every subsequent `update`.
+    /// f64 origins from level load. Preserved so round-tripping through the f32
+    /// `LightComponent` doesn't drop precision on non-moving lights.
     cached_origins_f64: Vec<[f64; 3]>,
     /// Float index into `anim_samples` where the scripted region starts
-    /// (= FGD sample float count). Set from `Renderer::scripted_sample_byte_offset`
-    /// at level load; used to compute per-light absolute sample offsets.
+    /// (= FGD sample float count). Used to compute per-light absolute offsets.
     fgd_sample_float_count: u32,
     /// CPU mirror of the scripted-animation region in `anim_samples`.
-    /// Sized to `entity_ids.len() * SCRIPTED_FLOATS_PER_LIGHT`; populated
-    /// each dirty frame and converted to bytes for `LightBridgeUpdate`.
+    /// Sized to `entity_ids.len() * SCRIPTED_FLOATS_PER_LIGHT`.
     scripted_sample_buf: Vec<f32>,
 }
 
-/// Per-light fields that the script-facing `LightComponent` does not carry
-/// (because they are runtime-only concerns). Kept so the bridge can rebuild a
-/// `MapLight` from a mutated `LightComponent` without the renderer having to
-/// hand the original list back every frame.
+/// Per-light fields not carried by `LightComponent` (runtime-only). Kept so
+/// the bridge can rebuild a `MapLight` without the renderer re-supplying the
+/// original list each frame.
 #[derive(Debug, Clone)]
 struct MapLightShape {
     is_dynamic: bool,
@@ -122,30 +106,21 @@ impl LightBridge {
         }
     }
 
-    /// Number of map lights the bridge owns. Equals `LevelWorld.lights.len()`
-    /// captured at `populate_from_level` time.
-    // Not yet called from production paths; retained for future `world.query`
-    // expansion that will expose per-light handles indexed by map position.
     #[allow(dead_code)]
     pub(crate) fn light_count(&self) -> usize {
         self.entity_ids.len()
     }
 
-    /// Lookup the `EntityId` for a given map-light index. Used by the
-    /// `world.query` primitive to build `LightEntity` handles.
-    // Not yet called from production paths; retained for future `world.query`
-    // expansion that will expose per-light handles indexed by map position.
     #[allow(dead_code)]
     pub(crate) fn entity_for_map_index(&self, map_index: usize) -> Option<EntityId> {
         self.entity_ids.get(map_index).copied()
     }
 
-    /// Populate the entity registry with one entity per map light, and seed
-    /// the bridge's internal state. Called once at level load.
+    /// Populate the entity registry with one entity per map light. Called once at level load.
     ///
-    /// f64 → f32 origin conversion happens here at the bridge boundary — the
-    /// only seam that touches both precisions. The f64 source stays on the
-    /// baker side; script-facing `LightComponent.origin` is f32.
+    /// f64 → f32 origin conversion happens here — the only seam that touches
+    /// both precisions. The f64 source is cached; script-facing
+    /// `LightComponent.origin` is f32.
     pub(crate) fn populate_from_level(
         &mut self,
         lights: &[MapLight],
@@ -164,9 +139,6 @@ impl LightBridge {
 
         for light in lights {
             let component = map_light_to_component(light);
-            // We spawn with a default Transform; the scripting registry does
-            // not model a separate "position" channel for lights — `origin`
-            // lives on `LightComponent`.
             let Some(id) = registry.try_spawn(Default::default()) else {
                 log::warn!(
                     "[LightBridge] entity registry exhausted; dropping map light (index {}). \
@@ -175,8 +147,6 @@ impl LightBridge {
                 );
                 break;
             };
-            // `set_component` can only fail on a stale ID; the ID was just
-            // returned by `try_spawn` on this same borrow so it must be live.
             let _ = registry.set_component(id, component);
             if !light.tags.is_empty() {
                 let _ = registry.set_tags(id, light.tags.clone());
@@ -189,21 +159,15 @@ impl LightBridge {
             self.cached_origins_f64.push(light.origin);
         }
 
-        // First-frame upload is always dirty so the initial pack lands even
-        // when no script mutates anything. Renderer-side init already uploads
-        // a packed buffer; re-running on frame one is harmless and ensures the
-        // animation descriptor set is in sync.
+        // Ensure the initial pack lands even when no script mutates on frame one.
         self.dirty = true;
     }
 
-    /// Walk every `LightComponent` entity; detect mutations, settle any
-    /// completed `play_count`-bounded animations, and — when anything
-    /// changed — return the re-packed light + descriptor buffers for the
-    /// renderer to upload.
+    /// Detect mutations, settle completed `play_count`-bounded animations, and
+    /// return repacked buffers when anything changed.
     ///
-    /// `current_time` is seconds since level load (matches the engine frame
-    /// clock passed to `update_per_frame_uniforms`). Only consulted when a
-    /// `LightComponent.animation` carries `play_count: Some(n)`.
+    /// `current_time` is seconds since level load. Only consulted for
+    /// `play_count`-bounded animations.
     pub(crate) fn update(
         &mut self,
         registry: &mut EntityRegistry,
@@ -213,11 +177,8 @@ impl LightBridge {
             return None;
         }
 
-        // Pass 1: diff + play_count completion detection. We walk the bridge's
-        // `entity_ids` (fixed at level load) rather than the registry's full
-        // iterator — map lights have stable slots and we want index
-        // correspondence for re-packing.
-        //
+        // Walk `entity_ids` (fixed at level load) rather than the registry's
+        // full iterator — stable slots give index correspondence for re-packing.
         // Settled animations are collected and written back after the loop to
         // avoid aliasing the registry borrow.
         let mut settled: Vec<(EntityId, LightComponent)> = Vec::new();
@@ -227,13 +188,11 @@ impl LightBridge {
             };
             let snapshot = self.snapshots.get(&id);
 
-            // Compare against last-observed state.
             let changed = match snapshot {
                 Some(snap) => snap.component != *current,
                 None => true,
             };
 
-            // Detect play_count completion.
             if let Some(settled_component) =
                 check_play_count_completion(current, snapshot, current_time)
             {
@@ -247,9 +206,8 @@ impl LightBridge {
                 if let Some(anim) = &current.animation
                     && anim.play_count.is_some()
                 {
-                    // A play_count-bounded anim: record the start time so
-                    // completion can fire on a future frame. "Last call wins"
-                    // means any mutation resets the clock.
+                    // Record start time so completion can fire on a future frame.
+                    // Any mutation resets the clock ("last call wins").
                     new_start = Some(current_time);
                 }
                 self.snapshots.insert(
@@ -262,13 +220,10 @@ impl LightBridge {
             }
         }
 
-        // Pass 2: commit settled components. `set_component` writes the new
-        // static `LightComponent` back through the registry so a subsequent
-        // `world.query` observes the post-animation state rather than an
-        // animation that has already finished (Sub-plan 4 spec).
+        // Commit settled components so a subsequent `world.query` observes
+        // post-animation static state.
         for (id, settled_component) in settled {
-            // Ignore a stale-id error on the unlikely path where the entity
-            // was despawned between our read and this write.
+            // Stale-id error means the entity was despawned between read and write; ignore.
             let _ = registry.set_component(id, settled_component.clone());
             self.snapshots.insert(
                 id,
@@ -280,14 +235,11 @@ impl LightBridge {
             self.dirty = true;
         }
 
-        // Always compute effective_brightness at the current frame time. This
-        // must happen before the dirty guard because it is time-varying: the
-        // GPU evaluates animation curves continuously, and the CPU-side
-        // suppression check must track the same curve every frame so that
-        // dimmed lights lose their shadow slots promptly and bright lights gain
-        // them as soon as they fire. Freezing this at the single dirty frame
-        // caused only lights that happened to be above threshold when the
-        // levelLoad animation was first applied to hold permanent shadow slots.
+        // Compute before the dirty guard — effective_brightness is time-varying.
+        // The GPU evaluates animation curves continuously; the CPU suppression
+        // check must track the same curve every frame so shadow slots are gained
+        // and lost promptly. Previously frozen at the dirty frame, which locked
+        // shadow slot assignment to the state at levelLoad animation time.
         let effective_brightness: Vec<f32> = self
             .entity_ids
             .iter()
@@ -310,22 +262,17 @@ impl LightBridge {
         }
         self.dirty = false;
 
-        // Re-pack. Walk `entity_ids` in order; for each, pull the live
-        // component and build both buffers. Also rebuild the scripted sample
-        // region so the GPU reads the current animation keyframes.
         let mut lights_bytes: Vec<u8> = Vec::with_capacity(self.entity_ids.len() * GPU_LIGHT_SIZE);
         let mut descriptor_bytes: Vec<u8> =
             Vec::with_capacity(self.entity_ids.len() * ANIMATION_DESCRIPTOR_SIZE);
 
-        // Zero the scripted sample region; live animations will overwrite their slots.
         self.scripted_sample_buf.fill(0.0);
 
         for (map_idx, &id) in self.entity_ids.iter().enumerate() {
             let Ok(component) = registry.get_component::<LightComponent>(id) else {
-                // Entity was despawned — push a zeroed slot so downstream
-                // offsets stay aligned. The renderer's `light_count` bound
-                // keeps the slot off the shading path; Plan 2 forbids script
-                // despawn but a future plan may reach this case.
+                // Entity was despawned — push a zeroed slot to keep downstream
+                // offsets aligned. The renderer's `light_count` bound keeps
+                // the slot off the shading path.
                 lights_bytes.extend_from_slice(&[0u8; GPU_LIGHT_SIZE]);
                 descriptor_bytes.extend_from_slice(&[0u8; ANIMATION_DESCRIPTOR_SIZE]);
                 continue;
@@ -339,13 +286,11 @@ impl LightBridge {
             );
             lights_bytes.extend_from_slice(&pack_light(&map_light));
 
-            // Compute absolute offsets into the shared `anim_samples` buffer.
             let light_base =
                 self.fgd_sample_float_count + (map_idx as u32) * (SCRIPTED_FLOATS_PER_LIGHT as u32);
             let brightness_offset = light_base;
             let color_offset = light_base + SCRIPTED_BRIGHTNESS_SLOT as u32;
 
-            // Write the light's keyframes into the scripted sample region.
             let slot_start = map_idx * SCRIPTED_FLOATS_PER_LIGHT;
             if let Some(anim) = &component.animation {
                 if let Some(brightness) = &anim.brightness {
@@ -370,8 +315,7 @@ impl LightBridge {
             descriptor_bytes.extend_from_slice(&desc);
         }
 
-        // Convert the scripted sample region to bytes (native endian, matching
-        // `f32_slice_to_bytes` in sh_volume.rs).
+        // Native endian matches `f32_slice_to_bytes` in sh_volume.rs.
         let samples_bytes = self
             .scripted_sample_buf
             .iter()
@@ -393,8 +337,6 @@ impl Default for LightBridge {
         Self::new()
     }
 }
-
-// --- Conversions ---
 
 fn map_light_to_component(light: &MapLight) -> LightComponent {
     let light_type = match light.light_type {
@@ -458,9 +400,8 @@ fn component_to_map_light(
         FalloffKind::InverseSquared => FalloffModel::InverseSquared,
     };
     MapLight {
-        // Preserve the original f64 origin from level load — script mutations
-        // do not touch position (Plan 2 non-goal), so round-tripping through
-        // the f32 component would needlessly drop precision.
+        // Preserve the cached f64 origin — round-tripping through the f32
+        // component would drop precision for no reason.
         origin: origin_f64,
         light_type,
         intensity: component.intensity,
@@ -472,21 +413,18 @@ fn component_to_map_light(
         cone_direction: component.cone_direction.unwrap_or([0.0, 0.0, 0.0]),
         cast_shadows: component.cast_shadows,
         is_dynamic,
-        // Tag is not used by `pack_light`; script mutations don't touch it.
         tags: vec![],
         leaf_index,
     }
 }
 
-/// CPU mirror of `sample_curve_catmull_rom` from
-/// `postretro/src/shaders/curve_eval.wgsl`. Closed-loop uniform Catmull-Rom
-/// (tension 0.5) over `samples` at normalized cycle position `cycle_t` ∈ [0, 1).
+/// CPU mirror of `sample_curve_catmull_rom` from `curve_eval.wgsl`.
+/// Closed-loop uniform Catmull-Rom (tension 0.5) at normalized cycle position
+/// `cycle_t` ∈ [0, 1).
 ///
-/// Used by the bridge to compute each animated light's current effective
-/// brightness so the renderer can exclude near-zero animated lights from the
-/// dynamic spot shadow slot ranking. Must stay byte-for-byte equivalent with
-/// the WGSL helper — any drift between CPU/GPU evaluation would let a light
-/// briefly flicker into a shadow slot it should not own.
+/// Must stay numerically equivalent to the WGSL helper — drift between
+/// CPU/GPU evaluation would let a light flicker into a shadow slot it
+/// should not own.
 fn sample_brightness_at(samples: &[f32], cycle_t: f32) -> f32 {
     let count = samples.len();
     if count == 0 {
@@ -509,9 +447,8 @@ fn sample_brightness_at(samples: &[f32], cycle_t: f32) -> f32 {
     ((a * f + b) * f + c) * f + d
 }
 
-/// CPU-side effective brightness for a single light at `current_time`.
-/// Mirrors the GPU animation evaluation so shadow-slot suppression tracks the
-/// live curve. Called every frame (not just on dirty frames).
+/// Current effective brightness for shadow-slot suppression. Mirrors GPU
+/// animation evaluation; called every frame, not just on dirty frames.
 fn eval_effective_brightness(component: &LightComponent, current_time: f32) -> f32 {
     match &component.animation {
         None => 1.0,
@@ -537,29 +474,20 @@ fn eval_effective_brightness(component: &LightComponent, current_time: f32) -> f
 }
 
 /// Pack one `LightComponent`'s animation state into a 48-byte
-/// `AnimationDescriptor` record matching the WGSL layout (see
-/// `postretro/src/render/sh_volume.rs` for the authoritative byte offsets).
+/// `AnimationDescriptor` matching the WGSL layout in `sh_volume.rs`.
 ///
-/// **Sentinel descriptor:** lights with `animation == None` produce a
-/// 48-byte record where `brightness_count`, `color_count`, and the reserved
-/// direction count are all zero. `forward.wgsl` already reads this as "no
-/// animation; fall back to static `intensity`/`color`/`cone_direction`."
-/// This is the pre-reservation invariant — every map light owns an
-/// `AnimationDescriptor` slot whether or not it has a live animation, so
-/// `setAnimation` always overwrites in place and never allocates.
+/// **Sentinel:** `animation == None` produces an all-zero record. `forward.wgsl`
+/// reads zero counts as "no animation; use static fields." Every map light
+/// owns a descriptor slot regardless of whether it has a live animation, so
+/// `setAnimation` always overwrites in place.
 ///
-/// **`play_count` is stripped:** the GPU descriptor never learns about
-/// completion bounds. The CPU-side `LightBridge::update` handles completion
-/// by writing the final keyframe back as static `intensity`/`color` and
-/// clearing `animation`. The GPU always sees a looping descriptor or a
-/// sentinel.
+/// **`play_count` is stripped:** the GPU never sees completion bounds. The
+/// CPU-side bridge handles completion by writing the final keyframe back as
+/// static `intensity`/`color` and clearing `animation`. The GPU always sees
+/// a looping descriptor or a sentinel.
 ///
-/// Sample payloads (brightness/color samples themselves) are *not* packed
-/// here — they live in a separate `anim_samples` storage buffer addressed
-/// by per-descriptor offsets. Until the renderer-side plumbing for
-/// per-map-light sample buffers lands, the descriptor's sample-offset
-/// fields reference slot zero; brightness_count/color_count > 0 is
-/// sufficient to test the bridge end-to-end.
+/// Sample payloads live in a separate `anim_samples` storage buffer addressed
+/// by per-descriptor offsets.
 fn pack_animation_descriptor(
     component: &LightComponent,
     brightness_offset: u32,
@@ -567,14 +495,12 @@ fn pack_animation_descriptor(
 ) -> [u8; ANIMATION_DESCRIPTOR_SIZE] {
     let mut bytes = [0u8; ANIMATION_DESCRIPTOR_SIZE];
     let Some(anim) = &component.animation else {
-        // Sentinel: all zeros. `active` stays 0 which reads as inactive on
-        // the compose-pass side; the forward-pass spot/point loop keys on
-        // `brightness_count == 0 && color_count == 0` and uses the static
-        // fields, so a zero `active` flag does not suppress the light.
+        // Sentinel: all zeros. Forward-pass keys on zero counts; zero `active`
+        // does not suppress the light on that path.
         return bytes;
     };
 
-    // period is in seconds on the GPU; the script/animation side tracks ms.
+    // GPU uses seconds; script-side tracks ms.
     let period_s = anim.period_ms / 1000.0;
     bytes[0..4].copy_from_slice(&period_s.to_ne_bytes());
     let phase = anim.phase.unwrap_or(0.0).rem_euclid(1.0);
@@ -598,22 +524,17 @@ fn pack_animation_descriptor(
     bytes[28..32].copy_from_slice(&color_offset.to_ne_bytes());
     bytes[32..36].copy_from_slice(&color_count.to_ne_bytes());
 
-    // `active` — 1 while an animation is playing, 0 when the author opts it
-    // out via `start_active: false`. `None` defaults to active.
-    // Sentinel descriptor above keeps this 0.
+    // `None` defaults to active; `Some(false)` opts the light out at spawn.
     let active: u32 = u32::from(anim.start_active.unwrap_or(true));
     bytes[36..40].copy_from_slice(&active.to_ne_bytes());
 
-    // bytes[40..48] reserved for the direction channel (Sub-plan 1).
+    // bytes[40..48] reserved for the direction channel.
     bytes
 }
 
-/// If `current` carries a `play_count`-bounded animation whose elapsed time
-/// meets or exceeds the completion bound, sample the final keyframe values
-/// and return the settled static `LightComponent`. Otherwise `None`.
-///
-/// Decoupled from mutation so `update`'s diff pass can walk the registry
-/// behind a shared borrow.
+/// If `current` carries a `play_count`-bounded animation that has elapsed,
+/// sample the final keyframe and return the settled static `LightComponent`.
+/// Decoupled from mutation so `update`'s diff pass can hold a shared borrow.
 fn check_play_count_completion(
     current: &LightComponent,
     snapshot: Option<&LightSnapshot>,
@@ -621,8 +542,7 @@ fn check_play_count_completion(
 ) -> Option<LightComponent> {
     let anim = current.animation.as_ref()?;
     let play_count = anim.play_count?;
-    // play_count == 0 is nonsensical; treat as "never completes" so scripts
-    // that accidentally build one don't lock up the bridge.
+    // play_count == 0 is nonsensical; treat as "never completes".
     if play_count == 0 || anim.period_ms <= 0.0 {
         return None;
     }
@@ -632,8 +552,6 @@ fn check_play_count_completion(
         return None;
     }
 
-    // Completed: sample the last keyframe of each channel; those are the
-    // static values the light settles to.
     let mut settled = current.clone();
     if let Some(brightness) = &anim.brightness
         && let Some(&final_brightness) = brightness.last()
@@ -774,7 +692,6 @@ mod tests {
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
         let _ = bridge.update(&mut registry, 0.0); // flush initial
 
-        // Script-side mutation: read current, bump intensity, write back.
         let id = bridge.entity_for_map_index(0).unwrap();
         let mut component = registry
             .get_component::<LightComponent>(id)
@@ -790,8 +707,7 @@ mod tests {
             update.has_dirty_data,
             "mutation must trigger GPU buffer repack"
         );
-        // Intensity × color pre-multiplies into bytes 16..28 of the packed
-        // GpuLight record. Sampled first channel must reflect the new value.
+        // Intensity × color pre-multiplies into bytes 16..28 of the GpuLight record.
         let packed_r = f32::from_le_bytes(update.lights_bytes[16..20].try_into().unwrap());
         assert!(
             (packed_r - 7.5 * 1.0).abs() < 1e-5,
@@ -829,7 +745,6 @@ mod tests {
         let active = u32::from_le_bytes(update.descriptor_bytes[36..40].try_into().unwrap());
         assert_eq!(active, 1);
 
-        // Clear animation → sentinel.
         let mut component = registry
             .get_component::<LightComponent>(id)
             .unwrap()
@@ -861,7 +776,6 @@ mod tests {
             .get_component::<LightComponent>(id)
             .unwrap()
             .clone();
-        // 2-period bounded animation; final brightness = 0.25, final color = blue.
         component.animation = Some(LightAnimation {
             period_ms: 500.0,
             phase: None,
@@ -873,11 +787,9 @@ mod tests {
         });
         registry.set_component(id, component).unwrap();
 
-        // Set the animation at t=1.0. Completion bound = 2 × 0.5s = 1.0s
-        // (absolute completion at t=2.0).
+        // Animate starts at t=1.0; completion bound = 2 × 0.5s, fires at t=2.0.
         let _ = bridge.update(&mut registry, 1.0);
 
-        // Not yet complete at t=1.5.
         let _ = bridge.update(&mut registry, 1.5);
         let mid = registry.get_component::<LightComponent>(id).unwrap();
         assert!(
@@ -885,7 +797,6 @@ mod tests {
             "animation still live before completion bound"
         );
 
-        // At t=2.01 the 2×500ms bound is crossed. Bridge must settle values.
         let _ = bridge.update(&mut registry, 2.01);
         let settled = registry.get_component::<LightComponent>(id).unwrap();
         assert!(
@@ -902,8 +813,6 @@ mod tests {
 
     #[test]
     fn setanimation_restart_resets_play_count_clock() {
-        // "Last call wins" — a second setAnimation restarts the completion
-        // clock from the current frame time.
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
@@ -920,7 +829,6 @@ mod tests {
             direction: None,
         };
 
-        // Write at t=0.0.
         let mut comp = registry
             .get_component::<LightComponent>(id)
             .unwrap()
@@ -929,22 +837,20 @@ mod tests {
         registry.set_component(id, comp).unwrap();
         let _ = bridge.update(&mut registry, 0.0);
 
-        // At t=0.9 — past completion bound (1.0s) would normally fire — but
-        // first re-write at t=0.6 resets the clock. Completion now at t=1.6.
+        // Re-write at t=0.6 resets the clock; completion now at t=1.6.
+        // Phase change makes this a distinct animation value so the bridge detects a mutation.
         let mut comp = registry
             .get_component::<LightComponent>(id)
             .unwrap()
             .clone();
-        // Mutate to trigger the restart path (different animation instance).
         let mut anim = make_anim();
         anim.phase = Some(0.5);
         comp.animation = Some(anim);
         registry.set_component(id, comp).unwrap();
         let _ = bridge.update(&mut registry, 0.6);
 
-        // At t=1.1 — would have triggered completion with the first clock
-        // (started at 0.0) but should NOT with the restarted clock (started
-        // at 0.6, completion at 1.6).
+        // t=1.1 would fire with the original clock (started at 0.0) but not
+        // with the restarted clock (started at 0.6, completion at 1.6).
         let _ = bridge.update(&mut registry, 1.1);
         assert!(
             registry
@@ -955,7 +861,6 @@ mod tests {
             "restart must reset completion clock; animation should still be live at t=1.1"
         );
 
-        // At t=1.7 — past the restarted clock's completion bound.
         let _ = bridge.update(&mut registry, 1.7);
         assert!(
             registry
@@ -969,9 +874,7 @@ mod tests {
 
     #[test]
     fn pack_animation_descriptor_honors_start_active_false() {
-        // start_active: Some(false) → descriptor's `active` field at byte offset
-        // 36..40 must be 0. Mirrors the FGD `_start_inactive` flag. Absent
-        // / Some(true) defaults to 1 (covered by the sibling sentinel test).
+        // `active` lives at bytes 36..40. `None`/`Some(true)` → 1; `Some(false)` → 0.
         let component = LightComponent {
             origin: [0.0, 0.0, 0.0],
             light_type: LightKind::Point,
@@ -1031,10 +934,9 @@ mod tests {
 
     #[test]
     fn idempotent_update_after_settled_component_does_not_re_trigger_completion() {
-        // Regression guard: after play_count completion writes back, a
-        // follow-up tick with an unchanged component must not re-enter the
-        // completion branch (snapshot now carries `animation_start_time: None`
-        // and `component.animation: None`).
+        // Regression guard: after completion writes back, the snapshot carries
+        // `animation_start_time: None` and `animation: None`, so subsequent
+        // ticks must not re-enter the completion branch.
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
@@ -1057,8 +959,6 @@ mod tests {
         registry.set_component(id, comp).unwrap();
         let _ = bridge.update(&mut registry, 0.0);
         let _ = bridge.update(&mut registry, 0.2); // past completion
-
-        // Now idle frames must not re-upload GPU buffers.
         let idle1 = bridge.update(&mut registry, 0.3).unwrap();
         assert!(
             !idle1.has_dirty_data,
@@ -1073,11 +973,9 @@ mod tests {
 
     #[test]
     fn effective_brightness_tracks_animation_curve_on_idle_frames() {
-        // Regression: effective_brightness was frozen at the value computed on
-        // the one dirty frame when the levelLoad script applied animations.
-        // Lights at 0% during that window were permanently suppressed; lights
-        // at non-zero were permanently eligible — shadow slot assignment was
-        // stuck regardless of which lights were actually bright at render time.
+        // Regression: effective_brightness was frozen at the levelLoad dirty
+        // frame. Lights dark at that instant were permanently suppressed; bright
+        // lights held shadow slots regardless of their actual state.
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_spot_light()], &mut registry, 0);
@@ -1088,7 +986,6 @@ mod tests {
             .get_component::<LightComponent>(id)
             .unwrap()
             .clone();
-        // Pulse at phase 0 (bright at T=0, dark for the rest of the period).
         comp.animation = Some(LightAnimation {
             period_ms: 1000.0,
             phase: Some(0.0),
@@ -1099,10 +996,8 @@ mod tests {
             direction: None,
         });
         registry.set_component(id, comp).unwrap();
-        // Flush the dirty frame caused by setting the animation.
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0); // flush dirty frame
 
-        // At T=0.5s: mid-period, no component change, light is dark.
         let dark = bridge.update(&mut registry, 0.5).unwrap();
         assert!(
             !dark.has_dirty_data,
@@ -1114,7 +1009,6 @@ mod tests {
             dark.effective_brightness[0]
         );
 
-        // At T=1.0s: cycle wraps back to phase=0, light is bright again.
         let bright = bridge.update(&mut registry, 1.0).unwrap();
         assert!(!bright.has_dirty_data);
         assert!(

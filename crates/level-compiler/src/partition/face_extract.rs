@@ -1,15 +1,12 @@
-// Brush-side face extraction: two-pass projection that walks each brush
-// side through the BSP tree, accumulates a per-side visible hull from the
-// fragments that survive into empty leaves, then distributes those hulls
-// back through the tree to emit one `Face` per empty-leaf fragment.
+// Brush-side face extraction: two-pass BSP walk that builds per-side visible
+// hulls then distributes them into empty leaves as emitted faces.
 //
-// Plane-equality routing (rather than a numeric front/back test) sidesteps
-// every epsilon problem that would otherwise arise when a polygon sits
-// exactly on a splitting plane — and the splitter pool is built from the
-// same brush-side planes the walker reads back, so equivalence is exact.
+// Plane-equality routing avoids epsilon failures when a polygon sits exactly
+// on a splitting plane. The splitter pool is built from the same brush-side
+// planes the walker compares against, so equivalence is exact rather than
+// approximate.
 //
-// Algorithm shape mirrors id Tech 4's `ClipSideByTree_r` /
-// `PutWindingIntoAreas_r` (Doom 3 GPL dmap, `usurface.cpp`).
+// Mirrors id Tech 4 ClipSideByTree_r / PutWindingIntoAreas_r (Doom 3 GPL dmap).
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use glam::DVec3;
@@ -18,30 +15,21 @@ use super::types::*;
 use crate::geometry_utils::split_polygon;
 use crate::map_data::{BrushVolume, Face};
 
-/// Tolerance for polygon splits during Pass 1 / Pass 2 recursion. Matches the
-/// generous epsilon the BSP builder uses for face classification.
+/// Matches the generous epsilon the BSP builder uses for face classification.
 const SPLIT_EPSILON: f64 = 0.1;
 
-/// Squared L2 tolerance for plane-equivalence tests between a brush side and
-/// a BSP node's splitting plane. A 1e-3 effective L2 tolerance (1e-6 squared)
-/// is tight on purpose: the splitter pool is built from the same brush-side
-/// planes the walker compares against, so the test checks for exact reuse —
-/// not approximate parallelism.
+/// Tight on purpose: the splitter pool reuses the same brush-side plane objects
+/// the walker reads back, so this checks for exact reuse, not approximate parallelism.
 const PLANE_NORMAL_EPSILON_SQ: f64 = 1e-6;
 const PLANE_DISTANCE_EPSILON: f64 = 1e-4;
 
-/// Tolerance for deduping coplanar brush sides at leaf emission. Looser than
-/// the node-equality tolerance because two independently authored brushes
-/// may carry slightly different plane coefficients that still collapse to
-/// the same visual surface.
+/// Looser than the node-equality tolerance: independently authored brushes may
+/// carry slightly different plane coefficients that still collapse to the same surface.
 const COPLANAR_NORMAL_EPSILON: f64 = 1e-4;
 const COPLANAR_DISTANCE_EPSILON: f64 = 1e-3;
 
-/// Diagnostic record emitted when the coplanar dedup rule drops a brush
-/// side whose texture differs from the winning side's. Stricter than dmap,
-/// which has no tiebreaker — surfacing the conflict gives content authors
-/// immediate feedback on overlapping brushes that would otherwise ship as
-/// non-deterministic z-fighting.
+/// Emitted when coplanar dedup drops a brush side with a mismatched texture.
+/// Surfaces overlapping brushes that would otherwise produce non-deterministic z-fighting.
 #[derive(Debug, Clone)]
 pub struct CoplanarConflict {
     pub winner_brush: usize,
@@ -50,10 +38,7 @@ pub struct CoplanarConflict {
     pub loser_texture: String,
 }
 
-/// Output of the two-pass face extraction: the emitted face polygons (with
-/// `leaf.face_indices` on the tree already populated) plus any texture
-/// conflicts the coplanar dedup rule surfaced. Callers log conflicts via
-/// `log::warn!` on the boundary; tests inspect the returned vec.
+/// Output of `extract_faces`. Callers log conflicts; tests inspect the vec directly.
 #[derive(Debug, Default)]
 pub struct FaceExtractionResult {
     pub faces: Vec<Face>,
@@ -62,21 +47,18 @@ pub struct FaceExtractionResult {
 
 /// Extract the final world face list from a completed BSP tree.
 ///
-/// Two passes:
-/// 1. Walk each brush side through the tree, accumulating a visible hull
-///    from every fragment that survives clipping into an empty leaf.
-/// 2. Walk each visible hull back through the tree, emitting one `Face`
-///    per empty-leaf fragment and recording its index on that leaf.
+/// Pass 1: walk each brush side through the tree, accumulating a visible hull
+/// from every fragment that survives into an empty leaf.
+/// Pass 2: walk each visible hull back through the tree, emitting one `Face`
+/// per empty-leaf fragment and recording its index on that leaf.
 ///
-/// The tree's `leaves[i].face_indices` are populated in place; the
-/// returned vec owns the face polygons themselves.
+/// `leaves[i].face_indices` are populated in place; the returned vec owns the faces.
 pub fn extract_faces(tree: &mut BspTree, brushes: &[BrushVolume]) -> FaceExtractionResult {
-    // Empty tree: nothing to project against.
     if tree.leaves.is_empty() {
         return FaceExtractionResult::default();
     }
 
-    // Clear any prior face assignments so this pass is authoritative.
+    // Clear prior face assignments so this pass is authoritative.
     for leaf in tree.leaves.iter_mut() {
         leaf.face_indices.clear();
     }
@@ -95,12 +77,9 @@ pub fn extract_faces(tree: &mut BspTree, brushes: &[BrushVolume]) -> FaceExtract
         );
     }
 
-    // Pass 2: distribute surviving hulls into empty leaves. Coplanar dedup
-    // runs at leaf emission: when a hull fragment would land in a leaf that
-    // already has a face on the same oriented plane, the lower-brush-index
-    // side wins. This is stricter than dmap (which has no tiebreaker) and
-    // scoped correctly — non-overlapping coplanar sides end up in different
-    // leaves and never collide.
+    // Pass 2: distribute surviving hulls into empty leaves. Coplanar dedup runs
+    // at leaf emission — non-overlapping coplanar sides land in different leaves
+    // and never collide, so the rule is correctly scoped.
     let mut faces: Vec<Face> = Vec::new();
     let mut coplanar_conflicts: Vec<CoplanarConflict> = Vec::new();
     for record in &side_records {
@@ -136,7 +115,6 @@ pub fn extract_faces(tree: &mut BspTree, brushes: &[BrushVolume]) -> FaceExtract
     }
 }
 
-/// Per-side state carried through Pass 1 and Pass 2.
 struct SideRecord {
     brush_index: usize,
     plane_normal: DVec3,
@@ -176,23 +154,20 @@ fn collect_side_records(brushes: &[BrushVolume]) -> Vec<SideRecord> {
     records
 }
 
-/// Returns the root child handle. Empty-node tree (single-leaf or empty)
-/// is handled explicitly because the walkers key off node indices.
+/// Returns the root child handle. A no-node tree routes straight to leaf 0.
 fn tree_root(tree: &BspTree) -> BspChild {
     if tree.nodes.is_empty() {
-        // Single-leaf tree: descent routes straight to leaf 0.
         BspChild::Leaf(0)
     } else {
         BspChild::Node(0)
     }
 }
 
-/// Plane relationship between a brush side and a BSP node's splitting plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlaneMatch {
-    /// Same oriented plane — route polygon to the front child only.
+    /// Same oriented plane — route to front child only.
     Same,
-    /// Same plane, opposite orientation — route polygon to the back child only.
+    /// Same plane, opposite orientation — route to back child only.
     Opposite,
     /// Distinct planes — split normally.
     Different,
@@ -217,8 +192,7 @@ fn classify_plane_vs_node(
     PlaneMatch::Different
 }
 
-/// Pass 1 recursion: walk a brush side's polygon down the tree, accumulating
-/// a visible hull from every fragment that reaches an empty leaf.
+/// Pass 1: accumulate a visible hull from every fragment that reaches an empty leaf.
 fn clip_side_by_tree(
     tree: &BspTree,
     child: BspChild,
@@ -236,7 +210,7 @@ fn clip_side_by_tree(
             if !tree.leaves[idx].is_solid {
                 hull_union_into(visible_hull, polygon, side_normal);
             }
-            // Solid leaf: fragment is buried. Drop it.
+            // Solid leaf: fragment buried, drop it.
         }
         BspChild::Node(idx) => {
             let node = &tree.nodes[idx];
@@ -247,9 +221,8 @@ fn clip_side_by_tree(
                 node.plane_distance,
             ) {
                 PlaneMatch::Same => {
-                    // Polygon lies on this node's plane. Route to front
-                    // child only — by convention the polygon's outward
-                    // normal matches the plane's +normal direction.
+                    // Outward normal matches the splitting plane's +normal;
+                    // polygon lives entirely in front.
                     clip_side_by_tree(
                         tree,
                         node.front.clone(),
@@ -260,9 +233,8 @@ fn clip_side_by_tree(
                     );
                 }
                 PlaneMatch::Opposite => {
-                    // Polygon lies on this node's plane with the opposite
-                    // orientation — its outward normal points "backwards"
-                    // through the node plane. Route to back.
+                    // Outward normal opposes the splitting plane;
+                    // polygon lives entirely behind.
                     clip_side_by_tree(
                         tree,
                         node.back.clone(),
@@ -305,11 +277,7 @@ fn clip_side_by_tree(
     }
 }
 
-/// Pass 2 recursion: walk a brush side's visible hull down the tree,
-/// emitting one `Face` per empty-leaf fragment. Routing mirrors Pass 1.
-///
-/// At leaf emission, runs the containment-aware coplanar resolution rule
-/// (see the in-function block comment for the rationale).
+/// Pass 2: emit one `Face` per empty-leaf fragment. Routing mirrors Pass 1.
 fn put_hull_into_areas(
     tree: &mut BspTree,
     child: BspChild,
@@ -328,45 +296,23 @@ fn put_hull_into_areas(
                 return;
             }
 
-            // Coplanar dedup rule: containment-aware, not lower-brush-index.
+            // Coplanar dedup uses containment, not brush index order.
             //
-            // Two brush sides on the same oriented plane can reach the same
-            // leaf with *different* clipped polygons — the leaf's footprint
-            // on the plane can extend past one source's coverage, leaving
-            // each brush's contribution as a different shape. A naive
-            // wholesale-replace tiebreak ("lower brush index wins, overwrite
-            // the slot") then trades a large polygon for a small one and
-            // leaves a hole in the world. The previous rule did exactly
-            // this and silently dropped ~63% of test-3.map's faces.
+            // Two coplanar sides can reach the same leaf with different clipped
+            // shapes. A naive "lower index wins, overwrite" tiebreak trades a
+            // large polygon for a small one and punches holes in the world.
             //
-            // The rule here keeps coverage by checking containment instead
-            // of brush index:
-            //   • Incoming polygon is fully inside an existing one → drop
-            //     the incoming as redundant (the larger polygon already
-            //     covers it).
-            //   • Existing polygon is fully inside the incoming one →
-            //     unlink the existing from this leaf and emit the incoming
-            //     (the new one supersedes the smaller patch).
-            //   • Neither contains the other (partial overlap or disjoint)
-            //     → emit both and accept z-fighting in any overlap region.
+            // Containment rule:
+            //   • Incoming inside existing → drop incoming (existing covers it).
+            //   • Existing inside incoming → unlink existing, emit incoming.
+            //   • Partial overlap / disjoint → emit both; z-fight signals the
+            //     authoring error. Merging partial overlaps requires general 2D
+            //     polygon union — not worth it at compile time.
             //
-            // The third case is deliberate: partially-overlapping coplanar
-            // brushes are a real authoring error this compiler will not
-            // try to outsmart, and merging them would require general 2D
-            // polygon union. The visible z-fight is the diagnostic.
-            //
-            // The texture-mismatch warning still fires when a containment
-            // resolution drops a side whose texture differs from the
-            // surviving side. The warning is "stricter than dmap" — Doom 3
-            // has no dedup at all — but it surfaces overlapping brushes
-            // with mismatched materials so authors can fix them.
-            //
-            // Removed entries are unlinked from `leaf.face_indices` but
-            // left in the `faces` vec as orphans. The downstream geometry
-            // pass walks faces via leaf face-index lists, so orphans are
-            // never drawn or packed. Compacting `faces` would invalidate
-            // every other leaf's indices and is not worth the bookkeeping
-            // for a handful of dropped entries per map.
+            // Unlinked entries stay in `faces` as orphans. The downstream
+            // geometry pass walks faces via leaf face-index lists, so orphans
+            // are never drawn. Compacting `faces` would invalidate every other
+            // leaf's indices for negligible gain.
             let coplanar_existing: Vec<usize> = tree.leaves[idx]
                 .face_indices
                 .iter()
@@ -427,8 +373,8 @@ fn put_hull_into_areas(
             tree.leaves[idx].face_indices.push(face_idx);
         }
         BspChild::Node(idx) => {
-            // Snapshot node fields so we can release the borrow before
-            // recursing with `&mut tree`.
+            // Snapshot before recursing so the immutable borrow on `tree.nodes`
+            // is released before `put_hull_into_areas` takes `&mut tree`.
             let node_normal;
             let node_distance;
             let node_front;
@@ -475,42 +421,29 @@ fn put_hull_into_areas(
     }
 }
 
-/// Union a polygon fragment into the running visible hull for a brush side.
+/// Expand the running visible hull to include `fragment`.
 ///
-/// Coplanarity is guaranteed by Pass 1's routing: when the walker hits a
-/// node whose plane equals the side's plane (same or opposite orientation),
-/// it routes the polygon to a single child without splitting, so no
-/// fragment ever leaves the side's plane. The accumulated hull and every
-/// incoming fragment therefore live in the same 2D subspace and a plain
-/// 2D convex hull on the union of points is the correct accumulation —
-/// no separate coplanarity test required.
+/// Coplanarity is guaranteed by Pass 1's routing: on-plane polygons are never
+/// split, so every fragment and the hull share the same 2D subspace. A plain
+/// 2D convex hull over the union of points is correct — no coplanarity test needed.
 ///
-/// Strategy:
-/// 1. Build an orthonormal basis for the plane from `side_normal`.
-/// 2. Project both the existing hull vertices and the incoming fragment
-///    vertices to 2D.
-/// 3. Re-run a 2D convex hull (monotone chain) on the combined set.
-/// 4. Lift the result back to 3D by inverting the projection.
+/// Projects to 2D via an orthonormal basis built from `side_normal`, runs
+/// monotone-chain hull, lifts back to 3D.
 fn hull_union_into(hull: &mut Vec<DVec3>, fragment: &[DVec3], side_normal: DVec3) {
     if fragment.len() < 3 {
         return;
     }
 
-    // Build an orthonormal basis (u, v) spanning the plane perpendicular
-    // to side_normal. Pick the axis least aligned with the normal to avoid
-    // a degenerate cross product.
+    // Pick the helper axis least aligned with the normal to avoid a degenerate cross product.
     let n = side_normal.normalize_or_zero();
     if n.length_squared() < 0.5 {
-        // Degenerate normal — skip this fragment rather than crash.
         return;
     }
     let helper = if n.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
     let u = n.cross(helper).normalize();
     let v = n.cross(u).normalize();
 
-    // Use the first hull point (or fragment[0] if hull is empty) as the
-    // origin so 2D coordinates stay near zero and the hull arithmetic is
-    // well-conditioned.
+    // Local origin keeps 2D coordinates near zero for numerical stability.
     let origin = if hull.is_empty() {
         fragment[0]
     } else {
@@ -532,16 +465,13 @@ fn hull_union_into(hull: &mut Vec<DVec3>, fragment: &[DVec3], side_normal: DVec3
         return;
     }
 
-    // Lift back to 3D.
     hull.clear();
     for (x, y) in hull_2d {
         hull.push(origin + u * x + v * y);
     }
 }
 
-/// 2D convex hull via Andrew's monotone chain. O(n log n). Produces vertices
-/// in counter-clockwise order starting from the lowest-leftmost point. The
-/// returned vec does not repeat the starting point.
+/// Andrew's monotone chain, O(n log n). CCW from lowest-leftmost; no repeated start point.
 fn monotone_chain_hull(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
     const POINT_EPSILON: f64 = 1e-9;
 
@@ -592,17 +522,10 @@ fn planes_match_oriented(n1: DVec3, d1: f64, n2: DVec3, d2: f64) -> bool {
         && (d1 - d2).abs() < COPLANAR_DISTANCE_EPSILON
 }
 
-/// True when convex polygon `inner` is fully contained in convex polygon
-/// `outer`. Both polygons must lie on the same plane and use the same
-/// orientation, given by `plane_normal` (CCW when viewed from +normal).
-///
-/// Vertices exactly on an edge count as inside; the tolerance is in
-/// length units (perpendicular distance from each edge), so identical
-/// polygons and floating-point-noisy duplicates both pass cleanly.
+/// True when convex `inner` lies fully inside convex `outer`, both on the same
+/// oriented plane (`plane_normal`, CCW from +normal). Points on an edge pass;
+/// 1 mm tolerance absorbs split-clipping noise without admitting visible outsiders.
 fn convex_contains(outer: &[DVec3], inner: &[DVec3], plane_normal: DVec3) -> bool {
-    // Tolerance is in meters (engine units). 1 mm of slack absorbs the
-    // numerical noise from coordinate transforms and split clipping
-    // without admitting visibly-outside points.
     const INSIDE_TOLERANCE: f64 = 1e-3;
 
     if outer.len() < 3 || inner.is_empty() {
@@ -618,10 +541,9 @@ fn convex_contains(outer: &[DVec3], inner: &[DVec3], plane_normal: DVec3) -> boo
             if edge_len < 1e-12 {
                 continue;
             }
-            // For a CCW polygon viewed from +plane_normal, the inside of
-            // edge a→b is where cross(edge, p - a) · plane_normal ≥ 0.
-            // Dividing by edge length converts the cross magnitude to a
-            // perpendicular distance.
+            // For CCW from +plane_normal: inside edge a→b is where
+            // cross(edge, p-a)·normal ≥ 0. Dividing by edge length gives
+            // perpendicular distance in world units.
             let signed_distance = edge.cross(p - a).dot(plane_normal) / edge_len;
             if signed_distance < -INSIDE_TOLERANCE {
                 return false;
@@ -641,9 +563,7 @@ mod tests {
         TextureProjection::default()
     }
 
-    /// Build a box brush with the six axis-aligned sides carrying their
-    /// vertex polygons. Used as the canonical face-extraction test fixture
-    /// because the BSP-builder tests' `box_brush` leaves `sides` empty.
+    /// Canonical test fixture — BSP-builder tests' `box_brush` leaves `sides` empty.
     fn box_brush_with_sides(min: DVec3, max: DVec3, texture: &str) -> BrushVolume {
         box_brush_with_sides_per_face(
             min,
@@ -653,8 +573,7 @@ mod tests {
     }
 
     fn box_brush_with_sides_per_face(min: DVec3, max: DVec3, textures: [&str; 6]) -> BrushVolume {
-        // Axis-aligned quads, winding so the polygon's normal matches the
-        // outward face normal via right-hand rule.
+        // Winding chosen so the polygon normal matches the outward face normal (right-hand rule).
         let sides = vec![
             // +X
             BrushSide {
@@ -831,8 +750,6 @@ mod tests {
         );
         assert!(result.coplanar_conflicts.is_empty());
 
-        // Every face should be referenced by exactly one leaf, and that leaf
-        // must be empty.
         assert_eq!(
             face_count_in_leaves(&tree),
             6,
@@ -867,17 +784,12 @@ mod tests {
         let mut tree = build_bsp_from_brushes(&brushes).expect("narrow gap should build");
         let result = extract_faces(&mut tree, &brushes);
 
-        // Both brushes carry six visible sides from the outside, plus each
-        // brush has one side facing the gap — so the total face count is
-        // 2 * 6 = 12 visible sides, no duplicates.
         assert_eq!(
             result.faces.len(),
             12,
             "two disjoint boxes with an air gap should emit 12 faces"
         );
 
-        // At least one face should point +Z (brush A's top) and at least one
-        // should point -Z (brush B's bottom) — these are the gap-facing walls.
         let mut has_plus_z_at_top_of_a = false;
         let mut has_neg_z_at_bottom_of_b = false;
         for face in &result.faces {
@@ -900,12 +812,9 @@ mod tests {
 
     #[test]
     fn abutting_brushes_do_not_emit_shared_boundary_face() {
-        // Two boxes sharing the X=10 plane. The touching sides have
-        // opposite normals (brush A's +X and brush B's -X), both buried in
-        // solid. Pass 1 leaves both with empty hulls and Pass 2 emits
-        // nothing from either — the shared plane contributes zero output
-        // faces. Every surviving face is an outward-facing side of one of
-        // the boxes.
+        // Opposite-normal touching sides (brush A's +X, brush B's -X) are both
+        // buried in solid — Pass 1 leaves them with empty hulls. The shared plane
+        // contributes zero output faces.
         let brushes = vec![
             box_brush_with_sides(
                 DVec3::new(0.0, 0.0, 0.0),
@@ -921,8 +830,6 @@ mod tests {
         let mut tree = build_bsp_from_brushes(&brushes).expect("abutting boxes should build");
         let result = extract_faces(&mut tree, &brushes);
 
-        // No face should lie on the shared X=10 plane with an outward normal
-        // of +X (that would be brush A's buried side) or -X (brush B's).
         for face in &result.faces {
             let on_shared_plane =
                 face.normal.x.abs() > 0.99 && (face.distance.abs() - 10.0).abs() < 1e-6;
@@ -936,13 +843,8 @@ mod tests {
 
     #[test]
     fn coplanar_identical_brushes_dedup_to_first_arrival() {
-        // Two identical boxes placed at the same location. Every side is
-        // coplanar and same-oriented with its counterpart on the other
-        // brush, and the polygons are mutually contained (identical
-        // shape). Containment-aware dedup drops the second arrival; in
-        // practice that is brush 0 because Pass 2 iterates side records in
-        // brush order. Conflict diagnostics still fire because textures
-        // differ.
+        // Polygons are mutually contained (identical shape), so dedup drops the
+        // second arrival (brush 1). Conflicts fire because textures differ.
         let brushes = vec![
             box_brush_with_sides(
                 DVec3::new(0.0, 0.0, 0.0),
@@ -958,7 +860,6 @@ mod tests {
         let mut tree = build_bsp_from_brushes(&brushes).expect("stacked boxes should build");
         let result = extract_faces(&mut tree, &brushes);
 
-        // Exactly six visible faces (a single box's worth), all from brush 0.
         assert_eq!(
             result.faces.len(),
             6,
@@ -991,17 +892,9 @@ mod tests {
 
     #[test]
     fn spatially_disjoint_coplanar_sides_both_emit() {
-        // Two boxes at the same Z range but offset in X with a gap between
-        // them in X. Both have +Z sides coplanar at Z=10 but the hulls are
-        // spatially disjoint (X=0..5 vs X=10..15). Each should emit its own
-        // face; neither should be dropped by the dedup rule.
-        //
-        // The BSP tree splits along X=5 and X=10 — adjacent planes from the
-        // two brushes — so the above-world empty space is partitioned into
-        // three regions: X<5, 5<X<10, and X>10. Brush 0's +Z hull lands in
-        // the first empty region; brush 1's +Z hull lands in the third. They
-        // never collide, so the dedup rule (currently leaf-time) does not
-        // spuriously drop either side.
+        // Both have +Z faces coplanar at Z=10 but hulls are disjoint (X=0..5 vs X=10..15).
+        // The tree splits on X=5 and X=10, placing each hull in a different empty leaf —
+        // they never collide so dedup never fires.
         let brushes = vec![
             box_brush_with_sides(
                 DVec3::new(0.0, 0.0, 0.0),
@@ -1017,8 +910,6 @@ mod tests {
         let mut tree = build_bsp_from_brushes(&brushes).expect("two disjoint boxes should build");
         let result = extract_faces(&mut tree, &brushes);
 
-        // Each box contributes six faces. No dedup should fire because
-        // the hulls are spatially disjoint.
         assert_eq!(
             result.faces.len(),
             12,
@@ -1029,7 +920,6 @@ mod tests {
             "disjoint hulls should not produce coplanar conflicts"
         );
 
-        // Both brushes should own at least one +Z face.
         let plus_z_from_zero = result
             .faces
             .iter()
@@ -1076,16 +966,14 @@ mod tests {
         assert!(!convex_contains(&big, &partial_overlap, normal));
         assert!(!convex_contains(&partial_overlap, &big, normal));
         assert!(!convex_contains(&big, &disjoint, normal));
-        // Identical polygons must mutually contain each other so the
-        // first-arrival dedup path resolves duplicate fragments cleanly.
+        // Identical polygons mutually contain each other — required for first-arrival dedup.
         assert!(convex_contains(&big, &big, normal));
     }
 
     #[test]
     fn coplanar_matching_textures_emit_no_conflict() {
-        // Same stacked-brush configuration, but both brushes use the same
-        // texture. Dedup still runs (six faces, all from brush 0), but no
-        // conflict is reported because the textures match.
+        // Same stacked configuration as above, same texture on both brushes.
+        // Dedup runs, but no conflict is reported.
         let brushes = vec![
             box_brush_with_sides(
                 DVec3::new(0.0, 0.0, 0.0),

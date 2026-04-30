@@ -1,35 +1,18 @@
 // Ephemeral script context pools, one per language.
 // See: context/lib/scripting.md
 //
-// Each pool pre-warms `size` contexts at construction — primitives installed
-// once per context, not per acquire — and hands them out via RAII handles that
-// return to the pool on drop.
-//
-// # Scope
-//
-// **The shared behavior context is NEVER pooled and NEVER reset.** It carries
-// event-handler globals for the level's lifetime; recycling it would erase
-// them. This pool is infrastructure for future per-entity ephemeral contexts.
-// The default path is still the shared behavior context via
-// `ScriptRuntime::run_script_file`.
-//
-// # Thread model
-//
-// Deliberately `!Send`. Both runtimes are `!Send` without the `send` feature.
-// Interior mutability uses `Rc<RefCell<_>>` — same rationale as `ScriptCtx`:
-// `RefCell` does not poison, `RwLock` does, and every FFI crossing is
-// `catch_unwind`-wrapped.
-//
-// # Reset-on-release policy
-//
-// No per-entity globals exist yet — the reset routine is a GC pass plus a
-// placeholder wipe step. Both parts are present so a future plan has one
-// obvious place to extend.
-//
 // Pooled contexts are NOT isolation boundaries. Scripts writing to `globalThis`
 // (QuickJS) can leave state for the next acquirer. All persistent entity state
 // must flow through Rust via `setComponent`/`getComponent`. Luau's
 // `sandbox(true)` already blocks new global writes at the VM level.
+//
+// The shared behavior context is NEVER pooled — it carries event-handler
+// globals for the level's lifetime. This pool is for future per-entity
+// ephemeral contexts.
+//
+// Deliberately `!Send`: `Rc<RefCell<_>>` + `!Send` runtimes. `RefCell` rather
+// than `RwLock` because `RefCell` does not poison and every FFI crossing is
+// `catch_unwind`-wrapped.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -41,44 +24,22 @@ use rquickjs::{Context, Runtime};
 use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, ScriptPrimitive};
 
-/// Default pool size. 32 is generous for day-one usage (no per-entity script
-/// state exists yet) but cheap — a pre-warmed QuickJS `Context` is a few KB,
-/// and mlua's `Lua` scales similarly.
+/// 32 is generous for day-one usage but cheap — a pre-warmed QuickJS `Context`
+/// is a few KB; mlua's `Lua` scales similarly.
 pub(crate) const DEFAULT_POOL_SIZE: usize = 32;
 
-// ---------------------------------------------------------------------------
-// QuickJS pool.
-
-/// Interior of the QuickJS pool. One `Rc<RefCell<_>>` wrapping the runtime
-/// handle, the idle queue, the in-flight counter, and the primitive snapshot
-/// used to build any fallback contexts.
-///
-/// The pool takes a `&Runtime` at construction and holds a clone of it.
-/// `rquickjs::Runtime` is ref-counted internally; the memory-limit cost is
-/// shared with the subsystem only when the caller passes the same `Runtime`.
 struct QuickJsPoolInner {
-    /// Cloned runtime handle; contexts built against it stay valid as long as
-    /// any handle to the runtime lives.
     runtime: Runtime,
     idle: VecDeque<Context>,
     in_flight: usize,
     primitives: Vec<ScriptPrimitive>,
 }
 
-/// Pre-warmed pool of QuickJS behavior-scope contexts. See module docs for
-/// scope and thread-model constraints.
-///
-/// `!Send` by construction: `rquickjs::Context` is `!Send`, wrapped in
-/// `Rc<RefCell<_>>`. Callers on any other thread would not compile.
 pub(crate) struct QuickJsContextPool {
     inner: Rc<RefCell<QuickJsPoolInner>>,
 }
 
 impl QuickJsContextPool {
-    /// Pre-create `size` behavior-scope contexts against `runtime`, each with
-    /// `BehaviorOnly` + `Both` primitives installed as real functions and
-    /// `DefinitionOnly` primitives installed as stubs — the same partitioning
-    /// as `QuickJsSubsystem::behavior_ctx`.
     pub(crate) fn new(
         runtime: &Runtime,
         primitives: &[ScriptPrimitive],
@@ -98,10 +59,8 @@ impl QuickJsContextPool {
         })
     }
 
-    /// Pop an idle context if any. Returns `None` when fully occupied.
-    ///
-    /// Takes `&self` because `Drop`-returning handles must borrow inner state
-    /// on release, which requires interior mutability.
+    /// Returns `None` when fully occupied. Takes `&self` because drop-returning
+    /// handles need interior mutability to borrow on release.
     pub(crate) fn acquire(&self) -> Option<PooledQuickJsContext> {
         let mut inner = self.inner.borrow_mut();
         let ctx = inner.idle.pop_front()?;
@@ -112,9 +71,8 @@ impl QuickJsContextPool {
         })
     }
 
-    /// Acquire a context, falling back to synchronous creation if the pool is
-    /// exhausted. The fallback context returns to the pool on drop, growing
-    /// the pool. Logs a warning on the fallback path.
+    /// Falls back to synchronous creation when exhausted; fallback grows the
+    /// pool on drop. Logs a warning on the fallback path.
     pub(crate) fn acquire_or_create(&self) -> Result<PooledQuickJsContext, ScriptError> {
         if let Some(h) = self.acquire() {
             return Ok(h);
@@ -123,8 +81,8 @@ impl QuickJsContextPool {
             target: "script/pool",
             "QuickJsContextPool exhausted; creating a fallback context synchronously",
         );
-        // Extract what we need before building a context: `build_pool_context`
-        // borrows `&Runtime` and executes user primitives.
+        // Clone before building: `build_pool_context` borrows `&Runtime` and
+        // executes user primitives, so we can't hold the borrow across it.
         let (runtime, primitives) = {
             let inner = self.inner.borrow();
             (inner.runtime.clone(), inner.primitives.clone())
@@ -140,34 +98,27 @@ impl QuickJsContextPool {
         })
     }
 
-    /// Number of idle (ready-to-acquire) contexts.
     pub(crate) fn idle_len(&self) -> usize {
         self.inner.borrow().idle.len()
     }
 
-    /// Number of contexts currently handed out.
     pub(crate) fn in_flight(&self) -> usize {
         self.inner.borrow().in_flight
     }
 
-    /// Total contexts known to the pool (idle + in-flight). Grows when
-    /// `acquire_or_create` allocates past the initial size.
+    /// Grows when `acquire_or_create` allocates past the initial size.
     pub(crate) fn capacity(&self) -> usize {
         let inner = self.inner.borrow();
         inner.idle.len() + inner.in_flight
     }
 }
 
-/// RAII handle returned from `QuickJsContextPool::acquire`. Dropping it runs
-/// the reset routine and pushes the context back onto the idle queue.
 pub(crate) struct PooledQuickJsContext {
-    /// `Option` so `Drop` can move the context out before returning it.
-    ctx: Option<Context>,
+    ctx: Option<Context>,  // Option so Drop can move out before returning
     pool: Rc<RefCell<QuickJsPoolInner>>,
 }
 
 impl PooledQuickJsContext {
-    /// Borrow the underlying context so callers can enter it via `ctx.with`.
     pub(crate) fn context(&self) -> &Context {
         self.ctx
             .as_ref()
@@ -181,9 +132,7 @@ impl Drop for PooledQuickJsContext {
             reset_quickjs_context(&ctx);
             let mut inner = self.pool.borrow_mut();
             inner.idle.push_back(ctx);
-            // Saturating for paranoia; double-drop is prevented by the
-            // `Option::take` above.
-            inner.in_flight = inner.in_flight.saturating_sub(1);
+            inner.in_flight = inner.in_flight.saturating_sub(1); // double-drop prevented by Option::take
         }
     }
 }
@@ -207,9 +156,6 @@ fn build_pool_context(
     Ok(ctx)
 }
 
-/// Install the behavior-scope partition — same policy as
-/// `QuickJsSubsystem::behavior_ctx`. `Both` + `BehaviorOnly` primitives land
-/// as real functions; `DefinitionOnly` primitives land as stubs.
 fn install_pool_primitives(
     ctx: &rquickjs::Ctx<'_>,
     primitives: &[ScriptPrimitive],
@@ -231,25 +177,15 @@ fn install_pool_primitives(
     Ok(())
 }
 
-/// Reset a QuickJS context before returning it to the pool.
-///
-/// No per-entity globals exist yet, so the reset is a GC-only pass. Extend
-/// this function when per-entity globals land.
+/// No per-entity globals yet; extend this when they land. Stray `globalThis`
+/// writes by the current acquirer are NOT cleared — tolerated until then.
+/// No `Runtime::run_gc` here: per-release GC serializes a full-heap pass in
+/// spawn-burst scenarios; GC scheduling belongs in the frame loop.
 fn reset_quickjs_context(ctx: &Context) {
     ctx.with(|ctx| {
-        // Placeholder for per-entity globals wipe. Stray script-level globals
-        // set by the current acquirer are NOT cleared here; that is the
-        // tolerated behavior until per-entity globals land. Extend here when
-        // they do.
-        let _ = ctx; // suppress unused-binding warning if future wipe is conditional
+        let _ = ctx;
     });
-    // No `Runtime::run_gc` on every release — in a spawn-burst scenario that
-    // serializes a full-heap pass into the frame. GC scheduling is a
-    // frame-loop concern left to a future plan.
 }
-
-// ---------------------------------------------------------------------------
-// Luau pool.
 
 struct LuauPoolInner {
     idle: VecDeque<mlua::Lua>,
@@ -257,17 +193,11 @@ struct LuauPoolInner {
     primitives: Vec<ScriptPrimitive>,
 }
 
-/// Pre-warmed pool of Luau behavior-scope `Lua` states. Same contract and
-/// thread-model as `QuickJsContextPool` (see module docs).
 pub(crate) struct LuauContextPool {
     inner: Rc<RefCell<LuauPoolInner>>,
 }
 
 impl LuauContextPool {
-    /// Pre-create `size` behavior-scope Lua states. Each state runs the same
-    /// deny-list scrub, `print` redirect, behavior-scope primitive install,
-    /// SDK prelude evaluation, and `sandbox(true)` finalization as
-    /// `LuauSubsystem::behavior_lua`.
     pub(crate) fn new(primitives: &[ScriptPrimitive], size: usize) -> Result<Self, ScriptError> {
         let mut idle = VecDeque::with_capacity(size);
         for _ in 0..size {
@@ -326,8 +256,6 @@ impl LuauContextPool {
     }
 }
 
-/// RAII handle from `LuauContextPool::acquire`. Dropping it resets and
-/// returns to the pool.
 pub(crate) struct PooledLuau {
     lua: Option<mlua::Lua>,
     pool: Rc<RefCell<LuauPoolInner>>,
@@ -351,8 +279,6 @@ impl Drop for PooledLuau {
 }
 
 fn build_pool_lua(primitives: &[ScriptPrimitive]) -> Result<mlua::Lua, ScriptError> {
-    // Matches `LuauSubsystem::build_lua_state` for the behavior scope. Inlined
-    // rather than re-exported to keep the pool self-contained.
     let lua = mlua::Lua::new();
     apply_denylist(&lua)?;
     install_print_redirect(&lua)?;
@@ -365,9 +291,8 @@ fn build_pool_lua(primitives: &[ScriptPrimitive]) -> Result<mlua::Lua, ScriptErr
     Ok(lua)
 }
 
-/// Duplicates `luau::DENIED_GLOBALS` / `DENIED_OS_FIELDS`. Those constants are
-/// private to `luau.rs`; duplication here is cheaper than a visibility change.
-/// Keep the two lists in sync when either grows.
+/// Duplicates `luau::DENIED_GLOBALS` / `DENIED_OS_FIELDS` (private to
+/// `luau.rs`). Keep both lists in sync when either grows.
 fn apply_denylist(lua: &mlua::Lua) -> Result<(), ScriptError> {
     const DENIED_GLOBALS: &[&str] = &["io", "package", "require", "dofile", "loadfile", "load"];
     const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv"];
@@ -449,9 +374,8 @@ fn install_behavior_primitives(
     Ok(())
 }
 
+/// Extend here when per-entity globals land (see `reset_quickjs_context`).
 fn reset_lua(lua: &mlua::Lua) {
-    // Placeholder for per-entity globals wipe — see `reset_quickjs_context`
-    // for rationale. Extend here when per-entity globals land.
     let _ = lua;
     lua.gc_collect().ok();
 }
@@ -474,8 +398,6 @@ mod tests {
         Runtime::new().unwrap()
     }
 
-    // --- QuickJS pool -------------------------------------------------------
-
     #[test]
     fn quickjs_pool_prewarms_with_primitives_installed() {
         let rt = runtime();
@@ -488,9 +410,6 @@ mod tests {
         assert_eq!(pool.idle_len(), 3);
         assert_eq!(pool.in_flight(), 1);
 
-        // Primitives must already be installed — `entityExists(0)` should
-        // evaluate without throwing and return `false` against a fresh
-        // registry.
         handle.context().with(|ctx| {
             let v: bool = ctx.eval("entityExists(0)").unwrap();
             assert!(!v);
@@ -502,16 +421,12 @@ mod tests {
         let rt = runtime();
         let pool = QuickJsContextPool::new(&rt, &primitives(), 1).unwrap();
 
-        // Acquire and immediately release. globalThis is frozen so no stray
-        // globals can be written — isolation is enforced at the VM level.
         {
             let _h = pool.acquire().unwrap();
         }
         assert_eq!(pool.in_flight(), 0);
         assert_eq!(pool.idle_len(), 1);
 
-        // Re-acquire and verify the context is usable: FIFO recycle works and
-        // primitives still execute correctly after the reset-on-release pass.
         let h2 = pool.acquire().unwrap();
         h2.context().with(|ctx| {
             let v: bool = ctx.eval("entityExists(0)").unwrap();
@@ -528,12 +443,10 @@ mod tests {
         let _h2 = pool.acquire().unwrap();
         assert!(pool.acquire().is_none());
 
-        // Fallback path must succeed and grow the pool's capacity.
         let h3 = pool.acquire_or_create().expect("fallback should succeed");
         assert_eq!(pool.in_flight(), 3);
         assert_eq!(pool.capacity(), 3);
-        // Drop the fallback — pool capacity remains at 3 (not 2).
-        drop(h3);
+        drop(h3); // capacity stays at 3 (fallback grew the pool)
         assert_eq!(pool.idle_len(), 1);
         assert_eq!(pool.in_flight(), 2);
         assert_eq!(pool.capacity(), 3);
@@ -541,8 +454,6 @@ mod tests {
 
     #[test]
     fn quickjs_definition_primitive_is_stubbed_in_pool() {
-        // A DefinitionOnly primitive must throw WrongContext in pool
-        // contexts, matching the shared behavior context's scope rule.
         let ctx = ScriptCtx::new();
         let mut registry = PrimitiveRegistry::new();
         register_all(&mut registry, ctx.clone());
@@ -572,8 +483,6 @@ mod tests {
         let _ = ctx;
     }
 
-    // --- Luau pool ----------------------------------------------------------
-
     #[test]
     fn luau_pool_prewarms_with_primitives_installed() {
         let pool = LuauContextPool::new(&primitives(), 4).unwrap();
@@ -598,7 +507,6 @@ mod tests {
         assert_eq!(pool.in_flight(), 0);
         assert_eq!(pool.idle_len(), 1);
 
-        // Re-acquire and verify still usable.
         let h2 = pool.acquire().unwrap();
         let v: bool = h2.lua().load("return entityExists(0)").eval().unwrap();
         assert!(!v);
@@ -615,7 +523,6 @@ mod tests {
         assert_eq!(pool.in_flight(), 3);
         assert_eq!(pool.capacity(), 3);
 
-        // Fallback Lua state must be fully wired (deny-list, primitives).
         let v: bool = h3.lua().load("return entityExists(0)").eval().unwrap();
         assert!(!v);
         drop(h3);
@@ -661,9 +568,4 @@ mod tests {
         let _ = ctx;
     }
 
-    // --- Thread model -------------------------------------------------------
-    //
-    // The `!Send` invariant is structural: `Rc<RefCell<_>>`, `rquickjs::Context`,
-    // and `mlua::Lua` are all `!Send`. No runtime assertion is needed; a
-    // `Send` wrapper would fail to compile at the use site.
 }

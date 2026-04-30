@@ -1,35 +1,6 @@
-// SH compose compute pass.
-//
-// Once-per-frame compute dispatch that composes the static base SH bands
-// plus animated per-light deltas into a parallel set of "total" SH band
-// 3D textures. All SH consumers (forward, billboard, fog) sample the total
-// textures via `ShVolumeResources::bind_group`, so the delta data lights
-// them up without any consumer-side branching.
-//
-// Algorithm (per probe in the output grid):
-//   1. Load the base SH bands at this probe coordinate.
-//   2. Convert the probe to world space (grid_origin + cell_size × index).
-//   3. For each animated light's delta grid:
-//        a. Convert the world-space probe into the delta grid's AABB-local
-//           cell coordinates.
-//        b. Skip lights whose delta grid does not contain this probe.
-//        c. Trilinearly sample the delta grid's 9 SH bands (RGB).
-//        d. Evaluate the animation curve (Catmull-Rom, shared with the
-//           animated-lightmap pass) at the current `uniforms.time`.
-//        e. Accumulate `delta_bands × brightness × color` into the running
-//           total.
-//   4. Write `base + Σ(weighted delta)` to the total SH band textures.
-//
-// When the delta section is absent or empty, the per-light loop bound is 0
-// and the pass behaves identically to the old base→total copy.
-//
-// Dispatch order: runs after BVH cull / animated-lightmap compose and
-// before the depth pre-pass — see `render/mod.rs`. wgpu infers the
-// storage-write → sampled-read barrier from the bind-group usage change
-// when the forward pass reaches the SH bind group.
-//
+// SH compose compute pass: merges static base SH bands with animated per-light
+// deltas into the "total" SH 3D textures consumed by all SH samplers.
 // See: context/lib/rendering_pipeline.md §7.1
-//      context/plans/in-progress/lighting-animated-sh/index.md (Task E)
 
 use postretro_level_format::delta_sh_volumes::{DeltaShVolumesSection, PROBE_F16_COUNT};
 
@@ -52,15 +23,12 @@ use super::sh_volume::{
 /// ```
 const DELTA_LIGHT_META_SIZE: usize = 48;
 
-/// Number of f32 slots per probe in the flat probe storage buffer.
-/// Matches `PROBE_F16_COUNT` (27 = 9 SH bands × RGB).
+// f16→f32 expansion keeps probe storage at 27 f32s per probe (9 bands × RGB).
 const PROBE_F32_COUNT: usize = PROBE_F16_COUNT;
 
-/// GPU-side compose pass. Always allocated alongside `ShVolumeResources` —
-/// when the level has no SH section, the base/total textures are 1×1×1
-/// dummies and the dispatch is a single tiny workgroup. The cost is
-/// negligible and keeping the pipeline live unconditionally keeps the
-/// frame-loop control flow simple.
+/// GPU-side compose pass. Always present — levels without an SH section get
+/// 1×1×1 dummy textures and a single workgroup dispatch. Unconditional
+/// dispatch avoids branching in the frame loop.
 pub struct ShComposeResources {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
@@ -70,10 +38,8 @@ pub struct ShComposeResources {
 }
 
 impl ShComposeResources {
-    /// Build the compose pipeline and bind group from an existing
-    /// `ShVolumeResources` plus the optional `DeltaShVolumesSection`. When
-    /// the section is `None` or empty, the compose pass still runs but the
-    /// per-light loop bound is 0 and the result is identical to a pure
+    /// Build the compose pipeline and bind group. When `delta` is `None` or
+    /// empty, the per-light loop bound is 0 and the result is a pure
     /// base→total copy.
     pub fn new(
         device: &wgpu::Device,
@@ -82,27 +48,20 @@ impl ShComposeResources {
         delta: Option<&DeltaShVolumesSection>,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        // ----- Build per-light meta + flat probe buffer -----
-        //
-        // The flat probe buffer holds every animated light's delta probe
-        // data concatenated, as f32 (one f32 per SH coefficient — we trade
-        // 2× memory for one fewer unpack instruction in the shader).
-        // Per-light `probe_offset` records the f32-index of that light's
-        // probe block.
+        // Build per-light meta + flat probe buffer.
+        // Probes are stored as f32 (expanded from f16) to avoid unpack
+        // instructions in the shader. Per-light `probe_offset` is an f32 index.
 
         let (light_count, meta_bytes, probe_data) = build_delta_buffers(sh_section, delta);
 
-        // wgpu rejects zero-sized storage buffer bindings. Pad to one slot
-        // so the bind group is always valid; the shader gates on
-        // `delta_light_count` before reading.
+        // wgpu rejects zero-sized storage buffers; pad to one slot so the
+        // bind group is always valid. Shader gates on `delta_light_count`.
         let safe_meta_bytes: Vec<u8> = if meta_bytes.is_empty() {
             vec![0u8; DELTA_LIGHT_META_SIZE]
         } else {
             meta_bytes
         };
         let safe_probe_f32: Vec<f32> = if probe_data.is_empty() {
-            // Match the dummy meta buffer so the WGSL bounds checks remain
-            // sound even if the shader is invoked with `delta_light_count = 0`.
             vec![0.0; PROBE_F32_COUNT]
         } else {
             probe_data
@@ -125,8 +84,7 @@ impl ShComposeResources {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // ----- Grid-dims + delta_light_count uniform -----
-        // Layout: vec3<u32> grid_dims, u32 delta_light_count.
+        // Grid-dims uniform: vec3<u32> grid_dims, u32 delta_light_count.
         let mut grid_bytes = [0u8; 16];
         grid_bytes[0..4].copy_from_slice(&sh.grid_dimensions[0].to_ne_bytes());
         grid_bytes[4..8].copy_from_slice(&sh.grid_dimensions[1].to_ne_bytes());
@@ -138,9 +96,8 @@ impl ShComposeResources {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-        // ----- Grid origin + cell size for the base/total grid -----
-        // Used to convert probe indices to world-space positions.
-        // Layout: vec3<f32> grid_origin, f32 _pad, vec3<f32> cell_size, f32 _pad.
+        // Grid origin uniform: vec3<f32> grid_origin, f32 _pad, vec3<f32> cell_size, f32 _pad.
+        // Used in the shader to convert probe indices to world-space positions.
         let (grid_origin, cell_size) = match sh_section {
             Some(s) => (s.grid_origin, s.cell_size),
             None => ([0.0; 3], [1.0; 3]),
@@ -158,7 +115,7 @@ impl ShComposeResources {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-        // ----- Build the bind group layout + pipeline -----
+        // Build the bind group layout + pipeline.
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SH Compose BGL"),
             entries: &compose_bgl_entries(),
@@ -170,8 +127,7 @@ impl ShComposeResources {
             immediate_size: 0,
         });
 
-        // Concatenate the curve helper after the compose shader, matching
-        // the pattern used by `forward.wgsl` and `animated_lightmap.rs`.
+        // curve_eval.wgsl provides `sample_curve_catmull_rom` used by the shader.
         let shader_source = concat!(
             include_str!("../shaders/sh_compose.wgsl"),
             "\n",
@@ -191,7 +147,6 @@ impl ShComposeResources {
             cache: None,
         });
 
-        // ----- Bind group -----
         debug_assert_eq!(sh.base_band_views.len(), SH_BAND_COUNT);
         debug_assert_eq!(sh.total_band_storage_views.len(), SH_BAND_COUNT);
 
@@ -210,32 +165,26 @@ impl ShComposeResources {
                 resource: wgpu::BindingResource::TextureView(view),
             });
         }
-        // Binding 18: grid-dims + delta-light-count uniform.
         entries.push(wgpu::BindGroupEntry {
             binding: 18,
             resource: grid_buffer.as_entire_binding(),
         });
-        // Binding 19: grid origin + cell size uniform.
         entries.push(wgpu::BindGroupEntry {
             binding: 19,
             resource: origin_buffer.as_entire_binding(),
         });
-        // Binding 20: per-light delta meta storage buffer.
         entries.push(wgpu::BindGroupEntry {
             binding: 20,
             resource: meta_buffer.as_entire_binding(),
         });
-        // Binding 21: flat delta probe storage buffer.
         entries.push(wgpu::BindGroupEntry {
             binding: 21,
             resource: probe_buffer.as_entire_binding(),
         });
-        // Binding 22: animation descriptors (shared with SH bind group).
         entries.push(wgpu::BindGroupEntry {
             binding: 22,
             resource: sh.animation.descriptors.as_entire_binding(),
         });
-        // Binding 23: animation samples (shared with SH bind group).
         entries.push(wgpu::BindGroupEntry {
             binding: 23,
             resource: sh.animation.anim_samples.as_entire_binding(),
@@ -247,10 +196,8 @@ impl ShComposeResources {
             entries: &entries,
         });
 
-        // Suppress unused-field warnings; `AnimatedLightBuffers` ownership
-        // sits in `ShVolumeResources` and is borrowed via the bind group
-        // entries above. Reference the type so the import doesn't go stale
-        // if the field plumbing changes in the future.
+        // Keep the `AnimatedLightBuffers` import live; the type is borrowed
+        // via bind group entries above, not held directly.
         let _ = std::marker::PhantomData::<AnimatedLightBuffers>;
         let _ = ANIMATION_DESCRIPTOR_SIZE;
 
@@ -269,9 +216,7 @@ impl ShComposeResources {
         }
     }
 
-    /// Encode the per-frame compose dispatch. Always dispatched — even for
-    /// maps without an SH section, the 1×1×1 dummy grid runs in a single
-    /// workgroup so the cost is irrelevant.
+    /// Encode the per-frame compose dispatch.
     pub fn dispatch(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -291,16 +236,12 @@ impl ShComposeResources {
     }
 }
 
-/// Build the per-light meta byte payload and the flat f32 probe buffer for
-/// the GPU. Returns `(animated_light_count, meta_bytes, probe_data)`.
+/// Build per-light meta bytes and flat f32 probe buffer for the GPU.
+/// Returns `(animated_light_count, meta_bytes, probe_data)`.
+/// Returns `(0, [], [])` when the section is absent or empty.
 ///
-/// `animated_light_count` is the number of delta light entries the shader
-/// will iterate. When the section is `None` or empty, returns `(0, [], [])`
-/// and the caller pads to dummy bindings.
-///
-/// The `descriptor_index` field of each light's meta record indexes into
-/// the SH section's `animation_descriptors` (same order as the
-/// `AnimatedBakedLights` namespace produced by the compiler).
+/// Each light's `descriptor_index` indexes into the SH section's
+/// `animation_descriptors`, matching the order produced by the compiler.
 fn build_delta_buffers(
     sh_section: Option<&postretro_level_format::sh_volume::ShVolumeSection>,
     delta: Option<&DeltaShVolumesSection>,
@@ -312,10 +253,8 @@ fn build_delta_buffers(
         return (0, Vec::new(), Vec::new());
     }
 
-    // Validate descriptor index references against the SH section. Out-of-
-    // range indices would silently read garbage descriptors at the shader
-    // boundary, so refuse to upload them — emit a warning and clamp instead
-    // of failing the load (the rest of the pipeline still works).
+    // Out-of-range descriptor indices would silently read garbage in the shader.
+    // Warn and flag with u32::MAX rather than failing the load.
     let descriptor_count = sh_section
         .map(|s| s.animation_descriptors.len() as u32)
         .unwrap_or(0);
@@ -339,12 +278,11 @@ fn build_delta_buffers(
                 descriptor_index,
                 descriptor_count,
             );
-            // Still emit a meta record so per-light index alignment stays
-            // intact, but flag with descriptor_index = u32::MAX so the
-            // shader can early-out.
+            // Emit a meta record to keep per-light index alignment intact;
+            // descriptor_index = u32::MAX lets the shader early-out.
         }
 
-        // Per-light meta (48 bytes).
+        // Write 48-byte per-light meta record.
         let start = meta_bytes.len();
         meta_bytes.resize(start + DELTA_LIGHT_META_SIZE, 0);
         let s = &mut meta_bytes[start..start + DELTA_LIGHT_META_SIZE];
@@ -359,10 +297,8 @@ fn build_delta_buffers(
         s[32..36].copy_from_slice(&descriptor_index.to_ne_bytes());
         // s[36..48] = padding, already zero.
 
-        // Probe data: convert each f16 to f32. This is wasteful in memory
-        // but eliminates a `unpack2x16float` instruction per band fetch.
-        // Memory budget per plan: ~1MB for typical scenes; 2× = 2MB still
-        // well within wgpu storage-buffer limits.
+        // Expand f16→f32 to avoid `unpack2x16float` in the shader.
+        // Typical scenes: ~1MB f16 → ~2MB f32, well within storage-buffer limits.
         for probe in &grid.probes {
             for &half in &probe.sh_coefficients_f16 {
                 probe_data.push(f16_bits_to_f32(half));
@@ -373,9 +309,8 @@ fn build_delta_buffers(
     (delta.grids.len() as u32, meta_bytes, probe_data)
 }
 
-/// IEEE 754 binary16 → f32 conversion. Subnormals supported; NaN is
-/// preserved as a canonical NaN. The bake side uses `f32_to_f16_bits` in
-/// `sh_volume.rs`; this is the inverse.
+/// IEEE 754 binary16 → f32. Subnormals supported; NaN preserved.
+/// Inverse of `f32_to_f16_bits` in `sh_volume.rs`.
 fn f16_bits_to_f32(bits: u16) -> f32 {
     let sign = ((bits >> 15) & 0x1) as u32;
     let exp = ((bits >> 10) & 0x1f) as u32;
@@ -410,14 +345,12 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
 
 fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let mut entries = Vec::with_capacity(SH_BAND_COUNT * 2 + 6);
-    // Bindings 0..9: base SH bands as sampled 3D textures (read via textureLoad).
+    // Bindings 0..9: base SH band textures (sampled via textureLoad — no filtering needed).
     for i in 0..SH_BAND_COUNT {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: i as u32,
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Texture {
-                // textureLoad with `Float { filterable: false }` is sufficient
-                // for the integer-coordinate fetches the compose shader uses.
                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
                 view_dimension: wgpu::TextureViewDimension::D3,
                 multisampled: false,
@@ -425,7 +358,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             count: None,
         });
     }
-    // Bindings 9..18: total SH bands as storage-write 3D textures.
+    // Bindings 9..18: total SH band textures (storage write).
     for i in 0..SH_BAND_COUNT {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: (SH_BAND_COUNT + i) as u32,
@@ -438,7 +371,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             count: None,
         });
     }
-    // Binding 18: grid-dimensions + delta_light_count uniform.
+    // Binding 18: grid-dimensions + delta_light_count.
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 18,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -449,7 +382,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         count: None,
     });
-    // Binding 19: grid_origin + cell_size uniform.
+    // Binding 19: grid_origin + cell_size.
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 19,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -460,7 +393,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         count: None,
     });
-    // Binding 20: per-light delta meta storage buffer.
+    // Binding 20: per-light delta meta.
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 20,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -471,7 +404,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         count: None,
     });
-    // Binding 21: flat delta probe data storage buffer.
+    // Binding 21: flat delta probe data.
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 21,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -482,7 +415,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         count: None,
     });
-    // Binding 22: animation descriptors (shared with SH bind group).
+    // Bindings 22–23: animation descriptors and samples (shared with SH bind group).
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 22,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -493,7 +426,6 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         count: None,
     });
-    // Binding 23: animation samples (shared with SH bind group).
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 23,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -513,8 +445,7 @@ mod tests {
 
     #[test]
     fn sh_compose_shader_parses_and_exports_compose_main() {
-        // Concat the curve helper so the shader resolves
-        // `sample_curve_catmull_rom` and `sample_color_catmull_rom`.
+        // curve_eval.wgsl must be appended to resolve Catmull-Rom helpers.
         let src = concat!(
             include_str!("../shaders/sh_compose.wgsl"),
             "\n",
@@ -531,8 +462,6 @@ mod tests {
 
     #[test]
     fn f16_bits_round_trip_for_simple_values() {
-        // Reuse the existing `f32_to_f16_bits` from sh_volume to verify
-        // the inverse reconstruction.
         use crate::render::sh_volume::f32_to_f16_bits;
         for v in [0.0f32, 1.0, -1.0, 0.5, 2.0, -0.25, 100.0] {
             let bits = f32_to_f16_bits(v);
@@ -544,9 +473,6 @@ mod tests {
         }
     }
 
-    /// When no delta section is provided, the compose pass falls back to a
-    /// pure base→total copy. Verified via the meta/probe builder returning
-    /// (0, [], []).
     #[test]
     fn build_delta_buffers_no_section_returns_empty() {
         let (count, meta, probes) = build_delta_buffers(None, None);
@@ -581,8 +507,7 @@ mod tests {
             AnimationDescriptor, PROBE_STRIDE, ShVolumeSection,
         };
 
-        // SH section with two animated descriptors so descriptor indices
-        // {0, 1} validate.
+        // Two descriptors so indices {0, 1} pass validation.
         let sh = ShVolumeSection {
             grid_origin: [0.0; 3],
             cell_size: [1.0; 3],
@@ -630,13 +555,13 @@ mod tests {
         // 2 probes × 27 + 1 probe × 27 = 81 f32s.
         assert_eq!(probes.len(), 81);
 
-        // Light 0 meta: probe_offset = 0, descriptor_index = 0.
+        // Light 0: probe_offset = 0, descriptor_index = 0.
         let p0 = u32::from_ne_bytes(meta[28..32].try_into().unwrap());
         let d0 = u32::from_ne_bytes(meta[32..36].try_into().unwrap());
         assert_eq!(p0, 0);
         assert_eq!(d0, 0);
 
-        // Light 1 meta: probe_offset = 2 × 27 = 54, descriptor_index = 1.
+        // Light 1: probe_offset = 2 × 27 = 54, descriptor_index = 1.
         let p1 = u32::from_ne_bytes(
             meta[DELTA_LIGHT_META_SIZE + 28..DELTA_LIGHT_META_SIZE + 32]
                 .try_into()
@@ -650,7 +575,7 @@ mod tests {
         assert_eq!(p1, 54);
         assert_eq!(d1, 1);
 
-        // Origin/cell_size/dims of light 0 round-trip.
+        // Spot-check light 0 spatial fields.
         let ox = f32::from_ne_bytes(meta[0..4].try_into().unwrap());
         let cs = f32::from_ne_bytes(meta[12..16].try_into().unwrap());
         let dx = u32::from_ne_bytes(meta[16..20].try_into().unwrap());

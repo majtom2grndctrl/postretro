@@ -57,14 +57,6 @@ impl BuildProgress {
                     .template("{elapsed:>4}  {spinner} {msg}")
                     .unwrap(),
             );
-            // We can't easily set the "start time" of an indicatif ProgressBar to the past
-            // but we can use a custom formatter or just accept that it shows time-in-stage.
-            // Actually, the user liked the "time since start" feel.
-
-            // To show total elapsed time in the spinner line, we can use a template that
-            // doesn't rely on the PB's internal clock if we want to be exact,
-            // but indicatif's {elapsed} is fine for showing active progress.
-
             pb.set_message(msg.to_string());
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             self.pb = Some(pb);
@@ -124,40 +116,25 @@ fn main() -> anyhow::Result<()> {
     let map_data = parse::parse_map_file(&args.input, args.format)?;
     timings.push(("Parsing", stage_start.elapsed()));
 
-    // Compile the worldspawn `script` KVP, if present, before any geometry
-    // bake stages. Failures here block the compile so the engine never loads
-    // a `.prl` whose paired `.js` is stale or missing.
+    // Must run before any geometry bake: failures block the compile so the
+    // engine never loads a `.prl` whose paired `.js` is stale or missing.
     progress.start_stage("Script compilation...");
     let stage_start = Instant::now();
     compile_worldspawn_script(&args.input, map_data.script.as_deref())?;
     timings.push(("ScriptCompile", stage_start.elapsed()));
 
-    // Compile and embed the worldspawn `data_script` KVP, if present.
-    // Absent KVP → `Ok(None)`, no DataScript section emitted.
-    // KVP set but source file missing → hard compile error.
-    // Unlike the behavior `script`, the compiled bytes are embedded directly
-    // in the PRL `DataScript` section (the runtime evaluates them in a
-    // short-lived data context at level load), so there is no sibling `.js`
-    // fallback path.
     progress.start_stage("Data script compilation...");
     let stage_start = Instant::now();
     let data_script_section =
         compile_worldspawn_data_script(&args.input, map_data.data_script.as_deref())?;
     timings.push(("DataScript", stage_start.elapsed()));
 
-    // Validate that every `_n.png` / `_s.png` surface-map sibling under the
-    // textures root carries linear PNG color-space metadata. Diffuse textures
-    // (no suffix) are not checked — the runtime samples them as Rgba8UnormSrgb.
-    // See `context/lib/resource_management.md` §4 and `texture_validation.rs`.
     progress.start_stage("Texture color-space validation...");
     let stage_start = Instant::now();
     let texture_root = resolve_texture_root(&args.input);
     texture_validation::validate_sibling_color_spaces(&texture_root)?;
     timings.push(("TexValidation", stage_start.elapsed()));
 
-    // Pre-compute light-namespace envelopes once so each bake stage takes the
-    // typed slice it needs and applies no further filter. See
-    // `light_namespaces.rs` for the index-space contracts.
     let static_baked_lights = light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
     let animated_baked_lights =
         light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
@@ -165,10 +142,6 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("BSP partitioning...");
     let stage_start = Instant::now();
-    // Partition space with brush-derived planes, then project each brush
-    // side through the resulting tree to recover the world face list.
-    // Solidity is assigned during construction, so face extraction never
-    // emits a polygon into a solid leaf.
     let result = partition::partition(&map_data.brush_volumes)?;
     timings.push(("Partitioning", stage_start.elapsed()));
     if args.verbose {
@@ -177,9 +150,8 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("Visibility computation...");
     let stage_start = Instant::now();
-    // Portals feed both the exterior flood-fill and the BSP/leaf encoder:
-    // the encoder uses the exterior set to emit `face_count = 0` for
-    // outside-the-map leaves in lockstep with the geometry section.
+    // The exterior set is used by the BSP/leaf encoder to emit `face_count = 0`
+    // for outside-the-map leaves in lockstep with the geometry section.
     let generated_portals = portals::generate_portals(&result.tree);
     let portal_count = generated_portals.len();
     if portal_count == 0 {
@@ -213,9 +185,6 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("BVH build...");
     let stage_start = Instant::now();
-    // Build the global BVH over all static geometry. One acceleration
-    // structure feeds both the runtime GPU traversal (via the flattened
-    // BvhSection) and Milestone 5's CPU baker (via the live bvh::Bvh).
     let (bvh, bvh_primitives, bvh_section) =
         bvh_build::build_bvh(&geo_result).map_err(|e| anyhow::anyhow!("BVH build failed: {e}"))?;
     timings.push(("BVH Build", stage_start.elapsed()));
@@ -225,18 +194,12 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("Lightmap bake...");
     let stage_start = Instant::now();
-    // Bake the directional lightmap. Writes per-vertex lightmap UVs back
-    // into `geo_result.geometry` and returns the atlas section for packing.
-    // Same BVH as the SH bake — one acceleration structure, two consumers.
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
     let final_lightmap_density;
     let lightmap_bake_output = {
-        // Retry on atlas overflow: double the texel size (halve resolution)
-        // up to `MAX_RETRIES` times. Degrades quality instead of failing the
-        // build on maps too large to fit at the default density. Per-face
-        // planar unwrap wastes atlas area vs. a chart-merging unwrapper, so
-        // large maps hit this regularly; a warning records the fallback so
-        // it's not silent.
+        // Retry on atlas overflow: doubles texel size (halves resolution) up to
+        // MAX_RETRIES times. Degrades quality instead of failing the build.
+        // Per-face planar unwrap wastes atlas area, so large maps hit this often.
         const MAX_RETRIES: u32 = 3;
         let mut density = args.lightmap_density;
         let mut attempt = 0;
@@ -289,15 +252,9 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("SH volume bake...");
     let stage_start = Instant::now();
-    // Pack-time validation: the baked lighting paths cannot absorb color
-    // animation on a non-dynamic, non-bake_only light (Plan 2 Sub-plan 1).
     if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
         anyhow::bail!("light animation validation failed: {msg}");
     }
-    // Bake the SH irradiance volume. Same BVH, different traversal: the
-    // baker walks the tree on the CPU via the `bvh` crate, so the runtime
-    // compute shader and the compile-time probe bake share one acceleration
-    // structure.
     let sh_inputs = sh_bake::BakeInputs {
         bvh: &bvh,
         primitives: &bvh_primitives,
@@ -360,20 +317,13 @@ fn main() -> anyhow::Result<()> {
     let light_influence_section = pack::encode_light_influence(&alpha_lights_ns);
     let light_tags_section = pack::encode_light_tags(&alpha_lights_ns);
 
-    // Owned parallel `MapLight` slice in the AnimatedBakedLights namespace —
-    // the animated weight-map baker holds its light list across multi-stage
-    // pipelines and needs owned values.
     let (animated_chunk_lights, _) = animated_baked_lights.to_parallel_vecs();
 
     progress.start_stage("Animated light chunks...");
     let stage_start = Instant::now();
-    // Builds the per-face, per-leaf animated-light chunk partition. Returns a
-    // parallel `(chunk_range_start, chunk_range_count)` table indexed by BVH
-    // leaf slot; pack stamps the table onto the on-disk `BvhLeaf` records at
-    // serialization time (`pack::serialize_bvh_with_chunk_ranges`). The
-    // explicit data flow replaces an earlier hidden mutation of `bvh_section`.
-    // When the map has no animated lights the returned section is empty,
-    // which is the signal to skip emission — no placeholder record needed.
+    // Returns a parallel chunk-range table indexed by BVH leaf slot; pack stamps
+    // it onto the on-disk `BvhLeaf` records at serialization time. Empty section
+    // signals no animated lights — no placeholder record is emitted.
     let (animated_light_chunks_section, bvh_chunk_ranges) =
         animated_light_chunks::build_animated_light_chunks(
             &bvh_section,
@@ -384,10 +334,6 @@ fn main() -> anyhow::Result<()> {
         );
     timings.push(("AnimLightChunks", stage_start.elapsed()));
 
-    // Weight-map bake: for every chunk, emit per-texel animated-light
-    // contribution weights. Consumes the same `animated_chunk_lights` list the
-    // chunk builder used, so chunk-list indices index directly into the
-    // animated-light descriptor buffer at runtime with no remap.
     progress.start_stage("Animated light weight maps...");
     let stage_start = Instant::now();
     let animated_light_weight_maps_section = if animated_light_chunks_section.chunks.is_empty() {
@@ -460,14 +406,10 @@ fn main() -> anyhow::Result<()> {
 struct Args {
     input: PathBuf,
     output: PathBuf,
-    /// Enable detailed logging.
     verbose: bool,
-    /// Map dialect to parse (default: IdTech2).
     format: MapFormat,
-    /// SH probe grid spacing in meters.
     probe_spacing: f32,
-    /// Starting lightmap texel density in meters. The baker retries at
-    /// progressively coarser densities on atlas overflow.
+    /// Starting density in meters; baker retries at coarser densities on atlas overflow.
     lightmap_density: f32,
 }
 
@@ -559,15 +501,10 @@ where
 
 /// Locate the `scripts-build` sidecar for compiling worldspawn `.ts` scripts.
 ///
-/// Two-step detection cascade. Duplicated from
-/// `crates/postretro/src/scripting/watcher.rs` `TsCompilerPath::detect`;
-/// `watcher.rs` is `cfg(debug_assertions)` so cannot be imported.
-/// If the cascade grows (e.g. add POSTRETRO_SCRIPTS_BUILD env var), promote to a
-/// shared crate.
+/// Duplicated from `crates/postretro/src/scripting/watcher.rs`
+/// `TsCompilerPath::detect`; `watcher.rs` is `cfg(debug_assertions)` so cannot
+/// be imported. If the cascade grows, promote to a shared crate.
 fn find_scripts_build() -> Option<PathBuf> {
-    // In dev, `cargo run` places all workspace binaries in the same
-    // `target/debug/` (or `target/release/`) directory, so `scripts-build`
-    // will be a sibling of the level-compiler binary — step 1 finds it.
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
@@ -582,7 +519,6 @@ fn find_scripts_build() -> Option<PathBuf> {
             return Some(candidate);
         }
     }
-    // Fall back to PATH
     let path_var = std::env::var_os("PATH")?;
     let exe_name = if cfg!(windows) {
         "scripts-build.exe"
@@ -631,10 +567,6 @@ fn compile_worldspawn_script(
         );
     }
 
-    // Up-to-date check: skip the compile if a `.js` sibling already covers a
-    // newer-or-equal mtime than the `.ts`. This is a pure optimization; the
-    // missing-compiler fallback below handles the case where the user has
-    // shipped a pre-built `.js` without scripts-build available.
     if let Some(true) = js_is_fresh(&ts_path, &js_path) {
         log::info!(
             "[prl-build] script up to date: {} (skipping compile)",
@@ -681,8 +613,6 @@ fn compile_worldspawn_script(
             Ok(())
         }
         None => {
-            // No compiler available. Accept a stale-fresh `.js` sibling as a
-            // fallback so a distribution without the sidecar can still build.
             if js_path.is_file() {
                 log::warn!(
                     "[prl-build] scripts-build not found; using existing compiled artifact {} \
@@ -753,10 +683,8 @@ fn compile_worldspawn_data_script(
         }
         Some("ts") | Some("js") => {
             let js_path = source_path.with_extension("js");
-            // For `.ts`, run scripts-build (or fall back to a fresh sibling
-            // `.js` when the sidecar is missing). For `.js` source, the input
-            // is already JS — `js_path == source_path`, the up-to-date check
-            // succeeds trivially, and we just read the bytes back.
+            // For `.js` source `js_path == source_path`; the mtime check passes
+            // trivially and we just read bytes back — no compile needed.
             let needs_compile = extension.as_deref() == Some("ts")
                 && !matches!(js_is_fresh(&source_path, &js_path), Some(true));
 
@@ -830,9 +758,6 @@ fn compile_worldspawn_data_script(
         }
     };
 
-    // Resolve to absolute path for the source_path field (best-effort: fall
-    // back to the joined path if canonicalization fails — e.g. on a
-    // case-insensitive FS where the canonical form is unavailable).
     let absolute_source_path = std::fs::canonicalize(&source_path)
         .unwrap_or(source_path.clone())
         .to_string_lossy()
@@ -850,13 +775,7 @@ fn compile_worldspawn_data_script(
     )))
 }
 
-/// Returns `Some(true)` when the `.js` sibling exists with mtime strictly
-/// greater than the `.ts`, `Some(false)` when the `.js` is stale or missing,
-/// `None` if either mtime cannot be read (treated as "unknown — recompile").
-///
-/// Using `>` (not `>=`): a `.ts` and `.js` written in the same second have
-/// equal mtimes, which should trigger recompilation. `>=` would falsely treat
-/// that as fresh.
+/// `>` not `>=`: equal mtimes (same-second write) must trigger recompilation.
 /// mtime is unreliable after `git checkout` and on network filesystems — this
 /// is best-effort, not a correctness gate.
 fn js_is_fresh(ts_path: &std::path::Path, js_path: &std::path::Path) -> Option<bool> {
@@ -997,8 +916,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -- data_script compilation --
-
     #[test]
     fn data_script_absent_kvp_emits_no_section() {
         let result = compile_worldspawn_data_script(Path::new("/dev/null/fake.map"), None)
@@ -1011,7 +928,6 @@ mod tests {
 
     #[test]
     fn data_script_missing_file_is_hard_error() {
-        // Use a real existing map_dir so only the script path is missing.
         let tmp_dir = std::env::temp_dir().join("postretro_data_script_missing");
         let _ = std::fs::create_dir_all(&tmp_dir);
         let map_path = tmp_dir.join("test.map");

@@ -1,18 +1,4 @@
 // Value conversion adapters at the scripting FFI boundary.
-//
-// Wire shapes:
-//   - `glam::Vec3` ↔ `{ x, y, z }` object/table.
-//   - Rotation crosses as `EulerDegrees { pitch, yaw, roll }` (degrees).
-//     Internally always `glam::Quat`. Conversion uses
-//     `Quat::from_euler(EulerRot::YXZ, yaw_rad, pitch_rad, roll_rad)` —
-//     yaw around world-up first, matching the common FPS authoring convention.
-//   - `Transform` crosses as `{ position, rotation: EulerDegrees, scale }`.
-//   - `ComponentKind` crosses as its variant name string (`"Transform"`).
-//   - `ComponentValue` mirrors `#[serde(tag = "kind")]`:
-//     `{ kind: "Transform", position, rotation, scale }`.
-//   - `ScriptEvent { kind, payload }` crosses as `{ kind, payload }`;
-//     `payload` roundtrips via `serde_json::Value`.
-//
 // See: context/lib/scripting.md
 
 use glam::{EulerRot, Quat, Vec3};
@@ -26,15 +12,10 @@ use super::components::light::{LightAnimation, LightComponent};
 use super::ctx::ScriptEvent;
 use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
 
-// --- Vec3Lit ----------------------------------------------------------------
-//
-// Cross-runtime wire shape for a 3-component vector inside `LightAnimation`
-// sample arrays. Accepts both `[x, y, z]` arrays (serde default for
-// `[f32; 3]`) and `{ x, y, z }` objects — the SDK vocabulary constructs
-// `Vec3` objects, while internal tests and some callers emit raw arrays.
-
 /// Three-component float vector with a permissive Deserialize accepting
 /// either a JSON array of 3 numbers or an object with `x`/`y`/`z` keys.
+/// Accepts both forms because the SDK emits `{x,y,z}` objects while some
+/// callers and tests emit raw `[x, y, z]` arrays.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Vec3Lit(pub [f32; 3]);
 
@@ -46,8 +27,6 @@ impl Vec3Lit {
 
 impl Serialize for Vec3Lit {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Serialize as `{x, y, z}` so cross-FFI output matches the script-facing
-        // `Vec3` shape. Deserialize accepts both array and object forms.
         use serde::ser::SerializeStruct;
         let [x, y, z] = self.0;
         let mut st = serializer.serialize_struct("Vec3", 3)?;
@@ -120,8 +99,8 @@ pub(crate) struct EulerDegrees {
 }
 
 impl EulerDegrees {
-    /// Convert into the engine-internal `Quat`. Order: YXZ (yaw, then pitch,
-    /// then roll) — see module-level comment for rationale.
+    /// Convert into the engine-internal `Quat`. Order: YXZ (yaw around
+    /// world-up first, then pitch, then roll) — matches the FPS authoring convention.
     pub(crate) fn to_quat(self) -> Quat {
         Quat::from_euler(
             EulerRot::YXZ,
@@ -143,10 +122,7 @@ impl EulerDegrees {
     }
 }
 
-// --- EntityId ---------------------------------------------------------------
-//
-// Crosses as a raw `u32`. Both JS `number` (f64) and Luau `number` (f64)
-// losslessly hold a 32-bit integer.
+// EntityId crosses as a raw u32; both JS and Luau number (f64) losslessly hold a 32-bit integer.
 
 impl<'js> FromJs<'js> for EntityId {
     fn from_js(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
@@ -173,8 +149,6 @@ impl IntoLua for EntityId {
         self.to_raw().into_lua(lua)
     }
 }
-
-// --- Vec3 -------------------------------------------------------------------
 
 fn vec3_to_js<'js>(ctx: &Ctx<'js>, v: Vec3) -> rquickjs::Result<Object<'js>> {
     let o = Object::new(ctx.clone())?;
@@ -205,8 +179,6 @@ fn vec3_from_lua_table(t: &Table) -> mlua::Result<Vec3> {
     let z: f32 = t.get("z")?;
     Ok(Vec3::new(x, y, z))
 }
-
-// --- EulerDegrees -----------------------------------------------------------
 
 fn euler_to_js<'js>(ctx: &Ctx<'js>, e: EulerDegrees) -> rquickjs::Result<Object<'js>> {
     let o = Object::new(ctx.clone())?;
@@ -239,8 +211,6 @@ fn euler_from_lua_table(t: &Table) -> mlua::Result<EulerDegrees> {
         roll: t.get("roll")?,
     })
 }
-
-// --- Transform --------------------------------------------------------------
 
 impl<'js> FromJs<'js> for Transform {
     fn from_js(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
@@ -307,8 +277,6 @@ impl IntoLua for Transform {
     }
 }
 
-// --- ComponentKind ----------------------------------------------------------
-
 fn component_kind_name(k: ComponentKind) -> &'static str {
     match k {
         ComponentKind::Transform => "Transform",
@@ -359,11 +327,6 @@ impl IntoLua for ComponentKind {
     }
 }
 
-// --- ComponentValue ---------------------------------------------------------
-//
-// Wire shape mirrors serde `#[serde(tag = "kind")]` flattening on the enum:
-// `{ kind: "Transform", position, rotation, scale }`.
-
 impl<'js> FromJs<'js> for ComponentValue {
     fn from_js(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
         let o = Object::from_value(value).map_err(|_| {
@@ -372,15 +335,12 @@ impl<'js> FromJs<'js> for ComponentValue {
         let kind: String = o.get("kind")?;
         match kind.as_str() {
             "Transform" => {
-                // Re-interpret the object as a Transform. Extra `kind` field is
-                // ignored by the Transform extractor.
                 let t = Transform::from_js(ctx, o.into_value())?;
                 Ok(ComponentValue::Transform(t))
             }
             "Light" => {
-                // LightComponent is write-only through setLightAnimation;
                 // setComponent("Light",...) is intentionally blocked — scripts
-                // use the LightEntity handle's setAnimation method.
+                // use the LightEntity handle's setAnimation method instead.
                 let _ = o;
                 Err(rquickjs::Exception::throw_type(
                     ctx,
@@ -389,10 +349,9 @@ impl<'js> FromJs<'js> for ComponentValue {
                 ))
             }
             "BillboardEmitter" | "ParticleState" | "SpriteVisual" => {
-                // These components are populated by Rust bridges (emitter
-                // bridge, particle simulation) — scripts read them but never
-                // write through `setComponent`. Configuration changes go
-                // through the dedicated reaction primitives instead.
+                // These components are bridge-managed (emitter bridge, particle
+                // simulation) — scripts read but never write via setComponent;
+                // configuration goes through dedicated reaction primitives.
                 let _ = o;
                 Err(rquickjs::Exception::throw_type(
                     ctx,
@@ -414,20 +373,12 @@ impl<'js> IntoJs<'js> for ComponentValue {
     fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         match self {
             ComponentValue::Transform(t) => {
-                // Encode Transform as an object, then set `kind: "Transform"`
-                // on it so the shape matches the serde-tagged wire form.
                 let v = t.into_js(ctx)?;
                 let o = Object::from_value(v).expect("Transform encodes to an object");
                 o.set("kind", "Transform")?;
                 Ok(o.into_value())
             }
             ComponentValue::Light(light) => {
-                // Serialize through serde_json then re-cross into QuickJS —
-                // the shape matches the serde-tagged wire form (`kind: "Light"`
-                // plus every `LightComponent` field). Used by
-                // `getComponent({kind: "Light"})`.
-                // Write-side (setComponent("Light",...)) is intentionally blocked;
-                // scripts use setLightAnimation instead.
                 let json = serde_json::to_value(ComponentValue::Light(light)).map_err(|e| {
                     rquickjs::Exception::throw_type(
                         ctx,
@@ -470,9 +421,6 @@ impl FromLua for ComponentValue {
                 Ok(ComponentValue::Transform(transform))
             }
             "Light" => {
-                // LightComponent is write-only through setLightAnimation;
-                // setComponent("Light",...) is intentionally blocked — scripts
-                // use the LightEntity handle's setAnimation method.
                 let _ = t;
                 Err(mlua::Error::RuntimeError(
                     "LightComponent is read-only via setComponent; \
@@ -505,9 +453,6 @@ impl IntoLua for ComponentValue {
                 Ok(v)
             }
             ComponentValue::Light(light) => {
-                // Serialize via serde_json then walk back into a Lua table —
-                // same approach as the IntoJs side so QuickJS and Luau scripts
-                // see identical structural shapes from `getComponent`.
                 let json = serde_json::to_value(ComponentValue::Light(light)).map_err(|e| {
                     mlua::Error::RuntimeError(format!("LightComponent serialization failed: {e}"))
                 })?;
@@ -525,11 +470,7 @@ impl IntoLua for ComponentValue {
     }
 }
 
-// --- ScriptEvent ------------------------------------------------------------
-//
-// `payload` is a `serde_json::Value`. We bridge it through the runtimes by
-// walking the value recursively — there is no JSON string on the wire, scripts
-// see a native object/table.
+// payload is a serde_json::Value walked recursively into native objects — no JSON string on the wire.
 
 pub(crate) fn json_to_js<'js>(
     ctx: &Ctx<'js>,
@@ -737,14 +678,8 @@ impl IntoLua for ScriptEvent {
     }
 }
 
-// --- LightAnimation / LightComponent ----------------------------------------
-//
-// Both cross the FFI boundary as serde-shaped objects. The structs carry
-// `#[serde(rename_all = "camelCase")]` so the wire shape (`periodMs`,
-// `playCount`, `lightType`, ...) matches the external API spec directly —
-// no manual key-rename pass is needed.
-//
-// See: context/lib/scripting.md §10 (External API Shape)
+// LightAnimation / LightComponent cross via serde_json; `rename_all = "camelCase"` on the structs
+// produces the script-facing field names (periodMs, playCount, lightType, ...) without manual mapping.
 
 impl<'js> FromJs<'js> for LightAnimation {
     fn from_js(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
@@ -780,9 +715,7 @@ impl IntoLua for LightAnimation {
     }
 }
 
-// `LightComponent` is only emitted from Rust into script (never decoded from
-// script), so we only implement IntoJs / IntoLua. Serde's `rename_all =
-// "camelCase"` produces the script-facing field names directly.
+// LightComponent is Rust-to-script only; no FromJs/FromLua impl.
 impl<'js> IntoJs<'js> for LightComponent {
     fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         let json = serde_json::to_value(self).map_err(|e| {

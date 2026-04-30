@@ -1,20 +1,4 @@
 // Animated-light chunks builder.
-//
-// For every BVH leaf that owns a face overlapped by an animated light, build
-// a recursive face-local UV-space partition where every emitted chunk carries
-// at most `MAX_ANIMATED_LIGHTS_PER_CHUNK` animated-light indices. Returns a
-// per-leaf `(chunk_range_start, chunk_range_count)` table parallel to the BVH
-// leaf array; the pack stage stamps these onto the on-disk `BvhLeaf` records
-// during serialization. The runtime BVH walk over visible leaves then
-// enumerates visible animated-light chunks as a union of contiguous ranges.
-//
-// Light indices in the emitted flat pool index into the **filtered** light
-// list passed by the caller (the `!is_dynamic && animation.is_some()`
-// filter — same namespace and iteration order as the animated-light
-// `AnimationDescriptor` buffer the runtime compose pass consumes). No
-// per-entry remap is needed downstream. `bake_only` animated lights
-// participate in weight-map compose, so they are NOT filtered out here.
-//
 // See: context/plans/in-progress/animated-light-chunks/index.md
 
 use std::collections::HashMap;
@@ -42,27 +26,6 @@ const MAX_OVERFLOW_LOG_LINES: u64 = 8;
 /// records during serialization — making the dependency from "this stage
 /// must run before BVH serialization" explicit at the call site rather than
 /// hidden behind a side-effect on a shared struct.
-///
-/// Inputs:
-/// - `bvh_section`: read-only. Iterated to pair leaves to faces.
-/// - `filtered_lights` / `filtered_influence`: parallel slices, post
-///   `!is_dynamic && animation.is_some()` filter — the same namespace and
-///   iteration order the runtime `AnimationDescriptor` buffer uses, so
-///   emitted indices match descriptor slots directly with no remap.
-///   `bake_only` animated lights are retained here — they participate in
-///   weight-map compose at runtime.
-/// - `face_charts`: per-face chart data from the lightmap baker. Indexed by
-///   geometry face index; supplies the face-local (origin, u_axis, v_axis)
-///   basis and world-meter UV bounds.
-/// - `face_index_ranges`: per-face index range parallel to `face_charts`.
-///   Used only to pair BVH leaves back to the face they own. Today every
-///   primitive (and therefore every leaf) covers exactly one face's range,
-///   so the pairing is a single O(1) `index_offset` lookup. Generalizing
-///   to a leaf spanning multiple consecutive face ranges would require a
-///   different mapping structure (e.g. offset→(face, len) interval tree).
-/// - `lightmap_texel_density`: meters per lightmap texel. The min UV-extent
-///   floor is the texel size in meters — finer subdivision cannot be
-///   addressed by the UV-indexed weight-map baker downstream.
 pub fn build_animated_light_chunks(
     bvh_section: &BvhSection,
     animated_lights: &AnimatedBakedLights<'_>,
@@ -76,14 +39,9 @@ pub fn build_animated_light_chunks(
         "face_charts and face_index_ranges must be parallel per-face slices",
     );
 
-    // Min UV extent = one lightmap texel in meters. `texel_density` in this
-    // project is meters-per-texel (see `lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS`),
-    // so the floor is the texel size itself; clamp to a safe positive value.
+    // One lightmap texel in meters; finer UV subdivision can't be addressed by the weight-map baker.
     let min_uv_extent = lightmap_texel_density.max(1.0e-4);
 
-    // Drop directional and zero-radius animated lights from chunk emission.
-    // Order matches the AnimatedBakedLights namespace so the per-chunk pool
-    // feeds animation-descriptor slots directly with no remap.
     let animated: Vec<AnimatedLight> = animated_lights
         .entries()
         .iter()
@@ -117,14 +75,10 @@ pub fn build_animated_light_chunks(
         );
     }
 
-    // Pair leaves to faces. Today `bvh_build::collect_primitives` emits one
-    // primitive per face, and `flatten` propagates each primitive into one
-    // leaf — so a leaf's `(index_offset, index_count)` exactly matches one
-    // face's `FaceIndexRange`. Build the lookup once; each leaf then resolves
-    // to its face in O(1) via `face_by_offset.get(&leaf.index_offset)`.
-    // Generalizing to a leaf spanning multiple consecutive face ranges would
-    // require a different mapping structure (e.g. an offset→(face, len)
-    // interval tree) — do not re-introduce a linear scan here.
+    // One primitive per face, one face per leaf — `index_offset` is a unique key.
+    // Generalizing to a leaf spanning multiple face ranges requires a different
+    // mapping structure (e.g. an offset→(face, len) interval tree) — do not
+    // re-introduce a linear scan here.
     let mut face_by_offset: HashMap<u32, u32> = HashMap::with_capacity(face_index_ranges.len());
     for (face_index, range) in face_index_ranges.iter().enumerate() {
         if range.index_count == 0 {
@@ -149,11 +103,6 @@ pub fn build_animated_light_chunks(
 
         let leaf_offset = leaf.index_offset;
 
-        // O(1) leaf→face resolution. Today each leaf's `index_offset` is
-        // exactly one face's `index_offset`. If this lookup ever misses (or
-        // the face's range doesn't exactly match the leaf's), that's a real
-        // change to the BVH contract — see the `face_by_offset` construction
-        // above for the generalization note.
         debug_assert!(
             face_by_offset.contains_key(&leaf_offset) || leaf.index_count == 0,
             "non-empty leaf at offset {} has no matching face — BVH/geometry contract violation",
@@ -172,9 +121,6 @@ pub fn build_animated_light_chunks(
 
             let chart = &face_charts[face_index_usize];
 
-            // Cheap reject: any animated light whose sphere overlaps the
-            // chart's world-space face AABB is a candidate; pass the survivors
-            // down so subdivision shrinks the candidate set.
             let face_aabb = project_uv_to_world_aabb(chart, chart.uv_min, chart.uv_extent);
             let candidates: Vec<u32> = animated
                 .iter()
@@ -241,7 +187,6 @@ pub fn build_animated_light_chunks(
     )
 }
 
-/// Animated light, with its filtered-list index for stable index emission.
 #[derive(Debug, Clone, Copy)]
 struct AnimatedLight {
     filtered_index: u32,
@@ -255,7 +200,7 @@ fn recurse(
     chart: &Chart,
     uv_min: [f32; 2],
     uv_extent: [f32; 2],
-    candidate_indices: &[u32], // indices into `animated`
+    candidate_indices: &[u32],
     animated: &[AnimatedLight],
     min_uv_extent: f32,
     chunks: &mut Vec<AnimatedLightChunk>,
@@ -266,7 +211,6 @@ fn recurse(
 ) {
     let (aabb_min, aabb_max) = project_uv_to_world_aabb(chart, uv_min, uv_extent);
 
-    // Filter the candidate set by sphere-vs-world-AABB overlap.
     let mut hits: Vec<u32> = candidate_indices
         .iter()
         .copied()
@@ -277,7 +221,6 @@ fn recurse(
         .collect();
 
     if hits.is_empty() {
-        // Prune: no chunk emitted for this sub-region.
         return;
     }
 
@@ -305,8 +248,7 @@ fn recurse(
                 );
             }
         }
-        // Stable order: sort by filtered_index so the on-disk pool is
-        // independent of the upstream candidate iteration order.
+        // Sort for stable on-disk pool ordering independent of candidate iteration order.
         hits.sort_by_key(|&i| animated[i as usize].filtered_index);
 
         let index_offset = light_indices.len() as u32;
@@ -326,7 +268,7 @@ fn recurse(
         return;
     }
 
-    // Split along the longest UV axis. Tie → split U (axis 0) for stability.
+    // Tie-break → U (axis 0) for determinism.
     let split_u = uv_extent[0] >= uv_extent[1];
     let (left_min, left_extent, right_min, right_extent) = if split_u {
         let half = uv_extent[0] * 0.5;
@@ -408,8 +350,6 @@ mod tests {
     use postretro_level_format::bvh::{BvhLeaf, BvhSection};
     use postretro_level_format::light_influence::InfluenceRecord;
 
-    // ---- fixture helpers -------------------------------------------------
-
     fn chart_xz_plane() -> Chart {
         // 1m × 1m face on XZ at y=0, +Y normal. uv_extent = (1, 1).
         Chart {
@@ -424,8 +364,7 @@ mod tests {
         }
     }
 
-    /// Chart with non-axis-aligned (u,v) basis. Retained from earlier tests
-    /// as a secondary fixture exercising skewed UV→world projection.
+    /// Non-axis-aligned (u,v) basis; exercises skewed UV→world projection.
     fn chart_tilted(origin: Vec3) -> Chart {
         Chart {
             origin,
@@ -439,9 +378,6 @@ mod tests {
         }
     }
 
-    /// Project an (x, z) face-local point on `chart_tilted` to world space,
-    /// matching the chart's (u,v) basis so test fixtures can place light
-    /// centers onto the face.
     fn tilted_world_point(origin: Vec3, u: f32, v: f32) -> Vec3 {
         origin + Vec3::new(1.0, 0.5, 0.0) * u + Vec3::new(0.0, 0.5, 1.0) * v
     }
@@ -456,8 +392,7 @@ mod tests {
                 index_offset: 0,
                 index_count: 6,
                 cell_id: 0,
-                // Default zero — these fields are populated by pack-time
-                // stamping from the per-leaf range table the builder returns.
+                // Populated by pack-time stamping from the per-leaf range table.
                 chunk_range_start: 0,
                 chunk_range_count: 0,
             }],
@@ -474,8 +409,6 @@ mod tests {
                 index_offset: (i * 6) as u32,
                 index_count: 6,
                 cell_id: 0,
-                // Default zero — these fields are populated by pack-time
-                // stamping from the per-leaf range table the builder returns.
                 chunk_range_start: 0,
                 chunk_range_count: 0,
             })
@@ -550,12 +483,9 @@ mod tests {
         }
     }
 
-    // Deprecated-name alias kept for the original smoke tests below.
     fn animated_point_light() -> MapLight {
         mk_animated_light()
     }
-
-    // ---- existing smoke tests (preserved) --------------------------------
 
     #[test]
     fn no_animated_lights_emits_empty_section_and_zero_ranges() {
@@ -614,8 +544,6 @@ mod tests {
         assert_eq!(ranges[0], (0, 1));
     }
 
-    // ---- new tests (Task 4) ----------------------------------------------
-
     /// Scope case 2: N ≤ cap overlapping animated lights → exactly one chunk
     /// containing all N indices.
     #[test]
@@ -649,8 +577,6 @@ mod tests {
     /// multiple chunks, none exceeding the cap.
     #[test]
     fn over_cap_overlapping_animated_lights_subdivide() {
-        // 6 lights, each concentrated in a different (u,v) quadrant so
-        // subdivision actually shrinks the per-chunk overlap set.
         let uv_centers = [
             (0.1, 0.1),
             (0.9, 0.1),
@@ -667,8 +593,6 @@ mod tests {
                 let p = tilted_world_point(origin, u, v);
                 InfluenceRecord {
                     center: [p.x, p.y, p.z],
-                    // Small radius: in world meters on the tilted face a 0.2
-                    // sphere covers roughly one quadrant but not the opposite.
                     radius: 0.2,
                 }
             })
@@ -681,7 +605,7 @@ mod tests {
             &envelope,
             &[chart_tilted(origin)],
             &one_face_range(),
-            0.01, // 1 cm / texel — floor not triggered at 1 m face extent.
+            0.01,
         );
 
         assert!(
@@ -699,13 +623,11 @@ mod tests {
         assert_eq!(ranges[0].1 as usize, section.chunks.len());
     }
 
-    /// Regression: an axis-aligned planar face (walls/floors/ceilings — the
-    /// common case) must subdivide. Earlier the builder applied a
-    /// world-AABB min-extent floor that tripped on the planar face's
-    /// zero-thickness dimension and defeated subdivision entirely.
+    /// Regression: earlier the builder applied a world-AABB min-extent floor that
+    /// tripped on the zero-thickness dimension of axis-aligned planar faces and
+    /// defeated subdivision entirely.
     #[test]
     fn axis_aligned_planar_face_subdivides() {
-        // 4 lights, one in each quadrant of a 1m × 1m XZ-plane face.
         let uv_centers = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
         let lights: Vec<_> = uv_centers.iter().map(|_| mk_animated_light()).collect();
         let influence: Vec<_> = uv_centers
@@ -715,8 +637,6 @@ mod tests {
                 radius: 0.2,
             })
             .collect();
-        // Pack two more overlapping lights at the same centers so the root
-        // rect sees > cap and must subdivide.
         let mut all_lights = lights.clone();
         let mut all_influence = influence.clone();
         all_lights.push(mk_animated_light());
@@ -746,8 +666,7 @@ mod tests {
     }
 
     /// Scope case 4: min-extent floor forces a single chunk to exceed the cap
-    /// rather than infinite-loop. Using a texel density equal to the face
-    /// extent forces the very first recursion to trip the floor.
+    /// rather than infinite-loop.
     #[test]
     fn min_extent_floor_emits_single_overfull_chunk() {
         let n_lights = MAX_ANIMATED_LIGHTS_PER_CHUNK + 3;
@@ -755,8 +674,7 @@ mod tests {
         let influence: Vec<_> = (0..n_lights).map(|_| mk_inf(0.5, 0.5, 5.0)).collect();
 
         let bvh = make_bvh_with_one_leaf();
-        // texel density = 1.0 m/texel so `min_uv_extent >= uv_extent` on the
-        // root rect; builder must NOT recurse.
+        // texel density = 1.0 m/texel → min_uv_extent >= uv_extent on the root rect.
         let envelope = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
         let (section, _ranges) = build_animated_light_chunks(
             &bvh,
@@ -771,10 +689,8 @@ mod tests {
         assert_eq!(section.light_indices.len(), n_lights);
     }
 
-    /// `bake_only` animated lights participate in weight-map compose at
-    /// runtime (retroactive Spec 1 change, see plan Settled decisions), so
-    /// the builder MUST emit a chunk for them. Only `!is_dynamic &&
-    /// animation.is_some()` with a bounded influence radius gates inclusion.
+    /// `bake_only` animated lights participate in weight-map compose at runtime,
+    /// so the builder MUST emit chunks for them.
     #[test]
     fn bake_only_animated_light_produces_a_chunk() {
         let lights = vec![mk_bake_only_light()];
@@ -797,8 +713,7 @@ mod tests {
         assert_eq!(ranges[0].1, 1);
     }
 
-    /// Scope case 7: animated-flagged `is_dynamic` lights are not treated as
-    /// animated.
+    /// Scope case 7: `is_dynamic` lights must not enter the chunk section.
     #[test]
     fn dynamic_animated_light_is_skipped() {
         let lights = vec![mk_dynamic_light()];
@@ -819,15 +734,11 @@ mod tests {
         assert_eq!(ranges[0].1, 0);
     }
 
-    /// Scope case 8: emitted u32 indices index into the AnimatedBakedLights
-    /// namespace (positions inside the envelope). `is_dynamic` entries are
-    /// dropped by `AnimatedBakedLights::from_lights`, so they never receive a
-    /// slot. `bake_only` animated lights ARE retained — see
-    /// `bake_only_animated_light_produces_a_chunk`.
+    /// Scope case 8: emitted indices reference envelope slot positions;
+    /// `is_dynamic` entries are never assigned a slot.
     #[test]
     fn index_namespace_matches_envelope_slot_positions() {
-        // Source list: [animated, dynamic, animated, dynamic, animated].
-        // Envelope keeps positions 0, 2, 4 → slot indices 0, 1, 2.
+        // [animated, dynamic, animated, dynamic, animated] → envelope slots 0, 1, 2.
         let lights = vec![
             mk_animated_light(),
             mk_dynamic_light(),
@@ -860,12 +771,9 @@ mod tests {
         assert_eq!(seen, vec![0, 1, 2]);
     }
 
-    /// Scope case 9: two builds on identical input produce byte-identical
-    /// `AnimatedLightChunks` sections AND byte-identical `BvhSection`s (the
-    /// latter covers the stamped `chunk_range_*` fields).
+    /// Scope case 9: two builds on identical input produce byte-identical output.
     #[test]
     fn determinism_two_builds_byte_identical() {
-        // Non-trivial input — subdivision + multiple chunks.
         let uv_centers = [(0.2, 0.2), (0.8, 0.2), (0.2, 0.8), (0.8, 0.8), (0.5, 0.5)];
         let origin = Vec3::ZERO;
         let lights: Vec<_> = uv_centers.iter().map(|_| mk_animated_light()).collect();
@@ -903,20 +811,16 @@ mod tests {
         );
 
         assert_eq!(section_a.to_bytes(), section_b.to_bytes());
-        // Per-leaf range table must be identical across builds — covers what
-        // the on-disk stamped `chunk_range_*` fields will carry.
         assert_eq!(ranges_a, ranges_b);
     }
 
-    /// Acceptance invariant: every leaf owns a contiguous range into the chunk
-    /// array. No overlap. Sum of per-leaf `chunk_range_count` equals total
-    /// chunk count.
+    /// Every leaf owns a contiguous range into the chunk array; sum of per-leaf
+    /// counts equals total chunk count.
     #[test]
     fn bvh_leaf_chunk_ranges_are_contiguous_and_cover_all_chunks() {
-        // Four faces/leaves. Face 0 → one chunk. Face 1 → zero (no overlap).
-        // Face 2 → subdivision (multiple chunks). Face 3 → zero.
-        // Tilted charts keep the projected world AABB non-degenerate so the
-        // min-extent floor does not short-circuit subdivision on face 2.
+        // Face 0: one chunk. Face 1: zero. Face 2: subdivided (multiple chunks). Face 3: zero.
+        // Tilted charts keep projected world AABBs non-degenerate so the min-extent floor
+        // does not short-circuit subdivision on face 2.
         let origins = [
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(10.0, 0.0, 0.0),
@@ -925,8 +829,6 @@ mod tests {
         ];
         let charts: Vec<Chart> = origins.iter().map(|&o| chart_tilted(o)).collect();
 
-        // Six lights total: 1 for face 0, 5 for face 2 (> cap so subdivision
-        // is forced).
         let lights: Vec<_> = (0..6).map(|_| mk_animated_light()).collect();
         let p0 = tilted_world_point(origins[0], 0.5, 0.5);
         let p2a = tilted_world_point(origins[2], 0.1, 0.1);
@@ -968,14 +870,10 @@ mod tests {
         let (section, ranges) =
             build_animated_light_chunks(&bvh, &envelope, &charts, &face_ranges, 0.01);
 
-        // Invariant: total = sum of per-leaf counts.
         let sum: u32 = ranges.iter().map(|r| r.1).sum();
         assert_eq!(sum as usize, section.chunks.len());
 
-        // Invariant: ranges do not overlap AND are contiguous when we ignore
-        // zero-count leaves (zero-count leaves are permitted anywhere and
-        // carry a `chunk_range_start` equal to the next emit-point at their
-        // turn in the walk).
+        // Zero-count leaves carry a chunk_range_start equal to the next emit-point.
         let mut expected_next: u32 = 0;
         for &(start, count) in &ranges {
             assert_eq!(
@@ -986,8 +884,6 @@ mod tests {
         }
         assert_eq!(expected_next as usize, section.chunks.len());
 
-        // Invariant: face-0 leaf has exactly one chunk; face-2 leaf has more
-        // than one; faces 1 and 3 have zero.
         assert_eq!(ranges[0].1, 1);
         assert_eq!(ranges[1].1, 0);
         assert!(

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use super::data_descriptors::{
     EntityTypeDescriptor, NamedReaction, PrimitiveDescriptor, ReactionDescriptor, SequenceStep,
 };
+use super::ctx::ScriptCtx;
 use super::data_registry::DataRegistry;
 use super::reactions::registry::ReactionPrimitiveRegistry;
 use super::registry::{ComponentKind, EntityId, EntityRegistry};
@@ -204,7 +205,7 @@ pub(crate) fn fire_named_event_with_sequences(
     data_registry: &DataRegistry,
     sequence_registry: &SequencedPrimitiveRegistry,
     reaction_registry: &ReactionPrimitiveRegistry,
-    entity_registry: &mut EntityRegistry,
+    script_ctx: &ScriptCtx,
 ) -> Vec<String> {
     let mut chained = Vec::new();
     for named in &data_registry.reactions {
@@ -214,13 +215,13 @@ pub(crate) fn fire_named_event_with_sequences(
         match &named.descriptor {
             ReactionDescriptor::Progress(_) => {}
             ReactionDescriptor::Primitive(p) => {
-                dispatch_primitive(p, reaction_registry, entity_registry);
+                dispatch_primitive(p, reaction_registry, script_ctx);
                 if let Some(on_complete) = &p.on_complete {
                     chained.push(on_complete.clone());
                 }
             }
             ReactionDescriptor::Sequence(steps) => {
-                dispatch_sequence(steps, sequence_registry, &*entity_registry);
+                dispatch_sequence(steps, sequence_registry, script_ctx);
             }
         }
     }
@@ -235,12 +236,14 @@ pub(crate) fn fire_named_event_with_sequences(
 fn dispatch_primitive(
     descriptor: &PrimitiveDescriptor,
     reaction_registry: &ReactionPrimitiveRegistry,
-    entity_registry: &mut EntityRegistry,
+    script_ctx: &ScriptCtx,
 ) {
-    let targets: Vec<EntityId> = entity_registry
-        .query_by_component_and_tag(ComponentKind::Transform, Some(&descriptor.tag))
-        .map(|(id, _)| id)
-        .collect();
+    let targets: Vec<EntityId> = {
+        let reg = script_ctx.registry.borrow();
+        reg.query_by_component_and_tag(ComponentKind::Transform, Some(&descriptor.tag))
+            .map(|(id, _)| id)
+            .collect()
+    };
 
     log::info!(
         "[Scripting] dispatch primitive '{}' on tag '{}' ({} targets)",
@@ -249,9 +252,10 @@ fn dispatch_primitive(
         targets.len(),
     );
 
+    let mut reg = script_ctx.registry.borrow_mut();
     match reaction_registry.dispatch(
         &descriptor.primitive,
-        entity_registry,
+        &mut reg,
         &targets,
         &descriptor.args,
     ) {
@@ -270,10 +274,10 @@ fn dispatch_primitive(
 fn dispatch_sequence(
     steps: &[SequenceStep],
     sequence_registry: &SequencedPrimitiveRegistry,
-    entity_registry: &EntityRegistry,
+    script_ctx: &ScriptCtx,
 ) {
     for (i, step) in steps.iter().enumerate() {
-        if !entity_registry.exists(step.id) {
+        if !script_ctx.registry.borrow().exists(step.id) {
             log::warn!(
                 "[Scripting] sequence step {i}: entity {:?} not found, skipping",
                 step.id
@@ -646,6 +650,7 @@ mod tests {
 
     // --- sequence dispatch --------------------------------------------------
 
+    use crate::scripting::ctx::ScriptCtx;
     use crate::scripting::data_descriptors::SequenceStep;
     use crate::scripting::registry::EntityId;
     use crate::scripting::sequence::{SequenceError, SequencedPrimitiveRegistry};
@@ -661,9 +666,9 @@ mod tests {
 
     #[test]
     fn sequence_dispatch_runs_each_step_in_order() {
-        let mut entities = EntityRegistry::new();
-        let id_a = entities.spawn(Transform::default());
-        let id_b = entities.spawn(Transform::default());
+        let script_ctx = ScriptCtx::new();
+        let id_a = script_ctx.registry.borrow_mut().spawn(Transform::default());
+        let id_b = script_ctx.registry.borrow_mut().spawn(Transform::default());
 
         let calls: Arc<std::sync::Mutex<Vec<(u32, i64)>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -698,7 +703,7 @@ mod tests {
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
         let chained =
-            fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &mut entities);
+            fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &script_ctx);
         assert!(chained.is_empty());
         let observed = calls.lock().unwrap().clone();
         assert_eq!(observed, vec![(id_a.to_raw(), 1), (id_b.to_raw(), 2)]);
@@ -708,14 +713,14 @@ mod tests {
     fn sequence_dispatch_skips_stale_entity_and_continues() {
         // Acceptance: multi-step sequence where one step has a stale ID — the
         // surviving steps still execute.
-        let mut entities = EntityRegistry::new();
-        let id_a = entities.spawn(Transform::default());
-        let id_b = entities.spawn(Transform::default());
+        let script_ctx = ScriptCtx::new();
+        let id_a = script_ctx.registry.borrow_mut().spawn(Transform::default());
+        let id_b = script_ctx.registry.borrow_mut().spawn(Transform::default());
 
         // Stale ID: reuse a slot that was despawned (mismatched generation).
-        let id_dead = entities.spawn(Transform::default());
-        entities.despawn(id_dead).unwrap();
-        assert!(!entities.exists(id_dead));
+        let id_dead = script_ctx.registry.borrow_mut().spawn(Transform::default());
+        script_ctx.registry.borrow_mut().despawn(id_dead).unwrap();
+        assert!(!script_ctx.registry.borrow().exists(id_dead));
 
         let count = Arc::new(AtomicU32::new(0));
         let count_cl = Arc::clone(&count);
@@ -752,16 +757,16 @@ mod tests {
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
-        fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &mut entities);
+        fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &script_ctx);
         // Two surviving steps fired; the stale step was skipped.
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[test]
     fn sequence_dispatch_continues_after_handler_error() {
-        let mut entities = EntityRegistry::new();
-        let id_a = entities.spawn(Transform::default());
-        let id_b = entities.spawn(Transform::default());
+        let script_ctx = ScriptCtx::new();
+        let id_a = script_ctx.registry.borrow_mut().spawn(Transform::default());
+        let id_b = script_ctx.registry.borrow_mut().spawn(Transform::default());
 
         let count = Arc::new(AtomicU32::new(0));
         let count_cl = Arc::clone(&count);
@@ -798,7 +803,7 @@ mod tests {
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
-        fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &mut entities);
+        fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &script_ctx);
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 

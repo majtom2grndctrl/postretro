@@ -883,7 +883,7 @@ impl ApplicationHandler for App {
                         &self.data_registry,
                         &self.sequence_registry,
                         &self.reaction_registry,
-                        &mut self.script_ctx.registry.borrow_mut(),
+                        &self.script_ctx,
                     );
                     self.level_load_fired = true;
                     self.script_time = 0.0;

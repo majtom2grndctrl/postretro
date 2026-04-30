@@ -98,7 +98,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
     }
 }
 
-const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Behavior context only. \
+const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Available in behavior and data contexts. \
      Filter shape: { component: string, tag?: string } where `component` names the \
      component type to query. Only \"light\" is supported in the current build; \
      other values return an InvalidArgument error. \
@@ -124,7 +124,7 @@ pub(crate) fn register_world_query(registry: &mut PrimitiveRegistry, ctx: Script
                 }
             }
         })
-        .scope(ContextScope::BehaviorOnly)
+        .scope(ContextScope::Both)
         .doc(WORLD_QUERY_DOC)
         .param("filter", "WorldQueryFilter")
         .finish();

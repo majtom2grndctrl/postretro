@@ -158,10 +158,19 @@ fn apply_light_animation(
     id: EntityId,
     animation: Option<LightAnimation>,
 ) -> Result<(), ScriptError> {
-    // Read current component. Early-return the spec'd errors if entity is
-    // missing or has no light component.
     let mut reg = ctx.registry.borrow_mut();
-    let current = reg
+    apply_light_animation_inner(&mut reg, id, animation)
+}
+
+/// Inner logic shared by the script-facing FFI path (`apply_light_animation`)
+/// and the sequenced-primitive path. Takes the already-borrowed registry
+/// directly to avoid a second `borrow_mut` on the same `RefCell` guard.
+pub(crate) fn apply_light_animation_inner(
+    registry: &mut super::registry::EntityRegistry,
+    id: EntityId,
+    animation: Option<LightAnimation>,
+) -> Result<(), ScriptError> {
+    let current = registry
         .get_component::<LightComponent>(id)
         .map_err(ScriptError::from)?
         .clone();
@@ -173,7 +182,7 @@ fn apply_light_animation(
 
     let mut next = current;
     next.animation = validated;
-    reg.set_component(id, next).map_err(ScriptError::from)?;
+    registry.set_component(id, next).map_err(ScriptError::from)?;
     Ok(())
 }
 
@@ -219,7 +228,9 @@ fn register_set_light_animation(registry: &mut PrimitiveRegistry, ctx: ScriptCtx
 /// deserializes the step's `serde_json::Value` payload as
 /// `Option<LightAnimation>` (a JSON `null` clears the entity's animation,
 /// matching the script-facing primitive) and applies it via the same
-/// `apply_light_animation` path the behavior primitive uses.
+/// `apply_light_animation` path the behavior primitive uses. `ctx` is
+/// captured so future sequenced primitives can reach audio, render, or other
+/// `ScriptCtx`-held state without a signature change.
 pub(crate) fn register_sequenced_light_primitives(
     registry: &mut SequencedPrimitiveRegistry,
     ctx: ScriptCtx,
@@ -1041,17 +1052,19 @@ mod tests {
     // --- Context-scope enforcement ------------------------------------------
 
     #[test]
-    fn both_primitives_are_behavior_only() {
+    fn primitive_context_scopes() {
         let ctx = ScriptCtx::new();
         let r = registry_for(ctx);
-        let names_scopes: Vec<_> = r.iter().map(|p| (p.name, p.context_scope)).collect();
-        for &(name, scope) in &names_scopes {
-            assert_eq!(
-                scope,
-                ContextScope::BehaviorOnly,
-                "primitive {name} must be BehaviorOnly"
-            );
-        }
+        let scope_of = |name: &str| {
+            r.iter()
+                .find(|p| p.name == name)
+                .map(|p| p.context_scope)
+                .unwrap_or_else(|| panic!("primitive {name} not found"))
+        };
+        // worldQuery is read-only and valid in both behavior and data contexts.
+        assert_eq!(scope_of("worldQuery"), ContextScope::Both);
+        // setLightAnimation mutates runtime light state — behavior context only.
+        assert_eq!(scope_of("setLightAnimation"), ContextScope::BehaviorOnly);
     }
 
     #[test]
@@ -1145,7 +1158,7 @@ mod tests {
     fn sequenced_set_light_animation_rejects_zero_length_direction() {
         let (ctx, id) = test_ctx_with_light(true, None);
         let mut seq_reg = SequencedPrimitiveRegistry::new();
-        register_sequenced_light_primitives(&mut seq_reg, ctx);
+        register_sequenced_light_primitives(&mut seq_reg, ctx.clone());
         let handler = seq_reg.get("setLightAnimation").unwrap();
         let args = serde_json::json!({
             "periodMs": 100.0,
@@ -1162,7 +1175,7 @@ mod tests {
     fn sequenced_set_light_animation_rejects_color_on_non_dynamic() {
         let (ctx, id) = test_ctx_with_light(false, None);
         let mut seq_reg = SequencedPrimitiveRegistry::new();
-        register_sequenced_light_primitives(&mut seq_reg, ctx);
+        register_sequenced_light_primitives(&mut seq_reg, ctx.clone());
         let handler = seq_reg.get("setLightAnimation").unwrap();
         let args = serde_json::json!({
             "periodMs": 100.0,
@@ -1179,7 +1192,7 @@ mod tests {
     fn sequenced_set_light_animation_rejects_malformed_args() {
         let (ctx, id) = test_ctx_with_light(true, None);
         let mut seq_reg = SequencedPrimitiveRegistry::new();
-        register_sequenced_light_primitives(&mut seq_reg, ctx);
+        register_sequenced_light_primitives(&mut seq_reg, ctx.clone());
         let handler = seq_reg.get("setLightAnimation").unwrap();
         // `periodMs` is required and numeric — a string fails deserialization.
         let args = serde_json::json!({ "periodMs": "fast" });

@@ -30,13 +30,14 @@ pub(crate) enum SequenceError {
 }
 
 /// Boxed handler for a sequenced primitive. Receives the resolved entity ID
-/// and a serde_json payload carrying primitive-specific arguments.
+/// and a serde_json payload. Handlers capture a `ScriptCtx` clone at
+/// registration time so they can reach the entity registry, audio state, or
+/// any other engine subsystem added to `ScriptCtx` in the future — without
+/// being limited to the single subsystem the dispatcher happens to pass.
 ///
 /// No `Send + Sync` bound: the scripting subsystem is single-threaded by
-/// design (`ScriptCtx` captures `Rc<RefCell<_>>` into every primitive
-/// closure), and the reaction dispatcher runs on the main thread alongside
-/// the rest of the frame loop. Adding cross-thread bounds here would force
-/// every handler to give up its `Rc`-shared engine state.
+/// design (`ScriptCtx` captures `Rc<RefCell<_>>`), and the reaction
+/// dispatcher runs on the main thread alongside the rest of the frame loop.
 // Not Clone — handlers capture Rc<RefCell<_>> state.
 pub(crate) type SequencedPrimitiveFn =
     Box<dyn Fn(EntityId, &serde_json::Value) -> Result<(), SequenceError>>;

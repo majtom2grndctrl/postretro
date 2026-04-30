@@ -103,7 +103,7 @@ declare module "postretro" {
   /** Spawns a new entity with the given transform and returns its id. */
   export function spawnEntity(transform: Transform): EntityId;
 
-  /** Return an array of entity handles matching the filter. Behavior context only. Filter shape: { component: string, tag?: string } where `component` names the component type to query. Only "light" is supported in the current build; other values return an InvalidArgument error. The `world.ts` vocabulary module wraps this as `world.query`. */
+  /** Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: string, tag?: string } where `component` names the component type to query. Only "light" is supported in the current build; other values return an InvalidArgument error. The `world.ts` vocabulary module wraps this as `world.query`. */
   export function worldQuery(filter: WorldQueryFilter): ReadonlyArray<Entity>;
 
   // -------------------------------------------------------------------------

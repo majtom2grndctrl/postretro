@@ -39,75 +39,47 @@ use smoke::SmokePass;
 
 use crate::fx::smoke::SpriteFrame;
 
-// --- WGSL Shaders ---
-
-// Forward shader source is `forward.wgsl` concatenated with the binding-
-// agnostic Catmull-Rom helper in `curve_eval.wgsl`. The helper reads
-// `anim_samples` by lexical name — `forward.wgsl` declares that storage
-// buffer, and WGSL resolves both function and variable references at module scope
-// independently of textual declaration order, so appending the helper after `forward.wgsl` is safe.
+// `curve_eval.wgsl` reads `anim_samples` by lexical name; `forward.wgsl`
+// declares that buffer. WGSL resolves references at module scope regardless of
+// textual order, so appending the helper after `forward.wgsl` is safe.
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),
 );
 
-// Wireframe overlay: culling-delta debug visualization. See shader header.
 const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 
-// Depth pre-pass: vertex-only shader used to populate the shared depth
-// buffer before the forward pass, so the forward pass can run with a
-// `depth_compare: Equal` test and zero shading overdraw.
+// Depth pre-pass: vertex-only; enables `depth_compare: Equal` in the forward
+// pass so each pixel is shaded exactly once (zero shading overdraw).
 const DEPTH_PREPASS_SHADER_SOURCE: &str = include_str!("../shaders/depth_prepass.wgsl");
 
-// Spot light shadow depth pass: vertex-only shader that transforms world
-// geometry by a per-slot light-space matrix uniform, writing Depth32Float
-// into one layer of the shadow-map array per draw.
+// Spot shadow depth pass: vertex-only; writes Depth32Float per slot via a
+// dynamic-offset uniform selecting the per-slot light-space matrix.
 const SPOT_SHADOW_SHADER_SOURCE: &str = include_str!("../shaders/spot_shadow.wgsl");
 
-// --- GPU-timing pair indices ---
-//
-// Pair index `i` maps to query slots `[2i, 2i+1]` in the `FrameTiming`
-// query set (see `frame_timing::FrameTiming`). The labels vector passed
-// to `FrameTiming::new` is indexed by these constants so the label
-// ordering and the callsite indices can't drift: add an entry here,
-// bump the label-vec length below, and the per-pass `*_pass_writes(...)`
-// callsites read the right label.
+// Pair index `i` → query slots `[2i, 2i+1]`. Indexed by `FrameTiming::new`'s
+// labels vec so label ordering and callsite indices can't drift independently.
 const TIMING_PAIR_CULL: usize = 0;
 const TIMING_PAIR_ANIMATED_LM_COMPOSE: usize = 1;
 const TIMING_PAIR_DEPTH_PREPASS: usize = 2;
 const TIMING_PAIR_FORWARD: usize = 3;
 const TIMING_PAIR_COUNT: usize = 4;
 
-// --- Uniform buffer layout ---
-
-/// Per-frame uniform data: view-projection, camera world-space position,
-/// ambient floor, light count, elapsed time, lighting-isolation mode,
-/// and SH indirect scale.
-///
-/// Layout must match the WGSL `Uniforms` struct in `forward.wgsl` and
-/// `wireframe.wgsl` — both shaders bind the same buffer. std140 rules
-/// align `vec3<f32>` to 16 bytes, so `camera_position` (vec3) + trailing
-/// `ambient_floor` (f32) share one 16-byte slot. `light_count` (u32)
-/// starts a new slot and is padded out to a full vec4 slot for alignment.
-///
-/// Offsets (bytes):
-///   0..64    view_proj           (mat4x4<f32>)
-///   64..76   camera_position     (vec3<f32>)
-///   76..80   ambient_floor       (f32)
-///   80..84   light_count         (u32)
-///   84..88   time                (f32, elapsed seconds for SH animation)
-///   88..92   lighting_isolation  (u32, cycles 0..=9; chord Alt+Shift+4)
-///   92..96   indirect_scale      (f32, per-frame SH indirect multiplier)
+// std140 aligns vec3<f32> to 16 bytes, so camera_position (vec3) and
+// ambient_floor (f32) share one slot. Must match the WGSL `Uniforms` struct
+// in forward.wgsl and wireframe.wgsl — both shaders bind the same buffer.
+//   0..64    view_proj
+//   64..76   camera_position (vec3<f32>)
+//   76..80   ambient_floor (f32)
+//   80..84   light_count (u32)
+//   84..88   time (elapsed seconds for SH animation curves)
+//   88..92   lighting_isolation (u32, 0..=9; Alt+Shift+4)
+//   92..96   indirect_scale (f32)
 const UNIFORM_SIZE: usize = 96;
 
-/// Lighting-term isolation mode for leak/bleed debugging.
-///
-/// Cycled by the `Alt+Shift+4` diagnostic chord. The fragment shader branches
-/// on this value to enable each lighting term independently, so an A/B compare
-/// inside a leaky room pins the bug to exactly one lighting path. `Normal` is
-/// the default and matches production shading. The ambient floor always
-/// contributes so interior geometry is never pitch black.
+/// Lighting-term isolation mode for leak/bleed debugging (cycled by Alt+Shift+4).
+/// The ambient floor always contributes so interior geometry is never pitch black.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum LightingIsolation {
@@ -124,7 +96,6 @@ pub enum LightingIsolation {
 }
 
 impl LightingIsolation {
-    /// Advance to the next mode in the cycle, wrapping back to `Normal`.
     pub fn cycle(self) -> Self {
         match self {
             LightingIsolation::Normal => LightingIsolation::NoLightmap,
@@ -140,7 +111,6 @@ impl LightingIsolation {
         }
     }
 
-    /// Human-readable label for diagnostics logging.
     pub fn label(self) -> &'static str {
         match self {
             LightingIsolation::Normal => "Normal (all terms)",
@@ -157,9 +127,6 @@ impl LightingIsolation {
     }
 }
 
-/// CPU-side mirror of the per-frame uniform buffer. Fields map 1:1 to the
-/// WGSL uniform layout; `build_uniform_data` is the single source of truth
-/// for the byte packing.
 struct FrameUniforms {
     view_proj: Mat4,
     camera_position: Vec3,
@@ -189,27 +156,16 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes
 }
 
-/// Default ambient floor applied when the caller doesn't override it.
-/// Provisional value from sub-plan 3; tuned via the ambient-floor slider
-/// in the settings menu. The right default is the lowest value where a
-/// player can still navigate dark areas.
+/// Lowest value where a player can still navigate dark areas; tuned via the
+/// ambient-floor slider (Alt+Shift+{ / Alt+Shift+}).
 pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.001;
 
-/// Global until per-draw world/entity split lands; entities will need a
-/// higher value than static surfaces once they are mesh-drawn.
 pub const DEFAULT_INDIRECT_SCALE: f32 = 0.10;
 
-// --- GPU texture ---
-
-/// A GPU-uploaded material with per-texture bind group (group 1): diffuse
-/// texture + sampler + specular texture + material uniform.
 struct GpuTexture {
     bind_group: wgpu::BindGroup,
 }
 
-/// Upload a texture's pixel data to the GPU and return the texture handle.
-/// Callers wrap the returned texture in a bind group via
-/// `create_material_bind_group`.
 fn upload_texture_data(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -260,20 +216,16 @@ fn upload_texture_data(
     texture
 }
 
-/// Extract the R channel from RGBA8 pixel data. Used when uploading the
-/// grayscale `_s.png` sidecars as single-channel `R8Unorm` — the diffuse
-/// loader expands grayscale PNGs to RGBA8, but only the R channel carries
-/// specular data, so the G/B/A bytes are dropped to save 4× VRAM.
+// The diffuse loader expands grayscale PNGs to RGBA8; only R carries specular
+// data so G/B/A are dropped to save 4× VRAM before upload as R8Unorm.
 fn extract_r_channel(rgba: &[u8]) -> Vec<u8> {
     rgba.iter().step_by(4).copied().collect()
 }
 
-/// Byte layout of `MaterialUniform`. Layout mirrors the WGSL struct in
-/// `forward.wgsl`:
-///   0..4    shininess (f32)
-///   4..16   pad
-///   16..32  pad (vec3<f32> _pad lands here with align-16, rounding the
-///           struct size up to 32 in the uniform address space)
+// std140 rounds the struct size to a multiple of 16. The trailing vec3<f32>
+// _pad field forces the size to 32 bytes to match the WGSL `MaterialUniform`.
+//   0..4   shininess (f32)
+//   4..32  pad
 const MATERIAL_UNIFORM_SIZE: usize = 32;
 
 fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
@@ -282,13 +234,8 @@ fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
     bytes
 }
 
-// --- Depth buffer ---
-
-/// Depth format used for the depth buffer.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Create the depth texture and return both the texture and its view
-/// (for depth attachment).
 fn create_depth_texture(
     device: &wgpu::Device,
     width: u32,
@@ -315,59 +262,31 @@ fn create_depth_texture(
     (depth_texture, view)
 }
 
-// --- Geometry data ---
-
-/// Geometry data the renderer needs from a level, including the BVH used to
-/// build the GPU-driven indirect draw pipeline and the map's light list.
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [crate::geometry::WorldVertex],
     pub indices: &'a [u32],
-    /// Global BVH loaded from the `Bvh` section. Always present for valid
-    /// PRL levels — pre-BVH maps fail earlier in the loader.
     pub bvh: &'a BvhTree,
-    /// Direct lights parsed from the AlphaLights PRL section. May be empty
-    /// on maps compiled before the Lighting Foundation milestone.
     pub lights: &'a [MapLight],
-    /// Per-light influence volumes from the LightInfluence PRL section.
-    /// Same length as `lights` when present; empty if absent.
     pub light_influences: &'a [LightInfluence],
-    /// Baked SH L2 irradiance volume from the `ShVolume` PRL section. `None`
-    /// when the section is absent — the renderer binds dummy 1×1×1 textures
-    /// and the shader skips SH sampling.
+    /// `None` → renderer binds dummy 1×1×1 textures; shader skips SH sampling.
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::ShVolumeSection>,
-    /// Baked directional lightmap atlas from the `Lightmap` PRL section.
-    /// `None` when the section is absent — the renderer binds a 1×1 white
-    /// placeholder and bumped-Lambert falls back to flat white.
+    /// `None` → 1×1 white placeholder; bumped-Lambert falls back to flat white.
     pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapSection>,
-    /// Chunk-light-list section from the `ChunkLightList` PRL section.
-    /// `None` when the section is absent — the runtime binds a dummy
-    /// payload and the fragment shader's `has_chunk_grid == 0` guard
-    /// iterates the full spec buffer. See `lighting::chunk_list`.
+    /// `None` → `has_chunk_grid == 0`; shader iterates the full spec buffer.
     pub chunk_light_list:
         Option<&'a postretro_level_format::chunk_light_list::ChunkLightListSection>,
-    /// Per-face animated-light chunk section (ID 24). Consumed by the
-    /// animated-lightmap compose pass's cross-section validator. May be
-    /// `None` alongside `animated_light_weight_maps` on maps with zero
-    /// animated lights.
+    /// `None` when the map has zero animated lights.
     pub animated_light_chunks:
         Option<&'a postretro_level_format::animated_light_chunks::AnimatedLightChunksSection>,
-    /// Baked per-animated-light weight maps (ID 25). `None` when the map
-    /// has no animated lights — the renderer binds a 1×1 zero atlas.
+    /// `None` → 1×1 zero atlas bound on group 4.
     pub animated_light_weight_maps: Option<
         &'a postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection,
     >,
-    /// Per-animated-light delta SH probe grids (ID 27). Consumed by the SH
-    /// compose pass to accumulate per-light animated contributions on top of
-    /// the static base SH bands. `None` when the map has no animated lights —
-    /// the compose pass falls back to a base→total copy.
+    /// `None` → compose pass falls back to a base→total copy.
     pub delta_sh_volumes:
         Option<&'a postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
-    /// Per-texture material, indexed by texture (bucket) index. Drives
-    /// per-material shininess uploaded to group 1 binding 3.
     pub texture_materials: &'a [crate::material::Material],
 }
-
-// --- Renderer ---
 
 pub struct Renderer {
     device: wgpu::Device,
@@ -377,14 +296,9 @@ pub struct Renderer {
     is_surface_configured: bool,
 
     pipeline: wgpu::RenderPipeline,
-    /// Depth-only pipeline used for the pre-pass that populates the
-    /// shared depth buffer before the forward pass. The forward pass
-    /// then runs with `depth_compare: Equal` and shades each pixel once.
     depth_prepass_pipeline: wgpu::RenderPipeline,
-    /// GPU timestamp-query recorder. `Some` when
-    /// `POSTRETRO_GPU_TIMING=1` is set AND the adapter advertises the
-    /// `TIMESTAMP_QUERY` feature; `None` otherwise so no
-    /// `timestamp_writes` fields are attached to any pass.
+    /// `Some` when `POSTRETRO_GPU_TIMING=1` AND adapter supports `TIMESTAMP_QUERY`;
+    /// `None` → no `timestamp_writes` attached to any pass.
     frame_timing: Option<FrameTiming>,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -392,150 +306,77 @@ pub struct Renderer {
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
 
-    /// Group 2 — storage buffer of packed `GpuLight` records, uploaded
-    /// once at level load. Always bound; maps with zero lights get a
-    /// 1-element dummy buffer so the binding is never empty (wgpu
-    /// rejects zero-sized storage buffer bindings).
+    /// Always bound; maps with zero lights get a 1-element dummy buffer —
+    /// wgpu rejects zero-sized storage buffer bindings.
     lighting_bind_group: wgpu::BindGroup,
-    /// Number of real (non-dummy) lights uploaded — this is the loop
-    /// bound the fragment shader reads from `uniforms.light_count`.
     light_count: u32,
-    /// Ambient floor applied before albedo multiply. Player-facing setting
-    /// (0.0–1.0 slider); default is `DEFAULT_AMBIENT_FLOOR`. A scalar
-    /// brightness only — no color.
     ambient_floor: f32,
-    /// SH indirect scale. See `DEFAULT_INDIRECT_SCALE`.
     indirect_scale: f32,
 
-    /// Group 3 — SH irradiance volume resources. Always allocated; when no
-    /// SH section is present the bind group binds dummy 1×1×1 textures and
-    /// the fragment shader's `has_sh_volume` flag is 0 so SH sampling is
-    /// skipped. See `sh_volume` module for layout.
+    /// Absent SH section → dummy 1×1×1 textures; `has_sh_volume == 0` skips sampling.
     sh_volume_resources: ShVolumeResources,
 
-    /// SH compose compute pass. Runs once per frame before the depth
-    /// pre-pass; composes base SH bands into the total SH bands that
-    /// `sh_volume_resources.bind_group` exposes to all SH consumers
-    /// (forward, billboard, fog). Stub phase: pure base→total copy.
+    /// Composes base SH bands into the total bands consumers sample. Must run
+    /// before the depth pre-pass so the storage→sampled barrier resolves first.
     sh_compose: ShComposeResources,
 
-    /// Group 4 — directional lightmap atlas resources. Always allocated;
-    /// when no Lightmap section is present the bind group binds a 1×1
-    /// white/neutral placeholder so the shader path never branches.
-    /// See `lighting::lightmap`.
+    /// Absent Lightmap section → 1×1 white/neutral placeholder; no shader branch.
     lightmap_resources: LightmapResources,
 
-    /// Animated-lightmap compose pass. Owns the compute pipeline, storage
-    /// atlas, per-frame clear + compose dispatch, and (when no weight-map
-    /// section is present) a 1×1 zero atlas bound via
-    /// `lightmap_resources` for the forward pass. See
-    /// `render::animated_lightmap`.
     animated_lightmap: animated_lightmap::AnimatedLightmapResources,
 
-    /// Group 2 — dynamic lights buffer. Holds the packed GpuLight array
-    /// (updated per frame for slot assignment).
     #[allow(dead_code)]
     lights_buffer: wgpu::Buffer,
-    /// Per-frame light list cached from the level (for slot assignment).
     #[allow(dead_code)]
     level_lights: Vec<MapLight>,
-    /// Per-map-light current effective brightness, in `level_lights` order.
-    /// Updated each dirty frame by `set_light_effective_brightness` from the
-    /// light bridge. Lights whose animation curve evaluates near zero are
-    /// excluded from dynamic spot shadow slot ranking. Empty (or shorter than
-    /// `level_lights`) means "no suppression"; missing entries are treated
-    /// as 1.0.
+    /// Lights near zero are excluded from shadow slot ranking. Empty = no suppression.
     light_effective_brightness: Vec<f32>,
-    /// Last camera position uploaded via `update_per_frame_uniforms`,
-    /// cached so the shadow pass can re-rank lights on its own clock.
+    /// Cached from `update_per_frame_uniforms` so the shadow pass can re-rank lights.
     last_camera_position: Vec3,
-    /// Spot shadow pool: 8 depth textures with per-frame slot assignment,
-    /// plus the sampler, matrix buffer, and bind group consumed by group 5
-    /// of the forward shader.
     spot_shadow_pool: SpotShadowPool,
-    /// Vertex-stage uniform buffer holding the light-space matrix for the
-    /// currently-rendering shadow slot. Rebound per slot via a dynamic
-    /// offset into a single buffer sized for `SHADOW_POOL_SIZE` slots.
+    /// Dynamic-offset into a single buffer; offset selects the per-slot light-space matrix.
     shadow_vs_uniform_buffer: wgpu::Buffer,
-    /// Bind group for group 0 of the shadow depth pipeline. Uses dynamic
-    /// offset so the slot index selects the matrix for each depth pass.
     shadow_vs_bind_group: wgpu::BindGroup,
-    /// Depth-only pipeline that renders static geometry into a shadow map
-    /// slot using `spot_shadow.wgsl`.
     shadow_depth_pipeline: wgpu::RenderPipeline,
-    /// Stride between per-slot entries in `shadow_vs_uniform_buffer`,
-    /// rounded up to `min_uniform_buffer_offset_alignment`.
+    /// Rounded up to `min_uniform_buffer_offset_alignment`.
     shadow_vs_stride: u32,
 
     depth_view: wgpu::TextureView,
 
     /// GPU textures indexed by texture index.
     gpu_textures: Vec<GpuTexture>,
-    /// Cached BVH leaves, used by the wireframe overlay to size per-leaf
-    /// draw ranges. The renderer no longer consults this for the textured
-    /// pass — that flows entirely through the compute shader / indirect
-    /// buffer path.
     bvh_leaves: Vec<crate::geometry::BvhLeaf>,
-    /// GPU-driven compute culling pipeline. `Some` when the level has a
-    /// non-empty BVH; `None` for no-geometry mode.
+    /// `None` for maps with no BVH.
     compute_cull: Option<ComputeCullPipeline>,
 
-    /// Debug wireframe overlay pipeline (LineList topology, cull-status-driven color).
     wireframe_pipeline: wgpu::RenderPipeline,
-    /// Line-list index buffer built from the triangle index buffer at load time.
-    /// Layout is 1:1 parallel with the triangle index buffer: each triangle at
-    /// triangle-buffer range `[tri_start..tri_end]` (multiple of 3) maps to
-    /// line-buffer range `[tri_start*2..tri_end*2]` (6 line indices per 3
-    /// triangle indices).
     wireframe_index_buffer: wgpu::Buffer,
     wireframe_index_count: u32,
-    /// Bind group layout for the wireframe cull-status storage buffer (group 1).
     wireframe_cull_status_bgl: wgpu::BindGroupLayout,
-    /// Whether the culling-delta wireframe overlay is active.
     wireframe_enabled: bool,
 
-    /// Lighting-term isolation mode for leak/bleed debugging. Cycled by the
-    /// `Alt+Shift+4` diagnostic chord. When not `Normal`, the fragment
-    /// shader zeroes out one or both lighting terms so an A/B compare
-    /// isolates which path (direct vs baked SH indirect) is carrying a bad
-    /// contribution.
     lighting_isolation: LightingIsolation,
 
-    /// Whether the surface is currently configured with vsync on
-    /// (`AutoVsync`) or off (`AutoNoVsync`). Toggled by the
-    /// `Alt+Shift+V` diagnostic chord so the frametime meter can be
-    /// compared against real CPU cost; initialized to match the
-    /// `AutoVsync` default chosen in `Renderer::new`.
+    /// Toggled by Alt+Shift+V; `true` = AutoVsync, `false` = AutoNoVsync.
     vsync_enabled: bool,
 
     has_geometry: bool,
 
-    /// Monotonic frame counter for debug logging.
     debug_frame: u64,
-    /// Previous frame's visible-cell bitmask fingerprint (popcount, xor_hash).
     debug_prev_bitmask: (u32, u32),
-    /// Previous frame's view_proj matrix fingerprint (bitwise xor of all 16 f32 bits).
     debug_prev_vp_hash: u32,
-    /// Previous frame's VisibleCells variant label + cell count.
     debug_prev_visible: (&'static str, usize),
 
-    /// Wall-clock timestamp of renderer creation. The per-frame uniform's
-    /// `time` field is `app_start.elapsed()`; the fragment shader wraps it
-    /// per-light via `fract(time / period + phase)` for SH animation.
+    /// `app_start.elapsed()` feeds the `time` uniform; shaders wrap it via
+    /// `fract(time / period + phase)` for SH animation curves.
     app_start: Instant,
 
-    /// Billboard sprite pass. Always allocated; idle (no draw) on maps with
-    /// no registered collections. Collections are registered at level load
-    /// via `register_smoke_collection`. Draw ordering: after opaque forward
-    /// pass, before wireframe overlay. See §7.4.
+    /// Idle (no draw) on maps with no registered collections. See §7.4.
     smoke_pass: SmokePass,
 }
 
 impl Renderer {
-    /// Create the renderer, taking ownership of all GPU state.
-    ///
-    /// `geometry` is `None` when no map file was loaded (renders clear color only).
-    /// `texture_set` provides CPU-side textures for GPU upload; `None` for no textures.
+    /// `geometry` is `None` when no map is loaded (renders clear color only).
     pub fn new(
         window: &Arc<Window>,
         geometry: Option<&LevelGeometry>,
@@ -561,8 +402,8 @@ impl Renderer {
 
         log::info!("[Renderer] GPU adapter: {}", adapter.get_info().name);
 
-        // Probe for multi_draw_indexed_indirect support via downlevel flags.
-        // Available on Vulkan, Metal, DX12; absent on WebGL2 (not a target).
+        // Vulkan/Metal/DX12 support multi_draw_indexed_indirect; WebGL2 does not
+        // (not a target). Fall back to singular draw_indexed_indirect.
         let downlevel = adapter.get_downlevel_capabilities();
         let has_multi_draw_indirect = downlevel
             .flags
@@ -575,10 +416,8 @@ impl Renderer {
             );
         }
 
-        // Probe for TIMESTAMP_QUERY: only enable GPU timing when both the
-        // adapter supports it AND the user opted in via env var. On
-        // fallback `FrameTiming` is `None` and no timestamp_writes are
-        // attached anywhere — zero runtime cost when disabled.
+        // Only enable GPU timing when POSTRETRO_GPU_TIMING=1 AND the adapter
+        // supports TIMESTAMP_QUERY. FrameTiming=None → zero runtime cost.
         let adapter_features = adapter.features();
         let gpu_timing_requested =
             std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1");
@@ -594,23 +433,19 @@ impl Renderer {
             );
         }
 
-        // Raise `max_bind_groups` above the WebGPU downlevel default of 4.
-        // The forward pipeline binds groups 0–4 today (camera, material,
-        // lights + spec stack, SH volume, lightmap); `lighting-spot-shadows`
-        // will add a shadow-pool group. 8 is the WebGPU maximum and is
-        // supported on every desktop backend we target.
-        // NOTE: the forward fragment shader binds exactly 16 sampled textures
-        // (3 material [diffuse, spec, normal — normal at binding 4 was added by
-        // the normal-maps plan; previously 15] + 9 SH bands + 3 lightmap +
-        // 1 shadow depth), which is the WebGPU spec floor for
-        // max_sampled_textures_per_shader_stage. Adding another sampled texture
-        // to the forward pass requires bumping this limit (all desktop backends
-        // support ≥32) or restructuring the SH bindings (e.g., collapsing the
-        // 9 band textures into a texture array).
+        // WebGPU downlevel default is 4 bind groups; the forward pipeline uses
+        // groups 0–5 (camera, material, lights, SH, lightmap, shadow pool).
+        // 8 is the WebGPU cap and is supported on all desktop backends.
+        //
+        // The forward fragment shader binds exactly 16 sampled textures
+        // (3 material + 9 SH bands + 3 lightmap + 1 shadow depth) — the
+        // WebGPU spec floor for max_sampled_textures_per_shader_stage. Adding
+        // another sampled texture requires bumping this limit or collapsing the
+        // 9 SH band textures into a texture array.
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
-            // SH compose pass writes 9 storage textures (one per SH band).
-            // WebGPU spec floor is 4; all desktop backends (Metal, Vulkan, DX12) support ≥9.
+            // SH compose writes 9 storage textures. WebGPU floor is 4;
+            // Metal/Vulkan/DX12 support ≥9.
             max_storage_textures_per_shader_stage: 9,
             ..wgpu::Limits::default()
         };
@@ -647,7 +482,6 @@ impl Renderer {
         let has_geometry =
             geometry.is_some_and(|g| !g.vertices.is_empty() && !g.indices.is_empty());
 
-        // Build vertex and index buffers.
         let (vertex_data, index_data, index_count) = if let Some(geom) =
             geometry.filter(|g| !g.vertices.is_empty() && !g.indices.is_empty())
         {
@@ -696,9 +530,6 @@ impl Renderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        // Uniform buffer (view-projection + camera position + ambient floor
-        // + light count). Initial value is the hardcoded default view until
-        // `update_per_frame_uniforms` is called from the main loop.
         let view_proj = build_default_view_projection(
             surface_config.width as f32 / surface_config.height as f32,
         );
@@ -727,7 +558,6 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Bind group layout for group 0: per-frame uniforms.
         let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Uniform Bind Group Layout"),
@@ -761,14 +591,9 @@ impl Renderer {
             }],
         });
 
-        // Bind group layout for group 1: per-material.
-        //   0 = diffuse texture
-        //   1 = base sampler (shared across diffuse + specular + normal)
-        //   2 = specular texture (R8 in .r channel; 1×1 black fallback)
-        //   3 = MaterialUniform (shininess)
-        //   4 = normal map texture (Rgba8Unorm tangent-space; 1×1 +Z fallback)
-        //       Decode in shader: n = sample.rgb * 2.0 - 1.0.
-        //       See context/lib/resource_management.md §4.3.
+        // Group 1: per-material
+        //   0 = diffuse (sRGB), 1 = sampler, 2 = specular (R8), 3 = shininess uniform
+        //   4 = normal map (Rgba8Unorm, NOT sRGB; decode: n = sample.rgb * 2.0 - 1.0)
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Material Bind Group Layout"),
@@ -822,13 +647,10 @@ impl Renderer {
                 ],
             });
 
-        // Bind group layout for group 2: direct-light + specular/chunk buffers.
-        //   0 = dynamic GpuLight array (diffuse direct path)
-        //   1 = per-light influence volumes
-        //   2 = spec-only static light buffer (lighting-chunk-lists/ Task B)
-        //   3 = ChunkGridInfo uniform (has_chunk_grid = 0 → full-buffer fallback)
-        //   4 = per-chunk offset table (u32, u32) pairs
-        //   5 = flat chunk index list (u32 into spec buffer)
+        // Group 2: direct-light + specular/chunk buffers
+        //   0 = dynamic GpuLight array, 1 = influence volumes
+        //   2 = spec-only static lights, 3 = ChunkGridInfo (has_chunk_grid=0 → full scan)
+        //   4 = per-chunk offset table, 5 = flat chunk index list
         let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -861,7 +683,6 @@ impl Renderer {
                 ],
             });
 
-        // Check for dynamic directional lights and warn (not supported).
         for (idx, light) in level_lights.iter().enumerate() {
             if light.is_dynamic && light.light_type == crate::prl::LightType::Directional {
                 log::warn!(
@@ -872,11 +693,8 @@ impl Renderer {
             }
         }
 
-        // Pack the map's lights into GPU bytes and create the storage
-        // buffer. wgpu rejects a zero-size storage buffer, so we pad to a
-        // single dummy record when there are no lights at all; the
-        // shader's `light_count` loop bound stays at 0 so the dummy is
-        // never read.
+        // wgpu rejects zero-size storage buffers; pad to one dummy record when empty.
+        // `light_count` stays at 0 so the dummy is never read by the shader.
         let lights_data = if !level_lights.is_empty() {
             pack_lights(&level_lights)
         } else {
@@ -888,9 +706,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Initialize the spot shadow pool. The group 5 bind group layout
-        // is owned here and passed into the pool so the forward pipeline
-        // layout and the pool's bind group share a single definition.
+        // BGL owned here so the forward pipeline layout and pool bind group share a definition.
         let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&device);
         let spot_shadow_pool = SpotShadowPool::new(&device, &spot_shadow_bgl);
         log::info!(
@@ -909,11 +725,8 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Spec-only light buffer (group 2 binding 2). Populated from the
-        // same static light list; dynamic lights are filtered out by
-        // `pack_spec_lights`. Dummy 1-record payload when no static lights
-        // remain (empty map, or every light flagged dynamic) so the storage
-        // binding is never zero-sized.
+        // Static-only light buffer for specular; dynamic lights excluded by pack_spec_lights.
+        // 1-record dummy when empty (avoids zero-size storage binding).
         let spec_lights_data = {
             let packed = geometry
                 .map(|g| pack_spec_lights(g.lights))
@@ -1007,10 +820,7 @@ impl Renderer {
             ..Default::default()
         });
 
-        // Shared 1×1 black specular fallback. Mirrors the `_n` normal-map
-        // convention: absent specular → zeros in the R channel → no
-        // highlight without any shader branching. See
-        // context/lib/resource_management.md §4.1.
+        // Absent specular → zeros in R channel → no highlight, no shader branch.
         let black_specular_texture = upload_texture_data(
             &device,
             &queue,
@@ -1023,12 +833,8 @@ impl Renderer {
         let black_specular_view =
             black_specular_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Shared 1×1 neutral-normal placeholder. Tangent-space +Z encoded in
-        // Rgba8Unorm: (0, 0, 1) → (127, 127, 255) in u8. Decode in the shader
-        // is `n = sample.rgb * 2.0 - 1.0`, which round-trips to (≈0, ≈0, ≈1).
-        // Engine-lifetime: allocated alongside the diffuse-checkerboard and
-        // black-spec placeholders; survives level swaps because the renderer
-        // owns it directly. See context/lib/resource_management.md §4.3.
+        // Tangent-space +Z: (0,0,1) → (127,127,255) in Rgba8Unorm.
+        // Shader decode: n = sample.rgb * 2.0 - 1.0 → (≈0, ≈0, ≈1).
         let neutral_normal_texture = upload_texture_data(
             &device,
             &queue,
@@ -1041,7 +847,6 @@ impl Renderer {
         let neutral_normal_view =
             neutral_normal_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Upload textures to GPU and build per-material bind groups.
         let texture_materials: &[Material] = geometry.map(|g| g.texture_materials).unwrap_or(&[]);
         let specular_set: Option<&[Option<LoadedTexture>]> =
             texture_set.map(|s| s.specular.as_slice());
@@ -1143,8 +948,6 @@ impl Renderer {
             }
         }
 
-        // If we have no textures at all, create a single placeholder so we always
-        // have something to bind.
         if gpu_textures.is_empty() {
             let placeholder = crate::texture::generate_placeholder();
             let diffuse_tex = upload_texture_data(
@@ -1192,23 +995,16 @@ impl Renderer {
             gpu_textures.push(GpuTexture { bind_group });
         }
 
-        // Store the BVH leaves (for the wireframe overlay) and create the
-        // compute cull pipeline off the loaded BVH. Empty-BVH levels skip
-        // the pipeline entirely.
         let bvh_leaves: Vec<crate::geometry::BvhLeaf> =
             geometry.map(|g| g.bvh.leaves.clone()).unwrap_or_default();
         let compute_cull = geometry
             .filter(|g| !g.bvh.leaves.is_empty())
             .map(|g| ComputeCullPipeline::new(&device, g.bvh, has_multi_draw_indirect));
 
-        // Depth buffer.
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
 
-        // Group 3: SH irradiance volume (indirect lighting). Always created —
-        // when the level has no SH section, dummies are bound and the shader
-        // skips SH sampling via the `has_sh_volume` flag in the grid-info
-        // uniform. See sub-plan 6.
+        // Absent SH section → dummy 1×1×1 textures; shader skips via `has_sh_volume == 0`.
         let sh_volume_resources = ShVolumeResources::new(
             &device,
             &queue,
@@ -1216,10 +1012,6 @@ impl Renderer {
             level_lights.len(),
         );
 
-        // SH compose pass — populates the total SH bands consumers sample
-        // through `sh_volume_resources.bind_group`. Stub: copies base→total
-        // each frame. Always allocated; cost is irrelevant for the typical
-        // probe-grid shape.
         let sh_compose = ShComposeResources::new(
             &device,
             &sh_volume_resources,
@@ -1228,16 +1020,8 @@ impl Renderer {
             &uniform_bind_group_layout,
         );
 
-        // Animated-lightmap compose pass. Owns the compute pipeline, the
-        // Rgba16Float storage atlas, and the dispatch-tile buffer. When the
-        // PRL has no weight-map section (zero animated lights), this
-        // returns a module-owned 1×1 zero texture whose view is still
-        // bound on group 4 — the forward shader path never branches.
-        // The construction runs the cross-section validator and returns
-        // an error for an inconsistent section; we surface it as an
-        // initialization panic (map loads are not recoverable here).
-        // Env-var-gated debug visualization. Read once at init; no per-frame
-        // string reads. See `AnimatedLmDebugConfig::from_env`.
+        // Absent weight-map section → 1×1 zero atlas; forward shader never branches on it.
+        // Cross-section validation errors surface as init failures (map loads are unrecoverable).
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
             &device,
@@ -1251,12 +1035,9 @@ impl Renderer {
         .map_err(|msg| anyhow::anyhow!("[Renderer] animated lightmap init failed: {msg}"))?;
 
         // Group 4: directional lightmap atlas (baked static direct lighting).
-        // Always created — placeholder 1×1 white/neutral bindings are used
-        // when the level has no Lightmap section. See `lighting::lightmap`.
-        // Layout is built up front so the pipeline layout can reference it
-        // before the bind group is populated. The animated-contribution
-        // atlas is bound on this same group at binding 3; its view comes
-        // from `animated_lightmap` (real texture or 1×1 zero dummy).
+        // Animated-contribution atlas bound at group 4 binding 3 — from `animated_lightmap`
+        // (real texture or 1×1 zero dummy). Layout created before the bind group so the
+        // pipeline layout can reference it first.
         let lightmap_bind_group_layout = crate::lighting::lightmap::bind_group_layout(&device);
         let lightmap_resources = LightmapResources::new(
             &device,
@@ -1266,11 +1047,6 @@ impl Renderer {
             &animated_lightmap.forward_view,
         );
 
-        // Pipeline layout. Group 2 is the direct-lighting storage buffer
-        // introduced in sub-plan 3 of the lighting foundation; group 3 is
-        // the SH irradiance volume introduced in sub-plan 6; group 4 is the
-        // baked directional lightmap atlas (`lighting-lightmaps`); group 5
-        // is the dynamic spot-shadow pool (`lighting-spot-shadows`).
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Textured Pipeline Layout"),
             bind_group_layouts: &[
@@ -1341,11 +1117,8 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                // Depth pre-pass populates the depth buffer; the forward
-                // pass only needs an `Equal` pass-through test so it
-                // shades each screen pixel exactly once. Disabling
-                // `depth_write_enabled` avoids a redundant rewrite of
-                // values the pre-pass already stored.
+                // Pre-pass filled the buffer; Equal test → one shade per pixel.
+                // Write disabled to skip redundant rewrite of pre-pass values.
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Equal),
                 stencil: wgpu::StencilState::default(),
@@ -1366,10 +1139,8 @@ impl Renderer {
             cache: None,
         });
 
-        // --- Wireframe overlay pipeline ---
-        // Group 0 = uniforms (view_proj), group 1 = cull_status storage buffer.
-        // Draws line lists with depth test disabled so edges render on top.
-        // Colors are driven by per-chunk cull status from the compute shader.
+        // Wireframe overlay: group 0 = uniforms, group 1 = cull_status storage buffer.
+        // Colors are driven by per-leaf cull status from the compute shader.
         let wireframe_cull_status_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Wireframe Cull Status BGL"),
@@ -1439,9 +1210,8 @@ impl Renderer {
                 cull_mode: None,
                 ..Default::default()
             },
-            // Depth buffer is populated by the depth pre-pass; the forward
-            // pass no longer writes depth. `CompareFunction::Always` means
-            // wireframe overdraw is intentional — no behavior change needed.
+            // Always so wireframe draws on top regardless of depth; write disabled
+            // since the forward pass already holds the depth buffer contents.
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: Some(false),
@@ -1464,11 +1234,7 @@ impl Renderer {
             cache: None,
         });
 
-        // --- Depth pre-pass pipeline ---
-        // Group 0 = uniforms only (view_proj). No fragment stage —
-        // wgpu permits `fragment: None` for depth-only pipelines.
-        // Depth state writes depth with the standard `Less` test; the
-        // forward pipeline then loads this buffer with an `Equal` test.
+        // Depth pre-pass: group 0 only, fragment: None (wgpu allows depth-only pipelines).
         let depth_prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Depth Pre-Pass Pipeline Layout"),
             bind_group_layouts: &[Some(&uniform_bind_group_layout)],
@@ -1538,12 +1304,9 @@ impl Renderer {
                 cache: None,
             });
 
-        // --- Spot shadow depth pipeline ---
-        // One depth-only pipeline shared across all 8 slots. The slot's
-        // light-space matrix is selected per-draw via a dynamic offset
-        // into `shadow_vs_uniform_buffer`. Depth bias matches the plan's
-        // tuning (constant=2, slope=1.5) to suppress self-shadow acne
-        // without introducing Peter-Panning for the hard-edged look.
+        // Spot shadow depth pipeline: shared across all 8 slots; slot selected via
+        // dynamic offset into shadow_vs_uniform_buffer. Depth bias (constant=2, slope=1.5)
+        // suppresses self-shadow acne without Peter-Panning (back-face cull, not front-face).
         let shadow_vs_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shadow VS BGL"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -1588,11 +1351,6 @@ impl Renderer {
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
                     front_face: wgpu::FrontFace::Ccw,
-                    // Match the depth pre-pass: back-face cull on single-sided
-                    // brushes, with a conservative depth bias to keep acne
-                    // off the lit side. Front-face culling is the typical
-                    // "trade acne for Peter Panning" swap but we want the
-                    // hard-edged retro look without Peter Panning.
                     cull_mode: Some(wgpu::Face::Back),
                     ..Default::default()
                 },
@@ -1613,11 +1371,9 @@ impl Renderer {
                 cache: None,
             });
 
-        // Per-slot uniform buffer. Each slot gets its own `mat4x4<f32>`
-        // aligned to the device's min-uniform-offset so dynamic-offset
-        // binds are legal across adapters.
+        // Align each mat4 slot to min_uniform_buffer_offset_alignment for legal dynamic offsets.
         let min_ubo_align = device.limits().min_uniform_buffer_offset_alignment.max(64);
-        let shadow_vs_stride = min_ubo_align; // one 64-byte mat4 rounded up.
+        let shadow_vs_stride = min_ubo_align;
         let shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Spot Shadow VS Uniforms"),
             size: (shadow_vs_stride as u64)
@@ -1638,10 +1394,6 @@ impl Renderer {
             }],
         });
 
-        // --- GPU frame timing (optional) ---
-        // Labels are indexed by the `TIMING_PAIR_*` constants so the
-        // query-slot assignment is mechanical — no "keep in sync" comment
-        // needed at the `*_pass_writes(...)` callsites.
         let frame_timing = if enable_gpu_timing {
             log::info!("[Renderer] GPU timing enabled (POSTRETRO_GPU_TIMING=1)");
             let mut pass_labels = vec![""; TIMING_PAIR_COUNT];
@@ -1654,8 +1406,7 @@ impl Renderer {
             None
         };
 
-        // --- Billboard sprite pipeline (scripted particles pass) ---
-        // See: context/lib/rendering_pipeline.md §7.4
+        // Billboard sprite pipeline. See: context/lib/rendering_pipeline.md §7.4
         let smoke_pass = SmokePass::new(
             &device,
             surface_format,
@@ -1732,13 +1483,8 @@ impl Renderer {
         })
     }
 
-    /// Register a smoke sprite sheet collection. Called once per unique
-    /// `BillboardEmitterComponent.sprite` at level load. `frames` is the list of
-    /// `smoke_NN.png` animation frames in order. `spec_intensity` and
-    /// `lifetime` are the emitter's per-collection lighting and timing
-    /// parameters — when multiple emitters share a collection the first
-    /// caller's parameters win (the animation frame timing is a
-    /// per-collection property, not per-emitter).
+    /// When multiple emitters share a collection, the first caller's `spec_intensity`
+    /// and `lifetime` win — these are per-collection, not per-emitter.
     pub fn register_smoke_collection(
         &mut self,
         collection: &str,
@@ -1756,7 +1502,6 @@ impl Renderer {
         );
     }
 
-    /// Toggle the culling-delta wireframe debug overlay on/off.
     pub fn toggle_wireframe(&mut self) -> bool {
         self.wireframe_enabled = !self.wireframe_enabled;
         log::info!(
@@ -1766,14 +1511,7 @@ impl Renderer {
         self.wireframe_enabled
     }
 
-    /// Advance the lighting-term isolation mode through its nine-step cycle
-    /// (Normal → DirectOnly → IndirectOnly → AmbientOnly → LightmapOnly →
-    /// StaticSHOnly → AnimatedDeltaOnly → DynamicOnly → SpecularOnly → Normal).
     /// Takes effect on the next `update_per_frame_uniforms` upload.
-    ///
-    /// Used to A/B compare individual lighting terms when diagnosing leaks:
-    /// each "*Only" mode shows the ambient floor plus a single contribution,
-    /// while DirectOnly / IndirectOnly group terms by category.
     pub fn cycle_lighting_isolation(&mut self) -> LightingIsolation {
         self.lighting_isolation = self.lighting_isolation.cycle();
         log::info!(
@@ -1783,11 +1521,7 @@ impl Renderer {
         self.lighting_isolation
     }
 
-    /// Flip between `AutoVsync` and `AutoNoVsync`. Rebuilds the swapchain
-    /// via `surface.configure`. Returns the new state (`true` = vsync on).
-    ///
-    /// Diagnostic-only — triggered by the `Alt+Shift+V` chord so the user
-    /// can compare vsync-pinned frametimes against real CPU cost.
+    /// Alt+Shift+V diagnostic chord. Rebuilds the swapchain via surface.configure.
     pub fn toggle_vsync(&mut self) -> bool {
         self.vsync_enabled = !self.vsync_enabled;
         self.surface_config.present_mode = if self.vsync_enabled {
@@ -1799,15 +1533,12 @@ impl Renderer {
         self.vsync_enabled
     }
 
-    /// Whether the surface is currently configured with vsync on.
-    /// Read by the title rewrite so the current state is always visible.
     pub fn vsync_enabled(&self) -> bool {
         self.vsync_enabled
     }
 
-    /// Handle window resize. Reconfigures the surface and recreates the depth buffer.
-    /// The caller is responsible for updating the view-projection matrix via
-    /// `update_per_frame_uniforms` after calling this (the camera owns aspect ratio).
+    /// Caller must update view-projection via `update_per_frame_uniforms` — the camera
+    /// owns aspect ratio, not the renderer.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
@@ -1820,10 +1551,6 @@ impl Renderer {
         self.is_surface_configured = true;
     }
 
-    /// Upload the per-frame uniform buffer (view-projection, camera position,
-    /// ambient floor, light count, elapsed time, lighting-isolation mode).
-    /// The elapsed time is used by the SH animated-light layers to evaluate
-    /// curves per frame.
     pub fn update_per_frame_uniforms(&mut self, view_proj: Mat4, camera_position: Vec3) {
         let time = self.app_start.elapsed().as_secs_f32();
         let data = build_uniform_data(&FrameUniforms {
@@ -1838,35 +1565,21 @@ impl Renderer {
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
 
-        // Flush any pending `active` toggles on animated lights. Scripting
-        // calls `set_active` during game-logic update (frame order: Input →
-        // Game → Audio → Render). The compose pass (Task 5) and this frame's
-        // SH-volume fragment pass both read from the descriptor buffer, so
-        // the upload must land before either runs.
+        // Must upload before the compose pass and SH fragment pass — both read
+        // the descriptor buffer. set_active is called during Game logic (before Render).
         self.sh_volume_resources
             .animation
             .upload_descriptors_if_dirty(&self.queue);
     }
 
-    /// Script-facing: toggle an animated light's `active` flag. `slot` is the
-    /// animated-light index from the SH section. The change is flushed to the
-    /// GPU on the next `update_per_frame_uniforms` call.
+    /// Flushed to GPU on the next `update_per_frame_uniforms` call.
     #[allow(dead_code)]
     pub fn set_animated_light_active(&mut self, slot: usize, active: bool) {
         self.sh_volume_resources.animation.set_active(slot, active);
     }
 
-    /// Upload a bridge-produced light byte buffer into the direct-lights
-    /// storage buffer. Called by the game layer between Game Logic and Render
-    /// once per frame with the light bridge's repacked bytes (see
-    /// `crate::scripting::systems::light_bridge`). Bytes must match the
-    /// authored-light layout the renderer booted with — same stride, same
-    /// light count, same order.
-    ///
-    /// Frame-ordering constraint: this must run **before**
-    /// `update_dynamic_light_slots`, which rewrites the same buffer with
-    /// per-frame shadow slot assignments. Slot assignment uses the
-    /// bridge-produced colors/intensities as its input, not the reverse.
+    /// Must run **before** `update_dynamic_light_slots` — slot assignment reads
+    /// the bridge-produced colors/intensities and then rewrites the same buffer.
     pub fn upload_bridge_lights(&mut self, lights_bytes: &[u8]) {
         debug_assert_eq!(
             lights_bytes.len(),
@@ -1884,19 +1597,8 @@ impl Renderer {
             .write_buffer(&self.lights_buffer, 0, lights_bytes);
     }
 
-    /// Upload a bridge-produced scripted-light `AnimationDescriptor` byte
-    /// buffer into the per-map-light descriptor storage buffer (group 3,
-    /// binding `BIND_SCRIPTED_LIGHT_DESCRIPTORS`). One 48-byte record per
-    /// map light, in map-light-index order. Lights without an active
-    /// animation carry the sentinel descriptor (all zeros); the forward
-    /// shader's light loop keys on `is_active` to decide whether to evaluate
-    /// a curve or pass through the static `GpuLight` color.
-    ///
-    /// Bytes must match the pre-allocated buffer size —
-    /// `level_lights.len() * ANIMATION_DESCRIPTOR_SIZE`. A mismatched length
-    /// logs a warning and returns without uploading (defensive: Plan 2
-    /// Sub-plan 4 guarantees the bridge emits exactly that count, but we fail
-    /// soft rather than crash the frame if the invariant slips).
+    /// Mismatched length logs a warning and skips the upload (fail soft) rather
+    /// than crashing the frame if the bridge invariant ever slips.
     pub fn upload_bridge_descriptors(&mut self, descriptor_bytes: &[u8]) {
         let expected = self.level_lights.len() * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
         if descriptor_bytes.len() != expected {
@@ -1920,9 +1622,7 @@ impl Renderer {
         );
     }
 
-    /// Upload scripted animation samples into the `anim_samples` GPU buffer,
-    /// starting at the scripted-region offset (immediately after FGD samples).
-    /// Called once per dirty frame, after `upload_bridge_descriptors`.
+    /// Writes into `anim_samples` at the scripted-region offset (after FGD samples).
     pub fn upload_bridge_samples(&mut self, samples_bytes: &[u8]) {
         if samples_bytes.is_empty() {
             return;
@@ -1935,43 +1635,25 @@ impl Renderer {
         );
     }
 
-    /// Byte offset within `anim_samples` where the scripted-animation region
-    /// starts. Divide by 4 to get the float index; pass to
-    /// `LightBridge::populate_from_level` as `fgd_sample_float_count`.
+    /// Divide by 4 for the float index; pass as `fgd_sample_float_count` to `LightBridge`.
     pub fn scripted_sample_byte_offset(&self) -> usize {
         self.sh_volume_resources.scripted_sample_byte_offset
     }
 
-    /// Access the cached level-light list. Called at level-load time by the
-    /// game layer to seed the light bridge so the bridge can populate the
-    /// scripting entity registry.
     pub fn level_lights(&self) -> &[MapLight] {
         &self.level_lights
     }
 
-    /// Cache per-map-light effective brightness from the light bridge for
-    /// the next call to `update_dynamic_light_slots`. Called once per dirty
-    /// frame from the game layer alongside the other `upload_bridge_*`
-    /// methods. An empty slice clears the cache (treated as "no suppression").
+    /// Empty slice = no suppression (all lights eligible for shadow slots).
     pub fn set_light_effective_brightness(&mut self, effective_brightness: &[f32]) {
         self.light_effective_brightness.clear();
         self.light_effective_brightness
             .extend_from_slice(effective_brightness);
     }
 
-    /// Update the dynamic lights buffer with per-frame shadow slot assignments.
-    ///
-    /// Ranks visible dynamic spot lights by influence area and assigns slots.
-    /// Rewrites the lights buffer with slot indices. Called once per frame
-    /// before rendering.
-    ///
-    /// `effective_brightness` is a per-map-light current brightness in
-    /// `level_lights` order, evaluated CPU-side from any active animation
-    /// curve (see `light_bridge`). Lights whose effective brightness is below
-    /// 0.01 are excluded from the candidate list so an animated-dark light
-    /// does not waste one of the 8 shadow slots. An empty (or short) slice
-    /// is treated as all-1.0 (no suppression) — the engine's first frame
-    /// runs before the bridge produces an update.
+    /// Lights with effective brightness below 0.01 are excluded from slot ranking
+    /// so an animated-dark light doesn't waste one of the 8 shadow slots.
+    /// Empty/short `effective_brightness` = all-1.0 (first frame runs before bridge).
     pub fn update_dynamic_light_slots(
         &mut self,
         camera_position: Vec3,
@@ -1984,14 +1666,8 @@ impl Renderer {
             return;
         }
 
-        // Build the per-light visibility mask. An empty `visible_leaf_mask`
-        // is the DrawAll sentinel (empty world, fallback paths) — every
-        // light with a real leaf assignment is eligible. Otherwise consult
-        // the per-leaf bitmask. Lights with `leaf_index ==
-        // ALPHA_LIGHT_LEAF_UNASSIGNED` are always culled (compile-time
-        // sentinel for "could not assign to a non-solid leaf"). Lights
-        // whose animated brightness is below the suppression threshold
-        // are folded in so `rank_lights` drops them.
+        // Empty visible_leaf_mask = DrawAll sentinel; ALPHA_LIGHT_LEAF_UNASSIGNED =
+        // compiler couldn't assign the light to a non-solid leaf → always cull.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let mut visible_lights = vec![false; self.level_lights.len()];
         for (i, light) in self.level_lights.iter().enumerate() {
@@ -2013,7 +1689,6 @@ impl Renderer {
             visible_lights[i] = true;
         }
 
-        // Rank lights and get slot assignments.
         let slot_assignment = SpotShadowPool::rank_lights(
             &self.level_lights,
             camera_position,
@@ -2022,14 +1697,12 @@ impl Renderer {
             light_influences,
         );
 
-        // Repack lights with slot assignments.
         let lights_data = pack_lights_with_slots(&self.level_lights, &slot_assignment);
         self.queue
             .write_buffer(&self.lights_buffer, 0, &lights_data);
 
-        // Compute the light-space matrix for each assigned slot and upload
-        // to both the fragment-side storage buffer (group 5 binding 2) and
-        // the vertex-side per-slot uniform buffer (shadow pipeline).
+        // Upload each slot's light-space matrix to both the fragment-side storage buffer
+        // (group 5 binding 2) and the vertex-side dynamic-offset uniform buffer.
         const MAT_BYTES: usize = 64;
         let stride = self.shadow_vs_stride as usize;
         let mut fragment_matrices =
@@ -2063,18 +1736,10 @@ impl Renderer {
         self.spot_shadow_pool.slot_assignment = slot_assignment;
     }
 
-    /// Current ambient floor value (0.0–1.0). Read by the diagnostic
-    /// `Alt+Shift+{` / `Alt+Shift+}` chords so each press steps from the
-    /// current value rather than a stored target. Will move to the
-    /// settings menu when one exists.
     pub fn ambient_floor(&self) -> f32 {
         self.ambient_floor
     }
 
-    /// Update the ambient floor, clamped to [0.0, 1.0]. Takes effect on
-    /// the next `update_per_frame_uniforms` upload. Player-facing entry
-    /// point is currently the `Alt+Shift+{` / `Alt+Shift+}` diagnostic
-    /// chords; will move to the settings menu when one exists.
     pub fn set_ambient_floor(&mut self, value: f32) {
         self.ambient_floor = value.clamp(0.0, 1.0);
     }
@@ -2092,21 +1757,13 @@ impl Renderer {
         self.is_surface_configured
     }
 
-    /// Whether the compute cull pipeline is available (level has a non-empty BVH).
     #[allow(dead_code)]
     pub fn has_compute_cull(&self) -> bool {
         self.compute_cull.is_some()
     }
 
-    /// GPU-driven render frame: dispatch the BVH traversal compute shader,
-    /// then issue indirect draw calls. This is the only render path.
-    ///
-    /// `visible` carries the set of potentially-visible cells from the
-    /// CPU-side visibility system (portal traversal, PVS, or fallbacks).
-    /// The compute shader walks the BVH, frustum-culls each surviving leaf,
-    /// checks its cell id against the visible-cell bitmask, and writes one
-    /// `DrawIndexedIndirect` per surviving leaf. The render pass consumes
-    /// them via `multi_draw_indexed_indirect` (or the singular fallback).
+    /// Compute shader writes one `DrawIndexedIndirect` per surviving BVH leaf;
+    /// render pass consumes them via multi_draw_indexed_indirect (or singular fallback).
     pub fn render_frame_indirect(
         &mut self,
         visible: &VisibleCells,
@@ -2146,10 +1803,8 @@ impl Renderer {
                 label: Some("Frame Encoder"),
             });
 
-        // Dispatch the BVH traversal compute shader. Portal DFS already
-        // produced the visible-cell set on the CPU; the shader writes
-        // per-leaf `DrawIndexedIndirect` commands into the indirect buffer
-        // in the same command submission — no readback or GPU sync needed.
+        // Writes DrawIndexedIndirect commands in the same submission as the render passes —
+        // no readback or GPU sync needed between cull and draw.
         if let Some(cull) = &mut self.compute_cull {
             let cull_ts = self
                 .frame_timing
@@ -2167,7 +1822,6 @@ impl Renderer {
             if log::log_enabled!(log::Level::Debug) {
                 let f = self.debug_frame;
 
-                // Bitmask fingerprint: popcount + xor hash of all words.
                 let bm = cull.debug_bitmask_fingerprint();
                 if bm != self.debug_prev_bitmask {
                     log::debug!(
@@ -2180,7 +1834,6 @@ impl Renderer {
                     self.debug_prev_bitmask = bm;
                 }
 
-                // View-proj fingerprint: XOR of all 16 f32 bit-patterns.
                 let mut vp_hash = 0u32;
                 for i in 0..4 {
                     let col = view_proj.col(i);
@@ -2194,7 +1847,6 @@ impl Renderer {
                     self.debug_prev_vp_hash = vp_hash;
                 }
 
-                // VisibleCells variant + size.
                 let cur_vis = match visible {
                     VisibleCells::Culled(cells) => ("Culled", cells.len()),
                     VisibleCells::DrawAll => ("DrawAll", 0),
@@ -2212,15 +1864,8 @@ impl Renderer {
             }
         }
 
-        // --- Animated lightmap compose pass ---
-        // Compose the per-frame animated-contribution atlas. Runs after
-        // BVH cull (independent work, no data dep) and before the depth
-        // pre-pass so the compose→sample barrier lands before any forward
-        // fragment samples the atlas. wgpu infers the storage→sampled
-        // transition from the bind-group usage change. `visible` is
-        // forwarded so the compose dispatch filters tiles against the
-        // current frame's visible-cell set — see
-        // `animated_lightmap::AnimatedLightmapResources::dispatch`.
+        // Must run before the depth pre-pass so the storage→sampled barrier resolves
+        // before any forward fragment samples the atlas (wgpu infers the transition).
         if self.animated_lightmap.is_active() {
             let animated_ts = self
                 .frame_timing
@@ -2235,24 +1880,13 @@ impl Renderer {
             );
         }
 
-        // --- SH compose pass ---
-        // Composes the base SH bands (and, in later phases, animated
-        // per-light deltas) into the total SH bands that all SH consumers
-        // sample via `sh_volume_resources.bind_group`. Stub phase: pure
-        // base→total copy. Encoded before the depth pre-pass so the
-        // storage-write → sampled-read barrier resolves before any forward
-        // fragment samples SH.
+        // Encoded before depth pre-pass so the storage-write → sampled-read barrier
+        // resolves before any forward fragment samples SH.
         self.sh_compose
             .dispatch(&mut encoder, &self.uniform_bind_group);
 
-        // --- Dynamic spot shadow slot update + depth pass ---
-        // Rank dynamic spot lights, upload slot indices + light-space
-        // matrices, then render a depth-only pass per allocated slot.
-        // The pass draws all static geometry into the slot's depth layer;
-        // per-light BVH culling would be a future optimization.
-        // Take the cached bridge-produced brightness out for the call so we
-        // don't borrow `self` immutably while also borrowing it mutably; put
-        // it back afterwards so the next frame reuses the same allocation.
+        // mem::take avoids a simultaneous borrow of self; put it back after the call
+        // so the next frame reuses the same allocation.
         let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
         self.update_dynamic_light_slots(
             self.last_camera_position,
@@ -2296,12 +1930,7 @@ impl Renderer {
             }
         }
 
-        // --- Depth pre-pass ---
-        // Populates the shared depth buffer so the forward pass can run
-        // with `depth_compare: Equal` and shade each pixel exactly once
-        // (zero shading overdraw). No color attachments, fragment stage
-        // is `None`. Uses the same vertex/index buffers + indirect draws
-        // as the forward pass but with a layout that only binds group 0.
+        // Depth pre-pass: same vertex/index/indirect as the forward pass; layout binds group 0 only.
         {
             let depth_ts = self
                 .frame_timing
@@ -2329,9 +1958,7 @@ impl Renderer {
                 depth_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
                 if let Some(cull) = &self.compute_cull {
-                    // `None` texture callback — the depth pre-pass
-                    // pipeline layout binds only group 0, so no
-                    // per-bucket texture bind is wanted or legal here.
+                    // None = no per-bucket texture bind (depth pre-pass layout is group 0 only).
                     cull.draw_indirect(&mut depth_pass, None);
                 }
             }
@@ -2361,11 +1988,7 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        // Depth was fully populated by the pre-pass; we
-                        // load it unchanged and rely on `depth_compare:
-                        // Equal` in the forward pipeline. `StoreOp::Store`
-                        // keeps the values around for the wireframe
-                        // overlay below.
+                        // Load: pre-pass filled it; Store: wireframe overlay reads it below.
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     }),
@@ -2387,7 +2010,6 @@ impl Renderer {
                     .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
                 if let Some(cull) = &self.compute_cull {
-                    // GPU-driven indirect draw path — the only path.
                     let gpu_textures = &self.gpu_textures;
                     cull.draw_indirect(
                         &mut render_pass,
@@ -2404,13 +2026,8 @@ impl Renderer {
             }
         }
 
-        // --- Billboard sprite pass (scripted particles) ---
-        // After the opaque forward pass, before the wireframe overlay. Alpha
-        // additive; depth test enabled, depth write disabled. Batched by
-        // sprite-sheet collection: one draw per collection. See §7.4.
-        // The particle collector (plan-3 sub-plan 4) packs `(collection,
-        // bytes)` slices off the entity registry and feeds them straight in;
-        // the legacy `SmokeEmitter` path was removed in plan-3 sub-plan 8.
+        // Billboard sprite pass: after opaque forward, before wireframe overlay.
+        // Alpha additive; depth test on, depth write off. One draw per collection.
         if self.smoke_pass.has_any_sheet() && !particle_collections.is_empty() {
             let mut smoke_pass_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Billboard Sprite Pass"),
@@ -2445,7 +2062,6 @@ impl Renderer {
             }
         }
 
-        // Culling-delta wireframe overlay: draw ALL BVH leaves color-coded by cull status.
         if self.wireframe_enabled
             && self.has_geometry
             && self.wireframe_index_count > 0
@@ -2519,9 +2135,6 @@ impl Renderer {
     }
 }
 
-// --- Hardcoded view-projection ---
-
-/// Camera at (0, 200, 500) looking at origin.
 fn build_default_view_projection(aspect: f32) -> Mat4 {
     let eye = glam::Vec3::new(0.0, 200.0, 500.0);
     let center = glam::Vec3::ZERO;
@@ -2529,7 +2142,7 @@ fn build_default_view_projection(aspect: f32) -> Mat4 {
 
     let view = Mat4::look_at_rh(eye, center, up);
     let projection = Mat4::perspective_rh(
-        std::f32::consts::FRAC_PI_2, // 90 degree FOV
+        std::f32::consts::FRAC_PI_2,
         aspect,
         0.1,
         4096.0,
@@ -2537,8 +2150,6 @@ fn build_default_view_projection(aspect: f32) -> Mat4 {
 
     projection * view
 }
-
-// --- Byte casting helpers ---
 
 fn cast_world_vertices_to_bytes(data: &[crate::geometry::WorldVertex]) -> Vec<u8> {
     let byte_len = data.len() * crate::geometry::WorldVertex::STRIDE;
@@ -2563,11 +2174,8 @@ fn cast_world_vertices_to_bytes(data: &[crate::geometry::WorldVertex]) -> Vec<u8
     bytes
 }
 
-/// Build a line-list index buffer from a triangle-list index buffer.
-/// Each triangle `[a, b, c]` contributes three line-list edges
-/// `[a, b, b, c, c, a]`. Shared edges across triangles are emitted multiple
-/// times; this is cheap and fine for a debug overlay. Incomplete trailing
-/// indices (not a full triangle) are ignored.
+// Each triangle [a, b, c] → three line pairs [a,b, b,c, c,a].
+// Shared edges are emitted multiple times; fine for a debug overlay.
 fn build_line_indices_from_triangles(tri_indices: &[u32]) -> Vec<u32> {
     let tri_count = tri_indices.len() / 3;
     let mut lines = Vec::with_capacity(tri_count * 6);
@@ -2592,11 +2200,8 @@ fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
     bytes
 }
 
-/// Filter the parallel `(lights, influences)` slices loaded from the PRL down
-/// to only the dynamic lights, preserving original order. Static lights are
-/// already baked into the lightmap; including them in the runtime direct loop
-/// would double-apply their contribution. Influences shorter than `lights`
-/// fall back to a zero-radius placeholder so the output stays index-aligned.
+// Static lights are baked into the lightmap; including them in the runtime loop
+// would double-apply their contribution. Short influences → zero-radius placeholder.
 fn filter_dynamic_lights(
     lights: &[MapLight],
     influences: &[LightInfluence],
@@ -2615,8 +2220,6 @@ fn filter_dynamic_lights(
         })
         .unzip()
 }
-
-// --- Tests ---
 
 #[cfg(test)]
 mod tests {

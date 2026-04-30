@@ -25,10 +25,19 @@ const COLLECT_FN_NAME: &str = "__collect_definitions";
 /// engine rebuild.
 const WORLD_LUAU_SRC: &str = include_str!("../../../../sdk/lib/world.luau");
 
-/// SDK library prelude — `light_animation.luau` returns a table whose fields
-/// (`flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`) are
-/// destructured into globals so authors call them by bare name.
-const LIGHT_ANIMATION_LUAU_SRC: &str = include_str!("../../../../sdk/lib/light_animation.luau");
+/// SDK library prelude — `entities/lights.luau` returns a table whose fields
+/// (`flicker`, `pulse`, `colorShift`, `sweep`, `wrapLightEntity`) are used
+/// during prelude evaluation. `wrapLightEntity` is installed as a temporary
+/// global for `world.luau` to capture, then nil'd out before the sandbox freezes.
+const LIGHTS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/lights.luau");
+
+/// SDK library prelude — `util/keyframes.luau` returns a table whose fields
+/// (`timeline`, `sequence`) are destructured into globals.
+const KEYFRAMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/util/keyframes.luau");
+
+/// SDK library prelude — `entities/emitters.luau` returns a table whose fields
+/// are destructured into globals so authors can call them by bare name.
+const EMITTERS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/emitters.luau");
 
 /// SDK library prelude — `data_script.luau` returns a table whose fields
 /// (`registerReaction`, `registerEntities`) are destructured into globals so
@@ -36,17 +45,19 @@ const LIGHT_ANIMATION_LUAU_SRC: &str = include_str!("../../../../sdk/lib/light_a
 /// no FFI happens until `registerLevelManifest` returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
 
-/// Light-animation SDK fields lifted to globals after evaluating
-/// `light_animation.luau`. Order is informational; iteration order is the
-/// same.
-const LIGHT_ANIMATION_FIELDS: &[&str] = &[
-    "flicker",
-    "pulse",
-    "colorShift",
-    "sweep",
-    "timeline",
-    "sequence",
-];
+/// Lights SDK fields lifted to globals after evaluating
+/// `entities/lights.luau`. `wrapLightEntity` is NOT a bare global — it is
+/// installed as a temporary bridge before `world.luau` evaluates, and nil'd
+/// out afterward.
+const LIGHTS_LUAU_FIELDS: &[&str] = &["flicker", "pulse", "colorShift", "sweep"];
+
+/// Keyframe-utility SDK fields lifted to globals after evaluating
+/// `util/keyframes.luau`.
+const KEYFRAMES_LUAU_FIELDS: &[&str] = &["timeline", "sequence"];
+
+/// Emitter SDK fields lifted to globals after evaluating
+/// `entities/emitters.luau`.
+const EMITTERS_LUAU_FIELDS: &[&str] = &["emitter", "smokeEmitter", "sparkEmitter", "dustEmitter"];
 
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
@@ -58,6 +69,49 @@ const DATA_SCRIPT_FIELDS: &[&str] = &["registerReaction", "registerEntities"];
 /// before `sandbox(true)` (which freezes `_G`).
 /// The prelude source uses type annotations declared in postretro.d.luau (luau-lsp only); the runtime evaluates the .luau source without loading the declaration file.
 pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
+    // Step 1: evaluate `entities/lights.luau`. It returns a table containing
+    // both the public animation builders (`flicker`, `pulse`, ...) and the
+    // private `wrapLightEntity` bridge that `world.luau` needs as a bare
+    // global during its closure setup.
+    let lights_sdk: Table = lua
+        .load(LIGHTS_LUAU_SRC)
+        .set_name("postretro/sdk/entities/lights.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `entities/lights.luau`: {e}"),
+            source_name: "sdk/lib/entities/lights.luau".to_string(),
+        })?;
+    let globals = lua.globals();
+    let wrap_light_entity: mlua::Value =
+        lights_sdk
+            .get("wrapLightEntity")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("entities/lights.luau missing `wrapLightEntity`: {e}"),
+            })?;
+    globals
+        .set("wrapLightEntity", wrap_light_entity)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to install temporary global `wrapLightEntity`: {e}"),
+        })?;
+
+    // Step 2: install the public lights fields as globals.
+    for field in LIGHTS_LUAU_FIELDS {
+        let value: mlua::Value =
+            lights_sdk
+                .get(*field)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("entities/lights.luau missing `{field}`: {e}"),
+                })?;
+        globals
+            .set(*field, value)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to install global `{field}`: {e}"),
+            })?;
+    }
+
+    // Step 3: evaluate `world.luau`. Its `query` closure captures
+    // `wrapLightEntity` as an upvalue at evaluation time, so step 4's nil-out
+    // does not break the closure.
     let world: mlua::Value = lua
         .load(WORLD_LUAU_SRC)
         .set_name("postretro/sdk/world.luau")
@@ -66,25 +120,36 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             msg: format!("failed to evaluate SDK prelude `world.luau`: {e}"),
             source_name: "sdk/lib/world.luau".to_string(),
         })?;
-    lua.globals()
+    globals
         .set("world", world)
         .map_err(|e| ScriptError::InvalidArgument {
             reason: format!("failed to install global `world`: {e}"),
         })?;
 
-    let sdk: Table = lua
-        .load(LIGHT_ANIMATION_LUAU_SRC)
-        .set_name("postretro/sdk/light_animation.luau")
+    // Step 4: nil out the temporary `wrapLightEntity` bridge so author scripts
+    // never see it as a bare global once `sandbox(true)` freezes `_G`.
+    globals
+        .set("wrapLightEntity", mlua::Value::Nil)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to clear temporary global `wrapLightEntity`: {e}"),
+        })?;
+
+    // Step 5: evaluate `util/keyframes.luau` and lift its fields to globals.
+    let keyframes_sdk: Table = lua
+        .load(KEYFRAMES_LUAU_SRC)
+        .set_name("postretro/sdk/util/keyframes.luau")
         .eval()
         .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `light_animation.luau`: {e}"),
-            source_name: "sdk/lib/light_animation.luau".to_string(),
+            msg: format!("failed to evaluate SDK prelude `util/keyframes.luau`: {e}"),
+            source_name: "sdk/lib/util/keyframes.luau".to_string(),
         })?;
-    let globals = lua.globals();
-    for field in LIGHT_ANIMATION_FIELDS {
-        let value: mlua::Value = sdk.get(*field).map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("light_animation.luau missing `{field}`: {e}"),
-        })?;
+    for field in KEYFRAMES_LUAU_FIELDS {
+        let value: mlua::Value =
+            keyframes_sdk
+                .get(*field)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("util/keyframes.luau missing `{field}`: {e}"),
+                })?;
         globals
             .set(*field, value)
             .map_err(|e| ScriptError::InvalidArgument {
@@ -92,6 +157,30 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             })?;
     }
 
+    // Step 6: evaluate `entities/emitters.luau` and lift its fields to globals.
+    let emitters_sdk: Table = lua
+        .load(EMITTERS_LUAU_SRC)
+        .set_name("postretro/sdk/entities/emitters.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `entities/emitters.luau`: {e}"),
+            source_name: "sdk/lib/entities/emitters.luau".to_string(),
+        })?;
+    for field in EMITTERS_LUAU_FIELDS {
+        let value: mlua::Value =
+            emitters_sdk
+                .get(*field)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("entities/emitters.luau missing `{field}`: {e}"),
+                })?;
+        globals
+            .set(*field, value)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to install global `{field}`: {e}"),
+            })?;
+    }
+
+    // Step 7: evaluate `data_script.luau` and lift its fields to globals.
     let data_sdk: Table = lua
         .load(DATA_SCRIPT_LUAU_SRC)
         .set_name("postretro/sdk/data_script.luau")
@@ -779,11 +868,30 @@ mod tests {
 
     #[test]
     fn sdk_prelude_installs_globals() {
-        // `world.luau` returns the world table; `light_animation.luau` returns
-        // a record whose fields we promote to globals.
+        // `world.luau` returns the world table; `entities/lights.luau`,
+        // `util/keyframes.luau`, and `entities/emitters.luau` each return
+        // records whose fields we promote to globals.
         let (subsys, _ctx) = setup();
         for which in [Which::Definition, Which::Behavior] {
-            let (world_ty, flicker_ty, pulse_ty, color_ty, sweep_ty, timeline_ty, sequence_ty): (
+            let (
+                world_ty,
+                flicker_ty,
+                pulse_ty,
+                color_ty,
+                sweep_ty,
+                timeline_ty,
+                sequence_ty,
+                emitter_ty,
+                smoke_ty,
+                spark_ty,
+                dust_ty,
+                wrap_ty,
+            ): (
+                String,
+                String,
+                String,
+                String,
+                String,
                 String,
                 String,
                 String,
@@ -802,7 +910,12 @@ mod tests {
                       type(colorShift),
                       type(sweep),
                       type(timeline),
-                      type(sequence)
+                      type(sequence),
+                      type(emitter),
+                      type(smokeEmitter),
+                      type(sparkEmitter),
+                      type(dustEmitter),
+                      type(wrapLightEntity)
                     "#,
                     "prelude.luau",
                 )
@@ -814,6 +927,13 @@ mod tests {
             assert_eq!(sweep_ty, "function", "{which:?}: sweep");
             assert_eq!(timeline_ty, "function", "{which:?}: timeline");
             assert_eq!(sequence_ty, "function", "{which:?}: sequence");
+            assert_eq!(emitter_ty, "function", "{which:?}: emitter");
+            assert_eq!(smoke_ty, "function", "{which:?}: smokeEmitter");
+            assert_eq!(spark_ty, "function", "{which:?}: sparkEmitter");
+            assert_eq!(dust_ty, "function", "{which:?}: dustEmitter");
+            // `wrapLightEntity` is a temporary bridge during prelude eval; it
+            // must not be visible to author scripts.
+            assert_eq!(wrap_ty, "nil", "{which:?}: wrapLightEntity");
         }
     }
 }

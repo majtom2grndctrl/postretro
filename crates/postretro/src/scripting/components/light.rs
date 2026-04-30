@@ -88,9 +88,9 @@ pub(crate) struct LightComponent {
     /// read this as `isDynamic` to gate `color` animation: color animation on
     /// a baked light would produce a direct/indirect mismatch (SH indirect was
     /// baked at compile-time color). The Rust primitive enforces this at
-    /// `setLightAnimation`; `sdk/lib/world.ts` / `world.luau` `wrapLightEntity`
-    /// pre-checks the handle snapshot and throws a descriptive error before the
-    /// primitive call.
+    /// `setLightAnimation`; `sdk/lib/entities/lights.ts` / `entities/lights.luau`
+    /// `wrapLightEntity` pre-checks the handle snapshot and throws a descriptive
+    /// error before the primitive call.
     #[serde(default)]
     pub(crate) is_dynamic: bool,
     #[serde(default)]

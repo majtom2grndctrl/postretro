@@ -78,11 +78,19 @@ In debug builds, the runtime also emits these files at startup as a convenience 
 
 ### SDK library globals
 
-Higher-level vocabulary (`world`, `flicker`, `pulse`, etc.) is provided by the SDK library, evaluated as a prelude in every scripting context before user scripts load.
+Higher-level vocabulary (`world`, `flicker`, `pulse`, `timeline`, etc.) is provided by the SDK library, evaluated as a prelude in every scripting context before user scripts load.
 
-**TypeScript:** `sdk/lib/prelude.js` (committed, regenerated when `sdk/lib/*.ts` changes) is embedded in the engine binary via `include_str!` and evaluated in every QuickJS context. Authors import SDK symbols as bare specifiers: `import { world, flicker } from "postretro"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
+**Module layout.** SDK source under `sdk/lib/` is organized as:
 
-**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Return values are destructured into bare globals — no import or require needed. Evaluation order matters: some prelude files depend on values established by earlier ones. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
+- `sdk/lib/world.{ts,luau}` — thin generic query wrapper. Delegates to entity-type-specific handle wrappers when a `component:` filter is given.
+- `sdk/lib/entities/lights.{ts,luau}` — light vocabulary: the `LightEntityHandle` wrapper plus `flicker`, `pulse`, `colorShift`, `sweep` animation constructors.
+- `sdk/lib/entities/emitters.{ts,luau}` — emitter vocabulary: the `emitter()` component constructor plus `smokeEmitter`, `sparkEmitter`, `dustEmitter` presets.
+- `sdk/lib/util/keyframes.{ts,luau}` — structurally generic keyframe utilities: the `Keyframe` type alias, `timeline`, and `sequence`. Not light-specific; usable for any keyframed animation.
+- `sdk/lib/data_script.{ts,luau}` — definition-context vocabulary.
+
+**TypeScript:** `sdk/lib/prelude.js` (committed, regenerated when any `sdk/lib/**/*.ts` changes) is embedded in the engine binary via `include_str!` and evaluated in every QuickJS context. Authors import SDK symbols as bare specifiers: `import { world, flicker, timeline } from "postretro"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
+
+**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Return values are destructured into bare globals — no import or require needed. Evaluation order matters: the only real ordering dependency is that `world.luau` needs `wrapLightEntity` from `entities/lights.luau`. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals. `entities/emitters.luau` is wired into the Luau prelude alongside `entities/lights.luau` (the emitter file existed prior to the lights restructure but was inadvertently absent from the prelude evaluation order; the lights restructure fixed this).
 
 Both preludes are baked at compile time. SDK library changes require an engine restart; hot reload does not reload the prelude.
 

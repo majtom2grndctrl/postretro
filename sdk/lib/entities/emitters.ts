@@ -22,7 +22,7 @@
 // future mesh-particle work; the rendering primitive is in the type
 // name so renames stay deliberate.
 //
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 7
+// See: context/lib/scripting.md §11
 
 // ---------------------------------------------------------------------------
 // Public types

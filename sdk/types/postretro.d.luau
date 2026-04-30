@@ -108,8 +108,9 @@ declare function worldQuery(filter: WorldQueryFilter): {Entity}
 -- ---------------------------------------------------------------------------
 -- SDK library — embedded into every Luau context via `include_str!` and
 -- evaluated during state construction. `world.luau`'s return value becomes
--- global `world`; `light_animation.luau`'s return value is destructured into
--- globals `flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`.
+-- global `world`; `entities/lights.luau`'s return value is destructured into
+-- light-vocabulary globals (`flicker`, `pulse`, `colorShift`, `sweep`);
+-- `util/keyframes.luau` supplies `timeline` and `sequence`.
 
 --- Easing family used by `LightEntityHandle:setIntensity` / `:setColor`.
 export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
@@ -119,7 +120,7 @@ export type LightEntityHandle = {
   id: EntityId,
   transform: EntityTransform,
   isDynamic: boolean,
-  tag: string?,
+  tags: {string},
   component: LightComponent,
 
   setAnimation: (self: LightEntityHandle, anim: LightAnimation?) -> (),
@@ -142,7 +143,7 @@ export type LightEntityHandle = {
 export type EntityHandle = {
   id: EntityId,
   transform: EntityTransform,
-  tag: string?,
+  tags: {string},
 }
 
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.

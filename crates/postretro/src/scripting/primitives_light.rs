@@ -19,7 +19,7 @@ use super::sequence::{SequenceError, SequencedPrimitiveRegistry};
 
 /// A single entity-handle snapshot produced by `world.query`. Carries the
 /// `EntityId` plus a read-only copy of the live component data at query time.
-/// The `world.ts` vocabulary module wraps this into a `LightEntity` script-visible object.
+/// `wrapLightEntity` is defined in `sdk/lib/entities/lights.ts`, imported and called by `world.ts` for the `component == "light"` branch.
 #[derive(Debug, Clone)]
 pub(super) struct LightQueryHandle {
     id: EntityId,
@@ -182,7 +182,9 @@ pub(crate) fn apply_light_animation_inner(
 
     let mut next = current;
     next.animation = validated;
-    registry.set_component(id, next).map_err(ScriptError::from)?;
+    registry
+        .set_component(id, next)
+        .map_err(ScriptError::from)?;
     Ok(())
 }
 

@@ -154,10 +154,10 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 ### Rendering and visual polish
 
-- **Billboard sprite rendering** — character and effect sprites; depth-sort against world geometry.
-- **Specular maps** — per-texel specular highlights in the direct light loop. Shading model decision (Phong vs. PBR) required first.
-- **Fog volumes** — `env_fog_volume` brush entity fully wired to a runtime fog pass.
-- **Emissive / fullbright surfaces** — texture prefix or material flag for self-lit surfaces.
+- **Billboard sprite rendering** — ~~character and effect sprites; depth-sort against world geometry.~~ **Shipped.** `BillboardEmitter` entity type, particle sim, and additive billboard pass (`src/fx/smoke.rs`, `billboard.wgsl`). See `plans/done/scripting-foundation/plan-3-emitter-entity.md`.
+- **Specular maps** — ~~per-texel specular highlights in the direct light loop. Shading model decision (Phong vs. PBR) required first.~~ **Shipped.** Blinn-Phong per-texel specular via `_s.png` siblings, chunk-list multi-source loop, bumped-Lambert correction. See `plans/done/normal-maps/`.
+- **Fog volumes** — `env_fog_volume` brush entity fully wired to a runtime fog pass. **Partially implemented** — `src/render/fog_pass.rs` written (634 lines) but not yet imported in `render/mod.rs`. See `plans/in-progress/fx-volumetric-smoke/` Task B.
+- **Emissive / fullbright surfaces** — ~~texture prefix or material flag for self-lit surfaces.~~ **Shipped.** `emissive_` prefix → `Material::Emissive`; `emissive_intensity` uniform; bloom-ready bypass in forward shader. See `plans/done/emissive-surfaces/`.
 - **Post-processing** — bloom, optional CRT/scanline filter.
 - **Baked cubemap reflections** — `env_cubemap` point entity baked to a cubemap atlas at compile time.
 

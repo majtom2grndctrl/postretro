@@ -8,10 +8,10 @@
 
 use std::collections::HashMap;
 
+use super::ctx::ScriptCtx;
 use super::data_descriptors::{
     EntityTypeDescriptor, NamedReaction, PrimitiveDescriptor, ReactionDescriptor, SequenceStep,
 };
-use super::ctx::ScriptCtx;
 use super::data_registry::DataRegistry;
 use super::reactions::registry::ReactionPrimitiveRegistry;
 use super::registry::{ComponentKind, EntityId, EntityRegistry};
@@ -253,12 +253,7 @@ fn dispatch_primitive(
     );
 
     let mut reg = script_ctx.registry.borrow_mut();
-    match reaction_registry.dispatch(
-        &descriptor.primitive,
-        &mut reg,
-        &targets,
-        &descriptor.args,
-    ) {
+    match reaction_registry.dispatch(&descriptor.primitive, &mut reg, &targets, &descriptor.args) {
         Ok(true) => {}
         Ok(false) => log::warn!(
             "[Scripting] primitive '{}' is not registered; reaction had no effect",

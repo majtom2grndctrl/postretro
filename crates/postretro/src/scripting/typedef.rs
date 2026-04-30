@@ -341,7 +341,7 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
 /// etc.) installed by the prelude. The block is appended verbatim inside
 /// `declare module "postretro" { ... }` so authors can `import { world }
 /// from "postretro"`. See: context/lib/scripting.md §7.
-// Source of truth: sdk/lib/world.ts, sdk/lib/light_animation.ts, sdk/lib/data_script.ts (re-exported via index.ts). Drift causes IDE types that don't match runtime behavior.
+// Source of truth: sdk/lib/world.ts, sdk/lib/entities/lights.ts, sdk/lib/entities/emitters.ts, sdk/lib/util/keyframes.ts, sdk/lib/data_script.ts (re-exported via index.ts). Drift causes IDE types that don't match runtime behavior.
 const TS_SDK_LIB_BLOCK: &str = r#"
   // -------------------------------------------------------------------------
   // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.
@@ -611,15 +611,17 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
 }
 
 /// Static type declarations for the Luau SDK library globals installed by
-/// the embedded `world.luau` and `light_animation.luau` preludes. Appended
-/// to the generated `postretro.d.luau` so `luau-lsp` resolves the symbols
-/// without an explicit `require`. See: context/lib/scripting.md §7.
+/// the embedded `world.luau`, `entities/lights.luau`, `entities/emitters.luau`,
+/// and `util/keyframes.luau` preludes. Appended to the generated
+/// `postretro.d.luau` so `luau-lsp` resolves the symbols without an explicit
+/// `require`. See: context/lib/scripting.md §7.
 const LUAU_SDK_LIB_BLOCK: &str = r#"
 -- ---------------------------------------------------------------------------
 -- SDK library — embedded into every Luau context via `include_str!` and
 -- evaluated during state construction. `world.luau`'s return value becomes
--- global `world`; `light_animation.luau`'s return value is destructured into
--- globals `flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`.
+-- global `world`; `entities/lights.luau`'s return value is destructured into
+-- light-vocabulary globals (`flicker`, `pulse`, `colorShift`, `sweep`);
+-- `util/keyframes.luau` supplies `timeline` and `sequence`.
 
 --- Easing family used by `LightEntityHandle:setIntensity` / `:setColor`.
 export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
@@ -629,7 +631,7 @@ export type LightEntityHandle = {
   id: EntityId,
   transform: EntityTransform,
   isDynamic: boolean,
-  tag: string?,
+  tags: {string},
   component: LightComponent,
 
   setAnimation: (self: LightEntityHandle, anim: LightAnimation?) -> (),
@@ -652,7 +654,7 @@ export type LightEntityHandle = {
 export type EntityHandle = {
   id: EntityId,
   transform: EntityTransform,
-  tag: string?,
+  tags: {string},
 }
 
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.

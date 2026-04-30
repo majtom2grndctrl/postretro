@@ -69,7 +69,7 @@ Returned when `component` is `"light"`. All fields are a snapshot at query time.
 | `id` | `EntityId` | Stable entity id. Pass to `set_light_animation` and other primitives. |
 | `transform.position` | `{ x, y, z }` | Light origin in world space at query time. |
 | `isDynamic` | `boolean` | Whether the light is runtime-dynamic. Sourced from the `_dynamic` key in the `.map` file. Dynamic lights participate in the per-fragment GPU light loop and the shadow-slot scheduler; use this to gate color animations (color animation is only valid on dynamic lights). |
-| `tag` | `string \| null` | The entity's tag at query time. |
+| `tags` | `string[]` | The entity's tags at query time. Empty array if untagged. |
 | `component` | `LightComponent` | Full component snapshot at query time. See [LightComponent](#lightcomponent) below. |
 
 #### Example — rolling wave down a hallway
@@ -79,8 +79,7 @@ Tag the hallway lights `"hallway_wave"` in TrenchBroom. The script queries them 
 **TypeScript**
 
 ```typescript
-import { registerHandler } from "postretro";
-import { world } from "./sdk/world";
+import { registerHandler, world } from "postretro";
 import type { LightAnimation } from "postretro";
 
 registerHandler("levelLoad", () => {
@@ -107,8 +106,7 @@ registerHandler("levelLoad", () => {
 **Luau**
 
 ```lua
-local world = require("sdk/world")
-
+-- `world` is a bare global installed by the engine prelude — no require needed.
 registerHandler("levelLoad", function()
   local lights = world:query({ component = "light", tag = "hallway_wave" })
   table.sort(lights, function(a, b)
@@ -175,7 +173,7 @@ The full component state returned in `LightEntity.component`. All fields are rea
 
 ## Vocabulary helpers
 
-Import from `sdk/light_animation.ts` (TypeScript) or `require("sdk/light_animation")` (Luau). Each helper returns a `LightAnimation` object without touching the engine — pass the result to `setAnimation`.
+Import from `"postretro"` (TypeScript) or use the bare globals directly (Luau) — `flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, and `sequence` are installed by the engine prelude; no require or import is needed in Luau. Each helper returns a `LightAnimation` object without touching the engine — pass the result to `setAnimation`. Generic keyframe utilities (`timeline`, `sequence`, the `Keyframe` type) are usable with any keyframed animation, not only lights.
 
 None of the helpers set `phase`. Set it at the call site when staggering multiple lights.
 
@@ -192,7 +190,7 @@ light.setAnimation(flicker(0.2, 1.0, 8));
 ```
 
 ```lua
-light:setAnimation(LightAnimationSdk.flicker(0.2, 1.0, 8))
+light:setAnimation(flicker(0.2, 1.0, 8))
 ```
 
 ---
@@ -210,7 +208,7 @@ light.setAnimation(pulse(0.4, 1.0, 2000));
 ```
 
 ```lua
-light:setAnimation(LightAnimationSdk.pulse(0.4, 1.0, 2000))
+light:setAnimation(pulse(0.4, 1.0, 2000))
 ```
 
 ---
@@ -286,7 +284,7 @@ const kf = sequence([
 In Luau, arrays are 1-indexed, so keyframe entries are `{timestamp_or_delta, value, ...}` tables:
 
 ```lua
-local kf = LightAnimationSdk.sequence({
+local kf = sequence({
   {  0, 0.0 },
   {200, 1.0 },
   {300, 0.5 },
@@ -336,7 +334,7 @@ light.setColor([1, 0.3, 0], 800); // shift to orange over 800 ms
 | Situation | Result |
 |-----------|--------|
 | Color animation (`color` field or `setColor`) on a non-dynamic light | Throws at the `setAnimation` / `setColor` call site with a message naming the light's entity id. |
-| Zero-length vector in `direction` samples | Rejected by `set_light_animation` with `InvalidArgument`. |
+| Zero-length vector in `direction` samples | Rejected by `setLightAnimation` with `InvalidArgument`. |
 | Non-unit direction vectors | Silently normalized by the engine. |
 | Calling `world.query` outside a `registerHandler` callback | Error — behavior context only. |
 
@@ -349,9 +347,7 @@ light.setColor([1, 0.3, 0], 800); // shift to orange over 800 ms
 Drop this into `content/base/scripts/hallway_wave.ts`. Tag the hallway lights `"hallway_wave"` in TrenchBroom and one additional light `"boss_light"` somewhere in the map.
 
 ```typescript
-import { registerHandler } from "postretro";
-import { world } from "./sdk/world";
-import { pulse, flicker } from "./sdk/light_animation";
+import { registerHandler, world, pulse, flicker } from "postretro";
 import type { LightAnimation } from "postretro";
 
 registerHandler("levelLoad", () => {
@@ -385,9 +381,7 @@ registerHandler("levelLoad", () => {
 ### Luau
 
 ```lua
-local world = require("sdk/world")
-local LightAnimationSdk = require("sdk/light_animation")
-
+-- `world`, `flicker`, etc. are bare globals installed by the engine prelude — no require needed.
 registerHandler("levelLoad", function()
   -- Rolling brightness wave across the hallway
   local hallway = world:query({ component = "light", tag = "hallway_wave" })
@@ -417,7 +411,7 @@ registerHandler("levelLoad", function()
   local bossLights = world:query({ component = "light", tag = "boss_light" })
   if #bossLights > 0 then
     local boss = bossLights[1]
-    local anim = LightAnimationSdk.flicker(0.1, 0.9, 12)
+    local anim = flicker(0.1, 0.9, 12)
     anim.phase = 0.3
     boss:setAnimation(anim)
   end

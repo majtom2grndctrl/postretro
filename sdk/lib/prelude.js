@@ -1,22 +1,3 @@
-const world = {
-    query (filter) {
-        const normalized = {
-            component: filter.component,
-            tag: filter.tag ?? null
-        };
-        const raw = worldQuery(normalized);
-        if (filter.component === "light") {
-            const lights = raw.map(wrapLightEntity);
-            return lights;
-        }
-        const entities = raw.map((s)=>({
-                id: s.id,
-                transform: s.transform,
-                tags: s.tags
-            }));
-        return entities;
-    }
-};
 function wrapLightEntity(snapshot) {
     const id = snapshot.id;
     const handle = {
@@ -223,6 +204,25 @@ function sweep(directions, periodMs) {
         direction
     };
 }
+const world = {
+    query (filter) {
+        const normalized = {
+            component: filter.component,
+            tag: filter.tag ?? null
+        };
+        const raw = worldQuery(normalized);
+        if (filter.component === "light") {
+            const lights = raw.map(wrapLightEntity);
+            return lights;
+        }
+        const entities = raw.map((s)=>({
+                id: s.id,
+                transform: s.transform,
+                tags: s.tags
+            }));
+        return entities;
+    }
+};
 function timeline(keyframes) {
     validateKeyframes(keyframes, false);
     return keyframes;

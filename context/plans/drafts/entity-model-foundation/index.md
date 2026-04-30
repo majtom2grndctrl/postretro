@@ -1,226 +1,154 @@
-# Entity Model Foundation (Rust-only)
-
-> **Status:** draft. Ready for refinement once Milestone 6 (sector graph) lands; conceptually independent of M5/M6 and can be drafted earlier.
-> **Milestone:** 7 — see `context/plans/roadmap.md`.
-> **Depends on:** Milestone 2 (fixed-timestep loop + input snapshot — done), Milestone 6 (sector graph, for entity ↔ sector linkage). Does **not** depend on Milestone 5 (lighting) or Milestone 8 (physics).
-> **Unblocks:** Milestone 8 (chunk primitive + physics — needs entity-owned transforms), Milestone 9 (kinematic clusters — driven by `KinematicDriver` entities), Milestone 10 (destruction — triggered by `DamageSource` entities), Milestone 11 (scripting layer — binds this API).
-> **Related:** `context/lib/entity_model.md` (architectural spec), `context/lib/index.md` §2 (subsystem boundaries), `context/plans/drafts/entity-types/index.md` (future consumer — post-M11 entity libraries).
-
----
-
-## Context
-
-The engine has no game logic layer yet. `main.rs` drives the camera directly from input each tick; there is no notion of an entity, no per-tick game state advancement beyond camera motion, no event stream. The lighting stack, sector graph, and renderer all exist, but nothing *lives* in the world.
-
-Milestone 7 establishes that layer — in pure Rust, before any scripting runtime is introduced. The single most important constraint is **scripting-layer exposure**: every public API decided here becomes a scripting contract in Milestone 11. Once a script can call `entity.spawn(...)`, the shape of `spawn` is frozen. Decisions made now propagate to JS/Lua/Rhai bindings later. This plan's job is to make those decisions while the compiler can still catch inconsistencies.
-
-Two reference drivers (`RotatorDriver`, `DamageSource`) validate the API shape and feed directly into M9 and M10 as stub behaviors.
-
-**What this plan is not:** it is not a catalog of game-specific entity types (doors, enemies, pickups). Those are post-M11 scripts. See `drafts/entity-types/` for that future scope.
-
----
+# Entity Model Foundation
 
 ## Goal
 
-Stand up the entity layer described in `context/lib/entity_model.md`:
+Complete the Milestone 6 entity layer. The registry, component structs, and scripting primitives are already built. What's missing is the data pipeline connecting `.map` entity definitions to the runtime: a PRL entity section so `world.map_entities` is populated at level load; an expansion of script-defined archetypes to carry component descriptors; and two reference behavior scripts that validate the full stack end-to-end.
 
-- Typed entity collections keyed by stable numeric ID.
-- Classname registry mapping `.map` entity lump `classname` strings to engine entity types.
-- Fixed-timestep update hook in the Game logic stage.
-- Parent/child transform hierarchy with inherited world-space transforms.
-- Interpolation state surfaced to the renderer.
-- Typed event emission/subscription with owned event payloads.
-- A scripting-exposure audit that gates progression to Milestone 8.
-- Two reference entity types (`RotatorDriver`, `DamageSource`) that prove the surface out.
+## Context
 
----
+The registry (`scripting/registry.rs`) is done: `EntityId`, `EntityRegistry`, all component kinds, tags. Scripting primitives are done: `spawnEntity`, `despawnEntity`, `entityExists`, `getComponent`, `setComponent`, `emitEvent`, `sendEvent`, `registerHandler`. The classname dispatch table (`scripting/builtins/mod.rs`) is wired in main.rs and handles `billboard_emitter`. The `DataRegistry` and `LevelManifest` deserialization are done. The event system (`registerHandler` for `levelLoad`/`tick`) is done.
 
-## Design principles (durable)
-
-These are the non-negotiable properties of the public API. The scripting-exposure audit (Task 5) enforces them.
-
-| Property | Rule | Why |
-|----------|------|-----|
-| **Identity** | Public handles are plain numeric IDs (e.g. `EntityId(u32)` + generation counter), never Rust references or lifetimes. | Scripts cannot hold Rust borrows. IDs survive cross-boundary. |
-| **Events** | Event payloads are owned, `Copy`- or `Clone`-friendly structs of primitives, IDs, and small fixed-size types (vectors, enums). No `&` fields, no trait objects, no associated types. | Scripts receive events across the FFI boundary. |
-| **Generics** | Public API surface is monomorphic or uses only erasable generics (e.g. `TypeId`-keyed lookup). No `fn foo<T: Trait>(...)` on the public boundary. | Scripts cannot instantiate Rust generics. |
-| **Lifetimes** | Zero explicit lifetimes on public signatures. Internal code may borrow freely; the boundary copies or returns IDs. | Scripts have no lifetime concept. |
-| **Mutation** | Scripts mutate via commands (`move_to`, `destroy`, `emit`), not by holding `&mut` to entity data. | Enforces the ownership invariant from `entity_model.md` §6. |
-| **Classname registry** | Classnames are registered once at startup; registration returns a type token used at spawn time. Unknown classnames log and skip, never panic. | Matches `entity_model.md` §4. Scripts will register their own classnames in M11. |
-
-A public API that forces a scripting binding author to invent workarounds is a failure of this plan.
+The three concrete gaps:
+- `world.map_entities` is always empty — the PRL format has no generic entity section; the compiler discards non-light entities.
+- `EntityTypeDescriptor` carries classname only; data scripts cannot attach components to script-defined archetypes.
+- `worldQuery` only resolves `"light"` to a component kind; other component strings are rejected at the FFI boundary.
 
 ---
 
-## Task 1 — Typed entity collections
+## Scope
 
-**Crate:** `postretro` · **New module:** `src/game/entity/` (parent module of this plan's code) · **Entry point:** `src/game/mod.rs` added to `main.rs`.
+### In scope
 
-### Collection storage
+- PRL map-entity section: compiler, format crate, runtime parser
+- `EntityTypeDescriptor` expansion to carry optional component values
+- `defineEntity` data-script helper accepting component descriptors
+- Data-archetype spawn path at level load: map entities matched to data-registry archetypes
+- `worldQuery` expansion to all `ComponentKind` variants
+- Reference behaviors: `RotatorDriver` and `DamageSource` as TypeScript/Luau scripts
+- Entity API coverage added to `docs/scripting-reference.md`
 
-1. **One concrete storage type per entity type.** `RotatorDriver` lives in `Vec<RotatorDriverSlot>`; `DamageSource` lives in `Vec<DamageSourceSlot>`. No `Vec<Box<dyn Entity>>`. Follows the "typed collections over heterogeneous lists" invariant in `entity_model.md` §1.
+### Out of scope
 
-2. **Stable numeric IDs with generation counter.** `EntityId { index: u32, generation: u32 }`. Destroyed slots are retained in the vector with their generation bumped; reused on next spawn of that type. Dangling IDs fail lookup cleanly rather than aliasing a newer entity. The id is the *only* public handle to an entity.
-
-3. **Per-type + global registry.** Each collection exposes `spawn`, `get`, `destroy`. A top-level `World` struct owns all collections and provides `lookup(EntityId) -> Option<EntityRef>` where `EntityRef` is a small enum dispatching to the right collection. The classname registry (Task 2) wires classname strings to the correct `spawn` path.
-
-4. **Common transform block.** Every entity slot carries the common spatial state from `entity_model.md` §2: position, orientation (quaternion), scale, velocity, sector membership (forward-compatible with M6 — entity currently stores a `SectorId` but the sector graph wiring is a separate integration step), bounding volume. Embedded directly in each type's slot — no base struct.
-
-### Query surface
-
-5. **Typed iteration.** `world.rotator_drivers().iter()` returns a typed iterator over live slots. Dead slots are skipped.
-
-6. **No heterogeneous query.** There is deliberately no `world.query::<Position>()` or component-style query. If game logic needs to touch "all damage-dealing things," it iterates the specific collections.
-
----
-
-## Task 2 — Classname registry
-
-**Input side:** `.map` entity lump → compiler. **Output side:** PRL entity section → engine.
-
-### Compile-time
-
-7. **Entity lump survives compilation.** `postretro-level-compiler` currently parses entities and discards all but light entities (see `parse.rs` ~lines 98–155). This task adds a new PRL section (`EntityLump` or similar — name to finalize in refinement) that stores the full key-value list for every entity the compiler doesn't strip. Each entry: `classname: String`, `origin: Vec3`, `angles: Vec3`, `properties: Vec<(String, String)>` (remaining keys). Keep the payload text-ish and simple — at M7 we prioritize iteration speed over wire-format compactness.
-
-8. **Lights are still consumed by the lighting stage.** The new section is additive — the lighting pipeline continues to consume light entities at compile time. A future refactor may unify them, but not in this plan.
-
-### Runtime
-
-9. **Registry as a hashmap of factories.** `ClassnameRegistry: HashMap<&'static str, EntityFactory>` where `EntityFactory: fn(&EntitySpawnArgs, &mut World) -> EntityId`. Registration happens during engine startup, once, before any level loads. Each reference entity type (`RotatorDriver`, `DamageSource`) registers one classname.
-
-10. **Spawn flow.** On level load: iterate the entity lump, look up each `classname` in the registry. Hit → call factory with parsed args. Miss → log warning, skip (per `entity_model.md` §4).
-
-11. **Key-value parsing helpers.** A small parser crate-internally converts the string `properties` into typed values (floats, vectors, ints, enums) with default-on-malformed semantics (logged warning, default value). Factories use these helpers rather than re-implementing string parsing per type.
+- Parent/child transform hierarchy (grounded movement)
+- Velocity integration, physics, collision (grounded movement)
+- BSP leaf tracking per entity
+- New `ComponentKind` variants
+- New FGD entity types beyond the two reference behaviors
+- Player entity
+- Hot reload of data scripts (already documented as engine-restart–only)
 
 ---
 
-## Task 3 — Lifecycle + update hook
+## Acceptance criteria
 
-### Fixed-timestep integration
-
-12. **`World::tick(dt, input_snapshot)` called from the game logic stage.** Currently `main.rs` has a single `for _ in 0..ticks { ... }` loop that advances the camera. Refactor: the body of that loop becomes `self.world.tick(tick_dt, &snapshot)` (camera motion temporarily stays inline; moving the player to a proper entity type is M12's job). Frame order (`Input → Game logic → Audio → Render → Present`) is preserved.
-
-13. **Update order per `entity_model.md` §5.** Player-type entities tick before all others. Within non-player types, order is stable but unspecified. For M7 there is no player entity yet — the ordering machinery is scaffolded but only has one "bucket" of non-player entities.
-
-14. **Deferred destruction.** `destroy(id)` sets a pending-destroy flag. After all updates complete, a sweep pass actually frees slots and bumps generations. This prevents iteration invalidation mid-tick, per `entity_model.md` §3.
-
-### Parent/child transforms
-
-15. **Optional `parent: Option<EntityId>` on every entity's transform block.** Children's world-space transform = parent's world transform composed with the child's local transform. Orphaned parents (destroyed before children) are handled by detaching children at destroy time — children inherit their last resolved world transform as a new local, then set `parent = None`. Cycles are rejected at `set_parent` time with a logged error and no-op.
-
-16. **World-space resolution is a per-tick pass.** After all entity updates emit their local transform mutations, a resolve pass walks from roots down and fills in world transforms. Downstream consumers (renderer, event system position lookups) read world transforms only.
-
-### Interpolation state
-
-17. **Renderer-facing interpolation buffer.** For every entity with a visible representation (none yet in M7, but the slot exists), the world stores the previous tick's world transform alongside the current one. The renderer lerps between them using the frame timing interpolation factor. This extends the pattern already used for the camera (`frame_timing.push_state(...)` in `main.rs`).
-
-18. **Non-visible entities skip interpolation.** `RotatorDriver` and `DamageSource` have no sprite or mesh in M7, so they skip the previous-transform push. The buffer is opt-in per entity type.
+- [ ] A `.map` with a non-light, non-worldspawn entity compiles to a `.prl` that loads without error. `world.map_entities` is non-empty. Unknown classnames log a warning and are skipped; the engine does not crash.
+- [ ] A data script calls `defineEntity` with an emitter component descriptor. At level load, map entities with the matching classname are spawned with the declared `BillboardEmitterComponent` attached. `worldQuery({ component: "emitter" })` returns them.
+- [ ] A data script calls `defineEntity` with a light component descriptor. At level load, entities spawn with `LightComponent` attached. `worldQuery({ component: "light" })` returns script-defined lights alongside map-authored ones.
+- [ ] `worldQuery` accepts every component kind string (`"transform"`, `"light"`, `"emitter"`, `"particle"`, `"spriteVisual"`). Unknown component strings return a `ScriptError`.
+- [ ] The `RotatorDriver` script is loaded in a test map. The `tick` handler fires at the fixed tick rate (confirmed via log output). An entity with the `game_rotator_driver` classname advances orientation each tick.
+- [ ] The `DamageSource` script is loaded in a test map. A debug action triggers emission of a named event. A behavior script registered with `registerHandler("tick", ...)` can observe the emission via `worldQuery` state changes (or an explicit log).
+- [ ] `cargo test --workspace` passes.
+- [ ] `docs/scripting-reference.md` covers: `spawnEntity`, `despawnEntity`, `entityExists`, `worldQuery`, `getComponent`, `setComponent`, `emitEvent`, `sendEvent`, and the `defineEntity` data-context helper.
 
 ---
 
-## Task 4 — Event system
+## Tasks
 
-### Shape
+### Task 1: PRL map-entity section
 
-19. **Events are owned structs.** Each event type is a plain struct: `DamageEvent { source: EntityId, target: EntityId, amount: f32, kind: DamageKind }`. No `&` fields, no lifetimes, no trait objects.
+**Compiler** (`postretro-level-compiler`): after resolving brush entities and lights, collect remaining non-worldspawn, non-light `.map` entity entries and write a new `MapEntity` PRL section. Each entry: `classname` (string), `origin` (Vec3), `angles` (Vec3), remaining key-value pairs as a flat string list.
 
-20. **Event type registry.** Event types are registered once at startup (like classnames). Each gets a `TypeId`-based key internally; the scripting layer will map these to string names in M11 without changing the Rust API.
+**Format** (`postretro-level-format`): add a new section type for the entity list. Wire format follows the existing section-table pattern. Assign the next available section ID from the inventory in `build_pipeline.md`.
 
-21. **Emission.** Entities call `world.emit(event)` during their tick. Events land in a per-tick queue.
+**Runtime** (`postretro/src/prl.rs`): parse the new section into `world.map_entities` (`Vec<MapEntity>`). The `MapEntity` struct already exists in `scripting/builtins/mod.rs`. The level load path in `main.rs` already calls `apply_classname_dispatch` on this slice; once populated, built-in entities (e.g. `billboard_emitter` placed from TrenchBroom) spawn automatically.
 
-22. **Subscriptions are classname- or ID-scoped.** Subscribers register: "I want all `DamageEvent`s where `target` has classname X," or "…where `target == specific id`." No broadcast to every entity — subscription scoping avoids O(N·M) dispatch at retro-scale entity counts.
+### Task 2: Script archetype expansion and `worldQuery`
 
-23. **Dispatch after updates.** After the update pass and before the resolve pass (or after — to finalize in refinement), queued events are dispatched to matching subscribers. Subscribers may emit further events; bounded iteration (e.g. 4 passes max) prevents runaway cascades. The bound is logged on trip and treated as a data bug, not runtime recovery.
+**`EntityTypeDescriptor` expansion** (`scripting/data_descriptors.rs`): add optional component fields — `light: Option<LightComponent>` and `emitter: Option<BillboardEmitterComponent>`. Expand the JS and Luau deserialization paths to parse these from the manifest bundle.
 
-### Scripting compatibility
+**`defineEntity` SDK helper** (`sdk/lib/data_script.ts`, `sdk/lib/data_script.luau`): add a `defineEntity` helper that produces a well-typed descriptor carrying classname and an optional `components` object. Components are expressed using the existing vocabulary: `smokeEmitter(...)` / `sparkEmitter(...)` presets for emitters, plain light tables for lights. Regenerate `sdk/lib/prelude.js`.
 
-24. **Subscribers are closures *internally* only.** The public subscription API takes a `fn(&EventCtx) -> ()` or equivalent plain-function pointer — not a closure that captures Rust state. Script subscribers in M11 resolve to a script function identifier; Rust-side subscribers in M7 register plain functions. This constraint is the one most likely to surface in the scripting-exposure audit (Task 5) if implementation drifts; watch for it.
+**Data-archetype spawn path** (`main.rs` level load): after `apply_classname_dispatch` runs for built-ins, sweep `world.map_entities` a second time against `data_registry.entities`. For each map entity whose classname matches an `EntityTypeDescriptor`, spawn an entity at its origin and attach declared components. Entities matched by the built-in dispatch are not re-spawned; built-in classnames take precedence if a classname appears in both tables (log a warning if that happens).
 
----
+**`worldQuery` expansion** (`scripting/primitives.rs`): extend `parse_query_filter` to map all component kind strings to `ComponentKind` variants. Add `"transform"`, `"emitter"`, `"particle"`, `"spriteVisual"` alongside the existing `"light"`. Unknown strings return `ScriptError`. Update the `WORLD_QUERY_DOC` string to reflect the full set.
 
-## Task 5 — Scripting-exposure audit
+### Task 3: Reference behaviors
 
-This is a gate, not an implementation task. Before declaring M7 complete:
+Two scripts shipped under `sdk/behaviors/reference/`. Both are in TypeScript (with Luau twins). Both load in the test map and are automatically picked up by the behavior context.
 
-25. **Enumerate the public API.** Walk every `pub fn`, `pub struct`, `pub enum` in `src/game/entity/` and its submodules. Produce a list — the PR description should include this list verbatim.
+**`RotatorDriver`** (`sdk/behaviors/reference/rotator_driver.ts`, `.luau`): handles `registerHandler("tick", ...)`. Each tick, queries for entities tagged `"rotatorDriver"`, reads their `Transform`, advances yaw by `ROTATION_RATE_DEG_PER_SEC × deltaTime`, writes back via `setComponent`. Demonstrates: `worldQuery`, `getComponent`, `setComponent`, tick lifecycle.
 
-26. **Apply the rules from the Design principles table.** For each item, verify: no lifetimes on the signature, no non-erasable generics, no `&`-containing event payloads, IDs not references in argument positions, etc. Any violation is a fix, not a documented exception.
+**`DamageSource`** (`sdk/behaviors/reference/damage_source.ts`, `.luau`): handles `registerHandler("levelLoad", ...)` to resolve target entities on load, and a keybind action that emits a named `"damage"` event via `emitEvent`. Demonstrates: `emitEvent`, event wiring, `worldQuery` by tag. (Keybind is debug-only, registered via the existing action system and gated on `DEBUG_ACTIONS`.)
 
-27. **Draft a scripting-binding sketch.** A one-page sketch showing what each public API looks like when called from a generic script-language perspective (pseudo-code). If any API cannot be expressed cleanly, rework the Rust surface now. This sketch goes in the PR description and then into `context/lib/entity_model.md` as a new section (`§ Scripting-facing surface`) so M11 has a reference.
+Both scripts are opt-in via the level's data script — neither runs unless the level's `registerLevelManifest` declares the relevant entity classnames. They are reference implementations, not global hooks.
 
-28. **Sign off as a gate.** The PR does not merge until the audit is complete. This is the cheapest moment to catch API shape bugs.
+### Task 4: Modder API docs
 
----
-
-## Task 6 — Reference entity types
-
-Two concrete types exercise the whole stack.
-
-### `RotatorDriver`
-
-29. **Classname:** `game_rotator_driver`. FGD entry added in `sdk/TrenchBroom/postretro.fgd`. Properties: `rate_yaw` (deg/s, default 30), `rate_pitch` (deg/s, default 0), `rate_roll` (deg/s, default 0), `targetname` (string, optional — for M9 integration: the cluster whose transform this entity drives).
-
-30. **Behavior.** Each tick, advances its own orientation by `rates × tick_dt`. Emits a `TransformEvent { source: EntityId, transform: Transform }` that downstream consumers (kinematic clusters in M9) will subscribe to. In M7, nothing consumes the event — the test is that it fires at the fixed tick rate.
-
-### `DamageSource`
-
-31. **Classname:** `game_damage_source`. Properties: `amount` (f32, default 10.0), `kind` (enum: `bullet | explosion | melee`, default `bullet`), `targetname` (entity id reference or classname filter — finalize in refinement).
-
-32. **Behavior.** Wired to a debug keybind (see §Debug hooks below). On keypress, emits a `DamageEvent` to the resolved target. In M7, nothing consumes the event — the test is that subscribed observers receive it with correct fields.
-
-### Debug hooks
-
-33. **A single debug keybind** (e.g. F7) triggers any `DamageSource` entities in the world to emit their event. Registered via the existing input action system. Gated behind a debug feature flag (`cargo run` exposes it; release builds strip it).
+`docs/scripting-reference.md` already covers the light and emitter vocabulary. Extend it with:
+- Entity lifecycle primitives: `spawnEntity`, `despawnEntity`, `entityExists`
+- Query and component access: `worldQuery` (all filter options), `getComponent`, `setComponent`
+- Events: `emitEvent`, `sendEvent`, `registerHandler` (event kinds and contract)
+- Data context: `defineEntity` signature, component descriptor fields, how archetypes spawn from map data
 
 ---
 
-## Integration with existing systems
+## Sequencing
 
-| System | Interaction |
-|--------|-------------|
-| **Input** (`src/input/`) | Read-only: `World::tick` receives the input snapshot. No entity owns input state directly; the future player entity (M12) will read from the snapshot passed in. |
-| **Renderer** (`src/render/`) | No changes in M7. Interpolation state structure is added but unused (no visible entities). Renderer continues to borrow the camera transform only. |
-| **Audio** (`src/`) | No audio subsystem exists yet. Event types are sized to accommodate audio triggers later; the emit/subscribe pattern is audio-ready. |
-| **Frame timing** (`src/frame_timing.rs`) | `World::tick` plugs into the same fixed-timestep accumulator as the current camera advance. No changes to the timing module. |
-| **Level compiler** (`postretro-level-compiler/`) | New PRL section for the entity lump. `parse.rs` stops discarding non-light entities. |
-| **PRL format** (`postretro-level-format/`) | New section type. Follows the existing section table pattern. |
+**Phase 1 (sequential):** Task 1 — populates `world.map_entities`, unblocks map-entity dispatch.
+
+**Phase 2 (concurrent):** Task 2, Task 4 — Task 2 expands archetypes and worldQuery; Task 4 is pure docs. Task 2 consumes `world.map_entities` from Task 1 but the archetype spawn path and `worldQuery` changes can be authored in parallel with Task 4.
+
+**Phase 3 (sequential):** Task 3 — reference behaviors require the full stack from Tasks 1 and 2.
 
 ---
 
-## Acceptance Criteria
+## Rough sketch
 
-1. `cargo test --workspace` passes. Unit tests cover: ID generation/generation-bump correctness; destroy-during-iteration deferral; parent/child transform composition; parent destruction detaches children cleanly; classname registry hit/miss/malformed-property paths; event subscription scoping (classname-scoped and ID-scoped); event dispatch bound enforcement.
-2. `cargo clippy --workspace -- -D warnings` clean.
-3. No new `unsafe`.
-4. A test map with a `game_rotator_driver` entity loads. Logged tick output confirms the entity advances orientation at the fixed tick rate (not the frame rate). Unknown classnames log a warning and do not crash.
-5. A test map with a `game_damage_source` entity plus a subscriber (test-only plain-function subscriber) logs the correct `DamageEvent` payload when the debug keybind fires.
-6. Scripting-exposure audit (Task 5) complete. The API enumeration and scripting-binding sketch are included in the PR description. `context/lib/entity_model.md` updated with the `§ Scripting-facing surface` reference section.
-7. `context/lib/entity_model.md` §4 updated: the "BSP entity lump" language is replaced with the PRL entity section. The key-value parsing contract documented here is summarized there.
-8. `sdk/TrenchBroom/postretro.fgd` extended with `game_rotator_driver` and `game_damage_source` entries.
+**`defineEntity` API shape (TypeScript):**
+
+```typescript
+// Proposed design — remove after implementation
+const exhaustPort = defineEntity({
+  classname: "exhaustPort",
+  components: {
+    emitter: smokeEmitter({ rate: 8, spread: 0.3, lifetime: 2.0 }),
+  },
+});
+
+const campfire = defineEntity({
+  classname: "campfire",
+  components: {
+    light: { color: [1.0, 0.5, 0.1], range: 256, intensity: 1.2, isDynamic: true },
+    emitter: sparkEmitter({ rate: 4, spread: 0.5, lifetime: 0.8 }),
+  },
+});
+
+export function registerLevelManifest(_ctx: unknown) {
+  return {
+    entities: registerEntities([exhaustPort, campfire]),
+    reactions: [],
+  };
+}
+```
+
+**`worldQuery` filter expansion:**
+
+```typescript
+// All of these should work after Task 2:
+world.query({ component: "transform" });
+world.query({ component: "light" });
+world.query({ component: "emitter" });
+world.query({ component: "particle" });
+world.query({ component: "spriteVisual" });
+world.query({ component: "light", tag: "campfire" });
+```
+
+**PRL section wire format:** classname is a length-prefixed UTF-8 string. Origin and angles are three `f32` each. Properties are a `u16` count followed by count × (key-length-prefixed string, value-length-prefix string) pairs. Consistent with existing PRL string encoding.
 
 ---
 
-## Out of scope
+## Open questions
 
-- Any concrete game entity type beyond the two reference drivers (player, enemy, door, pickup, trigger, projectile). Those are post-M11 scripts — see `drafts/entity-types/`.
-- Entity-entity collision. Bounding volumes are stored but no collision pass runs in M7. (M8 adds the chunk collider broadphase.)
-- Physics, rigidbodies, velocity integration beyond simple `position += velocity × dt` (if used at all — the reference drivers don't need it).
-- Scripting runtime, bindings, hot reload. All M11.
-- Spatial queries beyond sector membership lookup. No octree, no grid broadphase — `entity_model.md` §8 Non-Goals.
-- Save/load serialization of entity state. Out of scope project-wide.
-- Networked entity replication. Out of scope project-wide.
-- Renderer-visible entity types (sprites, billboards, meshes). M8 chunk primitive is the right seam for visible entities.
-- Player entity implementation. Deferred to M12 (player movement).
-- Audio event consumers. Deferred until the audio subsystem exists.
-
----
-
-## Key decisions to make during refinement
-
-- Exact shape of `EntityId` (u32+u32 vs. packed u64; generation width).
-- Whether `World` is a single struct with all collections as fields, or a `HashMap<TypeId, Box<dyn AnyCollection>>`. The former is simpler and more Rust-idiomatic; the latter is more modder-friendly for M11. Leaning toward the former with a small dispatch enum — revisit in refinement.
-- Event dispatch timing: after updates + before transform resolve, vs. after resolve. Affects whether subscribers see pre- or post-hierarchy world transforms.
-- Event subscription API shape: builder (`.on::<DamageEvent>().with_classname(...).call(fn)`) vs. flat registration function. Builder reads better; flat is simpler to bind.
-- PRL entity section wire format details (string table vs. inline strings; endianness consistent with existing sections).
-- Whether `game_damage_source.targetname` resolves at level load (eager) or each emit (lazy). Lazy is more flexible for entities that spawn at runtime; eager is faster and catches typos at load.
-- How `SectorId` on entities is populated and kept fresh. Depends on M6 landing details; a stub that always returns `SectorId(0)` is acceptable for M7 and revisited when sector graph runtime queries exist.
+- **Keybind for `DamageSource`:** which action name? Existing debug actions use `F7`-style bindings. Confirm whether to reuse an existing slot or reserve a new one during implementation.
+- **Section ID for map-entity section:** assign the next available ID from `build_pipeline.md` inventory. No conflicts anticipated but verify at implementation time.
+- **Angles convention:** `.map` angles are in Quake `pitch yaw roll` convention (degrees). Confirm the compiler preserves this and the runtime converts to engine convention at spawn time (or leaves conversion to the script).

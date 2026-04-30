@@ -82,7 +82,7 @@ Higher-level vocabulary (`world`, `flicker`, `pulse`, etc.) is provided by the S
 
 **TypeScript:** `sdk/lib/prelude.js` (committed, regenerated when `sdk/lib/*.ts` changes) is embedded in the engine binary via `include_str!` and evaluated in every QuickJS context. Authors import SDK symbols as bare specifiers: `import { world, flicker } from "postretro"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
 
-**Luau:** `sdk/lib/world.luau` and `sdk/lib/light_animation.luau` are embedded via `include_str!` and evaluated in every Luau context. Their return values are promoted to globals (`world`, `flicker`, `pulse`, etc.). No import or require needed — SDK symbols are plain globals.
+**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Return values are destructured into bare globals — no import or require needed. Evaluation order matters: some prelude files depend on values established by earlier ones. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
 
 Both preludes are baked at compile time. SDK library changes require an engine restart; hot reload does not reload the prelude.
 
@@ -124,7 +124,7 @@ cargo run -p postretro-script-compiler -- --prelude --sdk-root sdk/lib --out sdk
 
 `--prelude` mode bundles `<sdk-root>/index.ts`, then runs an extra AST pass that rewrites every surviving named export as `globalThis.<name> = <name>`. The result evaluates as a plain script that installs SDK vocabulary on the QuickJS global object before any user script runs. Default exports, namespace re-exports, and bare-specifier re-exports are unsupported in the prelude entry and bail with a clear panic.
 
-The Luau prelude is not pre-bundled — `world.luau` and `light_animation.luau` are embedded directly via `include_str!` and evaluated during Lua state construction; their return values are promoted to globals.
+The Luau prelude is not pre-bundled — each `sdk/lib/` source file is embedded directly via `include_str!` and evaluated during Lua state construction; return values are promoted to globals. See §7 for the evaluation order and the full list of files.
 
 **`const enum` across file boundaries is unsupported.** SWC strips `const enum` declarations without inlining their values into consumers in other files, producing `undefined` at runtime. Use `enum` or `as const` objects instead. Enforce with `"isolatedModules": true` in `tsconfig.json`.
 
@@ -143,6 +143,8 @@ Light entity handles expose `isDynamic` at the top level of the handle object an
 `BillboardEmitter` is a built-in engine entity type — the level loader handles `classname "billboard_emitter"` natively via the built-in classname dispatch table. Authors do not register it; the SDK's `BillboardEmitter` export is a TypeScript type for IDE safety, not a runtime value.
 
 The SDK ships an `emitter()` component constructor (`sdk/lib/entities/emitters.{ts,luau}`) alongside `smokeEmitter`, `sparkEmitter`, and `dustEmitter` presets. Authors compose emitter and light as sibling components on one entity; neither owns the other.
+
+**Per-entity-type vocabulary convention.** `sdk/lib/entities/emitters.{ts,luau}` and `sdk/lib/entities/lights.{ts,luau}` are instances of the same pattern: each file owns its entity-type's handle wrapper, vocabulary helpers, and presets. `sdk/lib/world.{ts,luau}` is a thin query router that delegates to entity-type-specific handle wrappers in `entities/`. Structurally generic utilities (keyframe validation) live in `sdk/lib/util/`. Add new entity types by following this same layout.
 
 **Scripts configure, Rust simulates.** Per-particle `on_tick` callbacks are not supported — the simulation loop runs in Rust every frame. Scripts never observe individual particles.
 

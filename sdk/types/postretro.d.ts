@@ -32,7 +32,7 @@ declare module "postretro" {
     phase: number | null;
     /** Total full periods to play; null loops forever. */
     playCount: number | null;
-    /** Whether the animation starts in the active state. null defaults to true; false mirrors the FGD `_start_inactive` flag. */
+    /** Defaults to true. false mirrors the FGD `_start_inactive` flag. */
     startActive: boolean | null;
     /** Per-sample brightness curve. */
     brightness: ReadonlyArray<number> | null;
@@ -47,7 +47,7 @@ declare module "postretro" {
   export type WorldQueryFilter = {
     /** Component name, e.g. "light". */
     component: string;
-    /** Optional tag filter (exact string match). */
+    /** Exact string match. */
     tag: string | null;
   };
 
@@ -57,59 +57,53 @@ declare module "postretro" {
   /** Generic entity handle returned by `world.query` when the component type is not known at compile time. */
   export type Entity = {
     id: EntityId;
-    /** Entity position at query time. */
     transform: EntityTransform;
-    /** The entity's tags at query time. Empty array if untagged. */
+    /** Empty array if untagged. */
     tags: ReadonlyArray<string>;
   };
 
   /** Entity handle returned by `world.query` when filtering for light entities. */
   export type LightEntity = {
     id: EntityId;
-    /** Light origin at query time. */
     transform: EntityTransform;
-    /** Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation. */
+    /** Gate color animation on this; color curves are invalid on non-dynamic lights. */
     isDynamic: boolean;
-    /** The entity's tags at query time. Empty array if untagged. */
+    /** Empty array if untagged. */
     tags: ReadonlyArray<string>;
     /** Full component snapshot at query time. */
     component: LightComponent;
   };
 
-  /** Despawns a previously-spawned entity. Errors if the id is stale. */
+  /** Errors if the id is stale. */
   export function despawnEntity(id: EntityId): void;
 
   /** Broadcasts an event to all listeners; drains at end of game logic. */
   export function emitEvent(event: ScriptEvent): void;
 
-  /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
 
-  /** Reads a component of the given kind from an entity. */
   export function getComponent(id: EntityId, kind: ComponentKind): ComponentValue;
 
-  /** Register a handler for an engine event. Currently accepts "levelLoad" or "tick". */
+  /** Currently accepts "levelLoad" or "tick". */
   export function registerHandler(event: string, handler: (ctx?: ScriptCallContext) => void): void;
 
-  /** Sends an event to a single entity; drains at end of game logic. */
+  /** Targets a single entity; drains at end of game logic. */
   export function sendEvent(target: EntityId, event: ScriptEvent): void;
 
-  /** Writes a component of the given kind onto an entity. */
   export function setComponent(id: EntityId, kind: ComponentKind, value: ComponentValue): void;
 
-  /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only. */
+  /** Pass null to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only. */
   export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
 
-  /** Spawns a new entity with the given transform and returns its id. */
   export function spawnEntity(transform: Transform): EntityId;
 
-  /** Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: string, tag?: string } where `component` names the component type to query. Only "light" is supported in the current build; other values return an InvalidArgument error. The `world.ts` vocabulary module wraps this as `world.query`. */
+  /** The `world.ts` vocabulary module wraps this as `world.query`. Only "light" is supported in the current build; other values return InvalidArgument. */
   export function worldQuery(filter: WorldQueryFilter): ReadonlyArray<Entity>;
 
   // -------------------------------------------------------------------------
   // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.
 
-  /** Easing family used by `LightEntityHandle.setIntensity` / `setColor`. */
+  /** Easing curve shape for intensity/color transitions. */
   export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut";
 
   /** Typed light handle returned by `world.query({ component: "light" })`. */
@@ -123,7 +117,7 @@ declare module "postretro" {
     ): void;
   }
 
-  /** Maps a component-name literal to the rich entity handle type. */
+  /** Maps a component-name literal to its rich entity handle type. */
   export type EntityForComponent<T extends string> =
     T extends "light" ? LightEntityHandle : Entity;
 
@@ -135,7 +129,6 @@ declare module "postretro" {
     }): EntityForComponent<T>[];
   }
 
-  /** `world` vocabulary global. Wraps `worldQuery` with a typed handle. */
   export const world: World;
 
   /** Per-channel keyframe accepted by `timeline` / `sequence`. */
@@ -181,12 +174,12 @@ declare module "postretro" {
   // Data script vocabulary — pure descriptor builders consumed by the engine
   // when `registerLevelManifest` returns. See: context/lib/scripting.md §2.
 
-  /** Progress-subscription reaction body: fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
+  /** Fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
   export type ProgressReactionDescriptor = {
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive on entities tagged `tag`, optionally firing `onComplete` when it finishes. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`). */
+  /** Invokes the named Rust primitive on entities tagged `tag`. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag: string;
@@ -194,13 +187,13 @@ declare module "postretro" {
     onComplete?: string;
   };
 
-  /** Tween shape used by `setSpinRate`. Mirrors the Rust `SpinAnimation` storage struct. */
+  /** Mirrors the Rust `SpinAnimation` storage struct. */
   export type SpinAnimation = {
     duration: number;
     rate_curve: ReadonlyArray<number>;
   };
 
-  /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. Sequence steps target a single `EntityId`; tag-targeted primitives belong on the `Primitive` reaction path. */
+  /** Sequence steps target a single `EntityId`; tag-targeted primitives belong on the `Primitive` reaction path. */
   export type SetLightAnimationStep = {
     id: EntityId;
     primitive: "setLightAnimation";
@@ -210,12 +203,12 @@ declare module "postretro" {
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
   export type SequenceStep = SetLightAnimationStep;
 
-  /** Sequence reaction body: ordered per-entity primitive invocations. Steps run in array order at dispatch. */
+  /** Ordered per-entity primitive invocations; steps run in array order at dispatch. */
   export type SequenceReactionDescriptor = {
     sequence: SequenceStep[];
   };
 
-  /** Descriptor produced by `registerReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
+  /** `name` is merged flat so the Rust deserializer reads both fields from one object. */
   export type NamedReactionDescriptor = { name: string } & (
     | ProgressReactionDescriptor
     | PrimitiveReactionDescriptor
@@ -231,7 +224,7 @@ declare module "postretro" {
     reactions: NamedReactionDescriptor[];
   };
 
-  /** Build a named reaction descriptor. Pure: returns a plain object, no FFI. */
+  /** Pure: returns a plain object, no FFI. */
   export function registerReaction(
     name: string,
     descriptor:
@@ -240,7 +233,7 @@ declare module "postretro" {
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
 
-  /** Build the entity-type descriptor list for `LevelManifest.entities`. Pure: returns a fresh array. */
+  /** Pure: returns a fresh array, no FFI. */
   export function registerEntities(
     types: ReadonlyArray<{ classname: string }>,
   ): EntityTypeDescriptor[];

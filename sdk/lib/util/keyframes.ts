@@ -81,9 +81,7 @@ export function sequence<T extends number[]>(
     out[i] = copy;
   }
 
-  // Defensive re-validation of the accumulated output. Catches any
-  // inconsistency we didn't already flag (e.g. the first entry's
-  // fields being non-finite).
+  // Defensive re-validation: catches non-finite values in the first entry that the loop above skips.
   validateKeyframes(out, /* isSequence */ true);
   return out;
 }

@@ -1,47 +1,5 @@
-// Light entity vocabulary: the `LightEntity` handle returned by
-// `world.query({ component: "light" })`, plus the pure animation
-// constructors (`flicker`, `pulse`, `colorShift`, `sweep`) that
-// produce `LightAnimation` values for `light.setAnimation`.
-//
-// The handle wraps the generated `LightEntity` snapshot with
-// convenience methods (`setAnimation`, `setIntensity`, `setColor`)
-// that call the underlying scripting primitives. `wrapLightEntity`
-// is exported so `world.ts` can construct handles for results
-// returned from `worldQuery`.
-//
-// ---------------------------------------------------------------------------
-// Canonical modder example — rolling pulse down a hallway, 10s loop.
-//
-// Map authors tag the hallway lights `"hallway_wave"` in TrenchBroom. The
-// behavior script below queries them at level load, sorts along the x
-// axis, and staggers `phase` across the row so the pulse travels.
-//
-// ```typescript
-// import { registerHandler } from "postretro";
-// import { world } from "./world";
-// import type { LightAnimation } from "postretro";
-//
-// registerHandler("levelLoad", () => {
-//   const lights = world
-//     .query({ component: "light", tag: "hallway_wave" })
-//     .sort((a, b) => a.transform.position.x - b.transform.position.x);
-//
-//   const pulse: LightAnimation = {
-//     periodMs: 10000,
-//     brightness: [
-//       0.1, 0.1, 0.1, 0.1, 0.1,
-//       0.3, 0.8, 1.0, 0.8, 0.3,
-//       0.1, 0.1, 0.1, 0.1, 0.1,
-//       0.1, 0.1, 0.1, 0.1, 0.1,
-//     ],
-//   };
-//
-//   lights.forEach((light, i) => {
-//     light.setAnimation({ ...pulse, phase: i / lights.length });
-//   });
-// });
-// ```
-// ---------------------------------------------------------------------------
+// Light entity handle and pure animation constructors (flicker, pulse, colorShift, sweep).
+// Governed by context/lib/entities.md.
 
 import {
   getComponent,
@@ -54,10 +12,6 @@ import type {
   LightEntity as GeneratedLightEntity,
   Vec3,
 } from "postretro";
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 /** Easing family used by `setIntensity` / `setColor` transitions. */
 export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut";
@@ -107,10 +61,6 @@ export interface LightEntity extends GeneratedLightEntity {
     easing?: EasingCurve,
   ): void;
 }
-
-// ---------------------------------------------------------------------------
-// Handle construction
-// ---------------------------------------------------------------------------
 
 export function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntity {
   const id: EntityId = snapshot.id;
@@ -182,12 +132,7 @@ function idDebug(id: EntityId): string {
   return String(id as unknown as number);
 }
 
-// ---------------------------------------------------------------------------
-// Easing + one-cycle animation builders
-// ---------------------------------------------------------------------------
-
-// 8-sample resolution for transitions. Fine enough for a smooth ease
-// without bloating the primitive call payload.
+// 8-sample resolution keeps transitions smooth without bloating the primitive call payload.
 const EASE_SAMPLES = 8;
 
 function resolveEasing(
@@ -195,14 +140,12 @@ function resolveEasing(
   easing: EasingCurve | undefined,
 ): EasingCurve {
   if (transitionMs <= 0) {
-    // Irrelevant for step transitions, but pick a stable default.
     return "linear";
   }
   return easing ?? "easeInOut";
 }
 
 function easeAt(curve: EasingCurve, t: number): number {
-  // t is the normalized sample position in [0, 1].
   switch (curve) {
     case "linear":
       return t;
@@ -211,7 +154,6 @@ function easeAt(curve: EasingCurve, t: number): number {
     case "easeOut":
       return 1 - (1 - t) * (1 - t);
     case "easeInOut":
-      // Smoothstep-style ease-in-out.
       return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
   }
 }
@@ -285,13 +227,7 @@ function buildColorAnimation(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Brightness curves
-// ---------------------------------------------------------------------------
-
-// Fixed 8-step irregular brightness pattern in [0, 1]. Reused for every
-// `flicker` call so the curve is deterministic across reloads and the
-// pattern is visually recognizable without importing a PRNG.
+// Fixed pattern reused for every `flicker` call — deterministic across reloads, no PRNG needed.
 const FLICKER_PATTERN: ReadonlyArray<number> = [
   0.95, 0.40, 1.00, 0.72, 0.15, 0.88, 0.30, 0.65,
 ];
@@ -353,10 +289,6 @@ export function pulse(
     direction: null,
   };
 }
-
-// ---------------------------------------------------------------------------
-// Color / direction curves
-// ---------------------------------------------------------------------------
 
 /**
  * Cycles uniformly through the given RGB `colors` over `periodMs`.

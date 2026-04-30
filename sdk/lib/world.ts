@@ -11,9 +11,8 @@ import { wrapLightEntity } from "./entities/lights";
 import type { LightEntity } from "./entities/lights";
 
 /**
- * Maps a component-name string literal to the rich entity handle type
- * returned by `world.query`. Extend this as new component types gain
- * dedicated handles; unknown component names fall back to `Entity`.
+ * Extend this as new component types gain dedicated handles; unknown
+ * component names fall back to `Entity`.
  */
 export type EntityForComponent<T extends string> =
   T extends "light" ? LightEntity : Entity;

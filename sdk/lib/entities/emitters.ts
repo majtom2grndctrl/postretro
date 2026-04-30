@@ -1,32 +1,5 @@
-// Reference vocabulary for authoring `BillboardEmitter` components in
-// TypeScript.
-//
-// Exports:
-//   - `BillboardEmitter` — TypeScript-only entity-shape type for IDE
-//     completions on named instances and per-instance overrides. No
-//     runtime value; the engine handles `classname "billboard_emitter"`
-//     natively (see plan-3 sub-plan 6).
-//   - `SpinAnimation` — tween shape consumed by the `setSpinRate`
-//     reaction primitive.
-//   - `ComponentDescriptor` — the shape every component constructor in
-//     the SDK returns (`{ kind, value }`); the engine deserializes it
-//     into a typed component when a preset is spawned.
-//   - `emitter(props)` — pure component constructor. Validates props
-//     synchronously, fills defaults, and returns a `ComponentDescriptor`
-//     with `kind: "billboard_emitter"`.
-//   - `smokeEmitter`, `sparkEmitter`, `dustEmitter` — preset wrappers
-//     around `emitter()` with curated defaults for the three shipped
-//     visual archetypes. Accept `Partial<EmitterProps>` overrides.
-//
-// Naming intent: `BillboardEmitter` reserves `ParticleEmitter` for
-// future mesh-particle work; the rendering primitive is in the type
-// name so renames stay deliberate.
-//
+// BillboardEmitter component constructors and types for entity authoring.
 // See: context/lib/scripting.md §11
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 /**
  * Tween shape consumed by `setSpinRate`. Mirrors the Rust `SpinAnimation`
@@ -92,27 +65,11 @@ export type EmitterProps = {
  */
 export type ComponentDescriptor = { kind: string; value: unknown };
 
-// ---------------------------------------------------------------------------
-// emitter() — validating component constructor
-// ---------------------------------------------------------------------------
-
 /**
  * Build a `BillboardEmitter` component descriptor from `props`. Validates
  * synchronously and throws `Error` naming the offending field on failure.
- * Fills defaults for omitted optional fields:
- *
- * - `rate = 0.0` (dormant continuous emission)
- * - `burst = undefined` (no one-shot burst)
- * - `spread = 0.2` rad (~11° cone)
- * - `buoyancy = 0.5` (rises gently — smoke default)
- * - `drag = 0.5`
- * - `opacity_over_lifetime = [1.0, 1.0, 0.8, 0.0]` (full → fade-out)
- * - `size_over_lifetime = [1.0]` (constant)
- * - `color = [1.0, 1.0, 1.0]` (white tint)
- * - `spin_rate = 0.0` (no rotation)
- *
- * `rate = 0` and `burst = undefined` together describe a dormant emitter
- * — that is a valid configuration, not a validation error.
+ * Fills defaults for omitted optional fields. `rate = 0` with no `burst`
+ * is a valid dormant emitter configuration, not a validation error.
  */
 export function emitter(props: EmitterProps): ComponentDescriptor {
   validateEmitterProps(props);
@@ -140,8 +97,7 @@ function validateEmitterProps(props: EmitterProps): void {
     throw new Error("emitter: props must be an object");
   }
 
-  // Required: sprite (validated first so a missing sprite isn't masked
-  // by the lifetime check on a default-{} call).
+  // Validate sprite first so a missing sprite isn't masked by the lifetime check.
   if (typeof props.sprite !== "string" || props.sprite.length === 0) {
     throw new Error("emitter: `sprite` must be a nonempty string");
   }
@@ -236,17 +192,9 @@ function validateCurve(curve: unknown, field: string): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Presets
-// ---------------------------------------------------------------------------
-
 /**
  * Soft, slowly-rising smoke. Use for chimneys, smoldering rubble,
  * incense pots — anything that needs a gentle vertical plume.
- *
- * Defaults: continuous `rate: 6`/sec, `lifetime: 3s`, slight positive
- * `buoyancy: 0.2`, growing-while-fading curves, no spin. Sprite
- * collection is `"smoke"`.
  */
 export function smokeEmitter(overrides: Partial<EmitterProps> = {}): ComponentDescriptor {
   const defaults: EmitterProps = {
@@ -266,12 +214,8 @@ export function smokeEmitter(overrides: Partial<EmitterProps> = {}): ComponentDe
 }
 
 /**
- * Fast, falling, tumbling sparks. One-shot `burst: 12` per trigger;
- * `rate: 0` so the emitter is idle until a burst is requested.
- *
- * Defaults: `lifetime: 0.6s`, gravity-pulled (`buoyancy: -1.0`), wide
- * `spread: 0.5`, shrinking-while-fading curves, `spin_rate: 1.5` rad/s
- * for a visible tumble. Warm orange tint. Sprite collection is `"spark"`.
+ * Fast, falling, tumbling sparks. One-shot burst per trigger; `rate: 0`
+ * so the emitter is idle until a burst is requested.
  */
 export function sparkEmitter(overrides: Partial<EmitterProps> = {}): ComponentDescriptor {
   const defaults: EmitterProps = {
@@ -294,11 +238,6 @@ export function sparkEmitter(overrides: Partial<EmitterProps> = {}): ComponentDe
 /**
  * Slow drifting dust motes. Use for shafts of light, disturbed floors,
  * and ambient atmospheric particles.
- *
- * Defaults: continuous `rate: 2`/sec, long `lifetime: 5s`, near-neutral
- * `buoyancy: 0.05` with high `drag: 1.0` so motes settle quickly,
- * subtle opacity bell, no spin. Warm-grey tint. Sprite collection is
- * `"dust"`.
  */
 export function dustEmitter(overrides: Partial<EmitterProps> = {}): ComponentDescriptor {
   const defaults: EmitterProps = {

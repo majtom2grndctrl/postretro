@@ -254,7 +254,7 @@ Empty tag list serialises as `tag_count = 0` with no following bytes. Absent sec
 
 ## Open questions
 
-- **`getEntityBounds` primitive.** Scripts currently cannot read an entity's AABB (fog volumes store it in a side-table not exposed through `ComponentValue`). A `getEntityBounds(id) -> { min: Vec3, max: Vec3 } | null` primitive would enable spatial scripts (e.g., detecting when the player enters a fog volume). Out of scope here — add if scripting needs it.
+- **`getEntityBounds` primitive.** ~~Out of scope here.~~ **Resolved: deferred.** The side-table exists after this plan's implementation; adding `getEntityBounds(id) -> { min: Vec3, max: Vec3 } | null` is a one-task follow-up when a concrete scripting use case arrives. Scope here is sufficient without it.
 
 - **FogVolumes section always vs. conditional.** ~~Decide at implementation time.~~ **Resolved: always emit.** prl-build writes the FogVolumes section even when `volume_count = 0`, so `fog_pixel_scale` on `worldspawn` is always honoured. Section overhead is 8 bytes.
 

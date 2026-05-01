@@ -57,6 +57,7 @@ integration, no level-loading support.
 - [ ] `world.query({ component: "fog_volume" })` returns one handle per `env_fog_volume` entity in the loaded map.
 - [ ] `world.query({ component: "fog_volume", tag: "neon_haze" })` returns only volumes tagged `neon_haze` in TrenchBroom via `_tags`.
 - [ ] `setComponent(id, { kind: "fog_volume", density: 0.0 })` causes the fog volume to visually disappear; restoring `density` to the authored value makes it visible again.
+- [ ] A fog volume with `falloff 1` has visibly lower density at its edges than at its center; setting `falloff 0` on the same volume produces uniform density to the AABB boundary.
 - [ ] `pulseDensity`, `fadeDensity`, `fadeColor` SDK helpers visually animate fog parameters when called from a test script's tick handler — confirmed by observing the effect in-engine.
 - [ ] `cargo test --workspace` passes.
 - [ ] `cargo clippy --workspace -- -D warnings` clean.
@@ -108,9 +109,9 @@ Section is optional. Absent → `pixel_scale = 4, volume_count = 0`.
 
 ### Task 3 — `FogVolume` component kind
 
-**`scripting/registry.rs`:** add `ComponentKind::FogVolume = 5` and `ComponentValue::FogVolume { density: f32, color: [f32; 3], scatter: f32 }`. Add to the `VARIANTS` const array. Implement the `Component` trait for `FogVolumeComponent`.
+**`scripting/registry.rs`:** add `ComponentKind::FogVolume = 5` and `ComponentValue::FogVolume { density: f32, color: [f32; 3], scatter: f32, falloff: f32 }`. Add to the `VARIANTS` const array. Implement the `Component` trait for `FogVolumeComponent`.
 
-**`scripting/conv.rs`:** extend `component_kind_from_name` with `"fog_volume" → ComponentKind::FogVolume`. Extend `FromJs`/`IntoJs` and `FromLua`/`IntoLua` for `ComponentValue::FogVolume`. `setComponent` accepts `density`, `color`, `scatter`; AABB fields are silently ignored if present (not settable at runtime). `getComponent` returns all three.
+**`scripting/conv.rs`:** extend `component_kind_from_name` with `"fog_volume" → ComponentKind::FogVolume`. Extend `FromJs`/`IntoJs` and `FromLua`/`IntoLua` for `ComponentValue::FogVolume`. `setComponent` accepts `density`, `color`, `scatter`, `falloff`; AABB fields are silently ignored if present. `getComponent` returns all four.
 
 **`scripting/primitives.rs`:** add `"fog_volume"` to `worldQuery`'s filter string set. `worldQuery({ component: "fog_volume" })` returns handles with shape `{ id, position, tags, component: { density, color, scatter } }`. Follow the entity-model-foundation handle-shape convention for return values.
 
@@ -120,7 +121,23 @@ Section is optional. Absent → `pixel_scale = 4, volume_count = 0`.
 
 **`fog_pass.rs`:** add `fog_points_buffer: wgpu::Buffer` sized for `MAX_FOG_POINT_LIGHTS × FOG_POINT_LIGHT_SIZE`. Add `BIND_FOG_POINTS: u32 = 5` binding constant. Add the binding-5 entry to the group-6 BGL (storage buffer, read-only, compute-visible). Rebuild `build_group6` to include it. Add `upload_points(queue: &wgpu::Queue, points: &[FogPointLight])` method.
 
-**`fog_volume.wgsl`:** add `struct FogPointLight { position: vec3<f32>, range: f32, color: vec3<f32>, _pad: f32 }` and `@group(6) @binding(5) var<storage, read> fog_points: array<FogPointLight>`. In `cs_main`, after the existing spot-light loop, add:
+**`fog_volume.wgsl` — falloff attenuation in `sample_fog_volumes`:** replace the bare `out.density += v.density` line with an edge-distance fade. Semantics: `falloff = 0` → uniform density to the AABB boundary; `falloff = 1` → linear ramp from zero at the face to full at the center; higher values → sharper interior dropoff.
+
+```wgsl
+// Proposed design (remove comment after implementation)
+let half_ext = (v.max_v - v.min) * 0.5;
+let center   = (v.min + v.max_v) * 0.5;
+// local_abs: [0..1] per axis, 0 = center, 1 = face
+let local_abs = abs(pos - center) / max(half_ext, vec3<f32>(1.0e-6));
+// edge_t: 1 at volume center, 0 at nearest face
+let edge_t = 1.0 - clamp(max(local_abs.x, max(local_abs.y, local_abs.z)), 0.0, 1.0);
+let fade = pow(clamp(edge_t, 0.0, 1.0), v.falloff);
+out.density += v.density * fade;
+```
+
+Replace the corresponding `out.color` accumulation (`v.color * v.density`) with `v.color * v.density * fade` so the weighted color blend tracks the attenuated density.
+
+**`fog_volume.wgsl` — point-light loop:** add `struct FogPointLight { position: vec3<f32>, range: f32, color: vec3<f32>, _pad: f32 }` and `@group(6) @binding(5) var<storage, read> fog_points: array<FogPointLight>`. In `cs_main`, after the existing spot-light loop, add:
 
 ```wgsl
 // Proposed design (remove comment after implementation)
@@ -192,7 +209,7 @@ The AABB is not in `ComponentValue::FogVolume` because it is baked level geometr
 
 `FogPointLight.color` is pre-multiplied by intensity on the CPU before upload, matching the `FogSpotLight.color` convention already in `fog_pass.rs`. No additional intensity field in the GPU struct.
 
-The `falloff` field on `FogVolume` (shader and PRL) is stored but not yet consumed in the scatter calculation. It is wired through the full pipeline for future use (edge density falloff within the AABB boundary) but its current value has no visual effect. Task 5's ECS collect loop passes `component.falloff` through; the WGSL loop does not read it. Document this in a brief source comment.
+The `falloff` field attenuates density at AABB edges — `falloff = 0` gives a hard box boundary; `falloff = 1` gives a linear center-to-edge ramp (the default). The attenuation is applied inside `sample_fog_volumes`, not in the outer scatter accumulation, so the weighted color blend stays consistent with the attenuated density value.
 
 For the `env_fog_volume` FGD, `_tags` works identically to all other FGD entities since entity-model-foundation established it as a universal KVP convention. TrenchBroom authors tag fog volumes with `_tags neon_haze` and scripts filter with `world.query({ component: "fog_volume", tag: "neon_haze" })`.
 
@@ -205,7 +222,7 @@ Static neon lights (`_dynamic 0`) tint fog via SH ambient (baked into the irradi
 | Name | Rust | Wire / serde | TS / JS | Luau | FGD KVP |
 |---|---|---|---|---|---|
 | `ComponentKind::FogVolume` | `ComponentKind::FogVolume` | `"fog_volume"` | `"fog_volume"` | `"fog_volume"` | n/a |
-| `ComponentValue::FogVolume` | `ComponentValue::FogVolume { density, color, scatter }` | `{ kind: "fog_volume", density, color, scatter }` | same | same | n/a |
+| `ComponentValue::FogVolume` | `ComponentValue::FogVolume { density, color, scatter, falloff }` | `{ kind: "fog_volume", density, color, scatter, falloff }` | same | same | n/a |
 | fog volume entity | `env_fog_volume` brush entity | PRL section 30 | `FogVolumeHandle` | `FogVolumeHandle` | `env_fog_volume` |
 | fog_pixel_scale | `LevelWorld.fog_pixel_scale: u32` | PRL section 30 header `u32` | n/a | n/a | `fog_pixel_scale` on worldspawn |
 | `FogPointLight` | `fx::fog_volume::FogPointLight` | group 6 binding 5 storage buffer | n/a | n/a | n/a |
@@ -243,4 +260,3 @@ Empty tag list serialises as `tag_count = 0` with no following bytes. Absent sec
 
 - **Influence-volume pre-culling for point lights.** Current design iterates all active dynamic point lights (capped at `MAX_FOG_POINT_LIGHTS = 32`) per raymarch step. Pre-culling against the fog volume AABB at CPU upload time would reduce per-step iteration. Leave as "iterate all" until profiling on a representative scene shows otherwise.
 
-- **`falloff` field activation.** The `falloff` f32 per fog volume is stored through the full pipeline but currently unused in the shader scatter loop. The intended use is density attenuation toward AABB edges (smooth boundary). If the blocked visual at hard AABB edges is unacceptable, activate `falloff` before shipping by having the shader compute a per-axis edge distance and apply `pow(edge_t, falloff)` to the density contribution at each sample. Decide before final review.

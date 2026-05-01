@@ -122,7 +122,7 @@ Section is optional. Absent → `pixel_scale = 4, volume_count = 0`.
 
 ### Task 4 — Point-light scatter
 
-**`fog_pass.rs`:** add `fog_points_buffer: wgpu::Buffer` sized for `MAX_FOG_POINT_LIGHTS × FOG_POINT_LIGHT_SIZE`. Add `BIND_FOG_POINTS: u32 = 5` binding constant. Add the binding-5 entry to the group-6 BGL (storage buffer, read-only, compute-visible). Rebuild `build_group6` to include it. Add `upload_points(queue: &wgpu::Queue, points: &[FogPointLight])` method.
+**`fog_pass.rs`:** add `fog_points_buffer: wgpu::Buffer` sized for `MAX_FOG_POINT_LIGHTS × FOG_POINT_LIGHT_SIZE`. Add `BIND_FOG_POINTS: u32 = 5` binding constant. Add the binding-5 entry to the group-6 BGL (storage buffer, read-only, compute-visible). Rebuild `build_group6` to include it. Add `upload_points(queue: &wgpu::Queue, points: &[FogPointLight])` method. Also add: `set_pixel_scale(device: &wgpu::Device, scale: u32, width: u32, height: u32, depth_view: &wgpu::TextureView)` — reallocates the scatter target at the new scaled resolution; `resize(device: &wgpu::Device, width: u32, height: u32, depth_view: &wgpu::TextureView)` — same reallocation on window resize; `rebuild_composite_for_format(device: &wgpu::Device, format: wgpu::TextureFormat)` — rebuilds the composite pipeline for a new surface format.
 
 **`fog_volume.wgsl` — falloff attenuation in `sample_fog_volumes`:** replace the bare `out.density += v.density` line with an edge-distance fade. Semantics: `falloff = 0` → uniform density to the AABB boundary; `falloff = 1` → linear ramp from zero at the face to full at the center; higher values → sharper interior dropoff.
 
@@ -138,7 +138,7 @@ let fade = pow(clamp(edge_t, 0.0, 1.0), v.falloff);
 out.density += v.density * fade;
 ```
 
-Replace the corresponding `out.color` accumulation (`v.color * v.density`) with `v.color * v.density * fade` so the weighted color blend tracks the attenuated density.
+Replace the corresponding `out.color` accumulation (`v.color * v.density`) with `v.color * v.density * fade` so the weighted color blend tracks the attenuated density. The existing post-loop `out.color = out.color / out.density;` normalization line is preserved unchanged — it correctly normalizes the fade-weighted color sum.
 
 **`fog_volume.wgsl` — point-light loop:** add `struct FogPointLight { position: vec3<f32>, range: f32, color: vec3<f32>, _pad: f32 }` and `@group(6) @binding(5) var<storage, read> fog_points: array<FogPointLight>`. In `cs_main`, after the existing spot-light loop, add:
 
@@ -163,7 +163,7 @@ Register `pub mod fog_pass;` in `render/mod.rs`. Add `fog: FogPass` to `Renderer
 
 1. Query ECS for `ComponentKind::FogVolume` components. For each entity, look up its AABB from the side-table (Task 2). Construct a `FogVolume` GPU entry from `(aabb, component.density, component.color, component.scatter, component.falloff)`. Pass the slice to `fog.upload_volumes(queue, &volumes)`.
 2. `fog.upload_params(queue, inv_view_proj, camera_pos, near, far)`.
-3. Build the `FogSpotLight` list from active shadow-mapped spots → `fog.upload_spots(queue, &spots)`.
+3. Upload the `FogSpotLight` list via the existing `fog.upload_spots(queue, &spots)` call — shader-side spot scatter is already implemented.
 4. Build the `FogPointLight` list from active dynamic `LightType::Point` lights: discard any light whose bounding sphere (`position` ± `falloff_range`) does not intersect at least one fog volume AABB (sphere-AABB test, O(lights × volumes)). Pack survivors as `{ position, range: falloff_range, color: [r×intensity, g×intensity, b×intensity], _pad: 0.0 }`, cap at `MAX_FOG_POINT_LIGHTS` → `fog.upload_points(queue, &points)`.
 5. If `fog.active()`: dispatch the raymarch compute pass, then dispatch the composite blit over the forward-rendered surface.
 
@@ -215,6 +215,8 @@ The AABB is not in `ComponentValue::FogVolume` because it is baked level geometr
 The `falloff` field attenuates density at AABB edges — `falloff = 0` gives a hard box boundary; `falloff = 1` gives a linear center-to-edge ramp (the default). The attenuation is applied inside `sample_fog_volumes`, not in the outer scatter accumulation, so the weighted color blend stays consistent with the attenuated density value.
 
 For the `env_fog_volume` FGD, `_tags` works identically to all other FGD entities since entity-model-foundation established it as a universal KVP convention. TrenchBroom authors tag fog volumes with `_tags neon_haze` and scripts filter with `world.query({ component: "fog_volume", tag: "neon_haze" })`.
+
+Fog volumes are loaded exclusively from the FogVolumes PRL section — the engine does not register an `env_fog_volume` handler in `ClassnameDispatch`. The classname is consumed only by prl-build at compile time.
 
 Static neon lights (`_dynamic 0`) tint fog via SH ambient (baked into the irradiance volume). For localized halos, authors must use `_dynamic 1`. The plan does not change static-light behavior.
 

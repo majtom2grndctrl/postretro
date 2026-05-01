@@ -33,7 +33,7 @@ integration, no level-loading support.
 - Integrate `FogPass` into `Renderer`: instantiate, dispatch compute + composite passes, handle resize and surface-format change. The renderer never queries the ECS or owns the AABB side-table — a game-side `FogVolumeBridge` (mirroring the existing `LightBridge` / `ParticleRenderCollector` pattern) walks the registry, packs `FogVolume` GPU bytes, and uploads via a new `Renderer::upload_fog_volumes(&[u8])` method between Game logic and Render (preserving the rendering-pipeline §9 boundary rule)
 - Add dynamic point-light scatter to `fog_volume.wgsl`: new `fog_points` binding (group 6, binding 5) iterates active dynamic omni lights and accumulates in-fog glow
 - Add `FogPointLight` struct, `upload_points()` method, and binding-5 slot to `fog_pass.rs`; CPU upload filters dynamic `LightType::Point` lights each frame
-- `sdk/lib/entities/fog_volumes.{ts,luau}`: `FogVolumeHandle` wrapper plus `pulseDensity`, `fadeDensity`, `fadeColor` animation helpers (tick-driven, no new engine primitives)
+- `sdk/lib/entities/fog_volumes.{ts,luau}`: `FogVolumeHandle` wrapper plus `pulseDensity` animation helper and tween-capable `setDensity` / `setColor` setters (tick-driven, no new engine primitives)
 - SDK type definitions updated; type-definition drift test passes
 - `docs/scripting-reference.md` coverage for fog volume query and animation
 
@@ -60,9 +60,9 @@ integration, no level-loading support.
 - [ ] `world.query({ component: "fog_volume", tag: "neon_haze" })` returns only volumes tagged `neon_haze` in TrenchBroom via `_tags`.
 - [ ] `setComponent(id, { kind: "fog_volume", density: 0.0 })` causes the fog volume to visually disappear; restoring `density` to the authored value makes it visible again.
 - [ ] A fog volume with `falloff 1` has visibly lower density at its edges than at its center; setting `falloff 0` on the same volume produces uniform density to the AABB boundary.
-- [ ] A fog volume with `height_gradient 1` is visibly denser at the bottom of the volume (min.y) and fades to zero at the top (max.y); setting `height_gradient 0` restores uniform vertical density.
-- [ ] A fog volume with `radial_falloff 1` produces a sphere-shaped fog cloud centred on the AABB, visibly thinner toward the corners; setting `radial_falloff 0` restores box-only falloff behavior (the `falloff` edge fade remains active; set `falloff 0` as well to confirm fully uniform density).
-- [ ] `pulseDensity`, `fadeDensity`, `fadeColor` SDK helpers visually animate fog parameters when called from a test script's tick handler — confirmed by observing the effect in-engine.
+- [ ] A fog volume compiled with `height_gradient 1` (set in TrenchBroom and prl-built) is visibly denser at the bottom of the volume (min.y) and fades toward the top (max.y). A second test volume compiled with `height_gradient 0` shows uniform vertical density.
+- [ ] A fog volume compiled with `radial_falloff 1` produces a sphere-shaped fog cloud centred on the AABB, visibly thinner toward the corners. A second test volume compiled with `radial_falloff 0` shows box-only falloff behavior.
+- [ ] `pulseDensity` oscillates density visually when called from a test script. `setDensity(to, durationMs)` and `setColor(to, durationMs)` produce a smooth tween when called with a nonzero `transitionMs` — confirmed by observing the effect in-engine.
 - [ ] `cargo test --workspace` passes.
 - [ ] `cargo clippy --workspace -- -D warnings` clean.
 - [ ] No new `unsafe`.
@@ -86,9 +86,15 @@ Create `crates/postretro/src/fx/fog_volume.rs`. Define the GPU-side types `fog_p
 
 Register `pub mod fog_volume;` in `crates/postretro/src/fx/mod.rs`.
 
+**Tests:** Add unit tests in `fx/fog_volume.rs`:
+- `clamp_fog_pixel_scale(0)` returns 4; `clamp_fog_pixel_scale(1)` returns 1; `clamp_fog_pixel_scale(8)` returns 8; `clamp_fog_pixel_scale(9)` returns 8.
+- `pack_fog_volumes` with one entry round-trips through `FogVolume` byte layout correctly (spot-check `density` offset = 12, `falloff` offset = 28).
+
 ### Task 2 — PRL section and level loading
 
 **`postretro-level-format` crate:** add `SectionId::FogVolumes` (assign the next available discriminant at implementation time). Create `fog_volumes.rs` with `FogVolumesSection { pixel_scale: u32, volumes: Vec<FogVolumeRecord> }`. `FogVolumeRecord` holds AABB + params + tags: `min [f32;3]`, `density f32`, `max [f32;3]`, `falloff f32`, `color [f32;3]`, `scatter f32`, `height_gradient f32`, `radial_falloff f32`, `tags: Vec<String>`. Implement `to_bytes` / `from_bytes` following the pattern of existing section files (little-endian, `u32` count headers, `u32`-length-prefixed strings — same as `LightTagsSection`). Also update `SectionId::from_u32` (in `crates/level-format/src/lib.rs`) to map the new discriminant to `SectionId::FogVolumes`.
+
+**Tests:** Add a round-trip test in `level-format/src/fog_volumes.rs`: serialize a `FogVolumesSection` with two entries (one with tags, one without), deserialize, assert field equality. Follow the pattern of existing section tests.
 
 **Wire format** — little-endian:
 ```
@@ -234,19 +240,17 @@ Note the renderer **does not** import `ComponentKind`, `ComponentValue`, `Entity
 
 Create `sdk/lib/entities/fog_volumes.ts` (and `.luau` twin). Define `FogVolumeHandle` — the return type of `world.query({ component: "fog_volume" })` — with fields from Task 3 (`id`, `position`, `tags`, `component`) plus four mutating methods:
 
-- `setDensity(density: number, transitionMs?: number)` — transitions density over time via `setComponent` calls in each tick, using the existing `timeline` / `sequence` utilities from `sdk/lib/util/`.
-- `setColor(color: [number, number, number], transitionMs?: number)` — same pattern for color.
+- `setDensity(density: number, transitionMs = 0)` — sets density instantly when `transitionMs` is 0 or omitted; transitions over the given duration via `setComponent` calls in each tick using `timeline` / `sequence` utilities from `sdk/lib/util/`.
+- `setColor(color: [number, number, number], transitionMs = 0)` — same pattern for color; instant when unspecified.
 - `setScatter(scatter: number)` — instant (no tween needed for this property).
 - `setFalloff(falloff: number)` — instant. Mirrors the per-field-setter pattern established by `LightEntity.setIntensity` / `LightEntity.setColor` in `sdk/lib/entities/lights.ts` (Luau: `LightEntityHandle`), where every authorable component field has a dedicated setter rather than forcing callers through raw `setComponent`. Required so AC8 (verifying the `falloff = 0` vs `falloff = 1` visual contrast) has an SDK-level surface, not just a `setComponent({ kind: "fog_volume", falloff: 0 })` raw call. Instant rather than tweenable because falloff drives a subtle edge-shape parameter that authors typically toggle at scene-setup time, not animate.
 
 Export animation constructors at module level:
 - `pulseDensity(handle, { min, max, period })` — returns a running animation controller that oscillates density sinusoidally each tick. Cancel via the returned controller's `.stop()`.
-- `fadeDensity(handle, to: number, durationMs: number)` — one-shot fade to target density.
-- `fadeColor(handle, to: [number, number, number], durationMs: number)` — one-shot color transition.
 
 All animation is tick-driven; no new engine primitives are required. Tick callbacks use `registerHandler("tick", ...)` internally.
 
-Wire `fog_volumes` into the SDK prelude: add `export type { FogVolumeHandle } from "./entities/fog_volumes"; export { pulseDensity, fadeDensity, fadeColor } from "./entities/fog_volumes";` to `sdk/lib/index.ts`, then regenerate `sdk/lib/prelude.js` via `cargo run -p postretro-script-compiler -- --prelude --sdk-root sdk/lib --out sdk/lib/prelude.js`. For Luau, add `fog_volumes.luau` to `LUAU_SDK_LIB_BLOCK` and the TS equivalent to `TS_SDK_LIB_BLOCK` in `crates/postretro/src/scripting/typedef.rs` (alongside the existing lights and emitters entries).
+Wire `fog_volumes` into the SDK prelude: add `export type { FogVolumeHandle } from "./entities/fog_volumes"; export { pulseDensity } from "./entities/fog_volumes";` to `sdk/lib/index.ts`, then regenerate `sdk/lib/prelude.js` via `cargo run -p postretro-script-compiler -- --prelude --sdk-root sdk/lib --out sdk/lib/prelude.js`. For Luau, add `fog_volumes.luau` to `LUAU_SDK_LIB_BLOCK` and the TS equivalent to `TS_SDK_LIB_BLOCK` in `crates/postretro/src/scripting/typedef.rs` (alongside the existing lights and emitters entries).
 
 Add fog volume entries to `docs/scripting-reference.md`: `world.query({ component: "fog_volume" })`, `FogVolumeHandle` methods, animation constructors, relationship to FGD `env_fog_volume` and `_tags`.
 

@@ -21,9 +21,8 @@ export type {
   SequenceReactionDescriptor,
   SequenceStep,
   SetLightAnimationStep,
-  EntityTypeDescriptor,
 } from "./data_script";
-export { registerReaction, registerEntities } from "./data_script";
+export { registerReaction } from "./data_script";
 
 export type {
   BillboardEmitter,

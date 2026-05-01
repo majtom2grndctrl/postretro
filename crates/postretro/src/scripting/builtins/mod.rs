@@ -1,42 +1,23 @@
 // Built-in classname dispatch: map FGD `classname` → handler that spawns an
 // engine-native entity with components configured from FGD KVPs.
-// See: context/lib/scripting.md
+// See: context/lib/build_pipeline.md §Built-in Classname Routing
 
-use std::collections::HashMap;
-
-use glam::Vec3;
+use std::collections::{HashMap, HashSet};
 
 use crate::scripting::registry::EntityRegistry;
 
 pub(crate) mod billboard_emitter;
+pub(crate) mod data_archetype;
 
-/// One map entity as it is presented to a built-in classname handler. Mirrors
-/// the FGD KVP shape: a flat string→string map plus an origin and an optional
-/// `_tags` list (data-script-setup convention).
-///
-/// The level loader calls [`apply_classname_dispatch`] on this list at level
-/// load. Until the PRL wire format gains a generic map-entity section, this
-/// list is always empty at load time — populating it is the only remaining
-/// step.
-#[derive(Debug, Clone)]
-pub(crate) struct MapEntity {
-    pub(crate) classname: String,
-    pub(crate) origin: Vec3,
-    pub(crate) key_values: HashMap<String, String>,
-    pub(crate) tags: Vec<String>,
-}
+// Used by `main.rs` for the level-load sweep. The `gen-script-types` bin
+// includes the scripting tree via `#[path]` but never references this
+// re-export, so the warning fires there only.
+#[allow(unused_imports)]
+pub(crate) use data_archetype::apply_data_archetype_dispatch;
 
-impl MapEntity {
-    /// Convenience: assemble the diagnostic prefix used by handlers when they
-    /// log warnings about a malformed key value. Format mirrors classic
-    /// `id Tech` baker logs: `classname @ (x, y, z)`.
-    pub(crate) fn diagnostic_origin(&self) -> String {
-        format!(
-            "{} @ ({:.3}, {:.3}, {:.3})",
-            self.classname, self.origin.x, self.origin.y, self.origin.z
-        )
-    }
-}
+// Re-export so call sites that say `super::MapEntity` (handlers, tests) keep
+// working unchanged. The struct itself lives in `scripting::map_entity`.
+pub(crate) use crate::scripting::map_entity::MapEntity;
 
 /// Built-in classname handler. Reads KVPs from `entity`, applies any defaults,
 /// spawns one ECS entity (with a `Transform` at `entity.origin`), copies tags,
@@ -105,19 +86,41 @@ pub(crate) fn register_builtins(dispatch: &mut ClassnameDispatch) {
 /// data-script-setup error policy, the loader logs and continues; bad data
 /// in one entity must not fail the level load.
 ///
-/// Returns the count of successfully dispatched entities (handler returned
-/// `Some(EntityId)`), for diagnostics.
+/// # Returns
+///
+/// The set of classnames *claimed* by a built-in handler — every classname
+/// for which a handler exists in `dispatch`, regardless of whether the handler
+/// successfully spawned an entity (i.e., regardless of whether it returned
+/// `Some` or `None`). A classname that appears in this set must not be
+/// re-processed by [`apply_data_archetype_dispatch`]; built-in dispatch always
+/// wins, even when the registry was exhausted and no entity actually landed.
+/// Contrast with [`apply_data_archetype_dispatch`], which returns only
+/// classnames for which at least one entity was materialized.
 pub(crate) fn apply_classname_dispatch(
     entities: &[MapEntity],
     dispatch: &ClassnameDispatch,
     registry: &mut EntityRegistry,
-) -> usize {
-    let mut spawned = 0usize;
+) -> HashSet<String> {
+    let mut handled: HashSet<String> = HashSet::new();
     for entity in entities {
         match dispatch.lookup(&entity.classname) {
             Some(handler) => {
-                if handler(entity, registry).is_some() {
-                    spawned += 1;
+                // Mark the classname owned by the built-in *before* invoking
+                // the handler. Even if the handler returns `None` (registry
+                // exhausted, etc.), we must not let the data-archetype sweep
+                // re-handle this classname — built-in dispatch wins.
+                handled.insert(entity.classname.clone());
+                // Uniform KVP-write point for all built-in handlers. Writing
+                // the KVP bag for every map-spawned entity (even those with no
+                // KVPs) keeps `getEntityProperty` consistent across spawn paths
+                // and lets callers distinguish map-spawned entities (always
+                // have a kvp_table entry) from runtime-spawned ones (never do).
+                // New built-in handlers inherit this behavior without needing
+                // to call `set_map_kvps` themselves. (The data-archetype path
+                // in `data_archetype.rs` is separate and handles its own KVP
+                // write.)
+                if let Some(entity_id) = handler(entity, registry) {
+                    let _ = registry.set_map_kvps(entity_id, entity.key_values.clone());
                 }
             }
             None => {
@@ -128,13 +131,14 @@ pub(crate) fn apply_classname_dispatch(
             }
         }
     }
-    spawned
+    handled
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::scripting::registry::ComponentKind;
+    use glam::Vec3;
 
     #[test]
     fn register_builtins_registers_billboard_emitter() {
@@ -169,12 +173,14 @@ mod tests {
             classname: "billboard_emitter".to_string(),
             origin: Vec3::new(1.0, 2.0, 3.0),
             key_values: kv,
+            angles: Vec3::ZERO,
             tags: vec!["fx".into()],
         }];
 
         let mut registry = EntityRegistry::new();
-        let spawned = apply_classname_dispatch(&entities, &dispatch, &mut registry);
-        assert_eq!(spawned, 1);
+        let handled = apply_classname_dispatch(&entities, &dispatch, &mut registry);
+        assert_eq!(handled.len(), 1);
+        assert!(handled.contains("billboard_emitter"));
 
         // Confirm the entity actually landed with the configured component.
         let found = registry
@@ -187,6 +193,16 @@ mod tests {
         assert_eq!(component.rate, 9.5);
         let tags = registry.get_tags(id).expect("tags should be set");
         assert_eq!(tags, &["fx".to_string()]);
+        // Verify the KVP bag was written: `set_map_kvps` runs inside
+        // `apply_classname_dispatch` so `getEntityProperty` works uniformly.
+        let kvp_rate = registry
+            .get_map_kvp(id, "rate")
+            .expect("KVP lookup should not fail on a live id");
+        assert_eq!(
+            kvp_rate.as_deref(),
+            Some("9.5"),
+            "raw 'rate' KVP should be stored verbatim in the entity's KVP bag"
+        );
     }
 
     #[test]
@@ -198,13 +214,14 @@ mod tests {
             classname: "never_registered".to_string(),
             origin: Vec3::ZERO,
             key_values: HashMap::new(),
+            angles: glam::Vec3::ZERO,
             tags: vec![],
         }];
 
         let mut registry = EntityRegistry::new();
-        let spawned = apply_classname_dispatch(&entities, &dispatch, &mut registry);
+        let handled = apply_classname_dispatch(&entities, &dispatch, &mut registry);
         // No handler ran; no entity was spawned. Logged at debug level.
-        assert_eq!(spawned, 0);
+        assert!(handled.is_empty());
         assert!(
             registry
                 .iter_with_kind(ComponentKind::BillboardEmitter)

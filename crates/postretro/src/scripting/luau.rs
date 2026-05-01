@@ -787,13 +787,13 @@ mod tests {
                     scale    = { x = 1, y = 1, z = 1 },
                 })
                 local input = {
-                    kind = "Transform",
+                    kind = "transform",
                     position = { x = 1.5,  y = 2.5, z = -3.25 },
                     rotation = { pitch = 15.0, yaw = 45.0, roll = -30.0 },
                     scale    = { x = 2.0, y = 2.0, z = 2.0 },
                 }
-                setComponent(id, "Transform", input)
-                local out = getComponent(id, "Transform")
+                setComponent(id, "transform", input)
+                local out = getComponent(id, "transform")
                 return
                   out.position.x, out.position.y, out.position.z,
                   out.rotation.pitch, out.rotation.yaw, out.rotation.roll,
@@ -804,7 +804,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(kind, "Transform");
+        assert_eq!(kind, "transform");
         assert!((px - 1.5).abs() < 1e-4);
         assert!((py - 2.5).abs() < 1e-4);
         assert!((pz - (-3.25)).abs() < 1e-4);

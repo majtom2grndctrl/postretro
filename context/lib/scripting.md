@@ -24,12 +24,17 @@ Each runtime maintains two **shared contexts** (long-lived, level-scoped) and a 
 |---------|---------|----------|
 | Definition | Cross-script data declarations | Level lifetime |
 | Behavior | Cross-script global runtime logic | Level lifetime |
-| Data | One-time level descriptor registration (`registerLevelManifest(ctx)` only) | Level load only — created once, dropped after `registerLevelManifest()` returns |
+| Data | One-time data-script run: `registerEntity` calls plus `registerLevelManifest(ctx)` | Level load only — created once, dropped after the data script completes |
 | Pooled (ephemeral) | Per-entity or per-call isolation | Returned to pool after use |
 
 Shared contexts accumulate definitions across calls — cross-script globals are intentional. Pooled contexts are recycled and must be isolated: QuickJS pools freeze the global object on construction; Luau pools use the sandbox flag. All persistent state flows through Rust primitives, not script globals.
 
-**Data context lifecycle.** At level load, after geometry and entities are ready but before `levelLoad` behavior handlers fire, the engine creates a short-lived VM context, calls the exported `registerLevelManifest(ctx)` function once, deserializes the return bundle into the reaction registry and entity type registry, then drops the context. No live reference to the data VM remains after `registerLevelManifest()` returns. The reaction and entity type registries are separate Rust structures from behavior script state — they can be cleared and repopulated independently (hot reload path).
+**Data context lifecycle.** At level load, after geometry and entities are ready but before `levelLoad` behavior handlers fire, the engine creates a short-lived VM context and runs the data script. During that run:
+
+- `registerEntity` calls register entity-type descriptors into the engine-global entity-type registry. These survive level unload — they describe types, not per-level state.
+- `registerLevelManifest(ctx)` is called once at the end. Its return bundle carries `{reactions}`; only those reactions land in the per-level reaction registry.
+
+The context is dropped after the data script completes. No live reference to the data VM remains. The reaction registry is per-level and clears on unload; the entity-type registry is engine-global. The two registries are separate Rust structures from behavior script state — each can be cleared and repopulated independently (hot reload path).
 
 `registerHandler` is behavior-only; calling it from a data context returns a `WrongContext` error.
 

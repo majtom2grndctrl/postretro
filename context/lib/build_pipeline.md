@@ -82,7 +82,7 @@ Invalid KVP values log a warning naming the key and entity origin, fall back to 
 
 **Current built-in types:** `billboard_emitter`.
 
-**Production status:** the PRL wire format does not yet carry a generic map-entity section. The `ClassnameDispatch` table and handlers are live and ready; once the section ships and `LevelWorld.map_entities` is populated at PRL load, the dispatch fires automatically with no further engine changes.
+**Two-sweep dispatch.** After the built-in pass, the loader runs a second sweep against script-registered entity types declared via `registerEntity` in the data script. The built-in pass returns the set of classnames it attempted to handle; the second sweep skips any classname in that set. Built-ins win on collision even when the built-in handler failed to spawn (e.g. registry exhausted) — a classname is owned by exactly one of the two paths for the lifetime of the level. Collisions log a `warn!` once per classname. See `context/lib/scripting.md §2` for the data context lifecycle that populates the descriptor table consumed by the second sweep.
 
 ---
 

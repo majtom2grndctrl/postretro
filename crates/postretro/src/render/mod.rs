@@ -2141,12 +2141,7 @@ fn build_default_view_projection(aspect: f32) -> Mat4 {
     let up = glam::Vec3::Y;
 
     let view = Mat4::look_at_rh(eye, center, up);
-    let projection = Mat4::perspective_rh(
-        std::f32::consts::FRAC_PI_2,
-        aspect,
-        0.1,
-        4096.0,
-    );
+    let projection = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, aspect, 0.1, 4096.0);
 
     projection * view
 }

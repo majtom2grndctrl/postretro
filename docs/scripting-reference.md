@@ -417,3 +417,236 @@ registerHandler("levelLoad", function()
   end
 end)
 ```
+
+---
+
+## Entity lifecycle
+
+### `spawnEntity(transform, tags?)`
+
+Spawns a new entity at the given transform. `tags` is an optional array of tag strings attached at creation time. Returns an `EntityId`.
+
+```typescript
+const id = spawnEntity(
+  {
+    position: { x: 0, y: 0, z: 64 },
+    rotation: { pitch: 0, yaw: 0, roll: 0 },
+    scale: { x: 1, y: 1, z: 1 },
+  },
+  ["myTag"]
+);
+```
+
+### `despawnEntity(id)`
+
+Removes an entity from the world. The entity stops responding to queries immediately; deferred cleanup runs at end-of-tick.
+
+```typescript
+despawnEntity(id);
+```
+
+### `entityExists(id)`
+
+Returns `true` if the entity is alive, `false` if it has been despawned or was never valid.
+
+```typescript
+if (entityExists(id)) { /* safe to use */ }
+```
+
+---
+
+## Query and component access
+
+### `worldQuery(filter)`
+
+Returns an array of entity handles matching the filter. Valid `filter` shapes:
+
+| Filter | Returns | Notes |
+|--------|---------|-------|
+| `{ component: "transform" }` | `{ id, position, tags }[]` | Returns **every** live entity. Filter by `tag` when you need a subset. |
+| `{ component: "light" }` | `{ id, position, tags, isDynamic, component: LightComponent }[]` | |
+| `{ component: "emitter" }` | `{ id, position, tags, component: BillboardEmitterComponent }[]` | |
+| `{ component: "particle" }` | `[]` | Always empty — particles are not individually observable by scripts. |
+| `{ component: "sprite_visual" }` | `[]` | Always empty — internal rendering detail. |
+| `{ tag: "someTag" }` | filtered subset | Narrows any of the above by tag (exact match). |
+
+Unknown `component` strings throw a `ScriptError`.
+
+> **Note:** `worldQuery({ component: "transform" })` returns every live entity with no cap. Use `{ tag: "..." }` to retrieve a targeted subset.
+
+```typescript
+const all   = worldQuery({ component: "transform" });
+const emitters = worldQuery({ component: "emitter", tag: "campfire" });
+```
+
+### `getComponent(id, kind)`
+
+Returns the current component value for the given entity and component kind string (`"light"`, `"billboard_emitter"`, etc.). Throws a `ScriptError` if the entity does not carry that component — use `entityExists` and `worldQuery` to check presence before calling.
+
+```typescript
+const emitter = getComponent(id, "billboard_emitter");
+```
+
+### `setComponent(id, kind, value)`
+
+Writes a component value onto an entity. The `value` must match the component kind's shape. Changes take effect at the next tick.
+
+> **Note:** `"light"`, `"billboard_emitter"`, `"particle_state"`, and `"sprite_visual"` are read-only via `setComponent`. Use dedicated primitives (`setLightAnimation`, reaction primitives) to mutate those components. Only `"transform"` writes are supported.
+
+```typescript
+setComponent(id, "transform", { kind: "transform", position: { x: 0, y: 0, z: 0 }, rotation: { pitch: 0, yaw: 0, roll: 0 }, scale: { x: 1, y: 1, z: 1 } });
+```
+
+### `getEntityProperty(id, key)`
+
+Reads a per-placement key-value pair authored on the `.map` entity that spawned this entity. Returns the string value for `key`, or `null` if the key was not set. Available on entities spawned via `registerEntity` archetypes and on built-in classname entities (e.g. `billboard_emitter`).
+
+```typescript
+const label = getEntityProperty(id, "display_name"); // null if unset
+```
+
+---
+
+## Events
+
+### `emitEvent(event)`
+
+Emits a game event. The event is appended to the `game_events` ring buffer (capacity 1024; oldest entry is evicted when full). The engine drains the buffer at the end of the Game logic phase and logs each entry at `game_events=info`. The event is also broadcast to any script-side handler registered for `kind` via `registerHandler`. Safe to call for event kinds with no registered handler — the call completes cleanly.
+
+```typescript
+emitEvent({ kind: "damage", payload: { source: id, amount: 10 } });
+```
+
+### `sendEvent(targetId, event)`
+
+Sends an event directly to a specific entity. The entity must be alive; calling with a dead id is a no-op.
+
+```typescript
+sendEvent(targetId, { kind: "activate", payload: {} });
+```
+
+### `registerHandler(kind, fn)`
+
+Registers a callback for an event kind. Multiple handlers for the same kind all fire. Valid event kinds:
+
+| Kind | Context parameter | When it fires |
+|------|-------------------|---------------|
+| `"levelLoad"` | none | Once when the level starts. |
+| `"tick"` | `{ delta: number, time: number }` | Once per frame. `delta` is seconds since the last tick; `time` is seconds since level load. |
+
+```typescript
+registerHandler("tick", (ctx) => {
+  const dt = ctx!.delta;
+});
+```
+
+---
+
+## Data context
+
+### `registerEntity(descriptor)`
+
+Registers a script-defined entity archetype for use across all levels. Call this from a data script (mod scope), before level load.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `classname` | `string` | The `.map` classname this archetype matches. Must not conflict with a built-in classname (e.g. `billboard_emitter`) — built-ins take precedence and a warning is logged. |
+| `components.emitter` | `ComponentValue` (optional) | Emitter component attached at spawn. Use `smokeEmitter`, `sparkEmitter`, or `emitter()`. |
+| `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
+
+**Idempotency:** calling `registerEntity` again with the same classname and descriptor is a silent no-op. If the descriptor differs, the new one wins and a debug log is emitted.
+
+**Archetype spawn order:** after built-in classname dispatch runs at level load, the engine sweeps `world.map_entities` a second time and spawns script-registered archetypes for any entity whose classname matched a `registerEntity` call and was not handled as a built-in.
+
+**KVP overrides with `initial_` prefix:** any `initial_`-prefixed key on a `.map` placement (e.g. `initial_rate`, `initial_range`, `initial_is_dynamic`) overrides the matching descriptor field at spawn time. On parse failure the descriptor default is kept and a warning is logged. The key is `initial_` followed by the descriptor's field name (e.g. `initial_range` overrides `LightDescriptor.range`).
+
+> **Naming note:** `BillboardEmitterComponent.initial_velocity` already starts with `initial_`, so the mechanical override key would be `initial_initial_velocity` (prefix doubled). Both `initial_initial_velocity` and the friendlier alias `initial_velocity` are accepted; either writes to `BillboardEmitterComponent.initial_velocity` at spawn. The shortest alias `velocity` is also accepted and writes the same field.
+
+**KVP read access:** `getEntityProperty` (see above) is available on entities spawned this way, as well as on entities spawned by built-in classname handlers.
+
+```typescript
+registerEntity({
+  classname: "exhaustPort",
+  components: {
+    emitter: smokeEmitter({ rate: 8, spread: 0.3, lifetime: 2.0 }),
+  },
+});
+
+registerEntity({
+  classname: "campfire",
+  components: {
+    light: { color: [1.0, 0.5, 0.1], range: 256, intensity: 1.2, is_dynamic: true },
+    emitter: sparkEmitter({ rate: 4, spread: 0.5, lifetime: 0.8 }),
+  },
+});
+```
+
+---
+
+## Entity API examples
+
+### Data script — registering archetypes
+
+```typescript
+// content/mymod/scripts/entities.ts
+// Runs at mod init (before level load). No import needed — registerEntity,
+// smokeEmitter, and sparkEmitter are engine globals.
+
+registerEntity({
+  classname: "exhaustPort",
+  components: {
+    emitter: smokeEmitter({ rate: 8, spread: 0.3, lifetime: 2.0 }),
+  },
+});
+
+registerEntity({
+  classname: "campfire",
+  components: {
+    light: { color: [1.0, 0.5, 0.1], range: 256, intensity: 1.2, is_dynamic: true },
+    emitter: sparkEmitter({ rate: 4, spread: 0.5, lifetime: 0.8 }),
+  },
+});
+```
+
+### Behavior script — query, get, set, and emit
+
+```typescript
+// content/mymod/scripts/smoke_manager.ts
+import { registerHandler } from "postretro";
+
+registerHandler("levelLoad", () => {
+  // Find all exhaust emitters and boost their rate
+  const ports = worldQuery({ component: "emitter", tag: "boost" });
+  for (const port of ports) {
+    // getComponent is safe here — worldQuery already guarantees the emitter component is present.
+    const comp = getComponent(port.id, "emitter");
+    setComponent(port.id, "emitter", { ...comp, rate: comp.rate * 2 });
+  }
+});
+
+registerHandler("tick", (ctx) => {
+  // Every 5 seconds, emit a gameplay event
+  if (Math.floor(ctx!.time) % 5 === 0 && Math.floor(ctx!.time - ctx!.delta) % 5 !== 0) {
+    emitEvent("ambientPulse", { time: ctx!.time });
+  }
+});
+```
+
+### Level script — levelLoad and tick handlers
+
+```typescript
+// content/mymod/scripts/level_01.ts
+import { registerHandler } from "postretro";
+
+registerHandler("levelLoad", () => {
+  const campfires = worldQuery({ component: "light", tag: "campfire" });
+  for (const fire of campfires) {
+    fire.setAnimation(flicker(0.6, 1.0, 6));
+  }
+});
+
+registerHandler("tick", (ctx) => {
+  const elapsed = ctx!.time;
+  // Tick-driven logic here — prefer pre-built animations over per-tick mutation.
+});
+```

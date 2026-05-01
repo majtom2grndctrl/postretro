@@ -1,6 +1,5 @@
 // PRL level loading: read .prl files, produce BSP tree + BVH runtime data.
-// See: context/lib/build_pipeline.md §PRL
-// See: context/plans/in-progress/bvh-foundation/2-runtime-bvh.md
+// See: context/lib/build_pipeline.md §PRL Compilation
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -18,6 +17,7 @@ use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -119,11 +119,7 @@ pub enum FalloffModel {
 
 /// Engine-side light loaded from the interim AlphaLights PRL section (ID 18).
 ///
-/// **INTERIM** — this type and the AlphaLights section it comes from will be
-/// replaced by an entity-system serialisation in Milestone 6+. Sub-plan 3 of
-/// the Lighting Foundation plan uploads these to the direct-lighting GPU
-/// buffer; sub-plan 1 only guarantees parsing round-trips cleanly.
-/// See `context/plans/in-progress/lighting-foundation/1-fgd-canonical.md`.
+/// **INTERIM** — AlphaLights will eventually move into the scripting entity registry; not yet scheduled. See context/lib/scripting.md.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapLight {
     pub origin: [f64; 3],
@@ -219,9 +215,15 @@ pub struct LevelWorld {
     /// lived data context at level load to populate the data registries.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     pub data_script: Option<DataScriptSection>,
-    /// FGD map entities awaiting classname dispatch.
-    // always empty at load time — the PRL format does not yet carry a generic map-entity section.
-    pub(crate) map_entities: Vec<crate::scripting::builtins::MapEntity>,
+    /// FGD map entities awaiting classname dispatch. Loaded from the
+    /// `MapEntity` PRL section (ID 29). Empty when the map carries no
+    /// non-light, non-worldspawn entities (the section is omitted in that case).
+    ///
+    /// Held as the format-crate's wire type — the loader is a strict
+    /// subsystem that does not depend on the scripting tree. The dispatch
+    /// entry point converts these records to `scripting::map_entity::MapEntity`
+    /// at the boundary.
+    pub map_entities: Vec<MapEntityRecord>,
 }
 
 impl LevelWorld {
@@ -736,6 +738,20 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => None,
         };
 
+    // MapEntity section (ID 29, optional). Absent for maps with no non-light,
+    // non-worldspawn entities — the runtime simply has nothing to dispatch.
+    // Records carry through to dispatch in their wire shape; the scripting
+    // layer adapts them at the dispatch entry point.
+    let map_entities: Vec<MapEntityRecord> =
+        match prl_format::read_section_data(&mut cursor, &meta, SectionId::MapEntity as u32)? {
+            Some(data) => {
+                let section = MapEntitySection::from_bytes(&data)?;
+                log::info!("[PRL] MapEntity: {} entities", section.entries.len());
+                section.entries
+            }
+            None => Vec::new(),
+        };
+
     let has_portals = portals_section.is_some();
 
     // Build runtime nodes from the nodes section.
@@ -876,7 +892,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         animated_light_weight_maps,
         delta_sh_volumes,
         data_script,
-        map_entities: Vec::new(), // always empty — PRL has no generic map-entity section yet
+        map_entities,
     })
 }
 
@@ -1502,6 +1518,90 @@ mod tests {
             "expected count mismatch error, got: {msg}"
         );
 
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_parses_map_entity_section_into_world() {
+        use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
+
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let me = MapEntitySection {
+            entries: vec![MapEntityRecord {
+                classname: "billboard_emitter".to_string(),
+                origin: [4.0, 1.0, -2.0],
+                angles: [0.0, std::f32::consts::FRAC_PI_2, 0.0],
+                key_values: vec![
+                    ("rate".to_string(), "12".to_string()),
+                    ("wave".to_string(), "3".to_string()),
+                ],
+                tags: vec!["fx".to_string()],
+            }],
+        };
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::MapEntity as u32,
+                version: 1,
+                data: me.to_bytes(),
+            },
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_map_entity.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+
+        assert_eq!(world.map_entities.len(), 1);
+        let e = &world.map_entities[0];
+        assert_eq!(e.classname, "billboard_emitter");
+        assert!((e.origin[0] - 4.0).abs() < 1e-5);
+        assert!((e.angles[1] - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        let rate = e
+            .key_values
+            .iter()
+            .find(|(k, _)| k == "rate")
+            .map(|(_, v)| v.as_str());
+        let wave = e
+            .key_values
+            .iter()
+            .find(|(k, _)| k == "wave")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(rate, Some("12"));
+        assert_eq!(wave, Some("3"));
+        assert_eq!(e.tags, vec!["fx".to_string()]);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_absent_map_entity_section_yields_empty_vec() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_no_map_entity.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+        assert!(world.map_entities.is_empty());
         std::fs::remove_file(&tmp).ok();
     }
 

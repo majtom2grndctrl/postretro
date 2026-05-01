@@ -1,6 +1,6 @@
 --!strict
 -- Data-script vocabulary: pure descriptor builders for `registerLevelManifest`.
--- `registerReaction` and `registerEntities` construct typed plain tables that
+-- `registerReaction` and `registerEntity` construct typed plain tables that
 -- the engine deserializes from the manifest's return value. They never call
 -- back into Rust -- the FFI boundary is the `return` statement of
 -- `registerLevelManifest`.
@@ -11,8 +11,10 @@
 --
 -- ```lua
 -- function registerLevelManifest(_ctx)
+--   -- Entity types are registered globally via the `registerEntity`
+--   -- primitive (definition context) and survive level unload. The
+--   -- manifest carries only per-level reactions.
 --   return {
---     entities = registerEntities({ Grunt, HeavyGunner }),
 --     reactions = {
 --       registerReaction("reactorWave1", {
 --         progress = { tag = "reactorWave1Monsters", at = 1.0, fire = "wave1Complete" },
@@ -79,14 +81,10 @@ export type NamedReactionDescriptor = {
   sequence: {SequenceStep}?,
 }
 
---- Descriptor produced by `registerEntities` -- one entry per registered class.
-export type EntityTypeDescriptor = { classname: string }
-
 --- Bundle returned from `registerLevelManifest`. The engine deserializes
 --- this shape in one pass at level load and drops the data-script VM
 --- context after the return.
 export type LevelManifest = {
-  entities: {EntityTypeDescriptor},
   reactions: {NamedReactionDescriptor},
 }
 
@@ -118,20 +116,6 @@ function DataScriptSdk.registerReaction(
   end
   if d.onComplete ~= nil then
     out.onComplete = d.onComplete
-  end
-  return out
-end
-
---- Build the entity-type descriptor list for `LevelManifest.entities`.
---- Each input class is reduced to its `classname` -- that's the only
---- field the engine reads at registration time. Pure: returns a fresh
---- table.
-function DataScriptSdk.registerEntities(
-  types: {{ classname: string }}
-): {EntityTypeDescriptor}
-  local out: {EntityTypeDescriptor} = {}
-  for i, t in ipairs(types) do
-    out[i] = { classname = t.classname }
   end
   return out
 end

@@ -1,10 +1,7 @@
 // Entity/component registry: the scripting surface that scripts address.
 // See: context/lib/scripting.md
 
-// No call sites yet; silence dead-code lints here rather than sprinkling
-// `#[allow]` on every item.
-#![allow(dead_code)]
-
+use std::collections::HashMap;
 use std::fmt;
 
 use glam::{Quat, Vec3};
@@ -132,7 +129,7 @@ impl Default for Transform {
 /// The `kind` discriminant matches [`ComponentKind`] one-to-one; downstream
 /// FFI plans serialize this directly to/from JS/Luau tables.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ComponentValue {
     Transform(Transform),
     Light(LightComponent),
@@ -256,6 +253,12 @@ pub(crate) struct EntityRegistry {
     /// matches `world.query({ tag: "t" })` when any of its tags equals `"t"`.
     /// Empty vec means untagged. Column is resized in lockstep with `components`.
     tags: Vec<Vec<String>>,
+    /// Per-entity key/value bag carried over from the FGD `.map` entity that
+    /// spawned the entity. Populated by built-in classname handlers (and any
+    /// future spawn paths that originate from a map entity); read by the
+    /// `getEntityProperty` primitive. Sparsely populated — entities spawned
+    /// outside the map-load path have no entry here.
+    kvp_table: HashMap<EntityId, HashMap<String, String>>,
 }
 
 impl EntityRegistry {
@@ -265,7 +268,37 @@ impl EntityRegistry {
             free_list: Vec::new(),
             components: [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             tags: Vec::new(),
+            kvp_table: HashMap::new(),
         }
+    }
+
+    /// Attach the per-placement KVP bag (authored on the source `.map` entity)
+    /// to a spawned entity. Called by built-in classname handlers immediately
+    /// after spawn so `getEntityProperty` works uniformly regardless of which
+    /// handler ran. Empty bags are stored as an empty map (still creates an
+    /// entry); pass through unchanged for readability.
+    pub(crate) fn set_map_kvps(
+        &mut self,
+        id: EntityId,
+        kvps: HashMap<String, String>,
+    ) -> Result<(), RegistryError> {
+        let _ = self.validate(id)?;
+        self.kvp_table.insert(id, kvps);
+        Ok(())
+    }
+
+    /// Read a single key from an entity's per-placement KVP bag. Returns
+    /// `Ok(None)` for both "entity has no KVP bag" and "key not present" —
+    /// scripts cannot distinguish, and the script-side contract is "absent
+    /// keys read as null". Stale entity ids surface as `GenerationMismatch` so
+    /// the FFI layer can map to a typed script error.
+    pub(crate) fn get_map_kvp(
+        &self,
+        id: EntityId,
+        key: &str,
+    ) -> Result<Option<String>, RegistryError> {
+        let _ = self.validate(id)?;
+        Ok(self.kvp_table.get(&id).and_then(|m| m.get(key).cloned()))
     }
 
     /// Attach (or overwrite) the tag list on an entity. An empty vec clears
@@ -291,7 +324,7 @@ impl EntityRegistry {
     /// When `tag_filter` is `None`, every entity with the component matches.
     ///
     /// Yields `(EntityId, &ComponentValue)` pairs in slot-index order. Used by
-    /// the `world.query` primitive (Sub-plan 6).
+    /// the `world.query` primitive.
     pub(crate) fn query_by_component_and_tag<'a>(
         &'a self,
         kind: ComponentKind,
@@ -346,12 +379,18 @@ impl EntityRegistry {
     /// Returns `None` when all 65,536 entity slots are exhausted (free list
     /// empty and slot vector at `u16::MAX`). Callers that must not panic
     /// (e.g. script primitives crossing the FFI boundary) should prefer this
-    /// over [`EntityRegistry::spawn`].
-    pub(crate) fn try_spawn(&mut self, transform: Transform) -> Option<EntityId> {
+    /// over [`EntityRegistry::spawn`]. Tags are attached at slot-mark time;
+    /// pass `&[]` to spawn untagged.
+    pub(crate) fn try_spawn(&mut self, transform: Transform, tags: &[String]) -> Option<EntityId> {
         if self.free_list.is_empty() && self.slots.len() >= u16::MAX as usize {
             return None;
         }
-        Some(self.spawn(transform))
+        let id = self.spawn(transform);
+        if !tags.is_empty() {
+            // `set_tags` only fails on a stale id — the id was just returned.
+            let _ = self.set_tags(id, tags.to_vec());
+        }
+        Some(id)
     }
 
     pub(crate) fn spawn(&mut self, transform: Transform) -> EntityId {
@@ -398,6 +437,7 @@ impl EntityRegistry {
             column[index] = None;
         }
         self.tags[index].clear();
+        self.kvp_table.remove(&id);
         slot.live = false;
 
         // Generation-wrap retirement: reusing the slot after wrap would let a
@@ -682,7 +722,7 @@ mod tests {
             burst: Some(3),
             spread: 0.4,
             lifetime: 3.0,
-            initial_velocity: [0.0, 1.5, 0.0],
+            velocity: [0.0, 1.5, 0.0],
             buoyancy: 0.2,
             drag: 0.5,
             size_over_lifetime: vec![0.3, 1.0, 0.5],
@@ -692,7 +732,7 @@ mod tests {
             spin_rate: 1.2,
             spin_animation: Some(SpinAnimation {
                 duration: 2.0,
-                rate_curve: vec![0.0, 3.14, 0.0],
+                rate_curve: vec![0.0, 3.5, 0.0],
             }),
         };
         reg.set_component(id, value.clone()).unwrap();

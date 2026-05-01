@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use super::primitives_registry::{
-    ParamInfo, PrimitiveRegistry, RegisteredType, ScriptPrimitive, TypeShape,
+    ParamInfo, PrimitiveRegistry, RegisteredType, ScriptPrimitive, TaggedVariant, TypeShape,
 };
 
 /// Strip `module::path::` qualification from a type name, returning just the
@@ -93,14 +93,25 @@ fn rust_to_ts(ty_name: &str) -> String {
         // is `Entity[]` — the SDK layer narrows to a specific entity type
         // (e.g. `LightEntity`) based on the query's component filter.
         "JsonValue" => "ReadonlyArray<Entity>".to_string(),
+        // `getEntityProperty` returns `Option<String>` mapped through a
+        // newtype that converts None → JS null (rather than rquickjs's
+        // default `undefined`). Script-side surface is `string | null`.
+        "NullableString" => "string | null".to_string(),
         "WorldQueryFilter" => "WorldQueryFilter".to_string(),
-        "EntityTransform" => "EntityTransform".to_string(),
+        "WorldQueryComponent" => "WorldQueryComponent".to_string(),
         "Entity" => "Entity".to_string(),
+        "TransformHandle" => "TransformHandle".to_string(),
         "LightAnimation" => "LightAnimation".to_string(),
         "LightComponent" => "LightComponent".to_string(),
         "LightEntity" => "LightEntity".to_string(),
+        "EmitterEntity" => "EmitterEntity".to_string(),
         "LightKind" => "LightKind".to_string(),
         "FalloffKind" => "FalloffKind".to_string(),
+        "BillboardEmitterComponent" => "BillboardEmitterComponent".to_string(),
+        "SpinAnimation" => "SpinAnimation".to_string(),
+        "LightDescriptor" => "LightDescriptor".to_string(),
+        "EntityTypeDescriptor" => "EntityTypeDescriptor".to_string(),
+        "EntityTypeComponents" => "EntityTypeComponents".to_string(),
         other => {
             if warned_once(&format!("ts:{other}")) {
                 log::warn!(
@@ -145,14 +156,22 @@ fn rust_to_luau(ty_name: &str) -> String {
         "ScriptCallContext" => "ScriptCallContext".to_string(),
         "HandlerFn" => "(ctx: ScriptCallContext?) -> ()".to_string(),
         "JsonValue" => "{Entity}".to_string(),
+        "NullableString" => "string?".to_string(),
         "WorldQueryFilter" => "WorldQueryFilter".to_string(),
-        "EntityTransform" => "EntityTransform".to_string(),
+        "WorldQueryComponent" => "WorldQueryComponent".to_string(),
         "Entity" => "Entity".to_string(),
+        "TransformHandle" => "TransformHandle".to_string(),
         "LightAnimation" => "LightAnimation".to_string(),
         "LightComponent" => "LightComponent".to_string(),
         "LightEntity" => "LightEntity".to_string(),
+        "EmitterEntity" => "EmitterEntity".to_string(),
         "LightKind" => "LightKind".to_string(),
         "FalloffKind" => "FalloffKind".to_string(),
+        "BillboardEmitterComponent" => "BillboardEmitterComponent".to_string(),
+        "SpinAnimation" => "SpinAnimation".to_string(),
+        "LightDescriptor" => "LightDescriptor".to_string(),
+        "EntityTypeDescriptor" => "EntityTypeDescriptor".to_string(),
+        "EntityTypeComponents" => "EntityTypeComponents".to_string(),
         other => {
             if warned_once(&format!("luau:{other}")) {
                 log::warn!(
@@ -265,19 +284,29 @@ fn emit_ts_type(ty: &RegisteredType, out: &mut String) {
         TypeShape::TaggedUnion {
             tag_field,
             value_field,
+            flat,
             variants,
         } => {
+            let render_variant = |v: &TaggedVariant| -> String {
+                if *flat {
+                    format!(
+                        "({{ {tag_field}: \"{}\" }} & {})",
+                        v.kind,
+                        rust_to_ts(v.value_ty)
+                    )
+                } else {
+                    format!(
+                        "{{ {tag_field}: \"{}\"; {value_field}: {} }}",
+                        v.kind,
+                        rust_to_ts(v.value_ty)
+                    )
+                }
+            };
             let any_doc = variants.iter().any(|v| !v.doc.is_empty());
             if !any_doc {
                 let body = variants
                     .iter()
-                    .map(|v| {
-                        format!(
-                            "{{ {tag_field}: \"{}\"; {value_field}: {} }}",
-                            v.kind,
-                            rust_to_ts(v.value_ty)
-                        )
-                    })
+                    .map(&render_variant)
                     .collect::<Vec<_>>()
                     .join(" | ");
                 writeln!(out, "{TS_INDENT}export type {} = {body};", ty.name).unwrap();
@@ -287,13 +316,7 @@ fn emit_ts_type(ty: &RegisteredType, out: &mut String) {
                 for (i, v) in variants.iter().enumerate() {
                     ts_doc_block(v.doc, TS_FIELD_INDENT, out);
                     let suffix = if i == last { ";" } else { "" };
-                    writeln!(
-                        out,
-                        "{TS_FIELD_INDENT}| {{ {tag_field}: \"{}\"; {value_field}: {} }}{suffix}",
-                        v.kind,
-                        rust_to_ts(v.value_ty)
-                    )
-                    .unwrap();
+                    writeln!(out, "{TS_FIELD_INDENT}| {}{suffix}", render_variant(v)).unwrap();
                 }
             }
         }
@@ -316,11 +339,33 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
         if !p.doc.is_empty() {
             writeln!(&mut out, "  /** {} */", p.doc).unwrap();
         }
+        // `worldQuery` is special-cased: the generic `JsonValue → ReadonlyArray<Entity>`
+        // mapping undertypes the kind-specific return fields. Mirror the
+        // `world.query` SDK wrapper by generating a generic signature keyed
+        // off the filter's `component` literal via `EntityForComponent<T>`.
+        // The SDK wrapper lives in `sdk/lib/world.ts` / `world.luau`.
+        if p.name == "worldQuery" {
+            writeln!(
+                &mut out,
+                "  export function worldQuery<T extends string>(filter: {{ component: T; tag?: string | null }}): ReadonlyArray<EntityForComponent<T>>;",
+            )
+            .unwrap();
+            continue;
+        }
         let params = p
             .signature
             .params
             .iter()
-            .map(|ParamInfo { name, ty_name }| format!("{}: {}", name, rust_to_ts(ty_name)))
+            .map(
+                |ParamInfo {
+                     name,
+                     ty_name,
+                     optional,
+                 }| {
+                    let marker = if *optional { "?" } else { "" };
+                    format!("{}{}: {}", name, marker, rust_to_ts(ty_name))
+                },
+            )
             .collect::<Vec<_>>()
             .join(", ");
         let ret = rust_to_ts(p.signature.return_ty_name);
@@ -360,9 +405,15 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     ): void;
   }
 
-  /** Maps a component-name literal to the rich entity handle type. */
+  /** Maps a component-name literal to the rich entity handle type. `"light"`
+   * yields `LightEntityHandle` (with convenience methods); `"emitter"` yields
+   * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
+   * snapshot under `component`). Other component names fall back to the bare
+   * `Entity` shape. */
   export type EntityForComponent<T extends string> =
-    T extends "light" ? LightEntityHandle : Entity;
+    T extends "light" ? LightEntityHandle :
+    T extends "emitter" ? EmitterEntity :
+    Entity;
 
   /** Vocabulary object installed as `globalThis.world`. */
   export interface World {
@@ -431,12 +482,6 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     onComplete?: string;
   };
 
-  /** Tween shape used by `setSpinRate`. Mirrors the Rust `SpinAnimation` storage struct. */
-  export type SpinAnimation = {
-    duration: number;
-    rate_curve: ReadonlyArray<number>;
-  };
-
   /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. Sequence steps target a single `EntityId`; tag-targeted primitives belong on the `Primitive` reaction path. */
   export type SetLightAnimationStep = {
     id: EntityId;
@@ -459,12 +504,8 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     | SequenceReactionDescriptor
   );
 
-  /** Descriptor produced by `registerEntities` — one entry per registered class. */
-  export type EntityTypeDescriptor = { classname: string };
-
   /** Bundle returned from `registerLevelManifest`. The engine deserializes this shape in one pass at level load. */
   export type LevelManifest = {
-    entities: EntityTypeDescriptor[];
     reactions: NamedReactionDescriptor[];
   };
 
@@ -476,11 +517,6 @@ const TS_SDK_LIB_BLOCK: &str = r#"
       | PrimitiveReactionDescriptor
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
-
-  /** Build the entity-type descriptor list for `LevelManifest.entities`. Pure: returns a fresh array. */
-  export function registerEntities(
-    types: ReadonlyArray<{ classname: string }>,
-  ): EntityTypeDescriptor[];
 "#;
 
 // ---------------------------------------------------------------------------
@@ -546,19 +582,35 @@ fn emit_luau_type(ty: &RegisteredType, out: &mut String) {
         TypeShape::TaggedUnion {
             tag_field,
             value_field,
+            flat,
             variants,
         } => {
+            let render_variant = |v: &TaggedVariant| -> String {
+                if *flat {
+                    // Luau lacks a TS-style intersection operator, so a flat
+                    // ComponentValue variant is spelled as the payload type
+                    // intersected with the tag literal via a type alias. We
+                    // approximate it as `Payload & { kind: "x" }` using the
+                    // typeof / intersection workaround — luau-lsp accepts
+                    // `T & { tag: "kind" }`. (Equivalent to the TS form.)
+                    format!(
+                        "({} & {{ {tag_field}: \"{}\" }})",
+                        rust_to_luau(v.value_ty),
+                        v.kind
+                    )
+                } else {
+                    format!(
+                        "{{ {tag_field}: \"{}\", {value_field}: {} }}",
+                        v.kind,
+                        rust_to_luau(v.value_ty)
+                    )
+                }
+            };
             let any_doc = variants.iter().any(|v| !v.doc.is_empty());
             if !any_doc {
                 let body = variants
                     .iter()
-                    .map(|v| {
-                        format!(
-                            "{{ {tag_field}: \"{}\", {value_field}: {} }}",
-                            v.kind,
-                            rust_to_luau(v.value_ty)
-                        )
-                    })
+                    .map(&render_variant)
                     .collect::<Vec<_>>()
                     .join(" | ");
                 writeln!(out, "export type {} = {body}", ty.name).unwrap();
@@ -567,13 +619,7 @@ fn emit_luau_type(ty: &RegisteredType, out: &mut String) {
                 for (i, v) in variants.iter().enumerate() {
                     luau_doc_line(v.doc, LUAU_FIELD_INDENT, out);
                     let prefix = if i == 0 { "" } else { "| " };
-                    writeln!(
-                        out,
-                        "{LUAU_FIELD_INDENT}{prefix}{{ {tag_field}: \"{}\", {value_field}: {} }}",
-                        v.kind,
-                        rust_to_luau(v.value_ty)
-                    )
-                    .unwrap();
+                    writeln!(out, "{LUAU_FIELD_INDENT}{prefix}{}", render_variant(v)).unwrap();
                 }
             }
         }
@@ -595,11 +641,42 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
         if !p.doc.is_empty() {
             writeln!(&mut out, "--- {}", p.doc).unwrap();
         }
+        // `worldQuery` is special-cased: the bare export must mirror the
+        // `world:query` overload set so kind-specific return fields
+        // (`LightEntity.isDynamic`, `LightEntity.component`,
+        // `EmitterEntity.component`) are not silently lost.
+        if p.name == "worldQuery" {
+            writeln!(
+                &mut out,
+                "declare worldQuery: \
+                 ((filter: {{ component: \"light\", tag: string? }}) -> {{LightEntity}}) \
+                 & ((filter: {{ component: \"emitter\", tag: string? }}) -> {{EmitterEntity}}) \
+                 & ((filter: WorldQueryFilter) -> {{Entity}})",
+            )
+            .unwrap();
+            continue;
+        }
         let params = p
             .signature
             .params
             .iter()
-            .map(|ParamInfo { name, ty_name }| format!("{}: {}", name, rust_to_luau(ty_name)))
+            .map(
+                |ParamInfo {
+                     name,
+                     ty_name,
+                     optional,
+                 }| {
+                    // Luau optional parameters render as `name: T?` (the `?`
+                    // attaches to the type, not the name) — matches the
+                    // Option<T> rendering convention used elsewhere.
+                    let ty = rust_to_luau(ty_name);
+                    if *optional {
+                        format!("{}: {}?", name, ty)
+                    } else {
+                        format!("{}: {}", name, ty)
+                    }
+                },
+            )
             .collect::<Vec<_>>()
             .join(", ");
         let ret = rust_to_luau(p.signature.return_ty_name);
@@ -629,7 +706,7 @@ export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
 --- Typed light handle returned by `world:query({ component = "light" })`.
 export type LightEntityHandle = {
   id: EntityId,
-  transform: EntityTransform,
+  position: Vec3,
   isDynamic: boolean,
   tags: {string},
   component: LightComponent,
@@ -650,16 +727,21 @@ export type LightEntityHandle = {
 }
 
 --- Generic entity handle returned by `world:query` when the component is
---- not "light". Use `getComponent` for component data.
+--- not "light" or "emitter". Use `getComponent` for component data.
 export type EntityHandle = {
   id: EntityId,
-  transform: EntityTransform,
+  position: Vec3,
   tags: {string},
 }
 
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
+--- `"light"` returns `LightEntityHandle` values (with `:setAnimation` /
+--- `:setIntensity` / `:setColor`); `"emitter"` returns `EmitterEntity`
+--- values carrying the full `BillboardEmitterComponent` snapshot under
+--- `component`; other components fall back to the bare `EntityHandle` shape.
 export type World = {
   query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
+       & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
        & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
 }
 
@@ -707,13 +789,6 @@ export type PrimitiveReactionDescriptor = {
   onComplete: string?,
 }
 
---- Tween shape used by `setSpinRate`. Mirrors the Rust `SpinAnimation`
---- storage struct.
-export type SpinAnimation = {
-  duration: number,
-  rate_curve: {number},
-}
-
 --- One step in a `sequence` reaction body: invokes the named sequenced
 --- primitive against the given entity with `args`. Sequence steps target a
 --- single `EntityId`; tag-targeted primitives belong on the `Primitive`
@@ -742,13 +817,9 @@ export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string
 export type SequenceNamedReactionDescriptor = { name: string, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 
---- Descriptor produced by `registerEntities` -- one entry per registered class.
-export type EntityTypeDescriptor = { classname: string }
-
 --- Bundle returned from `registerLevelManifest`. The engine deserializes
 --- this shape in one pass at level load.
 export type LevelManifest = {
-  entities: {EntityTypeDescriptor},
   reactions: {NamedReactionDescriptor},
 }
 
@@ -757,11 +828,6 @@ declare function registerReaction(
   name: string,
   descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor
 ): NamedReactionDescriptor
-
---- Build the entity-type descriptor list for `LevelManifest.entities`.
-declare function registerEntities(
-  types: {{ classname: string }}
-): {EntityTypeDescriptor}
 "#;
 
 // ---------------------------------------------------------------------------
@@ -852,11 +918,55 @@ declare module \"postretro\" {
 
   export type Transform = { position: Vec3; rotation: EulerDegrees; scale: Vec3 };
 
-  export type ComponentKind = \"Transform\" | \"Light\" | \"BillboardEmitter\" | \"ParticleState\" | \"SpriteVisual\";
+  export type ComponentKind = \"transform\" | \"light\" | \"billboard_emitter\" | \"particle_state\" | \"sprite_visual\";
 
-  export type ComponentValue = { kind: \"Transform\"; value: Transform } | { kind: \"Light\"; value: LightComponent } | { kind: \"BillboardEmitter\"; value: BillboardEmitterComponent } | { kind: \"ParticleState\"; value: ParticleState } | { kind: \"SpriteVisual\"; value: SpriteVisual };
+  export type ComponentValue = ({ kind: \"transform\" } & Transform) | ({ kind: \"light\" } & LightComponent) | ({ kind: \"billboard_emitter\" } & BillboardEmitterComponent) | ({ kind: \"particle_state\" } & ParticleState) | ({ kind: \"sprite_visual\" } & SpriteVisual);
 
   export type ScriptEvent = { kind: string; payload: unknown };
+
+  /** Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI. */
+  export type LightDescriptor = {
+    /** RGB color in [0, 1]. */
+    color: Vec3;
+    /** Static intensity scalar. */
+    intensity: number;
+    /** Falloff range (maps onto LightComponent.falloffRange at spawn). */
+    range: number;
+    /** Author hint; descriptor-spawned lights are always treated as dynamic at spawn (baked indirect not supported). */
+    is_dynamic: boolean;
+  };
+
+  /** Argument shape for `registerEntity`. `components` is an optional sub-object carrying typed component presets. */
+  export type EntityTypeDescriptor = {
+    /** FGD classname this descriptor binds to. */
+    classname: string;
+    /** Optional component presets attached at level-load spawn. */
+    components?: EntityTypeComponents;
+  };
+
+  /** Engine-managed billboard emitter component shape. Carried by `BillboardEmitter` ECS entities and produced by SDK `emitter()`/`smokeEmitter()`/etc. */
+  export type BillboardEmitterComponent = {
+    /** Continuous spawn rate (particles/sec). 0 = inactive. */
+    rate: number;
+    burst: number | null;
+    spread: number;
+    lifetime: number;
+    velocity: Vec3;
+    buoyancy: number;
+    drag: number;
+    size_over_lifetime: ReadonlyArray<number>;
+    opacity_over_lifetime: ReadonlyArray<number>;
+    color: Vec3;
+    sprite: string;
+    spin_rate: number;
+    spin_animation: SpinAnimation | null;
+  };
+
+  /** Spin tween shape consumed by `setSpinRate`. */
+  export type SpinAnimation = { duration: number; rate_curve: ReadonlyArray<number> };
+
+  /** Optional bag of component presets carried by `EntityTypeDescriptor.components`. */
+  export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null };
 
   /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
@@ -876,11 +986,55 @@ export type EulerDegrees = { pitch: number, yaw: number, roll: number }
 
 export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 
-export type ComponentKind = \"Transform\" | \"Light\" | \"BillboardEmitter\" | \"ParticleState\" | \"SpriteVisual\"
+export type ComponentKind = \"transform\" | \"light\" | \"billboard_emitter\" | \"particle_state\" | \"sprite_visual\"
 
-export type ComponentValue = { kind: \"Transform\", value: Transform } | { kind: \"Light\", value: LightComponent } | { kind: \"BillboardEmitter\", value: BillboardEmitterComponent } | { kind: \"ParticleState\", value: ParticleState } | { kind: \"SpriteVisual\", value: SpriteVisual }
+export type ComponentValue = (Transform & { kind: \"transform\" }) | (LightComponent & { kind: \"light\" }) | (BillboardEmitterComponent & { kind: \"billboard_emitter\" }) | (ParticleState & { kind: \"particle_state\" }) | (SpriteVisual & { kind: \"sprite_visual\" })
 
 export type ScriptEvent = { kind: string, payload: any }
+
+--- Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI.
+export type LightDescriptor = {
+  --- RGB color in [0, 1].
+  color: Vec3,
+  --- Static intensity scalar.
+  intensity: number,
+  --- Falloff range (maps onto LightComponent.falloffRange at spawn).
+  range: number,
+  --- Author hint; descriptor-spawned lights are always treated as dynamic at spawn (baked indirect not supported).
+  is_dynamic: boolean,
+}
+
+--- Argument shape for `registerEntity`. `components` is an optional sub-object carrying typed component presets.
+export type EntityTypeDescriptor = {
+  --- FGD classname this descriptor binds to.
+  classname: string,
+  --- Optional component presets attached at level-load spawn.
+  components?: EntityTypeComponents,
+}
+
+--- Engine-managed billboard emitter component shape. Carried by `BillboardEmitter` ECS entities and produced by SDK `emitter()`/`smokeEmitter()`/etc.
+export type BillboardEmitterComponent = {
+  --- Continuous spawn rate (particles/sec). 0 = inactive.
+  rate: number,
+  burst: number?,
+  spread: number,
+  lifetime: number,
+  velocity: Vec3,
+  buoyancy: number,
+  drag: number,
+  size_over_lifetime: {number},
+  opacity_over_lifetime: {number},
+  color: Vec3,
+  sprite: string,
+  spin_rate: number,
+  spin_animation: SpinAnimation?,
+}
+
+--- Spin tween shape consumed by `setSpinRate`.
+export type SpinAnimation = { duration: number, rate_curve: {number} }
+
+--- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
+export type EntityTypeComponents = { light?: LightDescriptor?, emitter?: BillboardEmitterComponent? }
 
 --- Returns true if the entity id refers to a live entity.
 declare function entityExists(id: EntityId): boolean

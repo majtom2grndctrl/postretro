@@ -16,11 +16,10 @@ use crate::scripting::registry::{
 
 use super::eval_curve;
 
-/// Per-emitter transient state held bridge-side. Mirrors Plan 2's
-/// `LightSnapshot` pattern: insert on first-seen, remove on emitter despawn (or
-/// when the entity loses its `BillboardEmitterComponent`). Authoritative
-/// component fields stay on the component itself — the bridge only owns
-/// simulation-derived state that the script surface should not see.
+/// Per-emitter transient state held bridge-side. Insert on first-seen; remove
+/// when the emitter is despawned or loses its `BillboardEmitterComponent`.
+/// Authoritative component fields stay on the component itself — the bridge
+/// only owns simulation-derived state that the script surface should not see.
 #[derive(Debug, Clone, PartialEq)]
 struct EmitterBridgeState {
     /// Fractional emission accumulator. Advances by `delta * rate` each tick;
@@ -83,7 +82,7 @@ impl EmitterBridgeState {
 }
 
 /// Emitter bridge owning the per-emitter transient state. Constructed once and
-/// run via [`EmitterBridge::update`] each frame after the script `on_tick`
+/// run via [`EmitterBridge::update`] each frame after the script `tick`
 /// dispatch and before the particle simulation.
 pub(crate) struct EmitterBridge {
     states: HashMap<EntityId, EmitterBridgeState>,
@@ -299,7 +298,7 @@ impl Default for EmitterBridge {
 }
 
 /// Spawn one particle entity attached to `parent`. Direction is randomized
-/// inside the emitter's `spread` cone around `initial_velocity`; magnitude is
+/// inside the emitter's `spread` cone around `velocity`; magnitude is
 /// preserved.
 fn spawn_one(
     registry: &mut EntityRegistry,
@@ -308,10 +307,10 @@ fn spawn_one(
     parent: EntityId,
     state: &mut EmitterBridgeState,
 ) {
-    let initial_velocity = Vec3::from(component.initial_velocity);
-    let speed = initial_velocity.length();
+    let velocity = Vec3::from(component.velocity);
+    let speed = velocity.length();
     let dir = if speed > 0.0 {
-        let base = initial_velocity / speed;
+        let base = velocity / speed;
         sample_cone_direction(base, component.spread, state)
     } else {
         // No bias direction: sample a uniform direction on the unit sphere.
@@ -320,10 +319,13 @@ fn spawn_one(
         sample_cone_direction(Vec3::Y, std::f32::consts::PI, state)
     };
 
-    let Some(particle_id) = registry.try_spawn(Transform {
-        position: origin,
-        ..Transform::default()
-    }) else {
+    let Some(particle_id) = registry.try_spawn(
+        Transform {
+            position: origin,
+            ..Transform::default()
+        },
+        &[],
+    ) else {
         // Registry exhausted; the bridge cannot spawn more particles. The
         // light bridge uses the same log; mirror that wording.
         log::warn!(
@@ -425,7 +427,7 @@ mod tests {
             burst: None,
             spread: 0.0,
             lifetime: 5.0,
-            initial_velocity: [0.0, 1.0, 0.0],
+            velocity: [0.0, 1.0, 0.0],
             buoyancy: 0.0,
             drag: 0.0,
             size_over_lifetime: vec![1.0],
@@ -611,11 +613,11 @@ mod tests {
     #[test]
     fn spawn_directions_distribute_within_cone() {
         // 500 spawns with spread = π/4. Mean direction must align with
-        // initial_velocity to within a tolerance.
+        // velocity to within a tolerance.
         let mut registry = EntityRegistry::new();
         let mut comp = base_component(0.0);
         comp.spread = std::f32::consts::FRAC_PI_4;
-        comp.initial_velocity = [0.0, 1.0, 0.0]; // up
+        comp.velocity = [0.0, 1.0, 0.0]; // up
         comp.burst = Some(500);
         let id = spawn_emitter(&mut registry, comp);
         let mut bridge = EmitterBridge::new();
@@ -767,14 +769,13 @@ mod tests {
         assert_eq!(bridge.tracked_count(), 0);
     }
 
-    /// Sub-plan 8 acceptance: an FGD `billboard_emitter` map entity flows
-    /// through `apply_classname_dispatch`, the bridge ticks once, and at
-    /// least one particle lands at the map entity's origin. End-to-end
-    /// coverage of the dispatch + spawn + bridge path stitched up in this
-    /// sub-plan; lives here (not under `scripting::builtins`) because the
-    /// `scripting_systems` mount only exists in the binary crate root, so
-    /// integration tests that touch the bridge belong inside the systems
-    /// tree itself.
+    /// End-to-end test: an FGD `billboard_emitter` map entity flows through
+    /// `apply_classname_dispatch` (classname-dispatch path), the bridge ticks
+    /// once, and at least one particle lands at the map entity's origin.
+    /// Covers the dispatch → spawn → bridge pipeline in one shot. Lives here
+    /// (not under `scripting::builtins`) because the `scripting_systems` mount
+    /// only exists in the binary crate root, so integration tests that touch
+    /// the bridge must live inside the systems tree.
     #[test]
     fn dispatch_then_bridge_tick_produces_particle_at_map_origin() {
         use std::collections::HashMap;
@@ -792,13 +793,17 @@ mod tests {
         let entities = vec![MapEntity {
             classname: "billboard_emitter".to_string(),
             origin: Vec3::new(10.0, 20.0, 30.0),
+            angles: Vec3::ZERO,
             key_values: kv,
             tags: vec![],
         }];
 
         let mut registry = EntityRegistry::new();
-        let spawned = apply_classname_dispatch(&entities, &dispatch, &mut registry);
-        assert_eq!(spawned, 1, "billboard_emitter should dispatch successfully");
+        let handled = apply_classname_dispatch(&entities, &dispatch, &mut registry);
+        assert!(
+            handled.contains("billboard_emitter"),
+            "billboard_emitter should dispatch successfully",
+        );
 
         let mut bridge = EmitterBridge::new();
         bridge.update(&mut registry, 0.5, 0.0);

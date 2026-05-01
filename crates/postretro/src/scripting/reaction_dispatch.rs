@@ -1,5 +1,6 @@
 // Reaction dispatch: fires named events and tracks per-tag kill progress.
-// Lives separate from the behavior `HandlerTable`; hot-reload preserves in-flight progress subscriptions.
+// Lives separate from the behavior `HandlerTable`; a behavior hot-reload does
+// not clear or rebuild the reaction registry.
 
 use std::collections::HashMap;
 
@@ -320,7 +321,6 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
-            entities: vec![],
         });
 
         let mut entities = EntityRegistry::new();
@@ -338,7 +338,6 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
-            entities: vec![],
         });
 
         let mut entities = EntityRegistry::new();
@@ -360,7 +359,6 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("half", "wave1", 0.5, "midwave")],
-            entities: vec![],
         });
 
         let mut entities = EntityRegistry::new();
@@ -385,7 +383,6 @@ mod tests {
                 progress_reaction("waveDone", "wave1", 1.0, "powerOn"),
                 progress_reaction("reactorDown", "reactorMonster", 1.0, "reactorOff"),
             ],
-            entities: vec![],
         });
 
         let mut entities = EntityRegistry::new();
@@ -411,7 +408,6 @@ mod tests {
                 progress_reaction("waveDone", "wave1", 0.5, "powerOn"),
                 progress_reaction("reactorDown", "reactorMonster", 0.5, "reactorOff"),
             ],
-            entities: vec![],
         });
 
         let mut entities = EntityRegistry::new();
@@ -438,7 +434,6 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
-            entities: vec![],
         });
         let mut entities = EntityRegistry::new();
         spawn_with_tags(&mut entities, &["wave1"]);
@@ -458,7 +453,6 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "ghosts", 1.0, "spooky")],
-            entities: vec![],
         });
         let entities = EntityRegistry::new();
 
@@ -471,18 +465,19 @@ mod tests {
     #[test]
     fn resolve_entity_type_finds_registered_classname() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![],
-            entities: vec![EntityTypeDescriptor {
-                classname: "grunt".to_string(),
-            }],
+        data.upsert_entity_type(EntityTypeDescriptor {
+            classname: "grunt".to_string(),
+            light: None,
+            emitter: None,
         });
 
         let resolved = resolve_entity_type("grunt", &data);
         assert_eq!(
             resolved,
             Some(&EntityTypeDescriptor {
-                classname: "grunt".to_string()
+                classname: "grunt".to_string(),
+                light: None,
+                emitter: None,
             })
         );
     }
@@ -503,7 +498,6 @@ mod tests {
                 "reactorChambers",
                 Some("wave2Revealed"),
             )],
-            entities: vec![],
         });
 
         let chained = fire_named_event("wave1Complete", &data);
@@ -520,7 +514,6 @@ mod tests {
                 "reactorWave2Monsters",
                 None,
             )],
-            entities: vec![],
         });
 
         let chained = fire_named_event("wave2Revealed", &data);
@@ -532,7 +525,6 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
-            entities: vec![],
         });
         let chained = fire_named_event("waveDone", &data);
         assert!(chained.is_empty());
@@ -593,7 +585,6 @@ mod tests {
                     },
                 ],
             )],
-            entities: vec![],
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
@@ -646,7 +637,6 @@ mod tests {
                     },
                 ],
             )],
-            entities: vec![],
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
@@ -691,7 +681,6 @@ mod tests {
                     },
                 ],
             )],
-            entities: vec![],
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();

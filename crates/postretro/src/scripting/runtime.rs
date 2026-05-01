@@ -115,7 +115,7 @@ impl ScriptRuntime {
         );
     }
 
-    /// The handler registry is strictly per-level (see `scripting.md` §11
+    /// The handler registry is strictly per-level (see `scripting.md` §12
     /// Non-Goals). On hot reload, scripts re-register from a clean slate so
     /// handlers don't accumulate across reloads.
     pub(crate) fn clear_level_handlers(&self) {
@@ -703,7 +703,6 @@ mod tests {
             r#"
             globalThis.registerLevelManifest = function(ctx) {
                 return {
-                    entities: [{ classname: "grunt" }],
                     reactions: [
                         { name: "wave1Complete", primitive: "moveGeometry", tag: "reactor" },
                     ],
@@ -712,8 +711,6 @@ mod tests {
             "#,
         );
         let manifest = rt.run_data_script(&section);
-        assert_eq!(manifest.entities.len(), 1);
-        assert_eq!(manifest.entities[0].classname, "grunt");
         assert_eq!(manifest.reactions.len(), 1);
         assert_eq!(manifest.reactions[0].name, "wave1Complete");
     }
@@ -726,7 +723,6 @@ mod tests {
             r#"
             function registerLevelManifest(ctx)
                 return {
-                    entities = { { classname = "grunt" } },
                     reactions = {
                         { name = "wave1Complete", primitive = "moveGeometry", tag = "reactor" },
                     },
@@ -735,8 +731,6 @@ mod tests {
             "#,
         );
         let manifest = rt.run_data_script(&section);
-        assert_eq!(manifest.entities.len(), 1);
-        assert_eq!(manifest.entities[0].classname, "grunt");
         assert_eq!(manifest.reactions.len(), 1);
     }
 
@@ -757,12 +751,12 @@ mod tests {
                     msg = String(e.message || e);
                 }
                 globalThis.__wc_msg = msg;
-                return { entities: [], reactions: [] };
+                return { reactions: [] };
             };
             "#,
         );
         let manifest = rt.run_data_script(&section);
-        assert!(manifest.entities.is_empty() && manifest.reactions.is_empty());
+        assert!(manifest.reactions.is_empty());
         // Re-run with a script that lets the throw propagate to verify the
         // warn-and-empty fallback path.
         let section = data_section(
@@ -770,13 +764,13 @@ mod tests {
             r#"
             globalThis.registerLevelManifest = function() {
                 registerHandler("levelLoad", function() {});
-                return { entities: [], reactions: [] };
+                return { reactions: [] };
             };
             "#,
         );
         let manifest = rt.run_data_script(&section);
         assert!(
-            manifest.entities.is_empty() && manifest.reactions.is_empty(),
+            manifest.reactions.is_empty(),
             "thrown registerHandler must surface as empty fallback manifest",
         );
     }
@@ -792,12 +786,12 @@ mod tests {
                 assert(not ok, "registerHandler must throw in data context")
                 assert(string.find(tostring(err), "registerHandler") ~= nil,
                        "WrongContext message must mention primitive name")
-                return { entities = {}, reactions = {} }
+                return { reactions = {} }
             end
             "#,
         );
         let manifest = rt.run_data_script(&section);
-        assert!(manifest.entities.is_empty() && manifest.reactions.is_empty());
+        assert!(manifest.reactions.is_empty());
     }
 
     /// Policy: a behavior-script hot reload must not re-run the data script
@@ -815,7 +809,6 @@ mod tests {
             r#"
             globalThis.registerLevelManifest = function() {
                 return {
-                    entities: [{ classname: "grunt" }],
                     reactions: [
                         { name: "wave1Complete", primitive: "moveGeometry", tag: "reactor" },
                     ],
@@ -827,7 +820,6 @@ mod tests {
         let mut data_registry = DataRegistry::new();
         data_registry.populate_from_manifest(manifest);
         assert_eq!(data_registry.reactions.len(), 1);
-        assert_eq!(data_registry.entities.len(), 1);
 
         let behavior = temp_script(
             "data_persists.js",
@@ -842,7 +834,6 @@ mod tests {
         }
 
         assert_eq!(data_registry.reactions.len(), 1);
-        assert_eq!(data_registry.entities.len(), 1);
         assert_eq!(data_registry.reactions[0].name, "wave1Complete");
 
         fs::remove_file(&behavior).ok();
@@ -856,7 +847,7 @@ mod tests {
             "// script with no registerLevelManifest export\nlet x = 1;",
         );
         let manifest = rt.run_data_script(&section);
-        assert!(manifest.entities.is_empty() && manifest.reactions.is_empty());
+        assert!(manifest.reactions.is_empty());
     }
 
     #[test]
@@ -867,7 +858,7 @@ mod tests {
             source_path: "/maps/binary.js".to_string(),
         };
         let manifest = rt.run_data_script(&section);
-        assert!(manifest.entities.is_empty() && manifest.reactions.is_empty());
+        assert!(manifest.reactions.is_empty());
     }
 
     #[test]

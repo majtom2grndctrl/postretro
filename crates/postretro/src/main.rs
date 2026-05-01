@@ -40,11 +40,11 @@ use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, DiagnosticAction};
 use crate::render::Renderer;
 use crate::scripting::builtins::{
-    ClassnameDispatch, apply_classname_dispatch, register_builtins as register_builtin_classnames,
+    ClassnameDispatch, apply_classname_dispatch, apply_data_archetype_dispatch,
+    register_builtins as register_builtin_classnames,
 };
 use crate::scripting::call_context::ScriptCallContext;
 use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::data_registry::DataRegistry;
 use crate::scripting::primitives::register_all;
 use crate::scripting::primitives_light::register_sequenced_light_primitives;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
@@ -209,7 +209,6 @@ fn main() -> Result<()> {
         last_title_update: Instant::now(),
         script_runtime,
         script_ctx,
-        data_registry: DataRegistry::new(),
         sequence_registry,
         reaction_registry,
         progress_tracker: ProgressTracker::new(),
@@ -218,6 +217,7 @@ fn main() -> Result<()> {
         emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
         level_load_fired: false,
+        builtin_handled: None,
         script_time: 0.0,
     };
 
@@ -425,17 +425,13 @@ struct App {
     /// light state. See: context/lib/scripting.md
     script_ctx: ScriptCtx,
 
-    /// Populated from `registerLevelManifest()`. Cleared on level unload
-    /// independently of the behavior `HandlerTable`. See: context/lib/scripting.md §2
-    data_registry: DataRegistry,
-
     /// Consulted by `fire_named_event_with_sequences` for `Sequence` steps.
     /// No per-level state — entity lookups go through `ScriptCtx`, which the
-    /// level-unload path clears separately. See: context/lib/scripting.md §4
+    /// level-unload path clears separately. See: context/lib/scripting.md §2
     sequence_registry: SequencedPrimitiveRegistry,
 
     /// Resolved by name when a `Primitive` reaction fires.
-    /// See: context/lib/scripting.md §4
+    /// See: context/lib/scripting.md §2
     reaction_registry: ReactionPrimitiveRegistry,
 
     /// Per-tag kill-count subscriptions. Cleared on level unload
@@ -452,7 +448,7 @@ struct App {
     /// when any `LightComponent` is dirty. See: context/lib/scripting.md
     light_bridge: scripting_systems::light_bridge::LightBridge,
 
-    /// Walks every `BillboardEmitterComponent` after script `on_tick` and
+    /// Walks every `BillboardEmitterComponent` after script `tick` handler and
     /// before particle sim. See: context/lib/scripting.md
     emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
 
@@ -463,6 +459,12 @@ struct App {
     /// Gates first-frame work: ensures `levelLoad` handlers run before the
     /// first `tick` and before the first render.
     level_load_fired: bool,
+
+    /// Classnames the built-in dispatch handled at level open. Captured in
+    /// `resumed()` and consumed by the data-archetype sweep on the first
+    /// redraw, once the data script has run. `None` before level load and
+    /// after the sweep consumes it.
+    builtin_handled: Option<std::collections::HashSet<String>>,
 
     /// Seconds since level load, not wall clock. Resets to zero on level
     /// unload; fed into `ScriptCallContext::time` each tick.
@@ -544,23 +546,34 @@ impl ApplicationHandler for App {
             );
         }
 
-        // Sweep map entities through classname dispatch. `world.map_entities`
-        // is currently always empty — the PRL wire format doesn't carry a
-        // generic map-entity section yet. The dispatch path is wired; only the
-        // data is missing.
+        // Sweep map entities through classname dispatch. The returned set of
+        // handled classnames is stashed and consumed by the data-archetype sweep
+        // on the first redraw, after the data script populates
+        // `data_registry.entities` via `registerEntity`.
+        //
+        // No re-entry guard is needed here: this engine targets desktop only,
+        // and winit fires `resumed()` exactly once on desktop platforms (it is
+        // only called multiple times on Android/iOS during surface re-creation).
         if let Some(world) = self.level.as_ref() {
             let mut registry = self.script_ctx.registry.borrow_mut();
-            let spawned = apply_classname_dispatch(
-                &world.map_entities,
-                &self.classname_dispatch,
-                &mut registry,
-            );
-            if !world.map_entities.is_empty() {
+            // Adapt the wire records to the scripting-tree representation at
+            // the dispatch boundary. The loader does not depend on scripting
+            // types; conversion happens here.
+            let map_entities: Vec<crate::scripting::map_entity::MapEntity> =
+                world.map_entities.iter().cloned().map(Into::into).collect();
+            // Returns classnames claimed by built-in handlers regardless of
+            // spawn success; passed to the data-archetype sweep to prevent
+            // double-handling even when a built-in handler fails to materialize.
+            let handled =
+                apply_classname_dispatch(&map_entities, &self.classname_dispatch, &mut registry);
+            if !map_entities.is_empty() {
                 log::info!(
-                    "[Loader] dispatched {spawned}/{total} map entities through built-in handlers",
-                    total = world.map_entities.len(),
+                    "[Loader] dispatched {total} map entities; {built_in} classname(s) handled by built-in handlers",
+                    built_in = handled.len(),
+                    total = map_entities.len(),
                 );
             }
+            self.builtin_handled = Some(handled);
         }
 
         // Register sprite collections for every distinct `sprite` name in the
@@ -730,20 +743,100 @@ impl ApplicationHandler for App {
                                 manifest.reactions,
                                 &self.sequence_registry,
                             );
-                            self.data_registry.populate_from_manifest(manifest);
+                            self.script_ctx
+                                .data_registry
+                                .borrow_mut()
+                                .populate_from_manifest(manifest);
                             // Independent of the behavior HandlerTable — a
                             // hot-reload leaves these subscriptions intact.
                             self.progress_tracker.initialize(
-                                &self.data_registry,
+                                &self.script_ctx.data_registry.borrow(),
                                 &self.script_ctx.registry.borrow(),
                             );
                         }
                     }
+
+                    // Data-archetype sweep: now that `registerEntity` has
+                    // populated `data_registry.entities`, materialize every
+                    // matching map placement that the built-in dispatch did
+                    // not already handle.
+                    // See: context/lib/scripting.md §2 · context/lib/build_pipeline.md §Built-in Classname Routing
+                    if let Some(world) = self.level.as_ref() {
+                        let handled = self.builtin_handled.take().unwrap_or_default();
+                        let descriptors = self.script_ctx.data_registry.borrow().entities.clone();
+                        let mut registry = self.script_ctx.registry.borrow_mut();
+                        // Adapt wire records to the scripting representation
+                        // at the dispatch boundary (same pattern as the
+                        // built-in sweep above).
+                        let map_entities: Vec<crate::scripting::map_entity::MapEntity> =
+                            world.map_entities.iter().cloned().map(Into::into).collect();
+                        let descriptor_handled = apply_data_archetype_dispatch(
+                            &map_entities,
+                            &descriptors,
+                            &handled,
+                            &mut registry,
+                        );
+                        if !descriptor_handled.is_empty() {
+                            log::info!(
+                                "[Loader] dispatched {} map entities through descriptor archetypes",
+                                descriptor_handled.len(),
+                            );
+                        }
+
+                        // Pick up any descriptor-spawned `LightComponent`s so
+                        // they participate in the per-frame light bridge pack.
+                        // `populate_from_level` ran in `resumed()` against the
+                        // FGD-sourced `MapLight` list; descriptor-spawn happens
+                        // here, after that, so the bridge needs a second pass
+                        // to enroll the new dynamic lights.
+                        self.light_bridge.absorb_dynamic_lights(&registry);
+                    }
+
+                    // Descriptor-spawned emitters may carry sprite collections
+                    // not seen during the resumed()-time sweep. Re-register
+                    // any new collections so the renderer pass has them ready
+                    // before the first frame draws.
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+                        use crate::scripting::registry::{ComponentKind, ComponentValue};
+                        let texture_root = self.content_root.join("textures");
+                        let registry = self.script_ctx.registry.borrow();
+                        let mut seen: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        for (_id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter)
+                        {
+                            let ComponentValue::BillboardEmitter(c) = value else {
+                                continue;
+                            };
+                            let _: &BillboardEmitterComponent = c;
+                            let collection = c.sprite.clone();
+                            if collection.is_empty() || !seen.insert(collection.clone()) {
+                                continue;
+                            }
+                            let frames =
+                                fx::smoke::load_collection_frames(&texture_root, &collection)
+                                    .unwrap_or_else(|| {
+                                        vec![fx::smoke::SpriteFrame {
+                                            data: vec![255, 255, 255, 255],
+                                            width: 1,
+                                            height: 1,
+                                        }]
+                                    });
+                            renderer.register_smoke_collection(
+                                &collection,
+                                &frames,
+                                0.3,
+                                c.lifetime,
+                            );
+                            self.particle_render.register_sprite(&collection);
+                        }
+                    }
+
                     load_behavior_scripts(&self.script_runtime, &self.content_root);
                     self.script_runtime.fire_level_load();
                     fire_named_event_with_sequences(
                         "levelLoad",
-                        &self.data_registry,
+                        &self.script_ctx.data_registry.borrow(),
                         &self.sequence_registry,
                         &self.reaction_registry,
                         &self.script_ctx,
@@ -765,6 +858,14 @@ impl ApplicationHandler for App {
                 // so zero-tick frames still consume accumulated mouse motion.
                 self.camera
                     .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
+
+                // Bump the engine frame counter once per Game logic phase,
+                // before any tick handlers fire. `emitEvent` reads this to
+                // stamp `GameEvent.frame` so each `game_events` log line
+                // carries an ordering key. See: context/lib/scripting.md
+                self.script_ctx
+                    .frame
+                    .set(self.script_ctx.frame.get().wrapping_add(1));
 
                 for _ in 0..ticks {
                     let forward_axis = snapshot.axis_value(Action::MoveForward);
@@ -803,6 +904,24 @@ impl ApplicationHandler for App {
                     delta: frame_dt,
                     time: self.script_time,
                 });
+
+                // Drain the `game_events` ring buffer that `emitEvent` writes
+                // to. Each entry surfaces as a single `log::info!` on the
+                // `game_events` target so authors can observe emissions with
+                // `RUST_LOG=game_events=info`. `payload` is rendered with
+                // `Display` so the line is canonical JSON, not Rust Debug.
+                {
+                    let mut buf = self.script_ctx.game_events.borrow_mut();
+                    while let Some(ev) = buf.pop_front() {
+                        log::info!(
+                            target: "game_events",
+                            "kind={} frame={} payload={}",
+                            ev.kind,
+                            ev.frame,
+                            ev.payload,
+                        );
+                    }
+                }
 
                 // Position interpolated from tick-state slots; yaw/pitch from
                 // `self.camera` directly so zero-tick frames still see this
@@ -854,7 +973,7 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(renderer) = self.renderer.as_mut() {
-                    // Emitter bridge — after script `on_tick`, before particle
+                    // Emitter bridge — after script `tick` handler, before particle
                     // sim. Spawns new particles; the sim advances them the same
                     // frame so they don't appear stuck at origin.
                     {

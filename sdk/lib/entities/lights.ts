@@ -1,5 +1,5 @@
 // Light entity handle and pure animation constructors (flicker, pulse, colorShift, sweep).
-// Governed by context/lib/entities.md.
+// Governed by context/lib/entity_model.md.
 
 import {
   getComponent,
@@ -117,13 +117,14 @@ export function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntity {
 }
 
 function readLightComponent(id: EntityId): LightComponent {
-  const c = getComponent(id, "Light");
-  if (c.kind !== "Light") {
+  const c = getComponent(id, "light");
+  if (c.kind !== "light") {
     throw new Error(
       `expected Light component on entity ${idDebug(id)}, got ${c.kind}`,
     );
   }
-  return c.value;
+  // Flat ComponentValue: kind + LightComponent fields are siblings.
+  return c as unknown as LightComponent;
 }
 
 function idDebug(id: EntityId): string {

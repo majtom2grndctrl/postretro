@@ -8,11 +8,55 @@ declare module "postretro" {
 
   export type Transform = { position: Vec3; rotation: EulerDegrees; scale: Vec3 };
 
-  export type ComponentKind = "Transform" | "Light" | "BillboardEmitter" | "ParticleState" | "SpriteVisual";
+  export type ComponentKind = "transform" | "light" | "billboard_emitter" | "particle_state" | "sprite_visual";
 
-  export type ComponentValue = { kind: "Transform"; value: Transform } | { kind: "Light"; value: LightComponent } | { kind: "BillboardEmitter"; value: BillboardEmitterComponent } | { kind: "ParticleState"; value: ParticleState } | { kind: "SpriteVisual"; value: SpriteVisual };
+  export type ComponentValue = ({ kind: "transform" } & Transform) | ({ kind: "light" } & LightComponent) | ({ kind: "billboard_emitter" } & BillboardEmitterComponent) | ({ kind: "particle_state" } & ParticleState) | ({ kind: "sprite_visual" } & SpriteVisual);
 
   export type ScriptEvent = { kind: string; payload: unknown };
+
+  /** Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI. */
+  export type LightDescriptor = {
+    /** RGB color in [0, 1]. */
+    color: Vec3;
+    /** Static intensity scalar. */
+    intensity: number;
+    /** Falloff range (maps onto LightComponent.falloffRange at spawn). */
+    range: number;
+    /** Author hint; descriptor-spawned lights are always treated as dynamic at spawn (baked indirect not supported). */
+    is_dynamic: boolean;
+  };
+
+  /** Argument shape for `registerEntity`. `components` is an optional sub-object carrying typed component presets. */
+  export type EntityTypeDescriptor = {
+    /** FGD classname this descriptor binds to. */
+    classname: string;
+    /** Optional component presets attached at level-load spawn. */
+    components?: EntityTypeComponents;
+  };
+
+  /** Engine-managed billboard emitter component shape. Carried by `BillboardEmitter` ECS entities and produced by SDK `emitter()`/`smokeEmitter()`/etc. */
+  export type BillboardEmitterComponent = {
+    /** Continuous spawn rate (particles/sec). 0 = inactive. */
+    rate: number;
+    burst: number | null;
+    spread: number;
+    lifetime: number;
+    velocity: Vec3;
+    buoyancy: number;
+    drag: number;
+    size_over_lifetime: ReadonlyArray<number>;
+    opacity_over_lifetime: ReadonlyArray<number>;
+    color: Vec3;
+    sprite: string;
+    spin_rate: number;
+    spin_animation: SpinAnimation | null;
+  };
+
+  /** Spin tween shape consumed by `setSpinRate`. */
+  export type SpinAnimation = { duration: number; rate_curve: ReadonlyArray<number> };
+
+  /** Optional bag of component presets carried by `EntityTypeDescriptor.components`. */
+  export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null };
 
   export type ScriptCallContext = {
     /** Seconds since the previous tick. */
@@ -32,7 +76,7 @@ declare module "postretro" {
     phase: number | null;
     /** Total full periods to play; null loops forever. */
     playCount: number | null;
-    /** Defaults to true. false mirrors the FGD `_start_inactive` flag. */
+    /** Whether the animation starts in the active state. null defaults to true; false mirrors the FGD `_start_inactive` flag. */
     startActive: boolean | null;
     /** Per-sample brightness curve. */
     brightness: ReadonlyArray<number> | null;
@@ -44,66 +88,105 @@ declare module "postretro" {
 
   export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner: number | null; coneAngleOuter: number | null; coneDirection: Vec3 | null; castShadows: boolean; isDynamic: boolean; animation: LightAnimation | null };
 
+  /** Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. */
+  export type WorldQueryComponent =
+    | "light"
+    | "transform"
+    | "emitter"
+    /** Always returns []. Engine-managed; scripts never iterate individual particles. */
+    | "particle"
+    /** Always returns []. Engine-managed. */
+    | "sprite_visual";
+
   export type WorldQueryFilter = {
-    /** Component name, e.g. "light". */
-    component: string;
-    /** Exact string match. */
+    /** Component name to query. */
+    component: WorldQueryComponent;
+    /** Optional tag filter (exact string match). */
     tag: string | null;
   };
-
-  /** Minimum transform shape guaranteed for all entity handles. */
-  export type EntityTransform = { position: Vec3 };
 
   /** Generic entity handle returned by `world.query` when the component type is not known at compile time. */
   export type Entity = {
     id: EntityId;
-    transform: EntityTransform;
-    /** Empty array if untagged. */
+    /** Entity position at query time. */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
     tags: ReadonlyArray<string>;
+  };
+
+  /** Handle returned by `world.query({ component: "transform" })`. Same shape as `Entity`. */
+  export type TransformHandle = {
+    id: EntityId;
+    /** Entity position at query time. */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+  };
+
+  /** Entity handle returned by `world.query` when filtering for billboard emitter entities. */
+  export type EmitterEntity = {
+    id: EntityId;
+    /** Emitter position at query time (from the entity's Transform). */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+    /** Full emitter component snapshot at query time. */
+    component: BillboardEmitterComponent;
   };
 
   /** Entity handle returned by `world.query` when filtering for light entities. */
   export type LightEntity = {
     id: EntityId;
-    transform: EntityTransform;
-    /** Gate color animation on this; color curves are invalid on non-dynamic lights. */
+    /** Light origin at query time. */
+    position: Vec3;
+    /** Whether the light is driven by the runtime dynamic-light buffer. Static lights baked from FGD entities are not; descriptor-spawned lights always are. */
     isDynamic: boolean;
-    /** Empty array if untagged. */
+    /** The entity's tags at query time. Empty array if untagged. */
     tags: ReadonlyArray<string>;
     /** Full component snapshot at query time. */
     component: LightComponent;
   };
 
-  /** Errors if the id is stale. */
+  /** Despawns a previously-spawned entity. Errors if the id is stale. */
   export function despawnEntity(id: EntityId): void;
 
   /** Broadcasts an event to all listeners; drains at end of game logic. */
   export function emitEvent(event: ScriptEvent): void;
 
+  /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
 
+  /** Reads a component of the given kind from an entity. */
   export function getComponent(id: EntityId, kind: ComponentKind): ComponentValue;
 
-  /** Currently accepts "levelLoad" or "tick". */
+  /** Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in both behavior and data contexts. */
+  export function getEntityProperty(id: EntityId, key: string): string | null;
+
+  /** Register an entity type with optional component presets. Definition context only. Survives level unload. */
+  export function registerEntity(descriptor: EntityTypeDescriptor): void;
+
+  /** Register a handler for an engine event. Currently accepts "levelLoad" or "tick". */
   export function registerHandler(event: string, handler: (ctx?: ScriptCallContext) => void): void;
 
-  /** Targets a single entity; drains at end of game logic. */
+  /** Sends an event to a single entity; drains at end of game logic. */
   export function sendEvent(target: EntityId, event: ScriptEvent): void;
 
+  /** Writes a component of the given kind onto an entity. */
   export function setComponent(id: EntityId, kind: ComponentKind, value: ComponentValue): void;
 
-  /** Pass null to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only. */
+  /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only. */
   export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
 
-  export function spawnEntity(transform: Transform): EntityId;
+  /** Spawns a new entity with the given transform and returns its id. Optional `tags` attaches a tag list at creation time. */
+  export function spawnEntity(transform: Transform, tags?: ReadonlyArray<string>): EntityId;
 
-  /** The `world.ts` vocabulary module wraps this as `world.query`. Only "light" is supported in the current build; other values return InvalidArgument. */
-  export function worldQuery(filter: WorldQueryFilter): ReadonlyArray<Entity>;
+  /** Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`. */
+  export function worldQuery<T extends string>(filter: { component: T; tag?: string | null }): ReadonlyArray<EntityForComponent<T>>;
 
   // -------------------------------------------------------------------------
   // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.
 
-  /** Easing curve shape for intensity/color transitions. */
+  /** Easing family used by `LightEntityHandle.setIntensity` / `setColor`. */
   export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut";
 
   /** Typed light handle returned by `world.query({ component: "light" })`. */
@@ -117,9 +200,15 @@ declare module "postretro" {
     ): void;
   }
 
-  /** Maps a component-name literal to its rich entity handle type. */
+  /** Maps a component-name literal to the rich entity handle type. `"light"`
+   * yields `LightEntityHandle` (with convenience methods); `"emitter"` yields
+   * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
+   * snapshot under `component`). Other component names fall back to the bare
+   * `Entity` shape. */
   export type EntityForComponent<T extends string> =
-    T extends "light" ? LightEntityHandle : Entity;
+    T extends "light" ? LightEntityHandle :
+    T extends "emitter" ? EmitterEntity :
+    Entity;
 
   /** Vocabulary object installed as `globalThis.world`. */
   export interface World {
@@ -129,6 +218,7 @@ declare module "postretro" {
     }): EntityForComponent<T>[];
   }
 
+  /** `world` vocabulary global. Wraps `worldQuery` with a typed handle. */
   export const world: World;
 
   /** Per-channel keyframe accepted by `timeline` / `sequence`. */
@@ -174,12 +264,12 @@ declare module "postretro" {
   // Data script vocabulary — pure descriptor builders consumed by the engine
   // when `registerLevelManifest` returns. See: context/lib/scripting.md §2.
 
-  /** Fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
+  /** Progress-subscription reaction body: fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
   export type ProgressReactionDescriptor = {
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Invokes the named Rust primitive on entities tagged `tag`. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`). */
+  /** Primitive reaction body: invokes the named Rust primitive on entities tagged `tag`, optionally firing `onComplete` when it finishes. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag: string;
@@ -187,13 +277,7 @@ declare module "postretro" {
     onComplete?: string;
   };
 
-  /** Mirrors the Rust `SpinAnimation` storage struct. */
-  export type SpinAnimation = {
-    duration: number;
-    rate_curve: ReadonlyArray<number>;
-  };
-
-  /** Sequence steps target a single `EntityId`; tag-targeted primitives belong on the `Primitive` reaction path. */
+  /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. Sequence steps target a single `EntityId`; tag-targeted primitives belong on the `Primitive` reaction path. */
   export type SetLightAnimationStep = {
     id: EntityId;
     primitive: "setLightAnimation";
@@ -203,28 +287,24 @@ declare module "postretro" {
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
   export type SequenceStep = SetLightAnimationStep;
 
-  /** Ordered per-entity primitive invocations; steps run in array order at dispatch. */
+  /** Sequence reaction body: ordered per-entity primitive invocations. Steps run in array order at dispatch. */
   export type SequenceReactionDescriptor = {
     sequence: SequenceStep[];
   };
 
-  /** `name` is merged flat so the Rust deserializer reads both fields from one object. */
+  /** Descriptor produced by `registerReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
   export type NamedReactionDescriptor = { name: string } & (
     | ProgressReactionDescriptor
     | PrimitiveReactionDescriptor
     | SequenceReactionDescriptor
   );
 
-  /** Descriptor produced by `registerEntities` — one entry per registered class. */
-  export type EntityTypeDescriptor = { classname: string };
-
   /** Bundle returned from `registerLevelManifest`. The engine deserializes this shape in one pass at level load. */
   export type LevelManifest = {
-    entities: EntityTypeDescriptor[];
     reactions: NamedReactionDescriptor[];
   };
 
-  /** Pure: returns a plain object, no FFI. */
+  /** Build a named reaction descriptor. Pure: returns a plain object, no FFI. */
   export function registerReaction(
     name: string,
     descriptor:
@@ -232,9 +312,4 @@ declare module "postretro" {
       | PrimitiveReactionDescriptor
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
-
-  /** Pure: returns a fresh array, no FFI. */
-  export function registerEntities(
-    types: ReadonlyArray<{ classname: string }>,
-  ): EntityTypeDescriptor[];
 }

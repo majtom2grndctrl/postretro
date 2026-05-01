@@ -11,7 +11,6 @@ use super::sequence::{SequenceError, SequencedPrimitiveRegistry};
 
 /// A single entity-handle snapshot produced by `world.query`. Carries the
 /// `EntityId` plus a read-only copy of the live component data at query time.
-/// `wrapLightEntity` is defined in `sdk/lib/entities/lights.ts`, imported and called by `world.ts` for the `component == "light"` branch.
 #[derive(Debug, Clone)]
 pub(super) struct LightQueryHandle {
     id: EntityId,
@@ -36,6 +35,9 @@ pub(super) fn collect_light_handles(ctx: &ScriptCtx, tag: Option<&str>) -> Vec<L
     out
 }
 
+/// Serialize a handle slice into the JSON array returned to scripts. The SDK
+/// wrappers (`sdk/lib/entities/lights.ts` and `lights.luau`) call
+/// `wrapLightEntity` on each entry to attach script-facing methods.
 pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
     use serde_json::{Map, Value};
     let arr: Vec<Value> = handles
@@ -47,14 +49,12 @@ pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Val
                 serde_json::to_value(&h.component).expect("LightComponent always serializes");
             let mut obj = Map::with_capacity(5);
             obj.insert("id".to_string(), Value::from(h.id.to_raw()));
-            let mut transform = Map::with_capacity(1);
             let [x, y, z] = h.component.origin;
             let mut position = Map::with_capacity(3);
             position.insert("x".to_string(), Value::from(x as f64));
             position.insert("y".to_string(), Value::from(y as f64));
             position.insert("z".to_string(), Value::from(z as f64));
-            transform.insert("position".to_string(), Value::Object(position));
-            obj.insert("transform".to_string(), Value::Object(transform));
+            obj.insert("position".to_string(), Value::Object(position));
             obj.insert("isDynamic".to_string(), Value::from(h.component.is_dynamic));
             obj.insert(
                 "tags".to_string(),
@@ -276,8 +276,21 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("animation", "Option<LightAnimation>", "")
         .finish();
     registry
+        .register_enum("WorldQueryComponent")
+        .doc("Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union.")
+        .variant("light", "")
+        .variant("transform", "")
+        .variant("emitter", "")
+        .variant("particle", "Always returns []. Engine-managed; scripts never iterate individual particles.")
+        .variant("sprite_visual", "Always returns []. Engine-managed.")
+        .finish();
+    registry
         .register_type("WorldQueryFilter")
-        .field("component", "String", "Component name, e.g. \"light\".")
+        .field(
+            "component",
+            "WorldQueryComponent",
+            "Component name to query.",
+        )
         .field(
             "tag",
             "Option<String>",
@@ -285,26 +298,44 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
-        .register_type("EntityTransform")
-        .doc("Minimum transform shape guaranteed for all entity handles.")
-        .field("position", "Vec3", "")
-        .finish();
-    registry
         .register_type("Entity")
         .doc("Generic entity handle returned by `world.query` when the component type is not known at compile time.")
         .field("id", "EntityId", "")
-        .field("transform", "EntityTransform", "Entity position at query time.")
+        .field("position", "Vec3", "Entity position at query time.")
         .field("tags", "Vec<String>", "The entity's tags at query time. Empty array if untagged.")
+        .finish();
+    registry
+        .register_type("TransformHandle")
+        .doc("Handle returned by `world.query({ component: \"transform\" })`. Same shape as `Entity`.")
+        .field("id", "EntityId", "")
+        .field("position", "Vec3", "Entity position at query time.")
+        .field("tags", "Vec<String>", "The entity's tags at query time. Empty array if untagged.")
+        .finish();
+    registry
+        .register_type("EmitterEntity")
+        .doc("Entity handle returned by `world.query` when filtering for billboard emitter entities.")
+        .field("id", "EntityId", "")
+        .field("position", "Vec3", "Emitter position at query time (from the entity's Transform).")
+        .field(
+            "tags",
+            "Vec<String>",
+            "The entity's tags at query time. Empty array if untagged.",
+        )
+        .field(
+            "component",
+            "BillboardEmitterComponent",
+            "Full emitter component snapshot at query time.",
+        )
         .finish();
     registry
         .register_type("LightEntity")
         .doc("Entity handle returned by `world.query` when filtering for light entities.")
         .field("id", "EntityId", "")
-        .field("transform", "EntityTransform", "Light origin at query time.")
+        .field("position", "Vec3", "Light origin at query time.")
         .field(
             "isDynamic",
             "bool",
-            "Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation.",
+            "Whether the light is driven by the runtime dynamic-light buffer. Static lights baked from FGD entities are not; descriptor-spawned lights always are.",
         )
         .field(
             "tags",
@@ -435,7 +466,7 @@ mod tests {
                 const hs = worldQuery({ component: "light", tag: "foo" });
                 JSON.stringify(hs.map(h => ({
                     id: h.id,
-                    x: h.transform.position.x,
+                    x: h.position.x,
                     tags: h.tags,
                     dyn: h.isDynamic,
                 })))
@@ -485,9 +516,9 @@ mod tests {
                         id: h.id,
                         isDynamic: h.isDynamic,
                         tags: h.tags,
-                        x: h.transform.position.x,
-                        y: h.transform.position.y,
-                        z: h.transform.position.z,
+                        x: h.position.x,
+                        y: h.position.y,
+                        z: h.position.z,
                     })))
                     "#,
                 )
@@ -505,8 +536,8 @@ mod tests {
                 r#"
                 local hs = worldQuery({ component = "light", tag = "hallway_wave" })
                 local h = hs[1]
-                return h.id, h.isDynamic, h.tags[1], h.transform.position.x,
-                       h.transform.position.y, h.transform.position.z
+                return h.id, h.isDynamic, h.tags[1], h.position.x,
+                       h.position.y, h.position.z
                 "#,
             )
             .eval()

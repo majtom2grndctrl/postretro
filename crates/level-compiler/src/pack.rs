@@ -19,6 +19,7 @@ use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::{
@@ -63,8 +64,8 @@ fn serialize_bvh_with_chunk_ranges(bvh: &BvhSection, chunk_ranges: &[(u32, u32)]
 }
 
 /// Convert translated map lights into an `AlphaLightsSection` for the format
-/// crate. Strips animation curves (direct lighting path uses static base
-/// properties only — sub-plan 3 of the Lighting Foundation plan).
+/// crate. Strips animation curves; the direct lighting path uses the static
+/// base properties only.
 pub fn encode_alpha_lights(lights: &AlphaLightsNs<'_>, tree: &BspTree) -> AlphaLightsSection {
     let records: Vec<AlphaLightRecord> = lights
         .entries()
@@ -160,6 +161,33 @@ pub fn encode_light_influence(lights: &AlphaLightsNs<'_>) -> LightInfluenceSecti
     LightInfluenceSection { records }
 }
 
+/// Encode the collected non-light, non-worldspawn map entities into a
+/// `MapEntitySection` for the runtime classname dispatch. Returns `None` when
+/// the map carries no such entities — the caller omits the section so empty
+/// maps add zero bytes.
+///
+/// Origin is narrowed from `f64` (compiler precision) to `f32` (engine /
+/// runtime precision) at this boundary; angles are already engine-convention
+/// `f32` from the format adapter.
+pub fn encode_map_entities(
+    entities: &[crate::map_data::MapEntityRecord],
+) -> Option<MapEntitySection> {
+    if entities.is_empty() {
+        return None;
+    }
+    let entries = entities
+        .iter()
+        .map(|e| MapEntityRecord {
+            classname: e.classname.clone(),
+            origin: [e.origin.x as f32, e.origin.y as f32, e.origin.z as f32],
+            angles: e.angles,
+            key_values: e.key_values.clone(),
+            tags: e.tags.clone(),
+        })
+        .collect();
+    Some(MapEntitySection { entries })
+}
+
 /// Build a `DataScriptSection` from already-compiled bytes and the resolved
 /// source path. The compiler reads the source, runs `scripts-build` for `.ts`
 /// inputs (or passes Luau through unchanged), then hands the result here for
@@ -221,6 +249,7 @@ pub fn pack_and_write_portals(
     light_tags: Option<&LightTagsSection>,
     delta_sh_volumes: Option<&DeltaShVolumesSection>,
     data_script: Option<&DataScriptSection>,
+    map_entities: Option<&MapEntitySection>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -238,6 +267,7 @@ pub fn pack_and_write_portals(
     let light_tags_bytes = light_tags.map(|s| s.to_bytes());
     let delta_sh_volumes_bytes = delta_sh_volumes.map(|s| s.to_bytes());
     let data_script_bytes = data_script.map(|s| s.to_bytes());
+    let map_entities_bytes = map_entities.map(|s| s.to_bytes());
 
     let mut sections = vec![
         SectionBlob {
@@ -327,6 +357,13 @@ pub fn pack_and_write_portals(
     if let Some(ref bytes) = data_script_bytes {
         sections.push(SectionBlob {
             section_id: SectionId::DataScript as u32,
+            version: 1,
+            data: bytes.clone(),
+        });
+    }
+    if let Some(ref bytes) = map_entities_bytes {
+        sections.push(SectionBlob {
+            section_id: SectionId::MapEntity as u32,
             version: 1,
             data: bytes.clone(),
         });
@@ -646,6 +683,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -699,6 +737,7 @@ mod tests {
             &empty_sh_volume(),
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
             None,
             None,
             None,
@@ -772,6 +811,7 @@ mod tests {
             &sh_volume,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
+            None,
             None,
             None,
             None,

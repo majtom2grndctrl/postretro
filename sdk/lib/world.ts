@@ -3,6 +3,7 @@
 
 import { worldQuery } from "postretro";
 import type {
+  EmitterEntity,
   Entity,
   LightEntity as GeneratedLightEntity,
   WorldQueryFilter,
@@ -12,10 +13,15 @@ import type { LightEntity } from "./entities/lights";
 
 /**
  * Extend this as new component types gain dedicated handles; unknown
- * component names fall back to `Entity`.
+ * component names fall back to `Entity`. `"emitter"` yields a handle
+ * carrying the full `BillboardEmitterComponent` snapshot under
+ * `component` — use it to read live emitter fields without a follow-up
+ * `getComponent` call.
  */
 export type EntityForComponent<T extends string> =
-  T extends "light" ? LightEntity : Entity;
+  T extends "light" ? LightEntity :
+  T extends "emitter" ? EmitterEntity :
+  Entity;
 
 /** Typed vocabulary object returned from `world.query`. */
 export interface World {
@@ -24,11 +30,13 @@ export interface World {
    * the literal `component` string: `"light"` yields `LightEntity[]`
    * (with convenience methods `setAnimation`, `setIntensity`,
    * `setColor`); any other component name yields base `Entity[]`
-   * (id, transform, tags) — use `getComponent` to access component data.
+   * (id, position, tags) — use `getComponent` to access component data.
    *
-   * **Note:** Unknown `component` strings (e.g. typos like `"lights"`)
-   * compile without error but throw `InvalidArgument` at runtime; only
-   * `"light"` is supported in the current build.
+   * Supported component strings: `"light"`, `"transform"`, `"emitter"`,
+   * `"particle"`, `"sprite_visual"`. Note that `"particle"` and
+   * `"sprite_visual"` always return `[]` (engine-managed; scripts never
+   * iterate individual particles or sprite visuals). Unknown component
+   * strings throw `InvalidArgument` at runtime.
    */
   query<T extends string>(
     filter: { component: T; tag?: string | null },
@@ -50,14 +58,21 @@ export const world: World = {
       );
       return lights as EntityForComponent<T>[];
     }
-    // Project per-component snapshots down to the `Entity` shape so
-    // callers using the generic path don't observe component-specific
-    // fields that the type does not promise.
-    const entities: Entity[] = raw.map((s) => ({
-      id: s.id,
-      transform: s.transform,
-      tags: s.tags,
-    }));
+    // Thread the optional `component` sub-object through unchanged for
+    // queries (e.g. `"emitter"`) whose Rust handle carries it; queries
+    // whose Rust handle omits `component` (e.g. `"transform"`) leave it
+    // undefined on the projected handle, matching the bare `Entity` type.
+    const entities = raw.map((s) => {
+      const projected: Entity & { component?: unknown } = {
+        id: s.id,
+        position: s.position,
+        tags: s.tags,
+      };
+      if ((s as { component?: unknown }).component !== undefined) {
+        projected.component = (s as { component: unknown }).component;
+      }
+      return projected;
+    });
     return entities as EntityForComponent<T>[];
   },
 };

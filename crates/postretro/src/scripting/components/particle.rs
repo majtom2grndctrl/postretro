@@ -1,5 +1,5 @@
 // Per-particle simulation state. Carried by each live particle ECS entity.
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 1
+// See: context/lib/scripting.md §11 (Emitter and Particles)
 
 use serde::{Deserialize, Serialize};
 

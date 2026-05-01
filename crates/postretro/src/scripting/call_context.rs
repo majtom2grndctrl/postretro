@@ -1,5 +1,5 @@
 // ScriptCallContext — the argument passed to `tick` handlers.
-// See: context/plans/ready/scripting-foundation/plan-2-light-entity.md §Sub-plan 5
+// See: context/lib/scripting.md
 //
 // `delta` and `time` come from the engine frame timer, not a separate clock.
 // Scripts have no wall-clock access; this struct is the only temporal surface
@@ -10,9 +10,14 @@ use rquickjs::{Ctx, FromJs, IntoJs, Object, Value as JsValue};
 
 /// Passed to `tick` handlers. `levelLoad` handlers receive no argument.
 ///
-/// * `delta` — seconds since the previous tick.
+/// * `delta` — seconds elapsed since the previous frame's `tick` invocation
+///   (wall-clock `frame_dt` from the engine frame timer). `tick` fires once
+///   per render frame, not per fixed simulation tick, so this value varies
+///   with frame rate. Use it to scale per-frame motion; do not assume it
+///   matches the fixed tick interval.
 /// * `time` — seconds since level load; resets to zero on each level load,
-///   monotonic within a level.
+///   monotonic within a level. Accumulates the same `frame_dt` `delta`
+///   carries each frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct ScriptCallContext {
     pub(crate) delta: f32,

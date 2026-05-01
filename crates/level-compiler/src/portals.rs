@@ -812,8 +812,14 @@ mod tests {
             }
         }
 
-        assert!(has_left_gap_portal, "no portal through left doorway (Z=62..64)");
-        assert!(has_right_gap_portal, "no portal through right doorway (Z=66..68)");
+        assert!(
+            has_left_gap_portal,
+            "no portal through left doorway (Z=62..64)"
+        );
+        assert!(
+            has_right_gap_portal,
+            "no portal through right doorway (Z=66..68)"
+        );
     }
 
     /// Regression guard for the "missing cube faces" bug: in the old face-driven

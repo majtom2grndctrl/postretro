@@ -316,6 +316,7 @@ fn main() -> anyhow::Result<()> {
     let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &result.tree);
     let light_influence_section = pack::encode_light_influence(&alpha_lights_ns);
     let light_tags_section = pack::encode_light_tags(&alpha_lights_ns);
+    let map_entities_section = pack::encode_map_entities(&map_data.map_entities);
 
     let (animated_chunk_lights, _) = animated_baked_lights.to_parallel_vecs();
 
@@ -384,6 +385,7 @@ fn main() -> anyhow::Result<()> {
         light_tags_section.as_ref(),
         delta_sh_volumes_section.as_ref(),
         data_script_section.as_ref(),
+        map_entities_section.as_ref(),
     )?;
     timings.push(("Packing", stage_start.elapsed()));
 

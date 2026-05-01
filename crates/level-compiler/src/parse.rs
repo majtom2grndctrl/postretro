@@ -14,7 +14,8 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
 use crate::format::quake_map;
 use crate::map_data::{
-    BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, MapLight, TextureProjection,
+    BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, MapEntityRecord, MapLight,
+    TextureProjection,
 };
 use crate::map_format::MapFormat;
 
@@ -141,6 +142,10 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // share the origin/classname extraction but do not participate in BSP
     // construction.
     let mut lights: Vec<MapLight> = Vec::new();
+    // Generic map entities for runtime classname dispatch — non-light point
+    // entities only. Brush entities (those with brushes attached) are resolved
+    // separately by their dedicated subsystems (e.g. `env_fog_volume`).
+    let mut map_entities: Vec<MapEntityRecord> = Vec::new();
 
     for entity_id in geo_map.entities.iter() {
         let classname =
@@ -185,7 +190,56 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                     ));
                 }
             }
+            continue;
         }
+
+        // Worldspawn carries scene-wide settings, not a runtime entity.
+        if *entity_id == worldspawn_id {
+            continue;
+        }
+
+        // Brush entities (e.g. env_fog_volume, env_reverb_zone) are resolved
+        // separately by their dedicated subsystems and do not flow through the
+        // generic classname dispatch path.
+        let has_brushes = geo_map
+            .entity_brushes
+            .get(entity_id)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        if has_brushes {
+            continue;
+        }
+
+        // Point entities without an origin can't be placed; skip with a warning.
+        let Some(entity_origin) = origin else {
+            log::warn!(
+                "[Compiler] entity '{classname}' has no origin; skipping (point entities must have an origin)"
+            );
+            continue;
+        };
+
+        let props = collect_entity_properties(&geo_map, entity_id);
+        let diagnostic_ref = format!(
+            "{classname} @ ({:.3}, {:.3}, {:.3})",
+            entity_origin.x, entity_origin.y, entity_origin.z
+        );
+        let angles = quake_map::quake_to_engine_angles(&props, &diagnostic_ref);
+        let tags: Vec<String> = props
+            .get("_tags")
+            .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
+            .unwrap_or_default();
+        let key_values: Vec<(String, String)> = props
+            .into_iter()
+            .filter(|(k, _)| !quake_map::RESERVED_MAP_ENTITY_KEYS.contains(&k.as_str()))
+            .collect();
+
+        map_entities.push(MapEntityRecord {
+            classname: classname.clone(),
+            origin: entity_origin,
+            angles,
+            key_values,
+            tags,
+        });
     }
 
     // Compute geometry for world brushes only
@@ -372,6 +426,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Total vertices: {total_vertex_count}");
     log::info!("Entity classnames: {}", entity_classnames.join(", "));
     log::info!("Lights: {}", lights.len());
+    log::info!("Map entities (classname dispatch): {}", map_entities.len());
 
     Ok(MapData {
         brush_volumes,
@@ -380,6 +435,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         lights,
         script,
         data_script,
+        map_entities,
     })
 }
 
@@ -491,6 +547,45 @@ mod tests {
             .collect();
         assert!(classnames.contains(&"worldspawn"));
         assert!(classnames.contains(&"info_player_start"));
+    }
+
+    #[test]
+    fn map_entities_collected_strip_reserved_keys_and_lights() {
+        let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
+            .expect("test.map should parse without error");
+
+        // info_player_start is the only non-light, non-worldspawn point entity
+        // in test.map.
+        assert_eq!(
+            map_data.map_entities.len(),
+            1,
+            "expected exactly one collected map entity, got {:?}",
+            map_data
+                .map_entities
+                .iter()
+                .map(|e| e.classname.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        let me = &map_data.map_entities[0];
+        assert_eq!(me.classname, "info_player_start");
+        // Reserved keys (`classname`, `origin`, `angle`/`angles`/`mangle`,
+        // `_tags`) must not appear in the residual KVP bag.
+        for (k, _) in &me.key_values {
+            assert!(
+                !["classname", "origin", "_tags", "angle", "angles", "mangle"]
+                    .contains(&k.as_str()),
+                "reserved key `{k}` leaked into key_values bag"
+            );
+        }
+        // Lights must NOT appear in map_entities.
+        assert!(
+            map_data
+                .map_entities
+                .iter()
+                .all(|e| !crate::format::quake_map::is_light_classname(&e.classname)),
+            "light classname leaked into map_entities"
+        );
     }
 
     #[test]

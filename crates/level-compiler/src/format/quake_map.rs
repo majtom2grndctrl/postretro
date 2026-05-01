@@ -1,5 +1,5 @@
-// Quake-family .map FGD light translation — owns the style preset table and unit conversions.
-// See: context/plans/in-progress/lighting-foundation/1-fgd-canonical.md
+// Quake-family .map FGD translation — light presets, unit conversions, and angle convention adapter.
+// See: context/lib/build_pipeline.md §Supported Map Formats
 
 use std::collections::HashMap;
 
@@ -53,7 +53,9 @@ pub enum TranslateError {
         reason: String,
     },
 
-    /// Animated direct color on a baked light drifts from the SH indirect bake (Plan 2 Sub-plan 1).
+    /// Color animation on a baked light is rejected because the SH irradiance volume is baked at a
+    /// static color. Letting the direct contribution change color at runtime would cause the animated
+    /// direct light to visibly drift from its own indirect contribution stored in the SH volume.
     #[error(
         "light {light_ref}: 'color_curve' — color animation is only valid on `_bake_only` or `_dynamic` lights. Either mark the light `_dynamic 1`, set `_bake_only 1`, or remove `color_curve`."
     )]
@@ -443,7 +445,7 @@ fn parse_f32(s: &str) -> Option<f32> {
 
 /// Parse a "R G B" triple (each 0-255) into linear RGB 0-1.
 /// Division by 255 only — no gamma correction. The FGD colour picker produces
-/// sRGB but the pipeline treats authored colours as linear (see sub-plan 2).
+/// sRGB but the pipeline treats authored colours as linear.
 fn parse_color255(s: &str) -> Option<[f32; 3]> {
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() != 3 {
@@ -458,6 +460,95 @@ fn parse_color255(s: &str) -> Option<[f32; 3]> {
         out[i] = v as f32 / 255.0;
     }
     Some(out)
+}
+
+/// Reserved KVP keys stripped from the generic map-entity property bag at
+/// compile time. `classname`, `origin`, and `_tags` are handled as dedicated
+/// `MapEntityRecord` fields. Quake angle keys (`angle`, `angles`, `mangle`)
+/// are converted to engine-convention Euler radians and stored in the
+/// `angles` field — scripts see only engine convention, never raw Quake KVPs.
+pub const RESERVED_MAP_ENTITY_KEYS: &[&str] =
+    &["classname", "origin", "_tags", "angle", "angles", "mangle"];
+
+/// Convert Quake-authored angles into engine-convention Euler radians
+/// (pitch, yaw, roll), reading whichever of `angles` / `mangle` / `angle` is
+/// present in `props`. Returns `[0.0; 3]` when no angle key is set.
+///
+/// Quake authoring conventions:
+/// - `angles "pitch yaw roll"` (degrees): full three-axis orientation. `mangle`
+///   is the same shape; some editors emit one or the other.
+/// - `angle <yaw>` (degrees): legacy single-axis form, yaw only. Two reserved
+///   sentinel values pre-date `angles`: `-1` = straight up, `-2` = straight
+///   down (encoded as ±90° pitch).
+///
+/// Engine convention: a `Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll)`
+/// rotation around (engine) +Y, +X, then -Z. The axis swizzle from Quake
+/// (Z-up, +X forward, +Y left) to engine (Y-up, -Z forward, +X right) inverts
+/// the sign of yaw — a positive Quake yaw rotates left around Z-up, which is a
+/// negative rotation around engine +Y. Pitch and roll keep their sign.
+///
+/// Malformed values log a `[Loader]`-style warning and fall back to zeros so
+/// the compile keeps going; bad angle data is recoverable.
+pub fn quake_to_engine_angles(
+    props: &std::collections::HashMap<String, String>,
+    diagnostic_ref: &str,
+) -> [f32; 3] {
+    // Prefer `angles`/`mangle` (full 3-axis) over the legacy `angle` (yaw only).
+    if let Some(raw) = props.get("angles").or_else(|| props.get("mangle")) {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return [0.0; 3];
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() != 3 {
+            log::warn!(
+                "[Loader] {diagnostic_ref}: 'angles' has {} components, expected 3; using zeros",
+                parts.len()
+            );
+            return [0.0; 3];
+        }
+        let nums: Option<Vec<f32>> = parts.iter().map(|p| p.parse::<f32>().ok()).collect();
+        let Some(nums) = nums else {
+            log::warn!(
+                "[Loader] {diagnostic_ref}: 'angles' contains non-numeric component(s) '{raw}'; using zeros"
+            );
+            return [0.0; 3];
+        };
+        let pitch_deg = nums[0];
+        let yaw_deg = nums[1];
+        let roll_deg = nums[2];
+        return [
+            pitch_deg.to_radians(),
+            -yaw_deg.to_radians(),
+            roll_deg.to_radians(),
+        ];
+    }
+
+    if let Some(raw) = props.get("angle") {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return [0.0; 3];
+        }
+        let yaw_deg: f32 = match trimmed.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                log::warn!(
+                    "[Loader] {diagnostic_ref}: 'angle' is not numeric ('{raw}'); using zero"
+                );
+                return [0.0; 3];
+            }
+        };
+        // Quake sentinels: -1 = up, -2 = down. Encoded as pitch alone.
+        if (yaw_deg + 1.0).abs() < f32::EPSILON {
+            return [std::f32::consts::FRAC_PI_2, 0.0, 0.0];
+        }
+        if (yaw_deg + 2.0).abs() < f32::EPSILON {
+            return [-std::f32::consts::FRAC_PI_2, 0.0, 0.0];
+        }
+        return [0.0, -yaw_deg.to_radians(), 0.0];
+    }
+
+    [0.0; 3]
 }
 
 /// Parse an `angles` "pitch yaw roll" string into a normalized engine-space direction.
@@ -1297,6 +1388,61 @@ mod tests {
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!(light.tags.is_empty());
+    }
+
+    #[test]
+    fn quake_to_engine_angles_absent_returns_zeros() {
+        let p = props(&[]);
+        assert_eq!(quake_to_engine_angles(&p, "ent"), [0.0; 3]);
+    }
+
+    #[test]
+    fn quake_to_engine_angles_three_axis_inverts_yaw() {
+        let p = props(&[("angles", "10 90 0")]);
+        let got = quake_to_engine_angles(&p, "ent");
+        assert!((got[0] - 10.0_f32.to_radians()).abs() < 1e-6);
+        assert!((got[1] - (-90.0_f32).to_radians()).abs() < 1e-6);
+        assert_eq!(got[2], 0.0);
+    }
+
+    #[test]
+    fn quake_to_engine_angles_legacy_yaw_only() {
+        let p = props(&[("angle", "180")]);
+        let got = quake_to_engine_angles(&p, "ent");
+        assert_eq!(got[0], 0.0);
+        assert!((got[1] - (-180.0_f32).to_radians()).abs() < 1e-6);
+        assert_eq!(got[2], 0.0);
+    }
+
+    #[test]
+    fn quake_to_engine_angles_legacy_up_sentinel() {
+        let p = props(&[("angle", "-1")]);
+        let got = quake_to_engine_angles(&p, "ent");
+        assert!((got[0] - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(got[1], 0.0);
+    }
+
+    #[test]
+    fn quake_to_engine_angles_legacy_down_sentinel() {
+        let p = props(&[("angle", "-2")]);
+        let got = quake_to_engine_angles(&p, "ent");
+        assert!((got[0] - -std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(got[1], 0.0);
+    }
+
+    #[test]
+    fn quake_to_engine_angles_malformed_falls_back_to_zero() {
+        let p = props(&[("angles", "down by the river")]);
+        let got = quake_to_engine_angles(&p, "ent");
+        assert_eq!(got, [0.0; 3]);
+    }
+
+    #[test]
+    fn quake_to_engine_angles_three_axis_takes_precedence_over_angle() {
+        let p = props(&[("angle", "180"), ("angles", "0 45 0")]);
+        let got = quake_to_engine_angles(&p, "ent");
+        // `angles` wins.
+        assert!((got[1] - (-45.0_f32).to_radians()).abs() < 1e-6);
     }
 
     #[test]

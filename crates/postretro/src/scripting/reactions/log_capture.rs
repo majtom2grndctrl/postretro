@@ -1,7 +1,7 @@
 // Test-only log capture: install a thread-local logger, run a closure, and
 // return every record produced inside that closure. Lets reaction tests
 // assert on `log::warn!` output without pulling in an extra dev-dep.
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 5
+// See: context/lib/scripting.md §11 (Emitter and Particles — Reaction primitives)
 
 use std::cell::RefCell;
 use std::sync::OnceLock;

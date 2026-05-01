@@ -29,11 +29,11 @@ function wrapLightEntity(snapshot) {
     return handle;
 }
 function readLightComponent(id) {
-    const c = getComponent(id, "Light");
-    if (c.kind !== "Light") {
+    const c = getComponent(id, "light");
+    if (c.kind !== "light") {
         throw new Error(`expected Light component on entity ${idDebug(id)}, got ${c.kind}`);
     }
-    return c.value;
+    return c;
 }
 function idDebug(id) {
     return String(id);
@@ -215,11 +215,20 @@ const world = {
             const lights = raw.map(wrapLightEntity);
             return lights;
         }
-        const entities = raw.map((s)=>({
+        // Thread `component` through unchanged when the Rust handle carries
+        // it (e.g. emitter queries) so callers can read component fields
+        // without a follow-up `getComponent` call.
+        const entities = raw.map((s)=>{
+            const projected = {
                 id: s.id,
-                transform: s.transform,
+                position: s.position,
                 tags: s.tags
-            }));
+            };
+            if (s.component !== undefined) {
+                projected.component = s.component;
+            }
+            return projected;
+        });
         return entities;
     }
 };
@@ -305,19 +314,15 @@ function registerReaction(name, descriptor) {
         ...descriptor
     };
 }
-function registerEntities(types) {
-    return types.map((t)=>({
-            classname: t.classname
-        }));
-}
 function emitter(props) {
     validateEmitterProps(props);
-    const value = {
+    return {
+        kind: "billboard_emitter",
         rate: props.rate ?? 0.0,
         burst: props.burst,
         spread: props.spread ?? 0.2,
         lifetime: props.lifetime,
-        initial_velocity: props.initial_velocity,
+        velocity: props.velocity,
         buoyancy: props.buoyancy ?? 0.5,
         drag: props.drag ?? 0.5,
         size_over_lifetime: props.size_over_lifetime ?? [
@@ -336,10 +341,6 @@ function emitter(props) {
         ],
         sprite: props.sprite,
         spin_rate: props.spin_rate ?? 0.0
-    };
-    return {
-        kind: "billboard_emitter",
-        value
     };
 }
 function validateEmitterProps(props) {
@@ -382,7 +383,7 @@ function validateEmitterProps(props) {
             throw new Error("emitter: `spin_rate` must be a finite number");
         }
     }
-    validateVec3(props.initial_velocity, "initial_velocity");
+    validateVec3(props.velocity, "velocity");
     if (props.color !== undefined) {
         validateVec3(props.color, "color");
         for(let i = 0; i < 3; i++){
@@ -440,7 +441,7 @@ function smokeEmitter(overrides = {}) {
         ],
         sprite: "smoke",
         spin_rate: 0.0,
-        initial_velocity: [
+        velocity: [
             0,
             0.5,
             0
@@ -475,7 +476,7 @@ function sparkEmitter(overrides = {}) {
         ],
         sprite: "spark",
         spin_rate: 1.5,
-        initial_velocity: [
+        velocity: [
             0,
             2.0,
             0
@@ -509,7 +510,7 @@ function dustEmitter(overrides = {}) {
         ],
         sprite: "dust",
         spin_rate: 0.0,
-        initial_velocity: [
+        velocity: [
             0,
             0.1,
             0
@@ -533,7 +534,6 @@ globalThis["sweep"] = sweep;
 globalThis["timeline"] = timeline;
 globalThis["sequence"] = sequence;
 globalThis["registerReaction"] = registerReaction;
-globalThis["registerEntities"] = registerEntities;
 globalThis["emitter"] = emitter;
 globalThis["smokeEmitter"] = smokeEmitter;
 globalThis["sparkEmitter"] = sparkEmitter;

@@ -390,10 +390,12 @@ pub(crate) fn register_register_handler(
                 ParamInfo {
                     name: "event",
                     ty_name: "String",
+                    optional: false,
                 },
                 ParamInfo {
                     name: "handler",
                     ty_name: "HandlerFn",
+                    optional: false,
                 },
             ],
             return_ty_name: "()",
@@ -407,8 +409,8 @@ pub(crate) fn register_register_handler(
     registry.push_manual(primitive);
 }
 
-/// Register shared SDK types introduced by Sub-plan 5: `ScriptCallContext` and
-/// the `HandlerFn` shorthand used in `registerHandler`'s signature.
+/// Register shared SDK types for the behavior call surface: `ScriptCallContext`
+/// and the `HandlerFn` shorthand used in `registerHandler`'s signature.
 pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("ScriptCallContext")

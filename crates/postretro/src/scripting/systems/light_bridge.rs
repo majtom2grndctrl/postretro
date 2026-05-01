@@ -15,7 +15,7 @@ use crate::scripting::components::light::LightAnimation;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
 #[cfg(test)]
 use crate::scripting::conv::Vec3Lit;
-use crate::scripting::registry::{EntityId, EntityRegistry};
+use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
 
 /// Snapshot of a map light's component state as last observed by the bridge.
 /// Dirty detection compares the live registry component against this value.
@@ -139,7 +139,7 @@ impl LightBridge {
 
         for light in lights {
             let component = map_light_to_component(light);
-            let Some(id) = registry.try_spawn(Default::default()) else {
+            let Some(id) = registry.try_spawn(Default::default(), &[]) else {
                 log::warn!(
                     "[LightBridge] entity registry exhausted; dropping map light (index {}). \
                      Further map lights in this level will not appear in the scripting surface.",
@@ -160,6 +160,71 @@ impl LightBridge {
         }
 
         // Ensure the initial pack lands even when no script mutates on frame one.
+        self.dirty = true;
+    }
+
+    /// Pick up `LightComponent` entities that were spawned outside of
+    /// `populate_from_level` — typically by the data-archetype sweep, which
+    /// runs after `App::resumed()` (where `populate_from_level` is called)
+    /// during the first `RedrawRequested` once the data script has populated
+    /// the entity-type registry.
+    ///
+    /// Any `LightComponent` entity not already tracked in `self.entity_ids` is
+    /// appended to the bridge's parallel arrays so its component participates
+    /// in the per-frame dirty/pack loop. The bridge does not mutate or read
+    /// the source `LightComponent` here — it just enrolls the entity. The
+    /// next call to `update` will produce the initial GPU upload for these
+    /// new entries.
+    ///
+    /// Descriptor-spawned lights are always dynamic
+    /// (`data_archetype.rs` forces `is_dynamic = true` regardless of source);
+    /// they have no leaf assignment yet, so `leaf_index` is recorded as
+    /// `u32::MAX` — the unassigned sentinel. Replace with a real leaf index
+    /// when BSP-leaf assignment for runtime-spawned lights is implemented.
+    /// The cached f64 origin mirrors the f32 component origin
+    /// (descriptor-spawn is f32 from the start; there is no f64 source).
+    pub(crate) fn absorb_dynamic_lights(&mut self, registry: &EntityRegistry) {
+        let already_tracked: std::collections::HashSet<EntityId> =
+            self.entity_ids.iter().copied().collect();
+
+        // Collect ids first (avoid borrowing the registry through the iterator
+        // while we mutate our own state).
+        let new_ids: Vec<EntityId> = registry
+            .iter_with_kind(ComponentKind::Light)
+            .map(|(id, _)| id)
+            .filter(|id| !already_tracked.contains(id))
+            .collect();
+
+        if new_ids.is_empty() {
+            return;
+        }
+
+        for id in new_ids {
+            // Read the component to capture the spawn-time f32 origin so the
+            // f64 cache matches what the bridge will hand back to the renderer
+            // when it round-trips through `component_to_map_light`.
+            let origin_f64 = match registry.get_component::<LightComponent>(id) {
+                Ok(component) => [
+                    component.origin[0] as f64,
+                    component.origin[1] as f64,
+                    component.origin[2] as f64,
+                ],
+                Err(_) => continue,
+            };
+
+            self.entity_ids.push(id);
+            self.shape.push(MapLightShape {
+                is_dynamic: true,
+                leaf_index: u32::MAX,
+            });
+            self.cached_origins_f64.push(origin_f64);
+        }
+
+        // Resize scripted-sample mirror to match the new entity count and
+        // mark dirty so the next `update` rebuilds the GPU buffers including
+        // the new entries.
+        self.scripted_sample_buf
+            .resize(self.entity_ids.len() * SCRIPTED_FLOATS_PER_LIGHT, 0.0);
         self.dirty = true;
     }
 
@@ -969,6 +1034,53 @@ mod tests {
             !idle2.has_dirty_data,
             "subsequent idle frame must not re-upload"
         );
+    }
+
+    #[test]
+    fn absorb_dynamic_lights_picks_up_components_spawned_after_populate() {
+        // Mirrors the data-archetype sweep: a `LightComponent` lands in the
+        // registry after `populate_from_level`. The bridge must enroll the
+        // new entity so it ends up in the GPU upload on the next `update`.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        assert_eq!(bridge.light_count(), 1);
+
+        // Simulate descriptor-spawn: a fresh entity with a `LightComponent`.
+        let new_id = registry.try_spawn(Default::default(), &[]).unwrap();
+        let component = LightComponent {
+            origin: [9.0, -2.0, 4.5],
+            light_type: LightKind::Point,
+            intensity: 3.0,
+            color: [1.0, 0.5, 0.25],
+            falloff_model: FalloffKind::InverseSquared,
+            falloff_range: 12.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            cast_shadows: false,
+            is_dynamic: true,
+            animation: None,
+        };
+        registry.set_component(new_id, component).unwrap();
+
+        bridge.absorb_dynamic_lights(&registry);
+        assert_eq!(
+            bridge.light_count(),
+            2,
+            "absorb must enroll the new dynamic light",
+        );
+        assert_eq!(bridge.entity_for_map_index(1), Some(new_id));
+
+        // Idempotent: a second pass with no new lights must not double-enroll.
+        bridge.absorb_dynamic_lights(&registry);
+        assert_eq!(bridge.light_count(), 2);
+
+        // Next update produces a GPU upload that includes both lights.
+        let update = bridge.update(&mut registry, 0.0).expect("dirty");
+        assert!(update.has_dirty_data);
+        assert_eq!(update.lights_bytes.len(), 2 * GPU_LIGHT_SIZE);
+        assert_eq!(update.descriptor_bytes.len(), 2 * ANIMATION_DESCRIPTOR_SIZE,);
     }
 
     #[test]

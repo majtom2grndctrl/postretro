@@ -124,7 +124,7 @@ mod tests {
             burst: None,
             spread: 0.0,
             lifetime: 1.0,
-            initial_velocity: [0.0, 0.0, 0.0],
+            velocity: [0.0, 0.0, 0.0],
             buoyancy: 0.0,
             drag: 0.0,
             size_over_lifetime: vec![1.0],

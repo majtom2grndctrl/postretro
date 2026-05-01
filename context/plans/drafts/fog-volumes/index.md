@@ -24,7 +24,7 @@ integration, no level-loading support.
 
 - Create `crates/postretro/src/fx/fog_volume.rs` — GPU-side structs, constants, and pack functions required by the orphaned `fog_pass.rs`
 - Declare `pub mod fog_volume;` in `fx/mod.rs` and `pub mod fog_pass;` in `render/mod.rs`
-- Add `ComponentKind::FogVolume = 5` and `ComponentValue::FogVolume { density, color, scatter }` to the entity registry; wire `worldQuery("fog_volume")`, `setComponent`, and `getComponent`
+- Add `ComponentKind::FogVolume = 5` and `ComponentValue::FogVolume { density, color, scatter, falloff }` to the entity registry; wire `worldQuery("fog_volume")`, `setComponent`, and `getComponent`
 - prl-build: parse `env_fog_volume` brush entities, compute world-space AABBs, write new `FogVolumes` PRL section (ID 30) with per-volume tags + `fog_pixel_scale` header
 - `postretro-level-format`: define `SectionId::FogVolumes = 30` and `FogVolumesSection`
 - Engine level load: parse FogVolumes section, spawn one FogVolume ECS entity per volume (origin = AABB center, tags from section, FogVolume component); apply `fog_pixel_scale`
@@ -53,7 +53,7 @@ integration, no level-loading support.
 - [ ] `env_fog_volume` brush entity placed in a test scene produces visible pixelated haze when the player walks into the volume.
 - [ ] A dynamic `light` entity (`_dynamic 1`) adjacent to an `env_fog_volume` region causes the fog to glow with the light's color — a localised tinted halo distinct from the ambient SH tint. Toggling the light off eliminates the halo.
 - [ ] `fog_pixel_scale 1` on `worldspawn` produces full-resolution fog; `fog_pixel_scale 8` produces coarser block-pixel fog. Absent defaults to 4.
-- [ ] Level with no `env_fog_volume` entities: `FogPass::active()` returns false; no compute dispatch or composite blit issues — confirmed by checking GPU timing output with `POSTRETRO_GPU_TIMING=1`.
+- [ ] Level with no `env_fog_volume` entities: `FogPass::active()` returns false (driven by `volume_count == 0`); no compute dispatch or composite blit issues — confirmed by checking GPU timing output with `POSTRETRO_GPU_TIMING=1`.
 - [ ] `world.query({ component: "fog_volume" })` returns one handle per `env_fog_volume` entity in the loaded map.
 - [ ] `world.query({ component: "fog_volume", tag: "neon_haze" })` returns only volumes tagged `neon_haze` in TrenchBroom via `_tags`.
 - [ ] `setComponent(id, { kind: "fog_volume", density: 0.0 })` causes the fog volume to visually disappear; restoring `density` to the authored value makes it visible again.
@@ -75,7 +75,7 @@ Create `crates/postretro/src/fx/fog_volume.rs`. Define the GPU-side types `fog_p
 - `FogSpotLight` — 48 bytes, mirrors existing WGSL `FogSpotLight`.
 - `FogPointLight` — 32 bytes: `position [f32;3]`, `range f32`, `color [f32;3]` (pre-multiplied by intensity), `_pad f32`.
 - `FogParams` — matches existing WGSL `FogParams`.
-- Constants: `MAX_FOG_VOLUMES`, `MAX_FOG_POINT_LIGHTS`, `FOG_VOLUME_SIZE`, `FOG_SPOT_LIGHT_SIZE`, `FOG_POINT_LIGHT_SIZE`, `FOG_PARAMS_SIZE`, `DEFAULT_FOG_STEP_SIZE`.
+- Constants: `MAX_FOG_VOLUMES = 16`, `MAX_FOG_POINT_LIGHTS = 32`, `FOG_VOLUME_SIZE`, `FOG_SPOT_LIGHT_SIZE`, `FOG_POINT_LIGHT_SIZE`, `FOG_PARAMS_SIZE`, `DEFAULT_FOG_STEP_SIZE`.
 - Pack functions: `pack_fog_volumes`, `pack_fog_spot_lights`, `pack_fog_point_lights`, `pack_fog_params`.
 - `clamp_fog_pixel_scale(scale: u32) -> u32` — clamps to `1..=8`, defaults to 4 on 0.
 
@@ -97,23 +97,23 @@ per entry:
   color_r, color_g, color_b: f32 (12 bytes)
   scatter: f32                   ( 4 bytes)
   tag_count: u32                 ( 4 bytes)
-  tags: tag_count × u32-length-prefixed UTF-8 strings
+  tags: tag_count × u32-length-prefixed UTF-8 strings (tag_len counts bytes, not codepoints)
 ```
 Section is optional. Absent → `pixel_scale = 4, volume_count = 0`.
 
-**prl-build:** after the `env_reverb_zone` pass (same structural pattern for brush-entity AABB extraction), add an `env_fog_volume` pass. For each brush entity with classname `env_fog_volume`: exclude brushes from world geometry (same mechanism as `env_reverb_zone`), compute world-space AABB over all brush faces, parse KVPs (`color` RGB default `1 1 1`, `density` f32 default `0.5`, `falloff` f32 default `1.0`, `scatter` f32 default `0.6`), parse `_tags` KVP (space-delimited, matching the `entity-model-foundation` convention). Warn and skip if volume count would exceed `MAX_FOG_VOLUMES`. Read `fog_pixel_scale` from `worldspawn` KVP (u32, default 4, clamp 1–8). Write `FogVolumesSection`.
+**prl-build:** after the `env_reverb_zone` pass (same structural pattern for brush-entity AABB extraction), add an `env_fog_volume` pass. For each brush entity with classname `env_fog_volume`: exclude brushes from world geometry (same mechanism as `env_reverb_zone`), compute world-space AABB over all brush faces, parse KVPs (`color` RGB default `1 1 1`, `density` f32 default `0.5`, `falloff` f32 default `1.0`, `scatter` f32 default `0.6`), parse `_tags` KVP (space-delimited, matching the `entity-model-foundation` convention). Warn and skip if volume count would exceed `MAX_FOG_VOLUMES` (= 16, matching the context doc). Read `fog_pixel_scale` from `worldspawn` KVP (u32, default 4, clamp 1–8). Write `FogVolumesSection`.
 
 **Engine (`prl.rs`):** parse the FogVolumes section if present. Populate `LevelWorld` with `fog_volumes: Vec<FogVolumeRecord>` and `fog_pixel_scale: u32`.
 
-**Level load (`main.rs`):** after the existing entity dispatch, iterate `world.fog_volumes`. For each entry, spawn an ECS entity via `registry.try_spawn(transform_at_aabb_center, &entry.tags)`. Attach a `ComponentValue::FogVolume { density: entry.density, color: entry.color, scatter: entry.scatter }` component. Store the AABB in a side-table keyed by `EntityId` (analogous to the KVP side-table from entity-model-foundation Task 1). The renderer reads this side-table when packing the GPU volume buffer.
+**Level load (`main.rs`):** after the existing entity dispatch, iterate `world.fog_volumes`. For each entry, spawn an ECS entity via `let id = registry.try_spawn(Transform { position: (entry.min + entry.max) * 0.5, rotation: Quat::IDENTITY, scale: Vec3::ONE })?;` then `registry.set_tags(id, entry.tags.clone()).ok();` (matching the pattern in `primitives_light.rs`). Attach a `ComponentValue::FogVolume { density: entry.density, color: entry.color, scatter: entry.scatter }` component. Store the AABB in a side-table keyed by `EntityId` (analogous to the KVP side-table from entity-model-foundation Task 1). The renderer reads this side-table when packing the GPU volume buffer.
 
 ### Task 3 — `FogVolume` component kind
 
 **`scripting/registry.rs`:** add `ComponentKind::FogVolume = 5` and `ComponentValue::FogVolume { density: f32, color: [f32; 3], scatter: f32, falloff: f32 }`. Add to the `VARIANTS` const array. Implement the `Component` trait for `FogVolumeComponent`.
 
-**`scripting/conv.rs`:** extend `component_kind_from_name` with `"fog_volume" → ComponentKind::FogVolume`. Extend `FromJs`/`IntoJs` and `FromLua`/`IntoLua` for `ComponentValue::FogVolume`. `setComponent` accepts `density`, `color`, `scatter`, `falloff`; AABB fields are silently ignored if present. `getComponent` returns all four.
+**`scripting/conv.rs`:** extend `component_kind_from_name` with `"FogVolume" → ComponentKind::FogVolume` (matching PascalCase convention of existing variants). The `worldQuery({ component: "fog_volume" })` filter uses snake_case — this is a separate lookup from the kind name. Extend `FromJs`/`IntoJs` and `FromLua`/`IntoLua` for `ComponentValue::FogVolume`. `setComponent` accepts `density`, `color`, `scatter`, `falloff`; AABB fields are silently ignored if present. `getComponent` returns all four.
 
-**`scripting/primitives.rs`:** add `"fog_volume"` to `worldQuery`'s filter string set. `worldQuery({ component: "fog_volume" })` returns handles with shape `{ id, position, tags, component: { density, color, scatter } }`. Follow the entity-model-foundation handle-shape convention for return values.
+**`scripting/primitives.rs`:** add `"fog_volume"` to `worldQuery`'s filter string set. `worldQuery({ component: "fog_volume" })` returns handles with shape `{ id, position, tags, component: { density, color, scatter, falloff } }`. Follow the entity-model-foundation handle-shape convention for return values.
 
 **`scripting/typedef.rs`:** add `"FogVolume"` to the `ComponentKind` union. Regenerate `sdk/types/postretro.d.ts` and `sdk/types/postretro.d.luau`; type-definition drift test passes.
 
@@ -148,7 +148,7 @@ for (var pi: u32 = 0u; pi < pt_count; pi = pi + 1u) {
     let dist = length(to_light);
     if dist > pt.range || dist < 1.0e-4 { continue; }
     let atten = clamp(1.0 - dist / pt.range, 0.0, 1.0);
-    accum = accum + transmittance * weight * vs.color * pt.color * atten;
+    accum = accum + transmittance * weight * pt.color * atten;
 }
 ```
 
@@ -183,7 +183,7 @@ Export animation constructors at module level:
 
 All animation is tick-driven; no new engine primitives are required. Tick callbacks use `registerHandler("tick", ...)` internally.
 
-Wire `fog_volumes` into the SDK prelude (`sdk/lib/index.ts` → `sdk/lib/prelude.js`). For Luau, add `fog_volumes.luau` to the prelude evaluation order (alongside `entities/lights.luau` and `entities/emitters.luau`).
+Wire `fog_volumes` into the SDK prelude: add `export type { FogVolumeHandle } from "./entities/fog_volumes"; export { pulseDensity, fadeDensity, fadeColor } from "./entities/fog_volumes";` to `sdk/lib/index.ts`, then regenerate `sdk/lib/prelude.js` via `cargo run -p postretro-script-compiler -- --prelude --sdk-root sdk/lib --out sdk/lib/prelude.js`. For Luau, add `fog_volumes.luau` to `LUAU_SDK_LIB_BLOCK` in `crates/postretro/src/scripting/typedef.rs` (alongside `entities/lights.luau` and `entities/emitters.luau`).
 
 Add fog volume entries to `docs/scripting-reference.md`: `world.query({ component: "fog_volume" })`, `FogVolumeHandle` methods, animation constructors, relationship to FGD `env_fog_volume` and `_tags`.
 
@@ -205,7 +205,7 @@ Add fog volume entries to `docs/scripting-reference.md`: `world.query({ componen
 
 `fog_pass.rs` is in `render/` but not yet declared as a module in `render/mod.rs` — adding `pub mod fog_pass;` is the minimal step to bring it into the build. The compiler will then surface all missing imports from `crate::fx::fog_volume`, which Task 1 resolves.
 
-The AABB is not in `ComponentValue::FogVolume` because it is baked level geometry. Scripts that need volume bounds for spatial logic should query the AABB side-table via a dedicated primitive (e.g., `getEntityBounds(id) -> { min, max }`). Whether to add this primitive is an open question below.
+The AABB is not in `ComponentValue::FogVolume` because it is baked level geometry. Scripts that need volume bounds for spatial logic should query the AABB side-table via a dedicated primitive (e.g., `getEntityBounds(id) -> { min, max }`). Adding this primitive is deferred (see Decisions).
 
 `FogPointLight.color` is pre-multiplied by intensity on the CPU before upload, matching the `FogSpotLight.color` convention already in `fog_pass.rs`. No additional intensity field in the GPU struct.
 
@@ -221,7 +221,7 @@ Static neon lights (`_dynamic 0`) tint fog via SH ambient (baked into the irradi
 
 | Name | Rust | Wire / serde | TS / JS | Luau | FGD KVP |
 |---|---|---|---|---|---|
-| `ComponentKind::FogVolume` | `ComponentKind::FogVolume` | `"fog_volume"` | `"fog_volume"` | `"fog_volume"` | n/a |
+| `ComponentKind::FogVolume` | `ComponentKind::FogVolume` | `"FogVolume"` | `"fog_volume"` | `"fog_volume"` | n/a |
 | `ComponentValue::FogVolume` | `ComponentValue::FogVolume { density, color, scatter, falloff }` | `{ kind: "fog_volume", density, color, scatter, falloff }` | same | same | n/a |
 | fog volume entity | `env_fog_volume` brush entity | PRL section 30 | `FogVolumeHandle` | `FogVolumeHandle` | `env_fog_volume` |
 | fog_pixel_scale | `LevelWorld.fog_pixel_scale: u32` | PRL section 30 header `u32` | n/a | n/a | `fog_pixel_scale` on worldspawn |
@@ -244,7 +244,7 @@ falloff: f32                4 bytes
 color_r, color_g, color_b: f32  12 bytes
 scatter: f32                4 bytes
 tag_count: u32              4 bytes
-  tag_len: u32              4 bytes each
+  tag_len: u32              4 bytes each (byte count, not codepoints)
   tag_utf8: [u8; tag_len]
 ```
 
@@ -252,7 +252,7 @@ Empty tag list serialises as `tag_count = 0` with no following bytes. Absent sec
 
 ---
 
-## Open questions
+## Decisions
 
 - **`getEntityBounds` primitive.** ~~Out of scope here.~~ **Resolved: deferred.** The side-table exists after this plan's implementation; adding `getEntityBounds(id) -> { min: Vec3, max: Vec3 } | null` is a one-task follow-up when a concrete scripting use case arrives. Scope here is sufficient without it.
 

@@ -142,7 +142,7 @@ Section is optional. Absent → `pixel_scale = 4, volume_count = 0`.
 
 ### Task 4 — Point-light scatter
 
-**`fog_pass.rs`:** add `fog_points_buffer: wgpu::Buffer` sized for `MAX_FOG_POINT_LIGHTS × FOG_POINT_LIGHT_SIZE`. Add `BIND_FOG_POINTS: u32 = 5` binding constant. Add the binding-5 entry to the group-6 BGL (storage buffer, read-only, compute-visible). Rebuild `build_group6` to include it. Add `upload_points(queue: &wgpu::Queue, points: &[FogPointLight])` method. Also add: `set_pixel_scale(device: &wgpu::Device, scale: u32, width: u32, height: u32, depth_view: &wgpu::TextureView)` — reallocates the scatter target at the new scaled resolution; `resize(device: &wgpu::Device, width: u32, height: u32, depth_view: &wgpu::TextureView)` — same reallocation on window resize; `rebuild_composite_for_format(device: &wgpu::Device, format: wgpu::TextureFormat)` — rebuilds the composite pipeline for a new surface format.
+**`fog_pass.rs`:** add `fog_points_buffer: wgpu::Buffer` sized for `MAX_FOG_POINT_LIGHTS × FOG_POINT_LIGHT_SIZE`. Add `BIND_FOG_POINTS: u32 = 5` binding constant. Add the binding-5 entry to the group-6 BGL (storage buffer, read-only, compute-visible). Rebuild `build_group6` to include it. Add `upload_points(queue: &wgpu::Queue, points: &[FogPointLight])` method. Also add: `set_pixel_scale(device: &wgpu::Device, scale: u32, width: u32, height: u32, depth_view: &wgpu::TextureView)` — reallocates the scatter target at the new scaled resolution; `resize(device: &wgpu::Device, width: u32, height: u32, depth_view: &wgpu::TextureView)` — same reallocation on window resize.
 
 **`fog_volume.wgsl` — extend `FogVolume` struct:** add `height_gradient: f32`, `radial_falloff: f32`, `_pad0: f32`, `_pad1: f32` to the WGSL `FogVolume` struct (`fog_volume.wgsl:71-78`) to match the 64-byte Task 1 layout. This step is a prerequisite for the `sample_fog_volumes` edits below.
 
@@ -236,7 +236,7 @@ Inside `render_frame_indirect`, after the existing SH compose / shadow / forward
 
 Note the renderer **does not** import `ComponentKind`, `ComponentValue`, `EntityRegistry`, `FogVolumeAabbs`, or any `scripting::*` type. The volumes and point-lights buffers are populated only via `upload_fog_volumes` / `upload_fog_points` from `main.rs`. This is identical to the precedent set by `upload_bridge_lights` for scripted-light data.
 
-`Renderer::resize` calls `self.fog.resize(device, width, height, depth_view)`. Surface-format change calls `self.fog.rebuild_composite_for_format(device, format)`.
+`Renderer::resize` calls `self.fog.resize(device, width, height, depth_view)`.
 
 ### Task 6 — SDK fog volumes module
 

@@ -161,7 +161,7 @@ Register `pub mod fog_pass;` in `render/mod.rs`. Add `fog: FogPass` to `Renderer
 1. Query ECS for `ComponentKind::FogVolume` components. For each entity, look up its AABB from the side-table (Task 2). Construct a `FogVolume` GPU entry from `(aabb, component.density, component.color, component.scatter, component.falloff)`. Pass the slice to `fog.upload_volumes(queue, &volumes)`.
 2. `fog.upload_params(queue, inv_view_proj, camera_pos, near, far)`.
 3. Build the `FogSpotLight` list from active shadow-mapped spots → `fog.upload_spots(queue, &spots)`.
-4. Build the `FogPointLight` list from active dynamic `LightType::Point` lights (pack as `{ position, range: falloff_range, color: [r×intensity, g×intensity, b×intensity], _pad: 0.0 }`, cap at `MAX_FOG_POINT_LIGHTS`) → `fog.upload_points(queue, &points)`.
+4. Build the `FogPointLight` list from active dynamic `LightType::Point` lights: discard any light whose bounding sphere (`position` ± `falloff_range`) does not intersect at least one fog volume AABB (sphere-AABB test, O(lights × volumes)). Pack survivors as `{ position, range: falloff_range, color: [r×intensity, g×intensity, b×intensity], _pad: 0.0 }`, cap at `MAX_FOG_POINT_LIGHTS` → `fog.upload_points(queue, &points)`.
 5. If `fog.active()`: dispatch the raymarch compute pass, then dispatch the composite blit over the forward-rendered surface.
 
 Apply `fog_pixel_scale` at level load: call `fog.set_pixel_scale(device, world.fog_pixel_scale, width, height, depth_view)`.
@@ -256,7 +256,7 @@ Empty tag list serialises as `tag_count = 0` with no following bytes. Absent sec
 
 - **`getEntityBounds` primitive.** Scripts currently cannot read an entity's AABB (fog volumes store it in a side-table not exposed through `ComponentValue`). A `getEntityBounds(id) -> { min: Vec3, max: Vec3 } | null` primitive would enable spatial scripts (e.g., detecting when the player enters a fog volume). Out of scope here — add if scripting needs it.
 
-- **FogVolumes section always vs. conditional.** Should prl-build always emit the FogVolumes section (to carry `fog_pixel_scale` even in maps with no volumes), or only when at least one `env_fog_volume` exists? Decide at implementation time; make the behavior explicit in the section writer.
+- **FogVolumes section always vs. conditional.** ~~Decide at implementation time.~~ **Resolved: always emit.** prl-build writes the FogVolumes section even when `volume_count = 0`, so `fog_pixel_scale` on `worldspawn` is always honoured. Section overhead is 8 bytes.
 
-- **Influence-volume pre-culling for point lights.** Current design iterates all active dynamic point lights (capped at `MAX_FOG_POINT_LIGHTS = 32`) per raymarch step. Pre-culling against the fog volume AABB at CPU upload time would reduce per-step iteration. Leave as "iterate all" until profiling on a representative scene shows otherwise.
+- **Influence-volume pre-culling for point lights.** ~~Leave as "iterate all" until profiling.~~ **Resolved: pre-cull at CPU upload.** Before filling the `FogPointLight` GPU buffer, filter the active dynamic point lights against the union of all fog volume AABBs: skip any light whose sphere (centre + `falloff_range`) does not intersect at least one fog volume AABB. This is O(lights × volumes) on the CPU and eliminates per-step GPU work for lights that cannot possibly illuminate any fog region. Implement in the `upload_points` path in Task 5.
 

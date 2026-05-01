@@ -515,9 +515,9 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     // rquickjs's auto-derived FromParams enforces the function arity
     // strictly, so a closure of the form `|t: Transform, tags: Option<...>|`
     // would still reject `spawnEntity(t)` with one argument. Using
-    // `function::Opt<T>` for the QuickJS side and a tuple of `Option`s for
-    // the Lua side gives the script-level optional shape this primitive
-    // promises in its SDK signature.
+    // `function::Opt<T>` for the QuickJS side and an `Option<Vec<String>>` for
+    // the second arg on the Lua side gives the script-level optional shape this
+    // primitive promises in its SDK signature.
     register_spawn_entity(registry, ctx.clone());
 
     // despawnEntity --------------------------------------------------------
@@ -581,6 +581,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                 // Enforce the `kind` and `value` discriminants agree. Mismatches
                 // are a script-side bug; we fail with a clear message rather
                 // than silently using one of the two.
+                // FromJs already rejects non-Transform variants; this guard catches kind/value disagreement only.
                 match (kind, &value) {
                     (ComponentKind::Transform, ComponentValue::Transform(_)) => {}
                     (ComponentKind::Light, ComponentValue::Light(_)) => {}
@@ -631,7 +632,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                 };
                 ctx.events.borrow_mut().broadcast.push_back(event);
                 let mut buf = ctx.game_events.borrow_mut();
-                if buf.len() >= GAME_EVENTS_CAPACITY {
+                while buf.len() >= GAME_EVENTS_CAPACITY {
                     buf.pop_front();
                 }
                 buf.push_back(game_event);

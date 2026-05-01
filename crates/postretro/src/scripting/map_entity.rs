@@ -53,7 +53,8 @@ impl MapEntity {
 
 /// Adapter from the format-crate wire record to the scripting-facing
 /// `MapEntity`. Lives in the scripting tree so the loader does not depend on
-/// scripting types — the dispatcher in `main.rs` calls this at the boundary.
+/// scripting types. Called in `main.rs` at the dispatch boundary, before
+/// passing the converted slice to `apply_classname_dispatch`.
 impl From<MapEntityRecord> for MapEntity {
     fn from(record: MapEntityRecord) -> Self {
         let mut kv = HashMap::with_capacity(record.key_values.len());

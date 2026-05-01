@@ -461,9 +461,9 @@ struct App {
     level_load_fired: bool,
 
     /// Classnames the built-in dispatch handled at level open. Captured in
-    /// `resumed()` and consumed by the data-archetype sweep on the first
-    /// redraw, once the data script has run. `None` before level load and
-    /// after the sweep consumes it.
+    /// `resumed()` and consumed by the data-archetype sweep during the
+    /// `!level_load_fired` cold path on the first redraw frame. `None` before
+    /// level load and after the sweep consumes it.
     builtin_handled: Option<std::collections::HashSet<String>>,
 
     /// Seconds since level load, not wall clock. Resets to zero on level

@@ -305,13 +305,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("tags", "Vec<String>", "The entity's tags at query time. Empty array if untagged.")
         .finish();
     registry
-        .register_type("TransformHandle")
-        .doc("Handle returned by `world.query({ component: \"transform\" })`. Same shape as `Entity`.")
-        .field("id", "EntityId", "")
-        .field("position", "Vec3", "Entity position at query time.")
-        .field("tags", "Vec<String>", "The entity's tags at query time. Empty array if untagged.")
-        .finish();
-    registry
         .register_type("EmitterEntity")
         .doc("Entity handle returned by `world.query` when filtering for billboard emitter entities.")
         .field("id", "EntityId", "")

@@ -113,15 +113,6 @@ export type Entity = {
   tags: {string},
 }
 
---- Handle returned by `world.query({ component: "transform" })`. Same shape as `Entity`.
-export type TransformHandle = {
-  id: EntityId,
-  --- Entity position at query time.
-  position: Vec3,
-  --- The entity's tags at query time. Empty array if untagged.
-  tags: {string},
-}
-
 --- Entity handle returned by `world.query` when filtering for billboard emitter entities.
 export type EmitterEntity = {
   id: EntityId,

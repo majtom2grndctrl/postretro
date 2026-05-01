@@ -266,7 +266,7 @@ impl EntityRegistry {
         Self {
             slots: Vec::new(),
             free_list: Vec::new(),
-            components: [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            components: std::array::from_fn(|_| Vec::new()),
             tags: Vec::new(),
             kvp_table: HashMap::new(),
         }
@@ -369,8 +369,7 @@ impl EntityRegistry {
                     return None;
                 }
                 let cell = column.get(idx).and_then(|c| c.as_ref())?;
-                // SAFETY: index fits in u16 because `slots.len() <= u16::MAX + 1`
-                // and we never allocate past that in `spawn`.
+                // idx as u16 is valid: slots.len() is bounded to u16::MAX by spawn.
                 let id = EntityId::new(idx as u16, slot.generation);
                 Some((id, cell))
             })
@@ -381,6 +380,9 @@ impl EntityRegistry {
     /// (e.g. script primitives crossing the FFI boundary) should prefer this
     /// over [`EntityRegistry::spawn`]. Tags are attached at slot-mark time;
     /// pass `&[]` to spawn untagged.
+    ///
+    /// KVPs from a source `MapEntity` must be written separately via
+    /// `set_map_kvps` after spawn — `try_spawn` does not accept them.
     pub(crate) fn try_spawn(&mut self, transform: Transform, tags: &[String]) -> Option<EntityId> {
         if self.free_list.is_empty() && self.slots.len() >= u16::MAX as usize {
             return None;

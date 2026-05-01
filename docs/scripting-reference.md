@@ -463,7 +463,7 @@ Returns an array of entity handles matching the filter. Valid `filter` shapes:
 
 | Filter | Returns | Notes |
 |--------|---------|-------|
-| `{ component: "transform" }` | `{ id, position, tags }[]` | Returns **every** live entity. Filter by `tag` when you need a subset. |
+| `{ component: "transform" }` | `{ id, position, tags }[]` | Returns **every** live entity. Filter by `tag` when you need a subset. The returned handle exposes only `id` (`EntityId`), `position` (`{ x, y, z }` in world space at query time), and `tags` (`string[]`). There is no `rotation` or `scale` field on the handle — use `getComponent(id, "transform")` to read the full `Transform` if you need those. |
 | `{ component: "light" }` | `{ id, position, tags, isDynamic, component: LightComponent }[]` | |
 | `{ component: "emitter" }` | `{ id, position, tags, component: BillboardEmitterComponent }[]` | |
 | `{ component: "particle" }` | `[]` | Always empty — particles are not individually observable by scripts. |

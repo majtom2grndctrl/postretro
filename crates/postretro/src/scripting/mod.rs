@@ -5,8 +5,8 @@
 // by anything in this module.
 
 #![deny(unsafe_code)]
-// No engine consumers yet — silence dead-code at the subsystem level rather
-// than sprinkling `#[allow]` on every item.
+// Some component types not yet wired to their bridges — silence dead-code at
+// the subsystem level rather than scattering item-level annotations.
 #![allow(dead_code)]
 
 pub(crate) mod builtins;

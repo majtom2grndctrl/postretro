@@ -114,15 +114,6 @@ declare module "postretro" {
     tags: ReadonlyArray<string>;
   };
 
-  /** Handle returned by `world.query({ component: "transform" })`. Same shape as `Entity`. */
-  export type TransformHandle = {
-    id: EntityId;
-    /** Entity position at query time. */
-    position: Vec3;
-    /** The entity's tags at query time. Empty array if untagged. */
-    tags: ReadonlyArray<string>;
-  };
-
   /** Entity handle returned by `world.query` when filtering for billboard emitter entities. */
   export type EmitterEntity = {
     id: EntityId;
@@ -181,7 +172,7 @@ declare module "postretro" {
   export function spawnEntity(transform: Transform, tags?: ReadonlyArray<string>): EntityId;
 
   /** Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`. */
-  export function worldQuery<T extends string>(filter: { component: T; tag?: string | null }): ReadonlyArray<EntityForComponent<T>>;
+  export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<EntityForComponent<T>>;
 
   // -------------------------------------------------------------------------
   // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.
@@ -204,15 +195,15 @@ declare module "postretro" {
    * yields `LightEntityHandle` (with convenience methods); `"emitter"` yields
    * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
    * snapshot under `component`). Other component names fall back to the bare
-   * `Entity` shape. */
-  export type EntityForComponent<T extends string> =
+   * `Entity` shape (`id`, `position`, `tags`). */
+  export type EntityForComponent<T extends WorldQueryComponent> =
     T extends "light" ? LightEntityHandle :
     T extends "emitter" ? EmitterEntity :
     Entity;
 
   /** Vocabulary object installed as `globalThis.world`. */
   export interface World {
-    query<T extends string>(filter: {
+    query<T extends WorldQueryComponent>(filter: {
       component: T;
       tag?: string | null;
     }): EntityForComponent<T>[];

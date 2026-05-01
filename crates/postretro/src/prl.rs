@@ -117,9 +117,9 @@ pub enum FalloffModel {
     InverseSquared,
 }
 
-/// Engine-side light loaded from the interim AlphaLights PRL section (ID 18).
+/// Engine-side light loaded from the AlphaLights PRL section (ID 18).
 ///
-/// **INTERIM** — AlphaLights will eventually move into the scripting entity registry; not yet scheduled. See context/lib/scripting.md.
+/// FGD-authored lights flow through this path; script-registered lights arrive via `registerEntity` and the data-archetype sweep instead.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapLight {
     pub origin: [f64; 3],
@@ -215,9 +215,10 @@ pub struct LevelWorld {
     /// lived data context at level load to populate the data registries.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     pub data_script: Option<DataScriptSection>,
-    /// FGD map entities awaiting classname dispatch. Loaded from the
-    /// `MapEntity` PRL section (ID 29). Empty when the map carries no
-    /// non-light, non-worldspawn entities (the section is omitted in that case).
+    /// FGD map entities for built-in classname dispatch and the data-archetype
+    /// spawn sweep. Loaded from the `MapEntity` PRL section (ID 29). Empty when
+    /// the map carries no non-light, non-worldspawn entities (the section is
+    /// omitted in that case).
     ///
     /// Held as the format-crate's wire type — the loader is a strict
     /// subsystem that does not depend on the scripting tree. The dispatch

@@ -56,18 +56,16 @@ fn apply_emitter_kvp_overrides(component: &mut BillboardEmitterComponent, entity
 }
 
 fn apply_light_kvp_overrides(descriptor: &mut LightDescriptor, entity: &MapEntity) {
-    // Snapshot pre-override values so we can roll back individual fields if
-    // the post-override descriptor fails `LightDescriptor::validate()`.
-    let pre_intensity = descriptor.intensity;
-    let pre_range = descriptor.range;
-
     for (key, raw) in entity.key_values.iter() {
         let Some(field) = key.strip_prefix("initial_") else {
             continue;
         };
         match field {
-            "intensity" => parse_into_f32(raw, &mut descriptor.intensity, entity, key),
-            "range" => parse_into_f32(raw, &mut descriptor.range, entity, key),
+            // Mirror the validation that `registerEntity` applies: reject
+            // negative or non-finite values at parse time so a bad override
+            // never lands on the descriptor (e.g. `initial_intensity -5.0`).
+            "intensity" => parse_into_nonneg_f32(raw, &mut descriptor.intensity, entity, key),
+            "range" => parse_into_nonneg_f32(raw, &mut descriptor.range, entity, key),
             "is_dynamic" => match parse_bool(raw) {
                 Some(v) => descriptor.is_dynamic = v,
                 None => warn_parse(entity, key, raw),
@@ -75,30 +73,6 @@ fn apply_light_kvp_overrides(descriptor: &mut LightDescriptor, entity: &MapEntit
             "color" => parse_into_vec3(raw, &mut descriptor.color, entity, key),
             _ => {}
         }
-    }
-
-    // Re-run the same validation that `registerEntity` applies to catch
-    // out-of-range values introduced by the KVP override path (e.g. a map
-    // author writing `initial_intensity -5.0`). A negative or non-finite
-    // value silently slipping through here would produce a descriptor that
-    // would have been rejected at definition time.
-    if !descriptor.intensity.is_finite() || descriptor.intensity < 0.0 {
-        log::warn!(
-            "[Loader] {origin}: `initial_intensity` produced invalid value `{value}`; \
-             must be finite and >= 0.0; using descriptor default",
-            origin = entity.diagnostic_origin(),
-            value = descriptor.intensity,
-        );
-        descriptor.intensity = pre_intensity;
-    }
-    if !descriptor.range.is_finite() || descriptor.range < 0.0 {
-        log::warn!(
-            "[Loader] {origin}: `initial_range` produced invalid value `{value}`; \
-             must be finite and >= 0.0; using descriptor default",
-            origin = entity.diagnostic_origin(),
-            value = descriptor.range,
-        );
-        descriptor.range = pre_range;
     }
 }
 
@@ -117,6 +91,16 @@ fn parse_bool(raw: &str) -> Option<bool> {
 fn parse_into_f32(raw: &str, slot: &mut f32, entity: &MapEntity, key: &str) {
     match raw.trim().parse::<f32>() {
         Ok(v) if v.is_finite() => *slot = v,
+        _ => warn_parse(entity, key, raw),
+    }
+}
+
+/// Like `parse_into_f32` but additionally rejects negative values, mirroring
+/// `LightDescriptor::validate()`. Bad values warn and leave the descriptor
+/// default in place — the `slot` is only written on success.
+fn parse_into_nonneg_f32(raw: &str, slot: &mut f32, entity: &MapEntity, key: &str) {
+    match raw.trim().parse::<f32>() {
+        Ok(v) if v.is_finite() && v >= 0.0 => *slot = v,
         _ => warn_parse(entity, key, raw),
     }
 }
@@ -180,6 +164,7 @@ pub(crate) fn apply_data_archetype_dispatch(
     registry: &mut EntityRegistry,
 ) -> HashSet<String> {
     // Warn-once tracking for descriptor/built-in collisions.
+    // scoped per sweep; current callers run exactly once per level load.
     let mut collision_warned: HashSet<String> = HashSet::new();
     let mut handled: HashSet<String> = HashSet::new();
 
@@ -240,7 +225,7 @@ pub(crate) fn apply_data_archetype_dispatch(
             }
 
             let component = LightComponent {
-                origin: [entity.origin.x, entity.origin.y, entity.origin.z],
+                origin: [entity.origin.x, entity.origin.y, entity.origin.z], // matches entity transform origin
                 light_type: LightKind::Point,
                 intensity: light_desc.intensity,
                 color: light_desc.color,
@@ -257,10 +242,10 @@ pub(crate) fn apply_data_archetype_dispatch(
         }
 
         // Mirror the per-placement KVP bag so `getEntityProperty` works
-        // uniformly across spawn paths.
-        if !entity.key_values.is_empty() {
-            let _ = registry.set_map_kvps(id, entity.key_values.clone());
-        }
+        // uniformly across spawn paths. Always write — even an empty bag —
+        // to honor the invariant that every map-spawned entity has a
+        // `kvp_table` entry (matches the built-in dispatch path).
+        let _ = registry.set_map_kvps(id, entity.key_values.clone());
 
         handled.insert(entity.classname.clone());
     }

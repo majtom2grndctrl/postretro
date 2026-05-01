@@ -34,6 +34,7 @@ pub(crate) struct ScriptEvent {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GameEvent {
     pub(crate) kind: String,
+    /// Engine frame counter at emit time; incremented once per redraw, not per fixed tick.
     pub(crate) frame: u64,
     pub(crate) payload: serde_json::Value,
 }
@@ -44,7 +45,11 @@ pub(crate) struct GameEvent {
 pub(crate) const GAME_EVENTS_CAPACITY: usize = 1024;
 
 /// In-flight events: broadcasts go into one queue, targeted events into the
-/// other. The frame loop drains both at the end of game logic.
+/// other. The two queues have different drain points:
+/// - `broadcast` is drained by `event_dispatch` immediately after each tick
+///   handler fires — not at end-of-frame.
+/// - `game_events` (on `ScriptCtx`) is the ring buffer drained at the end of
+///   the Game logic phase by `main.rs`.
 #[derive(Default)]
 pub(crate) struct EventQueue {
     pub(crate) broadcast: VecDeque<ScriptEvent>,

@@ -74,9 +74,9 @@ impl DataRegistry {
     /// will return `false`. This is intentional: entity types outlive levels.
     ///
     /// Marked `#[cfg(test)]` because production code should not gate logic on
-    /// this — after a level unload `reactions` is empty but `entities` is not,
-    /// so the return value would mislead callers checking "is the registry
-    /// ready to use?".
+    /// this — after a level unload `reactions` is empty but `entities` is not.
+    /// Production code must not use this as a readiness gate — it correctly
+    /// returns `false` after level unload while entity types remain.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.reactions.is_empty() && self.entities.is_empty()

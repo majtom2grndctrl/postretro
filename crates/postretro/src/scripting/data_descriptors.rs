@@ -1,18 +1,15 @@
-// Data-context descriptor types: shapes for `registerLevelManifest()` return
-// bundles and `registerEntity()` descriptors after they cross the script FFI boundary.
+// Data-context descriptor types: `LevelManifest`/`ReactionDescriptor`, `EntityTypeDescriptor`,
+// and `LightDescriptor`; JS and Luau deserialization paths for all of them.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
-//
-// Validation on the three discriminator keys ('progress', 'primitive',
-// 'sequence') — unknown shapes, empty primitive names, out-of-range thresholds
-// — runs at deserialization time so descriptor errors surface during level load
-// rather than being deferred to dispatch.
 
 use mlua::{Table, Value as LuaValue};
 use rquickjs::{Array, Ctx, Object, Value as JsValue};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::components::billboard_emitter::BillboardEmitterComponent;
+use super::components::billboard_emitter::{
+    BillboardEmitterComponent, BillboardEmitterComponentLit,
+};
 use super::registry::EntityId;
 
 /// Variants of a single reaction's behavior body. The `name` lives on the
@@ -421,11 +418,15 @@ pub(crate) fn entity_descriptor_from_js<'js>(
                 let raw: JsValue = components_obj.get("emitter").map_err(js_err)?;
                 if !raw.is_null() && !raw.is_undefined() {
                     let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
-                    emitter = Some(serde_json::from_value(json).map_err(|e| {
-                        DescriptorError::InvalidShape {
+                    let lit: BillboardEmitterComponentLit =
+                        serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
                             reason: format!("`components.emitter` invalid: {e}"),
-                        }
-                    })?);
+                        })?;
+                    let validated =
+                        lit.validate_into().map_err(|e| DescriptorError::InvalidShape {
+                            reason: format!("`components.emitter` invalid: {e}"),
+                        })?;
+                    emitter = Some(validated);
                 }
             }
         }
@@ -687,11 +688,15 @@ pub(crate) fn entity_descriptor_from_lua(
                 let raw: LuaValue = components_table.get("emitter").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
                     let json = super::conv::lua_to_json(raw).map_err(lua_err)?;
-                    emitter = Some(serde_json::from_value(json).map_err(|e| {
-                        DescriptorError::InvalidShape {
+                    let lit: BillboardEmitterComponentLit =
+                        serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
                             reason: format!("`components.emitter` invalid: {e}"),
-                        }
-                    })?);
+                        })?;
+                    let validated =
+                        lit.validate_into().map_err(|e| DescriptorError::InvalidShape {
+                            reason: format!("`components.emitter` invalid: {e}"),
+                        })?;
+                    emitter = Some(validated);
                 }
             }
         }

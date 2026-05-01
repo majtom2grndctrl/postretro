@@ -100,7 +100,6 @@ fn rust_to_ts(ty_name: &str) -> String {
         "WorldQueryFilter" => "WorldQueryFilter".to_string(),
         "WorldQueryComponent" => "WorldQueryComponent".to_string(),
         "Entity" => "Entity".to_string(),
-        "TransformHandle" => "TransformHandle".to_string(),
         "LightAnimation" => "LightAnimation".to_string(),
         "LightComponent" => "LightComponent".to_string(),
         "LightEntity" => "LightEntity".to_string(),
@@ -160,7 +159,6 @@ fn rust_to_luau(ty_name: &str) -> String {
         "WorldQueryFilter" => "WorldQueryFilter".to_string(),
         "WorldQueryComponent" => "WorldQueryComponent".to_string(),
         "Entity" => "Entity".to_string(),
-        "TransformHandle" => "TransformHandle".to_string(),
         "LightAnimation" => "LightAnimation".to_string(),
         "LightComponent" => "LightComponent".to_string(),
         "LightEntity" => "LightEntity".to_string(),
@@ -347,7 +345,7 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
         if p.name == "worldQuery" {
             writeln!(
                 &mut out,
-                "  export function worldQuery<T extends string>(filter: {{ component: T; tag?: string | null }}): ReadonlyArray<EntityForComponent<T>>;",
+                "  export function worldQuery<T extends WorldQueryComponent>(filter: {{ component: T; tag?: string | null }}): ReadonlyArray<EntityForComponent<T>>;",
             )
             .unwrap();
             continue;
@@ -409,15 +407,15 @@ const TS_SDK_LIB_BLOCK: &str = r#"
    * yields `LightEntityHandle` (with convenience methods); `"emitter"` yields
    * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
    * snapshot under `component`). Other component names fall back to the bare
-   * `Entity` shape. */
-  export type EntityForComponent<T extends string> =
+   * `Entity` shape (`id`, `position`, `tags`). */
+  export type EntityForComponent<T extends WorldQueryComponent> =
     T extends "light" ? LightEntityHandle :
     T extends "emitter" ? EmitterEntity :
     Entity;
 
   /** Vocabulary object installed as `globalThis.world`. */
   export interface World {
-    query<T extends string>(filter: {
+    query<T extends WorldQueryComponent>(filter: {
       component: T;
       tag?: string | null;
     }): EntityForComponent<T>[];

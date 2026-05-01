@@ -13,6 +13,7 @@ pub mod geometry;
 pub mod light_influence;
 pub mod light_tags;
 pub mod lightmap;
+pub mod map_entity;
 pub mod octahedral;
 pub mod portals;
 pub mod sh_volume;
@@ -140,6 +141,12 @@ pub enum SectionId {
     /// hot-reload support. Present only when the worldspawn `data_script` KVP
     /// is set. See `data_script::DataScriptSection`.
     DataScript = 28,
+
+    /// Per-entity classname, origin, angles, KVP bag, and tags for non-light,
+    /// non-worldspawn map entities. The runtime drives classname dispatch
+    /// (`apply_classname_dispatch`) from this section. See
+    /// `map_entity::MapEntitySection`.
+    MapEntity = 29,
 }
 
 impl SectionId {
@@ -161,6 +168,7 @@ impl SectionId {
             26 => Some(Self::LightTags),
             27 => Some(Self::DeltaShVolumes),
             28 => Some(Self::DataScript),
+            29 => Some(Self::MapEntity),
             _ => None,
         }
     }

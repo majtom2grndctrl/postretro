@@ -1,5 +1,5 @@
 // Script-facing billboard emitter component plus FFI-adapter shape.
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 1
+// See: context/lib/scripting.md §11 (Emitter and Particles)
 
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub(crate) struct BillboardEmitterComponent {
     pub(crate) burst: Option<u32>,
     pub(crate) spread: f32,
     pub(crate) lifetime: f32,
-    pub(crate) initial_velocity: [f32; 3],
+    pub(crate) velocity: [f32; 3],
     pub(crate) buoyancy: f32,
     pub(crate) drag: f32,
     pub(crate) size_over_lifetime: Vec<f32>,
@@ -44,7 +44,7 @@ pub(crate) struct SpinAnimationLit {
     pub(crate) rate_curve: Vec<f32>,
 }
 
-/// Script-side wire shape: `initial_velocity` and `color` cross as `Vec3Lit`
+/// Script-side wire shape: `velocity` and `color` cross as `Vec3Lit`
 /// (accepting both `[x, y, z]` arrays and `{ x, y, z }` objects), then convert
 /// into `[f32; 3]` for storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ pub(crate) struct BillboardEmitterComponentLit {
     pub(crate) burst: Option<u32>,
     pub(crate) spread: f32,
     pub(crate) lifetime: f32,
-    pub(crate) initial_velocity: Vec3Lit,
+    pub(crate) velocity: Vec3Lit,
     pub(crate) buoyancy: f32,
     pub(crate) drag: f32,
     pub(crate) size_over_lifetime: Vec<f32>,
@@ -156,7 +156,7 @@ impl BillboardEmitterComponentLit {
             burst: self.burst,
             spread: self.spread,
             lifetime: self.lifetime,
-            initial_velocity: self.initial_velocity.as_f32_3(),
+            velocity: self.velocity.as_f32_3(),
             buoyancy: self.buoyancy,
             drag: self.drag,
             size_over_lifetime: self.size_over_lifetime,
@@ -179,7 +179,7 @@ mod tests {
             burst: Some(4),
             spread: 0.4,
             lifetime: 3.0,
-            initial_velocity: [0.0, 1.5, 0.0],
+            velocity: [0.0, 1.5, 0.0],
             buoyancy: 0.2,
             drag: 0.5,
             size_over_lifetime: vec![0.3, 1.0, 0.5],
@@ -189,7 +189,7 @@ mod tests {
             spin_rate: 1.2,
             spin_animation: Some(SpinAnimation {
                 duration: 2.0,
-                rate_curve: vec![0.0, 3.14, 0.0],
+                rate_curve: vec![0.0, 3.5, 0.0],
             }),
         }
     }
@@ -200,7 +200,7 @@ mod tests {
             burst: Some(4),
             spread: 0.4,
             lifetime: 3.0,
-            initial_velocity: Vec3Lit([0.0, 1.5, 0.0]),
+            velocity: Vec3Lit([0.0, 1.5, 0.0]),
             buoyancy: 0.2,
             drag: 0.5,
             size_over_lifetime: vec![0.3, 1.0, 0.5],
@@ -210,7 +210,7 @@ mod tests {
             spin_rate: 1.2,
             spin_animation: Some(SpinAnimationLit {
                 duration: 2.0,
-                rate_curve: vec![0.0, 3.14, 0.0],
+                rate_curve: vec![0.0, 3.5, 0.0],
             }),
         }
     }
@@ -347,14 +347,14 @@ mod tests {
     }
 
     #[test]
-    fn lit_rejects_two_element_initial_velocity_array() {
+    fn lit_rejects_two_element_velocity_array() {
         // Vec3Lit must reject 2- and 4-element arrays at deserialize time.
         // The error surfaces during deserialization, before validate_into runs.
         let json = r#"{
             "rate": 1.0,
             "spread": 0.0,
             "lifetime": 1.0,
-            "initial_velocity": [0.0, 1.0],
+            "velocity": [0.0, 1.0],
             "buoyancy": 0.0,
             "drag": 0.0,
             "size_over_lifetime": [1.0],
@@ -366,7 +366,7 @@ mod tests {
         let err = serde_json::from_str::<BillboardEmitterComponentLit>(json).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("initial_velocity") || msg.contains("3 elements"),
+            msg.contains("velocity") || msg.contains("3 elements"),
             "expected a clear shape/length message, got: {msg}"
         );
     }
@@ -377,7 +377,7 @@ mod tests {
             "rate": 1.0,
             "spread": 0.0,
             "lifetime": 1.0,
-            "initial_velocity": [0.0, 1.0, 0.0],
+            "velocity": [0.0, 1.0, 0.0],
             "buoyancy": 0.0,
             "drag": 0.0,
             "size_over_lifetime": [1.0],
@@ -395,12 +395,12 @@ mod tests {
     }
 
     #[test]
-    fn lit_rejects_non_number_initial_velocity_element() {
+    fn lit_rejects_non_number_velocity_element() {
         let json = r#"{
             "rate": 1.0,
             "spread": 0.0,
             "lifetime": 1.0,
-            "initial_velocity": [0.0, "oops", 0.0],
+            "velocity": [0.0, "oops", 0.0],
             "buoyancy": 0.0,
             "drag": 0.0,
             "size_over_lifetime": [1.0],
@@ -412,7 +412,7 @@ mod tests {
         let err = serde_json::from_str::<BillboardEmitterComponentLit>(json).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("initial_velocity")
+            msg.contains("velocity")
                 || msg.contains("number")
                 || msg.contains("float")
                 || msg.contains("f32")
@@ -422,12 +422,12 @@ mod tests {
     }
 
     #[test]
-    fn lit_rejects_non_array_initial_velocity_shape() {
+    fn lit_rejects_non_array_velocity_shape() {
         let json = r#"{
             "rate": 1.0,
             "spread": 0.0,
             "lifetime": 1.0,
-            "initial_velocity": "not a vec",
+            "velocity": "not a vec",
             "buoyancy": 0.0,
             "drag": 0.0,
             "size_over_lifetime": [1.0],
@@ -439,7 +439,7 @@ mod tests {
         let err = serde_json::from_str::<BillboardEmitterComponentLit>(json).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("initial_velocity") || msg.contains("array") || msg.contains("object"),
+            msg.contains("velocity") || msg.contains("array") || msg.contains("object"),
             "expected a shape mismatch error, got: {msg}"
         );
     }

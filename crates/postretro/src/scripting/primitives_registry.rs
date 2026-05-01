@@ -18,10 +18,17 @@ pub(crate) enum ContextScope {
 }
 
 /// Name and type spelling for a single primitive parameter.
+///
+/// `optional` controls how the typedef generator renders the parameter:
+/// - `false` (default): `name: Type` in both TypeScript and Luau.
+/// - `true`: `name?: Type` in TypeScript and `name: Type?` in Luau. The
+///   generators apply the optional marker automatically — `ty_name` should be
+///   the inner type (e.g. `Vec<String>`), not `Option<Vec<String>>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ParamInfo {
     pub(crate) name: &'static str,
     pub(crate) ty_name: &'static str,
+    pub(crate) optional: bool,
 }
 
 /// Full signature of a registered primitive. `return_ty_name` is the
@@ -98,11 +105,16 @@ pub(crate) enum TypeShape {
     Struct { fields: Vec<FieldInfo> },
     /// String-literal union (enum with no data).
     StringEnum { variants: Vec<VariantInfo> },
-    /// Discriminated union `{ <tag>: "A"; <value>: TyA } | ...`. First-class
-    /// sum-type shape — not narrow to any one registered type.
+    /// Discriminated union. Two emission forms controlled by `flat`:
+    /// - `flat = false` (default): `{ <tag>: "A"; <value>: TyA } | ...` — variant
+    ///   payload nests under `value_field`.
+    /// - `flat = true`: `({ <tag>: "A" } & TyA) | ...` — variant payload spreads
+    ///   into the same object as the tag. `value_field` is unused. Matches the
+    ///   wire shape used by `ComponentValue` (kind sits next to component fields).
     TaggedUnion {
         tag_field: &'static str,
         value_field: &'static str,
+        flat: bool,
         variants: Vec<TaggedVariant>,
     },
 }
@@ -243,6 +255,7 @@ impl PrimitiveRegistry {
             doc: "",
             tag_field: "kind",
             value_field: "value",
+            flat: false,
             variants: Vec::new(),
         }
     }
@@ -364,6 +377,7 @@ pub(crate) struct TaggedUnionBuilder<'r> {
     doc: &'static str,
     tag_field: &'static str,
     value_field: &'static str,
+    flat: bool,
     variants: Vec<TaggedVariant>,
 }
 
@@ -377,6 +391,14 @@ impl<'r> TaggedUnionBuilder<'r> {
     pub(crate) fn tags(mut self, tag_field: &'static str, value_field: &'static str) -> Self {
         self.tag_field = tag_field;
         self.value_field = value_field;
+        self
+    }
+
+    /// Emit each variant as `({ <tag>: "A" } & TyA)` instead of the wrapped
+    /// `{ <tag>: "A"; value: TyA }` form. Use when the wire shape spreads the
+    /// payload into the tag-bearing object (e.g. `ComponentValue`).
+    pub(crate) fn flat(mut self) -> Self {
+        self.flat = true;
         self
     }
 
@@ -407,6 +429,7 @@ impl<'r> TaggedUnionBuilder<'r> {
             shape: TypeShape::TaggedUnion {
                 tag_field: self.tag_field,
                 value_field: self.value_field,
+                flat: self.flat,
                 variants: self.variants,
             },
         });
@@ -448,7 +471,11 @@ where
     /// order. Zero-arity primitives must not call this method. The values feed
     /// generated `.d.ts` / `.d.luau` output. See: context/lib/scripting.md §4.
     pub(crate) fn param(mut self, name: &'static str, ty_name: &'static str) -> Self {
-        self.params.push(ParamInfo { name, ty_name });
+        self.params.push(ParamInfo {
+            name,
+            ty_name,
+            optional: false,
+        });
         self
     }
 
@@ -559,6 +586,7 @@ macro_rules! impl_registerable {
                         $( ParamInfo {
                             name: stringify!($arg),
                             ty_name: type_name::<$ty>(),
+                            optional: false,
                         }, )*
                     ],
                     return_ty_name: type_name::<T>(),

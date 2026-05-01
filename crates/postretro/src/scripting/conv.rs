@@ -10,6 +10,9 @@ use std::fmt;
 
 use super::components::light::{LightAnimation, LightComponent};
 use super::ctx::ScriptEvent;
+use super::data_descriptors::{
+    EntityTypeDescriptor, entity_descriptor_from_js, entity_descriptor_from_lua,
+};
 use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
 
 /// Three-component float vector with a permissive Deserialize accepting
@@ -279,21 +282,28 @@ impl IntoLua for Transform {
 
 fn component_kind_name(k: ComponentKind) -> &'static str {
     match k {
-        ComponentKind::Transform => "Transform",
-        ComponentKind::Light => "Light",
-        ComponentKind::BillboardEmitter => "BillboardEmitter",
-        ComponentKind::ParticleState => "ParticleState",
-        ComponentKind::SpriteVisual => "SpriteVisual",
+        ComponentKind::Transform => "transform",
+        ComponentKind::Light => "light",
+        ComponentKind::BillboardEmitter => "billboard_emitter",
+        ComponentKind::ParticleState => "particle_state",
+        ComponentKind::SpriteVisual => "sprite_visual",
     }
 }
 
 fn component_kind_from_name(name: &str) -> Option<ComponentKind> {
+    // Accept both the canonical FFI string (snake_case, matching Rust enum
+    // variants) and the shorter `worldQuery` filter aliases so authors can
+    // use the same vocabulary across `world.query`, `getComponent`, and
+    // `setComponent`. `setComponent` for bridge-managed components
+    // (`billboard_emitter`, `particle_state`, `sprite_visual`) is rejected
+    // downstream by `ComponentValue::FromJs`/`FromLua`, so the aliases
+    // here cannot accidentally open a write path.
     match name {
-        "Transform" => Some(ComponentKind::Transform),
-        "Light" => Some(ComponentKind::Light),
-        "BillboardEmitter" => Some(ComponentKind::BillboardEmitter),
-        "ParticleState" => Some(ComponentKind::ParticleState),
-        "SpriteVisual" => Some(ComponentKind::SpriteVisual),
+        "transform" => Some(ComponentKind::Transform),
+        "light" => Some(ComponentKind::Light),
+        "billboard_emitter" | "emitter" => Some(ComponentKind::BillboardEmitter),
+        "particle_state" | "particle" => Some(ComponentKind::ParticleState),
+        "sprite_visual" => Some(ComponentKind::SpriteVisual),
         _ => None,
     }
 }
@@ -334,12 +344,12 @@ impl<'js> FromJs<'js> for ComponentValue {
         })?;
         let kind: String = o.get("kind")?;
         match kind.as_str() {
-            "Transform" => {
+            "transform" => {
                 let t = Transform::from_js(ctx, o.into_value())?;
                 Ok(ComponentValue::Transform(t))
             }
-            "Light" => {
-                // setComponent("Light",...) is intentionally blocked — scripts
+            "light" => {
+                // setComponent("light",...) is intentionally blocked — scripts
                 // use the LightEntity handle's setAnimation method instead.
                 let _ = o;
                 Err(rquickjs::Exception::throw_type(
@@ -348,7 +358,7 @@ impl<'js> FromJs<'js> for ComponentValue {
                      use a LightEntity handle's setAnimation method instead",
                 ))
             }
-            "BillboardEmitter" | "ParticleState" | "SpriteVisual" => {
+            "billboard_emitter" | "particle_state" | "sprite_visual" => {
                 // These components are bridge-managed (emitter bridge, particle
                 // simulation) — scripts read but never write via setComponent;
                 // configuration goes through dedicated reaction primitives.
@@ -375,7 +385,7 @@ impl<'js> IntoJs<'js> for ComponentValue {
             ComponentValue::Transform(t) => {
                 let v = t.into_js(ctx)?;
                 let o = Object::from_value(v).expect("Transform encodes to an object");
-                o.set("kind", "Transform")?;
+                o.set("kind", "transform")?;
                 Ok(o.into_value())
             }
             ComponentValue::Light(light) => {
@@ -416,11 +426,11 @@ impl FromLua for ComponentValue {
         };
         let kind: String = t.get("kind")?;
         match kind.as_str() {
-            "Transform" => {
+            "transform" => {
                 let transform = Transform::from_lua(LuaValue::Table(t), lua)?;
                 Ok(ComponentValue::Transform(transform))
             }
-            "Light" => {
+            "light" => {
                 let _ = t;
                 Err(mlua::Error::RuntimeError(
                     "LightComponent is read-only via setComponent; \
@@ -428,7 +438,7 @@ impl FromLua for ComponentValue {
                         .to_string(),
                 ))
             }
-            "BillboardEmitter" | "ParticleState" | "SpriteVisual" => {
+            "billboard_emitter" | "particle_state" | "sprite_visual" => {
                 let _ = t;
                 Err(mlua::Error::RuntimeError(format!(
                     "{kind} is bridge-managed; setComponent is not supported \
@@ -448,7 +458,7 @@ impl IntoLua for ComponentValue {
             ComponentValue::Transform(t) => {
                 let v = t.into_lua(lua)?;
                 if let LuaValue::Table(ref tbl) = v {
-                    tbl.set("kind", "Transform")?;
+                    tbl.set("kind", "transform")?;
                 }
                 Ok(v)
             }
@@ -675,6 +685,27 @@ impl IntoLua for ScriptEvent {
         t.set("kind", self.kind.as_str())?;
         t.set("payload", json_to_lua(lua, &self.payload)?)?;
         Ok(LuaValue::Table(t))
+    }
+}
+
+// EntityTypeDescriptor crosses via the hand-rolled walkers in
+// `data_descriptors::entity_descriptor_from_{js,lua}` rather than serde_json.
+// Component sub-objects (`light`, `emitter`) carry `Vec3` and `[f32;3]` shapes
+// that need the same array-or-object permissive deserialize the rest of the
+// scripting surface uses; the walkers thread through `js_to_json`/`lua_to_json`
+// + serde, matching how `LightAnimation` crosses.
+
+impl<'js> FromJs<'js> for EntityTypeDescriptor {
+    fn from_js(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
+        entity_descriptor_from_js(ctx, value).map_err(|e| {
+            rquickjs::Error::new_from_js_message("value", "EntityTypeDescriptor", e.to_string())
+        })
+    }
+}
+
+impl FromLua for EntityTypeDescriptor {
+    fn from_lua(value: LuaValue, _lua: &Lua) -> mlua::Result<Self> {
+        entity_descriptor_from_lua(value).map_err(|e| mlua::Error::RuntimeError(e.to_string()))
     }
 }
 

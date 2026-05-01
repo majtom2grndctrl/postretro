@@ -1,5 +1,5 @@
-// Data-context descriptor types: the shape of `registerLevelManifest()` return
-// bundles after they cross the script FFI boundary.
+// Data-context descriptor types: shapes for `registerLevelManifest()` return
+// bundles and `registerEntity()` descriptors after they cross the script FFI boundary.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
 // Validation on the three discriminator keys ('progress', 'primitive',
@@ -9,8 +9,10 @@
 
 use mlua::{Table, Value as LuaValue};
 use rquickjs::{Array, Ctx, Object, Value as JsValue};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::components::billboard_emitter::BillboardEmitterComponent;
 use super::registry::EntityId;
 
 /// Variants of a single reaction's behavior body. The `name` lives on the
@@ -63,18 +65,68 @@ pub(crate) struct NamedReaction {
     pub(crate) descriptor: ReactionDescriptor,
 }
 
-/// Currently minimal — entity type descriptors only carry the classname. Spawn
-/// behavior, component presets, etc. land in future tasks.
+/// Authored light component preset attached to an [`EntityTypeDescriptor`].
+/// Mirrors the runtime [`super::components::light::LightComponent`] shape but
+/// only carries the script-authored fields (no animation, no cone, no
+/// shadows). Spawn-time defaults fill the rest. `range` is mapped onto
+/// [`super::components::light::LightComponent::falloff_range`] when the
+/// data-archetype spawn path materializes the component.
+///
+/// `is_dynamic` may be set by the author but the data-archetype spawn path
+/// forces `true` regardless (baked indirect lighting is not supported for
+/// descriptor-spawned lights).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct LightDescriptor {
+    pub(crate) color: [f32; 3],
+    pub(crate) intensity: f32,
+    pub(crate) range: f32,
+    pub(crate) is_dynamic: bool,
+}
+
+impl LightDescriptor {
+    /// Validate bounds that serde cannot enforce: `intensity` and `range`
+    /// must be non-negative finite values.
+    pub(crate) fn validate(self) -> Result<Self, DescriptorError> {
+        if !self.intensity.is_finite() || self.intensity < 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.light.intensity` must be >= 0.0, got {}",
+                    self.intensity
+                ),
+            });
+        }
+        if !self.range.is_finite() || self.range < 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.light.range` must be >= 0.0, got {}",
+                    self.range
+                ),
+            });
+        }
+        Ok(self)
+    }
+}
+
+/// Author-side description of an entity type registered via `registerEntity`.
+/// `classname` is required; optional `light` / `emitter` carry per-entity-type
+/// component presets. The level-load spawn path materializes these into a
+/// fresh ECS entity per matching map placement.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EntityTypeDescriptor {
     pub(crate) classname: String,
+    pub(crate) light: Option<LightDescriptor>,
+    pub(crate) emitter: Option<BillboardEmitterComponent>,
 }
 
 /// The full bundle returned by a level's `registerLevelManifest(ctx)` export.
+///
+/// Entity-type descriptors are not part of the manifest; they arrive via
+/// `registerEntity` during the same data-script run and survive level unload.
+/// `LevelManifest` carries only per-level reactions.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct LevelManifest {
     pub(crate) reactions: Vec<NamedReaction>,
-    pub(crate) entities: Vec<EntityTypeDescriptor>,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -114,7 +166,7 @@ fn validate_primitive_name(name: String) -> Result<String, DescriptorError> {
 // --- JS deserialization -----------------------------------------------------
 
 impl LevelManifest {
-    /// Deserialize a top-level `{ entities, reactions }` object returned from
+    /// Deserialize a top-level `{ reactions }` object returned from
     /// a QuickJS `registerLevelManifest()` call.
     pub(crate) fn from_js_value<'js>(
         ctx: &Ctx<'js>,
@@ -136,25 +188,10 @@ impl LevelManifest {
             Vec::new()
         };
 
-        let entities = if obj.contains_key("entities").map_err(js_err)? {
-            let arr: Array = obj.get("entities").map_err(js_err)?;
-            let mut out = Vec::with_capacity(arr.len());
-            for i in 0..arr.len() {
-                let item: JsValue = arr.get(i).map_err(js_err)?;
-                out.push(entity_descriptor_from_js(ctx, item)?);
-            }
-            out
-        } else {
-            Vec::new()
-        };
-
-        Ok(Self {
-            reactions,
-            entities,
-        })
+        Ok(Self { reactions })
     }
 
-    /// Deserialize a top-level `{ entities, reactions }` table returned from a
+    /// Deserialize a top-level `{ reactions }` table returned from a
     /// Luau `registerLevelManifest()` call.
     pub(crate) fn from_lua_value(value: LuaValue) -> Result<Self, DescriptorError> {
         let table = match value {
@@ -182,23 +219,7 @@ impl LevelManifest {
             Vec::new()
         };
 
-        let entities = if table.contains_key("entities").map_err(lua_err)? {
-            let arr: Table = table.get("entities").map_err(lua_err)?;
-            let len = arr.raw_len();
-            let mut out = Vec::with_capacity(len);
-            for i in 1..=(len as i64) {
-                let item: LuaValue = arr.get(i).map_err(lua_err)?;
-                out.push(entity_descriptor_from_lua(item)?);
-            }
-            out
-        } else {
-            Vec::new()
-        };
-
-        Ok(Self {
-            reactions,
-            entities,
-        })
+        Ok(Self { reactions })
     }
 }
 
@@ -361,15 +382,60 @@ fn get_required_u32_js<'js>(
     })
 }
 
-fn entity_descriptor_from_js<'js>(
-    _ctx: &Ctx<'js>,
+/// Deserialize an entity-type descriptor from a JS object. Shape:
+/// `{ classname: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// Component sub-objects parse via `serde_json` after a recursive walk through
+/// the existing `js_to_json` helper — matches how `LightAnimation` /
+/// `BillboardEmitterComponent` cross the FFI elsewhere.
+pub(crate) fn entity_descriptor_from_js<'js>(
+    ctx: &Ctx<'js>,
     value: JsValue<'js>,
 ) -> Result<EntityTypeDescriptor, DescriptorError> {
     let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
         reason: "entity entry must be an object".to_string(),
     })?;
     let classname = get_required_string_js(&obj, "classname")?;
-    Ok(EntityTypeDescriptor { classname })
+
+    let mut light = None;
+    let mut emitter = None;
+
+    if obj.contains_key("components").map_err(js_err)? {
+        let components_val: JsValue = obj.get("components").map_err(js_err)?;
+        if !components_val.is_null() && !components_val.is_undefined() {
+            let components_obj =
+                Object::from_value(components_val).map_err(|_| DescriptorError::InvalidShape {
+                    reason: "`components` must be an object".to_string(),
+                })?;
+            if components_obj.contains_key("light").map_err(js_err)? {
+                let raw: JsValue = components_obj.get("light").map_err(js_err)?;
+                if !raw.is_null() && !raw.is_undefined() {
+                    let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
+                    let descriptor: LightDescriptor =
+                        serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
+                            reason: format!("`components.light` invalid: {e}"),
+                        })?;
+                    light = Some(descriptor.validate()?);
+                }
+            }
+            if components_obj.contains_key("emitter").map_err(js_err)? {
+                let raw: JsValue = components_obj.get("emitter").map_err(js_err)?;
+                if !raw.is_null() && !raw.is_undefined() {
+                    let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
+                    emitter = Some(serde_json::from_value(json).map_err(|e| {
+                        DescriptorError::InvalidShape {
+                            reason: format!("`components.emitter` invalid: {e}"),
+                        }
+                    })?);
+                }
+            }
+        }
+    }
+
+    Ok(EntityTypeDescriptor {
+        classname,
+        light,
+        emitter,
+    })
 }
 
 fn get_required_string_js<'js>(
@@ -578,7 +644,10 @@ fn get_required_u32_lua(table: &Table, field: &'static str) -> Result<u32, Descr
     }
 }
 
-fn entity_descriptor_from_lua(value: LuaValue) -> Result<EntityTypeDescriptor, DescriptorError> {
+/// Mirror of [`entity_descriptor_from_js`] for Luau tables.
+pub(crate) fn entity_descriptor_from_lua(
+    value: LuaValue,
+) -> Result<EntityTypeDescriptor, DescriptorError> {
     let table = match value {
         LuaValue::Table(t) => t,
         other => {
@@ -588,7 +657,51 @@ fn entity_descriptor_from_lua(value: LuaValue) -> Result<EntityTypeDescriptor, D
         }
     };
     let classname = get_required_string_lua(&table, "classname")?;
-    Ok(EntityTypeDescriptor { classname })
+
+    let mut light = None;
+    let mut emitter = None;
+
+    if table.contains_key("components").map_err(lua_err)? {
+        let raw: LuaValue = table.get("components").map_err(lua_err)?;
+        if !matches!(raw, LuaValue::Nil) {
+            let components_table = match raw {
+                LuaValue::Table(t) => t,
+                other => {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!("`components` must be a table, got {}", other.type_name()),
+                    });
+                }
+            };
+            if components_table.contains_key("light").map_err(lua_err)? {
+                let raw: LuaValue = components_table.get("light").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    let json = super::conv::lua_to_json(raw).map_err(lua_err)?;
+                    let descriptor: LightDescriptor =
+                        serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
+                            reason: format!("`components.light` invalid: {e}"),
+                        })?;
+                    light = Some(descriptor.validate()?);
+                }
+            }
+            if components_table.contains_key("emitter").map_err(lua_err)? {
+                let raw: LuaValue = components_table.get("emitter").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    let json = super::conv::lua_to_json(raw).map_err(lua_err)?;
+                    emitter = Some(serde_json::from_value(json).map_err(|e| {
+                        DescriptorError::InvalidShape {
+                            reason: format!("`components.emitter` invalid: {e}"),
+                        }
+                    })?);
+                }
+            }
+        }
+    }
+
+    Ok(EntityTypeDescriptor {
+        classname,
+        light,
+        emitter,
+    })
 }
 
 fn get_required_string_lua(table: &Table, field: &'static str) -> Result<String, DescriptorError> {
@@ -641,7 +754,6 @@ mod tests {
     #[test]
     fn js_manifest_parses_progress_and_primitive_reactions() {
         let src = r#"({
-            entities: [{ classname: "grunt" }, { classname: "heavyGunner" }],
             reactions: [
                 { name: "reactorWave1",
                   progress: { tag: "reactorWave1Monsters", at: 1.0, fire: "wave1Complete" } },
@@ -652,10 +764,6 @@ mod tests {
             ]
         })"#;
         let manifest = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
-
-        assert_eq!(manifest.entities.len(), 2);
-        assert_eq!(manifest.entities[0].classname, "grunt");
-        assert_eq!(manifest.entities[1].classname, "heavyGunner");
 
         assert_eq!(manifest.reactions.len(), 2);
         assert_eq!(manifest.reactions[0].name, "reactorWave1");
@@ -680,7 +788,6 @@ mod tests {
     #[test]
     fn js_primitive_without_on_complete_is_none() {
         let src = r#"({
-            entities: [],
             reactions: [{ name: "x", primitive: "moveGeometry", tag: "t" }]
         })"#;
         let m = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
@@ -694,7 +801,6 @@ mod tests {
     fn js_missing_required_field_reports_missing_field() {
         // progress missing `fire`
         let src = r#"({
-            entities: [],
             reactions: [{ name: "x", progress: { tag: "t", at: 0.5 } }]
         })"#;
         let err = eval_js(src, |ctx, v| {
@@ -706,7 +812,6 @@ mod tests {
     #[test]
     fn js_missing_name_field_reports_missing_field() {
         let src = r#"({
-            entities: [],
             reactions: [{ progress: { tag: "t", at: 0.5, fire: "f" } }]
         })"#;
         let err = eval_js(src, |ctx, v| {
@@ -718,7 +823,6 @@ mod tests {
     #[test]
     fn js_unknown_shape_reaction_is_rejected() {
         let src = r#"({
-            entities: [],
             reactions: [{ name: "x", tag: "t" }]
         })"#;
         let err = eval_js(src, |ctx, v| {
@@ -730,7 +834,6 @@ mod tests {
     #[test]
     fn js_empty_primitive_name_is_rejected() {
         let src = r#"({
-            entities: [],
             reactions: [{ name: "x", primitive: "", tag: "t" }]
         })"#;
         let err = eval_js(src, |ctx, v| {
@@ -742,7 +845,6 @@ mod tests {
     #[test]
     fn js_at_out_of_range_high_is_rejected() {
         let src = r#"({
-            entities: [],
             reactions: [{ name: "x", progress: { tag: "t", at: 1.5, fire: "f" } }]
         })"#;
         let err = eval_js(src, |ctx, v| {
@@ -754,7 +856,6 @@ mod tests {
     #[test]
     fn js_at_out_of_range_negative_is_rejected() {
         let src = r#"({
-            entities: [],
             reactions: [{ name: "x", progress: { tag: "t", at: -0.1, fire: "f" } }]
         })"#;
         let err = eval_js(src, |ctx, v| {
@@ -771,7 +872,6 @@ mod tests {
     #[test]
     fn js_sequence_reaction_deserializes() {
         let src = r#"({
-            entities: [],
             reactions: [{
                 name: "openVault",
                 sequence: [
@@ -798,7 +898,6 @@ mod tests {
     #[test]
     fn js_sequence_step_missing_args_defaults_to_null() {
         let src = r#"({
-            entities: [],
             reactions: [{
                 name: "x",
                 sequence: [{ id: 1, primitive: "ping" }]
@@ -816,9 +915,8 @@ mod tests {
 
     #[test]
     fn js_empty_arrays_yield_empty_manifest() {
-        let src = "({ entities: [], reactions: [] })";
+        let src = "({ reactions: [] })";
         let m = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
-        assert!(m.entities.is_empty());
         assert!(m.reactions.is_empty());
     }
 
@@ -836,7 +934,6 @@ mod tests {
     #[test]
     fn lua_manifest_parses_progress_and_primitive_reactions() {
         let src = r#"return {
-            entities = { { classname = "grunt" }, { classname = "heavyGunner" } },
             reactions = {
                 { name = "reactorWave1",
                   progress = { tag = "reactorWave1Monsters", at = 1.0, fire = "wave1Complete" } },
@@ -848,8 +945,6 @@ mod tests {
         }"#;
         let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
 
-        assert_eq!(m.entities.len(), 2);
-        assert_eq!(m.entities[0].classname, "grunt");
         assert_eq!(m.reactions.len(), 2);
         match &m.reactions[0].descriptor {
             ReactionDescriptor::Progress(p) => {
@@ -872,7 +967,6 @@ mod tests {
     #[test]
     fn lua_primitive_without_on_complete_is_none() {
         let src = r#"return {
-            entities = {},
             reactions = { { name = "x", primitive = "moveGeometry", tag = "t" } }
         }"#;
         let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
@@ -885,7 +979,6 @@ mod tests {
     #[test]
     fn lua_missing_required_field_reports_missing_field() {
         let src = r#"return {
-            entities = {},
             reactions = { { name = "x", progress = { tag = "t", at = 0.5 } } }
         }"#;
         let err = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap_err());
@@ -895,7 +988,6 @@ mod tests {
     #[test]
     fn lua_unknown_shape_reaction_is_rejected() {
         let src = r#"return {
-            entities = {},
             reactions = { { name = "x", tag = "t" } }
         }"#;
         let err = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap_err());
@@ -905,7 +997,6 @@ mod tests {
     #[test]
     fn lua_empty_primitive_name_is_rejected() {
         let src = r#"return {
-            entities = {},
             reactions = { { name = "x", primitive = "", tag = "t" } }
         }"#;
         let err = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap_err());
@@ -915,7 +1006,6 @@ mod tests {
     #[test]
     fn lua_at_out_of_range_is_rejected() {
         let src = r#"return {
-            entities = {},
             reactions = { { name = "x", progress = { tag = "t", at = 1.5, fire = "f" } } }
         }"#;
         let err = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap_err());
@@ -925,7 +1015,6 @@ mod tests {
     #[test]
     fn lua_sequence_reaction_deserializes() {
         let src = r#"return {
-            entities = {},
             reactions = {
                 { name = "openVault",
                   sequence = {
@@ -948,9 +1037,130 @@ mod tests {
 
     #[test]
     fn lua_empty_arrays_yield_empty_manifest() {
-        let src = "return { entities = {}, reactions = {} }";
+        let src = "return { reactions = {} }";
         let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
-        assert!(m.entities.is_empty());
         assert!(m.reactions.is_empty());
+    }
+
+    // --- EntityTypeDescriptor (registerEntity input shape) -------------------
+
+    #[test]
+    fn entity_descriptor_with_emitter_only_deserializes() {
+        let src = r#"({
+            classname: "smoke_pillar",
+            components: {
+                emitter: {
+                    rate: 12.0,
+                    burst: null,
+                    spread: 0.3,
+                    lifetime: 4.0,
+                    velocity: [0, 1, 0],
+                    buoyancy: 0.5,
+                    drag: 0.5,
+                    size_over_lifetime: [0.5, 1.0],
+                    opacity_over_lifetime: [0.0, 1.0, 0.0],
+                    color: [0.7, 0.7, 0.7],
+                    sprite: "smoke",
+                    spin_rate: 0.0
+                }
+            }
+        })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert_eq!(d.classname, "smoke_pillar");
+        assert!(d.light.is_none());
+        let e = d.emitter.expect("emitter present");
+        assert_eq!(e.rate, 12.0);
+        assert_eq!(e.sprite, "smoke");
+    }
+
+    #[test]
+    fn entity_descriptor_with_light_only_deserializes() {
+        let src = r#"({
+            classname: "campfire",
+            components: {
+                light: {
+                    color: [1.0, 0.6, 0.2],
+                    intensity: 4.0,
+                    range: 10.0,
+                    is_dynamic: false
+                }
+            }
+        })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert_eq!(d.classname, "campfire");
+        assert!(d.emitter.is_none());
+        let l = d.light.expect("light present");
+        assert_eq!(l.color, [1.0, 0.6, 0.2]);
+        assert_eq!(l.intensity, 4.0);
+        assert_eq!(l.range, 10.0);
+        assert!(!l.is_dynamic);
+    }
+
+    #[test]
+    fn entity_descriptor_with_both_components_deserializes() {
+        let src = r#"({
+            classname: "torch",
+            components: {
+                light: { color: [1, 1, 1], intensity: 2.0, range: 6.0, is_dynamic: true },
+                emitter: {
+                    rate: 4.0, burst: null, spread: 0.1, lifetime: 1.5,
+                    velocity: [0, 1, 0], buoyancy: 0.3, drag: 0.4,
+                    size_over_lifetime: [1.0], opacity_over_lifetime: [1.0, 0.0],
+                    color: [1, 1, 1], sprite: "ember", spin_rate: 0.0
+                }
+            }
+        })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert_eq!(d.classname, "torch");
+        assert!(d.light.is_some());
+        assert!(d.emitter.is_some());
+    }
+
+    #[test]
+    fn entity_descriptor_without_components_field_deserializes() {
+        let src = r#"({ classname: "vignette" })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert_eq!(d.classname, "vignette");
+        assert!(d.light.is_none());
+        assert!(d.emitter.is_none());
+    }
+
+    #[test]
+    fn entity_descriptor_with_emitter_only_deserializes_lua() {
+        let src = r#"return {
+            classname = "smoke_pillar",
+            components = {
+                emitter = {
+                    rate = 12.0,
+                    spread = 0.3,
+                    lifetime = 4.0,
+                    velocity = { 0, 1, 0 },
+                    buoyancy = 0.5,
+                    drag = 0.5,
+                    size_over_lifetime = { 0.5, 1.0 },
+                    opacity_over_lifetime = { 0.0, 1.0, 0.0 },
+                    color = { 0.7, 0.7, 0.7 },
+                    sprite = "smoke",
+                    spin_rate = 0.0,
+                }
+            }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        assert_eq!(d.classname, "smoke_pillar");
+        assert!(d.emitter.is_some());
+    }
+
+    #[test]
+    fn entity_descriptor_with_light_only_deserializes_lua() {
+        let src = r#"return {
+            classname = "campfire",
+            components = {
+                light = { color = { 1.0, 0.6, 0.2 }, intensity = 4.0, range = 10.0, is_dynamic = false }
+            }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        assert_eq!(d.classname, "campfire");
+        let l = d.light.expect("light present");
+        assert_eq!(l.intensity, 4.0);
     }
 }

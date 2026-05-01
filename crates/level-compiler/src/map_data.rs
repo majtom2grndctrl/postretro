@@ -108,6 +108,26 @@ pub struct EntityInfo {
     pub origin: Option<DVec3>,
 }
 
+/// One non-light, non-worldspawn map entity collected for the runtime
+/// classname dispatch. `angles` is engine-convention Euler radians (pitch,
+/// yaw, roll) — the format adapter (`format/quake_map.rs`) converts at the
+/// translation boundary so downstream stages and the runtime see no
+/// source-format axis convention.
+///
+/// `key_values` has the reserved authoring keys stripped (`classname`,
+/// `origin`, `_tags`, `angle`, `angles`, `mangle`); their data is hoisted into
+/// dedicated fields. `tags` is the pre-split `_tags` list.
+#[derive(Debug, Clone)]
+pub struct MapEntityRecord {
+    pub classname: String,
+    pub origin: DVec3,
+    pub angles: [f32; 3],
+    // Vec preserves authoring order and allows duplicate keys (Quake .map format permits them).
+    // Converted to HashMap at the scripting boundary; last occurrence wins on duplicates.
+    pub key_values: Vec<(String, String)>,
+    pub tags: Vec<String>,
+}
+
 /// Light shape. Governs which fields of `MapLight` are meaningful.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LightType {
@@ -365,6 +385,11 @@ pub struct MapData {
     /// entity has no `data_script` property. See `context/lib/scripting.md`
     /// §Data context.
     pub data_script: Option<String>,
+    /// Non-light, non-worldspawn map entities collected for the runtime
+    /// classname dispatch. Brush entities (e.g. `env_fog_volume`) are excluded
+    /// — they are resolved separately during BSP construction. See the
+    /// MapEntity PRL section in `context/lib/build_pipeline.md`.
+    pub map_entities: Vec<MapEntityRecord>,
 }
 
 #[cfg(test)]

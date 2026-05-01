@@ -558,7 +558,8 @@ mod tests {
             });
         };
 
-        push_quad( // Floor A
+        push_quad(
+            // Floor A
             [
                 [-10.0, 0.0, -10.0],
                 [-1.0, 0.0, -10.0],
@@ -567,7 +568,8 @@ mod tests {
             ],
             [0.0, 1.0, 0.0],
         );
-        push_quad( // Floor B
+        push_quad(
+            // Floor B
             [
                 [1.0, 0.0, -10.0],
                 [10.0, 0.0, -10.0],

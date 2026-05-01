@@ -1,6 +1,17 @@
-import { registerReaction, world } from "postretro";
+import { registerEntity, registerReaction, world } from "postretro";
 
 export function registerLevelManifest(_ctx: unknown) {
+  // Reference behavior archetype registrations. Components are intentionally
+  // empty: both archetypes are pure tag/transform carriers and the
+  // behavior scripts (`rotator-driver.ts`, `damage-source.ts`) locate
+  // their work via tag-filtered `worldQuery` rather than component data.
+  registerEntity({
+    classname: "game_rotator_driver",
+  });
+  registerEntity({
+    classname: "game_damage_source",
+  });
+
   const reactions = [];
 
   // Arena 1: angular sweep from the NW corner, counterclockwise.
@@ -9,21 +20,21 @@ export function registerLevelManifest(_ctx: unknown) {
     let centroidX = 0,
       centroidZ = 0;
     for (const light of arena1Raw) {
-      centroidX += light.transform.position.x;
-      centroidZ += light.transform.position.z;
+      centroidX += light.position.x;
+      centroidZ += light.position.z;
     }
     centroidX /= arena1Raw.length;
     centroidZ /= arena1Raw.length;
 
     const lightsWithAngle = arena1Raw.map((light) => {
-      const dx = light.transform.position.x - centroidX;
-      const dz = light.transform.position.z - centroidZ;
+      const dx = light.position.x - centroidX;
+      const dz = light.position.z - centroidZ;
       return { light, angle: Math.atan2(dz, dx) };
     });
 
     // Anchor at the NW corner: the light with the highest z (westernmost).
     const startAngle = lightsWithAngle.reduce((best, cur) =>
-      cur.light.transform.position.z > best.light.transform.position.z
+      cur.light.position.z > best.light.position.z
         ? cur
         : best,
     ).angle;
@@ -72,7 +83,7 @@ export function registerLevelManifest(_ctx: unknown) {
   const arena2Raw = world.query({ component: "light", tag: "arena_wave_2" });
   if (arena2Raw.length > 0) {
     const sorted = [...arena2Raw].sort(
-      (a, b) => b.transform.position.x - a.transform.position.x,
+      (a, b) => b.position.x - a.position.x,
     );
 
     const pulseDurationMs = 200;

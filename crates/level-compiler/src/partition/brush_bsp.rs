@@ -606,19 +606,34 @@ mod tests {
         let tree = build_bsp_from_brushes(&brushes).expect("doorway room should build");
 
         let left_air = DVec3::new(100.0, 40.0, 100.0);
-        assert!(!leaf_at(&tree, left_air).is_solid, "left room interior should be empty");
+        assert!(
+            !leaf_at(&tree, left_air).is_solid,
+            "left room interior should be empty"
+        );
 
         let right_air = DVec3::new(400.0, 40.0, 100.0);
-        assert!(!leaf_at(&tree, right_air).is_solid, "right room interior should be empty");
+        assert!(
+            !leaf_at(&tree, right_air).is_solid,
+            "right room interior should be empty"
+        );
 
         let doorway = DVec3::new(210.0, 40.0, 100.0);
-        assert!(!leaf_at(&tree, doorway).is_solid, "doorway opening should be empty");
+        assert!(
+            !leaf_at(&tree, doorway).is_solid,
+            "doorway opening should be empty"
+        );
 
         let jamb_interior = DVec3::new(210.0, 100.0, 50.0);
-        assert!(leaf_at(&tree, jamb_interior).is_solid, "jamb interior should be solid");
+        assert!(
+            leaf_at(&tree, jamb_interior).is_solid,
+            "jamb interior should be solid"
+        );
 
         let lintel_interior = DVec3::new(210.0, 150.0, 100.0);
-        assert!(leaf_at(&tree, lintel_interior).is_solid, "lintel interior should be solid");
+        assert!(
+            leaf_at(&tree, lintel_interior).is_solid,
+            "lintel interior should be solid"
+        );
     }
 
     #[test]
@@ -633,10 +648,16 @@ mod tests {
         let tree = build_bsp_from_brushes(&brushes).expect("narrow gap should build");
 
         let a_interior = DVec3::new(10.0, 10.0, 5.0);
-        assert!(leaf_at(&tree, a_interior).is_solid, "brush A interior should be solid");
+        assert!(
+            leaf_at(&tree, a_interior).is_solid,
+            "brush A interior should be solid"
+        );
 
         let b_interior = DVec3::new(10.0, 10.0, 17.0);
-        assert!(leaf_at(&tree, b_interior).is_solid, "brush B interior should be solid");
+        assert!(
+            leaf_at(&tree, b_interior).is_solid,
+            "brush B interior should be solid"
+        );
 
         let gap = DVec3::new(10.0, 10.0, 11.0);
         assert!(

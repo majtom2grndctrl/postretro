@@ -1,6 +1,6 @@
 // Per-particle visual descriptor. Distinct from `ParticleState` so future
 // non-particle sprite entities can reuse it.
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 1
+// See: context/lib/scripting.md §11 (Emitter and Particles)
 
 use serde::{Deserialize, Serialize};
 

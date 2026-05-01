@@ -1,10 +1,13 @@
 // Game: Generic
 // Format: Standard
 // entity 0
+// "script" is the entry-point KVP (future worldspawn chain). The engine currently
+// scans the entire scripts/ directory, so damage-source.ts is also loaded automatically.
 {
 "classname" "worldspawn"
 "wad" ""
 "data_script" "../scripts/arena-lights.ts"
+"script" "../scripts/rotator-driver.ts"
 "_tb_mod" "tests;base"
 "_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
 // brush 0
@@ -1431,4 +1434,16 @@
 "_cone" "5"
 "delay" "0"
 "_cone2" "20"
+}
+// entity 28 — reference behavior placement: rotated each tick by `rotator-driver.ts`.
+{
+"classname" "game_rotator_driver"
+"origin" "640 384 96"
+"_tags" "rotatorDriver"
+}
+// entity 29 — reference behavior placement: emits a synthetic damage event every 3s via `damage-source.ts`.
+{
+"classname" "game_damage_source"
+"origin" "384 384 96"
+"_tags" "damageSource"
 }

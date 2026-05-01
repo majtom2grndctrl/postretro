@@ -1,6 +1,6 @@
 // `setEmitterRate` reaction primitive: zero or modulate emission rate on
 // every entity matching the reaction's tag.
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 5
+// See: context/lib/scripting.md §11 (Emitter and Particles — Reaction primitives)
 
 use serde::{Deserialize, Serialize};
 
@@ -73,7 +73,7 @@ mod tests {
             burst: None,
             spread: 0.1,
             lifetime: 1.0,
-            initial_velocity: [0.0, 1.0, 0.0],
+            velocity: [0.0, 1.0, 0.0],
             buoyancy: 0.0,
             drag: 0.0,
             size_over_lifetime: vec![1.0],

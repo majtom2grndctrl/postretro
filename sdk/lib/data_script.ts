@@ -40,12 +40,8 @@ export type NamedReactionDescriptor = { name: string } & (
   | SequenceReactionDescriptor
 );
 
-/** One entry per registered entity class. */
-export type EntityTypeDescriptor = { classname: string };
-
 /** Deserialized once at level load; the data-script VM is dropped immediately after. */
 export type LevelManifest = {
-  entities: EntityTypeDescriptor[];
   reactions: NamedReactionDescriptor[];
 };
 
@@ -58,11 +54,4 @@ export function registerReaction(
     | SequenceReactionDescriptor,
 ): NamedReactionDescriptor {
   return { name, ...descriptor } as NamedReactionDescriptor;
-}
-
-/** Reduces each class to its `classname` — the only field the engine reads at registration time. */
-export function registerEntities(
-  types: ReadonlyArray<{ classname: string }>,
-): EntityTypeDescriptor[] {
-  return types.map((t) => ({ classname: t.classname }));
 }

@@ -3,11 +3,17 @@
 //
 // Lifecycle:
 //   * One `rquickjs::Runtime` per subsystem (owns GC, memory limit).
-//   * Two `Context`s: `definition_ctx` runs definition scripts once per level
-//     load; `behavior_ctx` runs behavior scripts for the level's lifetime.
-//   * Definition context has DefinitionOnly/Both primitives as real functions;
-//     BehaviorOnly primitives install as stubs that throw `ScriptError::WrongContext`.
-//     The behavior context flips the scopes.
+//   * Three contexts per level:
+//       - `definition_ctx`: long-lived context for cross-script definition-scope
+//         code. Carries DefinitionOnly/Both primitives as real functions;
+//         BehaviorOnly primitives install as stubs that throw
+//         `ScriptError::WrongContext`. NOT the entry point for level-load work.
+//       - `behavior_ctx`: long-lived context for the level's lifetime. Carries
+//         BehaviorOnly/Both primitives as real functions; DefinitionOnly stubs
+//         that throw `ScriptError::WrongContext`.
+//       - Ephemeral data context: a short-lived context created fresh per level
+//         in `run_data_script_quickjs`. This is the correct entry point for
+//         level-load data-script execution — not `definition_ctx`.
 //   * `__collect_definitions` is a magic sink injected into the definition
 //     context only. It is NOT a registered primitive.
 
@@ -547,13 +553,13 @@ mod tests {
                         scale:    { x: 1, y: 1, z: 1 },
                     });
                     const input = {
-                        kind: "Transform",
+                        kind: "transform",
                         position: { x: 1.5,  y: 2.5, z: -3.25 },
                         rotation: { pitch: 15.0, yaw: 45.0, roll: -30.0 },
                         scale:    { x: 2.0, y: 2.0, z: 2.0 },
                     };
-                    setComponent(id, "Transform", input);
-                    const out = getComponent(id, "Transform");
+                    setComponent(id, "transform", input);
+                    const out = getComponent(id, "transform");
                     out
                     "#,
                 )
@@ -561,7 +567,7 @@ mod tests {
 
             // Assert returned shape matches the input within float tolerance.
             let kind: String = out.get("kind").unwrap();
-            assert_eq!(kind, "Transform");
+            assert_eq!(kind, "transform");
             let pos: rquickjs::Object = out.get("position").unwrap();
             let rot: rquickjs::Object = out.get("rotation").unwrap();
             let scl: rquickjs::Object = out.get("scale").unwrap();

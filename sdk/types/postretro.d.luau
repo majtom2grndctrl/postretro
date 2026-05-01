@@ -7,11 +7,55 @@ export type EulerDegrees = { pitch: number, yaw: number, roll: number }
 
 export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 
-export type ComponentKind = "Transform" | "Light" | "BillboardEmitter" | "ParticleState" | "SpriteVisual"
+export type ComponentKind = "transform" | "light" | "billboard_emitter" | "particle_state" | "sprite_visual"
 
-export type ComponentValue = { kind: "Transform", value: Transform } | { kind: "Light", value: LightComponent } | { kind: "BillboardEmitter", value: BillboardEmitterComponent } | { kind: "ParticleState", value: ParticleState } | { kind: "SpriteVisual", value: SpriteVisual }
+export type ComponentValue = (Transform & { kind: "transform" }) | (LightComponent & { kind: "light" }) | (BillboardEmitterComponent & { kind: "billboard_emitter" }) | (ParticleState & { kind: "particle_state" }) | (SpriteVisual & { kind: "sprite_visual" })
 
 export type ScriptEvent = { kind: string, payload: any }
+
+--- Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI.
+export type LightDescriptor = {
+  --- RGB color in [0, 1].
+  color: Vec3,
+  --- Static intensity scalar.
+  intensity: number,
+  --- Falloff range (maps onto LightComponent.falloffRange at spawn).
+  range: number,
+  --- Author hint; descriptor-spawned lights are always treated as dynamic at spawn (baked indirect not supported).
+  is_dynamic: boolean,
+}
+
+--- Argument shape for `registerEntity`. `components` is an optional sub-object carrying typed component presets.
+export type EntityTypeDescriptor = {
+  --- FGD classname this descriptor binds to.
+  classname: string,
+  --- Optional component presets attached at level-load spawn.
+  components?: EntityTypeComponents,
+}
+
+--- Engine-managed billboard emitter component shape. Carried by `BillboardEmitter` ECS entities and produced by SDK `emitter()`/`smokeEmitter()`/etc.
+export type BillboardEmitterComponent = {
+  --- Continuous spawn rate (particles/sec). 0 = inactive.
+  rate: number,
+  burst: number?,
+  spread: number,
+  lifetime: number,
+  velocity: Vec3,
+  buoyancy: number,
+  drag: number,
+  size_over_lifetime: {number},
+  opacity_over_lifetime: {number},
+  color: Vec3,
+  sprite: string,
+  spin_rate: number,
+  spin_animation: SpinAnimation?,
+}
+
+--- Spin tween shape consumed by `setSpinRate`.
+export type SpinAnimation = { duration: number, rate_curve: {number} }
+
+--- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
+export type EntityTypeComponents = { light?: LightDescriptor?, emitter?: BillboardEmitterComponent? }
 
 export type ScriptCallContext = {
   --- Seconds since the previous tick.
@@ -43,31 +87,58 @@ export type LightAnimation = {
 
 export type LightComponent = { origin: Vec3, lightType: LightKind, intensity: number, color: Vec3, falloffModel: FalloffKind, falloffRange: number, coneAngleInner: number?, coneAngleOuter: number?, coneDirection: Vec3?, castShadows: boolean, isDynamic: boolean, animation: LightAnimation? }
 
+--- Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union.
+export type WorldQueryComponent =
+  "light"
+  | "transform"
+  | "emitter"
+  --- Always returns []. Engine-managed; scripts never iterate individual particles.
+  | "particle"
+  --- Always returns []. Engine-managed.
+  | "sprite_visual"
+
 export type WorldQueryFilter = {
-  --- Component name, e.g. "light".
-  component: string,
+  --- Component name to query.
+  component: WorldQueryComponent,
   --- Optional tag filter (exact string match).
   tag: string?,
 }
-
---- Minimum transform shape guaranteed for all entity handles.
-export type EntityTransform = { position: Vec3 }
 
 --- Generic entity handle returned by `world.query` when the component type is not known at compile time.
 export type Entity = {
   id: EntityId,
   --- Entity position at query time.
-  transform: EntityTransform,
+  position: Vec3,
   --- The entity's tags at query time. Empty array if untagged.
   tags: {string},
+}
+
+--- Handle returned by `world.query({ component: "transform" })`. Same shape as `Entity`.
+export type TransformHandle = {
+  id: EntityId,
+  --- Entity position at query time.
+  position: Vec3,
+  --- The entity's tags at query time. Empty array if untagged.
+  tags: {string},
+}
+
+--- Entity handle returned by `world.query` when filtering for billboard emitter entities.
+export type EmitterEntity = {
+  id: EntityId,
+  --- Emitter position at query time (from the entity's Transform).
+  position: Vec3,
+  --- The entity's tags at query time. Empty array if untagged.
+  tags: {string},
+  --- Full emitter component snapshot at query time.
+  component: BillboardEmitterComponent,
 }
 
 --- Entity handle returned by `world.query` when filtering for light entities.
 export type LightEntity = {
   id: EntityId,
   --- Light origin at query time.
-  transform: EntityTransform,
-  --- Whether MapLight.is_dynamic was set on the source. Scripts use this to gate color animation.
+  position: Vec3,
+  --- Whether the light is driven by the runtime dynamic-light buffer. Static lights baked from FGD entities are not; descriptor-spawned lights always are.
   isDynamic: boolean,
   --- The entity's tags at query time. Empty array if untagged.
   tags: {string},
@@ -87,6 +158,12 @@ declare function entityExists(id: EntityId): boolean
 --- Reads a component of the given kind from an entity.
 declare function getComponent(id: EntityId, kind: ComponentKind): ComponentValue
 
+--- Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in both behavior and data contexts.
+declare function getEntityProperty(id: EntityId, key: string): string?
+
+--- Register an entity type with optional component presets. Definition context only. Survives level unload.
+declare function registerEntity(descriptor: EntityTypeDescriptor): ()
+
 --- Register a handler for an engine event. Currently accepts "levelLoad" or "tick".
 declare function registerHandler(event: string, handler: (ctx: ScriptCallContext?) -> ()): ()
 
@@ -99,11 +176,11 @@ declare function setComponent(id: EntityId, kind: ComponentKind, value: Componen
 --- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only.
 declare function setLightAnimation(id: EntityId, animation: LightAnimation | null): ()
 
---- Spawns a new entity with the given transform and returns its id.
-declare function spawnEntity(transform: Transform): EntityId
+--- Spawns a new entity with the given transform and returns its id. Optional `tags` attaches a tag list at creation time.
+declare function spawnEntity(transform: Transform, tags: {string}?): EntityId
 
---- Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: string, tag?: string } where `component` names the component type to query. Only "light" is supported in the current build; other values return an InvalidArgument error. The `world.ts` vocabulary module wraps this as `world.query`.
-declare function worldQuery(filter: WorldQueryFilter): {Entity}
+--- Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`.
+declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEntity}) & ((filter: { component: "emitter", tag: string? }) -> {EmitterEntity}) & ((filter: WorldQueryFilter) -> {Entity})
 
 -- ---------------------------------------------------------------------------
 -- SDK library — embedded into every Luau context via `include_str!` and
@@ -118,7 +195,7 @@ export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
 --- Typed light handle returned by `world:query({ component = "light" })`.
 export type LightEntityHandle = {
   id: EntityId,
-  transform: EntityTransform,
+  position: Vec3,
   isDynamic: boolean,
   tags: {string},
   component: LightComponent,
@@ -139,16 +216,21 @@ export type LightEntityHandle = {
 }
 
 --- Generic entity handle returned by `world:query` when the component is
---- not "light". Use `getComponent` for component data.
+--- not "light" or "emitter". Use `getComponent` for component data.
 export type EntityHandle = {
   id: EntityId,
-  transform: EntityTransform,
+  position: Vec3,
   tags: {string},
 }
 
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
+--- `"light"` returns `LightEntityHandle` values (with `:setAnimation` /
+--- `:setIntensity` / `:setColor`); `"emitter"` returns `EmitterEntity`
+--- values carrying the full `BillboardEmitterComponent` snapshot under
+--- `component`; other components fall back to the bare `EntityHandle` shape.
 export type World = {
   query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
+       & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
        & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
 }
 
@@ -196,13 +278,6 @@ export type PrimitiveReactionDescriptor = {
   onComplete: string?,
 }
 
---- Tween shape used by `setSpinRate`. Mirrors the Rust `SpinAnimation`
---- storage struct.
-export type SpinAnimation = {
-  duration: number,
-  rate_curve: {number},
-}
-
 --- One step in a `sequence` reaction body: invokes the named sequenced
 --- primitive against the given entity with `args`. Sequence steps target a
 --- single `EntityId`; tag-targeted primitives belong on the `Primitive`
@@ -231,13 +306,9 @@ export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string
 export type SequenceNamedReactionDescriptor = { name: string, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 
---- Descriptor produced by `registerEntities` -- one entry per registered class.
-export type EntityTypeDescriptor = { classname: string }
-
 --- Bundle returned from `registerLevelManifest`. The engine deserializes
 --- this shape in one pass at level load.
 export type LevelManifest = {
-  entities: {EntityTypeDescriptor},
   reactions: {NamedReactionDescriptor},
 }
 
@@ -246,8 +317,3 @@ declare function registerReaction(
   name: string,
   descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor
 ): NamedReactionDescriptor
-
---- Build the entity-type descriptor list for `LevelManifest.entities`.
-declare function registerEntities(
-  types: {{ classname: string }}
-): {EntityTypeDescriptor}

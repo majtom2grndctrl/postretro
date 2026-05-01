@@ -41,7 +41,7 @@ export type BillboardEmitter = {
   burst: number?,
   spread: number?,
   lifetime: number?,
-  initial_velocity: {number}?,
+  velocity: {number}?,
   buoyancy: number?,
   drag: number?,
   size_over_lifetime: {number}?,
@@ -52,14 +52,14 @@ export type BillboardEmitter = {
 }
 
 --- Input shape for `emitter()`. Required: `lifetime`,
---- `initial_velocity`, `sprite`. Other fields fall back to documented
+--- `velocity`, `sprite`. Other fields fall back to documented
 --- defaults inside `emitter()`.
 export type EmitterProps = {
   rate: number?,
   burst: number?,
   spread: number?,
   lifetime: number,
-  initial_velocity: {number},
+  velocity: {number},
   buoyancy: number?,
   drag: number?,
   size_over_lifetime: {number}?,
@@ -69,11 +69,12 @@ export type EmitterProps = {
   spin_rate: number?,
 }
 
---- Return shape from every component constructor. The engine dispatches
---- on `kind` and deserializes `value` into the matching Rust struct.
+--- Flat `ComponentValue` shape produced by component constructors.
+--- `kind` is the snake_case wire tag; sibling fields carry the component
+--- payload directly (no `value` wrapper).
 export type ComponentDescriptor = {
   kind: string,
-  value: any,
+  [string]: any,
 }
 
 local EmittersSdk = {}
@@ -166,7 +167,7 @@ local function validateEmitterProps(props: any)
     end
   end
 
-  validateVec3(props.initial_velocity, "initial_velocity")
+  validateVec3(props.velocity, "velocity")
 
   if props.color ~= nil then
     validateVec3(props.color, "color")
@@ -233,12 +234,13 @@ end
 function EmittersSdk.emitter(props: EmitterProps): ComponentDescriptor
   validateEmitterProps(props)
 
-  local value = {
+  return {
+    kind = "billboard_emitter",
     rate = defaulted(props.rate, 0.0),
     burst = props.burst,
     spread = defaulted(props.spread, 0.2),
     lifetime = props.lifetime,
-    initial_velocity = props.initial_velocity,
+    velocity = props.velocity,
     buoyancy = defaulted(props.buoyancy, 0.5),
     drag = defaulted(props.drag, 0.5),
     size_over_lifetime = defaulted(props.size_over_lifetime, {1.0}),
@@ -246,11 +248,6 @@ function EmittersSdk.emitter(props: EmitterProps): ComponentDescriptor
     color = defaulted(props.color, {1.0, 1.0, 1.0}),
     sprite = props.sprite,
     spin_rate = defaulted(props.spin_rate, 0.0),
-  }
-
-  return {
-    kind = "billboard_emitter",
-    value = value,
   }
 end
 
@@ -275,7 +272,7 @@ function EmittersSdk.smokeEmitter(overrides: any?): ComponentDescriptor
     opacity_over_lifetime = {0.0, 0.8, 0.6, 0.0},
     sprite = "smoke",
     spin_rate = 0.0,
-    initial_velocity = {0, 0.5, 0},
+    velocity = {0, 0.5, 0},
     color = {1.0, 1.0, 1.0},
   }
   return EmittersSdk.emitter(mergeProps(defaults, overrides))
@@ -300,7 +297,7 @@ function EmittersSdk.sparkEmitter(overrides: any?): ComponentDescriptor
     opacity_over_lifetime = {1.0, 1.0, 0.0},
     sprite = "spark",
     spin_rate = 1.5,
-    initial_velocity = {0, 2.0, 0},
+    velocity = {0, 2.0, 0},
     color = {1.0, 0.8, 0.3},
   }
   return EmittersSdk.emitter(mergeProps(defaults, overrides))
@@ -324,7 +321,7 @@ function EmittersSdk.dustEmitter(overrides: any?): ComponentDescriptor
     opacity_over_lifetime = {0.0, 0.3, 0.0},
     sprite = "dust",
     spin_rate = 0.0,
-    initial_velocity = {0, 0.1, 0},
+    velocity = {0, 0.1, 0},
     color = {0.8, 0.7, 0.6},
   }
   return EmittersSdk.emitter(mergeProps(defaults, overrides))

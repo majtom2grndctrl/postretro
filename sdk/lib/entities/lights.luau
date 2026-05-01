@@ -25,7 +25,7 @@
 --   -- returns LightEntityHandle values with :setAnimation / :setIntensity / :setColor.
 --   local lights = world:query({ component = "light", tag = "hallway_wave" })
 --   table.sort(lights, function(a, b)
---     return a.transform.position.x < b.transform.position.x
+--     return a.position.x < b.position.x
 --   end)
 --
 --   local pulse = {
@@ -63,7 +63,7 @@ export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
 --- (e.g. `light:setAnimation(anim)`).
 export type LightEntityHandle = {
   id: EntityId,
-  transform: EntityTransform,
+  position: Vec3,
   isDynamic: boolean,
   tags: {string},
   component: LightComponent,
@@ -220,11 +220,12 @@ local function idDebug(id: EntityId): string
 end
 
 local function readLightComponent(id: EntityId): LightComponent
-  local c = getComponent(id, "Light")
-  if c.kind ~= "Light" then
+  local c = getComponent(id, "light")
+  if c.kind ~= "light" then
     error(`expected Light component on entity {idDebug(id)}, got {c.kind}`)
   end
-  return c.value
+  -- Flat ComponentValue: kind + LightComponent fields are siblings.
+  return (c :: any) :: LightComponent
 end
 
 function LightsSdk.wrapLightEntity(snapshot: LightEntity): LightEntityHandle
@@ -233,7 +234,7 @@ function LightsSdk.wrapLightEntity(snapshot: LightEntity): LightEntityHandle
 
   local handle: LightEntityHandle = {
     id = id,
-    transform = snapshot.transform,
+    position = snapshot.position,
     isDynamic = isDynamic,
     tags = snapshot.tags,
     component = snapshot.component,

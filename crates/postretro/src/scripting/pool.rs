@@ -35,6 +35,13 @@ struct QuickJsPoolInner {
     primitives: Vec<ScriptPrimitive>,
 }
 
+/// Pool of pre-warmed QuickJS contexts for ephemeral per-entity scripting.
+///
+/// **Safety note:** Pooled contexts are NOT isolation boundaries. Scripts
+/// writing to `globalThis` can leave state for the next acquirer. All
+/// persistent entity state must flow through Rust via
+/// `setComponent`/`getComponent`. (Luau's `sandbox(true)` already blocks new
+/// global writes at the VM level.)
 pub(crate) struct QuickJsContextPool {
     inner: Rc<RefCell<QuickJsPoolInner>>,
 }
@@ -114,7 +121,7 @@ impl QuickJsContextPool {
 }
 
 pub(crate) struct PooledQuickJsContext {
-    ctx: Option<Context>,  // Option so Drop can move out before returning
+    ctx: Option<Context>, // Option so Drop can move out before returning
     pool: Rc<RefCell<QuickJsPoolInner>>,
 }
 
@@ -193,6 +200,12 @@ struct LuauPoolInner {
     primitives: Vec<ScriptPrimitive>,
 }
 
+/// Pool of pre-warmed Luau VMs for ephemeral per-entity scripting.
+///
+/// **Safety note:** Pooled VMs are NOT isolation boundaries. All persistent
+/// entity state must flow through Rust via `setComponent`/`getComponent`.
+/// Luau's `sandbox(true)` blocks new `globalThis` writes at the VM level, but
+/// existing globals are still visible to every acquirer.
 pub(crate) struct LuauContextPool {
     inner: Rc<RefCell<LuauPoolInner>>,
 }
@@ -567,5 +580,4 @@ mod tests {
         );
         let _ = ctx;
     }
-
 }

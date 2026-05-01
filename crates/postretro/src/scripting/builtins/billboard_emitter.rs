@@ -1,5 +1,5 @@
 // Built-in classname handler for `billboard_emitter` map entities.
-// See: context/plans/in-progress/scripting-foundation/plan-3-emitter-entity.md §Sub-plan 6
+// See: context/lib/build_pipeline.md §Built-in Classname Routing
 //
 // Naming intent (load-bearing — please don't speculatively rename):
 //   "BillboardEmitter" is the built-in type name. The rendering primitive
@@ -10,7 +10,7 @@
 //   generic "ParticleEmitter" would collapse that distinction and force a
 //   later, breaking re-rename when mesh particles land.
 
-use glam::{Quat, Vec3};
+use glam::Vec3;
 
 use super::MapEntity;
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
@@ -28,7 +28,7 @@ fn default_component() -> BillboardEmitterComponent {
         burst: None,
         spread: 0.4,
         lifetime: 3.0,
-        initial_velocity: [0.0, 0.8, 0.0],
+        velocity: [0.0, 0.8, 0.0],
         buoyancy: 0.2,
         drag: 0.8,
         size_over_lifetime: vec![0.3, 1.5],
@@ -105,13 +105,13 @@ fn component_from_entity(entity: &MapEntity) -> BillboardEmitterComponent {
         c.sprite = v.to_string();
     }
     if let Some(v) = kvp_f32(entity, "initial_velocity_x") {
-        c.initial_velocity[0] = v;
+        c.velocity[0] = v;
     }
     if let Some(v) = kvp_f32(entity, "initial_velocity_y") {
-        c.initial_velocity[1] = v;
+        c.velocity[1] = v;
     }
     if let Some(v) = kvp_f32(entity, "initial_velocity_z") {
-        c.initial_velocity[2] = v;
+        c.velocity[2] = v;
     }
     if let Some(v) = kvp_f32(entity, "color_r") {
         c.color[0] = v;
@@ -136,10 +136,10 @@ pub(crate) fn handle(entity: &MapEntity, registry: &mut EntityRegistry) -> Optio
 
     let transform = Transform {
         position: entity.origin,
-        rotation: Quat::IDENTITY,
+        rotation: entity.rotation_quat(),
         scale: Vec3::ONE,
     };
-    let id = registry.try_spawn(transform).or_else(|| {
+    let id = registry.try_spawn(transform, &entity.tags).or_else(|| {
         log::warn!(
             "[Loader] {origin}: entity registry exhausted; dropping billboard_emitter",
             origin = entity.diagnostic_origin(),
@@ -150,9 +150,10 @@ pub(crate) fn handle(entity: &MapEntity, registry: &mut EntityRegistry) -> Optio
     // `set_component` only fails on a stale id — the id was just returned by
     // `try_spawn` so it must be live.
     let _ = registry.set_component(id, component);
-    if !entity.tags.is_empty() {
-        let _ = registry.set_tags(id, entity.tags.clone());
-    }
+    // Tags are attached via `try_spawn`; per-placement KVP mirroring is
+    // performed uniformly by `apply_classname_dispatch` after this handler
+    // returns. Built-in handlers need not call `set_tags` or `set_map_kvps`
+    // themselves.
     Some(id)
 }
 
@@ -169,6 +170,7 @@ mod tests {
         MapEntity {
             classname: CLASSNAME.to_string(),
             origin: Vec3::new(1.0, 2.0, 3.0),
+            angles: Vec3::ZERO,
             key_values: kv,
             tags: vec![],
         }
@@ -199,7 +201,7 @@ mod tests {
         assert_eq!(stored.buoyancy, expected.buoyancy);
         assert_eq!(stored.drag, expected.drag);
         assert_eq!(stored.sprite, expected.sprite);
-        assert_eq!(stored.initial_velocity, expected.initial_velocity);
+        assert_eq!(stored.velocity, expected.velocity);
         assert_eq!(stored.color, expected.color);
         assert_eq!(stored.spin_rate, expected.spin_rate);
         assert_eq!(stored.size_over_lifetime, expected.size_over_lifetime);
@@ -232,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn vec3_split_kvps_assemble_into_initial_velocity() {
+    fn vec3_split_kvps_assemble_into_velocity() {
         let mut reg = EntityRegistry::new();
         let entity = entity_with_kvps(&[
             ("initial_velocity_x", "1.0"),
@@ -242,7 +244,7 @@ mod tests {
 
         let id = handle(&entity, &mut reg).expect("spawn should succeed");
         let stored = reg.get_component::<BillboardEmitterComponent>(id).unwrap();
-        assert_eq!(stored.initial_velocity, [1.0, 2.0, -3.0]);
+        assert_eq!(stored.velocity, [1.0, 2.0, -3.0]);
     }
 
     #[test]
@@ -279,8 +281,8 @@ mod tests {
 
     #[test]
     fn dispatch_routes_billboard_emitter_classname_to_handler() {
-        // End-to-end through the dispatch table: simulates what sub-plan 8 will
-        // do when the level loader walks map entities and looks up classnames.
+        // End-to-end through the dispatch table: the level loader walks map
+        // entities and looks up classnames; this test covers that path.
         let mut dispatch = super::super::ClassnameDispatch::new();
         super::super::register_builtins(&mut dispatch);
 

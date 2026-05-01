@@ -17,13 +17,21 @@
 --- to access the component data for non-light entities.
 export type EntityHandle = {
   id: EntityId,
-  transform: EntityTransform,
+  position: Vec3,
   tags: {string},
 }
 
 --- Typed vocabulary object returned from `world:query`.
 --- Pass `{ component = "light", tag = "..." }` to get light handle
---- values; any other component filter returns `EntityHandle` values.
+--- values with `:setAnimation` / `:setIntensity` / `:setColor`;
+--- `{ component = "emitter", ... }` yields handles carrying the full
+--- `BillboardEmitterComponent` snapshot under `component`; any other
+--- component filter returns `EntityHandle` values (id, position, tags)
+--- -- use `getComponent` to access the component data.
+---
+--- Supported component strings: `"light"`, `"transform"`, `"emitter"`,
+--- `"particle"`, `"sprite_visual"`. `"particle"` and `"sprite_visual"`
+--- always return `{}` (engine-managed). Unknown strings error at runtime.
 export type World = {
   query: (self: World, filter: WorldQueryFilter) -> {EntityHandle},
 }
@@ -46,14 +54,25 @@ local world: World = {
       end
       return out :: any
     end
-    local out: {EntityHandle} = {}
+    local out: {any} = {}
     -- Cast at the array level: the primitive returns per-component snapshots
     -- that are supersets of `Entity`, so individual field access is safe.
+    -- Thread `component` through unchanged when present (e.g. `"emitter"`
+    -- handles); leave it absent for queries whose Rust handle omits it
+    -- (e.g. `"transform"`), matching the bare `EntityHandle` shape.
     local snapshots = raw :: {any}
     for i, snapshot in ipairs(snapshots) do
-      out[i] = { id = snapshot.id, transform = snapshot.transform, tags = snapshot.tags }
+      local handle: any = {
+        id = snapshot.id,
+        position = snapshot.position,
+        tags = snapshot.tags,
+      }
+      if snapshot.component ~= nil then
+        handle.component = snapshot.component
+      end
+      out[i] = handle
     end
-    return out
+    return out :: any
   end,
 }
 

@@ -2,14 +2,19 @@
 
 ## Goal
 
-Wire up the partially-built fog volume pass so `env_fog_volume` brush regions render
-as localized volumetric haze. Extend the raymarch shader with point-light
-(omnidirectional) scatter so dynamic `light` entities — neon signs, colored lamps —
-create visible in-fog glow halos.
+Wire up the partially-built fog volume pass so `env_fog_volume` brush regions render as
+localized volumetric haze. Extend the raymarch shader with point-light (omnidirectional)
+scatter so dynamic `light` entities — neon signs, colored lamps — create visible in-fog
+glow halos. Expose fog volumes as first-class ECS entities so scripts can query and
+animate them with the same vocabulary as lights and emitters.
 
-The GPU-side infrastructure (`fog_pass.rs`, `fog_volume.wgsl`, `fog_composite.wgsl`)
-is already written. What is missing is the CPU module those files import from, the
-renderer integration, the level-loading plumbing, and the point-light scatter path.
+The GPU-side infrastructure (`fog_pass.rs`, `fog_volume.wgsl`, `fog_composite.wgsl`) is
+already written but orphaned — no module declarations, no CPU data module, no renderer
+integration, no level-loading support.
+
+**Assumes entity-model-foundation is complete** — `MapEntity` PRL section (ID 29),
+`worldQuery`, `setComponent`, `getComponent`, `ComponentKind`, `ComponentValue`, and the
+`sdk/lib/entities/` vocabulary pattern are all available.
 
 ---
 
@@ -17,36 +22,42 @@ renderer integration, the level-loading plumbing, and the point-light scatter pa
 
 ### In scope
 
-- Create `crates/postretro/src/fx/fog_volume.rs` — CPU structs, constants, and pack functions required by the orphaned `fog_pass.rs`
-- Register `pub mod fog_volume;` in `fx/mod.rs` and `pub mod fog_pass;` in `render/mod.rs`
-- Integrate `FogPass` into `Renderer` — instantiate, call each frame (compute dispatch + composite blit), handle resize and surface-format change
-- prl-build: parse `env_fog_volume` brush entities, compute world-space AABBs, write new `FogVolumes` PRL section (ID 30)
-- prl-build: extract `fog_pixel_scale` from worldspawn and write it as a header field in the FogVolumes section
-- `postretro-level-format`: define `SectionId::FogVolumes = 30` and a `FogVolumesSection` parser/writer
-- Engine: load FogVolumes section at level load; upload volumes buffer; apply `fog_pixel_scale` to `FogPass`
+- Create `crates/postretro/src/fx/fog_volume.rs` — GPU-side structs, constants, and pack functions required by the orphaned `fog_pass.rs`
+- Declare `pub mod fog_volume;` in `fx/mod.rs` and `pub mod fog_pass;` in `render/mod.rs`
+- Add `ComponentKind::FogVolume = 5` and `ComponentValue::FogVolume { density, color, scatter }` to the entity registry; wire `worldQuery("fog_volume")`, `setComponent`, and `getComponent`
+- prl-build: parse `env_fog_volume` brush entities, compute world-space AABBs, write new `FogVolumes` PRL section (ID 30) with per-volume tags + `fog_pixel_scale` header
+- `postretro-level-format`: define `SectionId::FogVolumes = 30` and `FogVolumesSection`
+- Engine level load: parse FogVolumes section, spawn one FogVolume ECS entity per volume (origin = AABB center, tags from section, FogVolume component); apply `fog_pixel_scale`
+- Integrate `FogPass` into `Renderer`: instantiate, collect FogVolume components from ECS each frame to rebuild the GPU volumes buffer, dispatch compute + composite passes; handle resize and surface-format change
 - Add dynamic point-light scatter to `fog_volume.wgsl`: new `fog_points` binding (group 6, binding 5) iterates active dynamic omni lights and accumulates in-fog glow
-- Add `FogPointLight` struct, `upload_points()` method, and binding-5 slot to `FogPass` and its group-6 BGL
-- CPU-side upload: filter dynamic lights for `LightType::Point`, pack as `FogPointLight`, upload each frame
+- Add `FogPointLight` struct, `upload_points()` method, and binding-5 slot to `fog_pass.rs`; CPU upload filters dynamic `LightType::Point` lights each frame
+- `sdk/lib/entities/fog_volumes.{ts,luau}`: `FogVolumeHandle` wrapper plus `pulseDensity`, `fadeDensity`, `fadeColor` animation helpers (tick-driven, no new engine primitives)
+- SDK type definitions updated; type-definition drift test passes
+- `docs/scripting-reference.md` coverage for fog volume query and animation
 
 ### Out of scope
 
-- Static light scatter in fog (static point lights already tint fog via SH ambient; per-light localised scatter for static lights requires iterating baked per-light data and is deferred)
-- Shadow maps for point lights (point lights have no shadow maps in this engine)
+- `registerEntity` for fog volumes — brush entities cannot be spawned at runtime; only map-placed volumes are supported
+- AABB exposed through `ComponentValue` — baked geometry, not runtime-settable; AABB is internal to the FogVolumeComponent Rust struct
+- Script-controlled `fog_pixel_scale` changes at runtime
+- Static light scatter in fog (static lights already tint fog via SH ambient)
+- Shadow maps for point lights (not available in this engine)
 - Spot light scatter (already implemented in `fog_volume.wgsl`)
-- Animated fog density or color (driven by scripting if ever needed)
+- Phase functions, multi-scattering, or physically-based volumetrics
 - Bilinear upscaling of the fog scatter buffer (nearest-neighbor is intentional)
-- Per-volume `fog_pixel_scale` override (single global pass resolution)
 
 ---
 
 ## Acceptance criteria
 
 - [ ] `env_fog_volume` brush entity placed in a test scene produces visible pixelated haze when the player walks into the volume.
-- [ ] A dynamic `light` entity (`_dynamic 1`) inside or adjacent to an `env_fog_volume` region causes the fog in that region to glow with the light's color — visible as a localised tinted halo distinct from the ambient SH tint.
-- [ ] Removing the `env_fog_volume` (or disabling the dynamic light) eliminates the halo — confirming the scatter path is driving it, not an ambient term.
-- [ ] `fog_pixel_scale 1` on `worldspawn` produces smooth full-resolution fog; `fog_pixel_scale 8` produces coarser block-pixel fog.
-- [ ] `fog_pixel_scale` absent from `worldspawn` defaults to 4.
-- [ ] Level with no `env_fog_volume` entities: fog pass compute dispatch and composite blit are skipped entirely (`FogPass::active()` returns false), no render-time cost.
+- [ ] A dynamic `light` entity (`_dynamic 1`) adjacent to an `env_fog_volume` region causes the fog to glow with the light's color — a localised tinted halo distinct from the ambient SH tint. Toggling the light off eliminates the halo.
+- [ ] `fog_pixel_scale 1` on `worldspawn` produces full-resolution fog; `fog_pixel_scale 8` produces coarser block-pixel fog. Absent defaults to 4.
+- [ ] Level with no `env_fog_volume` entities: `FogPass::active()` returns false; no compute dispatch or composite blit issues — confirmed by checking GPU timing output with `POSTRETRO_GPU_TIMING=1`.
+- [ ] `world.query({ component: "fog_volume" })` returns one handle per `env_fog_volume` entity in the loaded map.
+- [ ] `world.query({ component: "fog_volume", tag: "neon_haze" })` returns only volumes tagged `neon_haze` in TrenchBroom via `_tags`.
+- [ ] `setComponent(id, { kind: "fog_volume", density: 0.0 })` causes the fog volume to visually disappear; restoring `density` to the authored value makes it visible again.
+- [ ] `pulseDensity`, `fadeDensity`, `fadeColor` SDK helpers visually animate fog parameters when called from a test script's tick handler — confirmed by observing the effect in-engine.
 - [ ] `cargo test --workspace` passes.
 - [ ] `cargo clippy --workspace -- -D warnings` clean.
 - [ ] No new `unsafe`.
@@ -57,77 +68,59 @@ renderer integration, the level-loading plumbing, and the point-light scatter pa
 
 ### Task 1 — CPU module: `fx/fog_volume.rs`
 
-Create `crates/postretro/src/fx/fog_volume.rs`. Define:
+Create `crates/postretro/src/fx/fog_volume.rs`. Define the GPU-side types `fog_pass.rs` imports:
 
-- `FogVolume { min, density, max, falloff, color, scatter }` — 48 bytes packed, mirrors the WGSL struct in `fog_volume.wgsl`. Field `max` must be packed as `max_v` in the WGSL (keyword collision) but the Rust struct can use `max`.
-- `FogSpotLight { position, slot, direction, cos_outer, color, range }` — 48 bytes, mirrors existing WGSL `FogSpotLight`.
-- `FogPointLight { position, range, color, _pad }` — 32 bytes. `color` is pre-multiplied by intensity. No slot or direction fields.
-- `FogParams { inv_view_proj, camera_position, step_size, volume_count, near_clip, far_clip, _pad }` — matches existing WGSL `FogParams`.
+- `FogVolume` — 48 bytes packed; mirrors the WGSL `FogVolume` struct in `fog_volume.wgsl` (fields: `min [f32;3]`, `density f32`, `max [f32;3]`, `falloff f32`, `color [f32;3]`, `scatter f32`). Note: `max` is `max_v` in WGSL to avoid keyword collision.
+- `FogSpotLight` — 48 bytes, mirrors existing WGSL `FogSpotLight`.
+- `FogPointLight` — 32 bytes: `position [f32;3]`, `range f32`, `color [f32;3]` (pre-multiplied by intensity), `_pad f32`.
+- `FogParams` — matches existing WGSL `FogParams`.
 - Constants: `MAX_FOG_VOLUMES`, `MAX_FOG_POINT_LIGHTS`, `FOG_VOLUME_SIZE`, `FOG_SPOT_LIGHT_SIZE`, `FOG_POINT_LIGHT_SIZE`, `FOG_PARAMS_SIZE`, `DEFAULT_FOG_STEP_SIZE`.
 - Pack functions: `pack_fog_volumes`, `pack_fog_spot_lights`, `pack_fog_point_lights`, `pack_fog_params`.
-- `clamp_fog_pixel_scale(scale: u32) -> u32` — clamps to 1..=8, defaulting to 4 on 0.
+- `clamp_fog_pixel_scale(scale: u32) -> u32` — clamps to `1..=8`, defaults to 4 on 0.
 
 Register `pub mod fog_volume;` in `crates/postretro/src/fx/mod.rs`.
 
-### Task 2 — Renderer integration
+### Task 2 — PRL section and level loading
 
-Register `pub mod fog_pass;` in `crates/postretro/src/render/mod.rs` (currently the file exists but is orphaned). Add `fog: FogPass` field to `Renderer`. Construct it in `Renderer::new`, passing the camera BGL, SH BGL, and spot-shadow BGL.
+**`postretro-level-format` crate:** add `SectionId::FogVolumes = 30`. Create `fog_volumes.rs` with `FogVolumesSection { pixel_scale: u32, volumes: Vec<FogVolumeRecord> }`. `FogVolumeRecord` holds AABB + params + tags: `min [f32;3]`, `density f32`, `max [f32;3]`, `falloff f32`, `color [f32;3]`, `scatter f32`, `tags: Vec<String>`. Implement `to_bytes` / `from_bytes` following the pattern of existing section files (little-endian, `u32` count headers, `u32`-length-prefixed strings — same as `LightTagsSection`).
 
-Each frame, after the billboard sprite pass and before Present:
-1. `fog.upload_params(queue, inv_view_proj, camera_pos, near, far)`
-2. Collect active dynamic spot lights with shadow slots → `fog.upload_spots(queue, &fog_spots)`.
-3. Collect active dynamic point lights (see Task 4) → `fog.upload_points(queue, &fog_points)`.
-4. If `fog.active()`: dispatch the raymarch compute pass, then dispatch the composite blit over the forward-rendered surface.
-
-Handle `Renderer::resize` — call `fog.resize(device, width, height, depth_view)`. Handle surface-format change — call `fog.rebuild_composite_for_format(device, format)`.
-
-Group-6 bind group is owned by `FogPass` and rebuilt by `FogPass::resize` as needed; the renderer passes no bind-group references — it just calls the `FogPass` methods.
-
-### Task 3 — PRL section and level loading
-
-**`postretro-level-format` crate:**
-
-Add `SectionId::FogVolumes = 30` to `lib.rs`. Add `30 => Some(Self::FogVolumes)` to `SectionId::from_u32`. Create `fog_volumes.rs` with a `FogVolumesSection` struct: `pixel_scale: u32`, `volumes: Vec<FogVolumeRecord>`. `FogVolumeRecord` holds the same six f32 groups as `FogVolume` in the engine (min, density, max, falloff, color, scatter). Implement `FogVolumesSection::to_bytes` and `FogVolumesSection::from_bytes` following the pattern of existing section files. Wire `pub mod fog_volumes;` in the crate.
-
-**Wire format** — FogVolumes section (ID 30), little-endian throughout:
-
+**Wire format** — ID 30, little-endian:
 ```
 pixel_scale: u32
 volume_count: u32
-per entry (48 bytes each):
-  min_x, min_y, min_z: f32   (12 bytes)
-  density: f32               ( 4 bytes)
-  max_x, max_y, max_z: f32   (12 bytes)
-  falloff: f32               ( 4 bytes)
-  color_r, color_g, color_b: f32  (12 bytes)
-  scatter: f32               ( 4 bytes)
+per entry:
+  min_x, min_y, min_z: f32       (12 bytes)
+  density: f32                   ( 4 bytes)
+  max_x, max_y, max_z: f32       (12 bytes)
+  falloff: f32                   ( 4 bytes)
+  color_r, color_g, color_b: f32 (12 bytes)
+  scatter: f32                   ( 4 bytes)
+  tag_count: u32                 ( 4 bytes)
+  tags: tag_count × u32-length-prefixed UTF-8 strings
 ```
+Section is optional. Absent → `pixel_scale = 4, volume_count = 0`.
 
-Section is optional. Engine absent-reads default to `pixel_scale = 4, volume_count = 0`.
+**prl-build:** after the `env_reverb_zone` pass (same structural pattern for brush-entity AABB extraction), add an `env_fog_volume` pass. For each brush entity with classname `env_fog_volume`: exclude brushes from world geometry (same mechanism as `env_reverb_zone`), compute world-space AABB over all brush faces, parse KVPs (`color` RGB default `1 1 1`, `density` f32 default `0.5`, `falloff` f32 default `1.0`, `scatter` f32 default `0.6`), parse `_tags` KVP (space-delimited, matching the `entity-model-foundation` convention). Warn and skip if volume count would exceed `MAX_FOG_VOLUMES`. Read `fog_pixel_scale` from `worldspawn` KVP (u32, default 4, clamp 1–8). Write `FogVolumesSection`.
 
-**`postretro-level-compiler` (prl-build):**
+**Engine (`prl.rs`):** parse the FogVolumes section if present. Populate `LevelWorld` with `fog_volumes: Vec<FogVolumeRecord>` and `fog_pixel_scale: u32`.
 
-After the `env_reverb_zone` brush-entity resolution pass (same structural pattern), add an `env_fog_volume` pass:
-- Iterate brush entities with classname `env_fog_volume`.
-- Exclude their brushes from world geometry (already done by the brush-entity path for `env_reverb_zone`; follow the same mechanism).
-- For each such entity, compute the world-space AABB over all its brush faces.
-- Parse KVPs: `color` (RGB, default `1 1 1`), `density` (f32, default `0.5`), `falloff` (f32, default `1.0`), `scatter` (f32, default `0.6`). Log a warning and skip if volume count would exceed `MAX_FOG_VOLUMES`.
-- Read `fog_pixel_scale` from the worldspawn entity KVP (u32, default 4, clamp 1–8).
-- Write `FogVolumesSection` to the PRL.
+**Level load (`main.rs`):** after the existing entity dispatch, iterate `world.fog_volumes`. For each entry, spawn an ECS entity via `registry.try_spawn(transform_at_aabb_center, &entry.tags)`. Attach a `ComponentValue::FogVolume { density: entry.density, color: entry.color, scatter: entry.scatter }` component. Store the AABB in a side-table keyed by `EntityId` (analogous to the KVP side-table from entity-model-foundation Task 1). The renderer reads this side-table when packing the GPU volume buffer.
 
-**Engine (`prl.rs`):**
+### Task 3 — `FogVolume` component kind
 
-At level load, read the `FogVolumes` section if present. Populate `LevelWorld` with `fog_volumes: Vec<FogVolume>` and `fog_pixel_scale: u32`. The renderer reads these fields at level load and calls `fog_pass.upload_volumes()` and `fog_pass.set_pixel_scale()`.
+**`scripting/registry.rs`:** add `ComponentKind::FogVolume = 5` and `ComponentValue::FogVolume { density: f32, color: [f32; 3], scatter: f32 }`. Add to the `VARIANTS` const array. Implement the `Component` trait for `FogVolumeComponent`.
+
+**`scripting/conv.rs`:** extend `component_kind_from_name` with `"fog_volume" → ComponentKind::FogVolume`. Extend `FromJs`/`IntoJs` and `FromLua`/`IntoLua` for `ComponentValue::FogVolume`. `setComponent` accepts `density`, `color`, `scatter`; AABB fields are silently ignored if present (not settable at runtime). `getComponent` returns all three.
+
+**`scripting/primitives.rs`:** add `"fog_volume"` to `worldQuery`'s filter string set. `worldQuery({ component: "fog_volume" })` returns handles with shape `{ id, position, tags, component: { density, color, scatter } }`. Follow the entity-model-foundation handle-shape convention for return values.
+
+**`scripting/typedef.rs`:** add `"FogVolume"` to the `ComponentKind` union. Regenerate `sdk/types/postretro.d.ts` and `sdk/types/postretro.d.luau`; type-definition drift test passes.
 
 ### Task 4 — Point-light scatter
 
-**`fog_pass.rs`:**
+**`fog_pass.rs`:** add `fog_points_buffer: wgpu::Buffer` sized for `MAX_FOG_POINT_LIGHTS × FOG_POINT_LIGHT_SIZE`. Add `BIND_FOG_POINTS: u32 = 5` binding constant. Add the binding-5 entry to the group-6 BGL (storage buffer, read-only, compute-visible). Rebuild `build_group6` to include it. Add `upload_points(queue: &wgpu::Queue, points: &[FogPointLight])` method.
 
-Add `fog_points_buffer: wgpu::Buffer` sized for `MAX_FOG_POINT_LIGHTS × FOG_POINT_LIGHT_SIZE`. Add `BIND_FOG_POINTS: u32 = 5` binding constant. Add the binding-5 entry to the group-6 BGL (`wgpu::BufferBindingType::Storage { read_only: true }`, compute-visible). Rebuild `build_group6` to include the new buffer. Add `upload_points(queue: &wgpu::Queue, points: &[FogPointLight])` method.
-
-**`fog_volume.wgsl`:**
-
-Add `struct FogPointLight { position: vec3<f32>, range: f32, color: vec3<f32>, _pad: f32 }` and `@group(6) @binding(5) var<storage, read> fog_points: array<FogPointLight>`. In `cs_main`, after the spot-light loop, add a point-light loop:
+**`fog_volume.wgsl`:** add `struct FogPointLight { position: vec3<f32>, range: f32, color: vec3<f32>, _pad: f32 }` and `@group(6) @binding(5) var<storage, read> fog_points: array<FogPointLight>`. In `cs_main`, after the existing spot-light loop, add:
 
 ```wgsl
 // Proposed design (remove comment after implementation)
@@ -144,9 +137,38 @@ for (var pi: u32 = 0u; pi < pt_count; pi = pi + 1u) {
 
 No shadow map occlusion for point lights.
 
-**Renderer (per-frame upload, `render/mod.rs`):**
+### Task 5 — Renderer integration
 
-From `level_lights` (the already-filtered dynamic light list in `Renderer`), additionally collect lights where `light_type == LightType::Point`, cap at `MAX_FOG_POINT_LIGHTS`, pack as `FogPointLight { position, range: falloff_range, color: [r*intensity, g*intensity, b*intensity], _pad: 0.0 }`, and pass to `fog.upload_points()` each frame. This collection happens alongside the existing spot-light collection for fog.
+Register `pub mod fog_pass;` in `render/mod.rs`. Add `fog: FogPass` to `Renderer`; construct in `Renderer::new`. Each frame:
+
+1. Query ECS for `ComponentKind::FogVolume` components. For each entity, look up its AABB from the side-table (Task 2). Construct a `FogVolume` GPU entry from `(aabb, component.density, component.color, component.scatter, component.falloff)`. Pass the slice to `fog.upload_volumes(queue, &volumes)`.
+2. `fog.upload_params(queue, inv_view_proj, camera_pos, near, far)`.
+3. Build the `FogSpotLight` list from active shadow-mapped spots → `fog.upload_spots(queue, &spots)`.
+4. Build the `FogPointLight` list from active dynamic `LightType::Point` lights (pack as `{ position, range: falloff_range, color: [r×intensity, g×intensity, b×intensity], _pad: 0.0 }`, cap at `MAX_FOG_POINT_LIGHTS`) → `fog.upload_points(queue, &points)`.
+5. If `fog.active()`: dispatch the raymarch compute pass, then dispatch the composite blit over the forward-rendered surface.
+
+Apply `fog_pixel_scale` at level load: call `fog.set_pixel_scale(device, world.fog_pixel_scale, width, height, depth_view)`.
+
+Handle `Renderer::resize` — call `fog.resize(device, width, height, depth_view)`. Handle surface-format change — call `fog.rebuild_composite_for_format(device, format)`.
+
+### Task 6 — SDK fog volumes module
+
+Create `sdk/lib/entities/fog_volumes.ts` (and `.luau` twin). Define `FogVolumeHandle` — the return type of `world.query({ component: "fog_volume" })` — with fields from Task 3 (`id`, `position`, `tags`, `component`) plus three mutating methods:
+
+- `setDensity(density: number, transitionMs?: number)` — transitions density over time via `setComponent` calls in each tick, using the existing `timeline` / `sequence` utilities from `sdk/lib/util/`.
+- `setColor(color: [number, number, number], transitionMs?: number)` — same pattern for color.
+- `setScatter(scatter: number)` — instant (no tween needed for this property).
+
+Export animation constructors at module level:
+- `pulseDensity(handle, { min, max, period })` — returns a running animation controller that oscillates density sinusoidally each tick. Cancel via the returned controller's `.stop()`.
+- `fadeDensity(handle, to: number, durationMs: number)` — one-shot fade to target density.
+- `fadeColor(handle, to: [number, number, number], durationMs: number)` — one-shot color transition.
+
+All animation is tick-driven; no new engine primitives are required. Tick callbacks use `registerHandler("tick", ...)` internally.
+
+Wire `fog_volumes` into the SDK prelude (`sdk/lib/index.ts` → `sdk/lib/prelude.js`). For Luau, add `fog_volumes.luau` to the prelude evaluation order (alongside `entities/lights.luau` and `entities/emitters.luau`).
+
+Add fog volume entries to `docs/scripting-reference.md`: `world.query({ component: "fog_volume" })`, `FogVolumeHandle` methods, animation constructors, relationship to FGD `env_fog_volume` and `_tags`.
 
 ---
 
@@ -154,28 +176,71 @@ From `level_lights` (the already-filtered dynamic light list in `Renderer`), add
 
 **Phase 1 (sequential):** Task 1 — `fx/fog_volume.rs` unblocks everything; `fog_pass.rs` does not compile without it.
 
-**Phase 2 (concurrent):** Task 3 (level-format + prl-build + engine PRL loading) and Task 4 (shader + fog_pass.rs binding extension) — Task 3 touches only the level-format crate, prl-build, and `prl.rs`; Task 4 touches only `fog_volume.wgsl` and `fog_pass.rs`. No shared files.
+**Phase 2 (concurrent):** Task 2 (PRL pipeline) and Task 4 (shader + point-light binding) — no shared files.
 
-**Phase 3 (sequential):** Task 2 (renderer wiring) — consumes the completed `FogPass` API from Tasks 1 and 4, and the level-loaded volumes and pixel-scale from Task 3.
+**Phase 3 (concurrent):** Task 3 (ComponentKind + scripting) and Task 5 (Renderer integration) — Task 3 touches only `scripting/`; Task 5 touches only `render/`. Both depend on Tasks 1 and 2. Task 5 also depends on Task 4.
+
+**Phase 4 (sequential):** Task 6 (SDK + docs) — depends on Task 3 for the component API shape.
 
 ---
 
 ## Rough sketch
 
-`fog_pass.rs` is in `crates/postretro/src/render/` but not yet declared as a module in `render/mod.rs`. Adding `pub mod fog_pass;` is the minimal change to bring it into the build. The compiler will then surface all missing imports from `crate::fx::fog_volume`.
+`fog_pass.rs` is in `render/` but not yet declared as a module in `render/mod.rs` — adding `pub mod fog_pass;` is the minimal step to bring it into the build. The compiler will then surface all missing imports from `crate::fx::fog_volume`, which Task 1 resolves.
 
-`FogPointLight` is deliberately simpler than `FogSpotLight`: no slot, no direction, no cone angle. The distance check against `range` is the only culling; influence-volume pre-culling would require pulling in the influence-volume buffer (group 2) which is not currently bound to the fog pipeline. At retro-scale light counts (≤ 32), iterating all dynamic point lights per raymarch step is acceptable.
+The AABB is not in `ComponentValue::FogVolume` because it is baked level geometry. Scripts that need volume bounds for spatial logic should query the AABB side-table via a dedicated primitive (e.g., `getEntityBounds(id) -> { min, max }`). Whether to add this primitive is an open question below.
 
-Static neon lights (`_dynamic 0`) continue to tint fog via the SH ambient term (their contribution is baked into the irradiance volume). For localized halos, authors must use `_dynamic 1`. The plan does not change static-light behavior.
+`FogPointLight.color` is pre-multiplied by intensity on the CPU before upload, matching the `FogSpotLight.color` convention already in `fog_pass.rs`. No additional intensity field in the GPU struct.
 
-The `env_fog_volume` brush in the level compiler should follow the same pattern as `env_reverb_zone` for brush-entity AABB extraction — search the level-compiler for the reverb zone resolution pass when implementing Task 3.
+The `falloff` field on `FogVolume` (shader and PRL) is stored but not yet consumed in the scatter calculation. It is wired through the full pipeline for future use (edge density falloff within the AABB boundary) but its current value has no visual effect. Task 5's ECS collect loop passes `component.falloff` through; the WGSL loop does not read it. Document this in a brief source comment.
+
+For the `env_fog_volume` FGD, `_tags` works identically to all other FGD entities since entity-model-foundation established it as a universal KVP convention. TrenchBroom authors tag fog volumes with `_tags neon_haze` and scripts filter with `world.query({ component: "fog_volume", tag: "neon_haze" })`.
+
+Static neon lights (`_dynamic 0`) tint fog via SH ambient (baked into the irradiance volume). For localized halos, authors must use `_dynamic 1`. The plan does not change static-light behavior.
+
+---
+
+## Boundary inventory
+
+| Name | Rust | Wire / serde | TS / JS | Luau | FGD KVP |
+|---|---|---|---|---|---|
+| `ComponentKind::FogVolume` | `ComponentKind::FogVolume` | `"fog_volume"` | `"fog_volume"` | `"fog_volume"` | n/a |
+| `ComponentValue::FogVolume` | `ComponentValue::FogVolume { density, color, scatter }` | `{ kind: "fog_volume", density, color, scatter }` | same | same | n/a |
+| fog volume entity | `env_fog_volume` brush entity | PRL section 30 | `FogVolumeHandle` | `FogVolumeHandle` | `env_fog_volume` |
+| fog_pixel_scale | `LevelWorld.fog_pixel_scale: u32` | PRL section 30 header `u32` | n/a | n/a | `fog_pixel_scale` on worldspawn |
+| `FogPointLight` | `fx::fog_volume::FogPointLight` | group 6 binding 5 storage buffer | n/a | n/a | n/a |
+
+---
+
+## Wire format
+
+**FogVolumes section (ID 30)** — little-endian throughout. New surface; no existing section mirrors this layout exactly.
+
+```
+pixel_scale:  u32          header
+volume_count: u32          entry count
+--- per entry (variable length due to tags) ---
+min_x, min_y, min_z: f32   12 bytes
+density: f32                4 bytes
+max_x, max_y, max_z: f32   12 bytes
+falloff: f32                4 bytes
+color_r, color_g, color_b: f32  12 bytes
+scatter: f32                4 bytes
+tag_count: u32              4 bytes
+  tag_len: u32              4 bytes each
+  tag_utf8: [u8; tag_len]
+```
+
+Empty tag list serialises as `tag_count = 0` with no following bytes. Absent section: `pixel_scale` defaults to 4, `volume_count` defaults to 0.
 
 ---
 
 ## Open questions
 
-- **Influence-volume pre-culling for point lights.** The current design iterates all dynamic point lights (capped at 32) per raymarch step. If a map has many dynamic point lights and a large fog volume, this may become costly. Pre-culling against the fog volume AABB at CPU side (before upload) would reduce the per-step iteration, but adds complexity. Leave at "iterate all" until profiling on a representative scene indicates otherwise.
+- **`getEntityBounds` primitive.** Scripts currently cannot read an entity's AABB (fog volumes store it in a side-table not exposed through `ComponentValue`). A `getEntityBounds(id) -> { min: Vec3, max: Vec3 } | null` primitive would enable spatial scripts (e.g., detecting when the player enters a fog volume). Out of scope here — add if scripting needs it.
 
-- **`fog_pixel_scale` in existing maps.** Maps compiled before this plan have no FogVolumes section. The engine must default `pixel_scale` to 4 silently. Confirm this is the correct default or adjust.
+- **FogVolumes section always vs. conditional.** Should prl-build always emit the FogVolumes section (to carry `fog_pixel_scale` even in maps with no volumes), or only when at least one `env_fog_volume` exists? Decide at implementation time; make the behavior explicit in the section writer.
 
-- **FogVolumes section always written vs. conditional.** Should prl-build always emit the FogVolumes section (to carry `fog_pixel_scale` even in maps with no fog volumes), or only when at least one `env_fog_volume` exists? If always, the engine always picks up the pixel scale. If conditional, absence means default-4. Either works — decide at implementation time and make it explicit in the section writer.
+- **Influence-volume pre-culling for point lights.** Current design iterates all active dynamic point lights (capped at `MAX_FOG_POINT_LIGHTS = 32`) per raymarch step. Pre-culling against the fog volume AABB at CPU upload time would reduce per-step iteration. Leave as "iterate all" until profiling on a representative scene shows otherwise.
+
+- **`falloff` field activation.** The `falloff` f32 per fog volume is stored through the full pipeline but currently unused in the shader scatter loop. The intended use is density attenuation toward AABB edges (smooth boundary). If the blocked visual at hard AABB edges is unacceptable, activate `falloff` before shipping by having the shader compute a per-axis edge distance and apply `pow(edge_t, falloff)` to the density contribution at each sample. Decide before final review.

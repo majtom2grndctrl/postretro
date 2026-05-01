@@ -12,7 +12,7 @@ The GPU-side infrastructure (`fog_pass.rs`, `fog_volume.wgsl`, `fog_composite.wg
 already written but orphaned — no module declarations, no CPU data module, no renderer
 integration, no level-loading support.
 
-**Assumes entity-model-foundation is complete** — `MapEntity` PRL section (ID 29),
+**Assumes entity-model-foundation is complete** — `MapEntity` PRL section,
 `worldQuery`, `setComponent`, `getComponent`, `ComponentKind`, `ComponentValue`, and the
 `sdk/lib/entities/` vocabulary pattern are all available.
 
@@ -25,8 +25,9 @@ integration, no level-loading support.
 - Create `crates/postretro/src/fx/fog_volume.rs` — GPU-side structs, constants, and pack functions required by the orphaned `fog_pass.rs`
 - Declare `pub mod fog_volume;` in `fx/mod.rs` and `pub mod fog_pass;` in `render/mod.rs`
 - Add `ComponentKind::FogVolume = 5` and `ComponentValue::FogVolume { density, color, scatter, falloff }` to the entity registry; wire `worldQuery("fog_volume")`, `setComponent`, and `getComponent`
-- prl-build: parse `env_fog_volume` brush entities, compute world-space AABBs, write new `FogVolumes` PRL section (ID 30) with per-volume tags + `fog_pixel_scale` header
-- `postretro-level-format`: define `SectionId::FogVolumes = 30` and `FogVolumesSection`
+- prl-build: parse `env_fog_volume` brush entities, compute world-space AABBs, write new `FogVolumes` PRL section with per-volume tags + `fog_pixel_scale` header
+- `postretro-level-format`: define `SectionId::FogVolumes` (next available ID after entity-model-foundation's MapEntity section) and `FogVolumesSection`
+- `sdk/TrenchBroom/postretro.fgd`: declare `@SolidClass = env_fog_volume` with `color`, `density`, `falloff`, `scatter`, `_tags` keys; correct `fog_pixel_scale` on worldspawn to `integer` type with default `"4"`
 - Engine level load: parse FogVolumes section, spawn one FogVolume ECS entity per volume (origin = AABB center, tags from section, FogVolume component); apply `fog_pixel_scale`
 - Integrate `FogPass` into `Renderer`: instantiate, collect FogVolume components from ECS each frame to rebuild the GPU volumes buffer, dispatch compute + composite passes; handle resize and surface-format change
 - Add dynamic point-light scatter to `fog_volume.wgsl`: new `fog_points` binding (group 6, binding 5) iterates active dynamic omni lights and accumulates in-fog glow
@@ -83,9 +84,9 @@ Register `pub mod fog_volume;` in `crates/postretro/src/fx/mod.rs`.
 
 ### Task 2 — PRL section and level loading
 
-**`postretro-level-format` crate:** add `SectionId::FogVolumes = 30`. Create `fog_volumes.rs` with `FogVolumesSection { pixel_scale: u32, volumes: Vec<FogVolumeRecord> }`. `FogVolumeRecord` holds AABB + params + tags: `min [f32;3]`, `density f32`, `max [f32;3]`, `falloff f32`, `color [f32;3]`, `scatter f32`, `tags: Vec<String>`. Implement `to_bytes` / `from_bytes` following the pattern of existing section files (little-endian, `u32` count headers, `u32`-length-prefixed strings — same as `LightTagsSection`).
+**`postretro-level-format` crate:** add `SectionId::FogVolumes` (assign the next available discriminant at implementation time). Create `fog_volumes.rs` with `FogVolumesSection { pixel_scale: u32, volumes: Vec<FogVolumeRecord> }`. `FogVolumeRecord` holds AABB + params + tags: `min [f32;3]`, `density f32`, `max [f32;3]`, `falloff f32`, `color [f32;3]`, `scatter f32`, `tags: Vec<String>`. Implement `to_bytes` / `from_bytes` following the pattern of existing section files (little-endian, `u32` count headers, `u32`-length-prefixed strings — same as `LightTagsSection`).
 
-**Wire format** — ID 30, little-endian:
+**Wire format** — little-endian:
 ```
 pixel_scale: u32
 volume_count: u32
@@ -101,7 +102,9 @@ per entry:
 ```
 Section is optional. Absent → `pixel_scale = 4, volume_count = 0`.
 
-**prl-build:** after the `env_reverb_zone` pass (same structural pattern for brush-entity AABB extraction), add an `env_fog_volume` pass. For each brush entity with classname `env_fog_volume`: exclude brushes from world geometry (same mechanism as `env_reverb_zone`), compute world-space AABB over all brush faces, parse KVPs (`color` RGB default `1 1 1`, `density` f32 default `0.5`, `falloff` f32 default `1.0`, `scatter` f32 default `0.6`), parse `_tags` KVP (space-delimited, matching the `entity-model-foundation` convention). Warn and skip if volume count would exceed `MAX_FOG_VOLUMES` (= 16, matching the context doc). Read `fog_pixel_scale` from `worldspawn` KVP (u32, default 4, clamp 1–8). Write `FogVolumesSection`.
+**prl-build:** add an `env_fog_volume` pass following the brush-entity AABB extraction pattern (same structure as any future `env_reverb_zone` pass would use — iterate brush entities of the target classname, collect all face vertices, compute world-space min/max). For each brush entity with classname `env_fog_volume`: exclude brushes from world geometry (same mechanism as `env_reverb_zone`), compute world-space AABB over all brush faces, parse KVPs (`color` RGB default `1 1 1`, `density` f32 default `0.5`, `falloff` f32 default `1.0`, `scatter` f32 default `0.6`), parse `_tags` KVP (space-delimited, matching the `entity-model-foundation` convention). Warn and skip if volume count would exceed `MAX_FOG_VOLUMES` (= 16, matching the context doc). Read `fog_pixel_scale` from `worldspawn` KVP (u32, default 4, clamp 1–8). Write `FogVolumesSection`.
+
+**`sdk/TrenchBroom/postretro.fgd`:** declare `@SolidClass = env_fog_volume : "Per-region volumetric fog" [ color(color255) : "Fog color (R G B)" : "255 255 255", density(float) : "Fog density" : "0.5", falloff(float) : "Edge fade (0=hard, 1=linear ramp)" : "1.0", scatter(float) : "Scatter fraction toward camera" : "0.6", _tags(string) : "Space-delimited tags for script queries" : "" ]`. Also correct the existing `fog_pixel_scale` worldspawn key from `float` type with default `"1.0"` to `integer` type with default `"4"`.
 
 **Engine (`prl.rs`):** parse the FogVolumes section if present. Populate `LevelWorld` with `fog_volumes: Vec<FogVolumeRecord>` and `fog_pixel_scale: u32`.
 
@@ -223,7 +226,7 @@ Static neon lights (`_dynamic 0`) tint fog via SH ambient (baked into the irradi
 |---|---|---|---|---|---|
 | `ComponentKind::FogVolume` | `ComponentKind::FogVolume` | `"FogVolume"` | `"fog_volume"` | `"fog_volume"` | n/a |
 | `ComponentValue::FogVolume` | `ComponentValue::FogVolume { density, color, scatter, falloff }` | `{ kind: "fog_volume", density, color, scatter, falloff }` | same | same | n/a |
-| fog volume entity | `env_fog_volume` brush entity | PRL section 30 | `FogVolumeHandle` | `FogVolumeHandle` | `env_fog_volume` |
+| fog volume entity | `env_fog_volume` brush entity | FogVolumes PRL section | `FogVolumeHandle` | `FogVolumeHandle` | `env_fog_volume` |
 | fog_pixel_scale | `LevelWorld.fog_pixel_scale: u32` | PRL section 30 header `u32` | n/a | n/a | `fog_pixel_scale` on worldspawn |
 | `FogPointLight` | `fx::fog_volume::FogPointLight` | group 6 binding 5 storage buffer | n/a | n/a | n/a |
 
@@ -231,7 +234,7 @@ Static neon lights (`_dynamic 0`) tint fog via SH ambient (baked into the irradi
 
 ## Wire format
 
-**FogVolumes section (ID 30)** — little-endian throughout. New surface; no existing section mirrors this layout exactly.
+**FogVolumes section** — little-endian throughout. New surface; no existing section mirrors this layout exactly. Section ID assigned at implementation time.
 
 ```
 pixel_scale:  u32          header

@@ -184,13 +184,7 @@ construction block at line ~220.
 
 ## Open Questions
 
-1. **`cast_shadows` default.** Defaulting to `false` is safe and conservative — no existing
-   map regresses. The alternative (`true`) matches FGD lights but would give all descriptor
-   lights shadow slots immediately, which may be unexpected. Confirm with author before
-   implementing.
+None. Resolved decisions:
 
-2. **`LightDescriptor` serde default.** The struct derives `Serialize, Deserialize` and
-   goes through `serde_json::from_value`. Confirm that adding `#[serde(default)]` on the new
-   `cast_shadows` field (or on the struct) is sufficient for both the JS and Lua FFI paths,
-   since both call through `serde_json::from_value` after the `js_to_json` / `lua_to_json`
-   conversion. If not, an explicit field presence check in each deserializer is the fallback.
+- **`cast_shadows` default:** `false`. Opt-in nudges modders to make a deliberate choice; no existing map regresses.
+- **`LightDescriptor` serde default:** use `#[serde(default)]` on the new field, consistent with the existing pattern on the struct. Both the JS and Lua FFI paths go through `serde_json::from_value` after `js_to_json` / `lua_to_json` conversion — same mechanism used for other optional fields.

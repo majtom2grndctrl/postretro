@@ -59,6 +59,8 @@ integration, no level-loading support.
 - [ ] `world.query({ component: "fog_volume", tag: "neon_haze" })` returns only volumes tagged `neon_haze` in TrenchBroom via `_tags`.
 - [ ] `setComponent(id, { kind: "fog_volume", density: 0.0 })` causes the fog volume to visually disappear; restoring `density` to the authored value makes it visible again.
 - [ ] A fog volume with `falloff 1` has visibly lower density at its edges than at its center; setting `falloff 0` on the same volume produces uniform density to the AABB boundary.
+- [ ] A fog volume with `height_gradient 1` is visibly denser at the bottom of the volume (min.y) and fades to zero at the top (max.y); setting `height_gradient 0` restores uniform vertical density.
+- [ ] A fog volume with `radial_falloff 1` produces a sphere-shaped fog cloud centred on the AABB, visibly thinner toward the corners; setting `radial_falloff 0` restores uniform density to the full AABB boundary.
 - [ ] `pulseDensity`, `fadeDensity`, `fadeColor` SDK helpers visually animate fog parameters when called from a test script's tick handler — confirmed by observing the effect in-engine.
 - [ ] `cargo test --workspace` passes.
 - [ ] `cargo clippy --workspace -- -D warnings` clean.
@@ -72,7 +74,7 @@ integration, no level-loading support.
 
 Create `crates/postretro/src/fx/fog_volume.rs`. Define the GPU-side types `fog_pass.rs` imports:
 
-- `FogVolume` — 48 bytes packed; mirrors the WGSL `FogVolume` struct in `fog_volume.wgsl` (fields: `min [f32;3]`, `density f32`, `max [f32;3]`, `falloff f32`, `color [f32;3]`, `scatter f32`). Note: `max` is `max_v` in WGSL to avoid keyword collision.
+- `FogVolume` — 64 bytes packed; mirrors the WGSL `FogVolume` struct in `fog_volume.wgsl` (fields: `min [f32;3]`, `density f32`, `max [f32;3]`, `falloff f32`, `color [f32;3]`, `scatter f32`, `height_gradient f32`, `radial_falloff f32`, `_pad0 f32`, `_pad1 f32`). Note: `max` is `max_v` in WGSL to avoid keyword collision. Layout: four 16-byte rows — `(min, density)`, `(max_v, falloff)`, `(color, scatter)`, `(height_gradient, radial_falloff, _pad0, _pad1)`.
 - `FogSpotLight` — 48 bytes, mirrors existing WGSL `FogSpotLight`.
 - `FogPointLight` — 32 bytes: `position [f32;3]`, `range f32`, `color [f32;3]` (pre-multiplied by intensity), `_pad f32`.
 - `FogParams` — matches existing WGSL `FogParams`.
@@ -84,7 +86,7 @@ Register `pub mod fog_volume;` in `crates/postretro/src/fx/mod.rs`.
 
 ### Task 2 — PRL section and level loading
 
-**`postretro-level-format` crate:** add `SectionId::FogVolumes` (assign the next available discriminant at implementation time). Create `fog_volumes.rs` with `FogVolumesSection { pixel_scale: u32, volumes: Vec<FogVolumeRecord> }`. `FogVolumeRecord` holds AABB + params + tags: `min [f32;3]`, `density f32`, `max [f32;3]`, `falloff f32`, `color [f32;3]`, `scatter f32`, `tags: Vec<String>`. Implement `to_bytes` / `from_bytes` following the pattern of existing section files (little-endian, `u32` count headers, `u32`-length-prefixed strings — same as `LightTagsSection`).
+**`postretro-level-format` crate:** add `SectionId::FogVolumes` (assign the next available discriminant at implementation time). Create `fog_volumes.rs` with `FogVolumesSection { pixel_scale: u32, volumes: Vec<FogVolumeRecord> }`. `FogVolumeRecord` holds AABB + params + tags: `min [f32;3]`, `density f32`, `max [f32;3]`, `falloff f32`, `color [f32;3]`, `scatter f32`, `height_gradient f32`, `radial_falloff f32`, `tags: Vec<String>`. Implement `to_bytes` / `from_bytes` following the pattern of existing section files (little-endian, `u32` count headers, `u32`-length-prefixed strings — same as `LightTagsSection`).
 
 **Wire format** — little-endian:
 ```
@@ -97,16 +99,18 @@ per entry:
   falloff: f32                   ( 4 bytes)
   color_r, color_g, color_b: f32 (12 bytes)
   scatter: f32                   ( 4 bytes)
+  height_gradient: f32           ( 4 bytes)
+  radial_falloff: f32            ( 4 bytes)
   tag_count: u32                 ( 4 bytes)
   tags: tag_count × u32-length-prefixed UTF-8 strings (tag_len counts bytes, not codepoints)
 ```
 Section is optional. Absent → `pixel_scale = 4, volume_count = 0`.
 
-**prl-build:** add an `env_fog_volume` pass following the brush-entity AABB extraction pattern (same structure as any future `env_reverb_zone` pass would use — iterate brush entities of the target classname, collect all face vertices, compute world-space min/max). For each brush entity with classname `env_fog_volume`: exclude brushes from world geometry (same mechanism as `env_reverb_zone`), compute world-space AABB over all brush faces, parse KVPs (`color` RGB default `1 1 1`, `density` f32 default `0.5`, `falloff` f32 default `1.0`, `scatter` f32 default `0.6`), parse `_tags` KVP (plural, space-delimited — the universal per-entity tag convention established by `entity-model-foundation` and already used by the `quake_map.rs` reader at the `_tags` key). Warn and skip if volume count would exceed `MAX_FOG_VOLUMES` (= 16, matching the context doc). Read `fog_pixel_scale` from `worldspawn` KVP (u32, default 4, clamp 1–8). Write `FogVolumesSection`.
+**prl-build:** add an `env_fog_volume` pass following the brush-entity AABB extraction pattern (same structure as any future `env_reverb_zone` pass would use — iterate brush entities of the target classname, collect all face vertices, compute world-space min/max). For each brush entity with classname `env_fog_volume`: exclude brushes from world geometry (same mechanism as `env_reverb_zone`), compute world-space AABB over all brush faces, parse KVPs (`color` RGB default `1 1 1`, `density` f32 default `0.5`, `falloff` f32 default `1.0`, `scatter` f32 default `0.6`, `height_gradient` f32 default `0.0`, `radial_falloff` f32 default `0.0`), parse `_tags` KVP (plural, space-delimited — the universal per-entity tag convention established by `entity-model-foundation` and already used by the `quake_map.rs` reader at the `_tags` key). Warn and skip if volume count would exceed `MAX_FOG_VOLUMES` (= 16, matching the context doc). Read `fog_pixel_scale` from `worldspawn` KVP (u32, default 4, clamp 1–8). Write `FogVolumesSection`.
 
 **Tag KVP convention — `_tags` is canonical; `_tag` rustdoc is stale.** The universal per-entity KVP key is `_tags` (plural, space-delimited). This is what `entity-model-foundation` formalises and what the existing reader in `crates/level-compiler/src/format/quake_map.rs` already parses (see the `_tags` literal at `quake_map.rs:390`, plus the round-trip tests at `quake_map.rs:1261`, `:1273`, `:1296`). The `LightTagsSection` (PRL section 26) is sourced from this same `_tags` FGD key — only the rustdoc comment on `LightTagsSection` in `crates/level-format/src/lib.rs:126` mentions `_tag` (singular), and that comment is stale. As a small bookkeeping fix, this plan corrects that single-line rustdoc to read `_tags` so future readers do not mis-cite it as a competing convention. No new tag KVP key is introduced; fog volumes use `_tags` everywhere — FGD, prl-build parser, PRL section, ECS tag column, scripting `worldQuery({ tag: ... })` — exactly as lights and any other entity do.
 
-**`sdk/TrenchBroom/postretro.fgd`:** declare `@SolidClass = env_fog_volume : "Per-region volumetric fog" [ color(color255) : "Fog color (R G B)" : "255 255 255", density(float) : "Fog density" : "0.5", falloff(float) : "Edge fade (0=hard, 1=linear ramp)" : "1.0", scatter(float) : "Scatter fraction toward camera" : "0.6", _tags(string) : "Space-delimited tags for script queries" : "" ]`. Also correct the existing `fog_pixel_scale` worldspawn key from `float` type with default `"1.0"` to `integer` type with default `"4"`.
+**`sdk/TrenchBroom/postretro.fgd`:** declare `@SolidClass = env_fog_volume : "Per-region volumetric fog" [ color(color255) : "Fog color (R G B)" : "255 255 255", density(float) : "Fog density" : "0.5", falloff(float) : "Edge fade (0=hard, 1=linear ramp)" : "1.0", scatter(float) : "Scatter fraction toward camera" : "0.6", height_gradient(float) : "Height density gradient (0=uniform, 1=dense at bottom)" : "0.0", radial_falloff(float) : "Radial density falloff (0=none, 1=sphere-shaped cloud)" : "0.0", _tags(string) : "Space-delimited tags for script queries" : "" ]`. Also correct the existing `fog_pixel_scale` worldspawn key from `float` type with default `"1.0"` to `integer` type with default `"4"`.
 
 **Engine (`prl.rs`):** parse the FogVolumes section if present. Populate `LevelWorld` with `fog_volumes: Vec<FogVolumeRecord>` and `fog_pixel_scale: u32`.
 
@@ -116,7 +120,7 @@ Section is optional. Absent → `pixel_scale = 4, volume_count = 0`.
 
 - Define `pub struct FogVolumeAabb { pub min: Vec3, pub max: Vec3 }` (a small local type in the new `fog_volume_bridge.rs` module — there is no pre-existing engine-wide `Aabb` type to reuse) and `pub struct FogVolumeAabbs { table: HashMap<EntityId, FogVolumeAabb> }`. Both live in `crates/postretro/src/scripting/systems/fog_volume_bridge.rs` alongside `FogVolumeBridge` (defined in Task 5). Use `glam::Vec3` (already pervasive in game-side code, non-wgpu).
 - The side-table is owned by `FogVolumeBridge`, which itself is owned by `Application` in `main.rs` — exactly parallel to how `Application` owns `LightBridge` and `ParticleRenderCollector`. It lives for the duration of the loaded level; `FogVolumeBridge::populate_from_level` (called from level load) inserts one entry per `FogVolumeRecord`, and a paired `FogVolumeBridge::clear` runs on level unload. `EntityRegistry` itself is *not* extended — fog AABBs are bridge-local, just as `LightBridge`'s `MapLightShape` table is bridge-local.
-- The side-table is read each frame *only* by `FogVolumeBridge::update`, never by the renderer. The bridge correlates each `(EntityId, ComponentValue::FogVolume { density, color, scatter, falloff })` it pulls from the registry with the entity's stored AABB, packs `FogVolume` GPU records (the 48-byte struct from Task 1) into a `Vec<u8>`, and hands the bytes to `Renderer::upload_fog_volumes(&[u8])`. The renderer therefore never imports `postretro-level-format` types, never imports `EntityRegistry`, and never reads the side-table — it only consumes opaque packed bytes, exactly as it does today for `upload_bridge_lights` / `upload_bridge_descriptors` / `upload_bridge_samples`. This satisfies the rendering-pipeline §9 boundary rule.
+- The side-table is read each frame *only* by `FogVolumeBridge::update`, never by the renderer. The bridge correlates each `(EntityId, ComponentValue::FogVolume { density, color, scatter, falloff })` it pulls from the registry with the entity's stored AABB, packs `FogVolume` GPU records (the 64-byte struct from Task 1) into a `Vec<u8>`, and hands the bytes to `Renderer::upload_fog_volumes(&[u8])`. The renderer therefore never imports `postretro-level-format` types, never imports `EntityRegistry`, and never reads the side-table — it only consumes opaque packed bytes, exactly as it does today for `upload_bridge_lights` / `upload_bridge_descriptors` / `upload_bridge_samples`. This satisfies the rendering-pipeline §9 boundary rule.
 
 ### Task 3 — `FogVolume` component kind
 
@@ -141,12 +145,23 @@ let center   = (v.min + v.max_v) * 0.5;
 // local_abs: [0..1] per axis, 0 = center, 1 = face
 let local_abs = abs(pos - center) / max(half_ext, vec3<f32>(1.0e-6));
 // edge_t: 1 at volume center, 0 at nearest face
-let edge_t = 1.0 - clamp(max(local_abs.x, max(local_abs.y, local_abs.z)), 0.0, 1.0);
-let fade = pow(clamp(edge_t, 0.0, 1.0), v.falloff);
+let edge_t   = 1.0 - clamp(max(local_abs.x, max(local_abs.y, local_abs.z)), 0.0, 1.0);
+let box_fade = pow(clamp(edge_t, 0.0, 1.0), v.falloff);
+
+// Height gradient: dense at min.y, fades toward max.y; 0 = no effect (height_fade = 1)
+let height_t    = clamp((pos.y - v.min.y) / max(v.max_v.y - v.min.y, 1.0e-6), 0.0, 1.0);
+let height_fade = clamp(1.0 - height_t * v.height_gradient, 0.0, 1.0);
+
+// Radial gradient: density peaks at center, falls off to AABB half-diagonal; 0 = no effect (radial_fade = 1)
+let half_diag   = length(half_ext);
+let radial_t    = clamp(length(pos - center) / max(half_diag, 1.0e-6), 0.0, 1.0);
+let radial_fade = pow(clamp(1.0 - radial_t, 0.0, 1.0), v.radial_falloff);
+
+let fade = box_fade * height_fade * radial_fade;
 out.density += v.density * fade;
 ```
 
-Replace the corresponding `out.color` accumulation (`v.color * v.density`) with `v.color * v.density * fade` so the weighted color blend tracks the attenuated density. The existing post-loop `out.color = out.color / out.density;` normalization line is preserved unchanged — it correctly normalizes the fade-weighted color sum.
+Replace the corresponding `out.color` accumulation (`v.color * v.density`) with `v.color * v.density * fade` so the weighted color blend tracks the attenuated density. All three fade terms are independent and composable — setting any parameter to `0.0` collapses its term to `1.0`. The existing post-loop `out.color = out.color / out.density;` normalization line is preserved unchanged — it correctly normalizes the fade-weighted color sum.
 
 **`fog_volume.wgsl` — point-light loop:** add `struct FogPointLight { position: vec3<f32>, range: f32, color: vec3<f32>, _pad: f32 }` and `@group(6) @binding(5) var<storage, read> fog_points: array<FogPointLight>`. In `cs_main`, after the existing spot-light loop, add:
 
@@ -177,7 +192,7 @@ API:
 
 - `populate_from_level(&mut self, registry: &mut EntityRegistry, records: &[FogVolumeRecord]) -> Result<()>` — called once at level load. Spawns ECS entities, attaches components, and writes the AABB side-table (see "Level load" in Task 2).
 - `clear(&mut self)` — called on level unload; drops `aabbs`, `entity_ids`, retains scratch capacity.
-- `update_volumes(&mut self, registry: &EntityRegistry) -> Option<&[u8]>` — walks `registry.iter_with_kind(ComponentKind::FogVolume)`, looks up each entity's AABB from `self.aabbs`, packs a `FogVolume` GPU record (Task 1's 48-byte struct) into `self.volumes_bytes`. Returns `Some(&self.volumes_bytes)` if non-empty, else `None`. Mirrors `ParticleRenderCollector::collect` + `iter_collections`.
+- `update_volumes(&mut self, registry: &EntityRegistry) -> Option<&[u8]>` — walks `registry.iter_with_kind(ComponentKind::FogVolume)`, looks up each entity's AABB from `self.aabbs`, packs a `FogVolume` GPU record (Task 1's 64-byte struct) into `self.volumes_bytes`. Returns `Some(&self.volumes_bytes)` if non-empty, else `None`. Mirrors `ParticleRenderCollector::collect` + `iter_collections`.
 - `update_points(&mut self, lights: &[MapLight]) -> &[u8]` — given the active dynamic light list (passed in by `main.rs`, sourced from the same place `render_frame_indirect` reads its lights), filters to `LightType::Point` with `_dynamic 1`, performs the sphere-vs-AABB pre-cull against `self.aabbs.values()` (O(lights × volumes); skip any light whose sphere fails to intersect every volume), packs survivors as `FogPointLight { position, range: falloff_range, color: [r×intensity, g×intensity, b×intensity], _pad: 0.0 }`, caps at `MAX_FOG_POINT_LIGHTS`, returns `&self.points_bytes`.
 
 **Frame call site** (`main.rs`, between Game logic and the existing `render_frame_indirect` call, alongside `light_bridge.update`):
@@ -291,6 +306,8 @@ max_x, max_y, max_z: f32   12 bytes
 falloff: f32                4 bytes
 color_r, color_g, color_b: f32  12 bytes
 scatter: f32                4 bytes
+height_gradient: f32        4 bytes
+radial_falloff: f32         4 bytes
 tag_count: u32              4 bytes
   tag_len: u32              4 bytes each (byte count, not codepoints)
   tag_utf8: [u8; tag_len]

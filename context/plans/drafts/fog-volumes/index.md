@@ -29,7 +29,7 @@ integration, no level-loading support.
 - `postretro-level-format`: define `SectionId::FogVolumes` (next available ID after entity-model-foundation's MapEntity section) and `FogVolumesSection`
 - `sdk/TrenchBroom/postretro.fgd`: declare `@SolidClass = env_fog_volume` with `color`, `density`, `falloff`, `scatter`, `_tags` keys; correct `fog_pixel_scale` on worldspawn to `integer` type with default `"4"`
 - Engine level load: parse FogVolumes section, spawn one FogVolume ECS entity per volume (origin = AABB center, tags from section, FogVolume component); apply `fog_pixel_scale`
-- Integrate `FogPass` into `Renderer`: instantiate, collect FogVolume components from ECS each frame to rebuild the GPU volumes buffer, dispatch compute + composite passes; handle resize and surface-format change
+- Integrate `FogPass` into `Renderer`: instantiate, dispatch compute + composite passes, handle resize and surface-format change. The renderer never queries the ECS or owns the AABB side-table — a game-side `FogVolumeBridge` (mirroring the existing `LightBridge` / `ParticleRenderCollector` pattern) walks the registry, packs `FogVolume` GPU bytes, and uploads via a new `Renderer::upload_fog_volumes(&[u8])` method between Game logic and Render (preserving the rendering-pipeline §9 boundary rule)
 - Add dynamic point-light scatter to `fog_volume.wgsl`: new `fog_points` binding (group 6, binding 5) iterates active dynamic omni lights and accumulates in-fog glow
 - Add `FogPointLight` struct, `upload_points()` method, and binding-5 slot to `fog_pass.rs`; CPU upload filters dynamic `LightType::Point` lights each frame
 - `sdk/lib/entities/fog_volumes.{ts,luau}`: `FogVolumeHandle` wrapper plus `pulseDensity`, `fadeDensity`, `fadeColor` animation helpers (tick-driven, no new engine primitives)
@@ -104,15 +104,19 @@ Section is optional. Absent → `pixel_scale = 4, volume_count = 0`.
 
 **prl-build:** add an `env_fog_volume` pass following the brush-entity AABB extraction pattern (same structure as any future `env_reverb_zone` pass would use — iterate brush entities of the target classname, collect all face vertices, compute world-space min/max). For each brush entity with classname `env_fog_volume`: exclude brushes from world geometry (same mechanism as `env_reverb_zone`), compute world-space AABB over all brush faces, parse KVPs (`color` RGB default `1 1 1`, `density` f32 default `0.5`, `falloff` f32 default `1.0`, `scatter` f32 default `0.6`), parse `_tags` KVP (plural, space-delimited — the universal per-entity tag convention established by `entity-model-foundation` and already used by the `quake_map.rs` reader at the `_tags` key). Warn and skip if volume count would exceed `MAX_FOG_VOLUMES` (= 16, matching the context doc). Read `fog_pixel_scale` from `worldspawn` KVP (u32, default 4, clamp 1–8). Write `FogVolumesSection`.
 
-**Tag KVP convention — note on prior `_tag` usage.** The legacy per-light `LightTagsSection` (PRL section 26) is sourced from the `_tags` FGD key on `light` entities (see `crates/level-compiler/src/format/quake_map.rs`); its rustdoc in `crates/level-format/src/lib.rs` mentions `_tag` (singular) but that comment is stale — the actual reader uses `_tags`. `entity-model-foundation` formalises `_tags` (plural, space-delimited) as the universal KVP convention for *all* entities (lights, brush entities, point entities); fog volumes follow that same convention. No new tag KVP key is introduced by this plan.
+**Tag KVP convention — `_tags` is canonical; `_tag` rustdoc is stale.** The universal per-entity KVP key is `_tags` (plural, space-delimited). This is what `entity-model-foundation` formalises and what the existing reader in `crates/level-compiler/src/format/quake_map.rs` already parses (see the `_tags` literal at `quake_map.rs:390`, plus the round-trip tests at `quake_map.rs:1261`, `:1273`, `:1296`). The `LightTagsSection` (PRL section 26) is sourced from this same `_tags` FGD key — only the rustdoc comment on `LightTagsSection` in `crates/level-format/src/lib.rs:126` mentions `_tag` (singular), and that comment is stale. As a small bookkeeping fix, this plan corrects that single-line rustdoc to read `_tags` so future readers do not mis-cite it as a competing convention. No new tag KVP key is introduced; fog volumes use `_tags` everywhere — FGD, prl-build parser, PRL section, ECS tag column, scripting `worldQuery({ tag: ... })` — exactly as lights and any other entity do.
 
 **`sdk/TrenchBroom/postretro.fgd`:** declare `@SolidClass = env_fog_volume : "Per-region volumetric fog" [ color(color255) : "Fog color (R G B)" : "255 255 255", density(float) : "Fog density" : "0.5", falloff(float) : "Edge fade (0=hard, 1=linear ramp)" : "1.0", scatter(float) : "Scatter fraction toward camera" : "0.6", _tags(string) : "Space-delimited tags for script queries" : "" ]`. Also correct the existing `fog_pixel_scale` worldspawn key from `float` type with default `"1.0"` to `integer` type with default `"4"`.
 
 **Engine (`prl.rs`):** parse the FogVolumes section if present. Populate `LevelWorld` with `fog_volumes: Vec<FogVolumeRecord>` and `fog_pixel_scale: u32`.
 
-**Level load (`main.rs`):** after the existing entity dispatch, iterate `world.fog_volumes`. For each entry, spawn an ECS entity via `let id = registry.try_spawn(Transform { position: (entry.min + entry.max) * 0.5, rotation: Quat::IDENTITY, scale: Vec3::ONE }, &entry.tags)?;` (using the `try_spawn(transform, tags)` signature established by entity-model-foundation Task 2). Attach a `ComponentValue::FogVolume { density: entry.density, color: entry.color, scatter: entry.scatter, falloff: entry.falloff }` component. Record the AABB in a per-level side-table keyed by `EntityId`.
+**Level load (`main.rs`):** after the existing entity dispatch, call `self.fog_volume_bridge.populate_from_level(&mut registry, &world.fog_volumes)?`. The bridge's `populate_from_level` method iterates `world.fog_volumes` and, for each entry, spawns an ECS entity via `let id = registry.try_spawn(Transform { position: (entry.min + entry.max) * 0.5, rotation: Quat::IDENTITY, scale: Vec3::ONE }, &entry.tags)?;` (using the `try_spawn(transform, tags)` signature established by entity-model-foundation Task 2), attaches a `ComponentValue::FogVolume { density: entry.density, color: entry.color, scatter: entry.scatter, falloff: entry.falloff }` component, and records `FogVolumeAabb { min: entry.min.into(), max: entry.max.into() }` into the bridge's `FogVolumeAabbs` side-table keyed by the new `EntityId`. The `Application` struct in `main.rs` gains a `fog_volume_bridge: FogVolumeBridge` field next to `light_bridge`.
 
-**AABB side-table ownership.** The side-table is a plain non-wgpu structure that lives outside both `render/` (which §9 forbids from importing map-loader types) and `postretro-level-format` (a wire-format crate). Concretely: define `pub struct FogVolumeAabbs { table: HashMap<EntityId, Aabb> }` in a new module `crates/postretro/src/fx/fog_volume_aabbs.rs` — the same `fx/` crate that owns `fog_volume.rs` (CPU-side fog data). `Aabb { min: Vec3, max: Vec3 }` is the existing `glam`-based engine AABB type (it is non-wgpu, already used by game logic and the renderer's frustum culler — see `LevelGeometry` in `render/mod.rs` for the precedent of passing engine-defined types across the renderer boundary). The level-load path in `main.rs` owns one `FogVolumeAabbs` instance for the duration of the loaded level (alongside `EntityRegistry`). Insert one entry per fog volume during the level-load loop above; clear on level unload. The side-table is read each frame by the fog-volume bridge step described in Task 5 — *not* by the renderer directly. This preserves §9: the renderer receives only packed GPU-ready bytes / engine slices, and never imports `postretro-level-format` types or queries the side-table itself.
+**AABB side-table ownership.** The side-table is a plain non-wgpu, non-wire structure owned by the game layer, mirroring the `LightBridge` / `ParticleRenderCollector` precedent in `crates/postretro/src/scripting/systems/`. Concretely:
+
+- Define `pub struct FogVolumeAabb { pub min: Vec3, pub max: Vec3 }` (a small local type in the new `fog_volume_bridge.rs` module — there is no pre-existing engine-wide `Aabb` type to reuse) and `pub struct FogVolumeAabbs { table: HashMap<EntityId, FogVolumeAabb> }`. Both live in `crates/postretro/src/scripting/systems/fog_volume_bridge.rs` alongside `FogVolumeBridge` (defined in Task 5). Use `glam::Vec3` (already pervasive in game-side code, non-wgpu).
+- The side-table is owned by `FogVolumeBridge`, which itself is owned by `Application` in `main.rs` — exactly parallel to how `Application` owns `LightBridge` and `ParticleRenderCollector`. It lives for the duration of the loaded level; `FogVolumeBridge::populate_from_level` (called from level load) inserts one entry per `FogVolumeRecord`, and a paired `FogVolumeBridge::clear` runs on level unload. `EntityRegistry` itself is *not* extended — fog AABBs are bridge-local, just as `LightBridge`'s `MapLightShape` table is bridge-local.
+- The side-table is read each frame *only* by `FogVolumeBridge::update`, never by the renderer. The bridge correlates each `(EntityId, ComponentValue::FogVolume { density, color, scatter, falloff })` it pulls from the registry with the entity's stored AABB, packs `FogVolume` GPU records (the 48-byte struct from Task 1) into a `Vec<u8>`, and hands the bytes to `Renderer::upload_fog_volumes(&[u8])`. The renderer therefore never imports `postretro-level-format` types, never imports `EntityRegistry`, and never reads the side-table — it only consumes opaque packed bytes, exactly as it does today for `upload_bridge_lights` / `upload_bridge_descriptors` / `upload_bridge_samples`. This satisfies the rendering-pipeline §9 boundary rule.
 
 ### Task 3 — `FogVolume` component kind
 
@@ -161,19 +165,53 @@ for (var pi: u32 = 0u; pi < pt_count; pi = pi + 1u) {
 
 No shadow map occlusion for point lights.
 
-### Task 5 — Renderer integration
+### Task 5 — Renderer integration and FogVolumeBridge
 
-Register `pub mod fog_pass;` in `render/mod.rs`. Add `fog: FogPass` to `Renderer`; construct in `Renderer::new`. Each frame:
+This task has two halves: the game-side **bridge** that walks the ECS and produces GPU-ready bytes, and the renderer-side **FogPass wiring** that consumes those bytes.
 
-1. Query ECS for `ComponentKind::FogVolume` components. For each entity, look up its AABB from the side-table (Task 2). Construct a `FogVolume` GPU entry from `(aabb, component.density, component.color, component.scatter, component.falloff)`. Pass the slice to `fog.upload_volumes(queue, &volumes)`.
-2. `fog.upload_params(queue, inv_view_proj, camera_pos, near, far)`.
-3. Upload the `FogSpotLight` list via the existing `fog.upload_spots(queue, &spots)` call — shader-side spot scatter is already implemented.
-4. Build the `FogPointLight` list from active dynamic `LightType::Point` lights: discard any light whose bounding sphere (`position` ± `falloff_range`) does not intersect at least one fog volume AABB (sphere-AABB test, O(lights × volumes)). Pack survivors as `{ position, range: falloff_range, color: [r×intensity, g×intensity, b×intensity], _pad: 0.0 }`, cap at `MAX_FOG_POINT_LIGHTS` → `fog.upload_points(queue, &points)`.
-5. If `fog.active()`: dispatch the raymarch compute pass, then dispatch the composite blit over the forward-rendered surface.
+**Game-side bridge** (`crates/postretro/src/scripting/systems/fog_volume_bridge.rs` — new module, registered in `scripting/systems/mod.rs`):
 
-Apply `fog_pixel_scale` at level load: call `fog.set_pixel_scale(device, world.fog_pixel_scale, width, height, depth_view)`.
+Define `pub(crate) struct FogVolumeBridge { aabbs: FogVolumeAabbs, entity_ids: Vec<EntityId>, volumes_bytes: Vec<u8>, points_bytes: Vec<u8> }` plus the `FogVolumeAabbs` / `FogVolumeAabb` types from Task 2. The bridge mirrors `LightBridge`'s shape: it owns retained scratch buffers across frames so capacity is reused.
 
-Handle `Renderer::resize` — call `fog.resize(device, width, height, depth_view)`. Handle surface-format change — call `fog.rebuild_composite_for_format(device, format)`.
+API:
+
+- `populate_from_level(&mut self, registry: &mut EntityRegistry, records: &[FogVolumeRecord]) -> Result<()>` — called once at level load. Spawns ECS entities, attaches components, and writes the AABB side-table (see "Level load" in Task 2).
+- `clear(&mut self)` — called on level unload; drops `aabbs`, `entity_ids`, retains scratch capacity.
+- `update_volumes(&mut self, registry: &EntityRegistry) -> Option<&[u8]>` — walks `registry.iter_with_kind(ComponentKind::FogVolume)`, looks up each entity's AABB from `self.aabbs`, packs a `FogVolume` GPU record (Task 1's 48-byte struct) into `self.volumes_bytes`. Returns `Some(&self.volumes_bytes)` if non-empty, else `None`. Mirrors `ParticleRenderCollector::collect` + `iter_collections`.
+- `update_points(&mut self, lights: &[MapLight]) -> &[u8]` — given the active dynamic light list (passed in by `main.rs`, sourced from the same place `render_frame_indirect` reads its lights), filters to `LightType::Point` with `_dynamic 1`, performs the sphere-vs-AABB pre-cull against `self.aabbs.values()` (O(lights × volumes); skip any light whose sphere fails to intersect every volume), packs survivors as `FogPointLight { position, range: falloff_range, color: [r×intensity, g×intensity, b×intensity], _pad: 0.0 }`, caps at `MAX_FOG_POINT_LIGHTS`, returns `&self.points_bytes`.
+
+**Frame call site** (`main.rs`, between Game logic and the existing `render_frame_indirect` call, alongside `light_bridge.update`):
+
+```rust
+{
+    let registry = self.script_ctx.registry.borrow();
+    if let Some(bytes) = self.fog_volume_bridge.update_volumes(&registry) {
+        renderer.upload_fog_volumes(bytes);
+    } else {
+        renderer.upload_fog_volumes(&[]); // signals zero volumes; FogPass::active() → false
+    }
+    let point_bytes = self.fog_volume_bridge.update_points(renderer.level_lights());
+    renderer.upload_fog_points(point_bytes);
+}
+```
+
+**Renderer-side wiring** (`crates/postretro/src/render/`):
+
+Register `pub mod fog_pass;` in `render/mod.rs`. Add `fog: FogPass` to `Renderer`; construct in `Renderer::new`. Add three new methods on `Renderer` (each is a thin pass-through to `FogPass`, *not* a place where ECS or side-table types are referenced):
+
+- `pub fn upload_fog_volumes(&mut self, bytes: &[u8])` — forwards to `self.fog.upload_volumes_bytes(&self.queue, bytes)`. Updates internal `volume_count` driving `FogPass::active()`.
+- `pub fn upload_fog_points(&mut self, bytes: &[u8])` — forwards to `self.fog.upload_points_bytes(&self.queue, bytes)`.
+- `pub fn set_fog_pixel_scale(&mut self, scale: u32)` — called at level load to apply `world.fog_pixel_scale`. Forwards to `self.fog.set_pixel_scale(...)` with the cached `width`, `height`, `depth_view`.
+
+Inside `render_frame_indirect`, after the existing SH compose / shadow / forward / smoke passes:
+
+1. `self.fog.upload_params(&self.queue, inv_view_proj, camera_pos, near, far)` — params come from the renderer's own camera state; no ECS needed.
+2. `self.fog.upload_spots(&self.queue, &spots)` — spot scatter list, built from the renderer's existing dynamic-light array (the `level_lights` / shadow-light path), same source the existing forward shader uses. No new boundary crossing.
+3. If `self.fog.active()`: dispatch the raymarch compute pass, then the composite blit.
+
+Note the renderer **does not** import `ComponentKind`, `ComponentValue`, `EntityRegistry`, `FogVolumeAabbs`, or any `scripting::*` type. The volumes and point-lights buffers are populated only via `upload_fog_volumes` / `upload_fog_points` from `main.rs`. This is identical to the precedent set by `upload_bridge_lights` for scripted-light data.
+
+`Renderer::resize` calls `self.fog.resize(device, width, height, depth_view)`. Surface-format change calls `self.fog.rebuild_composite_for_format(device, format)`.
 
 ### Task 6 — SDK fog volumes module
 
@@ -182,6 +220,7 @@ Create `sdk/lib/entities/fog_volumes.ts` (and `.luau` twin). Define `FogVolumeHa
 - `setDensity(density: number, transitionMs?: number)` — transitions density over time via `setComponent` calls in each tick, using the existing `timeline` / `sequence` utilities from `sdk/lib/util/`.
 - `setColor(color: [number, number, number], transitionMs?: number)` — same pattern for color.
 - `setScatter(scatter: number)` — instant (no tween needed for this property).
+- `setFalloff(falloff: number)` — instant. Mirrors the per-field-setter pattern established by `LightHandle.setIntensity` / `LightHandle.setColor` in `sdk/lib/entities/lights.ts`, where every authorable component field has a dedicated setter rather than forcing callers through raw `setComponent`. Required so AC8 (verifying the `falloff = 0` vs `falloff = 1` visual contrast) has an SDK-level surface, not just a `setComponent({ kind: "fog_volume", falloff: 0 })` raw call. Instant rather than tweenable because falloff drives a subtle edge-shape parameter that authors typically toggle at scene-setup time, not animate.
 
 Export animation constructors at module level:
 - `pulseDensity(handle, { min, max, period })` — returns a running animation controller that oscillates density sinusoidally each tick. Cancel via the returned controller's `.stop()`.
@@ -202,7 +241,7 @@ Add fog volume entries to `docs/scripting-reference.md`: `world.query({ componen
 
 **Phase 2 (concurrent):** Task 2 (PRL pipeline) and Task 4 (shader + point-light binding) — no shared files.
 
-**Phase 3 (concurrent):** Task 3 (ComponentKind + scripting) and Task 5 (Renderer integration) — Task 3 touches only `scripting/`; Task 5 touches only `render/`. Both depend on Tasks 1 and 2. Task 5 also depends on Task 4.
+**Phase 3 (concurrent):** Task 3 (ComponentKind + scripting) and Task 5 (FogVolumeBridge + renderer integration) — Task 3 touches only `scripting/registry.rs`, `scripting/conv.rs`, `scripting/primitives.rs`, `scripting/typedef.rs`; Task 5 touches `scripting/systems/fog_volume_bridge.rs` (new), `scripting/systems/mod.rs`, `render/mod.rs`, `render/fog_pass.rs`, and adds the bridge call site in `main.rs`. The two tasks do not share files. Both depend on Tasks 1 and 2. Task 5 also depends on Task 4.
 
 **Phase 4 (sequential):** Task 6 (SDK + docs) — depends on Task 3 for the component API shape.
 

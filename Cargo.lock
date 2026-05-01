@@ -2657,6 +2657,7 @@ name = "postretro"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "env_logger",
  "gilrs",
  "glam",

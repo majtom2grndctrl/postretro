@@ -22,6 +22,9 @@ pollster = "0.4"
 # Math
 glam = { version = "0.32", features = ["serde"] }
 
+# GPU struct casting (#[repr(C)] → bytes, no `unsafe` at call sites)
+bytemuck = { version = "1", features = ["derive"] }
+
 # Map parsing (level compiler)
 shambler = "0.2"
 

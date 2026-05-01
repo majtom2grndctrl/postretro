@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md
 
 pub mod animated_lightmap;
+pub mod fog_pass;
 pub mod frame_timing;
 pub mod sh_compose;
 pub mod sh_volume;

@@ -15,6 +15,7 @@ pollster.workspace = true
 
 # Math
 glam.workspace = true
+bytemuck.workspace = true
 
 # Audio
 kira.workspace = true

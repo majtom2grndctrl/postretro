@@ -75,6 +75,17 @@ struct FogVolume {
     falloff: f32,
     color: vec3<f32>,
     scatter: f32,
+    height_gradient: f32,
+    radial_falloff: f32,
+    _pad0: f32,
+    _pad1: f32,
+}
+
+struct FogPointLight {
+    position: vec3<f32>,
+    range: f32,
+    color: vec3<f32>,
+    _pad: f32,
 }
 
 // Must match `FogParams` layout in fog_volume.rs::pack_fog_params.
@@ -113,6 +124,7 @@ struct FogSpotLight {
 @group(6) @binding(2) var scatter_output: texture_storage_2d<rgba16float, write>;
 @group(6) @binding(3) var<uniform> fog: FogParams;
 @group(6) @binding(4) var<storage, read> fog_spots: array<FogSpotLight>;
+@group(6) @binding(5) var<storage, read> fog_points: array<FogPointLight>;
 
 // --- SH ambient sampling (positional only — cosine-lobe evaluation with a
 // neutral "up" normal gives a reasonable fog ambient tint) ---
@@ -186,8 +198,22 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
         if pos.x > v.max_v.x || pos.y > v.max_v.y || pos.z > v.max_v.z {
             continue;
         }
-        out.density = out.density + v.density;
-        out.color = out.color + v.color * v.density;
+        let half_ext = (v.max_v - v.min) * 0.5;
+        let center   = (v.min + v.max_v) * 0.5;
+        let local_abs = abs(pos - center) / max(half_ext, vec3<f32>(1.0e-6));
+        let edge_t   = 1.0 - clamp(max(local_abs.x, max(local_abs.y, local_abs.z)), 0.0, 1.0);
+        let box_fade = pow(clamp(edge_t, 0.0, 1.0), v.falloff);
+
+        let height_t    = clamp((pos.y - v.min.y) / max(v.max_v.y - v.min.y, 1.0e-6), 0.0, 1.0);
+        let height_fade = clamp(1.0 - height_t * v.height_gradient, 0.0, 1.0);
+
+        let half_diag   = length(half_ext);
+        let radial_t    = clamp(length(pos - center) / max(half_diag, 1.0e-6), 0.0, 1.0);
+        let radial_fade = pow(clamp(1.0 - radial_t, 0.0, 1.0), v.radial_falloff);
+
+        let fade = box_fade * height_fade * radial_fade;
+        out.density = out.density + v.density * fade;
+        out.color = out.color + v.color * v.density * fade;
         out.scatter = max(out.scatter, v.scatter);
         out.hits = out.hits + 1u;
     }
@@ -310,6 +336,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if lit <= 0.0 { continue; }
 
                 accum = accum + transmittance * weight * vs.color * spot.color * atten * lit;
+            }
+
+            let pt_count = arrayLength(&fog_points);
+            for (var pi: u32 = 0u; pi < pt_count; pi = pi + 1u) {
+                let pt = fog_points[pi];
+                let to_light = pt.position - pos;
+                let dist = length(to_light);
+                if dist > pt.range || dist < 1.0e-4 { continue; }
+                let atten = clamp(1.0 - dist / pt.range, 0.0, 1.0);
+                accum = accum + transmittance * weight * pt.color * atten;
             }
 
             transmittance = transmittance * exp(-vs.density * step);

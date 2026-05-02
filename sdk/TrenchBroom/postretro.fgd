@@ -14,7 +14,7 @@
     // Volumetric-fog raymarch downscale factor. 1 = full-resolution scatter
     // target; 8 = coarsest. Coarser is faster but blockier near edges.
     // See context/lib/build_pipeline.md for full semantics.
-    fog_pixel_scale(integer) : "Fog low-resolution downscale factor (1=full-res, 8=coarsest)" : "4"
+    fog_pixel_scale(integer) : "Fog low-resolution downscale factor (1=full-res, 8=coarsest)" : 4
 ]
 
 @BaseClass = Light
@@ -116,7 +116,7 @@
 
 // Per-region volumetric fog. Authored as a brush entity; faces are excluded
 // from worldspawn geometry. The brush's world-space AABB defines the volume.
-// See context/plans/ready/fog-volumes/index.md.
+// See context/lib/build_pipeline.md §Custom FGD.
 @SolidClass = env_fog_volume : "Per-region volumetric fog"
 [
     color(color255) : "Fog color (R G B)" : "255 255 255"

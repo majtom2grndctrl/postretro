@@ -390,6 +390,34 @@ pub struct MapData {
     /// — they are resolved separately during BSP construction. See the
     /// MapEntity PRL section in `context/lib/build_pipeline.md`.
     pub map_entities: Vec<MapEntityRecord>,
+    /// Per-region volumetric fog volumes resolved from `env_fog_volume` brush
+    /// entities. AABBs are in engine space (Y-up, meters); colour is linear
+    /// 0–1. Authored via the `env_fog_volume` FGD class — see
+    /// `context/lib/build_pipeline.md`.
+    pub fog_volumes: Vec<MapFogVolume>,
+    /// Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest); clamped to 1..=8.
+    /// Default 4 when the worldspawn entity does not author the key.
+    pub fog_pixel_scale: u32,
+}
+
+/// One `env_fog_volume` brush entity, resolved to an AABB in engine space.
+/// Carries linear-RGB colour and the per-volume density/falloff parameters
+/// authored on the brush entity. See `parse::parse_map_file`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapFogVolume {
+    /// AABB minimum corner (engine space, meters).
+    pub min: [f32; 3],
+    /// AABB maximum corner (engine space, meters).
+    pub max: [f32; 3],
+    /// Linear RGB 0–1.
+    pub color: [f32; 3],
+    pub density: f32,
+    pub falloff: f32,
+    pub scatter: f32,
+    pub height_gradient: f32,
+    pub radial_falloff: f32,
+    /// Author-supplied script tags (FGD `_tags`, pre-split on whitespace).
+    pub tags: Vec<String>,
 }
 
 #[cfg(test)]

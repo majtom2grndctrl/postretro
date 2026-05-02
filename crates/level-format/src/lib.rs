@@ -9,6 +9,7 @@ pub mod bvh;
 pub mod chunk_light_list;
 pub mod data_script;
 pub mod delta_sh_volumes;
+pub mod fog_volumes;
 pub mod geometry;
 pub mod light_influence;
 pub mod light_tags;
@@ -124,7 +125,7 @@ pub enum SectionId {
     AnimatedLightWeightMaps = 25,
 
     /// Optional script tags for AlphaLights (one entry per AlphaLights record,
-    /// same order). Authored via the FGD `_tag` key; consumed by the runtime
+    /// same order). Authored via the FGD `_tags` key; consumed by the runtime
     /// to populate the scripting entity registry's tag column so
     /// `world.query({ component: "light", tag: "<tag>" })` can filter lights.
     /// See `light_tags::LightTagsSection`.
@@ -147,6 +148,13 @@ pub enum SectionId {
     /// (`apply_classname_dispatch`) from this section. See
     /// `map_entity::MapEntitySection`.
     MapEntity = 29,
+
+    /// Per-region volumetric fog volumes (AABB + density/colour/scatter
+    /// parameters) plus the worldspawn `fog_pixel_scale` downscale factor.
+    /// Always emitted by `prl-build` so the worldspawn pixel-scale is honoured
+    /// even when no `env_fog_volume` brushes are present.
+    /// See `fog_volumes::FogVolumesSection`.
+    FogVolumes = 30,
 }
 
 impl SectionId {
@@ -169,6 +177,7 @@ impl SectionId {
             27 => Some(Self::DeltaShVolumes),
             28 => Some(Self::DataScript),
             29 => Some(Self::MapEntity),
+            30 => Some(Self::FogVolumes),
             _ => None,
         }
     }

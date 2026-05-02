@@ -14,10 +14,11 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
 use crate::format::quake_map;
 use crate::map_data::{
-    BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, MapEntityRecord, MapLight,
-    TextureProjection,
+    BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, MapEntityRecord, MapFogVolume,
+    MapLight, TextureProjection,
 };
 use crate::map_format::MapFormat;
+use postretro_level_format::fog_volumes::MAX_FOG_VOLUMES;
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
 ///
@@ -146,6 +147,17 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // entities only. Brush entities (those with brushes attached) are resolved
     // separately by their dedicated subsystems (e.g. `env_fog_volume`).
     let mut map_entities: Vec<MapEntityRecord> = Vec::new();
+    // Resolved `env_fog_volume` brush entities. Walked alongside the entity
+    // pass; AABBs are computed from the entity's brush-face vertices.
+    let mut fog_volumes: Vec<MapFogVolume> = Vec::new();
+
+    // Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest). Default 4 when
+    // unset. Clamped to [1, 8] — values outside this range are author errors
+    // but the compiler clamps silently to keep builds going.
+    let fog_pixel_scale: u32 = get_property(&geo_map, &worldspawn_id, "fog_pixel_scale")
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .map(|v| v.clamp(1, 8) as u32)
+        .unwrap_or(4);
 
     for entity_id in geo_map.entities.iter() {
         let classname =
@@ -207,6 +219,25 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         if has_brushes {
+            if classname == "env_fog_volume" {
+                if fog_volumes.len() >= MAX_FOG_VOLUMES {
+                    log::warn!(
+                        "[Compiler] env_fog_volume cap reached ({MAX_FOG_VOLUMES}); skipping additional volume"
+                    );
+                    continue;
+                }
+                let props = collect_entity_properties(&geo_map, entity_id);
+                let brush_ids = geo_map
+                    .entity_brushes
+                    .get(entity_id)
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(volume) =
+                    resolve_fog_volume(&geo_map, &brush_ids, &props, scale, &classname)
+                {
+                    fog_volumes.push(volume);
+                }
+            }
             continue;
         }
 
@@ -436,7 +467,125 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         script,
         data_script,
         map_entities,
+        fog_volumes,
+        fog_pixel_scale,
     })
+}
+
+/// Compute an env_fog_volume's world-space AABB from its brush faces and
+/// parse its KVP-authored parameters. Returns `None` when the brush set
+/// produces no usable vertices (degenerate authoring).
+fn resolve_fog_volume(
+    geo_map: &GeoMap,
+    brush_ids: &[BrushId],
+    props: &HashMap<String, String>,
+    scale: f64,
+    classname: &str,
+) -> Option<MapFogVolume> {
+    use shambler::brush::brush_hulls;
+    use shambler::face::{face_planes, face_vertices};
+
+    // Run shambler's face-vertex pipeline on the entity's brushes only — keeps
+    // the worldspawn computation undisturbed.
+    let geo_planes = face_planes(&geo_map.face_planes);
+    let entity_brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = brush_ids
+        .iter()
+        .filter_map(|bid| {
+            geo_map
+                .brush_faces
+                .get(bid)
+                .map(|faces| (*bid, faces.clone()))
+        })
+        .collect();
+    let hulls = brush_hulls(&entity_brush_faces, &geo_planes);
+    let (face_verts, _) = face_vertices(&entity_brush_faces, &geo_planes, &hulls);
+
+    let mut min = DVec3::splat(f64::INFINITY);
+    let mut max = DVec3::splat(f64::NEG_INFINITY);
+    let mut have_any = false;
+    for verts in face_verts.values() {
+        for v in verts {
+            let p = quake_to_engine(shambler_to_dvec3(v)) * scale;
+            min = min.min(p);
+            max = max.max(p);
+            have_any = true;
+        }
+    }
+    if !have_any {
+        log::warn!("[Compiler] env_fog_volume has no usable brush vertices; skipping");
+        return None;
+    }
+
+    // Colour authored as "R G B" 0–255; divide by 255 (no sRGB curve), to match
+    // the convention used across the FGD ecosystem.
+    let color = props
+        .get("color")
+        .and_then(|s| parse_color255_local(s))
+        .unwrap_or([1.0, 1.0, 1.0]);
+    let density = props
+        .get("density")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.5);
+    let falloff = props
+        .get("falloff")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(1.0);
+    let scatter = props
+        .get("scatter")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.6);
+    let height_gradient = props
+        .get("height_gradient")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let radial_falloff = props
+        .get("radial_falloff")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let tags: Vec<String> = props
+        .get("_tags")
+        .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
+        .unwrap_or_default();
+
+    log::info!(
+        "[Compiler] {classname}: aabb [{:.3}, {:.3}, {:.3}]–[{:.3}, {:.3}, {:.3}], density={density}",
+        min.x,
+        min.y,
+        min.z,
+        max.x,
+        max.y,
+        max.z,
+    );
+
+    Some(MapFogVolume {
+        min: [min.x as f32, min.y as f32, min.z as f32],
+        max: [max.x as f32, max.y as f32, max.z as f32],
+        color,
+        density,
+        falloff,
+        scatter,
+        height_gradient,
+        radial_falloff,
+        tags,
+    })
+}
+
+/// Local "R G B" 0–255 to linear 0–1 parser. Mirrors `format::quake_map::parse_color255`
+/// without crossing module visibility boundaries.
+fn parse_color255_local(s: &str) -> Option<[f32; 3]> {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let mut out = [0.0f32; 3];
+    for (i, p) in parts.iter().enumerate() {
+        let v: i32 = p.parse().ok()?;
+        if !(0..=255).contains(&v) {
+            return None;
+        }
+        out[i] = v as f32 / 255.0;
+    }
+    Some(out)
 }
 
 /// Re-export `quake_to_engine` for cross-module tests (geometry round-trip).

@@ -16,6 +16,7 @@ use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
@@ -188,6 +189,34 @@ pub fn encode_map_entities(
     Some(MapEntitySection { entries })
 }
 
+/// Encode the resolved `env_fog_volume` brush entities and the worldspawn
+/// `fog_pixel_scale` into a `FogVolumesSection`. Always produces a section so
+/// the worldspawn pixel-scale is always honoured at runtime, even when the map
+/// carries no fog brushes (8-byte overhead for that case).
+pub fn encode_fog_volumes(
+    fog_volumes: &[crate::map_data::MapFogVolume],
+    fog_pixel_scale: u32,
+) -> FogVolumesSection {
+    let volumes = fog_volumes
+        .iter()
+        .map(|v| FogVolumeRecord {
+            min: v.min,
+            density: v.density,
+            max: v.max,
+            falloff: v.falloff,
+            color: v.color,
+            scatter: v.scatter,
+            height_gradient: v.height_gradient,
+            radial_falloff: v.radial_falloff,
+            tags: v.tags.clone(),
+        })
+        .collect();
+    FogVolumesSection {
+        pixel_scale: fog_pixel_scale,
+        volumes,
+    }
+}
+
 /// Build a `DataScriptSection` from already-compiled bytes and the resolved
 /// source path. The compiler reads the source, runs `scripts-build` for `.ts`
 /// inputs (or passes Luau through unchanged), then hands the result here for
@@ -250,6 +279,7 @@ pub fn pack_and_write_portals(
     delta_sh_volumes: Option<&DeltaShVolumesSection>,
     data_script: Option<&DataScriptSection>,
     map_entities: Option<&MapEntitySection>,
+    fog_volumes: &FogVolumesSection,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -268,6 +298,7 @@ pub fn pack_and_write_portals(
     let delta_sh_volumes_bytes = delta_sh_volumes.map(|s| s.to_bytes());
     let data_script_bytes = data_script.map(|s| s.to_bytes());
     let map_entities_bytes = map_entities.map(|s| s.to_bytes());
+    let fog_volumes_bytes = fog_volumes.to_bytes();
 
     let mut sections = vec![
         SectionBlob {
@@ -368,6 +399,11 @@ pub fn pack_and_write_portals(
             data: bytes.clone(),
         });
     }
+    sections.push(SectionBlob {
+        section_id: SectionId::FogVolumes as u32,
+        version: 1,
+        data: fog_volumes_bytes.clone(),
+    });
 
     write_and_validate_sections(output, &sections)?;
 
@@ -442,6 +478,12 @@ pub fn pack_and_write_portals(
             section.source_path,
         );
     }
+    log::info!(
+        "  FogVolumes: {} bytes ({} volumes, pixel_scale={})",
+        fog_volumes_bytes.len(),
+        fog_volumes.volumes.len(),
+        fog_volumes.pixel_scale,
+    );
 
     Ok(())
 }
@@ -684,6 +726,7 @@ mod tests {
             None,
             None,
             None,
+            &FogVolumesSection::default(),
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -692,7 +735,8 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert_eq!(meta.header.section_count, 11);
+        // 11 baseline sections + always-emitted FogVolumes.
+        assert_eq!(meta.header.section_count, 12);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -743,6 +787,7 @@ mod tests {
             None,
             None,
             None,
+            &FogVolumesSection::default(),
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -817,6 +862,7 @@ mod tests {
             None,
             None,
             None,
+            &FogVolumesSection::default(),
         )
         .expect("full pipeline portal pack should succeed");
 
@@ -824,7 +870,8 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        assert_eq!(meta.header.section_count, 11);
+        // 11 baseline sections + always-emitted FogVolumes (worldspawn fog_pixel_scale).
+        assert_eq!(meta.header.section_count, 12);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
@@ -838,6 +885,7 @@ mod tests {
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
+        assert!(meta.find_section(SectionId::FogVolumes as u32).is_some());
 
         let _ = std::fs::remove_file(&output);
     }

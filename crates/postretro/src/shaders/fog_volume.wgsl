@@ -164,13 +164,16 @@ fn sample_spot_shadow_pt(
         || light_ndc.z < 0.0 || light_ndc.z > 1.0 {
         return 1.0;
     }
-    return textureSampleCompare(
-        spot_shadow_depth,
-        spot_shadow_compare,
-        uv,
-        i32(slot_index),
-        light_ndc.z,
+    // textureSampleCompare is fragment-only; use textureLoad + manual compare.
+    // Single-tap hard shadow is acceptable here — the volumetric integration
+    // already smooths the result.
+    let dims = textureDimensions(spot_shadow_depth);
+    let tc = vec2<i32>(
+        clamp(i32(uv.x * f32(dims.x)), 0, i32(dims.x) - 1),
+        clamp(i32(uv.y * f32(dims.y)), 0, i32(dims.y) - 1),
     );
+    let stored_depth = textureLoad(spot_shadow_depth, tc, i32(slot_index), 0);
+    return select(0.0, 1.0, light_ndc.z <= stored_depth);
 }
 
 // --- AABB membership + accumulated volume lookup ---
@@ -361,11 +364,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(scatter_output, vec2<i32>(gid.xy), vec4<f32>(accum, 1.0 - transmittance));
 }
 
-// Silence "unused binding" warnings for the animated buffers. The fog
-// pass doesn't need them but the group-3 layout is shared with the forward
-// pipeline so the declarations have to exist.
-fn _keep_anim_bindings_live() -> f32 {
+// Silence "unused binding" warnings for the animated buffers and the
+// comparison sampler. The fog pass shares group 3 with the forward pipeline
+// and group 5's sampler_comparison with forward's shadow pass — both
+// layouts must be satisfied even though fog reads depth via textureLoad.
+fn _keep_bindings_live() -> f32 {
     let d = anim_descriptors[0];
     let a = anim_samples[0];
+    // Touch the comparison sampler so the binding slot isn't stripped.
+    _ = textureSampleCompareLevel(spot_shadow_depth, spot_shadow_compare, vec2<f32>(0.0), 0, 0.0);
     return d.period + a;
 }

@@ -369,10 +369,13 @@ impl ShVolumeResources {
 
 fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(SH_BAND_COUNT + 2);
+    // Shared with the forward pass (fragment) and fog raymarch (compute), so visibility
+    // covers both stages on every entry.
+    let vis = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
     // binding 0: sampler
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 0,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        visibility: vis,
         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         count: None,
     });
@@ -380,7 +383,7 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     for i in 0..SH_BAND_COUNT {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: 1 + i as u32,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: vis,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
                 view_dimension: wgpu::TextureViewDimension::D3,
@@ -392,7 +395,7 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     // binding 1 + SH_BAND_COUNT: ShGridInfo uniform
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: (1 + SH_BAND_COUNT) as u32,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        visibility: vis,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
@@ -409,7 +412,7 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     ] {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: vis,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,

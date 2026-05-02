@@ -5,14 +5,15 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
 /// Maximum number of fog volumes the raymarch shader iterates per frame.
+// Mirrors `postretro_level_format::fog_volumes::MAX_FOG_VOLUMES` — keep in sync.
 pub const MAX_FOG_VOLUMES: usize = 16;
 
 /// Maximum number of fog point lights (currently unused by the shader, but
 /// reserved so the CPU side can stage point-light beams alongside spots).
 pub const MAX_FOG_POINT_LIGHTS: usize = 32;
 
-/// Default raymarch step size in world units. ~0.5m balances quality and cost
-/// for the plan's <2ms/pass target.
+/// Default raymarch step size in world units. Smaller values increase quality
+/// and GPU cost; larger values are faster but produce visible banding.
 pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 
 /// Packed AABB + scattering parameters for a single fog volume. 64 bytes,
@@ -51,8 +52,9 @@ pub struct FogSpotLight {
     pub range: f32,
 }
 
-/// Per-frame point-light record. 32 bytes. Currently staged but not consumed
-/// by the shader; reserved for future point-light fog scattering.
+/// Per-frame point-light record marched by the fog shader. Uploaded by
+/// `FogVolumeBridge::update_points`; pre-culled against fog volume AABBs
+/// before upload so only nearby lights reach the GPU.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FogPointLight {

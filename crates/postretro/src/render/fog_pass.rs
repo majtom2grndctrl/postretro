@@ -1,6 +1,5 @@
 // Volumetric fog / beam pass GPU resources.
 // See: context/lib/rendering_pipeline.md §7.5
-//      context/plans/in-progress/fx-volumetric-smoke/index.md Task B
 //
 // Owns the low-resolution RGBA16F scatter target, the fog-volume AABB
 // storage buffer, the fog-params uniform, and the group-6 bind group that
@@ -11,7 +10,6 @@
 // re-uploaded. Group 6 layout is owned here.
 
 use glam::{Mat4, Vec3};
-use wgpu::util::DeviceExt;
 
 use crate::fx::fog_volume::{
     self, FOG_PARAMS_SIZE, FOG_POINT_LIGHT_SIZE, FOG_SPOT_LIGHT_SIZE, FOG_VOLUME_SIZE,
@@ -65,9 +63,8 @@ pub struct FogPass {
     /// pixel scale.
     scatter_dims: (u32, u32),
 
-    // --- Group 6 bind group, rebuilt whenever the depth view or the
-    /// scatter target is recreated (depth on resize, scatter on resize or
-    /// pixel-scale change). ---
+    /// Group 6 bind group. Rebuilt whenever the depth view or scatter target
+    /// is recreated (depth on resize; scatter on resize or pixel-scale change).
     pub bind_group: wgpu::BindGroup,
 
     /// Most recently uploaded fog volume count. Shader loops against this.
@@ -177,24 +174,15 @@ impl FogPass {
             mapped_at_creation: false,
         });
 
-        // Upfront allocation for the spot-light storage buffer. Sized for the
-        // maximum shadow-map pool (8 slots) so the buffer is never reallocated.
-        let spots_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // Spot-light storage buffer. wgpu rejects zero-sized storage buffers,
+        // so we always allocate at full capacity (SHADOW_POOL_SIZE slots) and
+        // track the real count in `spot_count`. The buffer is never reallocated.
+        let spots_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Fog Spot Lights Buffer"),
-            contents: &fog_volume::pack_fog_spot_lights(&[]),
+            size: (crate::lighting::spot_shadow::SHADOW_POOL_SIZE * FOG_SPOT_LIGHT_SIZE) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-        // Resize to fit 8 entries so we can rewrite without reallocation.
-        let spots_buffer = {
-            // Drop the init-only 1-record buffer and re-create at full size.
-            drop(spots_buffer);
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Fog Spot Lights Buffer"),
-                size: (crate::lighting::spot_shadow::SHADOW_POOL_SIZE * FOG_SPOT_LIGHT_SIZE) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        };
 
         // Point-light storage buffer. Sized for MAX_FOG_POINT_LIGHTS so the
         // buffer is never reallocated; per-frame uploads go through
@@ -322,9 +310,8 @@ impl FogPass {
             fragment: Some(wgpu::FragmentState {
                 module: &composite_shader,
                 entry_point: Some("fs_main"),
-                // Target format is filled in by the caller at pipeline-rebuild
-                // time. Keeping it inline here means the surface format is
-                // decided at FogPass::new. The renderer passes it in below.
+                // Placeholder format — caller must invoke
+                // `rebuild_composite_for_format` before the pipeline is used.
                 targets: &[Some(wgpu::ColorTargetState {
                     // Additive: final = scene + fog_scatter. Alpha path is
                     // unused but kept consistent.

@@ -101,6 +101,10 @@ local function writeFogVolume(
   scatter: number,
   falloff: number
 )
+  -- `kind` is required: the scripting runtime's `FromLua for ComponentValue`
+  -- reads the `kind` field first to dispatch to the correct component branch
+  -- (see `scripting/conv.rs`). Omitting it would produce "missing field `kind`"
+  -- at the Rust boundary and silently drop the setComponent call.
   setComponent(id, "fog_volume", {
     kind = "fog_volume",
     density = density,

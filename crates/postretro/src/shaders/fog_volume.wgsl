@@ -1,6 +1,5 @@
 // Volumetric fog / beam raymarch.
 // See: context/lib/rendering_pipeline.md §7.5
-//      context/plans/in-progress/fx-volumetric-smoke/index.md Task B
 //
 // Runs as a compute pass over a low-resolution scatter target.
 // One thread per low-res texel. Reconstructs a world-space ray from the
@@ -9,7 +8,7 @@
 // beam scatter (with shadow map occlusion), and writes the accumulated
 // in-scattering radiance to an RGBA16F storage texture.
 //
-// Bind groups (see plan §Task B step 8):
+// Bind groups:
 //   group 0  Camera uniforms (reserved; fog shader uses its own fog_params)
 //   group 3  SH volume (shared with forward)
 //   group 5  Spot shadow maps (shared with forward)

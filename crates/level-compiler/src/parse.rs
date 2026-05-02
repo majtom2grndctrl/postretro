@@ -152,12 +152,14 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut fog_volumes: Vec<MapFogVolume> = Vec::new();
 
     // Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest). Default 4 when
-    // unset. Clamped to [1, 8] — values outside this range are author errors
-    // but the compiler clamps silently to keep builds going.
+    // unset. `0` is the "unset" sentinel — pass it through as `0` so the
+    // engine's `clamp_fog_pixel_scale(0)` returns its own default (4).
+    // Values above 8 are author errors and are clamped to 8 silently.
+    // Negative values are treated as unset (0).
     let fog_pixel_scale: u32 = get_property(&geo_map, &worldspawn_id, "fog_pixel_scale")
         .and_then(|s| s.trim().parse::<i64>().ok())
-        .map(|v| v.clamp(1, 8) as u32)
-        .unwrap_or(4);
+        .map(|v| v.clamp(0, 8) as u32)
+        .unwrap_or(0);
 
     for entity_id in geo_map.entities.iter() {
         let classname =

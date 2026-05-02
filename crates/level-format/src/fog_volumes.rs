@@ -6,6 +6,7 @@ use crate::FormatError;
 
 /// Maximum number of fog volumes per level. Mirrors the engine's GPU storage
 /// buffer cap so author-side overflow is caught at compile time.
+// Mirrors `postretro::fx::fog_volume::MAX_FOG_VOLUMES` — keep in sync.
 pub const MAX_FOG_VOLUMES: usize = 16;
 
 /// One fog volume baked into the PRL. AABB extents are in engine space (Y-up,
@@ -175,6 +176,12 @@ fn read_f32(data: &[u8], o: &mut usize, ctx: &str) -> crate::Result<f32> {
     }
     let v = f32::from_le_bytes([data[*o], data[*o + 1], data[*o + 2], data[*o + 3]]);
     *o += 4;
+    if !v.is_finite() {
+        return Err(FormatError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("fog volumes: non-finite float in {ctx}"),
+        )));
+    }
     Ok(v)
 }
 
@@ -277,5 +284,36 @@ mod tests {
         buf.extend_from_slice(&u32::MAX.to_le_bytes()); // count = u32::MAX
         let err = FogVolumesSection::from_bytes(&buf).unwrap_err();
         assert!(err.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn rejects_non_finite_float_fields() {
+        // Build a section with one volume whose density field is NaN.
+        let valid = FogVolumesSection {
+            pixel_scale: 4,
+            volumes: vec![FogVolumeRecord {
+                min: [0.0, 0.0, 0.0],
+                density: 0.5,
+                max: [1.0, 1.0, 1.0],
+                falloff: 0.5,
+                color: [1.0, 1.0, 1.0],
+                scatter: 0.5,
+                height_gradient: 0.0,
+                radial_falloff: 0.0,
+                tags: vec![],
+            }],
+        };
+        let mut bytes = valid.to_bytes();
+        // density is at offset: 4 (pixel_scale) + 4 (count) + 12 (min xyz) = 20
+        let nan_bytes = f32::NAN.to_le_bytes();
+        bytes[20..24].copy_from_slice(&nan_bytes);
+        let err = FogVolumesSection::from_bytes(&bytes).unwrap_err();
+        assert!(err.to_string().contains("non-finite"));
+
+        // Also test infinity.
+        let inf_bytes = f32::INFINITY.to_le_bytes();
+        bytes[20..24].copy_from_slice(&inf_bytes);
+        let err = FogVolumesSection::from_bytes(&bytes).unwrap_err();
+        assert!(err.to_string().contains("non-finite"));
     }
 }

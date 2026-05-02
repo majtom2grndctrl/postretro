@@ -130,6 +130,12 @@ impl FogVolumeBridge {
                 // Entity despawned or component removed; skip the slot.
                 continue;
             };
+            // Zero-density volumes are invisible and must not occupy GPU slots or
+            // keep the pass active. Skip them so `FogPass::active()` returns false
+            // when all volumes have been scripted to density 0.
+            if component.density <= 0.0 {
+                continue;
+            }
             let Some(aabb) = self.aabbs.get(id) else {
                 continue;
             };

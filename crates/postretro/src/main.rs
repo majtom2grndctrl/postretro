@@ -1045,15 +1045,19 @@ impl ApplicationHandler for App {
                             renderer.upload_fog_volumes(&[]);
                         }
                     }
-                    let level_lights = renderer.level_lights().to_vec();
-                    // `effective_brightness` parallels `level_lights` (same
-                    // index space — `LightBridge::populate_from_level` walks
-                    // the renderer's map-light slice). Forwards scripted
-                    // intensity changes to the fog halo; the static
-                    // `MapLight.intensity` alone never reflects them.
+                    // Combine static map lights with script-spawned dynamic lights so
+                    // fog halos react to lights from both sources. The light bridge
+                    // tracks both via `populate_from_level` + `absorb_dynamic_lights`;
+                    // `renderer.level_lights()` only covers the static subset.
+                    // `effective_brightness` is indexed by bridge position (same order
+                    // as `collect_all_as_map_lights`), so the parallel arrays align.
+                    let all_lights = {
+                        let registry = self.script_ctx.registry.borrow();
+                        self.light_bridge.collect_all_as_map_lights(&registry)
+                    };
                     let point_bytes = self
                         .fog_volume_bridge
-                        .update_points(&level_lights, &effective_brightness);
+                        .update_points(&all_lights, &effective_brightness);
                     renderer.upload_fog_points(point_bytes);
 
                     renderer.update_per_frame_uniforms(view_proj, interp.position);

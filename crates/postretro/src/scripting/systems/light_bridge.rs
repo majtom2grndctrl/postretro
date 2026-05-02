@@ -116,6 +116,31 @@ impl LightBridge {
         self.entity_ids.get(map_index).copied()
     }
 
+    /// Collect all tracked lights (FGD map-authored + descriptor-spawned dynamic)
+    /// as `MapLight` records, reading live component state from the registry.
+    ///
+    /// Used by `FogVolumeBridge::update_points` so that script-spawned dynamic
+    /// lights contribute to fog halos, not just the static map-light list that
+    /// `renderer.level_lights()` returns. Entities that have been despawned or
+    /// whose component was removed are silently skipped.
+    pub(crate) fn collect_all_as_map_lights(&self, registry: &EntityRegistry) -> Vec<MapLight> {
+        self.entity_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(map_idx, &id)| {
+                let component = registry
+                    .get_component::<crate::scripting::components::light::LightComponent>(id)
+                    .ok()?;
+                Some(component_to_map_light(
+                    component,
+                    self.cached_origins_f64[map_idx],
+                    self.shape[map_idx].is_dynamic,
+                    self.shape[map_idx].leaf_index,
+                ))
+            })
+            .collect()
+    }
+
     /// Populate the entity registry with one entity per map light. Called once at level load.
     ///
     /// f64 → f32 origin conversion happens here — the only seam that touches

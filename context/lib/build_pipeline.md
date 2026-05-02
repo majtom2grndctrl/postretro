@@ -136,6 +136,7 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | DataScript | 28 | When `data_script` KVP present on `worldspawn`; compiled script bytes + original source path |
 | MapEntity | 29 | When the map has at least one non-light, non-worldspawn entity; per-entity classname, origin, angles, tags, and KVP bag for runtime classname dispatch |
 | FogVolumes | 30 | Always (8-byte overhead when no env_fog_volume brushes present; carries fog_pixel_scale) |
+| FogCellMasks | 31 | When at least one env_fog_volume brush entity is present |
 
 ### Runtime visibility
 

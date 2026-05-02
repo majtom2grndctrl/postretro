@@ -54,6 +54,13 @@ local world: World = {
       end
       return out :: any
     end
+    if filter.component == "fog_volume" then
+      local out: {any} = {}
+      for i, snapshot in ipairs(raw) do
+        out[i] = wrapFogVolumeEntity(snapshot :: any)
+      end
+      return out :: any
+    end
     local out: {any} = {}
     -- Cast at the array level: the primitive returns per-component snapshots
     -- that are supersets of `Entity`, so individual field access is safe.

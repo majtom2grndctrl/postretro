@@ -5,11 +5,14 @@ import { worldQuery } from "postretro";
 import type {
   EmitterEntity,
   Entity,
+  FogVolumeEntity as GeneratedFogVolumeEntity,
   LightEntity as GeneratedLightEntity,
   WorldQueryFilter,
 } from "postretro";
 import { wrapLightEntity } from "./entities/lights";
 import type { LightEntity } from "./entities/lights";
+import { wrapFogVolumeEntity } from "./entities/fog_volumes";
+import type { FogVolumeHandle } from "./entities/fog_volumes";
 
 /**
  * Extend this as new component types gain dedicated handles; unknown
@@ -21,6 +24,7 @@ import type { LightEntity } from "./entities/lights";
 export type EntityForComponent<T extends string> =
   T extends "light" ? LightEntity :
   T extends "emitter" ? EmitterEntity :
+  T extends "fog_volume" ? FogVolumeHandle :
   Entity;
 
 /** Typed vocabulary object returned from `world.query`. */
@@ -57,6 +61,12 @@ export const world: World = {
         wrapLightEntity,
       );
       return lights as EntityForComponent<T>[];
+    }
+    if (filter.component === "fog_volume") {
+      const volumes = (raw as ReadonlyArray<GeneratedFogVolumeEntity>).map(
+        wrapFogVolumeEntity,
+      );
+      return volumes as EntityForComponent<T>[];
     }
     // Thread the optional `component` sub-object through unchanged for
     // queries (e.g. `"emitter"`) whose Rust handle carries it; queries

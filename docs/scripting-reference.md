@@ -329,6 +329,83 @@ light.setColor([1, 0.3, 0], 800); // shift to orange over 800 ms
 
 ---
 
+## Fog volumes
+
+`env_fog_volume` brush entities placed in TrenchBroom render as localized volumetric haze. The `_tags` FGD key (space-delimited) attaches script-queryable tags to a volume — for example, `_tags neon_haze pulse_slow`.
+
+### `world.query({ component: "fog_volume" })`
+
+Returns an array of `FogVolumeHandle` values, one per `env_fog_volume` entity in the loaded map. Pass an optional `tag` to narrow the result to volumes carrying that tag.
+
+```typescript
+world.query({ component: "fog_volume" });                       // all volumes
+world.query({ component: "fog_volume", tag: "neon_haze" });     // only tagged volumes
+```
+
+```lua
+world:query({ component = "fog_volume" })
+world:query({ component = "fog_volume", tag = "neon_haze" })
+```
+
+### `FogVolumeHandle`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `EntityId` | Stable entity id. |
+| `position` | `{ x, y, z }` | Volume centre at query time (AABB midpoint, baked at level load). |
+| `tags` | `string[]` | The entity's `_tags` at query time. Empty if untagged. |
+| `component` | `FogVolumeComponent` | Snapshot at query time. Carries `density`, `color` (RGB triplet), `scatter`, `falloff`. |
+
+The AABB itself is **not** exposed through `FogVolumeComponent` — it is baked level geometry, not runtime-settable. The bounds live in the engine-side `FogVolumeBridge` side-table and feed the GPU raymarch directly.
+
+#### `setDensity(density, durationMs?)`
+
+Sets the volume's density. `durationMs` defaults to `0` (instant). With a positive duration the value is lerped each tick from the live density to `target` over the given milliseconds. Last call wins — a previous density tween on the same handle is cancelled before the new tween begins.
+
+```typescript
+volume.setDensity(0.0, 1500);   // fade out over 1.5 s
+volume.setDensity(0.6);         // snap back instantly
+```
+
+#### `setColor(color, durationMs?)`
+
+Same pattern for the volume's RGB color. `color` is `[r, g, b]` in TypeScript, `{r, g, b}` array in Luau. `durationMs` defaults to `0` (instant).
+
+```typescript
+volume.setColor([1.0, 0.4, 0.8], 2000); // slow shift to magenta
+```
+
+#### `setScatter(scatter)` / `setFalloff(falloff)`
+
+Instant. `scatter` controls the camera-direction in-scattering fraction; `falloff` sets the AABB edge fade (`0` = uniform to the boundary, `1` = linear ramp from face to centre, larger values = sharper interior dropoff).
+
+```typescript
+volume.setScatter(0.8);
+volume.setFalloff(0.0); // hard box boundary
+```
+
+### `pulseDensity(handle, opts)`
+
+Module-level animation constructor. Oscillates the volume's density sinusoidally between `opts.min` and `opts.max` with `opts.period` milliseconds. Returns an `AnimationController` whose `.stop()` cancels the animation.
+
+```typescript
+import { pulseDensity } from "postretro";
+
+const ctrl = pulseDensity(volume, { min: 0.2, max: 0.6, period: 4000 });
+// later:
+ctrl.stop();
+```
+
+```lua
+local ctrl = pulseDensity(volume, { min = 0.2, max = 0.6, period = 4000 })
+-- later:
+ctrl:stop()
+```
+
+`pulseDensity` is implemented as a tick handler that writes `setComponent(id, "fog_volume", ...)` each frame — there is no engine-side fog animation primitive (unlike lights). Multiple `pulseDensity` calls on the same handle stack; call `.stop()` on the previous controller before starting a new one if you do not want overlap.
+
+---
+
 ## Constraints and errors
 
 | Situation | Result |

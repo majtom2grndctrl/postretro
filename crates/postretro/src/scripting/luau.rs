@@ -39,6 +39,13 @@ const KEYFRAMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/util/keyframe
 /// are destructured into globals so authors can call them by bare name.
 const EMITTERS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/emitters.luau");
 
+/// SDK library prelude — `entities/fog_volumes.luau` returns a table whose
+/// fields (`pulseDensity`, `wrapFogVolumeEntity`) are used during prelude
+/// evaluation. `wrapFogVolumeEntity` is installed as a temporary global for
+/// `world.luau` to capture, then nil'd out before the sandbox freezes.
+const FOG_VOLUMES_LUAU_SRC: &str =
+    include_str!("../../../../sdk/lib/entities/fog_volumes.luau");
+
 /// SDK library prelude — `data_script.luau` returns a table whose fields
 /// (`registerReaction`, `registerEntities`) are destructured into globals so
 /// data-script authors call them by bare name. Pure descriptor builders;
@@ -58,6 +65,12 @@ const KEYFRAMES_LUAU_FIELDS: &[&str] = &["timeline", "sequence"];
 /// Emitter SDK fields lifted to globals after evaluating
 /// `entities/emitters.luau`.
 const EMITTERS_LUAU_FIELDS: &[&str] = &["emitter", "smokeEmitter", "sparkEmitter", "dustEmitter"];
+
+/// Fog-volume SDK fields lifted to globals after evaluating
+/// `entities/fog_volumes.luau`. `wrapFogVolumeEntity` is NOT a bare global —
+/// it is installed as a temporary bridge before `world.luau` evaluates and
+/// nil'd out afterward.
+const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &["pulseDensity"];
 
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
@@ -109,9 +122,45 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             })?;
     }
 
+    // Step 2b: evaluate `entities/fog_volumes.luau`. Like
+    // `entities/lights.luau`, it returns a table containing both public
+    // helpers (`pulseDensity`) and the private `wrapFogVolumeEntity` bridge
+    // that `world.luau` needs as a bare global during its closure setup.
+    let fog_volumes_sdk: Table = lua
+        .load(FOG_VOLUMES_LUAU_SRC)
+        .set_name("postretro/sdk/entities/fog_volumes.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `entities/fog_volumes.luau`: {e}"),
+            source_name: "sdk/lib/entities/fog_volumes.luau".to_string(),
+        })?;
+    let wrap_fog_volume_entity: mlua::Value = fog_volumes_sdk
+        .get("wrapFogVolumeEntity")
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("entities/fog_volumes.luau missing `wrapFogVolumeEntity`: {e}"),
+        })?;
+    globals
+        .set("wrapFogVolumeEntity", wrap_fog_volume_entity)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to install temporary global `wrapFogVolumeEntity`: {e}"),
+        })?;
+    for field in FOG_VOLUMES_LUAU_FIELDS {
+        let value: mlua::Value =
+            fog_volumes_sdk
+                .get(*field)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("entities/fog_volumes.luau missing `{field}`: {e}"),
+                })?;
+        globals
+            .set(*field, value)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to install global `{field}`: {e}"),
+            })?;
+    }
+
     // Step 3: evaluate `world.luau`. Its `query` closure captures
-    // `wrapLightEntity` as an upvalue at evaluation time, so step 4's nil-out
-    // does not break the closure.
+    // `wrapLightEntity` and `wrapFogVolumeEntity` as upvalues at evaluation
+    // time, so step 4's nil-out does not break the closure.
     let world: mlua::Value = lua
         .load(WORLD_LUAU_SRC)
         .set_name("postretro/sdk/world.luau")
@@ -126,12 +175,18 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             reason: format!("failed to install global `world`: {e}"),
         })?;
 
-    // Step 4: nil out the temporary `wrapLightEntity` bridge so author scripts
-    // never see it as a bare global once `sandbox(true)` freezes `_G`.
+    // Step 4: nil out the temporary `wrapLightEntity` / `wrapFogVolumeEntity`
+    // bridges so author scripts never see them as bare globals once
+    // `sandbox(true)` freezes `_G`.
     globals
         .set("wrapLightEntity", mlua::Value::Nil)
         .map_err(|e| ScriptError::InvalidArgument {
             reason: format!("failed to clear temporary global `wrapLightEntity`: {e}"),
+        })?;
+    globals
+        .set("wrapFogVolumeEntity", mlua::Value::Nil)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to clear temporary global `wrapFogVolumeEntity`: {e}"),
         })?;
 
     // Step 5: evaluate `util/keyframes.luau` and lift its fields to globals.

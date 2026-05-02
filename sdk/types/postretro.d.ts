@@ -279,6 +279,22 @@ declare module "postretro" {
     periodMs: number,
   ): LightAnimation;
 
+  /** Controller returned by `pulseDensity` to cancel the running animation. */
+  export interface AnimationController {
+    /** Stop the animation. Idempotent. */
+    stop(): void;
+  }
+
+  /** Oscillates a fog volume's density between `min` and `max` with `period`
+   * milliseconds. Implemented as a tick handler that writes
+   * `setComponent(id, "fog_volume", ...)` each frame; cancel via the
+   * returned controller's `.stop()`. No engine-side fog animation
+   * primitive exists — this is pure script-side animation. */
+  export function pulseDensity(
+    handle: FogVolumeHandle,
+    opts: { min: number; max: number; period: number },
+  ): AnimationController;
+
   /** Validate `[absolute_ms, ...value]` keyframes; pass-through on success. */
   export function timeline<T extends number[]>(
     keyframes: [number, ...T][],

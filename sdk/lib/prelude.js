@@ -204,6 +204,148 @@ function sweep(directions, periodMs) {
         direction
     };
 }
+function readFogVolumeComponent(id) {
+    const c = getComponent(id, "fog_volume");
+    if (c.kind !== "fog_volume") {
+        throw new Error(`expected FogVolume component on entity ${idDebug1(id)}, got ${c.kind}`);
+    }
+    return c;
+}
+function idDebug1(id) {
+    return String(id);
+}
+function tickSubscription(fn) {
+    let cancelled = false;
+    registerHandler("tick", (ctx)=>{
+        if (cancelled) return;
+        if (ctx === undefined) return;
+        fn(ctx);
+    });
+    return {
+        stop () {
+            cancelled = true;
+        }
+    };
+}
+const DENSITY_TWEEN = Symbol("fog_density_tween");
+const COLOR_TWEEN = Symbol("fog_color_tween");
+function cancelExisting(slots, key) {
+    const slotKey = key;
+    const existing = slots[slotKey];
+    if (existing) {
+        existing.stop();
+        slots[slotKey] = null;
+    }
+}
+function writeFogVolume(id, density, color, scatter, falloff) {
+    setComponent(id, "fog_volume", {
+        kind: "fog_volume",
+        density,
+        color: [
+            color[0],
+            color[1],
+            color[2]
+        ],
+        scatter,
+        falloff
+    });
+}
+function startDensityTween(id, slots, target, durationMs) {
+    cancelExisting(slots, DENSITY_TWEEN);
+    const startDensity = readFogVolumeComponent(id).density;
+    let elapsedMs = 0;
+    const ctrl = tickSubscription((ctx)=>{
+        elapsedMs += ctx.delta * 1000;
+        const t = Math.min(1, elapsedMs / durationMs);
+        const value = startDensity + (target - startDensity) * t;
+        const live = readFogVolumeComponent(id);
+        writeFogVolume(id, value, live.color, live.scatter, live.falloff);
+        if (t >= 1) {
+            ctrl.stop();
+            slots[DENSITY_TWEEN] = null;
+        }
+    });
+    slots[DENSITY_TWEEN] = ctrl;
+}
+function startColorTween(id, slots, target, durationMs) {
+    cancelExisting(slots, COLOR_TWEEN);
+    const liveStart = readFogVolumeComponent(id);
+    const from = [
+        liveStart.color[0],
+        liveStart.color[1],
+        liveStart.color[2]
+    ];
+    let elapsedMs = 0;
+    const ctrl = tickSubscription((ctx)=>{
+        elapsedMs += ctx.delta * 1000;
+        const t = Math.min(1, elapsedMs / durationMs);
+        const value = [
+            from[0] + (target[0] - from[0]) * t,
+            from[1] + (target[1] - from[1]) * t,
+            from[2] + (target[2] - from[2]) * t
+        ];
+        const live = readFogVolumeComponent(id);
+        writeFogVolume(id, live.density, value, live.scatter, live.falloff);
+        if (t >= 1) {
+            ctrl.stop();
+            slots[COLOR_TWEEN] = null;
+        }
+    });
+    slots[COLOR_TWEEN] = ctrl;
+}
+function wrapFogVolumeEntity(snapshot) {
+    const id = snapshot.id;
+    const slots = {};
+    const handle = {
+        ...snapshot,
+        setDensity (density, durationMs = 0) {
+            if (durationMs <= 0) {
+                cancelExisting(slots, DENSITY_TWEEN);
+                const live = readFogVolumeComponent(id);
+                writeFogVolume(id, density, live.color, live.scatter, live.falloff);
+                return;
+            }
+            startDensityTween(id, slots, density, durationMs);
+        },
+        setColor (color, durationMs = 0) {
+            if (durationMs <= 0) {
+                cancelExisting(slots, COLOR_TWEEN);
+                const live = readFogVolumeComponent(id);
+                writeFogVolume(id, live.density, color, live.scatter, live.falloff);
+                return;
+            }
+            startColorTween(id, slots, color, durationMs);
+        },
+        setScatter (scatter) {
+            const live = readFogVolumeComponent(id);
+            writeFogVolume(id, live.density, live.color, scatter, live.falloff);
+        },
+        setFalloff (falloff) {
+            const live = readFogVolumeComponent(id);
+            writeFogVolume(id, live.density, live.color, live.scatter, falloff);
+        }
+    };
+    return handle;
+}
+function pulseDensity(handle, opts) {
+    const { min, max, period } = opts;
+    if (!(period > 0)) {
+        throw new Error("pulseDensity: `period` must be a positive number");
+    }
+    const lo = Math.min(min, max);
+    const hi = Math.max(min, max);
+    const mid = (lo + hi) * 0.5;
+    const amp = (hi - lo) * 0.5;
+    const id = handle.id;
+    let elapsedMs = 0;
+    return tickSubscription((ctx)=>{
+        elapsedMs += ctx.delta * 1000;
+        const phase = elapsedMs % period / period;
+        const value = mid + amp * Math.sin(phase * Math.PI * 2);
+        const live = readFogVolumeComponent(id);
+        writeFogVolume(id, value, live.color, live.scatter, live.falloff);
+    });
+}
 const world = {
     query (filter) {
         const normalized = {
@@ -215,9 +357,10 @@ const world = {
             const lights = raw.map(wrapLightEntity);
             return lights;
         }
-        // Thread `component` through unchanged when the Rust handle carries
-        // it (e.g. emitter queries) so callers can read component fields
-        // without a follow-up `getComponent` call.
+        if (filter.component === "fog_volume") {
+            const volumes = raw.map(wrapFogVolumeEntity);
+            return volumes;
+        }
         const entities = raw.map((s)=>{
             const projected = {
                 id: s.id,
@@ -531,6 +674,7 @@ globalThis["flicker"] = flicker;
 globalThis["pulse"] = pulse;
 globalThis["colorShift"] = colorShift;
 globalThis["sweep"] = sweep;
+globalThis["pulseDensity"] = pulseDensity;
 globalThis["timeline"] = timeline;
 globalThis["sequence"] = sequence;
 globalThis["registerReaction"] = registerReaction;

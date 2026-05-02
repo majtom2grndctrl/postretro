@@ -471,6 +471,22 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     periodMs: number,
   ): LightAnimation;
 
+  /** Controller returned by `pulseDensity` to cancel the running animation. */
+  export interface AnimationController {
+    /** Stop the animation. Idempotent. */
+    stop(): void;
+  }
+
+  /** Oscillates a fog volume's density between `min` and `max` with `period`
+   * milliseconds. Implemented as a tick handler that writes
+   * `setComponent(id, "fog_volume", ...)` each frame; cancel via the
+   * returned controller's `.stop()`. No engine-side fog animation
+   * primitive exists — this is pure script-side animation. */
+  export function pulseDensity(
+    handle: FogVolumeHandle,
+    opts: { min: number; max: number; period: number },
+  ): AnimationController;
+
   /** Validate `[absolute_ms, ...value]` keyframes; pass-through on success. */
   export function timeline<T extends number[]>(
     keyframes: [number, ...T][],
@@ -706,7 +722,8 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
 
 /// Static type declarations for the Luau SDK library globals installed by
 /// the embedded `world.luau`, `entities/lights.luau`, `entities/emitters.luau`,
-/// `entities/fog_volumes.luau`, and `util/keyframes.luau` preludes. Appended to the generated
+/// `entities/fog_volumes.luau` (provides `pulseDensity` global and the
+/// temporary `wrapFogVolumeEntity` bridge), and `util/keyframes.luau` preludes. Appended to the generated
 /// `postretro.d.luau` so `luau-lsp` resolves the symbols without an explicit
 /// `require`. See: context/lib/scripting.md §7.
 const LUAU_SDK_LIB_BLOCK: &str = r#"
@@ -805,6 +822,21 @@ declare function colorShift(colors: {{number}}, periodMs: number): LightAnimatio
 
 --- Sweeps the light's `direction` through normalized vectors over `periodMs`.
 declare function sweep(directions: {{number}}, periodMs: number): LightAnimation
+
+--- Controller returned by `pulseDensity` to cancel the running animation.
+export type AnimationController = {
+  stop: (self: AnimationController) -> (),
+}
+
+--- Oscillates a fog volume's density between `min` and `max` with `period`
+--- milliseconds. Implemented as a tick handler that writes
+--- `setComponent(id, "fog_volume", ...)` each frame; cancel via the returned
+--- controller's `:stop()`. No engine-side fog animation primitive exists --
+--- this is pure script-side animation.
+declare function pulseDensity(
+  handle: FogVolumeHandle,
+  opts: { min: number, max: number, period: number }
+): AnimationController
 
 --- Validate `{absolute_ms, ...value}` keyframes; pass-through on success.
 declare function timeline(keyframes: {Keyframe}): {Keyframe}

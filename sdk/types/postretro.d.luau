@@ -293,6 +293,21 @@ declare function colorShift(colors: {{number}}, periodMs: number): LightAnimatio
 --- Sweeps the light's `direction` through normalized vectors over `periodMs`.
 declare function sweep(directions: {{number}}, periodMs: number): LightAnimation
 
+--- Controller returned by `pulseDensity` to cancel the running animation.
+export type AnimationController = {
+  stop: (self: AnimationController) -> (),
+}
+
+--- Oscillates a fog volume's density between `min` and `max` with `period`
+--- milliseconds. Implemented as a tick handler that writes
+--- `setComponent(id, "fog_volume", ...)` each frame; cancel via the returned
+--- controller's `:stop()`. No engine-side fog animation primitive exists --
+--- this is pure script-side animation.
+declare function pulseDensity(
+  handle: FogVolumeHandle,
+  opts: { min: number, max: number, period: number }
+): AnimationController
+
 --- Validate `{absolute_ms, ...value}` keyframes; pass-through on success.
 declare function timeline(keyframes: {Keyframe}): {Keyframe}
 

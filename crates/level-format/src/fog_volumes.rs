@@ -11,6 +11,11 @@ pub const MAX_FOG_VOLUMES: usize = 16;
 /// One fog volume baked into the PRL. AABB extents are in engine space (Y-up,
 /// meters); colour is linear 0–1 (no sRGB curve applied). The runtime spawns
 /// one ECS entity per record at level load.
+///
+/// `center`, `inv_half_ext`, `half_diag`, and `inv_height_extent` are derived
+/// from `min`/`max` at compile time so the raymarch shader can skip recomputing
+/// them per ray step. They are baked into the PRL rather than rebuilt at level
+/// load to keep the wire format self-describing for tooling.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FogVolumeRecord {
     pub min: [f32; 3],
@@ -21,6 +26,17 @@ pub struct FogVolumeRecord {
     pub scatter: f32,
     pub height_gradient: f32,
     pub radial_falloff: f32,
+    /// AABB center: `(min + max) * 0.5`.
+    pub center: [f32; 3],
+    /// Reciprocal of the AABB half-extent: `1.0 / max((max - min) * 0.5, 1e-6)`.
+    /// Clamped away from zero so degenerate (zero-thickness) volumes don't
+    /// produce infinities in the shader.
+    pub inv_half_ext: [f32; 3],
+    /// Length of the AABB half-extent vector — used as the radial-falloff
+    /// normalization radius.
+    pub half_diag: f32,
+    /// Reciprocal of `max.y - min.y`, clamped away from zero.
+    pub inv_height_extent: f32,
     /// Author-supplied script tags (FGD `_tags`, pre-split on whitespace).
     pub tags: Vec<String>,
 }
@@ -39,6 +55,10 @@ pub struct FogVolumeRecord {
 ///     f32  scatter
 ///     f32  height_gradient
 ///     f32  radial_falloff
+///     f32  center_x, center_y, center_z
+///     f32  inv_half_ext_x, inv_half_ext_y, inv_half_ext_z
+///     f32  half_diag
+///     f32  inv_height_extent
 ///     u32  tag_count
 ///     repeat tag_count:
 ///       u32  tag_byte_len; u8[] tag_utf8
@@ -80,6 +100,14 @@ impl FogVolumesSection {
             buf.extend_from_slice(&v.scatter.to_le_bytes());
             buf.extend_from_slice(&v.height_gradient.to_le_bytes());
             buf.extend_from_slice(&v.radial_falloff.to_le_bytes());
+            for c in v.center {
+                buf.extend_from_slice(&c.to_le_bytes());
+            }
+            for c in v.inv_half_ext {
+                buf.extend_from_slice(&c.to_le_bytes());
+            }
+            buf.extend_from_slice(&v.half_diag.to_le_bytes());
+            buf.extend_from_slice(&v.inv_height_extent.to_le_bytes());
             buf.extend_from_slice(&(v.tags.len() as u32).to_le_bytes());
             for tag in &v.tags {
                 let bytes = tag.as_bytes();
@@ -95,8 +123,8 @@ impl FogVolumesSection {
         let pixel_scale = read_u32(data, &mut o, "pixel_scale")?;
         let count = read_u32(data, &mut o, "volume count")? as usize;
 
-        // Sanity-check: each fixed payload is 14 × f32 + u32 = 60 bytes.
-        const MIN_RECORD_SIZE: usize = 60;
+        // Sanity-check: each fixed payload is 22 × f32 + u32 = 92 bytes.
+        const MIN_RECORD_SIZE: usize = 92;
         let remaining = data.len().saturating_sub(o);
         if count > remaining / MIN_RECORD_SIZE {
             // FormatError has no Parse variant; Io is the closest proxy for
@@ -119,6 +147,11 @@ impl FogVolumesSection {
             let scatter = read_f32(data, &mut o, &format!("volume {i} scatter"))?;
             let height_gradient = read_f32(data, &mut o, &format!("volume {i} height_gradient"))?;
             let radial_falloff = read_f32(data, &mut o, &format!("volume {i} radial_falloff"))?;
+            let center = read_vec3(data, &mut o, &format!("volume {i} center"))?;
+            let inv_half_ext = read_vec3(data, &mut o, &format!("volume {i} inv_half_ext"))?;
+            let half_diag = read_f32(data, &mut o, &format!("volume {i} half_diag"))?;
+            let inv_height_extent =
+                read_f32(data, &mut o, &format!("volume {i} inv_height_extent"))?;
 
             let tag_count = read_u32(data, &mut o, &format!("volume {i} tag count"))? as usize;
             const MIN_TAG_SIZE: usize = 4;
@@ -145,6 +178,10 @@ impl FogVolumesSection {
                 scatter,
                 height_gradient,
                 radial_falloff,
+                center,
+                inv_half_ext,
+                half_diag,
+                inv_height_extent,
                 tags,
             });
         }
@@ -244,6 +281,10 @@ mod tests {
                     scatter: 0.4,
                     height_gradient: 0.25,
                     radial_falloff: 0.0,
+                    center: [0.0, 1.5, 0.0],
+                    inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
+                    half_diag: 2.5,
+                    inv_height_extent: 1.0 / 3.0,
                     tags: vec!["smoke".to_string(), "ambient".to_string()],
                 },
                 FogVolumeRecord {
@@ -255,6 +296,10 @@ mod tests {
                     scatter: 0.9,
                     height_gradient: 0.0,
                     radial_falloff: 1.0,
+                    center: [11.0, 2.0, -3.0],
+                    inv_half_ext: [1.0, 0.5, 0.5],
+                    half_diag: 3.0,
+                    inv_height_extent: 0.25,
                     tags: vec![],
                 },
             ],
@@ -303,6 +348,10 @@ mod tests {
                 scatter: 0.5,
                 height_gradient: 0.0,
                 radial_falloff: 0.0,
+                center: [0.5, 0.5, 0.5],
+                inv_half_ext: [2.0, 2.0, 2.0],
+                half_diag: 0.866_025_4,
+                inv_height_extent: 1.0,
                 tags: vec![],
             }],
         };

@@ -475,7 +475,10 @@ mod tests {
             .iter()
             .filter(|&&s| s != NO_SHADOW_SLOT)
             .count();
-        assert_eq!(assigned_count, 8, "all 8 visible lights get slots (pool has 12 capacity)");
+        assert_eq!(
+            assigned_count, 8,
+            "all 8 visible lights get slots (pool has 12 capacity)"
+        );
     }
 
     #[test]

@@ -19,11 +19,18 @@ pub const MAX_FOG_POINT_LIGHTS: usize = 32;
 /// and GPU cost; larger values are faster but produce visible banding.
 pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 
-/// Packed AABB + scattering parameters for a single fog volume. 64 bytes,
+/// Packed AABB + scattering parameters for a single fog volume. 96 bytes,
 /// matches the `FogVolume` struct in fog_volume.wgsl.
 ///
 /// `max_v` (rather than `max`) avoids the WGSL `max` builtin shadowing a
 /// member field name.
+///
+/// `center`, `inv_half_ext`, `half_diag`, and `inv_height_extent` are baked at
+/// compile time by the level compiler so the raymarch shader doesn't recompute
+/// them per ray step.
+///
+/// Field order pairs each `vec3<f32>` with a trailing scalar so WGSL's 16-byte
+/// vec3 alignment slots fill naturally without internal padding holes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FogVolume {
@@ -33,10 +40,13 @@ pub struct FogVolume {
     pub falloff: f32,
     pub color: [f32; 3],
     pub scatter: f32,
+    pub center: [f32; 3],
+    pub half_diag: f32,
+    pub inv_half_ext: [f32; 3],
+    pub inv_height_extent: f32,
     pub height_gradient: f32,
     pub radial_falloff: f32,
-    pub _pad0: f32,
-    pub _pad1: f32,
+    pub _pad: [f32; 2],
 }
 
 /// Per-frame spot-light record consumed by the fog raymarch. 48 bytes;
@@ -101,7 +111,7 @@ pub const FOG_POINT_LIGHT_SIZE: usize = std::mem::size_of::<FogPointLight>();
 pub const FOG_PARAMS_SIZE: usize = std::mem::size_of::<FogParams>();
 
 // Compile-time guards against accidental layout drift.
-const _: () = assert!(FOG_VOLUME_SIZE == 64);
+const _: () = assert!(FOG_VOLUME_SIZE == 96);
 const _: () = assert!(FOG_SPOT_LIGHT_SIZE == 48);
 const _: () = assert!(FOG_POINT_LIGHT_SIZE == 32);
 const _: () = assert!(FOG_PARAMS_SIZE == 112);
@@ -134,11 +144,11 @@ pub struct FogParamsInput {
 }
 
 /// Build the per-frame fog uniform. Takes a [`FogParamsInput`] rather than a
-/// `FogParams` directly so callers don't depend on the GPU struct shape — the
-/// GPU layout (`FogParams`) is the stable contract; the call signature, carried
-/// by `FogParamsInput`, can evolve independently. Callers cast the returned
-/// struct to bytes via `bytemuck::bytes_of` at the upload site, avoiding a
-/// per-frame `Vec<u8>` allocation.
+/// `FogParams` directly so callers don't depend on the GPU struct layout —
+/// `FogParamsInput` is the stable call-shape contract; `FogParams` carries the
+/// GPU-aligned layout (with explicit padding) and can drift independently.
+/// Callers cast the returned struct to bytes via `bytemuck::bytes_of` at the
+/// upload site, avoiding a per-frame `Vec<u8>` allocation.
 pub fn pack_fog_params(input: FogParamsInput) -> FogParams {
     FogParams {
         inv_view_proj: input.inv_view_proj.to_cols_array_2d(),
@@ -187,10 +197,12 @@ mod tests {
     }
 
     #[test]
-    fn pack_fog_volumes_round_trips_density_and_falloff() {
-        // density at byte offset 12, falloff at byte offset 28 — these are
-        // the float32 fields most likely to silently drift if a layout
-        // change forgets the WGSL counterpart.
+    fn pack_fog_volumes_round_trips_all_baked_fields() {
+        // Byte offsets follow the field order: min(0) density(12) max(16)
+        // falloff(28) color(32) scatter(44) center(48) half_diag(60)
+        // inv_half_ext(64) inv_height_extent(76) height_gradient(80)
+        // radial_falloff(84) pad(88..96). Asserting on each baked field
+        // catches silent layout drift between Rust and WGSL.
         let v = FogVolume {
             min: [1.0, 2.0, 3.0],
             density: 0.75,
@@ -198,18 +210,30 @@ mod tests {
             falloff: 0.25,
             color: [0.1, 0.2, 0.3],
             scatter: 0.5,
+            center: [2.5, 3.5, 4.5],
+            half_diag: 2.598_076,
+            inv_half_ext: [0.666_666_7, 0.666_666_7, 0.666_666_7],
+            inv_height_extent: 0.333_333_3,
             height_gradient: 0.0,
             radial_falloff: 0.0,
-            _pad0: 0.0,
-            _pad1: 0.0,
+            _pad: [0.0, 0.0],
         };
         let volumes = [v];
         let bytes = pack_fog_volumes(&volumes);
         assert_eq!(bytes.len(), FOG_VOLUME_SIZE);
+        assert_eq!(FOG_VOLUME_SIZE, 96);
 
         let density = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
         let falloff = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
+        let center_x = f32::from_le_bytes(bytes[48..52].try_into().unwrap());
+        let half_diag = f32::from_le_bytes(bytes[60..64].try_into().unwrap());
+        let inv_hx = f32::from_le_bytes(bytes[64..68].try_into().unwrap());
+        let inv_h_ext = f32::from_le_bytes(bytes[76..80].try_into().unwrap());
         assert_eq!(density, 0.75);
         assert_eq!(falloff, 0.25);
+        assert_eq!(center_x, 2.5);
+        assert!((half_diag - 2.598_076).abs() < 1e-5);
+        assert!((inv_hx - 0.666_666_7).abs() < 1e-5);
+        assert!((inv_h_ext - 0.333_333_3).abs() < 1e-5);
     }
 }

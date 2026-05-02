@@ -70,6 +70,13 @@ struct LightSpaceMatrices {
 
 // --- Group 6: Fog resources ---
 
+// 96 bytes; layout must match `FogVolume` in fx/fog_volume.rs. Each `vec3<f32>`
+// is paired with a trailing scalar so WGSL's 16-byte vec3 alignment slots fill
+// without internal padding holes.
+//
+// `center`, `inv_half_ext`, `half_diag`, and `inv_height_extent` are baked at
+// compile time by the level compiler so the raymarch reads precomputed values
+// rather than deriving them per step.
 struct FogVolume {
     min: vec3<f32>,
     density: f32,
@@ -77,10 +84,13 @@ struct FogVolume {
     falloff: f32,
     color: vec3<f32>,
     scatter: f32,
+    center: vec3<f32>,
+    half_diag: f32,
+    inv_half_ext: vec3<f32>,
+    inv_height_extent: f32,
     height_gradient: f32,
     radial_falloff: f32,
-    _pad0: f32,
-    _pad1: f32,
+    _pad: vec2<f32>,
 }
 
 struct FogPointLight {
@@ -206,18 +216,17 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
         if pos.x > v.max_v.x || pos.y > v.max_v.y || pos.z > v.max_v.z {
             continue;
         }
-        let half_ext = (v.max_v - v.min) * 0.5;
-        let center   = (v.min + v.max_v) * 0.5;
-        let local_abs = abs(pos - center) / max(half_ext, vec3<f32>(1.0e-6));
+        // `center`, `inv_half_ext`, `half_diag`, `inv_height_extent` are baked
+        // into FogVolume by the level compiler — no need to recompute them.
+        let local_abs = abs(pos - v.center) * v.inv_half_ext;
         let edge_t   = 1.0 - clamp(max(local_abs.x, max(local_abs.y, local_abs.z)), 0.0, 1.0);
         // Guard against pow(0,0) NaN: clamp both base and exponent away from zero.
         let box_fade = select(pow(max(edge_t, 1.0e-6), max(v.falloff, 1.0e-6)), 1.0, v.falloff <= 0.0);
 
-        let height_t    = clamp((pos.y - v.min.y) / max(v.max_v.y - v.min.y, 1.0e-6), 0.0, 1.0);
+        let height_t    = clamp((pos.y - v.min.y) * v.inv_height_extent, 0.0, 1.0);
         let height_fade = clamp(1.0 - height_t * v.height_gradient, 0.0, 1.0);
 
-        let half_diag   = length(half_ext);
-        let radial_t    = clamp(length(pos - center) / max(half_diag, 1.0e-6), 0.0, 1.0);
+        let radial_t    = clamp(length(pos - v.center) / max(v.half_diag, 1.0e-6), 0.0, 1.0);
         let radial_inv  = 1.0 - radial_t;
         let radial_fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
 
@@ -293,7 +302,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let step = max(fog.step_size, 1.0e-3);
     let start_t = max(fog.near_clip, step * 0.5);
-    var t = start_t;
     var transmittance: f32 = 1.0;
     var accum: vec3<f32> = vec3<f32>(0.0);
 
@@ -307,68 +315,165 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // (the buffer is sized for SHADOW_POOL_SIZE and never shrinks).
     let spot_count = fog.spot_count;
 
-    for (var s: u32 = 0u; s < max_steps; s = s + 1u) {
-        if t >= ray.max_t { break; }
-        if transmittance < 0.01 { break; }
+    // --- Slab-clip prologue ---------------------------------------------------
+    // Compute the union of [t_enter, t_exit] intervals over all active fog
+    // volumes, clamped to [start_t, ray.max_t]. The march only iterates inside
+    // these sub-intervals; an empty union skips the loop entirely.
+    //
+    // IEEE-inf on zero ray-direction components is the standard slab-test
+    // behavior — `(min - origin) / 0` propagates to ±inf and the min/max
+    // composition handles axis-aligned rays correctly without epsilon hacks.
+    let inv_d = vec3<f32>(1.0) / ray.direction;
 
-        let pos = ray.origin + ray.direction * t;
-        let vs = sample_fog_volumes(pos);
-        if vs.density > 0.0 {
-            // Scatter weight for this step.
-            let weight = vs.density * vs.scatter * step;
+    // MAX_FOG_VOLUMES = 16 (mirrors level-format constant). We track raw
+    // [enter, exit] hits, then sort-merge into a disjoint union.
+    var raw_enter: array<f32, 16>;
+    var raw_exit: array<f32, 16>;
+    var raw_count: u32 = 0u;
 
-            // SH ambient contribution (tinted by the fog color).
-            let sh_amb = sample_sh_ambient(pos);
-            accum = accum + transmittance * weight * vs.color * sh_amb;
+    let vc = fog.volume_count;
+    for (var i: u32 = 0u; i < vc; i = i + 1u) {
+        let v = fog_volumes[i];
+        let t_min = (v.min - ray.origin) * inv_d;
+        let t_max = (v.max_v - ray.origin) * inv_d;
+        let t_lo = min(t_min, t_max);
+        let t_hi = max(t_min, t_max);
+        let t_near = max(max(t_lo.x, t_lo.y), t_lo.z);
+        let t_far = min(min(t_hi.x, t_hi.y), t_hi.z);
 
-            // Dynamic spot beams.
-            for (var li: u32 = 0u; li < spot_count; li = li + 1u) {
-                let spot = fog_spots[li];
-                if spot.slot == 0xFFFFFFFFu { continue; }
-
-                let to_light = spot.position - pos;
-                let dist = length(to_light);
-                if dist > spot.range || dist < 1.0e-4 { continue; }
-                let l = to_light / dist;
-
-                // Cone test: the stored `direction` is the aim (light → target),
-                // so compare dot(-l, direction) against cos(outer).
-                let cos_aim = dot(-l, spot.direction);
-                if cos_aim < spot.cos_outer { continue; }
-
-                // Distance falloff (linear — matches FalloffModel::Linear baseline;
-                // beams are aesthetic, subtle differences between falloff models
-                // aren't worth an extra branch here).
-                let atten = clamp(1.0 - dist / spot.range, 0.0, 1.0);
-
-                // Shadow map occlusion.
-                let lit = sample_spot_shadow_pt(
-                    spot.slot,
-                    pos,
-                    light_space_matrices.m[spot.slot],
-                );
-                if lit <= 0.0 { continue; }
-
-                accum = accum + transmittance * weight * vs.color * spot.color * atten * lit;
+        if t_near < t_far && t_far > start_t && t_near < ray.max_t {
+            let enter = max(t_near, start_t);
+            let exit = min(t_far, ray.max_t);
+            if enter < exit {
+                if raw_count < 16u {
+                    raw_enter[raw_count] = enter;
+                    raw_exit[raw_count] = exit;
+                    raw_count = raw_count + 1u;
+                }
             }
-
-            // Loop over the CPU-tracked prefix (`fog.point_count`) instead of
-            // `arrayLength(&fog_points)` so a frame that uploads zero point
-            // lights doesn't re-iterate stale records left in the buffer from
-            // a previous frame.
-            for (var pi: u32 = 0u; pi < fog.point_count; pi = pi + 1u) {
-                let pt = fog_points[pi];
-                let to_light = pt.position - pos;
-                let dist = length(to_light);
-                if dist > pt.range || dist < 1.0e-4 { continue; }
-                let atten = clamp(1.0 - dist / pt.range, 0.0, 1.0);
-                accum = accum + transmittance * weight * pt.color * atten;
-            }
-
-            transmittance = transmittance * exp(-vs.density * step);
         }
+    }
 
-        t = t + step;
+    // Merge raw hits into a disjoint, sorted union.
+    // `fog.volume_count` is capped at MAX_FOG_VOLUMES (16), so raw_count <= 16
+    // is always satisfied — no overflow path is needed.
+    var union_enter: array<f32, 16>;
+    var union_exit: array<f32, 16>;
+    var union_count: u32 = 0u;
+
+    // Selection sort by enter (raw_count <= 16, so O(n^2) is fine).
+    for (var a: u32 = 0u; a < raw_count; a = a + 1u) {
+        var best = a;
+        for (var b: u32 = a + 1u; b < raw_count; b = b + 1u) {
+            if raw_enter[b] < raw_enter[best] {
+                best = b;
+            }
+        }
+        if best != a {
+            let te = raw_enter[a];
+            let tx = raw_exit[a];
+            raw_enter[a] = raw_enter[best];
+            raw_exit[a] = raw_exit[best];
+            raw_enter[best] = te;
+            raw_exit[best] = tx;
+        }
+    }
+    // Sweep-merge overlapping/touching intervals.
+    for (var k: u32 = 0u; k < raw_count; k = k + 1u) {
+        let e = raw_enter[k];
+        let x = raw_exit[k];
+        if union_count == 0u || e > union_exit[union_count - 1u] {
+            union_enter[union_count] = e;
+            union_exit[union_count] = x;
+            union_count = union_count + 1u;
+        } else {
+            union_exit[union_count - 1u] = max(union_exit[union_count - 1u], x);
+        }
+    }
+
+    // No fog volume intersects the ray — skip the march entirely.
+    if union_count == 0u {
+        textureStore(scatter_output, vec2<i32>(gid.xy), vec4<f32>(accum, 1.0 - transmittance));
+        return;
+    }
+
+    var step_count: u32 = 0u;
+
+    for (var ui: u32 = 0u; ui < union_count; ui = ui + 1u) {
+        if transmittance < 0.01 { break; }
+        if step_count >= max_steps { break; }
+
+        let sub_enter = union_enter[ui];
+        let sub_exit = union_exit[ui];
+        // Align the first step inside the sub-interval to a half-step offset
+        // (matches the original `start_t = step * 0.5` cadence).
+        var t = sub_enter + step * 0.5;
+
+        loop {
+            if t >= sub_exit { break; }
+            if transmittance < 0.01 { break; }
+            if step_count >= max_steps { break; }
+            step_count = step_count + 1u;
+
+            let pos = ray.origin + ray.direction * t;
+            let vs = sample_fog_volumes(pos);
+            if vs.density > 0.0 {
+                // Scatter weight for this step.
+                let weight = vs.density * vs.scatter * step;
+
+                // SH ambient contribution (tinted by the fog color).
+                let sh_amb = sample_sh_ambient(pos);
+                accum = accum + transmittance * weight * vs.color * sh_amb;
+
+                // Dynamic spot beams.
+                for (var li: u32 = 0u; li < spot_count; li = li + 1u) {
+                    let spot = fog_spots[li];
+                    if spot.slot == 0xFFFFFFFFu { continue; }
+
+                    let to_light = spot.position - pos;
+                    let dist = length(to_light);
+                    if dist > spot.range || dist < 1.0e-4 { continue; }
+                    let l = to_light / dist;
+
+                    // Cone test: the stored `direction` is the aim (light → target),
+                    // so compare dot(-l, direction) against cos(outer).
+                    let cos_aim = dot(-l, spot.direction);
+                    if cos_aim < spot.cos_outer { continue; }
+
+                    // Distance falloff (linear — matches FalloffModel::Linear baseline;
+                    // beams are aesthetic, subtle differences between falloff models
+                    // aren't worth an extra branch here).
+                    let atten = clamp(1.0 - dist / spot.range, 0.0, 1.0);
+
+                    // Shadow map occlusion.
+                    let lit = sample_spot_shadow_pt(
+                        spot.slot,
+                        pos,
+                        light_space_matrices.m[spot.slot],
+                    );
+                    if lit <= 0.0 { continue; }
+
+                    accum = accum + transmittance * weight * vs.color * spot.color * atten * lit;
+                }
+
+                // Loop over the CPU-tracked prefix (`fog.point_count`) instead of
+                // `arrayLength(&fog_points)` so a frame that uploads zero point
+                // lights doesn't re-iterate stale records left in the buffer from
+                // a previous frame.
+                for (var pi: u32 = 0u; pi < fog.point_count; pi = pi + 1u) {
+                    let pt = fog_points[pi];
+                    let to_light = pt.position - pos;
+                    let dist = length(to_light);
+                    if dist > pt.range || dist < 1.0e-4 { continue; }
+                    let atten = clamp(1.0 - dist / pt.range, 0.0, 1.0);
+                    accum = accum + transmittance * weight * pt.color * atten;
+                }
+
+                transmittance = transmittance * exp(-vs.density * step);
+            }
+
+            t = t + step;
+        }
     }
 
     textureStore(scatter_output, vec2<i32>(gid.xy), vec4<f32>(accum, 1.0 - transmittance));

@@ -2,12 +2,12 @@
 // See: context/lib/scripting.md
 //
 // Mirrors `light_bridge.rs`: per-frame, walks the entity registry to repack
-// GPU-ready bytes. `update_volumes` returns `Option<&[u8]>` — `None` means no
-// active volumes; the caller uses that to skip the upload and deactivate the
-// fog pass entirely.
+// GPU-ready bytes. `update_volumes` returns `Option<&[u8]>` — `None` means no active volumes.
+// The caller uploads an empty slice on `None`, which zeroes `volume_count` and
+// causes `FogPass::active()` to return false, skipping the compute dispatch.
 //
-// Fog volume AABBs are baked at level load (immutable runtime) and cached in
-// `aabbs` here. Density / colour / scatter / falloff are runtime-tweakable
+// Fog volume AABBs are baked into the PRL at compile time (immutable at runtime)
+// and cached in `aabbs` here. Density / colour / scatter / falloff are runtime-tweakable
 // `FogVolumeComponent` fields read from the entity registry on every update.
 
 use std::collections::HashMap;
@@ -23,11 +23,19 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 /// alongside it. These are not runtime-settable — surfacing them at runtime
 /// would require adding them to `FogVolumeComponent` and the scripting API —
 /// so they live in a side-table rather than on `FogVolumeComponent`.
+///
+/// `center`, `inv_half_ext`, `half_diag`, and `inv_height_extent` are baked
+/// into the PRL by the level compiler; they're cached here so per-frame fog
+/// uploads can copy precomputed values without recomputing them from min/max.
 pub struct FogVolumeAabb {
     pub min: Vec3,
     pub max: Vec3,
     pub height_gradient: f32,
     pub radial_falloff: f32,
+    pub center: Vec3,
+    pub inv_half_ext: Vec3,
+    pub half_diag: f32,
+    pub inv_height_extent: f32,
 }
 
 /// State carried across frames. Owned by the game layer so the renderer never
@@ -72,7 +80,7 @@ impl FogVolumeBridge {
         self.entity_ids.reserve(records.len());
 
         for entry in records {
-            let center = (Vec3::from(entry.min) + Vec3::from(entry.max)) * 0.5;
+            let center = Vec3::from(entry.center);
             let transform = Transform {
                 position: center,
                 rotation: Quat::IDENTITY,
@@ -102,6 +110,10 @@ impl FogVolumeBridge {
                     max: Vec3::from(entry.max),
                     height_gradient: entry.height_gradient,
                     radial_falloff: entry.radial_falloff,
+                    center: Vec3::from(entry.center),
+                    inv_half_ext: Vec3::from(entry.inv_half_ext),
+                    half_diag: entry.half_diag,
+                    inv_height_extent: entry.inv_height_extent,
                 },
             );
             self.entity_ids.push(id);
@@ -149,10 +161,13 @@ impl FogVolumeBridge {
                 falloff: component.falloff,
                 color: component.color,
                 scatter: component.scatter,
+                center: aabb.center.to_array(),
+                half_diag: aabb.half_diag,
+                inv_half_ext: aabb.inv_half_ext.to_array(),
+                inv_height_extent: aabb.inv_height_extent,
                 height_gradient: aabb.height_gradient,
                 radial_falloff: aabb.radial_falloff,
-                _pad0: 0.0,
-                _pad1: 0.0,
+                _pad: [0.0, 0.0],
             };
             self.volumes_bytes
                 .extend_from_slice(bytemuck::bytes_of(&fv));
@@ -276,6 +291,10 @@ mod tests {
             scatter: 0.4,
             height_gradient: 0.25,
             radial_falloff: 0.0,
+            center: [0.0, 1.5, 0.0],
+            inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
+            half_diag: 2.5,
+            inv_height_extent: 1.0 / 3.0,
             tags: vec![],
         }
     }
@@ -312,6 +331,10 @@ mod tests {
         let aabb = bridge.aabbs.get(&id).unwrap();
         assert_eq!(aabb.min, Vec3::new(-2.0, 0.0, -2.0));
         assert_eq!(aabb.height_gradient, 0.25);
+        assert_eq!(aabb.center, Vec3::new(0.0, 1.5, 0.0));
+        assert_eq!(aabb.inv_half_ext, Vec3::new(0.5, 1.0 / 1.5, 0.5));
+        assert_eq!(aabb.half_diag, 2.5);
+        assert_eq!(aabb.inv_height_extent, 1.0 / 3.0);
     }
 
     #[test]
@@ -361,11 +384,7 @@ mod tests {
         let near_miss = point_light([100.0, 100.0, 100.0], 5.0, true);
         let static_light = point_light([0.0, 1.0, 0.0], 5.0, false);
 
-        let bytes = bridge.update_points(&[
-            (inside, 1.0),
-            (near_miss, 1.0),
-            (static_light, 1.0),
-        ]);
+        let bytes = bridge.update_points(&[(inside, 1.0), (near_miss, 1.0), (static_light, 1.0)]);
         // Only the dynamic in-range light passes both filters.
         assert_eq!(bytes.len(), std::mem::size_of::<FogPointLight>());
     }

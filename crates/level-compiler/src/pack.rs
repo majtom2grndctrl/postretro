@@ -5,6 +5,7 @@ use std::fs;
 use std::io::Cursor;
 use std::path::Path;
 
+use glam::Vec3;
 use postretro_level_format::alpha_lights::{
     ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
     AlphaLightsSection,
@@ -199,16 +200,33 @@ pub fn encode_fog_volumes(
 ) -> FogVolumesSection {
     let volumes = fog_volumes
         .iter()
-        .map(|v| FogVolumeRecord {
-            min: v.min,
-            density: v.density,
-            max: v.max,
-            falloff: v.falloff,
-            color: v.color,
-            scatter: v.scatter,
-            height_gradient: v.height_gradient,
-            radial_falloff: v.radial_falloff,
-            tags: v.tags.clone(),
+        .map(|v| {
+            // Bake derived AABB metrics at compile time so the raymarch shader
+            // can skip recomputing them per ray step. `half_ext` is clamped
+            // away from zero to avoid infinities for degenerate volumes.
+            let min = Vec3::from(v.min);
+            let max = Vec3::from(v.max);
+            let center = (min + max) * 0.5;
+            let half_ext = ((max - min) * 0.5).max(Vec3::splat(1.0e-6));
+            let inv_half_ext = Vec3::ONE / half_ext;
+            let half_diag = half_ext.length();
+            let inv_height_extent = 1.0 / (max.y - min.y).max(1.0e-6);
+
+            FogVolumeRecord {
+                min: v.min,
+                density: v.density,
+                max: v.max,
+                falloff: v.falloff,
+                color: v.color,
+                scatter: v.scatter,
+                height_gradient: v.height_gradient,
+                radial_falloff: v.radial_falloff,
+                center: center.to_array(),
+                inv_half_ext: inv_half_ext.to_array(),
+                half_diag,
+                inv_height_extent,
+                tags: v.tags.clone(),
+            }
         })
         .collect();
     FogVolumesSection {
@@ -257,8 +275,11 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
     }
 }
 
-/// Write geometry, texture names, BSP nodes, BSP leaves, portals, BVH,
-/// alpha lights, light influence, SH volume, and FogVolumes sections to a .prl file.
+/// Write all required sections (geometry, texture names, BSP nodes, BSP leaves,
+/// portals, BVH, alpha lights, light influence, lightmap, chunk light list, SH
+/// volume, and FogVolumes) and conditionally write optional sections
+/// (animated-light chunks and weight maps, light tags, delta SH volumes, data
+/// script, and map entities) when their arguments are non-`None`.
 #[allow(clippy::too_many_arguments)]
 pub fn pack_and_write_portals(
     output: &Path,

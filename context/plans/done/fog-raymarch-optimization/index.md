@@ -61,7 +61,7 @@ let center   = (min + max) * 0.5;
 // can't produce inf/NaN in the shader downstream.
 let inv_half = Vec3::ONE / half_ext.max(Vec3::splat(1e-6));
 let half_diag = half_ext.length();
-let inv_height_extent = 1.0 / half_ext.y.max(1e-6);
+let inv_height_extent = 1.0 / (max.y - min.y).max(1e-6);
 
 FogVolumeRecord {
     min: v.min,
@@ -93,12 +93,12 @@ repeat volume_count:
   f32  center_x, center_y, center_z          // NEW: baked from (min+max)*0.5
   f32  inv_half_ext_x, inv_half_ext_y, inv_half_ext_z  // NEW: 1 / max(half_ext, 1e-6)
   f32  half_diag                              // NEW: length(half_ext)
-  f32  inv_height_extent                      // NEW: 1 / max(half_ext.y, 1e-6)
+  f32  inv_height_extent                      // NEW: 1 / max(max.y - min.y, 1e-6)
   u32  tag_count
   repeat tag_count: u32 tag_byte_len; u8[] tag_utf8
 ```
 
-Fixed payload grows from 60 to 88 bytes per volume; the tag tail is unchanged. This is a breaking PRL change — pre-release, fix all consumers (compiler, runtime, tests) in the same pass. No back-compat shim.
+Fixed payload grows from 60 to 92 bytes per volume; the tag tail is unchanged. This is a breaking PRL change — pre-release, fix all consumers (compiler, runtime, tests) in the same pass. No back-compat shim.
 
 ### Task 2 — Slab-clip prologue and constant-free inner sampler
 
@@ -160,6 +160,6 @@ The runtime never recomputes these from `min`/`max`. If the on-disk record is mi
 
 ## Risks
 
-- **Degenerate AABBs.** A zero-thickness brush would divide by zero in `inv_half_ext` or `inv_height_extent`. The level compiler clamps each divisor at `1e-6` before inverting — `half_ext.max(Vec3::splat(1e-6))` for `inv_half_ext` and `half_ext.y.max(1e-6)` for `inv_height_extent` — so both fields are finite by construction. The format crate's `read_f32` already rejects non-finite floats at the boundary as a defense-in-depth check.
+- **Degenerate AABBs.** A zero-thickness brush would divide by zero in `inv_half_ext` or `inv_height_extent`. The level compiler clamps each divisor at `1e-6` before inverting — `half_ext.max(Vec3::splat(1e-6))` for `inv_half_ext` and `(max.y - min.y).max(1e-6)` for `inv_height_extent` — so both fields are finite by construction. The format crate's `read_f32` already rejects non-finite floats at the boundary as a defense-in-depth check.
 - **Ray direction with zero components.** Slab-clip's `1.0 / dir` is infinite on axis-aligned rays. Standard fix: let the IEEE-inf propagate; `min`/`max` resolve correctly because the t_min/t_max swap on the affected axis still produces a valid [t_near, t_far] when the ray origin is inside the slab, and produces an empty interval (t_far < t_near) when it's outside. Validate during implementation; if a target adapter mishandles inf, fall back to a per-axis branch.
 - **Interval-union overflow.** Capped at `MAX_FOG_VOLUMES` slots. Overflow path collapses to `[min_enter, max_exit]` — looser bound, correct shading.

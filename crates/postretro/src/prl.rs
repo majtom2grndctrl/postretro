@@ -13,6 +13,7 @@ use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::light_tags::LightTagsSection;
@@ -225,6 +226,19 @@ pub struct LevelWorld {
     /// entry point converts these records to `scripting::map_entity::MapEntity`
     /// at the boundary.
     pub map_entities: Vec<MapEntityRecord>,
+    /// Per-region volumetric fog volumes loaded from the FogVolumes section
+    /// (ID 30). Each record carries an engine-space AABB plus density / colour
+    /// / scatter parameters. Empty when the section is absent or the map
+    /// authored no `env_fog_volume` brushes. Task 5 of the fog-volumes plan
+    /// wires these into the renderer; the loader here just makes them
+    /// available on the level struct.
+    #[allow(dead_code)]
+    pub fog_volumes: Vec<FogVolumeRecord>,
+    /// Worldspawn `fog_pixel_scale` downscale factor for the volumetric fog
+    /// pass (1=full-res, 8=coarsest). Defaults to 4 when the section is
+    /// absent.
+    #[allow(dead_code)]
+    pub fog_pixel_scale: u32,
 }
 
 impl LevelWorld {
@@ -753,6 +767,25 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => Vec::new(),
         };
 
+    // FogVolumes section (ID 30, optional). Always emitted by current
+    // `prl-build` runs so the worldspawn `fog_pixel_scale` is honoured even
+    // when no `env_fog_volume` brushes are present. Maps compiled before this
+    // section was introduced fall back to `pixel_scale = 4` and an empty
+    // volume list.
+    let (fog_volumes, fog_pixel_scale): (Vec<FogVolumeRecord>, u32) =
+        match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogVolumes as u32)? {
+            Some(data) => {
+                let section = FogVolumesSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] FogVolumes: {} volumes, pixel_scale={}",
+                    section.volumes.len(),
+                    section.pixel_scale,
+                );
+                (section.volumes, section.pixel_scale)
+            }
+            None => (Vec::new(), 4),
+        };
+
     let has_portals = portals_section.is_some();
 
     // Build runtime nodes from the nodes section.
@@ -894,6 +927,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         delta_sh_volumes,
         data_script,
         map_entities,
+        fog_volumes,
+        fog_pixel_scale,
     })
 }
 
@@ -985,6 +1020,8 @@ mod tests {
             delta_sh_volumes: None,
             data_script: None,
             map_entities: Vec::new(),
+            fog_volumes: Vec::new(),
+            fog_pixel_scale: 4,
         }
     }
 
@@ -1036,6 +1073,8 @@ mod tests {
             delta_sh_volumes: None,
             data_script: None,
             map_entities: Vec::new(),
+            fog_volumes: Vec::new(),
+            fog_pixel_scale: 4,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -1080,6 +1119,8 @@ mod tests {
             delta_sh_volumes: None,
             data_script: None,
             map_entities: Vec::new(),
+            fog_volumes: Vec::new(),
+            fog_pixel_scale: 4,
         };
 
         let spawn = world.spawn_position();
@@ -1113,6 +1154,8 @@ mod tests {
             delta_sh_volumes: None,
             data_script: None,
             map_entities: Vec::new(),
+            fog_volumes: Vec::new(),
+            fog_pixel_scale: 4,
         };
 
         let indices = face_leaf_indices(&world);

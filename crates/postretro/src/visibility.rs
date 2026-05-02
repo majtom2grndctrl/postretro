@@ -758,6 +758,8 @@ mod tests {
             delta_sh_volumes: None,
             data_script: None,
             map_entities: Vec::new(),
+            fog_volumes: Vec::new(),
+            fog_pixel_scale: 4,
         }
     }
 
@@ -802,6 +804,8 @@ mod tests {
             delta_sh_volumes: None,
             data_script: None,
             map_entities: Vec::new(),
+            fog_volumes: Vec::new(),
+            fog_pixel_scale: 4,
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();

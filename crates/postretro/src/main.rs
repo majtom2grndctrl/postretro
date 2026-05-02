@@ -214,6 +214,7 @@ fn main() -> Result<()> {
         progress_tracker: ProgressTracker::new(),
         classname_dispatch,
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
+        fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
         emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
         level_load_fired: false,
@@ -448,6 +449,11 @@ struct App {
     /// when any `LightComponent` is dirty. See: context/lib/scripting.md
     light_bridge: scripting_systems::light_bridge::LightBridge,
 
+    /// Per-level fog-volume registry side-table; packs `FogVolume` GPU bytes
+    /// each frame from `FogVolumeComponent` mutations. See:
+    /// context/lib/rendering_pipeline.md §7.5
+    fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge,
+
     /// Walks every `BillboardEmitterComponent` after script `tick` handler and
     /// before particle sim. See: context/lib/scripting.md
     emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
@@ -546,6 +552,20 @@ impl ApplicationHandler for App {
             );
         }
 
+        // Fog volumes — one entity per record + a renderer-side pixel-scale
+        // push. Done after light bridge populate so the registry's first fog
+        // entity-id always lands after the light entities.
+        if let Some(world) = self.level.as_ref() {
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            if let Err(err) = self
+                .fog_volume_bridge
+                .populate_from_level(&mut registry, &world.fog_volumes)
+            {
+                log::warn!("[FogVolumeBridge] populate failed: {err}");
+            }
+            renderer.set_fog_pixel_scale(world.fog_pixel_scale);
+        }
+
         // Sweep map entities through classname dispatch. The returned set of
         // handled classnames is stashed and consumed by the data-archetype sweep
         // on the first redraw, after the data script populates
@@ -621,6 +641,10 @@ impl ApplicationHandler for App {
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         self.window_state = None;
         self.renderer = None;
+        // Fog-volume entities live in the script registry; clearing the
+        // bridge's id table here keeps it from referencing stale slots if a
+        // future surface re-creation re-runs `populate_from_level`.
+        self.fog_volume_bridge.clear();
         log::info!("[Engine] Suspended");
     }
 
@@ -1005,6 +1029,23 @@ impl ApplicationHandler for App {
                             renderer.set_light_effective_brightness(&update.effective_brightness);
                         }
                     }
+
+                    // Fog volume bridge — alongside the light bridge. Volume
+                    // packing reads `FogVolumeComponent`; point-light packing
+                    // pre-culls dynamic point lights against fog AABBs. Upload
+                    // happens unconditionally so an empty list zeroes the GPU
+                    // volume count and skips the pass for the rest of the frame.
+                    {
+                        let registry = self.script_ctx.registry.borrow();
+                        if let Some(bytes) = self.fog_volume_bridge.update_volumes(&registry) {
+                            renderer.upload_fog_volumes(bytes);
+                        } else {
+                            renderer.upload_fog_volumes(&[]);
+                        }
+                    }
+                    let level_lights = renderer.level_lights().to_vec();
+                    let point_bytes = self.fog_volume_bridge.update_points(&level_lights);
+                    renderer.upload_fog_points(point_bytes);
 
                     renderer.update_per_frame_uniforms(view_proj, interp.position);
 

@@ -33,6 +33,7 @@ use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 
+use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 use sh_compose::ShComposeResources;
 use sh_volume::ShVolumeResources;
@@ -374,6 +375,11 @@ pub struct Renderer {
 
     /// Idle (no draw) on maps with no registered collections. See §7.4.
     smoke_pass: SmokePass,
+
+    /// Volumetric fog raymarch + composite. Active only when the level has
+    /// at least one fog volume uploaded; otherwise the dispatch + composite
+    /// are skipped (see `FogPass::active`).
+    fog: FogPass,
 }
 
 impl Renderer {
@@ -1417,6 +1423,23 @@ impl Renderer {
             &sh_volume_resources.bind_group_layout,
         );
 
+        // Volumetric fog pass. Pixel scale is the worldspawn default until the
+        // app pushes a per-level value via `set_fog_pixel_scale`.
+        let mut fog = FogPass::new(
+            &device,
+            surface_config.width,
+            surface_config.height,
+            crate::fx::fog_volume::clamp_fog_pixel_scale(0),
+            &depth_view,
+            &uniform_bind_group_layout,
+            &sh_volume_resources.bind_group_layout,
+            &spot_shadow_bgl,
+        );
+        // Match the actual surface format — `FogPass::new` hardcodes
+        // `Rgba8UnormSrgb`, but the swapchain may have picked a different
+        // sRGB or non-sRGB variant.
+        fog.rebuild_composite_for_format(&device, surface_format);
+
         if has_geometry {
             log::info!(
                 "[Renderer] Textured pipeline ready: {} indices, {} textures, bvh_leaves={}",
@@ -1481,6 +1504,7 @@ impl Renderer {
             debug_prev_visible: ("init", usize::MAX),
             app_start: Instant::now(),
             smoke_pass,
+            fog,
         })
     }
 
@@ -1549,6 +1573,8 @@ impl Renderer {
         self.surface.configure(&self.device, &self.surface_config);
         let (_depth_texture, depth_view) = create_depth_texture(&self.device, width, height);
         self.depth_view = depth_view;
+        self.fog
+            .resize(&self.device, width, height, &self.depth_view);
         self.is_surface_configured = true;
     }
 
@@ -1643,6 +1669,64 @@ impl Renderer {
 
     pub fn level_lights(&self) -> &[MapLight] {
         &self.level_lights
+    }
+
+    /// Upload the per-frame fog-volume buffer. Bytes must be a tightly packed
+    /// `[FogVolume]` array; the renderer never sees the script-side type.
+    /// Empty input clears the volume count, which `FogPass::active` reads to
+    /// skip the compute + composite passes for the rest of the frame.
+    pub fn upload_fog_volumes(&mut self, bytes: &[u8]) {
+        let stride = std::mem::size_of::<crate::fx::fog_volume::FogVolume>();
+        if bytes.is_empty() {
+            self.fog.volume_count = 0;
+            return;
+        }
+        if !bytes.len().is_multiple_of(stride) {
+            log::warn!(
+                "[Renderer] upload_fog_volumes: byte length {} is not a multiple of \
+                 FogVolume stride {}; skipping.",
+                bytes.len(),
+                stride,
+            );
+            return;
+        }
+        // `FogPass::upload_volumes` takes `&[FogVolume]`; recover the typed
+        // slice via `bytemuck::cast_slice` so the GPU upload path reuses the
+        // existing capped/labelled writer.
+        let volumes: &[crate::fx::fog_volume::FogVolume] = bytemuck::cast_slice(bytes);
+        self.fog.upload_volumes(&self.queue, volumes);
+    }
+
+    /// Upload the per-frame fog point-light buffer. Bytes must be a tightly
+    /// packed `[FogPointLight]` array. Empty input is a no-op (the buffer keeps
+    /// its previous contents but `volume_count` gates whether the pass runs).
+    pub fn upload_fog_points(&mut self, bytes: &[u8]) {
+        let stride = std::mem::size_of::<crate::fx::fog_volume::FogPointLight>();
+        if bytes.is_empty() {
+            return;
+        }
+        if !bytes.len().is_multiple_of(stride) {
+            log::warn!(
+                "[Renderer] upload_fog_points: byte length {} is not a multiple of \
+                 FogPointLight stride {}; skipping.",
+                bytes.len(),
+                stride,
+            );
+            return;
+        }
+        let points: &[crate::fx::fog_volume::FogPointLight] = bytemuck::cast_slice(bytes);
+        self.fog.upload_points(&self.queue, points);
+    }
+
+    /// Set the global `fog_pixel_scale` from worldspawn. No-op when unchanged.
+    pub fn set_fog_pixel_scale(&mut self, scale: u32) {
+        self.fog.set_pixel_scale(
+            &self.device,
+            scale,
+            self.surface_config.width,
+            self.surface_config.height,
+            &self.depth_view,
+        );
     }
 
     /// Empty slice = no suppression (all lights eligible for shadow slots).
@@ -2061,6 +2145,61 @@ impl Renderer {
                 self.smoke_pass
                     .record_draw(&self.queue, &mut smoke_pass_enc, collection, bytes);
             }
+        }
+
+        // Volumetric fog: low-res raymarch (compute) + additive composite blit.
+        // Skipped entirely when no fog volumes are active for this frame —
+        // the scatter target need not be cleared because the composite is not
+        // issued. See: context/lib/rendering_pipeline.md §7.5
+        if self.fog.active() {
+            let inv_view_proj = view_proj.inverse();
+            self.fog.upload_params(
+                &self.queue,
+                inv_view_proj,
+                self.last_camera_position,
+                crate::camera::NEAR,
+                crate::camera::FAR,
+            );
+
+            let (scatter_w, scatter_h) = self.fog.scatter_dims();
+            // 8×8 workgroup matches the WGSL `@workgroup_size(8, 8)` declaration
+            // in fog_volume.wgsl. Round up so partial tiles still cover the
+            // scatter target's edge pixels.
+            let groups_x = scatter_w.div_ceil(8);
+            let groups_y = scatter_h.div_ceil(8);
+            {
+                let mut raymarch =
+                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("Fog Raymarch Pass"),
+                        timestamp_writes: None,
+                    });
+                raymarch.set_pipeline(&self.fog.raymarch_pipeline);
+                raymarch.set_bind_group(0, &self.uniform_bind_group, &[]);
+                raymarch.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
+                raymarch.set_bind_group(5, &self.spot_shadow_pool.bind_group, &[]);
+                raymarch.set_bind_group(6, &self.fog.bind_group, &[]);
+                raymarch.dispatch_workgroups(groups_x, groups_y, 1);
+            }
+
+            let mut composite = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Fog Composite Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            composite.set_pipeline(&self.fog.composite_pipeline);
+            composite.set_bind_group(0, &self.fog.composite_bind_group, &[]);
+            // Fullscreen triangle: 3 vertices, 1 instance. Geometry is generated
+            // in the vertex shader from `vertex_index` — no vertex buffer.
+            composite.draw(0..3, 0..1);
         }
 
         if self.wireframe_enabled

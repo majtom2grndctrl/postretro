@@ -115,10 +115,8 @@ impl FogVolumesSection {
             let falloff = read_f32(data, &mut o, &format!("volume {i} falloff"))?;
             let color = read_vec3(data, &mut o, &format!("volume {i} color"))?;
             let scatter = read_f32(data, &mut o, &format!("volume {i} scatter"))?;
-            let height_gradient =
-                read_f32(data, &mut o, &format!("volume {i} height_gradient"))?;
-            let radial_falloff =
-                read_f32(data, &mut o, &format!("volume {i} radial_falloff"))?;
+            let height_gradient = read_f32(data, &mut o, &format!("volume {i} height_gradient"))?;
+            let radial_falloff = read_f32(data, &mut o, &format!("volume {i} radial_falloff"))?;
 
             let tag_count = read_u32(data, &mut o, &format!("volume {i} tag count"))? as usize;
             const MIN_TAG_SIZE: usize = 4;

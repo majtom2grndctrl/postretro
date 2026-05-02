@@ -481,7 +481,8 @@ mod tests {
         let result = apply_data_archetype_dispatch(&placements, &descriptors, &handled, &mut reg);
 
         assert_eq!(
-            result.len(), 0,
+            result.len(),
+            0,
             "all colliding placements must be skipped by the conflict guard"
         );
         assert!(
@@ -714,7 +715,8 @@ mod tests {
             apply_data_archetype_dispatch(&placements, &descriptors, &handled, &mut reg);
 
         assert_eq!(
-            descriptor_handled.len(), 0,
+            descriptor_handled.len(),
+            0,
             "data-archetype path must skip a classname owned by built-in dispatch",
         );
         // Built-in handler spawned exactly one billboard_emitter.

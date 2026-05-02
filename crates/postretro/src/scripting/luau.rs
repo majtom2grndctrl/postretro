@@ -43,8 +43,7 @@ const EMITTERS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/emitt
 /// fields (`pulseDensity`, `wrapFogVolumeEntity`) are used during prelude
 /// evaluation. `wrapFogVolumeEntity` is installed as a temporary global for
 /// `world.luau` to capture, then nil'd out before the sandbox freezes.
-const FOG_VOLUMES_LUAU_SRC: &str =
-    include_str!("../../../../sdk/lib/entities/fog_volumes.luau");
+const FOG_VOLUMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/fog_volumes.luau");
 
 /// SDK library prelude — `data_script.luau` returns a table whose fields
 /// (`registerReaction`, `registerEntities`) are destructured into globals so
@@ -134,11 +133,12 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             msg: format!("failed to evaluate SDK prelude `entities/fog_volumes.luau`: {e}"),
             source_name: "sdk/lib/entities/fog_volumes.luau".to_string(),
         })?;
-    let wrap_fog_volume_entity: mlua::Value = fog_volumes_sdk
-        .get("wrapFogVolumeEntity")
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("entities/fog_volumes.luau missing `wrapFogVolumeEntity`: {e}"),
-        })?;
+    let wrap_fog_volume_entity: mlua::Value =
+        fog_volumes_sdk
+            .get("wrapFogVolumeEntity")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("entities/fog_volumes.luau missing `wrapFogVolumeEntity`: {e}"),
+            })?;
     globals
         .set("wrapFogVolumeEntity", wrap_fog_volume_entity)
         .map_err(|e| ScriptError::InvalidArgument {

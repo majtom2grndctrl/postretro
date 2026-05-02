@@ -381,10 +381,7 @@ impl<'js> FromJs<'js> for ComponentValue {
                 let color_v: JsValue = o.get("color")?;
                 let color = serde_json::from_value::<Vec3Lit>(js_to_json(ctx, color_v)?)
                     .map_err(|e| {
-                        rquickjs::Exception::throw_type(
-                            ctx,
-                            &format!("FogVolume.color: {e}"),
-                        )
+                        rquickjs::Exception::throw_type(ctx, &format!("FogVolume.color: {e}"))
                     })?
                     .as_f32_3();
                 let scatter: f32 = o.get("scatter")?;
@@ -478,9 +475,7 @@ impl FromLua for ComponentValue {
                 let density: f32 = t.get("density")?;
                 let color_v: LuaValue = t.get("color")?;
                 let color = serde_json::from_value::<Vec3Lit>(lua_to_json(color_v)?)
-                    .map_err(|e| {
-                        mlua::Error::RuntimeError(format!("FogVolume.color: {e}"))
-                    })?
+                    .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.color: {e}")))?
                     .as_f32_3();
                 let scatter: f32 = t.get("scatter")?;
                 let falloff: f32 = t.get("falloff")?;

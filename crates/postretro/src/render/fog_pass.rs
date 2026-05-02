@@ -226,9 +226,7 @@ impl FogPass {
         // --- Raymarch compute pipeline ---
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fog Raymarch Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../shaders/fog_volume.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/fog_volume.wgsl").into()),
         });
         let raymarch_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Fog Raymarch Pipeline Layout"),
@@ -300,9 +298,7 @@ impl FogPass {
         });
         let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fog Composite Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../shaders/fog_composite.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/fog_composite.wgsl").into()),
         });
         let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Fog Composite Pipeline Layout"),
@@ -382,9 +378,7 @@ impl FogPass {
     ) {
         let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fog Composite Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../shaders/fog_composite.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/fog_composite.wgsl").into()),
         });
         let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Fog Composite Pipeline Layout"),
@@ -549,6 +543,7 @@ impl FogPass {
     }
 
     /// Upload the per-frame spot-light list for the fog raymarch beams.
+    #[allow(dead_code)]
     pub fn upload_spots(&mut self, queue: &wgpu::Queue, spots: &[FogSpotLight]) {
         let capped = spots
             .len()

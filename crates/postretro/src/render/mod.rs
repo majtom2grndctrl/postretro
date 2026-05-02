@@ -1681,7 +1681,7 @@ impl Renderer {
             self.fog.volume_count = 0;
             return;
         }
-        if !bytes.len().is_multiple_of(stride) {
+        if bytes.len() % stride != 0 {
             log::warn!(
                 "[Renderer] upload_fog_volumes: byte length {} is not a multiple of \
                  FogVolume stride {}; skipping.",
@@ -1705,7 +1705,7 @@ impl Renderer {
         if bytes.is_empty() {
             return;
         }
-        if !bytes.len().is_multiple_of(stride) {
+        if bytes.len() % stride != 0 {
             log::warn!(
                 "[Renderer] upload_fog_points: byte length {} is not a multiple of \
                  FogPointLight stride {}; skipping.",
@@ -2168,11 +2168,10 @@ impl Renderer {
             let groups_x = scatter_w.div_ceil(8);
             let groups_y = scatter_h.div_ceil(8);
             {
-                let mut raymarch =
-                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some("Fog Raymarch Pass"),
-                        timestamp_writes: None,
-                    });
+                let mut raymarch = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Fog Raymarch Pass"),
+                    timestamp_writes: None,
+                });
                 raymarch.set_pipeline(&self.fog.raymarch_pipeline);
                 raymarch.set_bind_group(0, &self.uniform_bind_group, &[]);
                 raymarch.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);

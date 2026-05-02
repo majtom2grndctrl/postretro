@@ -408,8 +408,10 @@ pub(crate) fn entity_descriptor_from_js<'js>(
                 if !raw.is_null() && !raw.is_undefined() {
                     let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
                     let descriptor: LightDescriptor =
-                        serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
-                            reason: format!("`components.light` invalid: {e}"),
+                        serde_json::from_value(json).map_err(|e| {
+                            DescriptorError::InvalidShape {
+                                reason: format!("`components.light` invalid: {e}"),
+                            }
                         })?;
                     light = Some(descriptor.validate()?);
                 }
@@ -419,13 +421,16 @@ pub(crate) fn entity_descriptor_from_js<'js>(
                 if !raw.is_null() && !raw.is_undefined() {
                     let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
                     let lit: BillboardEmitterComponentLit =
-                        serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
-                            reason: format!("`components.emitter` invalid: {e}"),
+                        serde_json::from_value(json).map_err(|e| {
+                            DescriptorError::InvalidShape {
+                                reason: format!("`components.emitter` invalid: {e}"),
+                            }
                         })?;
                     let validated =
-                        lit.validate_into().map_err(|e| DescriptorError::InvalidShape {
-                            reason: format!("`components.emitter` invalid: {e}"),
-                        })?;
+                        lit.validate_into()
+                            .map_err(|e| DescriptorError::InvalidShape {
+                                reason: format!("`components.emitter` invalid: {e}"),
+                            })?;
                     emitter = Some(validated);
                 }
             }
@@ -678,8 +683,10 @@ pub(crate) fn entity_descriptor_from_lua(
                 if !matches!(raw, LuaValue::Nil) {
                     let json = super::conv::lua_to_json(raw).map_err(lua_err)?;
                     let descriptor: LightDescriptor =
-                        serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
-                            reason: format!("`components.light` invalid: {e}"),
+                        serde_json::from_value(json).map_err(|e| {
+                            DescriptorError::InvalidShape {
+                                reason: format!("`components.light` invalid: {e}"),
+                            }
                         })?;
                     light = Some(descriptor.validate()?);
                 }
@@ -689,13 +696,16 @@ pub(crate) fn entity_descriptor_from_lua(
                 if !matches!(raw, LuaValue::Nil) {
                     let json = super::conv::lua_to_json(raw).map_err(lua_err)?;
                     let lit: BillboardEmitterComponentLit =
-                        serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
-                            reason: format!("`components.emitter` invalid: {e}"),
+                        serde_json::from_value(json).map_err(|e| {
+                            DescriptorError::InvalidShape {
+                                reason: format!("`components.emitter` invalid: {e}"),
+                            }
                         })?;
                     let validated =
-                        lit.validate_into().map_err(|e| DescriptorError::InvalidShape {
-                            reason: format!("`components.emitter` invalid: {e}"),
-                        })?;
+                        lit.validate_into()
+                            .map_err(|e| DescriptorError::InvalidShape {
+                                reason: format!("`components.emitter` invalid: {e}"),
+                            })?;
                     emitter = Some(validated);
                 }
             }

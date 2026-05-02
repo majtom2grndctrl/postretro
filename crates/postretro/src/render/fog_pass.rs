@@ -14,8 +14,9 @@ use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
 use crate::fx::fog_volume::{
-    self, FOG_PARAMS_SIZE, FOG_SPOT_LIGHT_SIZE, FOG_VOLUME_SIZE, FogSpotLight, FogVolume,
-    MAX_FOG_VOLUMES, clamp_fog_pixel_scale,
+    self, FOG_PARAMS_SIZE, FOG_POINT_LIGHT_SIZE, FOG_SPOT_LIGHT_SIZE, FOG_VOLUME_SIZE,
+    FogPointLight, FogSpotLight, FogVolume, MAX_FOG_POINT_LIGHTS, MAX_FOG_VOLUMES,
+    clamp_fog_pixel_scale,
 };
 
 /// Format of the low-resolution scatter target.
@@ -27,6 +28,7 @@ pub const BIND_VOLUMES: u32 = 1;
 pub const BIND_SCATTER_OUT: u32 = 2;
 pub const BIND_FOG_PARAMS: u32 = 3;
 pub const BIND_FOG_SPOTS: u32 = 4;
+pub const BIND_FOG_POINTS: u32 = 5;
 
 pub struct FogPass {
     pub pixel_scale: u32,
@@ -51,6 +53,8 @@ pub struct FogPass {
     pub params_buffer: wgpu::Buffer,
     /// Per-frame spot-light subset marched by the fog shader.
     pub spots_buffer: wgpu::Buffer,
+    /// Per-frame point-light subset marched by the fog shader.
+    pub fog_points_buffer: wgpu::Buffer,
 
     // --- Scatter target ---
     scatter_view: wgpu::TextureView,
@@ -142,6 +146,16 @@ impl FogPass {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: BIND_FOG_POINTS,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -183,6 +197,16 @@ impl FogPass {
             })
         };
 
+        // Point-light storage buffer. Sized for MAX_FOG_POINT_LIGHTS so the
+        // buffer is never reallocated; per-frame uploads go through
+        // `upload_points`.
+        let fog_points_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fog Point Lights Buffer"),
+            size: (MAX_FOG_POINT_LIGHTS * FOG_POINT_LIGHT_SIZE) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // --- Scatter target ---
         let (scatter_texture, scatter_view) =
             create_scatter_target(device, scatter_dims.0, scatter_dims.1);
@@ -196,6 +220,7 @@ impl FogPass {
             &scatter_view,
             &params_buffer,
             &spots_buffer,
+            &fog_points_buffer,
         );
 
         // --- Raymarch compute pipeline ---
@@ -337,6 +362,7 @@ impl FogPass {
             volumes_buffer,
             params_buffer,
             spots_buffer,
+            fog_points_buffer,
             scatter_view,
             scatter_texture,
             scatter_dims,
@@ -442,6 +468,7 @@ impl FogPass {
             &self.scatter_view,
             &self.params_buffer,
             &self.spots_buffer,
+            &self.fog_points_buffer,
         );
     }
 
@@ -501,6 +528,24 @@ impl FogPass {
             far_clip,
         );
         queue.write_buffer(&self.params_buffer, 0, &bytes);
+    }
+
+    /// Upload the per-frame point-light list for the fog raymarch. Truncates
+    /// at `MAX_FOG_POINT_LIGHTS` with a warning.
+    #[allow(dead_code)]
+    pub fn upload_points(&self, queue: &wgpu::Queue, points: &[FogPointLight]) {
+        let count = points.len().min(MAX_FOG_POINT_LIGHTS);
+        if points.len() > MAX_FOG_POINT_LIGHTS {
+            log::warn!(
+                "[FogPass] {} point lights exceeded MAX_FOG_POINT_LIGHTS={} — extras dropped",
+                points.len(),
+                MAX_FOG_POINT_LIGHTS
+            );
+        }
+        let bytes = fog_volume::pack_fog_point_lights(&points[..count]);
+        if !bytes.is_empty() {
+            queue.write_buffer(&self.fog_points_buffer, 0, &bytes);
+        }
     }
 
     /// Upload the per-frame spot-light list for the fog raymarch beams.
@@ -568,6 +613,7 @@ fn build_group6(
     scatter_view: &wgpu::TextureView,
     params_buffer: &wgpu::Buffer,
     spots_buffer: &wgpu::Buffer,
+    points_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Fog Group 6"),
@@ -592,6 +638,10 @@ fn build_group6(
             wgpu::BindGroupEntry {
                 binding: BIND_FOG_SPOTS,
                 resource: spots_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_FOG_POINTS,
+                resource: points_buffer.as_entire_binding(),
             },
         ],
     })

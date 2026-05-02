@@ -7,9 +7,9 @@ export type EulerDegrees = { pitch: number, yaw: number, roll: number }
 
 export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 
-export type ComponentKind = "transform" | "light" | "billboard_emitter" | "particle_state" | "sprite_visual"
+export type ComponentKind = "transform" | "light" | "billboard_emitter" | "particle_state" | "sprite_visual" | "fog_volume"
 
-export type ComponentValue = (Transform & { kind: "transform" }) | (LightComponent & { kind: "light" }) | (BillboardEmitterComponent & { kind: "billboard_emitter" }) | (ParticleState & { kind: "particle_state" }) | (SpriteVisual & { kind: "sprite_visual" })
+export type ComponentValue = (Transform & { kind: "transform" }) | (LightComponent & { kind: "light" }) | (BillboardEmitterComponent & { kind: "billboard_emitter" }) | (ParticleState & { kind: "particle_state" }) | (SpriteVisual & { kind: "sprite_visual" }) | (FogVolumeComponent & { kind: "fog_volume" })
 
 export type ScriptEvent = { kind: string, payload: any }
 
@@ -54,6 +54,29 @@ export type BillboardEmitterComponent = {
 --- Spin tween shape consumed by `setSpinRate`.
 export type SpinAnimation = { duration: number, rate_curve: {number} }
 
+--- Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable.
+export type FogVolumeComponent = {
+  --- Volumetric fog density inside the AABB.
+  density: number,
+  --- RGB fog color in linear [0, 1].
+  color: Vec3,
+  --- Fraction of in-scattering toward the camera.
+  scatter: number,
+  --- Edge fade: 0 = uniform to AABB boundary, 1 = linear ramp from face to center.
+  falloff: number,
+}
+
+--- Entity handle returned by `world.query` when filtering for fog-volume entities.
+export type FogVolumeEntity = {
+  id: EntityId,
+  --- Volume center at query time (AABB midpoint, baked at level load).
+  position: Vec3,
+  --- The entity's tags at query time. Empty array if untagged.
+  tags: {string},
+  --- Full fog-volume component snapshot at query time.
+  component: FogVolumeComponent,
+}
+
 --- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
 export type EntityTypeComponents = { light?: LightDescriptor?, emitter?: BillboardEmitterComponent? }
 
@@ -92,6 +115,7 @@ export type WorldQueryComponent =
   "light"
   | "transform"
   | "emitter"
+  | "fog_volume"
   --- Always returns []. Engine-managed; scripts never iterate individual particles.
   | "particle"
   --- Always returns []. Engine-managed.
@@ -170,8 +194,8 @@ declare function setLightAnimation(id: EntityId, animation: LightAnimation | nul
 --- Spawns a new entity with the given transform and returns its id. Optional `tags` attaches a tag list at creation time.
 declare function spawnEntity(transform: Transform, tags: {string}?): EntityId
 
---- Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`.
-declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEntity}) & ((filter: { component: "emitter", tag: string? }) -> {EmitterEntity}) & ((filter: WorldQueryFilter) -> {Entity})
+--- Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`.
+declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEntity}) & ((filter: { component: "emitter", tag: string? }) -> {EmitterEntity}) & ((filter: { component: "fog_volume", tag: string? }) -> {FogVolumeEntity}) & ((filter: WorldQueryFilter) -> {Entity})
 
 -- ---------------------------------------------------------------------------
 -- SDK library — embedded into every Luau context via `include_str!` and
@@ -214,14 +238,41 @@ export type EntityHandle = {
   tags: {string},
 }
 
+--- Typed fog-volume handle returned by `world:query({ component = "fog_volume" })`.
+export type FogVolumeHandle = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  component: FogVolumeComponent,
+
+  setDensity: (
+    self: FogVolumeHandle,
+    target: number,
+    transitionMs: number?,
+    easing: EasingCurve?
+  ) -> (),
+  setColor: (
+    self: FogVolumeHandle,
+    target: {number},
+    transitionMs: number?,
+    easing: EasingCurve?
+  ) -> (),
+  setScatter: (self: FogVolumeHandle, scatter: number) -> (),
+  setFalloff: (self: FogVolumeHandle, falloff: number) -> (),
+}
+
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
 --- `"light"` returns `LightEntityHandle` values (with `:setAnimation` /
 --- `:setIntensity` / `:setColor`); `"emitter"` returns `EmitterEntity`
 --- values carrying the full `BillboardEmitterComponent` snapshot under
---- `component`; other components fall back to the bare `EntityHandle` shape.
+--- `component`; `"fog_volume"` returns `FogVolumeHandle` values (with
+--- tween-capable `:setDensity` / `:setColor` and instant `:setScatter` /
+--- `:setFalloff`); other components fall back to the bare `EntityHandle`
+--- shape.
 export type World = {
   query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
        & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
+       & ((self: World, filter: { component: "fog_volume", tag: string? }) -> {FogVolumeHandle})
        & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
 }
 

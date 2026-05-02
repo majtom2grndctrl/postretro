@@ -83,6 +83,7 @@ pub(crate) enum ComponentKind {
     BillboardEmitter = 2,
     ParticleState = 3,
     SpriteVisual = 4,
+    FogVolume = 5,
 }
 
 impl ComponentKind {
@@ -97,6 +98,7 @@ impl ComponentKind {
             ComponentKind::BillboardEmitter,
             ComponentKind::ParticleState,
             ComponentKind::SpriteVisual,
+            ComponentKind::FogVolume,
         ];
         VARIANTS.len()
     };
@@ -136,6 +138,19 @@ pub(crate) enum ComponentValue {
     BillboardEmitter(BillboardEmitterComponent),
     ParticleState(ParticleState),
     SpriteVisual(SpriteVisual),
+    FogVolume(FogVolumeComponent),
+}
+
+/// Script-facing fog volume component. Carries the four runtime-tweakable fog
+/// parameters; the AABB lives in the `FogVolumeBridge` side-table (baked at
+/// level load) and is not exposed through `ComponentValue` because it is not
+/// runtime-settable.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub(crate) struct FogVolumeComponent {
+    pub(crate) density: f32,
+    pub(crate) color: [f32; 3],
+    pub(crate) scatter: f32,
+    pub(crate) falloff: f32,
 }
 
 /// Trait implemented by concrete component structs so they can be stored
@@ -220,6 +235,21 @@ impl Component for SpriteVisual {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::SpriteVisual(self)
+    }
+}
+
+impl Component for FogVolumeComponent {
+    const KIND: ComponentKind = ComponentKind::FogVolume;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::FogVolume(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::FogVolume(self)
     }
 }
 

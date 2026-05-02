@@ -13,7 +13,7 @@ use super::ctx::ScriptEvent;
 use super::data_descriptors::{
     EntityTypeDescriptor, entity_descriptor_from_js, entity_descriptor_from_lua,
 };
-use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
+use super::registry::{ComponentKind, ComponentValue, EntityId, FogVolumeComponent, Transform};
 
 /// Three-component float vector with a permissive Deserialize accepting
 /// either a JSON array of 3 numbers or an object with `x`/`y`/`z` keys.
@@ -287,6 +287,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::BillboardEmitter => "billboard_emitter",
         ComponentKind::ParticleState => "particle_state",
         ComponentKind::SpriteVisual => "sprite_visual",
+        ComponentKind::FogVolume => "fog_volume",
     }
 }
 
@@ -304,6 +305,7 @@ fn component_kind_from_name(name: &str) -> Option<ComponentKind> {
         "billboard_emitter" | "emitter" => Some(ComponentKind::BillboardEmitter),
         "particle_state" | "particle" => Some(ComponentKind::ParticleState),
         "sprite_visual" => Some(ComponentKind::SpriteVisual),
+        "fog_volume" => Some(ComponentKind::FogVolume),
         _ => None,
     }
 }
@@ -371,6 +373,29 @@ impl<'js> FromJs<'js> for ComponentValue {
                     ),
                 ))
             }
+            "fog_volume" => {
+                // setComponent accepts the four runtime-tweakable fields;
+                // any AABB fields (`min`, `max`) on the input are baked
+                // geometry and silently ignored.
+                let density: f32 = o.get("density")?;
+                let color_v: JsValue = o.get("color")?;
+                let color = serde_json::from_value::<Vec3Lit>(js_to_json(ctx, color_v)?)
+                    .map_err(|e| {
+                        rquickjs::Exception::throw_type(
+                            ctx,
+                            &format!("FogVolume.color: {e}"),
+                        )
+                    })?
+                    .as_f32_3();
+                let scatter: f32 = o.get("scatter")?;
+                let falloff: f32 = o.get("falloff")?;
+                Ok(ComponentValue::FogVolume(FogVolumeComponent {
+                    density,
+                    color,
+                    scatter,
+                    falloff,
+                }))
+            }
             other => Err(rquickjs::Exception::throw_type(
                 ctx,
                 &format!("unknown ComponentValue kind `{other}`"),
@@ -399,7 +424,8 @@ impl<'js> IntoJs<'js> for ComponentValue {
             }
             other @ (ComponentValue::BillboardEmitter(_)
             | ComponentValue::ParticleState(_)
-            | ComponentValue::SpriteVisual(_)) => {
+            | ComponentValue::SpriteVisual(_)
+            | ComponentValue::FogVolume(_)) => {
                 let json = serde_json::to_value(&other).map_err(|e| {
                     rquickjs::Exception::throw_type(
                         ctx,
@@ -445,6 +471,26 @@ impl FromLua for ComponentValue {
                      (use the dedicated reaction primitives instead)"
                 )))
             }
+            "fog_volume" => {
+                // setComponent accepts the four runtime-tweakable fields;
+                // any AABB fields (`min`, `max`) on the input are baked
+                // geometry and silently ignored.
+                let density: f32 = t.get("density")?;
+                let color_v: LuaValue = t.get("color")?;
+                let color = serde_json::from_value::<Vec3Lit>(lua_to_json(color_v)?)
+                    .map_err(|e| {
+                        mlua::Error::RuntimeError(format!("FogVolume.color: {e}"))
+                    })?
+                    .as_f32_3();
+                let scatter: f32 = t.get("scatter")?;
+                let falloff: f32 = t.get("falloff")?;
+                Ok(ComponentValue::FogVolume(FogVolumeComponent {
+                    density,
+                    color,
+                    scatter,
+                    falloff,
+                }))
+            }
             other => Err(mlua::Error::RuntimeError(format!(
                 "unknown ComponentValue kind `{other}`"
             ))),
@@ -470,7 +516,8 @@ impl IntoLua for ComponentValue {
             }
             other @ (ComponentValue::BillboardEmitter(_)
             | ComponentValue::ParticleState(_)
-            | ComponentValue::SpriteVisual(_)) => {
+            | ComponentValue::SpriteVisual(_)
+            | ComponentValue::FogVolume(_)) => {
                 let json = serde_json::to_value(&other).map_err(|e| {
                     mlua::Error::RuntimeError(format!("ComponentValue serialization failed: {e}"))
                 })?;
@@ -799,6 +846,93 @@ mod tests {
         assert!(serde_json::from_str::<Vec3Lit>("[1.0, 0.0]").is_err());
         assert!(serde_json::from_str::<Vec3Lit>(r#"{"x":1.0,"y":0.0}"#).is_err());
         assert!(serde_json::from_str::<Vec3Lit>("\"not a vec\"").is_err());
+    }
+
+    #[test]
+    fn fog_volume_component_round_trips_through_quickjs() {
+        // setComponent accepts {density, color, scatter, falloff}; getComponent
+        // returns all four under `kind: "fog_volume"`. AABB fields on the input
+        // are silently ignored.
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|jsctx| {
+            let v: JsValue = jsctx
+                .eval(
+                    r#"({
+                        kind: "fog_volume",
+                        density: 0.4,
+                        color: [0.1, 0.2, 0.3],
+                        scatter: 0.5,
+                        falloff: 0.75,
+                        // AABB fields silently ignored
+                        min: [0.0, 0.0, 0.0],
+                        max: [1.0, 1.0, 1.0],
+                    })"#,
+                )
+                .unwrap();
+            let cv = ComponentValue::from_js(&jsctx, v).unwrap();
+            let ComponentValue::FogVolume(f) = cv else {
+                panic!("expected FogVolume variant, got {cv:?}");
+            };
+            assert!((f.density - 0.4).abs() < 1e-6);
+            assert_eq!(f.color, [0.1, 0.2, 0.3]);
+            assert!((f.scatter - 0.5).abs() < 1e-6);
+            assert!((f.falloff - 0.75).abs() < 1e-6);
+
+            // Round-trip back to JS and read each field.
+            let js_back = ComponentValue::FogVolume(f).into_js(&jsctx).unwrap();
+            let o = rquickjs::Object::from_value(js_back).unwrap();
+            let kind: String = o.get("kind").unwrap();
+            assert_eq!(kind, "fog_volume");
+            let density: f32 = o.get("density").unwrap();
+            assert!((density - 0.4).abs() < 1e-6);
+            let scatter: f32 = o.get("scatter").unwrap();
+            assert!((scatter - 0.5).abs() < 1e-6);
+            let falloff: f32 = o.get("falloff").unwrap();
+            assert!((falloff - 0.75).abs() < 1e-6);
+        });
+    }
+
+    #[test]
+    fn fog_volume_component_round_trips_through_luau() {
+        let lua = mlua::Lua::new();
+        let v: LuaValue = lua
+            .load(
+                r#"return {
+                    kind = "fog_volume",
+                    density = 0.4,
+                    color = { 0.1, 0.2, 0.3 },
+                    scatter = 0.5,
+                    falloff = 0.75,
+                    -- AABB fields silently ignored
+                    min = { 0.0, 0.0, 0.0 },
+                    max = { 1.0, 1.0, 1.0 },
+                }"#,
+            )
+            .eval()
+            .unwrap();
+        let cv = ComponentValue::from_lua(v, &lua).unwrap();
+        let ComponentValue::FogVolume(f) = cv else {
+            panic!("expected FogVolume variant, got {cv:?}");
+        };
+        assert!((f.density - 0.4).abs() < 1e-6);
+        assert_eq!(f.color, [0.1, 0.2, 0.3]);
+        assert!((f.scatter - 0.5).abs() < 1e-6);
+        assert!((f.falloff - 0.75).abs() < 1e-6);
+
+        // Round-trip back to Lua and read each field.
+        let lua_back = ComponentValue::FogVolume(f).into_lua(&lua).unwrap();
+        let LuaValue::Table(tbl) = lua_back else {
+            panic!("expected Lua table");
+        };
+        let kind: String = tbl.get("kind").unwrap();
+        assert_eq!(kind, "fog_volume");
+        let density: f32 = tbl.get("density").unwrap();
+        assert!((density - 0.4).abs() < 1e-6);
+        let scatter: f32 = tbl.get("scatter").unwrap();
+        assert!((scatter - 0.5).abs() < 1e-6);
+        let falloff: f32 = tbl.get("falloff").unwrap();
+        assert!((falloff - 0.75).abs() < 1e-6);
     }
 
     #[test]

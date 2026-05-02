@@ -281,6 +281,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("light", "")
         .variant("transform", "")
         .variant("emitter", "")
+        .variant("fog_volume", "")
         .variant("particle", "Always returns []. Engine-managed; scripts never iterate individual particles.")
         .variant("sprite_visual", "Always returns []. Engine-managed.")
         .finish();

@@ -8,9 +8,9 @@ declare module "postretro" {
 
   export type Transform = { position: Vec3; rotation: EulerDegrees; scale: Vec3 };
 
-  export type ComponentKind = "transform" | "light" | "billboard_emitter" | "particle_state" | "sprite_visual";
+  export type ComponentKind = "transform" | "light" | "billboard_emitter" | "particle_state" | "sprite_visual" | "fog_volume";
 
-  export type ComponentValue = ({ kind: "transform" } & Transform) | ({ kind: "light" } & LightComponent) | ({ kind: "billboard_emitter" } & BillboardEmitterComponent) | ({ kind: "particle_state" } & ParticleState) | ({ kind: "sprite_visual" } & SpriteVisual);
+  export type ComponentValue = ({ kind: "transform" } & Transform) | ({ kind: "light" } & LightComponent) | ({ kind: "billboard_emitter" } & BillboardEmitterComponent) | ({ kind: "particle_state" } & ParticleState) | ({ kind: "sprite_visual" } & SpriteVisual) | ({ kind: "fog_volume" } & FogVolumeComponent);
 
   export type ScriptEvent = { kind: string; payload: unknown };
 
@@ -55,6 +55,29 @@ declare module "postretro" {
   /** Spin tween shape consumed by `setSpinRate`. */
   export type SpinAnimation = { duration: number; rate_curve: ReadonlyArray<number> };
 
+  /** Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable. */
+  export type FogVolumeComponent = {
+    /** Volumetric fog density inside the AABB. */
+    density: number;
+    /** RGB fog color in linear [0, 1]. */
+    color: Vec3;
+    /** Fraction of in-scattering toward the camera. */
+    scatter: number;
+    /** Edge fade: 0 = uniform to AABB boundary, 1 = linear ramp from face to center. */
+    falloff: number;
+  };
+
+  /** Entity handle returned by `world.query` when filtering for fog-volume entities. */
+  export type FogVolumeEntity = {
+    id: EntityId;
+    /** Volume center at query time (AABB midpoint, baked at level load). */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+    /** Full fog-volume component snapshot at query time. */
+    component: FogVolumeComponent;
+  };
+
   /** Optional bag of component presets carried by `EntityTypeDescriptor.components`. */
   export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null };
 
@@ -93,6 +116,7 @@ declare module "postretro" {
     | "light"
     | "transform"
     | "emitter"
+    | "fog_volume"
     /** Always returns []. Engine-managed; scripts never iterate individual particles. */
     | "particle"
     /** Always returns []. Engine-managed. */
@@ -171,7 +195,7 @@ declare module "postretro" {
   /** Spawns a new entity with the given transform and returns its id. Optional `tags` attaches a tag list at creation time. */
   export function spawnEntity(transform: Transform, tags?: ReadonlyArray<string>): EntityId;
 
-  /** Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`. */
+  /** Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`. */
   export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<EntityForComponent<T>>;
 
   // -------------------------------------------------------------------------
@@ -191,14 +215,28 @@ declare module "postretro" {
     ): void;
   }
 
+  /** Typed fog-volume handle returned by `world.query({ component: "fog_volume" })`. */
+  export interface FogVolumeHandle extends FogVolumeEntity {
+    setDensity(target: number, transitionMs?: number, easing?: EasingCurve): void;
+    setColor(
+      target: [number, number, number],
+      transitionMs?: number,
+      easing?: EasingCurve,
+    ): void;
+    setScatter(scatter: number): void;
+    setFalloff(falloff: number): void;
+  }
+
   /** Maps a component-name literal to the rich entity handle type. `"light"`
    * yields `LightEntityHandle` (with convenience methods); `"emitter"` yields
    * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
-   * snapshot under `component`). Other component names fall back to the bare
-   * `Entity` shape (`id`, `position`, `tags`). */
+   * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle` (with
+   * tween-capable density/color setters). Other component names fall back to
+   * the bare `Entity` shape (`id`, `position`, `tags`). */
   export type EntityForComponent<T extends WorldQueryComponent> =
     T extends "light" ? LightEntityHandle :
     T extends "emitter" ? EmitterEntity :
+    T extends "fog_volume" ? FogVolumeHandle :
     Entity;
 
   /** Vocabulary object installed as `globalThis.world`. */

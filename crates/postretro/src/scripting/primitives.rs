@@ -14,7 +14,7 @@ use super::ctx::{GAME_EVENTS_CAPACITY, GameEvent, ScriptCtx, ScriptEvent};
 use super::data_descriptors::EntityTypeDescriptor;
 use super::error::ScriptError;
 use super::primitives_registry::{ContextScope, PrimitiveRegistry};
-use super::registry::{ComponentKind, ComponentValue, EntityId, Transform};
+use super::registry::{ComponentKind, ComponentValue, EntityId, FogVolumeComponent, Transform};
 use mlua::{FromLua, IntoLua, Lua, Value as LuaValue};
 use rquickjs::{Ctx, FromJs, IntoJs, Value as JsValue};
 
@@ -115,6 +115,9 @@ enum QueryFilter {
     Emitter {
         tag: Option<String>,
     },
+    FogVolume {
+        tag: Option<String>,
+    },
     /// Always returns an empty array. Particles and sprite-visuals are
     /// engine-managed; scripts have no business iterating individual ones.
     AlwaysEmpty,
@@ -128,18 +131,19 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "light" => Ok(QueryFilter::Light { tag }),
         "transform" => Ok(QueryFilter::Transform { tag }),
         "emitter" => Ok(QueryFilter::Emitter { tag }),
+        "fog_volume" => Ok(QueryFilter::FogVolume { tag }),
         "particle" | "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"particle\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"particle\" | \"sprite_visual\""
             ),
         }),
     }
 }
 
 const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Available in behavior and data contexts. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"particle\" | \"sprite_visual\", tag?: string }. \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"particle\" | \"sprite_visual\", tag?: string }. \
      `\"particle\"` and `\"sprite_visual\"` always return `[]` (engine-managed; scripts never iterate individual particles). \
      Unknown component values raise InvalidArgument. \
      The `world.ts` vocabulary module wraps this as `world.query`.";
@@ -211,6 +215,43 @@ fn collect_emitter_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_jso
     Value::Array(arr)
 }
 
+/// Build the JSON shape `[{ id, position, tags, component: { density, color,
+/// scatter, falloff } }, ...]` for every entity carrying a
+/// `FogVolumeComponent`. Position is read from the entity's `Transform`
+/// (volume center, baked at level load).
+fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
+    use serde_json::{Map, Value};
+    let reg = ctx.registry.borrow();
+    let mut arr: Vec<Value> = Vec::new();
+    for (id, value) in reg.query_by_component_and_tag(ComponentKind::FogVolume, tag) {
+        let ComponentValue::FogVolume(f) = value else {
+            continue;
+        };
+        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
+        let position = match reg.get_component::<Transform>(id) {
+            Ok(t) => {
+                let mut p = Map::with_capacity(3);
+                p.insert("x".to_string(), Value::from(t.position.x as f64));
+                p.insert("y".to_string(), Value::from(t.position.y as f64));
+                p.insert("z".to_string(), Value::from(t.position.z as f64));
+                Value::Object(p)
+            }
+            Err(_) => Value::Null,
+        };
+        let comp = serde_json::to_value(f).expect("FogVolumeComponent always serializes");
+        let mut obj = Map::with_capacity(4);
+        obj.insert("id".to_string(), Value::from(id.to_raw()));
+        obj.insert("position".to_string(), position);
+        obj.insert(
+            "tags".to_string(),
+            Value::Array(tags.into_iter().map(Value::String).collect()),
+        );
+        obj.insert("component".to_string(), comp);
+        arr.push(Value::Object(obj));
+    }
+    Value::Array(arr)
+}
+
 pub(crate) fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     // Generic registration path: because `WorldQueryFilterInput: FromJs + FromLua`
     // and the returned `JsonValue: IntoJs + IntoLua`, rquickjs / mlua both
@@ -235,6 +276,9 @@ pub(crate) fn register_world_query(registry: &mut PrimitiveRegistry, ctx: Script
                         &ctx,
                         tag.as_deref(),
                     ))),
+                    QueryFilter::FogVolume { tag } => Ok(JsonValue(
+                        collect_fog_volume_handles_json(&ctx, tag.as_deref()),
+                    )),
                     QueryFilter::AlwaysEmpty => Ok(JsonValue(serde_json::Value::Array(Vec::new()))),
                 }
             }
@@ -414,6 +458,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("billboard_emitter", "")
         .variant("particle_state", "")
         .variant("sprite_visual", "")
+        .variant("fog_volume", "")
         .finish();
     registry
         .register_tagged_union("ComponentValue")
@@ -423,6 +468,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("billboard_emitter", "BillboardEmitterComponent", "")
         .variant("particle_state", "ParticleState", "")
         .variant("sprite_visual", "SpriteVisual", "")
+        .variant("fog_volume", "FogVolumeComponent", "")
         .finish();
     registry
         .register_type("ScriptEvent")
@@ -477,6 +523,34 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Spin tween shape consumed by `setSpinRate`.")
         .field("duration", "f32", "")
         .field("rate_curve", "Vec<f32>", "")
+        .finish();
+    registry
+        .register_type("FogVolumeComponent")
+        .doc("Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable.")
+        .field("density", "f32", "Volumetric fog density inside the AABB.")
+        .field("color", "Vec3", "RGB fog color in linear [0, 1].")
+        .field("scatter", "f32", "Fraction of in-scattering toward the camera.")
+        .field("falloff", "f32", "Edge fade: 0 = uniform to AABB boundary, 1 = linear ramp from face to center.")
+        .finish();
+    registry
+        .register_type("FogVolumeEntity")
+        .doc("Entity handle returned by `world.query` when filtering for fog-volume entities.")
+        .field("id", "EntityId", "")
+        .field(
+            "position",
+            "Vec3",
+            "Volume center at query time (AABB midpoint, baked at level load).",
+        )
+        .field(
+            "tags",
+            "Vec<String>",
+            "The entity's tags at query time. Empty array if untagged.",
+        )
+        .field(
+            "component",
+            "FogVolumeComponent",
+            "Full fog-volume component snapshot at query time.",
+        )
         .finish();
     registry
         .register_type("EntityTypeComponents")
@@ -561,6 +635,10 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                         let s = reg.get_component::<SpriteVisual>(id)?;
                         Ok(ComponentValue::SpriteVisual(s.clone()))
                     }
+                    ComponentKind::FogVolume => {
+                        let f = reg.get_component::<FogVolumeComponent>(id)?;
+                        Ok(ComponentValue::FogVolume(*f))
+                    }
                 }
             }
         })
@@ -588,6 +666,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                     (ComponentKind::BillboardEmitter, ComponentValue::BillboardEmitter(_)) => {}
                     (ComponentKind::ParticleState, ComponentValue::ParticleState(_)) => {}
                     (ComponentKind::SpriteVisual, ComponentValue::SpriteVisual(_)) => {}
+                    (ComponentKind::FogVolume, ComponentValue::FogVolume(_)) => {}
                     _ => {
                         return Err(ScriptError::InvalidArgument {
                             reason: format!(
@@ -604,6 +683,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                     ComponentValue::BillboardEmitter(e) => reg.set_component(id, e)?,
                     ComponentValue::ParticleState(p) => reg.set_component(id, p)?,
                     ComponentValue::SpriteVisual(s) => reg.set_component(id, s)?,
+                    ComponentValue::FogVolume(f) => reg.set_component(id, f)?,
                 }
                 Ok(())
             }

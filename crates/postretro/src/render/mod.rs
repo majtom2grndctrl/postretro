@@ -1671,6 +1671,61 @@ impl Renderer {
         &self.level_lights
     }
 
+    /// Build the per-frame `FogSpotLight` list from the dynamic spot lights
+    /// that received a shadow slot this frame. The raymarch shader uses
+    /// `slot` to index `light_space_matrices.m[slot]` for shadow comparison,
+    /// so unslotted spots are excluded — they have no usable light-space
+    /// matrix in the shader's view.
+    ///
+    /// Pre-multiplies `color × intensity × effective_brightness` so the GPU
+    /// path is purely additive; mirrors the fog point-light packing in
+    /// `FogVolumeBridge::update_points`.
+    fn collect_fog_spot_lights(&self) -> Vec<crate::fx::fog_volume::FogSpotLight> {
+        const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
+        let slot_assignment = &self.spot_shadow_pool.slot_assignment;
+        if slot_assignment.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (light_idx, &slot) in slot_assignment.iter().enumerate() {
+            if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
+                continue;
+            }
+            let Some(light) = self.level_lights.get(light_idx) else {
+                continue;
+            };
+            if !matches!(light.light_type, crate::prl::LightType::Spot) {
+                continue;
+            }
+            let multiplier = self
+                .light_effective_brightness
+                .get(light_idx)
+                .copied()
+                .unwrap_or(1.0);
+            if multiplier < BRIGHTNESS_SUPPRESSION_THRESHOLD {
+                continue;
+            }
+            let intensity = light.intensity * multiplier;
+            out.push(crate::fx::fog_volume::FogSpotLight {
+                position: [
+                    light.origin[0] as f32,
+                    light.origin[1] as f32,
+                    light.origin[2] as f32,
+                ],
+                slot,
+                direction: light.cone_direction,
+                cos_outer: light.cone_angle_outer.cos(),
+                color: [
+                    light.color[0] * intensity,
+                    light.color[1] * intensity,
+                    light.color[2] * intensity,
+                ],
+                range: light.falloff_range,
+            });
+        }
+        out
+    }
+
     /// Upload the per-frame fog-volume buffer. Bytes must be a tightly packed
     /// `[FogVolume]` array; the renderer never sees the script-side type.
     /// Empty input clears the volume count, which `FogPass::active` reads to
@@ -2160,6 +2215,16 @@ impl Renderer {
                 crate::camera::NEAR,
                 crate::camera::FAR,
             );
+
+            // Repack the dynamic spot lights that own a shadow slot this
+            // frame as `FogSpotLight` records — same source the shadow pass
+            // already consumed (`level_lights` × `slot_assignment`). Only
+            // shadow-slotted spots contribute to the fog beam pass; the
+            // raymarch shader looks up `light_space_matrices.m[slot]` to
+            // sample shadow occlusion, so a slotless spot has no usable
+            // light-space matrix.
+            let fog_spots = self.collect_fog_spot_lights();
+            self.fog.upload_spots(&self.queue, &fog_spots);
 
             let (scatter_w, scatter_h) = self.fog.scatter_dims();
             // 8×8 workgroup matches the WGSL `@workgroup_size(8, 8)` declaration

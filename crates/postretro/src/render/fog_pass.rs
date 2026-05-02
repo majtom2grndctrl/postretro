@@ -73,7 +73,6 @@ pub struct FogPass {
     /// Most recently uploaded fog volume count. Shader loops against this.
     pub volume_count: u32,
     /// Most recent spot light count for dynamic beams.
-    #[allow(dead_code)]
     pub spot_count: u32,
 }
 
@@ -543,7 +542,6 @@ impl FogPass {
     }
 
     /// Upload the per-frame spot-light list for the fog raymarch beams.
-    #[allow(dead_code)]
     pub fn upload_spots(&mut self, queue: &wgpu::Queue, spots: &[FogSpotLight]) {
         let capped = spots
             .len()

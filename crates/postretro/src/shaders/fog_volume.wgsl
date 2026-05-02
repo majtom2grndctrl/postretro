@@ -202,14 +202,19 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
         let center   = (v.min + v.max_v) * 0.5;
         let local_abs = abs(pos - center) / max(half_ext, vec3<f32>(1.0e-6));
         let edge_t   = 1.0 - clamp(max(local_abs.x, max(local_abs.y, local_abs.z)), 0.0, 1.0);
-        let box_fade = pow(clamp(edge_t, 0.0, 1.0), v.falloff);
+        // `pow(0.0, 0.0)` is NaN on most backends; the `falloff <= 0.0` fast-path
+        // ("no falloff = uniform fill") sidesteps it entirely, and the slow-path
+        // epsilon guards the boundary case where edge_t lands exactly on an
+        // AABB face.
+        let box_fade = select(pow(max(edge_t, 1.0e-6), max(v.falloff, 1.0e-6)), 1.0, v.falloff <= 0.0);
 
         let height_t    = clamp((pos.y - v.min.y) / max(v.max_v.y - v.min.y, 1.0e-6), 0.0, 1.0);
         let height_fade = clamp(1.0 - height_t * v.height_gradient, 0.0, 1.0);
 
         let half_diag   = length(half_ext);
         let radial_t    = clamp(length(pos - center) / max(half_diag, 1.0e-6), 0.0, 1.0);
-        let radial_fade = pow(clamp(1.0 - radial_t, 0.0, 1.0), v.radial_falloff);
+        let radial_inv  = 1.0 - radial_t;
+        let radial_fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
 
         let fade = box_fade * height_fade * radial_fade;
         out.density = out.density + v.density * fade;

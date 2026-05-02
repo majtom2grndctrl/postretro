@@ -1016,6 +1016,7 @@ impl ApplicationHandler for App {
                     // Light bridge — between Game Logic and Render. Uploads
                     // mutated `LightComponent` data before `render_frame_indirect`
                     // allocates slots, so scripted lights reflect their new state.
+                    let mut effective_brightness: Vec<f32> = Vec::new();
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
                         if let Some(update) =
@@ -1027,6 +1028,7 @@ impl ApplicationHandler for App {
                                 renderer.upload_bridge_samples(&update.samples_bytes);
                             }
                             renderer.set_light_effective_brightness(&update.effective_brightness);
+                            effective_brightness = update.effective_brightness;
                         }
                     }
 
@@ -1044,7 +1046,14 @@ impl ApplicationHandler for App {
                         }
                     }
                     let level_lights = renderer.level_lights().to_vec();
-                    let point_bytes = self.fog_volume_bridge.update_points(&level_lights);
+                    // `effective_brightness` parallels `level_lights` (same
+                    // index space — `LightBridge::populate_from_level` walks
+                    // the renderer's map-light slice). Forwards scripted
+                    // intensity changes to the fog halo; the static
+                    // `MapLight.intensity` alone never reflects them.
+                    let point_bytes = self
+                        .fog_volume_bridge
+                        .update_points(&level_lights, &effective_brightness);
                     renderer.upload_fog_points(point_bytes);
 
                     renderer.update_per_frame_uniforms(view_proj, interp.position);

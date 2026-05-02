@@ -12,11 +12,11 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use crate::fx::fog_volume::{FogPointLight, FogVolume, MAX_FOG_POINT_LIGHTS};
 use crate::prl::{LightType, MapLight};
-use crate::scripting::registry::{EntityId, EntityRegistry, FogVolumeComponent};
+use crate::scripting::registry::{EntityId, EntityRegistry, FogVolumeComponent, Transform};
 use postretro_level_format::fog_volumes::FogVolumeRecord;
 
 /// Authoring-time AABB plus the two compile-time falloff parameters carried
@@ -67,7 +67,13 @@ impl FogVolumeBridge {
         self.entity_ids.reserve(records.len());
 
         for entry in records {
-            let Some(id) = registry.try_spawn(Default::default(), &entry.tags) else {
+            let center = (Vec3::from(entry.min) + Vec3::from(entry.max)) * 0.5;
+            let transform = Transform {
+                position: center,
+                rotation: Quat::IDENTITY,
+                scale: Vec3::ONE,
+            };
+            let Some(id) = registry.try_spawn(transform, &entry.tags) else {
                 log::warn!(
                     "[FogVolumeBridge] entity registry exhausted; dropping fog volume \
                      (index {}). Further fog volumes in this level will not appear.",
@@ -153,15 +159,35 @@ impl FogVolumeBridge {
     /// pack the survivors as `FogPointLight` records. Filters to dynamic point
     /// lights only — static lights bake into the SH volume; spot lights have a
     /// dedicated path. Capped at `MAX_FOG_POINT_LIGHTS`.
-    pub(crate) fn update_points(&mut self, lights: &[MapLight]) -> &[u8] {
+    ///
+    /// `effective_brightness` parallels `lights` (same indexing — see
+    /// `LightBridgeUpdate::effective_brightness`). When present, each light's
+    /// authored `intensity` is multiplied by its effective brightness before
+    /// pre-multiplying into `color`, so `setComponent`-driven intensity
+    /// changes (which mutate the bridge, not the static `MapLight` slice)
+    /// reach the fog halo. An empty/short slice means "no scripted override"
+    /// and falls back to a multiplier of `1.0`.
+    pub(crate) fn update_points(
+        &mut self,
+        lights: &[MapLight],
+        effective_brightness: &[f32],
+    ) -> &[u8] {
         self.points_bytes.clear();
         if self.aabbs.is_empty() || lights.is_empty() {
             return &self.points_bytes;
         }
 
+        // Suppress fully-dark lights (matches the renderer's shadow-slot
+        // suppression threshold in `update_dynamic_light_slots`).
+        const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
+
         let mut packed: Vec<FogPointLight> = Vec::new();
-        for light in lights {
+        for (i, light) in lights.iter().enumerate() {
             if !matches!(light.light_type, LightType::Point) || !light.is_dynamic {
+                continue;
+            }
+            let multiplier = effective_brightness.get(i).copied().unwrap_or(1.0);
+            if multiplier < BRIGHTNESS_SUPPRESSION_THRESHOLD {
                 continue;
             }
             let center = Vec3::new(
@@ -173,7 +199,7 @@ impl FogVolumeBridge {
             if !sphere_intersects_any_aabb(center, range, self.aabbs.values()) {
                 continue;
             }
-            let intensity = light.intensity;
+            let intensity = light.intensity * multiplier;
             packed.push(FogPointLight {
                 position: center.to_array(),
                 range,
@@ -328,7 +354,7 @@ mod tests {
         let near_miss = point_light([100.0, 100.0, 100.0], 5.0, true);
         let static_light = point_light([0.0, 1.0, 0.0], 5.0, false);
 
-        let bytes = bridge.update_points(&[inside, near_miss, static_light]);
+        let bytes = bridge.update_points(&[inside, near_miss, static_light], &[]);
         // Only the dynamic in-range light passes both filters.
         assert_eq!(bytes.len(), std::mem::size_of::<FogPointLight>());
     }
@@ -342,11 +368,48 @@ mod tests {
             .unwrap();
 
         let light = point_light([0.0, 1.0, 0.0], 5.0, true);
-        let bytes = bridge.update_points(&[light]).to_vec();
+        let bytes = bridge.update_points(&[light], &[]).to_vec();
         // FogPointLight layout: position (12) | range (4) | color (12) | _pad (4).
         let r = f32::from_le_bytes(bytes[16..20].try_into().unwrap());
         // intensity 2.0 × color.r 1.0 = 2.0
         assert!((r - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn update_points_applies_effective_brightness_multiplier() {
+        // Regression: scripts mutating `LightComponent.intensity` update the
+        // light bridge's `effective_brightness`, not the static `MapLight`
+        // slice. The fog packer must apply that multiplier so a `setComponent`
+        // intensity change reaches the halo.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge
+            .populate_from_level(&mut registry, &[sample_record()])
+            .unwrap();
+
+        let light = point_light([0.0, 1.0, 0.0], 5.0, true);
+        // light.intensity = 2.0, color.r = 1.0, multiplier = 0.25 → 0.5
+        let bytes = bridge.update_points(&[light], &[0.25]).to_vec();
+        let r = f32::from_le_bytes(bytes[16..20].try_into().unwrap());
+        assert!(
+            (r - 0.5).abs() < 1e-5,
+            "color.r should be intensity × multiplier × color.r = 0.5; got {r}"
+        );
+    }
+
+    #[test]
+    fn update_points_suppresses_dark_lights() {
+        // Effective brightness < 0.01 → light dropped (matches forward-pass
+        // shadow-slot suppression threshold).
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge
+            .populate_from_level(&mut registry, &[sample_record()])
+            .unwrap();
+
+        let light = point_light([0.0, 1.0, 0.0], 5.0, true);
+        let bytes = bridge.update_points(&[light], &[0.0]);
+        assert!(bytes.is_empty(), "dark light must be suppressed");
     }
 
     #[test]

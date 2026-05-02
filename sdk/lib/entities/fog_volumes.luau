@@ -1,25 +1,7 @@
 --!strict
--- Fog volume vocabulary: the `FogVolumeHandle` returned by
--- `world:query({ component = "fog_volume" })`, plus the `pulseDensity`
--- animation constructor. Mirrors `entities/lights.luau` shape; the
--- handle wraps the generated `FogVolumeEntity` snapshot with mutating
--- methods that call `setComponent`. Density and color tweens are
--- driven from per-handle `tick` callbacks registered with
--- `registerHandler` -- there is no engine-side fog animation primitive,
--- unlike lights.
---
--- ---------------------------------------------------------------------
--- Canonical modder example -- pulse a tagged fog cloud.
---
--- ```lua
--- registerHandler("levelLoad", function()
---   local clouds = world:query({ component = "fog_volume", tag = "neon_haze" })
---   for _, cloud in ipairs(clouds) do
---     pulseDensity(cloud, { min = 0.2, max = 0.6, period = 4000 })
---   end
--- end)
--- ```
--- ---------------------------------------------------------------------
+-- FogVolumeHandle: wraps FogVolumeEntity snapshots with mutating methods.
+-- Density/color tweens are tick-handler loops; no engine-side fog
+-- animation primitive exists (unlike lights). See docs/scripting-reference.md.
 
 -- `EntityId`, `FogVolumeComponent`, `FogVolumeEntity`,
 -- `ScriptCallContext`, `getComponent`, `setComponent`, and
@@ -139,13 +121,15 @@ local function startDensityTween(
   cancelTween(slots, "density")
   local startDensity = readFogVolumeComponent(id).density
   local elapsedMs = 0.0
+  -- Both tweens call readFogVolumeComponent independently, so if they fire
+  -- on the same tick, the second write clobbers the first axis's update.
+  -- Each tween converges correctly over subsequent ticks; one setComponent
+  -- call per tick is wasted when both axes are animating simultaneously.
   local ctrl: AnimationController
   ctrl = tickSubscription(function(ctx: ScriptCallContext)
     elapsedMs += ctx.delta * 1000
     local t = math.min(1.0, elapsedMs / durationMs)
     local value = startDensity + (target - startDensity) * t
-    -- Re-read live for the other fields so a concurrent color tween or
-    -- scripted setScatter/setFalloff is not clobbered.
     local live = readFogVolumeComponent(id)
     writeFogVolume(id, value, (live.color :: any) :: {number}, live.scatter, live.falloff)
     if t >= 1.0 then
@@ -241,6 +225,11 @@ end
 --- `:stop()` cancels the animation. Multiple `pulseDensity` calls on
 --- the same handle stack -- call `:stop()` on the previous controller
 --- before starting a new one if you do not want overlap.
+---
+--- Note: cancelling via `:stop()` stops density updates but the tick
+--- handler remains registered until the level unloads. Avoid calling
+--- `pulseDensity` repeatedly on the same handle -- prefer reusing the
+--- controller returned from the first call.
 function FogVolumesSdk.pulseDensity(
   handle: FogVolumeHandle,
   opts: { min: number, max: number, period: number }

@@ -2,8 +2,9 @@
 // See: context/lib/scripting.md
 //
 // Mirrors `light_bridge.rs`: per-frame, walks the entity registry to repack
-// GPU-ready bytes, returns them to the renderer through a narrow `&[u8]` API
-// so the renderer never sees a scripting type.
+// GPU-ready bytes. `update_volumes` returns `Option<&[u8]>` — `None` means no
+// active volumes; the caller uses that to skip the upload and deactivate the
+// fog pass entirely.
 //
 // Fog volume AABBs are baked at level load (immutable runtime) and cached in
 // `aabbs` here. Density / colour / scatter / falloff are runtime-tweakable
@@ -11,7 +12,6 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
 use glam::{Quat, Vec3};
 
 use crate::fx::fog_volume::{FogPointLight, FogVolume, MAX_FOG_POINT_LIGHTS};
@@ -20,8 +20,9 @@ use crate::scripting::registry::{EntityId, EntityRegistry, FogVolumeComponent, T
 use postretro_level_format::fog_volumes::FogVolumeRecord;
 
 /// Authoring-time AABB plus the two compile-time falloff parameters carried
-/// alongside it. These are not runtime-settable, so they live in a side-table
-/// rather than on `FogVolumeComponent`.
+/// alongside it. These are not runtime-settable — surfacing them at runtime
+/// would require adding them to `FogVolumeComponent` and the scripting API —
+/// so they live in a side-table rather than on `FogVolumeComponent`.
 pub struct FogVolumeAabb {
     pub min: Vec3,
     pub max: Vec3,
@@ -41,6 +42,9 @@ pub(crate) struct FogVolumeBridge {
     volumes_bytes: Vec<u8>,
     /// Reusable byte buffer for `FogPointLight` records.
     points_bytes: Vec<u8>,
+    /// Set to `true` the first time the point-light cap warning fires; suppresses
+    /// per-frame log spam when the scene consistently exceeds `MAX_FOG_POINT_LIGHTS`.
+    warned_overflow: bool,
 }
 
 impl FogVolumeBridge {
@@ -50,6 +54,7 @@ impl FogVolumeBridge {
             entity_ids: Vec::new(),
             volumes_bytes: Vec::new(),
             points_bytes: Vec::new(),
+            warned_overflow: false,
         }
     }
 
@@ -61,7 +66,7 @@ impl FogVolumeBridge {
         &mut self,
         registry: &mut EntityRegistry,
         records: &[FogVolumeRecord],
-    ) -> Result<()> {
+    ) {
         self.aabbs.clear();
         self.entity_ids.clear();
         self.entity_ids.reserve(records.len());
@@ -101,8 +106,6 @@ impl FogVolumeBridge {
             );
             self.entity_ids.push(id);
         }
-
-        Ok(())
     }
 
     /// Drop per-level state. Byte-buffer capacity is retained so the next
@@ -113,6 +116,7 @@ impl FogVolumeBridge {
         // Length cleared, capacity retained.
         self.volumes_bytes.clear();
         self.points_bytes.clear();
+        self.warned_overflow = false;
     }
 
     /// Walk the registry and repack one `FogVolume` GPU record per tracked
@@ -124,7 +128,6 @@ impl FogVolumeBridge {
             return None;
         }
 
-        let mut packed: Vec<FogVolume> = Vec::with_capacity(self.entity_ids.len());
         for id in &self.entity_ids {
             let Ok(component) = registry.get_component::<FogVolumeComponent>(*id) else {
                 // Entity despawned or component removed; skip the slot.
@@ -139,7 +142,7 @@ impl FogVolumeBridge {
             let Some(aabb) = self.aabbs.get(id) else {
                 continue;
             };
-            packed.push(FogVolume {
+            let fv = FogVolume {
                 min: aabb.min.to_array(),
                 density: component.density,
                 max_v: aabb.max.to_array(),
@@ -150,14 +153,14 @@ impl FogVolumeBridge {
                 radial_falloff: aabb.radial_falloff,
                 _pad0: 0.0,
                 _pad1: 0.0,
-            });
+            };
+            self.volumes_bytes
+                .extend_from_slice(bytemuck::bytes_of(&fv));
         }
 
-        if packed.is_empty() {
+        if self.volumes_bytes.is_empty() {
             return None;
         }
-        self.volumes_bytes
-            .extend_from_slice(bytemuck::cast_slice(&packed));
         Some(&self.volumes_bytes)
     }
 
@@ -166,18 +169,11 @@ impl FogVolumeBridge {
     /// lights only — static lights bake into the SH volume; spot lights have a
     /// dedicated path. Capped at `MAX_FOG_POINT_LIGHTS`.
     ///
-    /// `effective_brightness` parallels `lights` (same indexing — see
-    /// `LightBridgeUpdate::effective_brightness`). When present, each light's
-    /// authored `intensity` is multiplied by its effective brightness before
-    /// pre-multiplying into `color`, so `setComponent`-driven intensity
-    /// changes (which mutate the bridge, not the static `MapLight` slice)
-    /// reach the fog halo. An empty/short slice means "no scripted override"
-    /// and falls back to a multiplier of `1.0`.
-    pub(crate) fn update_points(
-        &mut self,
-        lights: &[MapLight],
-        effective_brightness: &[f32],
-    ) -> &[u8] {
+    /// Each entry pairs a `MapLight` with its effective brightness multiplier
+    /// at the current frame. Pairing (rather than parallel slices) prevents
+    /// index drift when a `LightComponent` lookup fails — see
+    /// `LightBridge::collect_all_as_map_lights`.
+    pub(crate) fn update_points(&mut self, lights: &[(MapLight, f32)]) -> &[u8] {
         self.points_bytes.clear();
         if self.aabbs.is_empty() || lights.is_empty() {
             return &self.points_bytes;
@@ -187,12 +183,12 @@ impl FogVolumeBridge {
         // suppression threshold in `update_dynamic_light_slots`).
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
 
-        let mut packed: Vec<FogPointLight> = Vec::new();
-        for (i, light) in lights.iter().enumerate() {
+        let mut total_candidates = 0usize;
+        for (light, multiplier) in lights.iter() {
             if !matches!(light.light_type, LightType::Point) || !light.is_dynamic {
                 continue;
             }
-            let multiplier = effective_brightness.get(i).copied().unwrap_or(1.0);
+            let multiplier = *multiplier;
             if multiplier < BRIGHTNESS_SUPPRESSION_THRESHOLD {
                 continue;
             }
@@ -205,8 +201,14 @@ impl FogVolumeBridge {
             if !sphere_intersects_any_aabb(center, range, self.aabbs.values()) {
                 continue;
             }
+            total_candidates += 1;
+            let packed_count = self.points_bytes.len() / std::mem::size_of::<FogPointLight>();
+            if packed_count >= MAX_FOG_POINT_LIGHTS {
+                // Keep counting so we can log the total below.
+                continue;
+            }
             let intensity = light.intensity * multiplier;
-            packed.push(FogPointLight {
+            let record = FogPointLight {
                 position: center.to_array(),
                 range,
                 color: [
@@ -215,15 +217,20 @@ impl FogVolumeBridge {
                     light.color[2] * intensity,
                 ],
                 _pad: 0.0,
-            });
-            if packed.len() >= MAX_FOG_POINT_LIGHTS {
-                break;
-            }
+            };
+            self.points_bytes
+                .extend_from_slice(bytemuck::bytes_of(&record));
         }
 
-        if !packed.is_empty() {
-            self.points_bytes
-                .extend_from_slice(bytemuck::cast_slice(&packed));
+        let uploaded = self.points_bytes.len() / std::mem::size_of::<FogPointLight>();
+        if total_candidates > MAX_FOG_POINT_LIGHTS && !self.warned_overflow {
+            self.warned_overflow = true;
+            log::warn!(
+                "[FogVolumeBridge] fog point lights: {} uploaded, {} total (capped at {})",
+                uploaded,
+                total_candidates,
+                MAX_FOG_POINT_LIGHTS,
+            );
         }
         &self.points_bytes
     }
@@ -295,9 +302,7 @@ mod tests {
     fn populate_from_level_spawns_one_entity_per_record_with_component() {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
-        bridge
-            .populate_from_level(&mut registry, &[sample_record()])
-            .unwrap();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
 
         assert_eq!(bridge.entity_ids.len(), 1);
         let id = bridge.entity_ids[0];
@@ -313,7 +318,7 @@ mod tests {
     fn update_volumes_returns_none_when_no_records() {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
-        bridge.populate_from_level(&mut registry, &[]).unwrap();
+        bridge.populate_from_level(&mut registry, &[]);
         assert!(bridge.update_volumes(&registry).is_none());
     }
 
@@ -321,9 +326,7 @@ mod tests {
     fn update_volumes_packs_density_and_falloff_from_component() {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
-        bridge
-            .populate_from_level(&mut registry, &[sample_record()])
-            .unwrap();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
 
         // Mutate via the registry the way a script would.
         let id = bridge.entity_ids[0];
@@ -352,15 +355,17 @@ mod tests {
     fn update_points_pre_culls_lights_outside_every_aabb() {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
-        bridge
-            .populate_from_level(&mut registry, &[sample_record()])
-            .unwrap();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
 
         let inside = point_light([0.0, 1.0, 0.0], 5.0, true);
         let near_miss = point_light([100.0, 100.0, 100.0], 5.0, true);
         let static_light = point_light([0.0, 1.0, 0.0], 5.0, false);
 
-        let bytes = bridge.update_points(&[inside, near_miss, static_light], &[]);
+        let bytes = bridge.update_points(&[
+            (inside, 1.0),
+            (near_miss, 1.0),
+            (static_light, 1.0),
+        ]);
         // Only the dynamic in-range light passes both filters.
         assert_eq!(bytes.len(), std::mem::size_of::<FogPointLight>());
     }
@@ -369,15 +374,13 @@ mod tests {
     fn update_points_premultiplies_color_by_intensity() {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
-        bridge
-            .populate_from_level(&mut registry, &[sample_record()])
-            .unwrap();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
 
         let light = point_light([0.0, 1.0, 0.0], 5.0, true);
-        let bytes = bridge.update_points(&[light], &[]).to_vec();
+        let bytes = bridge.update_points(&[(light, 1.0)]).to_vec();
         // FogPointLight layout: position (12) | range (4) | color (12) | _pad (4).
         let r = f32::from_le_bytes(bytes[16..20].try_into().unwrap());
-        // intensity 2.0 × color.r 1.0 = 2.0
+        // intensity 2.0 × color.r 1.0 × multiplier 1.0 = 2.0
         assert!((r - 2.0).abs() < 1e-5);
     }
 
@@ -389,13 +392,11 @@ mod tests {
         // intensity change reaches the halo.
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
-        bridge
-            .populate_from_level(&mut registry, &[sample_record()])
-            .unwrap();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
 
         let light = point_light([0.0, 1.0, 0.0], 5.0, true);
         // light.intensity = 2.0, color.r = 1.0, multiplier = 0.25 → 0.5
-        let bytes = bridge.update_points(&[light], &[0.25]).to_vec();
+        let bytes = bridge.update_points(&[(light, 0.25)]).to_vec();
         let r = f32::from_le_bytes(bytes[16..20].try_into().unwrap());
         assert!(
             (r - 0.5).abs() < 1e-5,
@@ -409,12 +410,10 @@ mod tests {
         // shadow-slot suppression threshold).
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
-        bridge
-            .populate_from_level(&mut registry, &[sample_record()])
-            .unwrap();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
 
         let light = point_light([0.0, 1.0, 0.0], 5.0, true);
-        let bytes = bridge.update_points(&[light], &[0.0]);
+        let bytes = bridge.update_points(&[(light, 0.0)]);
         assert!(bytes.is_empty(), "dark light must be suppressed");
     }
 
@@ -422,9 +421,7 @@ mod tests {
     fn clear_drops_state_but_preserves_buffer_capacity() {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
-        bridge
-            .populate_from_level(&mut registry, &[sample_record()])
-            .unwrap();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
         let _ = bridge.update_volumes(&registry);
         let cap_before = bridge.volumes_bytes.capacity();
 

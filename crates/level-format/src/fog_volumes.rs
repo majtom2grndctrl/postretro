@@ -4,9 +4,8 @@
 
 use crate::FormatError;
 
-/// Maximum number of fog volumes per level. Mirrors the engine's GPU storage
-/// buffer cap so author-side overflow is caught at compile time.
-// Mirrors `postretro::fx::fog_volume::MAX_FOG_VOLUMES` — keep in sync.
+/// Maximum number of fog volumes per level. Authoritative definition; the engine
+/// re-exports this via `crate::fx::fog_volume::MAX_FOG_VOLUMES`.
 pub const MAX_FOG_VOLUMES: usize = 16;
 
 /// One fog volume baked into the PRL. AABB extents are in engine space (Y-up,
@@ -100,6 +99,8 @@ impl FogVolumesSection {
         const MIN_RECORD_SIZE: usize = 60;
         let remaining = data.len().saturating_sub(o);
         if count > remaining / MIN_RECORD_SIZE {
+            // FormatError has no Parse variant; Io is the closest proxy for
+            // corrupt-data failures at the format boundary.
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 format!(
@@ -177,6 +178,8 @@ fn read_f32(data: &[u8], o: &mut usize, ctx: &str) -> crate::Result<f32> {
     let v = f32::from_le_bytes([data[*o], data[*o + 1], data[*o + 2], data[*o + 3]]);
     *o += 4;
     if !v.is_finite() {
+        // FormatError has no Parse variant; Io is the closest proxy for
+        // corrupt-data failures at the format boundary.
         return Err(FormatError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("fog volumes: non-finite float in {ctx}"),

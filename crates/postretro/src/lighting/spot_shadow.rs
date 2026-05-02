@@ -1,7 +1,6 @@
 // Dynamic spot light shadow-map pool and slot allocation.
 //
-// See: context/plans/in-progress/lighting-spot-shadows/index.md § Task A
-//      context/lib/rendering_pipeline.md §4
+// See: context/lib/rendering_pipeline.md §4 (Dynamic direct, spot shadow maps)
 
 use crate::prl::{LightType, MapLight};
 use glam::{Mat4, Vec3};
@@ -60,8 +59,8 @@ pub const SHADOW_MAP_RESOLUTION: u32 = 1024;
 /// Sentinel value written to the slot index field when no slot is allocated.
 pub const NO_SHADOW_SLOT: u32 = 0xFFFFFFFF;
 
-/// Size of the `array<mat4x4<f32>, 8>` storage buffer consumed by the
-/// forward shader at `@group(5) @binding(2)`. Eight 4×4 f32 matrices.
+/// Size of the `array<mat4x4<f32>, SHADOW_POOL_SIZE>` storage buffer consumed
+/// by the forward shader at `@group(5) @binding(2)`. 12 4×4 f32 matrices.
 pub const LIGHT_SPACE_MATRICES_SIZE: u64 = (SHADOW_POOL_SIZE * 16 * 4) as u64;
 
 /// Pool of shadow-map texture slots, one per dynamic spot light that
@@ -69,8 +68,8 @@ pub const LIGHT_SPACE_MATRICES_SIZE: u64 = (SHADOW_POOL_SIZE * 16 * 4) as u64;
 ///
 /// Owns the group 5 resources the forward shader binds: the shadow depth
 /// array (as a D2Array view), the comparison sampler, and the light-space
-/// matrix storage buffer. `matrices` is sized for all 8 slots; slots that
-/// aren't assigned in a given frame are left at whatever was last written
+/// matrix storage buffer. `matrices` is sized for all `SHADOW_POOL_SIZE` slots;
+/// slots that aren't assigned in a given frame are left at whatever was last written
 /// (the fragment shader gates on the per-light slot sentinel so those
 /// stale entries are never sampled).
 pub struct SpotShadowPool {
@@ -88,12 +87,12 @@ pub struct SpotShadowPool {
     /// Held for ownership — `bind_group` references it.
     #[allow(dead_code)]
     pub compare_sampler: wgpu::Sampler,
-    /// Storage buffer of 8 `mat4x4<f32>` bound at `@group(5) @binding(2)`.
+    /// Uniform buffer of `SHADOW_POOL_SIZE` `mat4x4<f32>` bound at `@group(5) @binding(2)`.
     /// Contains light-space view-projection matrices per slot.
     pub matrices_buffer: wgpu::Buffer,
     /// Bind group for group 5 — lives alongside the resources above.
     pub bind_group: wgpu::BindGroup,
-    /// Per-frame slot assignment: slot_assignment[light_index] = slot (0..8) or NO_SHADOW_SLOT.
+    /// Per-frame slot assignment: slot_assignment[light_index] = slot (0..SHADOW_POOL_SIZE) or NO_SHADOW_SLOT.
     pub slot_assignment: Vec<u32>,
 }
 
@@ -299,7 +298,7 @@ impl SpotShadowPool {
                 .then(a.0.cmp(&b.0))
         });
 
-        // Assign top 8 to slots.
+        // Assign top SHADOW_POOL_SIZE to slots.
         for (slot, (light_idx, _score)) in candidates.iter().take(SHADOW_POOL_SIZE).enumerate() {
             slot_assignment[*light_idx] = slot as u32;
             log::debug!("[ShadowPool] light {} → slot {}", light_idx, slot);
@@ -476,7 +475,7 @@ mod tests {
             .iter()
             .filter(|&&s| s != NO_SHADOW_SLOT)
             .count();
-        assert_eq!(assigned_count, 8, "all 8 visible lights get slots");
+        assert_eq!(assigned_count, 8, "all 8 visible lights get slots (pool has 12 capacity)");
     }
 
     #[test]

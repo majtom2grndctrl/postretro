@@ -117,13 +117,24 @@ impl LightBridge {
     }
 
     /// Collect all tracked lights (FGD map-authored + descriptor-spawned dynamic)
-    /// as `MapLight` records, reading live component state from the registry.
+    /// as `(MapLight, brightness_multiplier)` pairs, reading live component
+    /// state from the registry.
     ///
     /// Used by `FogVolumeBridge::update_points` so that script-spawned dynamic
     /// lights contribute to fog halos, not just the static map-light list that
-    /// `renderer.level_lights()` returns. Entities that have been despawned or
-    /// whose component was removed are silently skipped.
-    pub(crate) fn collect_all_as_map_lights(&self, registry: &EntityRegistry) -> Vec<MapLight> {
+    /// `renderer.level_lights()` returns. The brightness multiplier is paired
+    /// with each `MapLight` here so the two cannot drift out of alignment when
+    /// component lookups fail (the previous parallel-`Vec<f32>` API silently
+    /// shifted the multipliers by one slot per missing component).
+    ///
+    /// `current_time` matches `LightBridge::update`'s clock — seconds since
+    /// level load — so animated brightness is sampled the same way the GPU
+    /// path samples it.
+    pub(crate) fn collect_all_as_map_lights(
+        &self,
+        registry: &EntityRegistry,
+        current_time: f32,
+    ) -> Vec<(MapLight, f32)> {
         self.entity_ids
             .iter()
             .enumerate()
@@ -131,12 +142,14 @@ impl LightBridge {
                 let component = registry
                     .get_component::<crate::scripting::components::light::LightComponent>(id)
                     .ok()?;
-                Some(component_to_map_light(
+                let brightness = eval_effective_brightness(component, current_time);
+                let map_light = component_to_map_light(
                     component,
                     self.cached_origins_f64[map_idx],
                     self.shape[map_idx].is_dynamic,
                     self.shape[map_idx].leaf_index,
-                ))
+                );
+                Some((map_light, brightness))
             })
             .collect()
     }

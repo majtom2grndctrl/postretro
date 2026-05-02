@@ -5,11 +5,14 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
 /// Maximum number of fog volumes the raymarch shader iterates per frame.
-// Mirrors `postretro_level_format::fog_volumes::MAX_FOG_VOLUMES` — keep in sync.
-pub const MAX_FOG_VOLUMES: usize = 16;
+// Authoritative definition lives in `postretro_level_format::fog_volumes`; re-exported here
+// so the renderer can import from a single crate-local path.
+pub use postretro_level_format::fog_volumes::MAX_FOG_VOLUMES;
 
-/// Maximum number of fog point lights (currently unused by the shader, but
-/// reserved so the CPU side can stage point-light beams alongside spots).
+/// Maximum number of fog point lights iterated per ray step. The point-light
+/// loop in `fog_volume.wgsl` runs over the buffer prefix gated by
+/// `FogParams.point_count`, so the CPU may upload anywhere from 0 to this many
+/// records each frame.
 pub const MAX_FOG_POINT_LIGHTS: usize = 32;
 
 /// Default raymarch step size in world units. Smaller values increase quality
@@ -75,7 +78,21 @@ pub struct FogParams {
     pub volume_count: u32,
     pub near_clip: f32,
     pub far_clip: f32,
-    pub _pad: u32,
+    /// Number of valid `FogPointLight` records uploaded this frame. The shader
+    /// loops over this prefix rather than `arrayLength(&fog_points)` so stale
+    /// records from a previous frame don't ghost into the current pass when
+    /// the point-light count drops to zero.
+    pub point_count: u32,
+    /// Number of valid `FogSpotLight` records uploaded this frame. Same
+    /// reasoning as `point_count`: the spots buffer is sized for
+    /// `SHADOW_POOL_SIZE` capacity and never shrinks, so the shader must
+    /// bound its loop on a CPU-tracked count instead of
+    /// `arrayLength(&fog_spots)`.
+    pub spot_count: u32,
+    /// Explicit padding to match WGSL struct alignment. `FogParams` contains a
+    /// `mat4x4<f32>` (alignment 16), so WGSL rounds the struct size up to the
+    /// next multiple of 16: ceil(100/16)*16 = 112. The CPU struct must match.
+    pub _pad2: [u32; 3],
 }
 
 pub const FOG_VOLUME_SIZE: usize = std::mem::size_of::<FogVolume>();
@@ -87,42 +104,53 @@ pub const FOG_PARAMS_SIZE: usize = std::mem::size_of::<FogParams>();
 const _: () = assert!(FOG_VOLUME_SIZE == 64);
 const _: () = assert!(FOG_SPOT_LIGHT_SIZE == 48);
 const _: () = assert!(FOG_POINT_LIGHT_SIZE == 32);
-const _: () = assert!(FOG_PARAMS_SIZE == 96);
+const _: () = assert!(FOG_PARAMS_SIZE == 112);
 
-pub fn pack_fog_volumes(volumes: &[FogVolume]) -> Vec<u8> {
-    bytemuck::cast_slice(volumes).to_vec()
+pub fn pack_fog_volumes(volumes: &[FogVolume]) -> &[u8] {
+    bytemuck::cast_slice(volumes)
 }
 
-pub fn pack_fog_spot_lights(lights: &[FogSpotLight]) -> Vec<u8> {
-    bytemuck::cast_slice(lights).to_vec()
+pub fn pack_fog_spot_lights(lights: &[FogSpotLight]) -> &[u8] {
+    bytemuck::cast_slice(lights)
 }
 
-pub fn pack_fog_point_lights(lights: &[FogPointLight]) -> Vec<u8> {
-    bytemuck::cast_slice(lights).to_vec()
+pub fn pack_fog_point_lights(lights: &[FogPointLight]) -> &[u8] {
+    bytemuck::cast_slice(lights)
 }
 
-/// Pack the per-frame fog uniform from its constituent values. Kept as
-/// individual arguments so the renderer doesn't have to maintain a separate
-/// struct just to call this — the GPU layout is what's stable, not the call
-/// shape.
-pub fn pack_fog_params(
-    inv_view_proj: Mat4,
-    camera_position: Vec3,
-    step_size: f32,
-    volume_count: u32,
-    near_clip: f32,
-    far_clip: f32,
-) -> Vec<u8> {
-    let params = FogParams {
-        inv_view_proj: inv_view_proj.to_cols_array_2d(),
-        camera_position: camera_position.to_array(),
-        step_size,
-        volume_count,
-        near_clip,
-        far_clip,
-        _pad: 0,
-    };
-    bytemuck::bytes_of(&params).to_vec()
+/// Inputs to [`pack_fog_params`]. Decouples callers from the GPU struct
+/// layout (`FogParams`): this struct is the stable call-shape contract, while
+/// `FogParams` — the GPU-side layout with explicit padding — can evolve
+/// independently.
+pub struct FogParamsInput {
+    pub inv_view_proj: Mat4,
+    pub camera_position: Vec3,
+    pub step_size: f32,
+    pub volume_count: u32,
+    pub near_clip: f32,
+    pub far_clip: f32,
+    pub point_count: u32,
+    pub spot_count: u32,
+}
+
+/// Build the per-frame fog uniform. Takes a [`FogParamsInput`] rather than a
+/// `FogParams` directly so callers don't depend on the GPU struct shape — the
+/// GPU layout (`FogParams`) is the stable contract; the call signature, carried
+/// by `FogParamsInput`, can evolve independently. Callers cast the returned
+/// struct to bytes via `bytemuck::bytes_of` at the upload site, avoiding a
+/// per-frame `Vec<u8>` allocation.
+pub fn pack_fog_params(input: FogParamsInput) -> FogParams {
+    FogParams {
+        inv_view_proj: input.inv_view_proj.to_cols_array_2d(),
+        camera_position: input.camera_position.to_array(),
+        step_size: input.step_size,
+        volume_count: input.volume_count,
+        near_clip: input.near_clip,
+        far_clip: input.far_clip,
+        point_count: input.point_count,
+        spot_count: input.spot_count,
+        _pad2: [0; 3],
+    }
 }
 
 /// Clamp the worldspawn `fog_pixel_scale` to a supported range. `0` is the
@@ -175,7 +203,8 @@ mod tests {
             _pad0: 0.0,
             _pad1: 0.0,
         };
-        let bytes = pack_fog_volumes(&[v]);
+        let volumes = [v];
+        let bytes = pack_fog_volumes(&volumes);
         assert_eq!(bytes.len(), FOG_VOLUME_SIZE);
 
         let density = f32::from_le_bytes(bytes[12..16].try_into().unwrap());

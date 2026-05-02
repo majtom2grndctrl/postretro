@@ -1743,6 +1743,10 @@ impl Renderer {
                 bytes.len(),
                 stride,
             );
+            // Zero the live count so the pass skips this frame entirely.
+            // Without this, malformed input leaves the previous frame's
+            // volumes active and the raymarch keeps drawing stale data.
+            self.fog.volume_count = 0;
             return;
         }
         // `FogPass::upload_volumes` takes `&[FogVolume]`; recover the typed
@@ -1753,11 +1757,14 @@ impl Renderer {
     }
 
     /// Upload the per-frame fog point-light buffer. Bytes must be a tightly
-    /// packed `[FogPointLight]` array. Empty input is a no-op (the buffer keeps
-    /// its previous contents but `volume_count` gates whether the pass runs).
+    /// packed `[FogPointLight]` array. Empty input zeroes `self.fog.point_count`
+    /// so the shader skips stale records from the previous frame.
     pub fn upload_fog_points(&mut self, bytes: &[u8]) {
         let stride = std::mem::size_of::<crate::fx::fog_volume::FogPointLight>();
         if bytes.is_empty() {
+            // Zero the live count so the shader doesn't iterate stale
+            // records left in the buffer from a previous frame.
+            self.fog.point_count = 0;
             return;
         }
         if bytes.len() % stride != 0 {
@@ -1767,6 +1774,7 @@ impl Renderer {
                 bytes.len(),
                 stride,
             );
+            self.fog.point_count = 0;
             return;
         }
         let points: &[crate::fx::fog_volume::FogPointLight] = bytemuck::cast_slice(bytes);
@@ -2207,6 +2215,19 @@ impl Renderer {
         // the scatter target need not be cleared because the composite is not
         // issued. See: context/lib/rendering_pipeline.md §7.5
         if self.fog.active() {
+            // Repack the dynamic spot lights that own a shadow slot this
+            // frame as `FogSpotLight` records — same source the shadow pass
+            // already consumed (`level_lights` × `slot_assignment`). Only
+            // shadow-slotted spots contribute to the fog beam pass; the
+            // raymarch shader looks up `light_space_matrices.m[slot]` to
+            // sample shadow occlusion, so a slotless spot has no usable
+            // light-space matrix.
+            //
+            // Spots upload before params so `FogParams.spot_count` packs
+            // this frame's count, not the previous frame's.
+            let fog_spots = self.collect_fog_spot_lights();
+            self.fog.upload_spots(&self.queue, &fog_spots);
+
             let inv_view_proj = view_proj.inverse();
             self.fog.upload_params(
                 &self.queue,
@@ -2215,16 +2236,6 @@ impl Renderer {
                 crate::camera::NEAR,
                 crate::camera::FAR,
             );
-
-            // Repack the dynamic spot lights that own a shadow slot this
-            // frame as `FogSpotLight` records — same source the shadow pass
-            // already consumed (`level_lights` × `slot_assignment`). Only
-            // shadow-slotted spots contribute to the fog beam pass; the
-            // raymarch shader looks up `light_space_matrices.m[slot]` to
-            // sample shadow occlusion, so a slotless spot has no usable
-            // light-space matrix.
-            let fog_spots = self.collect_fog_spot_lights();
-            self.fog.upload_spots(&self.queue, &fog_spots);
 
             let (scatter_w, scatter_h) = self.fog.scatter_dims();
             // 8×8 workgroup matches the WGSL `@workgroup_size(8, 8)` declaration

@@ -63,14 +63,20 @@ pub struct FogPass {
     /// pixel scale.
     scatter_dims: (u32, u32),
 
-    /// Group 6 bind group. Rebuilt whenever the depth view or scatter target
-    /// is recreated (depth on resize; scatter on resize or pixel-scale change).
+    /// Group 6 bind group. Rebuilt on any call to `resize` — the depth
+    /// view is always re-bound even when scatter dims are unchanged,
+    /// because the surface depth texture is recreated on every resize.
     pub bind_group: wgpu::BindGroup,
 
     /// Most recently uploaded fog volume count. Shader loops against this.
     pub volume_count: u32,
     /// Most recent spot light count for dynamic beams.
     pub spot_count: u32,
+    /// Most recent point-light count. Packed into `FogParams.point_count` so
+    /// the shader bounds its inner loop against the live count rather than
+    /// `arrayLength(&fog_points)` (which would replay stale records when a
+    /// frame uploads zero point lights).
+    pub point_count: u32,
 }
 
 impl FogPass {
@@ -174,9 +180,7 @@ impl FogPass {
             mapped_at_creation: false,
         });
 
-        // Spot-light storage buffer. wgpu rejects zero-sized storage buffers,
-        // so we always allocate at full capacity (SHADOW_POOL_SIZE slots) and
-        // track the real count in `spot_count`. The buffer is never reallocated.
+        // Spots buffer: fixed at SHADOW_POOL_SIZE capacity; never reallocated.
         let spots_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Fog Spot Lights Buffer"),
             size: (crate::lighting::spot_shadow::SHADOW_POOL_SIZE * FOG_SPOT_LIGHT_SIZE) as u64,
@@ -310,8 +314,9 @@ impl FogPass {
             fragment: Some(wgpu::FragmentState {
                 module: &composite_shader,
                 entry_point: Some("fs_main"),
-                // Placeholder format — caller must invoke
-                // `rebuild_composite_for_format` before the pipeline is used.
+                // Initial format — renderer calls `rebuild_composite_for_format` immediately
+                // after construction to set the real surface format. The pipeline created here
+                // is never used before that call.
                 targets: &[Some(wgpu::ColorTargetState {
                     // Additive: final = scene + fog_scatter. Alpha path is
                     // unused but kept consistent.
@@ -351,6 +356,7 @@ impl FogPass {
             bind_group,
             volume_count: 0,
             spot_count: 0,
+            point_count: 0,
         }
     }
 
@@ -454,7 +460,6 @@ impl FogPass {
 
     /// Set the global `fog_pixel_scale` from worldspawn. Rebuilds the scatter
     /// target if the value changed.
-    #[allow(dead_code)]
     pub fn set_pixel_scale(
         &mut self,
         device: &wgpu::Device,
@@ -473,7 +478,6 @@ impl FogPass {
 
     /// Upload the fog volume list. Truncates at `MAX_FOG_VOLUMES` with a
     /// warning. Subsequent frames reuse the buffer until the list changes.
-    #[allow(dead_code)]
     pub fn upload_volumes(&mut self, queue: &wgpu::Queue, volumes: &[FogVolume]) {
         let count = volumes.len().min(MAX_FOG_VOLUMES);
         if volumes.len() > MAX_FOG_VOLUMES {
@@ -485,7 +489,7 @@ impl FogPass {
         }
         let bytes = fog_volume::pack_fog_volumes(&volumes[..count]);
         if !bytes.is_empty() {
-            queue.write_buffer(&self.volumes_buffer, 0, &bytes);
+            queue.write_buffer(&self.volumes_buffer, 0, bytes);
         }
         self.volume_count = count as u32;
     }
@@ -499,21 +503,23 @@ impl FogPass {
         near_clip: f32,
         far_clip: f32,
     ) {
-        let bytes = fog_volume::pack_fog_params(
+        let params = fog_volume::pack_fog_params(fog_volume::FogParamsInput {
             inv_view_proj,
             camera_position,
-            self.step_size,
-            self.volume_count,
+            step_size: self.step_size,
+            volume_count: self.volume_count,
             near_clip,
             far_clip,
-        );
-        queue.write_buffer(&self.params_buffer, 0, &bytes);
+            point_count: self.point_count,
+            spot_count: self.spot_count,
+        });
+        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
     }
 
     /// Upload the per-frame point-light list for the fog raymarch. Truncates
-    /// at `MAX_FOG_POINT_LIGHTS` with a warning.
-    #[allow(dead_code)]
-    pub fn upload_points(&self, queue: &wgpu::Queue, points: &[FogPointLight]) {
+    /// at `MAX_FOG_POINT_LIGHTS` with a warning. Updates `point_count` so the
+    /// next `upload_params` packs the live bound into `FogParams.point_count`.
+    pub fn upload_points(&mut self, queue: &wgpu::Queue, points: &[FogPointLight]) {
         let count = points.len().min(MAX_FOG_POINT_LIGHTS);
         if points.len() > MAX_FOG_POINT_LIGHTS {
             log::warn!(
@@ -524,8 +530,9 @@ impl FogPass {
         }
         let bytes = fog_volume::pack_fog_point_lights(&points[..count]);
         if !bytes.is_empty() {
-            queue.write_buffer(&self.fog_points_buffer, 0, &bytes);
+            queue.write_buffer(&self.fog_points_buffer, 0, bytes);
         }
+        self.point_count = count as u32;
     }
 
     /// Upload the per-frame spot-light list for the fog raymarch beams.
@@ -534,7 +541,9 @@ impl FogPass {
             .len()
             .min(crate::lighting::spot_shadow::SHADOW_POOL_SIZE);
         let bytes = fog_volume::pack_fog_spot_lights(&spots[..capped]);
-        queue.write_buffer(&self.spots_buffer, 0, &bytes);
+        if !bytes.is_empty() {
+            queue.write_buffer(&self.spots_buffer, 0, bytes);
+        }
         self.spot_count = capped as u32;
     }
 

@@ -1,5 +1,5 @@
 // Pack and write: serialize sections to .prl binary, validate via read-back.
-// See: context/lib/build_pipeline.md §PRL
+// See: context/lib/build_pipeline.md §PRL Compilation
 
 use std::fs;
 use std::io::Cursor;
@@ -258,7 +258,7 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
 }
 
 /// Write geometry, texture names, BSP nodes, BSP leaves, portals, BVH,
-/// alpha lights, light influence, and SH volume sections to a .prl file.
+/// alpha lights, light influence, SH volume, and FogVolumes sections to a .prl file.
 #[allow(clippy::too_many_arguments)]
 pub fn pack_and_write_portals(
     output: &Path,

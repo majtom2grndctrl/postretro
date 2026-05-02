@@ -333,3 +333,9 @@ Empty tag list serialises as `tag_count = 0` with no following bytes. Absent sec
 
 - **Influence-volume pre-culling for point lights.** ~~Leave as "iterate all" until profiling.~~ **Resolved: pre-cull at CPU upload.** Before filling the `FogPointLight` GPU buffer, filter the active dynamic point lights against the union of all fog volume AABBs: skip any light whose sphere (centre + `falloff_range`) does not intersect at least one fog volume AABB. This is O(lights × volumes) on the CPU and eliminates per-step GPU work for lights that cannot possibly illuminate any fog region. Implement in the `upload_points` path in Task 5.
 
+---
+
+## Known limitations
+
+- **Mid-game dynamic lights not enrolled in fog scatter.** `absorb_dynamic_lights` runs once at level load, not per frame. Lights spawned by gameplay scripts after load (e.g. from a `tick` handler) are never added to `LightBridge.entity_ids` and therefore never reach fog scatter. This matches current engine behavior for direct lighting — it is not a fog-specific bug. Authors who need fog scatter from script-spawned lights must place `_dynamic 1` lights in the map rather than spawning them at runtime.
+

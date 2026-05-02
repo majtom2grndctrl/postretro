@@ -127,6 +127,49 @@ If you set both `brightness_curve` and `style`, the curve wins and `style` is ig
 
 ---
 
+## Fog Volumes
+
+A fog volume is a brush entity that marks a region of the map for volumetric fog rendering.
+
+### Creating a Fog Volume
+
+1. Draw a hollow brush (or any convex brush) covering the area you want to fog.
+2. Select the brush and use **Entity > Tie to Entity** (or press `T`) to bind it to `env_fog_volume`.
+3. Set your desired properties in the Entity Inspector. The volume's AABB is derived from the brush geometry — the texture on the faces doesn't matter.
+
+Up to 16 `env_fog_volume` entities are allowed per map.
+
+### `env_fog_volume` Properties
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `color` | RGB | `255 255 255` | Fog tint color as `"R G B"` values 0–255 |
+| `density` | float | `0.5` | How opaque the fog is. Higher values thicken the fog faster; values above 1.0 are very heavy. |
+| `falloff` | float | `1.0` | How sharply the fog fades at the volume boundary. `0` = hard cutoff, `1` = smooth linear ramp. |
+| `scatter` | float | `0.6` | How much light scatters toward the camera. Higher values make dynamic spotlights produce more visible beams and halos. |
+| `height_gradient` | float | `0.0` | Density bias by height. `0` = uniform density throughout the volume; `1` = denser at the bottom, thinner at the top. Good for ground-hugging smoke or water surface haze. |
+| `radial_falloff` | float | `0.0` | Density falloff toward the outer edges of the volume. `0` = no falloff (flat-sided box); `1` = sphere-shaped cloud, thin at the edges and dense at the center. |
+| `_tags` | string | `""` | Space-delimited tags for script queries (e.g. `"smoke ambient"`). Not visible in-game. |
+
+### Fog Resolution — `fog_pixel_scale`
+
+The fog pass renders at a reduced resolution for performance and to preserve the chunky pixelated look. The scale is controlled by a worldspawn property:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `fog_pixel_scale` | integer | `4` | Downscale factor for the fog render target. `1` = full resolution, `4` = quarter resolution (default), `8` = coarsest. |
+
+Set `fog_pixel_scale` on the `worldspawn` entity, not on individual volumes. It applies to all fog volumes in the map.
+
+### Tips
+
+- **Keep volumes inside sealed rooms.** A fog volume that crosses exterior geometry will still render but the AABB extends to the brush bounds, which may clip unexpectedly at room boundaries.
+- **Overlapping volumes stack additively.** Two volumes occupying the same space add their densities together. Use this intentionally for layered effects (ground mist plus a higher haze layer), but avoid accidental overlap.
+- **Match color to your lighting.** Fog lit by a blue neon overhead looks better with a slightly blue `color` than pure white. The color is multiplied by scattered light, so very bright values can wash out.
+- **`radial_falloff` hides box edges.** If a rectangular volume looks obviously box-shaped, increase `radial_falloff` toward `0.5`–`1.0` to soften the corners into a cloud shape.
+
+---
+
 ## Textures
 
 Textures are PNG files under `content/<mod>/textures/<collection>/<name>.png`. TrenchBroom requires this one-level subdirectory structure.

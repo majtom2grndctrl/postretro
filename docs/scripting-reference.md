@@ -51,7 +51,7 @@ end)
 
 ## world.query
 
-`world.query(filter)` returns an array of entity handles matching a filter. The concrete handle type depends on the `component` you query — currently only `"light"` is supported. Querying an unknown component name throws `InvalidArgument`.
+`world.query(filter)` returns an array of entity handles matching a filter. The concrete handle type depends on the `component` you query — `"light"` returns `LightEntity[]` and `"fog_volume"` returns `FogVolumeHandle[]`. Querying an unknown component name throws `InvalidArgument`.
 
 ```typescript
 world.query({ component: "light" })            // all lights → LightEntity[]
@@ -321,7 +321,7 @@ Available easing values: `"linear"`, `"easeIn"`, `"easeOut"`, `"easeInOut"`.
 
 ### `setColor(target, transitionMs?, easing?)`
 
-Transitions the light's color to `target` (`[r, g, b]` in TypeScript, `{r, g, b}` array in Luau) over `transitionMs` milliseconds. Same live-read / one-cycle pattern as `setIntensity`. **Dynamic lights only** — throws on baked lights.
+Transitions the light's color to `target` (`[r, g, b]` in TypeScript, `{r, g, b}` positional array in Luau — e.g. `{1.0, 0.4, 0.8}`) over `transitionMs` milliseconds. Same live-read / one-cycle pattern as `setIntensity`. **Dynamic lights only** — throws on baked lights.
 
 ```typescript
 light.setColor([1, 0.3, 0], 800); // shift to orange over 800 ms
@@ -369,7 +369,7 @@ volume.setDensity(0.6);         // snap back instantly
 
 #### `setColor(color, durationMs?)`
 
-Same pattern for the volume's RGB color. `color` is `[r, g, b]` in TypeScript, `{r, g, b}` array in Luau. `durationMs` defaults to `0` (instant).
+Same pattern for the volume's RGB color. `color` is `[r, g, b]` in TypeScript, `{r, g, b}` positional array in Luau — e.g. `{1.0, 0.4, 0.8}`. `durationMs` defaults to `0` (instant).
 
 ```typescript
 volume.setColor([1.0, 0.4, 0.8], 2000); // slow shift to magenta

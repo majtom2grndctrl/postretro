@@ -1,7 +1,8 @@
 // Fog volume entity handle and animation constructors.
 // Mirrors the LightEntity vocabulary in `./lights`, adapted to the
 // fog_volume ComponentValue surface.
-// Governed by context/lib/entity_model.md.
+// See: context/lib/scripting.md §10 (external API shape)
+// and docs/scripting-reference.md (public API surface).
 
 import {
   getComponent,
@@ -140,12 +141,14 @@ function startDensityTween(
   cancelExisting(slots, DENSITY_TWEEN);
   const startDensity = readFogVolumeComponent(id).density;
   let elapsedMs = 0;
+  // Both tweens call readFogVolumeComponent independently, so if they fire
+  // on the same tick, the second write clobbers the first axis's update.
+  // Each tween converges correctly over subsequent ticks; one setComponent
+  // call per tick is wasted when both axes are animating simultaneously.
   const ctrl = tickSubscription((ctx) => {
     elapsedMs += ctx.delta * 1000;
     const t = Math.min(1, elapsedMs / durationMs);
     const value = startDensity + (target - startDensity) * t;
-    // Re-read live for the other fields so a concurrent color tween or
-    // scripted setScatter/setFalloff is not clobbered.
     const live = readFogVolumeComponent(id);
     writeFogVolume(id, value, live.color as [number, number, number], live.scatter, live.falloff);
     if (t >= 1) {
@@ -255,6 +258,11 @@ export function wrapFogVolumeEntity(
  * `.stop()` cancels the animation. Multiple `pulseDensity` calls on
  * the same handle stack — call `.stop()` on the previous controller
  * before starting a new one if you do not want overlap.
+ *
+ * Note: cancelling via `.stop()` stops density updates but the tick
+ * handler remains registered until the level unloads. Avoid calling
+ * `pulseDensity` repeatedly on the same handle — prefer reusing the
+ * controller returned from the first call.
  *
  * Implementation: a `tick` handler that writes a fresh density to the
  * fog_volume component each frame. No engine-side animation primitive

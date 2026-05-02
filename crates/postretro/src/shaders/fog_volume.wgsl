@@ -10,7 +10,10 @@
 //
 // Bind groups:
 //   group 0  Camera uniforms (reserved; fog shader uses its own fog_params)
+//   group 1  Vacant (None in pipeline layout)
+//   group 2  Vacant (None in pipeline layout)
 //   group 3  SH volume (shared with forward)
+//   group 4  Vacant (None in pipeline layout)
 //   group 5  Spot shadow maps (shared with forward)
 //   group 6  Fog resources: depth, AABB buffer, scatter output, fog params
 
@@ -88,6 +91,8 @@ struct FogPointLight {
 }
 
 // Must match `FogParams` layout in fog_volume.rs::pack_fog_params.
+// WGSL rounds the 100-byte struct to 112 via 16-byte alignment (from `mat4x4`);
+// CPU side adds explicit `_pad2` to match.
 struct FogParams {
     inv_view_proj: mat4x4<f32>,
     camera_position: vec3<f32>,
@@ -95,7 +100,8 @@ struct FogParams {
     volume_count: u32,
     near_clip: f32,
     far_clip: f32,
-    _pad: u32,
+    point_count: u32,
+    spot_count: u32,
 }
 
 // One entry per dynamic spot shadow slot. Packed CPU-side from MapLight +
@@ -204,10 +210,7 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
         let center   = (v.min + v.max_v) * 0.5;
         let local_abs = abs(pos - center) / max(half_ext, vec3<f32>(1.0e-6));
         let edge_t   = 1.0 - clamp(max(local_abs.x, max(local_abs.y, local_abs.z)), 0.0, 1.0);
-        // `pow(0.0, 0.0)` is NaN on most backends; the `falloff <= 0.0` fast-path
-        // ("no falloff = uniform fill") sidesteps it entirely, and the slow-path
-        // epsilon guards the boundary case where edge_t lands exactly on an
-        // AABB face.
+        // Guard against pow(0,0) NaN: clamp both base and exponent away from zero.
         let box_fade = select(pow(max(edge_t, 1.0e-6), max(v.falloff, 1.0e-6)), 1.0, v.falloff <= 0.0);
 
         let height_t    = clamp((pos.y - v.min.y) / max(v.max_v.y - v.min.y, 1.0e-6), 0.0, 1.0);
@@ -298,7 +301,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // 256 steps × default 0.5m = 128m reach before early-out. Maps that need
     // more can reduce `fog_step_size`; plan target is <2ms/pass.
     let max_steps: u32 = 256u;
-    let spot_count = arrayLength(&fog_spots);
+    // Loop over the CPU-tracked prefix (`fog.spot_count`) instead of
+    // `arrayLength(&fog_spots)` so a frame that uploads fewer spots than the
+    // previous frame doesn't re-iterate stale records left in the buffer
+    // (the buffer is sized for SHADOW_POOL_SIZE and never shrinks).
+    let spot_count = fog.spot_count;
 
     for (var s: u32 = 0u; s < max_steps; s = s + 1u) {
         if t >= ray.max_t { break; }
@@ -345,8 +352,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 accum = accum + transmittance * weight * vs.color * spot.color * atten * lit;
             }
 
-            let pt_count = arrayLength(&fog_points);
-            for (var pi: u32 = 0u; pi < pt_count; pi = pi + 1u) {
+            // Loop over the CPU-tracked prefix (`fog.point_count`) instead of
+            // `arrayLength(&fog_points)` so a frame that uploads zero point
+            // lights doesn't re-iterate stale records left in the buffer from
+            // a previous frame.
+            for (var pi: u32 = 0u; pi < fog.point_count; pi = pi + 1u) {
                 let pt = fog_points[pi];
                 let to_light = pt.position - pos;
                 let dist = length(to_light);
@@ -371,7 +381,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 fn _keep_bindings_live() -> f32 {
     let d = anim_descriptors[0];
     let a = anim_samples[0];
-    // Touch the comparison sampler so the binding slot isn't stripped.
+    // WGSL dead-code elimination strips bindings that are never referenced.
+    // wgpu then rejects the pipeline because the BindGroupLayout declares those
+    // bindings but the shader reflection omits them. Touching each binding here
+    // keeps it in the reflected interface without affecting rendering output.
     _ = textureSampleCompareLevel(spot_shadow_depth, spot_shadow_compare, vec2<f32>(0.0), 0, 0.0);
     return d.period + a;
 }

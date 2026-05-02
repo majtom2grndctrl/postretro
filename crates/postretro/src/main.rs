@@ -557,12 +557,8 @@ impl ApplicationHandler for App {
         // entity-id always lands after the light entities.
         if let Some(world) = self.level.as_ref() {
             let mut registry = self.script_ctx.registry.borrow_mut();
-            if let Err(err) = self
-                .fog_volume_bridge
-                .populate_from_level(&mut registry, &world.fog_volumes)
-            {
-                log::warn!("[FogVolumeBridge] populate failed: {err}");
-            }
+            self.fog_volume_bridge
+                .populate_from_level(&mut registry, &world.fog_volumes);
             renderer.set_fog_pixel_scale(world.fog_pixel_scale);
         }
 
@@ -1016,7 +1012,6 @@ impl ApplicationHandler for App {
                     // Light bridge — between Game Logic and Render. Uploads
                     // mutated `LightComponent` data before `render_frame_indirect`
                     // allocates slots, so scripted lights reflect their new state.
-                    let mut effective_brightness: Vec<f32> = Vec::new();
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
                         if let Some(update) =
@@ -1028,7 +1023,6 @@ impl ApplicationHandler for App {
                                 renderer.upload_bridge_samples(&update.samples_bytes);
                             }
                             renderer.set_light_effective_brightness(&update.effective_brightness);
-                            effective_brightness = update.effective_brightness;
                         }
                     }
 
@@ -1037,27 +1031,24 @@ impl ApplicationHandler for App {
                     // pre-culls dynamic point lights against fog AABBs. Upload
                     // happens unconditionally so an empty list zeroes the GPU
                     // volume count and skips the pass for the rest of the frame.
-                    {
+                    // Combine static map lights with script-spawned dynamic lights so
+                    // fog halos react to lights from both sources. The light bridge
+                    // tracks both via `populate_from_level` + `absorb_dynamic_lights`;
+                    // `renderer.level_lights()` only covers the static subset.
+                    // `collect_all_as_map_lights` pairs each light with its
+                    // brightness multiplier so the two cannot drift out of alignment
+                    // when a `LightComponent` lookup fails.
+                    let all_lights = {
                         let registry = self.script_ctx.registry.borrow();
                         if let Some(bytes) = self.fog_volume_bridge.update_volumes(&registry) {
                             renderer.upload_fog_volumes(bytes);
                         } else {
                             renderer.upload_fog_volumes(&[]);
                         }
-                    }
-                    // Combine static map lights with script-spawned dynamic lights so
-                    // fog halos react to lights from both sources. The light bridge
-                    // tracks both via `populate_from_level` + `absorb_dynamic_lights`;
-                    // `renderer.level_lights()` only covers the static subset.
-                    // `effective_brightness` is indexed by bridge position (same order
-                    // as `collect_all_as_map_lights`), so the parallel arrays align.
-                    let all_lights = {
-                        let registry = self.script_ctx.registry.borrow();
-                        self.light_bridge.collect_all_as_map_lights(&registry)
+                        self.light_bridge
+                            .collect_all_as_map_lights(&registry, self.script_time)
                     };
-                    let point_bytes = self
-                        .fog_volume_bridge
-                        .update_points(&all_lights, &effective_brightness);
+                    let point_bytes = self.fog_volume_bridge.update_points(&all_lights);
                     renderer.upload_fog_points(point_bytes);
 
                     renderer.update_per_frame_uniforms(view_proj, interp.position);

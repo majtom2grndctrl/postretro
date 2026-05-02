@@ -377,15 +377,21 @@ impl<'js> FromJs<'js> for ComponentValue {
                 // setComponent accepts the four runtime-tweakable fields;
                 // any AABB fields (`min`, `max`) on the input are baked
                 // geometry and silently ignored.
-                let density: f32 = o.get("density")?;
+                let density: f32 = o.get("density").map_err(|e| {
+                    rquickjs::Exception::throw_type(ctx, &format!("FogVolume.density: {e}"))
+                })?;
                 let color_v: JsValue = o.get("color")?;
                 let color = serde_json::from_value::<Vec3Lit>(js_to_json(ctx, color_v)?)
                     .map_err(|e| {
                         rquickjs::Exception::throw_type(ctx, &format!("FogVolume.color: {e}"))
                     })?
                     .as_f32_3();
-                let scatter: f32 = o.get("scatter")?;
-                let falloff: f32 = o.get("falloff")?;
+                let scatter: f32 = o.get("scatter").map_err(|e| {
+                    rquickjs::Exception::throw_type(ctx, &format!("FogVolume.scatter: {e}"))
+                })?;
+                let falloff: f32 = o.get("falloff").map_err(|e| {
+                    rquickjs::Exception::throw_type(ctx, &format!("FogVolume.falloff: {e}"))
+                })?;
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
                     color,
@@ -472,13 +478,19 @@ impl FromLua for ComponentValue {
                 // setComponent accepts the four runtime-tweakable fields;
                 // any AABB fields (`min`, `max`) on the input are baked
                 // geometry and silently ignored.
-                let density: f32 = t.get("density")?;
+                let density: f32 = t
+                    .get("density")
+                    .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.density: {e}")))?;
                 let color_v: LuaValue = t.get("color")?;
                 let color = serde_json::from_value::<Vec3Lit>(lua_to_json(color_v)?)
                     .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.color: {e}")))?
                     .as_f32_3();
-                let scatter: f32 = t.get("scatter")?;
-                let falloff: f32 = t.get("falloff")?;
+                let scatter: f32 = t
+                    .get("scatter")
+                    .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.scatter: {e}")))?;
+                let falloff: f32 = t
+                    .get("falloff")
+                    .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.falloff: {e}")))?;
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
                     color,

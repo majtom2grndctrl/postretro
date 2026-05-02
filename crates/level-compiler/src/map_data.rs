@@ -231,7 +231,7 @@ pub struct MapLight {
     /// (the default), the light is static: it bakes into the lightmap and SH
     /// irradiance volume and emits no runtime shadow. Authored via the
     /// `_dynamic` FGD property on `light`, `light_spot`, and `light_sun`.
-    /// See `context/plans/ready/lighting-dynamic-flag/index.md`.
+    /// See `context/lib/build_pipeline.md §Custom FGD`.
     pub is_dynamic: bool,
 
     /// Author-supplied script tags (FGD `_tags`, space-delimited). Carried

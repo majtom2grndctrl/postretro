@@ -153,7 +153,7 @@ All wgpu calls live in the renderer module. Map loader, game logic, audio, and i
 | 5 | Spot shadow maps (depth texture array, comparison sampler, light-space matrices) |
 | 6 | FX resources (sprite instance storage buffer; fog depth buffer, AABB buffer, scatter target) |
 
-Groups 0, 2, 3, and 5 are shared across the forward, billboard, and fog pipelines — the same bind-group objects are reused, not re-uploaded. One budget slot remains; a pass needing a ninth group must consolidate, not raise the limit.
+Groups 0, 2, 3, and 5 are shared across the forward, billboard, and fog pipelines — the same bind-group objects are reused, not re-uploaded. When a new pipeline stage consumes a shared BGL, each accessed binding's `visibility` must include that stage (e.g. `FRAGMENT → FRAGMENT | COMPUTE`) — wgpu validates this at pipeline creation, not compile time. One budget slot remains; a pass needing a ninth group must consolidate, not raise the limit.
 
 ---
 

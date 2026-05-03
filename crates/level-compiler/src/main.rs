@@ -7,6 +7,7 @@ pub mod bvh_build;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
 pub mod delta_sh_bake;
+pub mod fog_cell_masks;
 pub mod format;
 pub mod geometry;
 pub mod geometry_utils;
@@ -319,6 +320,8 @@ fn main() -> anyhow::Result<()> {
     let map_entities_section = pack::encode_map_entities(&map_data.map_entities);
     let fog_volumes_section =
         pack::encode_fog_volumes(&map_data.fog_volumes, map_data.fog_pixel_scale);
+    let fog_cell_masks_section =
+        fog_cell_masks::bake_fog_cell_masks(&result.tree, &map_data.fog_volumes);
 
     let (animated_chunk_lights, _) = animated_baked_lights.to_parallel_vecs();
 
@@ -389,6 +392,7 @@ fn main() -> anyhow::Result<()> {
         data_script_section.as_ref(),
         map_entities_section.as_ref(),
         &fog_volumes_section,
+        fog_cell_masks_section.as_ref(),
     )?;
     timings.push(("Packing", stage_start.elapsed()));
 

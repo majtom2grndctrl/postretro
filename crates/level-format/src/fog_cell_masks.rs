@@ -1,0 +1,194 @@
+// FogCellMasks PRL section (ID 31): per-BSP-leaf bitmask of overlapping fog
+// volumes. Bit `i` set in leaf `L`'s mask means fog volume `i` overlaps leaf
+// `L`. Used at runtime to OR together visible-cell masks into an active fog
+// volume set for the fog raymarch pass.
+// See: context/lib/build_pipeline.md §PRL section IDs
+// See: context/plans/ready/perf-portal-fog-culling/index.md
+//
+// On-disk layout (little-endian):
+//   u32  cell_count          — total BSP leaf count (solid + empty)
+//   u32  masks[cell_count]   — per-leaf fog volume bitmask
+//
+// Bits 0..16 carry the volume bitmap (`MAX_FOG_VOLUMES = 16`). Bits 16..32 are
+// reserved, written as zero, and ignored on read so the section can grow
+// without a format break.
+//
+// The section is optional: it is omitted from the PRL when the source map has
+// no `env_fog_volume` brushes. Absence at load time produces `None`.
+
+use crate::FormatError;
+
+/// Parsed FogCellMasks section: one `u32` mask per BSP leaf, in leaf-index
+/// order.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FogCellMasksSection {
+    pub masks: Vec<u32>,
+}
+
+impl FogCellMasksSection {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(4 + self.masks.len() * 4);
+        buf.extend_from_slice(&(self.masks.len() as u32).to_le_bytes());
+        for mask in &self.masks {
+            buf.extend_from_slice(&mask.to_le_bytes());
+        }
+        buf
+    }
+
+    pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
+        if data.len() < 4 {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "fog cell masks: truncated header",
+            )));
+        }
+        let cell_count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+
+        let needed = 4usize.saturating_add(cell_count.saturating_mul(4));
+        if data.len() < needed {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!(
+                    "fog cell masks: truncated — cell_count {cell_count} requires {needed} bytes, got {}",
+                    data.len()
+                ),
+            )));
+        }
+
+        let mut masks = Vec::with_capacity(cell_count);
+        let mut o = 4usize;
+        for _ in 0..cell_count {
+            let mask = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
+            masks.push(mask);
+            o += 4;
+        }
+
+        Ok(Self { masks })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_empty() {
+        let section = FogCellMasksSection { masks: vec![] };
+        let bytes = section.to_bytes();
+        // 4-byte cell_count header only.
+        assert_eq!(bytes.len(), 4);
+        let restored = FogCellMasksSection::from_bytes(&bytes).unwrap();
+        assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn round_trip_several_leaves() {
+        let section = FogCellMasksSection {
+            masks: vec![0x0000_0000, 0x0000_0001, 0x0000_0003, 0x0000_8000, 0x0000_FFFF],
+        };
+        let bytes = section.to_bytes();
+        // 4 (header) + 5 * 4 (masks).
+        assert_eq!(bytes.len(), 24);
+        let restored = FogCellMasksSection::from_bytes(&bytes).unwrap();
+        assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn parses_well_formed_blob_to_expected_vec() {
+        // Hand-build a blob: cell_count=3, masks=[0x1, 0x2, 0x4].
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(&4u32.to_le_bytes());
+
+        let section = FogCellMasksSection::from_bytes(&buf).unwrap();
+        assert_eq!(section.masks, vec![1u32, 2, 4]);
+    }
+
+    #[test]
+    fn rejects_truncated_header() {
+        let err = FogCellMasksSection::from_bytes(&[0u8; 3]).unwrap_err();
+        assert!(err.to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn rejects_truncated_masks_payload() {
+        // cell_count = 4 but only one mask of payload supplied.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&4u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        let err = FogCellMasksSection::from_bytes(&buf).unwrap_err();
+        assert!(err.to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn rejects_implausible_cell_count() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&u32::MAX.to_le_bytes());
+        let err = FogCellMasksSection::from_bytes(&buf).unwrap_err();
+        assert!(err.to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn absent_section_yields_none_via_container() {
+        use crate::{
+            SectionBlob, SectionId, read_container, read_section_data, write_prl,
+        };
+        use std::io::Cursor;
+
+        // Build a PRL container with a non-FogCellMasks section.
+        let blobs = vec![SectionBlob {
+            section_id: SectionId::Geometry as u32,
+            version: 1,
+            data: vec![0xAB, 0xCD],
+        }];
+        let mut buf = Vec::new();
+        write_prl(&mut buf, &blobs).unwrap();
+
+        let mut cursor = Cursor::new(&buf);
+        let meta = read_container(&mut cursor).unwrap();
+
+        // Looking up FogCellMasks in a file that omits it yields None.
+        let raw =
+            read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32).unwrap();
+        assert!(raw.is_none());
+    }
+
+    #[test]
+    fn parses_via_container_round_trip() {
+        use crate::{
+            SectionBlob, SectionId, read_container, read_section_data, write_prl,
+        };
+        use std::io::Cursor;
+
+        let original = FogCellMasksSection {
+            masks: vec![0, 1, 0x8000, 0x0000_FFFF],
+        };
+        let blobs = vec![SectionBlob {
+            section_id: SectionId::FogCellMasks as u32,
+            version: 1,
+            data: original.to_bytes(),
+        }];
+        let mut buf = Vec::new();
+        write_prl(&mut buf, &blobs).unwrap();
+
+        let mut cursor = Cursor::new(&buf);
+        let meta = read_container(&mut cursor).unwrap();
+        let raw = read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32)
+            .unwrap()
+            .expect("FogCellMasks section should be present");
+        let parsed = FogCellMasksSection::from_bytes(&raw).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn section_id_31_is_registered() {
+        use crate::SectionId;
+        assert_eq!(
+            SectionId::from_u32(31),
+            Some(SectionId::FogCellMasks),
+            "section ID 31 must map to FogCellMasks"
+        );
+    }
+}

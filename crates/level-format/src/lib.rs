@@ -9,6 +9,7 @@ pub mod bvh;
 pub mod chunk_light_list;
 pub mod data_script;
 pub mod delta_sh_volumes;
+pub mod fog_cell_masks;
 pub mod fog_volumes;
 pub mod geometry;
 pub mod light_influence;
@@ -155,6 +156,12 @@ pub enum SectionId {
     /// even when no `env_fog_volume` brushes are present.
     /// See `fog_volumes::FogVolumesSection`.
     FogVolumes = 30,
+
+    /// Per-BSP-leaf bitmask of overlapping fog volumes (bit `i` = volume `i`
+    /// overlaps this leaf). Optional — emitted only when at least one
+    /// `env_fog_volume` brush entity is present.
+    /// See `fog_cell_masks::FogCellMasksSection`.
+    FogCellMasks = 31,
 }
 
 impl SectionId {
@@ -178,6 +185,7 @@ impl SectionId {
             28 => Some(Self::DataScript),
             29 => Some(Self::MapEntity),
             30 => Some(Self::FogVolumes),
+            31 => Some(Self::FogCellMasks),
             _ => None,
         }
     }

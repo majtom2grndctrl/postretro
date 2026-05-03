@@ -17,6 +17,7 @@ use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::light_tags::LightTagsSection;
@@ -279,7 +280,8 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
 /// portals, BVH, alpha lights, light influence, lightmap, chunk light list, SH
 /// volume, and FogVolumes) and conditionally write optional sections
 /// (animated-light chunks and weight maps, light tags, delta SH volumes, data
-/// script, and map entities) when their arguments are non-`None`.
+/// script, map entities, and fog cell masks) when their arguments are
+/// non-`None`.
 #[allow(clippy::too_many_arguments)]
 pub fn pack_and_write_portals(
     output: &Path,
@@ -301,6 +303,7 @@ pub fn pack_and_write_portals(
     data_script: Option<&DataScriptSection>,
     map_entities: Option<&MapEntitySection>,
     fog_volumes: &FogVolumesSection,
+    fog_cell_masks: Option<&FogCellMasksSection>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -320,6 +323,7 @@ pub fn pack_and_write_portals(
     let data_script_bytes = data_script.map(|s| s.to_bytes());
     let map_entities_bytes = map_entities.map(|s| s.to_bytes());
     let fog_volumes_bytes = fog_volumes.to_bytes();
+    let fog_cell_masks_bytes = fog_cell_masks.map(|s| s.to_bytes());
 
     let mut sections = vec![
         SectionBlob {
@@ -425,6 +429,13 @@ pub fn pack_and_write_portals(
         version: 1,
         data: fog_volumes_bytes.clone(),
     });
+    if let Some(ref bytes) = fog_cell_masks_bytes {
+        sections.push(SectionBlob {
+            section_id: SectionId::FogCellMasks as u32,
+            version: 1,
+            data: bytes.clone(),
+        });
+    }
 
     write_and_validate_sections(output, &sections)?;
 
@@ -505,6 +516,13 @@ pub fn pack_and_write_portals(
         fog_volumes.volumes.len(),
         fog_volumes.pixel_scale,
     );
+    if let (Some(section), Some(bytes)) = (fog_cell_masks, &fog_cell_masks_bytes) {
+        log::info!(
+            "  FogCellMasks: {} bytes ({} cells)",
+            bytes.len(),
+            section.masks.len(),
+        );
+    }
 
     Ok(())
 }
@@ -748,6 +766,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -809,6 +828,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -884,6 +904,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
         )
         .expect("full pipeline portal pack should succeed");
 

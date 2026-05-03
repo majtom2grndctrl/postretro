@@ -22,8 +22,9 @@ After BSP construction (step 2 of the prl-build pipeline), collect the world-spa
 
 After portal traversal produces `VisibleCells`, build `active_mask: u32`. (`volume_count` = number of `FogVolume`s loaded from PRL section 30 — canonical, immutable per level-load.)
 
-- `Culled(ref leaves)`: iterate the leaf indices, OR each leaf's `u32` mask from the loaded `FogCellMasks` array.
-- `DrawAll`: portal traversal fallback (solid-leaf camera, exterior, or no-portals map). Set `active_mask = (1u32 << volume_count) - 1` so every volume stays active. `FogCellMasks` absent implies `volume_count == 0`, so the pass is skipped via `FogPass::active()` before this branch is reached.
+- `Culled(ref leaves)` + `FogCellMasks` present: iterate the leaf indices, OR each leaf's `u32` mask from the loaded `FogCellMasks` array, then AND against `all_slots_mask = (1u32 << volume_count) - 1` so reserved bits 16..32 cannot light up a phantom slot.
+- `Culled(ref leaves)` + `FogCellMasks` absent: legacy-PRL fallback. Set `active_mask = all_slots_mask` so a level baked before section 31 existed still renders all canonical fog volumes; `live_mask` continues to gate density-zero slots. Section absence does **not** imply `volume_count == 0` — a legacy PRL can carry section 30 (FogVolumes) without section 31.
+- `DrawAll`: portal traversal fallback (solid-leaf camera, exterior, or no-portals map). Set `active_mask = all_slots_mask` so every canonical volume stays active.
 
 Repack the GPU fog buffer densely: write only volumes whose bit is set in `active_mask`, in ascending source-index order. Volume indices in the GPU buffer are not stable across frames — no other system may reference them. Upload `active_count = active_mask.count_ones()` to the FogPass uniform; the shader loops `0..active_count` as before. When `active_count == 0`, skip the fog pass entirely; this matches the existing `FogPass::active()` guard.
 

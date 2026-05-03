@@ -129,6 +129,14 @@ Billboard instances come from `BillboardEmitterComponent` particles packed by `P
 
 Low-resolution raymarched pass over `env_fog_volume` brush regions. Resolution governed by `fog_pixel_scale` worldspawn property (default 4 — quarter resolution). Per sample: point-in-AABB membership test against the fog volume buffer; accumulates SH ambient scatter and dynamic spot beam scatter (with shadow map occlusion for visible shafts and shadow wedges). Composited over the scene additively via nearest-neighbor upscale. The pixelated blocks are intentional, not a compromise.
 
+**Portal-driven volume culling.** Each frame, before dispatching the raymarch, the renderer reduces the per-sample AABB-test loop to only volumes reachable from the camera cell. Per-leaf `u32` bitmasks are baked at compile time into PRL section 31 (`FogCellMasks`); bit `i` set in leaf `L`'s mask means volume `i` overlaps leaf `L`'s bounds (conservative AABB-vs-AABB, no boundary pop). At runtime:
+
+- `VisibleCells::Culled(leaves)` + masks present: OR every visible leaf's mask, AND with `all_slots_mask = (1 << canonical_volume_count) - 1` to neutralize reserved bits 16..31.
+- `VisibleCells::Culled(leaves)` + masks absent: legacy-PRL fallback — keep all canonical slots active (`active_mask = all_slots_mask`). Section 30 can ship without section 31, so absence does **not** imply zero volumes.
+- `VisibleCells::DrawAll` (solid-leaf camera, exterior, no-portals): every canonical volume stays active.
+
+The active set is repacked densely into the GPU fog buffer in ascending source-index order; volume indices in the GPU buffer are not stable across frames. `FogParams.active_count = active_mask.count_ones()` controls the WGSL raymarch loop bound. The shader respects `active_count`, so trailing slots past it are stale-but-safe. A separate `live_mask` suppresses density-zero slots inside that loop. When `active_count == 0` the pass is skipped via `FogPass::active()`. See `context/plans/in-progress/perf-portal-fog-culling/index.md`.
+
 ---
 
 ## 8. Shader Module Composition

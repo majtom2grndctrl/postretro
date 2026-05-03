@@ -226,6 +226,43 @@ mod tests {
         assert_eq!(union_active_mask(&[], &[0xFFFF_FFFFu32]), 0);
     }
 
+    /// Algorithmic-regression guard for the per-frame OR loop. The plan's
+    /// performance target is < 10 µs on a 200-leaf input; criterion enforces
+    /// that statistically in the bench. This test uses a much more generous
+    /// 50 µs ceiling so it surfaces order-of-magnitude regressions in
+    /// `cargo test` without false-positives on loaded CI machines.
+    #[test]
+    fn union_active_mask_under_50us_on_200_leaves() {
+        use std::hint::black_box;
+        use std::time::{Duration, Instant};
+
+        let leaf_count = 1024usize;
+        let masks: Vec<u32> = (0..leaf_count)
+            .map(|i| 1u32 << ((i as u32) % 16))
+            .collect();
+        let visible: Vec<u32> = (0..200u32).map(|i| (i * 5) % leaf_count as u32).collect();
+
+        // Warm caches.
+        for _ in 0..1000 {
+            black_box(union_active_mask(black_box(&visible), black_box(&masks)));
+        }
+
+        let iters = 10_000u32;
+        let start = Instant::now();
+        let mut acc = 0u32;
+        for _ in 0..iters {
+            acc ^= union_active_mask(black_box(&visible), black_box(&masks));
+        }
+        let elapsed = start.elapsed();
+        black_box(acc);
+        let per_call = elapsed / iters;
+        assert!(
+            per_call < Duration::from_micros(50),
+            "union_active_mask regressed past the 50 µs algorithmic ceiling: \
+             {per_call:?} per call ({iters} iters in {elapsed:?})"
+        );
+    }
+
     #[test]
     fn section_id_31_is_registered() {
         use crate::SectionId;

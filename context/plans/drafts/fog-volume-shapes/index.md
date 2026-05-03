@@ -10,7 +10,7 @@ Extend fog volumes beyond AABB cuboids by adding sphere, ellipsoid, and capsule 
 
 - Three new shapes: `sphere`, `ellipsoid`, `capsule`.
 - `capsule` axis specified via `capsule_pitch` / `capsule_yaw` KVPs; defaults to longest-AABB-dimension auto-inference when not authored.
-- Optional half-space clip plane per volume: `clip_normal` + `clip_offset` KVPs. Applies after the shape membership test for all shapes. Enables hemisphere fog (sphere + horizontal clip), angled slab cuts, and ramp-conforming fog.
+- Optional half-space clip plane per volume: `clip_pitch` + `clip_yaw` + `clip_offset` KVPs. Applies after the shape membership test for all shapes. Enables hemisphere fog (sphere + horizontal clip), angled slab cuts, and ramp-conforming fog.
 - New `shape` KVP on `env_fog_volume` in the FGD; default `"box"` preserves backward compatibility.
 - Shape stored as a discriminant integer in `FogVolumeRecord` and the GPU struct.
 - Capsule baked fields (`capsule_axis`, `capsule_radius`, `capsule_half_height`) added to `FogVolumeRecord` and the GPU struct.
@@ -64,10 +64,12 @@ shape(choices) : "Volume shape" : "box" =
 ]
 capsule_pitch(float) : "Capsule axis pitch (degrees, -90..90)" : "0"
 capsule_yaw(float)   : "Capsule axis yaw (degrees, 0..360)" : "0"
-clip_pitch(float)    : "Clip plane normal pitch (degrees, -90..90; leave absent for no clip)" : ""
+clip_pitch(float)    : "Clip plane normal pitch (degrees, -90..90; omit key for no clip)" : "0"
 clip_yaw(float)      : "Clip plane normal yaw (degrees, 0..360)" : "0"
 clip_offset(float)   : "Clip plane offset (world units along clip normal)" : "0"
 ```
+
+`clip_pitch` must be omitted entirely (key absent from the entity) to signal no clip — do not define a non-numeric FGD default for it. TrenchBroom float KVPs require a numeric default; `"0"` is used here, but the compiler detects the no-clip case by key absence (`kvps.contains_key("clip_pitch")`), not by value. Authors who want no clip should leave the entity without these keys; authors who set `clip_pitch "0"` get a horizontal clip plane at origin.
 
 `capsule_pitch` and `capsule_yaw` are ignored for non-capsule shapes. When both are absent (or zero on a capsule), the compiler falls back to longest-AABB-dimension inference. `clip_pitch` absent (key not authored) means no clip plane — the sentinel is baked automatically. When `clip_pitch` is present, `clip_yaw` and `clip_offset` are read; the compiler converts pitch/yaw to a unit normal using the same convention as `capsule_pitch`/`capsule_yaw`. This matches the `angles` KVP pattern used by `light_spot` and `light_sun` in the same FGD.
 
@@ -170,7 +172,7 @@ let (axis_idx, _) = [half_ext.x, half_ext.y, half_ext.z]
 let capsule_axis = [Vec3::X, Vec3::Y, Vec3::Z][axis_idx];
 ```
 
-Clip plane sentinel (baked when `clip_normal` KVP is absent):
+Clip plane sentinel (baked when `clip_pitch` KVP is absent):
 ```rust
 // Proposed design — remove after implementation
 let clip_plane = [0.0_f32, 0.0, 0.0, f32::NEG_INFINITY];

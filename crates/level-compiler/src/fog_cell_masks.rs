@@ -152,9 +152,9 @@ mod tests {
             empty_leaf(aabb([1000.0, 0.0, 0.0], [1005.0, 5.0, 5.0])),
         ]);
         let volumes = vec![
-            fog([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),       // 0: in A
-            fog([100.0, 0.0, 0.0], [105.0, 5.0, 5.0]),   // 1: in B
-            fog([-1.0, -1.0, -1.0], [6.0, 6.0, 6.0]),    // 2: in A
+            fog([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),     // 0: in A
+            fog([100.0, 0.0, 0.0], [105.0, 5.0, 5.0]), // 1: in B
+            fog([-1.0, -1.0, -1.0], [6.0, 6.0, 6.0]),  // 2: in A
         ];
         let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
         assert_eq!(section.masks, vec![0b101, 0b010, 0]);

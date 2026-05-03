@@ -203,7 +203,6 @@ impl FogVolumeBridge {
         Some((&self.volumes_bytes, live_mask))
     }
 
-
     /// Pre-cull a slice of map lights against the cached fog-volume AABBs and
     /// pack the survivors as `FogPointLight` records. Filters to dynamic point
     /// lights only — static lights bake into the SH volume; spot lights have a
@@ -397,7 +396,10 @@ mod tests {
         let falloff = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
         assert_eq!(density, 1.25);
         assert_eq!(falloff, 0.5);
-        assert_eq!(live_mask, 0b1, "single non-zero-density slot should be live");
+        assert_eq!(
+            live_mask, 0b1,
+            "single non-zero-density slot should be live"
+        );
     }
 
     #[test]

@@ -105,7 +105,13 @@ mod tests {
     #[test]
     fn round_trip_several_leaves() {
         let section = FogCellMasksSection {
-            masks: vec![0x0000_0000, 0x0000_0001, 0x0000_0003, 0x0000_8000, 0x0000_FFFF],
+            masks: vec![
+                0x0000_0000,
+                0x0000_0001,
+                0x0000_0003,
+                0x0000_8000,
+                0x0000_FFFF,
+            ],
         };
         let bytes = section.to_bytes();
         // 4 (header) + 5 * 4 (masks).
@@ -153,9 +159,7 @@ mod tests {
 
     #[test]
     fn absent_section_yields_none_via_container() {
-        use crate::{
-            SectionBlob, SectionId, read_container, read_section_data, write_prl,
-        };
+        use crate::{SectionBlob, SectionId, read_container, read_section_data, write_prl};
         use std::io::Cursor;
 
         // Build a PRL container with a non-FogCellMasks section.
@@ -171,16 +175,13 @@ mod tests {
         let meta = read_container(&mut cursor).unwrap();
 
         // Looking up FogCellMasks in a file that omits it yields None.
-        let raw =
-            read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32).unwrap();
+        let raw = read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32).unwrap();
         assert!(raw.is_none());
     }
 
     #[test]
     fn parses_via_container_round_trip() {
-        use crate::{
-            SectionBlob, SectionId, read_container, read_section_data, write_prl,
-        };
+        use crate::{SectionBlob, SectionId, read_container, read_section_data, write_prl};
         use std::io::Cursor;
 
         let original = FogCellMasksSection {

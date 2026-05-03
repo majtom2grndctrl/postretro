@@ -509,8 +509,7 @@ impl FogPass {
             );
         }
         self.canonical_volumes.clear();
-        self.canonical_volumes
-            .extend_from_slice(&volumes[..count]);
+        self.canonical_volumes.extend_from_slice(&volumes[..count]);
         // Mask off any bits past `count` so a truncated list cannot leave a
         // dangling live bit.
         let count_mask = if count >= 32 {

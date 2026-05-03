@@ -46,7 +46,7 @@ Extend fog volumes beyond AABB cuboids by adding sphere, ellipsoid, and capsule 
 
 Add `shape: u32` (discriminant), `capsule_axis: [f32; 3]`, `capsule_radius: f32`, `capsule_half_height: f32`, and `clip_plane: [f32; 4]` to `FogVolumeRecord` in `crates/level-format/src/fog_volumes.rs`.
 
-Update `to_bytes()` and `from_bytes()` to serialise the new fields in the per-record block. Update the `MIN_RECORD_SIZE` sanity check (was 92 bytes; grows by 9 × f32 + 1 × u32 = 40 bytes → new minimum is 132 bytes for the fixed portion excluding tags; note this is the non-aligned on-disk byte count, not the GPU struct size).
+Update `to_bytes()` and `from_bytes()` to serialise the new fields in the per-record block. Update the `MIN_RECORD_SIZE` sanity check (was 92 bytes; grows by 10 × 4-byte fields = 40 bytes → new minimum is 132 bytes for the fixed portion excluding tags; note this is the non-aligned on-disk byte count, not the GPU struct size). `MIN_RECORD_SIZE` is a local `const` inside `from_bytes()` — it does not need to be promoted to module scope.
 
 Add round-trip tests for each shape value and for the clip plane, including the no-clip sentinel.
 
@@ -71,7 +71,7 @@ clip_offset(float)   : "Clip plane offset (world units along clip normal)" : "0"
 
 `clip_pitch` must be omitted entirely (key absent from the entity) to signal no clip — do not define a non-numeric FGD default for it. TrenchBroom float KVPs require a numeric default; `"0"` is used here, but the compiler detects the no-clip case by key absence (`kvps.contains_key("clip_pitch")`), not by value. Authors who want no clip should leave the entity without these keys; authors who set `clip_pitch "0"` get a horizontal clip plane at origin.
 
-`capsule_pitch` and `capsule_yaw` are ignored for non-capsule shapes. When both are absent (or zero on a capsule), the compiler falls back to longest-AABB-dimension inference. `clip_pitch` absent (key not authored) means no clip plane — the sentinel is baked automatically. When `clip_pitch` is present, `clip_yaw` and `clip_offset` are read; the compiler converts pitch/yaw to a unit normal using the same convention as `capsule_pitch`/`capsule_yaw`. This matches the `angles` KVP pattern used by `light_spot` and `light_sun` in the same FGD.
+`capsule_pitch` and `capsule_yaw` are ignored for non-capsule shapes. When both keys are absent from the entity, the compiler falls back to longest-AABB-dimension inference. `clip_pitch` absent (key not authored) means no clip plane — the sentinel is baked automatically. When `clip_pitch` is present, `clip_yaw` and `clip_offset` are read; the compiler converts pitch/yaw to a unit normal using the same convention as `capsule_pitch`/`capsule_yaw`. This matches the `angles` KVP pattern used by `light_spot` and `light_sun` in the same FGD.
 
 ### Task 3: Level compiler — parse + bake
 
@@ -79,8 +79,8 @@ clip_offset(float)   : "Clip plane offset (world units along clip normal)" : "0"
 
 `resolve_fog_volume()` in `crates/level-compiler/src/parse.rs`:
 - Parses `shape` KVP; unknown values → compiler error; missing → `FogVolumeShape::Box`.
-- Parses `capsule_pitch` and `capsule_yaw` (degrees); stores as `Option<f32>` — `None` when the key is absent.
-- Parses `clip_pitch` and `clip_yaw` (degrees) and `clip_offset`; if `clip_pitch` is absent, stores `None` (no clip); if present, converts pitch/yaw to a unit normal using the same formula as `capsule_axis` baking.
+- Parses `capsule_pitch` and `capsule_yaw` (degrees); stores as `Option<f32>` — `None` when the key is absent. If only one of the two keys is present, treat the absent key as `0.0` for the angle conversion.
+- Parses `clip_pitch` and `clip_yaw` (degrees) and `clip_offset`; if `clip_pitch` is absent, stores `None` (no clip) — `clip_yaw` and `clip_offset` present without `clip_pitch` are silently ignored; if present, converts pitch/yaw to a unit normal using the same formula as `capsule_axis` baking.
 
 `encode_fog_volumes()` in `crates/level-compiler/src/pack.rs`:
 
@@ -94,9 +94,11 @@ clip_offset(float)   : "Clip plane offset (world units along clip normal)" : "0"
 
 Replace `_pad: [f32; 2]` in `FogVolume` (`crates/postretro/src/fx/fog_volume.rs`) with `shape: u32, capsule_radius: f32`, append a 16-byte row `capsule_axis: [f32; 3], capsule_half_height: f32`, and append a final 16-byte row `clip_plane: [f32; 4]`. Update the compile-time assert to `FOG_VOLUME_SIZE == 128`.
 
-Propagate all new fields through `FogVolumeRecord → FogVolume` packing wherever fog volumes are uploaded to the GPU buffer.
+Propagate all new fields through `FogVolumeRecord → FogVolume` packing in `update_volumes()` in `crates/postretro/src/scripting/systems/fog_volume_bridge.rs`. Copy `clip_plane.w` bit-for-bit — do not apply any finite clamping; the `f32::NEG_INFINITY` sentinel must survive the pack.
 
-Mirror the layout change in the WGSL `FogVolume` struct (`crates/postretro/src/shaders/fog_volume.wgsl`): replace `_pad: vec2<f32>` with `shape: u32, capsule_radius: f32`, add `capsule_axis: vec3<f32>, capsule_half_height: f32` as a new struct row, and add `clip_plane: vec4<f32>` as the final row.
+Mirror the layout change in the WGSL `FogVolume` struct (`crates/postretro/src/shaders/fog_volume.wgsl`): replace `_pad: vec2<f32>` with `shape: u32, capsule_radius: f32`, add `capsule_axis: vec3<f32>, capsule_half_height: f32` as a new struct row, and add `clip_plane: vec4<f32>` as the final row. WGSL field declaration order must match the Rust struct field order exactly.
+
+Update the existing test `pack_fog_volumes_round_trips_all_baked_fields` in `crates/postretro/src/fx/fog_volume.rs` — it constructs a `FogVolume` literal that will not compile once the struct gains new fields.
 
 ### Task 5: Shader — shape-branched membership
 
@@ -117,13 +119,13 @@ Project `(pos - v.center)` onto `v.capsule_axis`; clamp to `[-v.capsule_half_hei
 **Clip plane (all shapes):**
 After the shape membership test passes, apply the half-space cut: `if dot(pos, v.clip_plane.xyz) < v.clip_plane.w { continue; }`. When the sentinel `(0,0,0,-inf)` is stored, the dot product is zero and the test is always false — no clipping. No branching on a "has clip" flag is needed.
 
-The slab-clip prologue (`v.min` / `v.max_v` ray-interval computation) requires **no changes** — the AABB serves as a valid conservative bound for all shapes, and the clip plane only removes density inside that bound.
+The slab-clip prologue (`v.min` / `v.max_v` ray-interval computation) requires **no changes** — the AABB serves as a valid conservative bound for all shapes, and the clip plane only removes density inside that bound. The clip-plane test is shape-independent (it runs after the per-shape membership check), so AC #5 (sphere + clip) is the behavioral verification for the clip path across all four shapes.
 
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 (level format) — wire format must be defined before compiler or runtime can use new fields.
 
-**Phase 2 (concurrent):** Task 2 (FGD), Task 3 (level compiler), Task 4 + 5 (CPU structs + WGSL) — all consume the Task 1 format; Tasks 2–5 are mutually independent.
+**Phase 2 (concurrent):** Task 2 (FGD), Task 3 (level compiler), Task 4 + 5 (CPU structs + WGSL) — all consume the Task 1 format; Tasks 2–5 are mutually independent. Tasks 4 and 5 must be implemented atomically — the Rust GPU struct and WGSL struct must change in the same commit to keep layouts in sync.
 
 ## Rough sketch
 

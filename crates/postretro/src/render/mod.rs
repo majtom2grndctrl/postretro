@@ -2537,10 +2537,7 @@ mod tests {
     fn compute_fog_cell_mask_zero_canonical_volumes_returns_zero() {
         // Pre-load / level-clear case — no canonical volumes loaded, all-slots
         // mask resolves to zero and the pass skips.
-        assert_eq!(
-            compute_fog_cell_mask(&VisibleCells::DrawAll, None, 0),
-            0
-        );
+        assert_eq!(compute_fog_cell_mask(&VisibleCells::DrawAll, None, 0), 0);
         assert_eq!(
             compute_fog_cell_mask(&VisibleCells::Culled(vec![0]), Some(&[0xFFu32]), 0),
             0

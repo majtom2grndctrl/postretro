@@ -226,6 +226,8 @@ pub fn encode_fog_volumes(
                 inv_half_ext: inv_half_ext.to_array(),
                 half_diag,
                 inv_height_extent,
+                plane_count: 0,
+                planes: Vec::new(),
                 tags: v.tags.clone(),
             }
         })

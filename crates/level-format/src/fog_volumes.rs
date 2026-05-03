@@ -37,6 +37,13 @@ pub struct FogVolumeRecord {
     pub half_diag: f32,
     /// Reciprocal of `max.y - min.y`, clamped away from zero.
     pub inv_height_extent: f32,
+    /// Number of bounding planes; mirrors `planes.len()` and is baked into the
+    /// fixed payload so the wire format header is self-describing.
+    pub plane_count: u32,
+    /// Convex bounding planes. A point `p` is inside the volume iff
+    /// `dot(p, n) <= d` for every `(nx, ny, nz, d)` plane. An empty list means
+    /// the AABB is the only bound (semantic-entity / box case).
+    pub planes: Vec<[f32; 4]>,
     /// Author-supplied script tags (FGD `_tags`, pre-split on whitespace).
     pub tags: Vec<String>,
 }
@@ -59,6 +66,9 @@ pub struct FogVolumeRecord {
 ///     f32  inv_half_ext_x, inv_half_ext_y, inv_half_ext_z
 ///     f32  half_diag
 ///     f32  inv_height_extent
+///     u32  plane_count
+///     repeat plane_count:
+///       f32  nx, ny, nz, d
 ///     u32  tag_count
 ///     repeat tag_count:
 ///       u32  tag_byte_len; u8[] tag_utf8
@@ -108,6 +118,12 @@ impl FogVolumesSection {
             }
             buf.extend_from_slice(&v.half_diag.to_le_bytes());
             buf.extend_from_slice(&v.inv_height_extent.to_le_bytes());
+            buf.extend_from_slice(&(v.planes.len() as u32).to_le_bytes());
+            for plane in &v.planes {
+                for c in plane {
+                    buf.extend_from_slice(&c.to_le_bytes());
+                }
+            }
             buf.extend_from_slice(&(v.tags.len() as u32).to_le_bytes());
             for tag in &v.tags {
                 let bytes = tag.as_bytes();
@@ -123,8 +139,10 @@ impl FogVolumesSection {
         let pixel_scale = read_u32(data, &mut o, "pixel_scale")?;
         let count = read_u32(data, &mut o, "volume count")? as usize;
 
-        // Sanity-check: each fixed payload is 22 × f32 + u32 = 92 bytes.
-        const MIN_RECORD_SIZE: usize = 92;
+        // Sanity-check: each fixed payload is 22 × f32 + 2 × u32 = 96 bytes
+        // (includes plane_count and tag_count headers; planes and tags are
+        // variable-length and validated against remaining bytes below).
+        const MIN_RECORD_SIZE: usize = 96;
         let remaining = data.len().saturating_sub(o);
         if count > remaining / MIN_RECORD_SIZE {
             // FormatError has no Parse variant; Io is the closest proxy for
@@ -152,6 +170,26 @@ impl FogVolumesSection {
             let half_diag = read_f32(data, &mut o, &format!("volume {i} half_diag"))?;
             let inv_height_extent =
                 read_f32(data, &mut o, &format!("volume {i} inv_height_extent"))?;
+
+            let plane_count = read_u32(data, &mut o, &format!("volume {i} plane count"))? as usize;
+            const PLANE_SIZE: usize = 16;
+            let remaining_for_planes = data.len().saturating_sub(o);
+            if plane_count > remaining_for_planes / PLANE_SIZE {
+                return Err(FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "fog volumes: volume {i} plane count {plane_count} exceeds what remaining {remaining_for_planes} bytes can hold"
+                    ),
+                )));
+            }
+            let mut planes = Vec::with_capacity(plane_count);
+            for j in 0..plane_count {
+                let nx = read_f32(data, &mut o, &format!("volume {i} plane {j} nx"))?;
+                let ny = read_f32(data, &mut o, &format!("volume {i} plane {j} ny"))?;
+                let nz = read_f32(data, &mut o, &format!("volume {i} plane {j} nz"))?;
+                let d = read_f32(data, &mut o, &format!("volume {i} plane {j} d"))?;
+                planes.push([nx, ny, nz, d]);
+            }
 
             let tag_count = read_u32(data, &mut o, &format!("volume {i} tag count"))? as usize;
             const MIN_TAG_SIZE: usize = 4;
@@ -182,6 +220,8 @@ impl FogVolumesSection {
                 inv_half_ext,
                 half_diag,
                 inv_height_extent,
+                plane_count: plane_count as u32,
+                planes,
                 tags,
             });
         }
@@ -285,6 +325,8 @@ mod tests {
                     inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
                     half_diag: 2.5,
                     inv_height_extent: 1.0 / 3.0,
+                    plane_count: 0,
+                    planes: vec![],
                     tags: vec!["smoke".to_string(), "ambient".to_string()],
                 },
                 FogVolumeRecord {
@@ -300,6 +342,8 @@ mod tests {
                     inv_half_ext: [1.0, 0.5, 0.5],
                     half_diag: 3.0,
                     inv_height_extent: 0.25,
+                    plane_count: 0,
+                    planes: vec![],
                     tags: vec![],
                 },
             ],
@@ -334,6 +378,110 @@ mod tests {
         assert!(err.to_string().contains("exceeds"));
     }
 
+    fn make_volume(planes: Vec<[f32; 4]>, tags: Vec<String>) -> FogVolumeRecord {
+        let plane_count = planes.len() as u32;
+        FogVolumeRecord {
+            min: [-1.0, -1.0, -1.0],
+            density: 0.5,
+            max: [1.0, 1.0, 1.0],
+            falloff: 0.5,
+            color: [0.5, 0.5, 0.5],
+            scatter: 0.5,
+            height_gradient: 0.0,
+            radial_falloff: 0.0,
+            center: [0.0, 0.0, 0.0],
+            inv_half_ext: [1.0, 1.0, 1.0],
+            half_diag: 1.732_050_8,
+            inv_height_extent: 0.5,
+            plane_count,
+            planes,
+            tags,
+        }
+    }
+
+    #[test]
+    fn round_trip_six_plane_box_preserves_every_component() {
+        let planes: Vec<[f32; 4]> = vec![
+            [1.0, 0.0, 0.0, 1.5],
+            [-1.0, 0.0, 0.0, 1.25],
+            [0.0, 1.0, 0.0, 2.5],
+            [0.0, -1.0, 0.0, 2.25],
+            [0.0, 0.0, 1.0, 3.5],
+            [0.0, 0.0, -1.0, 3.25],
+        ];
+        let section = FogVolumesSection {
+            pixel_scale: 4,
+            volumes: vec![make_volume(planes.clone(), vec![])],
+        };
+        let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
+        let restored_planes = &restored.volumes[0].planes;
+        assert_eq!(restored_planes.len(), planes.len());
+        for (got, want) in restored_planes.iter().zip(planes.iter()) {
+            for (g, w) in got.iter().zip(want.iter()) {
+                assert_eq!(g.to_bits(), w.to_bits());
+            }
+        }
+        assert_eq!(restored.volumes[0].plane_count, 6);
+        assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn round_trip_five_plane_wedge_preserves_every_component() {
+        let inv_sqrt2 = 1.0_f32 / 2.0_f32.sqrt();
+        let planes: Vec<[f32; 4]> = vec![
+            [1.0, 0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0, 1.0],
+            [0.0, -1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, inv_sqrt2, -inv_sqrt2, 0.25],
+        ];
+        let section = FogVolumesSection {
+            pixel_scale: 4,
+            volumes: vec![make_volume(planes.clone(), vec![])],
+        };
+        let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
+        let restored_planes = &restored.volumes[0].planes;
+        assert_eq!(restored_planes.len(), planes.len());
+        for (got, want) in restored_planes.iter().zip(planes.iter()) {
+            for (g, w) in got.iter().zip(want.iter()) {
+                assert_eq!(g.to_bits(), w.to_bits());
+            }
+        }
+        assert_eq!(restored.volumes[0].plane_count, 5);
+        assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn round_trip_zero_plane_volume_round_trips() {
+        let section = FogVolumesSection {
+            pixel_scale: 4,
+            volumes: vec![make_volume(vec![], vec![])],
+        };
+        let bytes = section.to_bytes();
+        let restored = FogVolumesSection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.volumes[0].plane_count, 0);
+        assert!(restored.volumes[0].planes.is_empty());
+        assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn round_trip_planes_and_tags_coexist() {
+        let planes: Vec<[f32; 4]> = vec![
+            [1.0, 0.0, 0.0, 0.5],
+            [0.0, 1.0, 0.0, 0.75],
+            [0.0, 0.0, 1.0, 1.25],
+        ];
+        let tags = vec!["smoke".to_string(), "indoor".to_string()];
+        let section = FogVolumesSection {
+            pixel_scale: 4,
+            volumes: vec![make_volume(planes.clone(), tags.clone())],
+        };
+        let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
+        assert_eq!(restored.volumes[0].planes, planes);
+        assert_eq!(restored.volumes[0].tags, tags);
+        assert_eq!(section, restored);
+    }
+
     #[test]
     fn rejects_non_finite_float_fields() {
         // Build a section with one volume whose density field is NaN.
@@ -352,6 +500,8 @@ mod tests {
                 inv_half_ext: [2.0, 2.0, 2.0],
                 half_diag: 0.866_025_4,
                 inv_height_extent: 1.0,
+                plane_count: 0,
+                planes: vec![],
                 tags: vec![],
             }],
         };

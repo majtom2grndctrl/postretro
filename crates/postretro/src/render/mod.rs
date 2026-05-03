@@ -34,6 +34,14 @@ use crate::visibility::VisibleCells;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::fog_cell_masks::union_active_mask;
 
+use fog_pass::FogPass;
+use frame_timing::FrameTiming;
+use sh_compose::ShComposeResources;
+use sh_volume::ShVolumeResources;
+use smoke::SmokePass;
+
+use crate::fx::smoke::SpriteFrame;
+
 /// Compute the per-frame fog-volume cell mask from the visibility result and
 /// the baked per-leaf fog-volume bitmasks (PRL section 31).
 ///
@@ -71,14 +79,6 @@ fn compute_fog_cell_mask(
         (VisibleCells::Culled(_), None) => all_slots_mask,
     }
 }
-
-use fog_pass::FogPass;
-use frame_timing::FrameTiming;
-use sh_compose::ShComposeResources;
-use sh_volume::ShVolumeResources;
-use smoke::SmokePass;
-
-use crate::fx::smoke::SpriteFrame;
 
 // `curve_eval.wgsl` reads `anim_samples` by lexical name; `forward.wgsl`
 // declares that buffer. WGSL resolves references at module scope regardless of
@@ -1806,10 +1806,11 @@ impl Renderer {
     }
 
     /// Set the per-BSP-leaf fog-volume bitmask table loaded from PRL section 31.
-    /// Called once at level load. `None` means the level has no fog volumes
-    /// (or predates section 31) — the fog pass falls back to "all canonical
-    /// slots active" on `VisibleCells::DrawAll`, but skips entirely on
-    /// `Culled` because the active mask resolves to zero without baked masks.
+    /// Called once at level load. When `masks` is `None` (level predates
+    /// section 31 or has no fog volumes) and visibility is `Culled`, all
+    /// canonical slots remain active — same behaviour as `DrawAll` — so legacy
+    /// PRLs continue rendering fog without baked masks. `live_mask` still
+    /// suppresses any canonical slots whose density is zero.
     pub fn set_fog_cell_masks(&mut self, masks: Option<Vec<u32>>) {
         self.fog_cell_masks = masks;
     }

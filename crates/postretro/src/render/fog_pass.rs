@@ -179,7 +179,7 @@ impl FogPass {
         //
         // Initial fog-volumes buffer: zero-count dummy record. wgpu rejects
         // zero-sized storage buffers, so we always size for MAX_FOG_VOLUMES
-        // and track the real count in `fog.volume_count`.
+        // and track the real count in `fog.active_count`.
         let volumes_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Fog Volume AABB Buffer"),
             size: (MAX_FOG_VOLUMES * FOG_VOLUME_SIZE) as u64,
@@ -512,6 +512,13 @@ impl FogPass {
         self.canonical_volumes.extend_from_slice(&volumes[..count]);
         // Mask off any bits past `count` so a truncated list cannot leave a
         // dangling live bit.
+        //
+        // The `(1 << count) - 1` pattern is intentionally redundant with the
+        // `all_slots_mask` computed in `compute_fog_cell_mask`. The duplication
+        // is belt-and-suspenders: a forward-compatible PRL may store reserved
+        // bits (16..31) in the baked per-leaf masks, and we want to guarantee
+        // they are stripped before they can reach the shader regardless of which
+        // call site is hit first.
         let count_mask = if count >= 32 {
             u32::MAX
         } else {
@@ -538,6 +545,9 @@ impl FogPass {
             }
         }
         self.active_count = self.repack_scratch.len() as u32;
+        // GPU buffer tail past `active_count` may hold stale records from a
+        // previous frame, but that is safe: the shader loops only `0..active_count`,
+        // so stale slots are never read.
         if self.active_count > 0 {
             // Upload unconditionally when active_count > 0 — the dense layout
             // changes each frame based on the per-frame visible set, so we

@@ -802,6 +802,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         }
     }
 
@@ -889,6 +890,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         };
 
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::NEG_Z);
@@ -975,6 +977,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         };
 
         // Camera in leaf A, looking straight along +X toward portal 0.
@@ -1302,6 +1305,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         };
 
         // Camera looking through the LEFT passage (Z=63, center of Z=62..64 gap).
@@ -1713,6 +1717,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         };
 
         let camera_pos = Vec3::new(1.0, 0.0, 0.0);
@@ -1888,6 +1893,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         };
 
         // Camera at origin looking +X. The camera frustum is wide enough that
@@ -1994,6 +2000,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         };
 
         // Camera pose from the captured blank-frame trace. The live trace
@@ -2131,6 +2138,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         };
 
         // Camera pose from the captured blank-frame trace. z = -13.00

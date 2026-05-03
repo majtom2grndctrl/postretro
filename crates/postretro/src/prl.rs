@@ -13,6 +13,7 @@ use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
 use postretro_level_format::light_influence::LightInfluenceSection;
@@ -239,6 +240,17 @@ pub struct LevelWorld {
     /// absent.
     #[allow(dead_code)]
     pub fog_pixel_scale: u32,
+    /// Per-BSP-leaf bitmask of overlapping fog volumes loaded from the
+    /// FogCellMasks section (ID 31). `masks[L]` has bit `i` set when fog
+    /// volume `i` overlaps leaf `L`. The runtime ORs together masks for
+    /// visible cells to derive the active fog-volume set for the fog
+    /// raymarch pass.
+    ///
+    /// `None` when the section is absent — the map has no `env_fog_volume`
+    /// brushes, so the fog pass should be skipped entirely (the all-zero /
+    /// `DrawAll`-equivalent case).
+    #[allow(dead_code)]
+    pub fog_cell_masks: Option<Vec<u32>>,
 }
 
 impl LevelWorld {
@@ -786,6 +798,20 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => (Vec::new(), 4),
         };
 
+    // FogCellMasks section (ID 31, optional). Per-BSP-leaf bitmask of which
+    // fog volumes overlap each leaf. Absent when the source map authored no
+    // `env_fog_volume` brushes — the runtime treats `None` as "skip the fog
+    // pass" rather than "draw all volumes".
+    let fog_cell_masks: Option<Vec<u32>> =
+        match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32)? {
+            Some(data) => {
+                let section = FogCellMasksSection::from_bytes(&data)?;
+                log::info!("[PRL] FogCellMasks: {} cells", section.masks.len());
+                Some(section.masks)
+            }
+            None => None,
+        };
+
     let has_portals = portals_section.is_some();
 
     // Build runtime nodes from the nodes section.
@@ -929,6 +955,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         map_entities,
         fog_volumes,
         fog_pixel_scale,
+        fog_cell_masks,
     })
 }
 
@@ -1022,6 +1049,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         }
     }
 
@@ -1075,6 +1103,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -1121,6 +1150,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         };
 
         let spawn = world.spawn_position();
@@ -1156,6 +1186,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            fog_cell_masks: None,
         };
 
         let indices = face_leaf_indices(&world);
@@ -1670,6 +1701,73 @@ mod tests {
         let tmp = write_prl_fixture(sections, "postretro_test_no_alpha_lights.prl");
         let world = load_prl(tmp.to_str().unwrap()).expect("should load");
         assert!(world.lights.is_empty());
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_parses_fog_cell_masks_section() {
+        use postretro_level_format::fog_cell_masks::FogCellMasksSection;
+
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let masks = FogCellMasksSection {
+            masks: vec![0x0000_0000, 0x0000_0001, 0x0000_8000, 0x0000_FFFF],
+        };
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::FogCellMasks as u32,
+                version: 1,
+                data: masks.to_bytes(),
+            },
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_fog_cell_masks.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+
+        assert_eq!(
+            world.fog_cell_masks,
+            Some(vec![0x0000_0000u32, 0x0000_0001, 0x0000_8000, 0x0000_FFFF])
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_absent_fog_cell_masks_yields_none() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_no_fog_cell_masks.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+        assert!(
+            world.fog_cell_masks.is_none(),
+            "absent FogCellMasks section should yield None"
+        );
 
         std::fs::remove_file(&tmp).ok();
     }

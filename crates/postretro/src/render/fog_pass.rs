@@ -68,8 +68,22 @@ pub struct FogPass {
     /// because the surface depth texture is recreated on every resize.
     pub bind_group: wgpu::BindGroup,
 
-    /// Most recently uploaded fog volume count. Shader loops against this.
-    pub volume_count: u32,
+    /// Number of dense-packed `FogVolume` records the shader iterates over
+    /// this frame. Set per-frame by `repack_active` after AND-ing the visible-
+    /// cell mask against the bridge's live mask. Shader loops against this.
+    pub active_count: u32,
+    /// Canonical fog-volume list in source order (one entry per
+    /// `env_fog_volume` brush in the PRL). The bytes are stored as raw
+    /// `FogVolume` records and re-packed per-frame in `repack_active`. Empty
+    /// when no level is loaded or the level has no fog volumes.
+    canonical_volumes: Vec<FogVolume>,
+    /// Bit `i` set ⇒ canonical slot `i` has density > 0 and is eligible for
+    /// upload. ANDed with the visible-cell-derived mask to produce the
+    /// per-frame `active_mask`.
+    live_mask: u32,
+    /// Reusable scratch buffer for the per-frame dense repack — capacity
+    /// retained between frames to avoid per-frame allocation.
+    repack_scratch: Vec<FogVolume>,
     /// Most recent spot light count for dynamic beams.
     pub spot_count: u32,
     /// Most recent point-light count. Packed into `FogParams.point_count` so
@@ -354,7 +368,10 @@ impl FogPass {
             scatter_texture,
             scatter_dims,
             bind_group,
-            volume_count: 0,
+            active_count: 0,
+            canonical_volumes: Vec::new(),
+            live_mask: 0,
+            repack_scratch: Vec::new(),
             spot_count: 0,
             point_count: 0,
         }
@@ -476,9 +493,13 @@ impl FogPass {
         self.resize(device, surface_width, surface_height, depth_view);
     }
 
-    /// Upload the fog volume list. Truncates at `MAX_FOG_VOLUMES` with a
-    /// warning. Subsequent frames reuse the buffer until the list changes.
-    pub fn upload_volumes(&mut self, queue: &wgpu::Queue, volumes: &[FogVolume]) {
+    /// Replace the canonical fog-volume list. The list is the per-frame
+    /// `FogVolume` records emitted in original PRL record order — `live_mask`
+    /// indicates which slots have density > 0 and are eligible for upload.
+    /// The buffer is *not* written here; `repack_active` does the dense
+    /// repack-and-upload once the per-frame visible-cell mask is known.
+    /// Truncates at `MAX_FOG_VOLUMES` with a warning.
+    pub fn set_canonical_volumes(&mut self, volumes: &[FogVolume], live_mask: u32) {
         let count = volumes.len().min(MAX_FOG_VOLUMES);
         if volumes.len() > MAX_FOG_VOLUMES {
             log::warn!(
@@ -487,11 +508,50 @@ impl FogPass {
                 MAX_FOG_VOLUMES
             );
         }
-        let bytes = fog_volume::pack_fog_volumes(&volumes[..count]);
-        if !bytes.is_empty() {
+        self.canonical_volumes.clear();
+        self.canonical_volumes
+            .extend_from_slice(&volumes[..count]);
+        // Mask off any bits past `count` so a truncated list cannot leave a
+        // dangling live bit.
+        let count_mask = if count >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << count).wrapping_sub(1)
+        };
+        self.live_mask = live_mask & count_mask;
+    }
+
+    /// Compute the per-frame `active_mask` from the visible-cell-derived
+    /// `cell_mask` ANDed against `live_mask`, dense-pack the surviving
+    /// canonical slots into the GPU buffer, and update `active_count`.
+    /// Idempotent and allocation-free on the steady state — the scratch
+    /// buffer's capacity is retained across frames.
+    pub fn repack_active(&mut self, queue: &wgpu::Queue, cell_mask: u32) {
+        let active_mask = cell_mask & self.live_mask;
+        self.repack_scratch.clear();
+        // Iterate by bit so we naturally produce dense, source-order output.
+        let mut bits = active_mask;
+        while bits != 0 {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            if let Some(v) = self.canonical_volumes.get(i) {
+                self.repack_scratch.push(*v);
+            }
+        }
+        self.active_count = self.repack_scratch.len() as u32;
+        if self.active_count > 0 {
+            // Upload unconditionally when active_count > 0 — the dense layout
+            // changes each frame based on the per-frame visible set, so we
+            // cannot skip the write even when the count happens to match.
+            let bytes = fog_volume::pack_fog_volumes(&self.repack_scratch);
             queue.write_buffer(&self.volumes_buffer, 0, bytes);
         }
-        self.volume_count = count as u32;
+    }
+
+    /// Number of canonical fog-volume slots currently loaded. Used by callers
+    /// to derive the `DrawAll` cell-mask (`(1 << canonical_count) - 1`).
+    pub fn canonical_volume_count(&self) -> u32 {
+        self.canonical_volumes.len() as u32
     }
 
     /// Upload the per-frame fog params (inv view-proj, camera pos, step size).
@@ -507,7 +567,7 @@ impl FogPass {
             inv_view_proj,
             camera_position,
             step_size: self.step_size,
-            volume_count: self.volume_count,
+            active_count: self.active_count,
             near_clip,
             far_clip,
             point_count: self.point_count,
@@ -557,7 +617,7 @@ impl FogPass {
     /// the scatter target does not have to be cleared because the composite
     /// isn't issued.
     pub fn active(&self) -> bool {
-        self.volume_count > 0
+        self.active_count > 0
     }
 }
 

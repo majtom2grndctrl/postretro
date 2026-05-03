@@ -107,7 +107,7 @@ struct FogParams {
     inv_view_proj: mat4x4<f32>,
     camera_position: vec3<f32>,
     step_size: f32,
-    volume_count: u32,
+    active_count: u32,
     near_clip: f32,
     far_clip: f32,
     point_count: u32,
@@ -207,7 +207,7 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
     out.color = vec3<f32>(0.0);
     out.scatter = 0.0;
     out.hits = 0u;
-    let n = fog.volume_count;
+    let n = fog.active_count;
     for (var i: u32 = 0u; i < n; i = i + 1u) {
         let v = fog_volumes[i];
         if pos.x < v.min.x || pos.y < v.min.y || pos.z < v.min.z {
@@ -331,7 +331,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var raw_exit: array<f32, 16>;
     var raw_count: u32 = 0u;
 
-    let vc = fog.volume_count;
+    let vc = fog.active_count;
     for (var i: u32 = 0u; i < vc; i = i + 1u) {
         let v = fog_volumes[i];
         let t_min = (v.min - ray.origin) * inv_d;
@@ -355,7 +355,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // Merge raw hits into a disjoint, sorted union.
-    // `fog.volume_count` is capped at MAX_FOG_VOLUMES (16), so raw_count <= 16
+    // `fog.active_count` is capped at MAX_FOG_VOLUMES (16), so raw_count <= 16
     // is always satisfied — no overflow path is needed.
     var union_enter: array<f32, 16>;
     var union_exit: array<f32, 16>;

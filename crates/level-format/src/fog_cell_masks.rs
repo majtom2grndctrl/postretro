@@ -25,6 +25,27 @@ pub struct FogCellMasksSection {
     pub masks: Vec<u32>,
 }
 
+/// OR together the per-leaf fog-volume bitmasks for every leaf in `visible_leaves`,
+/// returning an `active_mask` whose bit `i` is set iff fog volume `i` overlaps at
+/// least one visible leaf.
+///
+/// Out-of-range leaf indices are silently skipped — no clamping or panic — so a
+/// stale `VisibleCells` from a previous level cannot crash a frame mid-load.
+///
+/// Hot path: called once per frame from the fog pass before the raymarch
+/// dispatch. Kept tight (no allocation, no bounds-check error path) so it stays
+/// well under the < 10 µs target on a 200-leaf input.
+#[inline]
+pub fn union_active_mask(visible_leaves: &[u32], masks: &[u32]) -> u32 {
+    let mut active = 0u32;
+    for &leaf in visible_leaves {
+        if let Some(m) = masks.get(leaf as usize) {
+            active |= *m;
+        }
+    }
+    active
+}
+
 impl FogCellMasksSection {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(4 + self.masks.len() * 4);
@@ -180,6 +201,28 @@ mod tests {
             .expect("FogCellMasks section should be present");
         let parsed = FogCellMasksSection::from_bytes(&raw).unwrap();
         assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn union_active_mask_ors_visible_leaves() {
+        let masks = vec![0b0001, 0b0010, 0b0100, 0b1000];
+        let visible = vec![0u32, 2u32];
+        assert_eq!(union_active_mask(&visible, &masks), 0b0101);
+    }
+
+    #[test]
+    fn union_active_mask_skips_out_of_range_leaves() {
+        let masks = vec![0b0001, 0b0010];
+        // leaf 99 is out of range — must not panic or affect the result.
+        let visible = vec![0u32, 99u32, 1u32];
+        assert_eq!(union_active_mask(&visible, &masks), 0b0011);
+    }
+
+    #[test]
+    fn union_active_mask_empty_inputs_yield_zero() {
+        assert_eq!(union_active_mask(&[], &[]), 0);
+        assert_eq!(union_active_mask(&[0, 1], &[]), 0);
+        assert_eq!(union_active_mask(&[], &[0xFFFF_FFFFu32]), 0);
     }
 
     #[test]

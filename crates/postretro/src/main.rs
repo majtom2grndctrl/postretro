@@ -560,6 +560,7 @@ impl ApplicationHandler for App {
             self.fog_volume_bridge
                 .populate_from_level(&mut registry, &world.fog_volumes);
             renderer.set_fog_pixel_scale(world.fog_pixel_scale);
+            renderer.set_fog_cell_masks(world.fog_cell_masks.clone());
         }
 
         // Sweep map entities through classname dispatch. The returned set of
@@ -1040,10 +1041,12 @@ impl ApplicationHandler for App {
                     // when a `LightComponent` lookup fails.
                     let all_lights = {
                         let registry = self.script_ctx.registry.borrow();
-                        if let Some(bytes) = self.fog_volume_bridge.update_volumes(&registry) {
-                            renderer.upload_fog_volumes(bytes);
+                        if let Some((bytes, live_mask)) =
+                            self.fog_volume_bridge.update_volumes(&registry)
+                        {
+                            renderer.upload_fog_volumes(bytes, live_mask);
                         } else {
-                            renderer.upload_fog_volumes(&[]);
+                            renderer.upload_fog_volumes(&[], 0);
                         }
                         self.light_bridge
                             .collect_all_as_map_lights(&registry, self.script_time)

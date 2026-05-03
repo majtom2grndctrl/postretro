@@ -132,52 +132,77 @@ impl FogVolumeBridge {
     }
 
     /// Walk the registry and repack one `FogVolume` GPU record per tracked
-    /// entity. Returns `None` when there are no fog volumes — the renderer
-    /// uses this to skip the whole upload path.
-    pub(crate) fn update_volumes(&mut self, registry: &EntityRegistry) -> Option<&[u8]> {
+    /// entity, in original PRL record order. Returns `None` when there are no
+    /// fog volumes (empty `entity_ids`) — the renderer uses this to skip the
+    /// whole upload path.
+    ///
+    /// The returned byte slice has length `entity_ids.len() * FOG_VOLUME_SIZE`
+    /// — every slot is emitted, in source order, even when the underlying
+    /// entity has no `FogVolumeComponent` or has density ≤ 0. This preserves
+    /// the canonical index that `FogCellMasks` bits refer to.
+    ///
+    /// The returned `live_mask` has bit `i` set iff slot `i` has a present
+    /// component with density > 0. The renderer ANDs this into the
+    /// portal-cull mask so density-zero slots never reach the GPU.
+    pub(crate) fn update_volumes(&mut self, registry: &EntityRegistry) -> Option<(&[u8], u32)> {
         self.volumes_bytes.clear();
         if self.entity_ids.is_empty() {
             return None;
         }
 
-        for id in &self.entity_ids {
-            let Ok(component) = registry.get_component::<FogVolumeComponent>(*id) else {
-                // Entity despawned or component removed; skip the slot.
-                continue;
-            };
-            // Zero-density volumes are invisible and must not occupy GPU slots or
-            // keep the pass active. Skip them so `FogPass::active()` returns false
-            // when all volumes have been scripted to density 0.
-            if component.density <= 0.0 {
-                continue;
+        let mut live_mask = 0u32;
+        for (i, id) in self.entity_ids.iter().enumerate() {
+            let component = registry.get_component::<FogVolumeComponent>(*id).ok();
+            let aabb = self.aabbs.get(id);
+
+            // Slot `i` is live iff the component is present with density > 0.
+            // Zero-density and missing-component slots emit a zero-density
+            // placeholder so the buffer's index layout matches the PRL record
+            // order — the renderer drops these via the live_mask AND.
+            let live = component.is_some_and(|c| c.density > 0.0) && aabb.is_some();
+            if live {
+                live_mask |= 1u32 << i;
             }
-            let Some(aabb) = self.aabbs.get(id) else {
-                continue;
-            };
-            let fv = FogVolume {
-                min: aabb.min.to_array(),
-                density: component.density,
-                max_v: aabb.max.to_array(),
-                falloff: component.falloff,
-                color: component.color,
-                scatter: component.scatter,
-                center: aabb.center.to_array(),
-                half_diag: aabb.half_diag,
-                inv_half_ext: aabb.inv_half_ext.to_array(),
-                inv_height_extent: aabb.inv_height_extent,
-                height_gradient: aabb.height_gradient,
-                radial_falloff: aabb.radial_falloff,
-                _pad: [0.0, 0.0],
+
+            let fv = match (component, aabb) {
+                (Some(component), Some(aabb)) => FogVolume {
+                    min: aabb.min.to_array(),
+                    density: component.density,
+                    max_v: aabb.max.to_array(),
+                    falloff: component.falloff,
+                    color: component.color,
+                    scatter: component.scatter,
+                    center: aabb.center.to_array(),
+                    half_diag: aabb.half_diag,
+                    inv_half_ext: aabb.inv_half_ext.to_array(),
+                    inv_height_extent: aabb.inv_height_extent,
+                    height_gradient: aabb.height_gradient,
+                    radial_falloff: aabb.radial_falloff,
+                    _pad: [0.0, 0.0],
+                },
+                _ => FogVolume {
+                    min: [0.0; 3],
+                    density: 0.0,
+                    max_v: [0.0; 3],
+                    falloff: 0.0,
+                    color: [0.0; 3],
+                    scatter: 0.0,
+                    center: [0.0; 3],
+                    half_diag: 0.0,
+                    inv_half_ext: [0.0; 3],
+                    inv_height_extent: 0.0,
+                    height_gradient: 0.0,
+                    radial_falloff: 0.0,
+                    _pad: [0.0, 0.0],
+                },
             };
             self.volumes_bytes
                 .extend_from_slice(bytemuck::bytes_of(&fv));
         }
 
-        if self.volumes_bytes.is_empty() {
-            return None;
-        }
-        Some(&self.volumes_bytes)
+        Some((&self.volumes_bytes, live_mask))
     }
+
 
     /// Pre-cull a slice of map lights against the cached fog-volume AABBs and
     /// pack the survivors as `FogPointLight` records. Filters to dynamic point
@@ -365,13 +390,41 @@ mod tests {
             )
             .unwrap();
 
-        let bytes = bridge.update_volumes(&registry).expect("dirty volumes");
+        let (bytes, live_mask) = bridge.update_volumes(&registry).expect("dirty volumes");
         assert_eq!(bytes.len(), std::mem::size_of::<FogVolume>());
         // density at byte offset 12, falloff at byte offset 28.
         let density = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
         let falloff = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
         assert_eq!(density, 1.25);
         assert_eq!(falloff, 0.5);
+        assert_eq!(live_mask, 0b1, "single non-zero-density slot should be live");
+    }
+
+    #[test]
+    fn update_volumes_emits_canonical_length_with_zero_density_placeholder() {
+        // Two records — zero out the second one's density. The bridge must
+        // still emit two GPU records (canonical layout) but mark only slot 0
+        // as live so the renderer drops slot 1 from the dense repack.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record(), sample_record()]);
+
+        let id1 = bridge.entity_ids[1];
+        registry
+            .set_component(
+                id1,
+                FogVolumeComponent {
+                    density: 0.0,
+                    color: [0.0; 3],
+                    scatter: 0.0,
+                    falloff: 0.0,
+                },
+            )
+            .unwrap();
+
+        let (bytes, live_mask) = bridge.update_volumes(&registry).expect("two slots");
+        assert_eq!(bytes.len(), 2 * std::mem::size_of::<FogVolume>());
+        assert_eq!(live_mask, 0b01);
     }
 
     #[test]
@@ -441,7 +494,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
         bridge.populate_from_level(&mut registry, &[sample_record()]);
-        let _ = bridge.update_volumes(&registry);
+        let _ = bridge.update_volumes(&registry).expect("one slot");
         let cap_before = bridge.volumes_bytes.capacity();
 
         bridge.clear();

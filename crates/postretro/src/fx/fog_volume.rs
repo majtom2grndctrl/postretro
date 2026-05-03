@@ -85,7 +85,12 @@ pub struct FogParams {
     pub inv_view_proj: [[f32; 4]; 4],
     pub camera_position: [f32; 3],
     pub step_size: f32,
-    pub volume_count: u32,
+    /// Number of dense-packed `FogVolume` records the shader iterates this
+    /// frame — the result of OR-ing portal-visible cells' per-cell volume
+    /// bitmasks and counting set bits. Renamed from `volume_count` when
+    /// portal-based fog culling repurposed the field for the active-set
+    /// count rather than the static loaded count.
+    pub active_count: u32,
     pub near_clip: f32,
     pub far_clip: f32,
     /// Number of valid `FogPointLight` records uploaded this frame. The shader
@@ -136,7 +141,7 @@ pub struct FogParamsInput {
     pub inv_view_proj: Mat4,
     pub camera_position: Vec3,
     pub step_size: f32,
-    pub volume_count: u32,
+    pub active_count: u32,
     pub near_clip: f32,
     pub far_clip: f32,
     pub point_count: u32,
@@ -154,7 +159,7 @@ pub fn pack_fog_params(input: FogParamsInput) -> FogParams {
         inv_view_proj: input.inv_view_proj.to_cols_array_2d(),
         camera_position: input.camera_position.to_array(),
         step_size: input.step_size,
-        volume_count: input.volume_count,
+        active_count: input.active_count,
         near_clip: input.near_clip,
         far_clip: input.far_clip,
         point_count: input.point_count,

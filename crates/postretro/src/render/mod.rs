@@ -32,6 +32,45 @@ use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
+use postretro_level_format::fog_cell_masks::union_active_mask;
+
+/// Compute the per-frame fog-volume cell mask from the visibility result and
+/// the baked per-leaf fog-volume bitmasks (PRL section 31).
+///
+/// - `Culled(leaves)` + masks present: OR each visible leaf's `u32` mask.
+/// - `Culled(leaves)` + masks absent: fall back to "all canonical slots
+///   visible" so a level missing section 31 still draws fog (regression-safe
+///   for legacy PRLs).
+/// - `DrawAll`: every canonical slot is visible —
+///   `(1 << canonical_volume_count) - 1`.
+///
+/// `canonical_volume_count` is capped at `MAX_FOG_VOLUMES` (16) by
+/// `FogPass::set_canonical_volumes`, so the `1 << count` shift never reaches
+/// 32 and the result fits in `u32`.
+fn compute_fog_cell_mask(
+    visible: &VisibleCells,
+    fog_cell_masks: Option<&[u32]>,
+    canonical_volume_count: u32,
+) -> u32 {
+    let all_slots_mask = if canonical_volume_count >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << canonical_volume_count).wrapping_sub(1)
+    };
+    match (visible, fog_cell_masks) {
+        (VisibleCells::DrawAll, _) => all_slots_mask,
+        // AND against `all_slots_mask` so reserved bits 16..32 in the baked
+        // mask (or trailing bits past the loaded canonical count) cannot set
+        // a phantom active slot the GPU buffer doesn't carry.
+        (VisibleCells::Culled(leaves), Some(masks)) => {
+            union_active_mask(leaves, masks) & all_slots_mask
+        }
+        // Culled visibility + missing baked masks: fall back to "all slots
+        // visible" so a legacy PRL without section 31 still renders fog
+        // — `live_mask` will gate density-zero slots either way.
+        (VisibleCells::Culled(_), None) => all_slots_mask,
+    }
+}
 
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
@@ -380,6 +419,12 @@ pub struct Renderer {
     /// at least one fog volume uploaded; otherwise the dispatch + composite
     /// are skipped (see `FogPass::active`).
     fog: FogPass,
+
+    /// Per-BSP-leaf bitmask of overlapping fog volumes, loaded from PRL section
+    /// 31 at level load. `None` for maps with no `env_fog_volume` brushes (or
+    /// for legacy PRLs predating section 31). The fog pass OR's the masks of
+    /// visible leaves each frame to skip raymarching invisible fog volumes.
+    fog_cell_masks: Option<Vec<u32>>,
 }
 
 impl Renderer {
@@ -1505,6 +1550,7 @@ impl Renderer {
             app_start: Instant::now(),
             smoke_pass,
             fog,
+            fog_cell_masks: None,
         })
     }
 
@@ -1726,14 +1772,20 @@ impl Renderer {
         out
     }
 
-    /// Upload the per-frame fog-volume buffer. Bytes must be a tightly packed
-    /// `[FogVolume]` array; the renderer never sees the script-side type.
-    /// Empty input clears the volume count, which `FogPass::active` reads to
-    /// skip the compute + composite passes for the rest of the frame.
-    pub fn upload_fog_volumes(&mut self, bytes: &[u8]) {
+    /// Stash the canonical fog-volume list for this frame. Bytes must be a
+    /// tightly packed `[FogVolume]` array in original PRL record order; the
+    /// renderer never sees the script-side type. `live_mask` carries bit `i`
+    /// when canonical slot `i` has density > 0.
+    ///
+    /// The actual GPU upload happens in `render_frame_indirect` after the
+    /// per-frame visible-cell mask is known — that step ANDs `live_mask`
+    /// with the portal-cull mask and dense-repacks survivors into the GPU
+    /// buffer. Empty input zeroes the canonical list and `live_mask`, which
+    /// causes `FogPass::active` to return false for the rest of the frame.
+    pub fn upload_fog_volumes(&mut self, bytes: &[u8], live_mask: u32) {
         let stride = std::mem::size_of::<crate::fx::fog_volume::FogVolume>();
         if bytes.is_empty() {
-            self.fog.volume_count = 0;
+            self.fog.set_canonical_volumes(&[], 0);
             return;
         }
         if bytes.len() % stride != 0 {
@@ -1743,17 +1795,23 @@ impl Renderer {
                 bytes.len(),
                 stride,
             );
-            // Zero the live count so the pass skips this frame entirely.
+            // Zero the canonical list so the pass skips this frame entirely.
             // Without this, malformed input leaves the previous frame's
             // volumes active and the raymarch keeps drawing stale data.
-            self.fog.volume_count = 0;
+            self.fog.set_canonical_volumes(&[], 0);
             return;
         }
-        // `FogPass::upload_volumes` takes `&[FogVolume]`; recover the typed
-        // slice via `bytemuck::cast_slice` so the GPU upload path reuses the
-        // existing capped/labelled writer.
         let volumes: &[crate::fx::fog_volume::FogVolume] = bytemuck::cast_slice(bytes);
-        self.fog.upload_volumes(&self.queue, volumes);
+        self.fog.set_canonical_volumes(volumes, live_mask);
+    }
+
+    /// Set the per-BSP-leaf fog-volume bitmask table loaded from PRL section 31.
+    /// Called once at level load. `None` means the level has no fog volumes
+    /// (or predates section 31) — the fog pass falls back to "all canonical
+    /// slots active" on `VisibleCells::DrawAll`, but skips entirely on
+    /// `Culled` because the active mask resolves to zero without baked masks.
+    pub fn set_fog_cell_masks(&mut self, masks: Option<Vec<u32>>) {
+        self.fog_cell_masks = masks;
     }
 
     /// Upload the per-frame fog point-light buffer. Bytes must be a tightly
@@ -2214,6 +2272,17 @@ impl Renderer {
         // Skipped entirely when no fog volumes are active for this frame —
         // the scatter target need not be cleared because the composite is not
         // issued. See: context/lib/rendering_pipeline.md §7.5
+        //
+        // Portal-based fog culling: OR each visible leaf's fog-volume bitmask
+        // (from PRL section 31) into a per-frame `cell_mask`, then dense-pack
+        // the surviving canonical slots into the GPU buffer. `DrawAll` skips
+        // the OR loop and treats every canonical slot as visible.
+        let cell_mask = compute_fog_cell_mask(
+            visible,
+            self.fog_cell_masks.as_deref(),
+            self.fog.canonical_volume_count(),
+        );
+        self.fog.repack_active(&self.queue, cell_mask);
         if self.fog.active() {
             // Repack the dynamic spot lights that own a shadow slot this
             // frame as `FogSpotLight` records — same source the shadow pass
@@ -2434,6 +2503,49 @@ fn filter_dynamic_lights(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compute_fog_cell_mask_culled_unions_visible_leaf_masks() {
+        // 4 leaves, 3 fog volumes. Leaf 0 overlaps vol 0, leaf 1 overlaps
+        // vol 1, leaf 2 overlaps vols 0 + 2, leaf 3 has no fog.
+        let masks = vec![0b001u32, 0b010, 0b101, 0b000];
+        let visible = VisibleCells::Culled(vec![1, 2]);
+        let active = compute_fog_cell_mask(&visible, Some(&masks), 3);
+        // leaf 1 → 0b010, leaf 2 → 0b101 → union 0b111
+        assert_eq!(active, 0b111);
+    }
+
+    #[test]
+    fn compute_fog_cell_mask_drawall_returns_all_canonical_slots() {
+        let visible = VisibleCells::DrawAll;
+        // Masks present but ignored on the DrawAll path — DrawAll keeps every
+        // canonical slot eligible so a fallback path still draws fog.
+        let masks = vec![0u32; 4];
+        assert_eq!(compute_fog_cell_mask(&visible, Some(&masks), 3), 0b111);
+        assert_eq!(compute_fog_cell_mask(&visible, None, 3), 0b111);
+    }
+
+    #[test]
+    fn compute_fog_cell_mask_culled_without_baked_masks_falls_back_to_all_slots() {
+        // Legacy PRL without section 31 + Culled visibility ⇒ keep every
+        // canonical slot eligible so fog still renders.
+        let visible = VisibleCells::Culled(vec![0, 1, 2]);
+        assert_eq!(compute_fog_cell_mask(&visible, None, 4), 0b1111);
+    }
+
+    #[test]
+    fn compute_fog_cell_mask_zero_canonical_volumes_returns_zero() {
+        // Pre-load / level-clear case — no canonical volumes loaded, all-slots
+        // mask resolves to zero and the pass skips.
+        assert_eq!(
+            compute_fog_cell_mask(&VisibleCells::DrawAll, None, 0),
+            0
+        );
+        assert_eq!(
+            compute_fog_cell_mask(&VisibleCells::Culled(vec![0]), Some(&[0xFFu32]), 0),
+            0
+        );
+    }
 
     #[test]
     fn default_view_projection_is_finite() {

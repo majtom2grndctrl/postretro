@@ -9,3 +9,12 @@ license.workspace = true
 [dependencies]
 glam.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# Microbenchmarks for hot-path helpers (e.g. fog cell-mask OR loop). Pulled in
+# only as a dev-dependency so release binaries don't carry the harness.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "fog_cull_bench"
+harness = false

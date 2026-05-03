@@ -1041,12 +1041,12 @@ impl ApplicationHandler for App {
                     // when a `LightComponent` lookup fails.
                     let all_lights = {
                         let registry = self.script_ctx.registry.borrow();
-                        if let Some((bytes, live_mask)) =
+                        if let Some((bytes, planes, live_mask)) =
                             self.fog_volume_bridge.update_volumes(&registry)
                         {
-                            renderer.upload_fog_volumes(bytes, live_mask);
+                            renderer.upload_fog_volumes(bytes, planes, live_mask);
                         } else {
-                            renderer.upload_fog_volumes(&[], 0);
+                            renderer.upload_fog_volumes(&[], &[], 0);
                         }
                         renderer.set_fog_aabbs(self.fog_volume_bridge.active_aabbs());
                         self.light_bridge

@@ -50,6 +50,11 @@ pub(crate) struct FogVolumeBridge {
     /// Reusable byte buffer for `FogVolume` records. Capacity retained between
     /// frames; cleared at the start of each `update_volumes` call.
     volumes_bytes: Vec<u8>,
+    /// Per-canonical-slot bounding planes. Indexed parallel to `entity_ids` so
+    /// the renderer can look up planes when dense-packing the active set. Cloned
+    /// from the side-table at level load — keeps the per-frame `update_volumes`
+    /// path allocation-free since the renderer reads by reference.
+    canonical_planes: Vec<Vec<[f32; 4]>>,
     /// Reusable byte buffer for `FogPointLight` records.
     points_bytes: Vec<u8>,
     /// Per-frame cache of (min, max) AABBs for volumes that are currently active
@@ -68,6 +73,7 @@ impl FogVolumeBridge {
             aabbs: HashMap::new(),
             entity_ids: Vec::new(),
             volumes_bytes: Vec::new(),
+            canonical_planes: Vec::new(),
             points_bytes: Vec::new(),
             active_aabbs: Vec::new(),
             warned_overflow: false,
@@ -85,7 +91,9 @@ impl FogVolumeBridge {
     ) {
         self.aabbs.clear();
         self.entity_ids.clear();
+        self.canonical_planes.clear();
         self.entity_ids.reserve(records.len());
+        self.canonical_planes.reserve(records.len());
 
         for entry in records {
             let center = Vec3::from(entry.center);
@@ -124,6 +132,7 @@ impl FogVolumeBridge {
                     inv_height_extent: entry.inv_height_extent,
                 },
             );
+            self.canonical_planes.push(entry.planes.clone());
             self.entity_ids.push(id);
         }
     }
@@ -135,6 +144,7 @@ impl FogVolumeBridge {
         self.entity_ids.clear();
         // Length cleared, capacity retained.
         self.volumes_bytes.clear();
+        self.canonical_planes.clear();
         self.points_bytes.clear();
         self.active_aabbs.clear();
         self.warned_overflow = false;
@@ -156,7 +166,10 @@ impl FogVolumeBridge {
     /// The returned `live_mask` has bit `i` set iff slot `i` has a present
     /// component with density > 0. The renderer ANDs this into the
     /// portal-cull mask so density-zero slots never reach the GPU.
-    pub(crate) fn update_volumes(&mut self, registry: &EntityRegistry) -> Option<(&[u8], u32)> {
+    pub(crate) fn update_volumes(
+        &mut self,
+        registry: &EntityRegistry,
+    ) -> Option<(&[u8], &[Vec<[f32; 4]>], u32)> {
         self.volumes_bytes.clear();
         self.active_aabbs.clear();
         if self.entity_ids.is_empty() {
@@ -180,12 +193,21 @@ impl FogVolumeBridge {
                 }
             }
 
+            // `plane_count` is the canonical-slot's plane count. `plane_offset`
+            // is left at zero here — the renderer's dense repack patches it
+            // when the active set is packed into the GPU buffer (offsets are
+            // dense-order, not canonical-order).
+            let plane_count = self
+                .canonical_planes
+                .get(i)
+                .map(|p| p.len() as u32)
+                .unwrap_or(0);
             let fv = match (component, aabb) {
                 (Some(component), Some(aabb)) => FogVolume {
                     min: aabb.min.to_array(),
                     density: component.density,
                     max_v: aabb.max.to_array(),
-                    falloff: component.falloff,
+                    edge_softness: component.falloff,
                     color: component.color,
                     scatter: component.scatter,
                     center: aabb.center.to_array(),
@@ -194,13 +216,14 @@ impl FogVolumeBridge {
                     inv_height_extent: aabb.inv_height_extent,
                     height_gradient: aabb.height_gradient,
                     radial_falloff: aabb.radial_falloff,
-                    _pad: [0.0, 0.0],
+                    plane_offset: 0,
+                    plane_count,
                 },
                 _ => FogVolume {
                     min: [0.0; 3],
                     density: 0.0,
                     max_v: [0.0; 3],
-                    falloff: 0.0,
+                    edge_softness: 0.0,
                     color: [0.0; 3],
                     scatter: 0.0,
                     center: [0.0; 3],
@@ -209,14 +232,15 @@ impl FogVolumeBridge {
                     inv_height_extent: 0.0,
                     height_gradient: 0.0,
                     radial_falloff: 0.0,
-                    _pad: [0.0, 0.0],
+                    plane_offset: 0,
+                    plane_count: 0,
                 },
             };
             self.volumes_bytes
                 .extend_from_slice(bytemuck::bytes_of(&fv));
         }
 
-        Some((&self.volumes_bytes, live_mask))
+        Some((&self.volumes_bytes, &self.canonical_planes, live_mask))
     }
 
     /// Pre-cull a slice of map lights against the cached fog-volume AABBs and
@@ -344,6 +368,8 @@ mod tests {
             inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
             half_diag: 2.5,
             inv_height_extent: 1.0 / 3.0,
+            plane_count: 0,
+            planes: vec![],
             tags: vec![],
         }
     }
@@ -414,13 +440,14 @@ mod tests {
             )
             .unwrap();
 
-        let (bytes, live_mask) = bridge.update_volumes(&registry).expect("dirty volumes");
+        let (bytes, _planes, live_mask) = bridge.update_volumes(&registry).expect("dirty volumes");
         assert_eq!(bytes.len(), std::mem::size_of::<FogVolume>());
-        // density at byte offset 12, falloff at byte offset 28.
+        // density at byte offset 12, edge_softness at byte offset 28
+        // (component.falloff packs into FogVolume.edge_softness — same slot).
         let density = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
-        let falloff = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
+        let edge_softness = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
         assert_eq!(density, 1.25);
-        assert_eq!(falloff, 0.5);
+        assert_eq!(edge_softness, 0.5);
         assert_eq!(
             live_mask, 0b1,
             "single non-zero-density slot should be live"
@@ -449,7 +476,7 @@ mod tests {
             )
             .unwrap();
 
-        let (bytes, live_mask) = bridge.update_volumes(&registry).expect("two slots");
+        let (bytes, _planes, live_mask) = bridge.update_volumes(&registry).expect("two slots");
         assert_eq!(bytes.len(), 2 * std::mem::size_of::<FogVolume>());
         assert_eq!(live_mask, 0b01);
     }

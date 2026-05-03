@@ -1834,10 +1834,10 @@ impl Renderer {
     /// with the portal-cull mask and dense-repacks survivors into the GPU
     /// buffer. Empty input zeroes the canonical list and `live_mask`, which
     /// causes `FogPass::active` to return false for the rest of the frame.
-    pub fn upload_fog_volumes(&mut self, bytes: &[u8], live_mask: u32) {
+    pub fn upload_fog_volumes(&mut self, bytes: &[u8], planes: &[Vec<[f32; 4]>], live_mask: u32) {
         let stride = std::mem::size_of::<crate::fx::fog_volume::FogVolume>();
         if bytes.is_empty() {
-            self.fog.set_canonical_volumes(&[], 0);
+            self.fog.set_canonical_volumes(&[], &[], 0);
             return;
         }
         if bytes.len() % stride != 0 {
@@ -1850,11 +1850,11 @@ impl Renderer {
             // Zero the canonical list so the pass skips this frame entirely.
             // Without this, malformed input leaves the previous frame's
             // volumes active and the raymarch keeps drawing stale data.
-            self.fog.set_canonical_volumes(&[], 0);
+            self.fog.set_canonical_volumes(&[], &[], 0);
             return;
         }
         let volumes: &[crate::fx::fog_volume::FogVolume] = bytemuck::cast_slice(bytes);
-        self.fog.set_canonical_volumes(volumes, live_mask);
+        self.fog.set_canonical_volumes(volumes, planes, live_mask);
     }
 
     /// Set the per-BSP-leaf fog-volume bitmask table loaded from PRL section 31.

@@ -76,7 +76,8 @@ const MAX_FOG_VOLUMES: u32 = 16u;
 
 // 96 bytes; layout must match `FogVolume` in fx/fog_volume.rs. Each `vec3<f32>`
 // is paired with a trailing scalar so WGSL's 16-byte vec3 alignment slots fill
-// without internal padding holes.
+// without internal padding holes. The trailing `plane_offset / plane_count`
+// pair indexes into the `fog_planes` storage buffer (group 6 binding 6).
 //
 // `center`, `inv_half_ext`, `half_diag`, and `inv_height_extent` are baked at
 // compile time by the level compiler so the raymarch reads precomputed values
@@ -85,7 +86,11 @@ struct FogVolume {
     min: vec3<f32>,
     density: f32,
     max_v: vec3<f32>,
-    falloff: f32,
+    // World-unit fade band for primitive (plane-bounded) volumes. Reuses the
+    // legacy `falloff` slot — same offset, same 4 bytes. Semantic / zero-plane
+    // volumes (`fog_lamp`, `fog_tube`) ignore this field and fall back to
+    // `radial_falloff` for soft falloff.
+    edge_softness: f32,
     color: vec3<f32>,
     scatter: f32,
     center: vec3<f32>,
@@ -94,7 +99,8 @@ struct FogVolume {
     inv_height_extent: f32,
     height_gradient: f32,
     radial_falloff: f32,
-    _pad: vec2<f32>,
+    plane_offset: u32,
+    plane_count: u32,
 }
 
 struct FogPointLight {
@@ -144,6 +150,10 @@ struct FogSpotLight {
 @group(6) @binding(3) var<uniform> fog: FogParams;
 @group(6) @binding(4) var<storage, read> fog_spots: array<FogSpotLight>;
 @group(6) @binding(5) var<storage, read> fog_points: array<FogPointLight>;
+// Flat plane buffer indexed by per-volume `(plane_offset, plane_count)`. Each
+// plane is `(nx, ny, nz, d)`; a sample is inside the volume iff
+// `dot(pos, n) <= d` for every plane in the volume's range.
+@group(6) @binding(6) var<storage, read> fog_planes: array<vec4<f32>>;
 
 // --- SH ambient sampling (positional only — cosine-lobe evaluation with a
 // neutral "up" normal gives a reasonable fog ambient tint) ---
@@ -214,27 +224,53 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
     let n = fog.active_count;
     for (var i: u32 = 0u; i < n; i = i + 1u) {
         let v = fog_volumes[i];
+        // AABB still gates entry — it's the conservative bound for both the
+        // primitive and semantic paths and matches the slab-clip prologue.
         if pos.x < v.min.x || pos.y < v.min.y || pos.z < v.min.z {
             continue;
         }
         if pos.x > v.max_v.x || pos.y > v.max_v.y || pos.z > v.max_v.z {
             continue;
         }
-        // `center`, `inv_half_ext`, `half_diag`, `inv_height_extent` are baked
-        // into FogVolume by the level compiler — no need to recompute them.
-        let local_abs = abs(pos - v.center) * v.inv_half_ext;
-        let edge_t   = 1.0 - clamp(max(local_abs.x, max(local_abs.y, local_abs.z)), 0.0, 1.0);
-        // Guard against pow(0,0) NaN: clamp both base and exponent away from zero.
-        let box_fade = select(pow(max(edge_t, 1.0e-6), max(v.falloff, 1.0e-6)), 1.0, v.falloff <= 0.0);
 
-        let height_t    = clamp((pos.y - v.min.y) * v.inv_height_extent, 0.0, 1.0);
-        let height_fade = clamp(1.0 - height_t * v.height_gradient, 0.0, 1.0);
+        var height_fade: f32;
+        var fade: f32;
 
-        let radial_t    = clamp(length(pos - v.center) / max(v.half_diag, 1.0e-6), 0.0, 1.0);
-        let radial_inv  = 1.0 - radial_t;
-        let radial_fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
+        if v.plane_count > 0u {
+            // Primitive path: convex brush bounded by `plane_count` half-spaces.
+            // `min_signed_dist` is the signed distance to the nearest face
+            // boundary — positive inside, negative outside. We iterate every
+            // plane (no early-exit) so the same value drives both the inside
+            // test and the edge-softness fade.
+            var min_signed_dist: f32 = 1.0e30;
+            for (var pi: u32 = 0u; pi < v.plane_count; pi = pi + 1u) {
+                let p = fog_planes[v.plane_offset + pi];
+                min_signed_dist = min(min_signed_dist, p.w - dot(pos, p.xyz));
+            }
+            if min_signed_dist < 0.0 {
+                continue;
+            }
+            // Hard cutoff when `edge_softness <= 0` — no division.
+            let soft = select(1.0, saturate(min_signed_dist / v.edge_softness), v.edge_softness > 0.0);
 
-        let fade = box_fade * height_fade * radial_fade;
+            let height_t = clamp((pos.y - v.min.y) * v.inv_height_extent, 0.0, 1.0);
+            height_fade = clamp(1.0 - height_t * v.height_gradient, 0.0, 1.0);
+            fade = soft * height_fade;
+        } else {
+            // Semantic path: AABB-only membership with a spherical radial fade
+            // (`fog_lamp`, `fog_tube`). Behaviorally unchanged from the
+            // pre-plane-sweep code, minus the `box_fade` term that primitive
+            // entities now get from `edge_softness`.
+            let height_t = clamp((pos.y - v.min.y) * v.inv_height_extent, 0.0, 1.0);
+            height_fade = clamp(1.0 - height_t * v.height_gradient, 0.0, 1.0);
+
+            let radial_t = clamp(length(pos - v.center) / max(v.half_diag, 1.0e-6), 0.0, 1.0);
+            let radial_inv = 1.0 - radial_t;
+            // Guard against pow(0,0) NaN: clamp both base and exponent away from zero.
+            let radial_fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
+            fade = height_fade * radial_fade;
+        }
+
         out.density = out.density + v.density * fade;
         out.color = out.color + v.color * v.density * fade;
         out.scatter = max(out.scatter, v.scatter);

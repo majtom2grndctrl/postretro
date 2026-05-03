@@ -12,8 +12,8 @@
 use glam::{Mat4, Vec3};
 
 use crate::fx::fog_volume::{
-    self, FOG_PARAMS_SIZE, FOG_POINT_LIGHT_SIZE, FOG_SPOT_LIGHT_SIZE, FOG_VOLUME_SIZE,
-    FogPointLight, FogSpotLight, FogVolume, MAX_FOG_POINT_LIGHTS, MAX_FOG_VOLUMES,
+    self, FOG_PARAMS_SIZE, FOG_PLANES_BUFFER_CAPACITY, FOG_POINT_LIGHT_SIZE, FOG_SPOT_LIGHT_SIZE,
+    FOG_VOLUME_SIZE, FogPointLight, FogSpotLight, FogVolume, MAX_FOG_POINT_LIGHTS, MAX_FOG_VOLUMES,
     clamp_fog_pixel_scale,
 };
 
@@ -27,6 +27,11 @@ pub const BIND_SCATTER_OUT: u32 = 2;
 pub const BIND_FOG_PARAMS: u32 = 3;
 pub const BIND_FOG_SPOTS: u32 = 4;
 pub const BIND_FOG_POINTS: u32 = 5;
+pub const BIND_FOG_PLANES: u32 = 6;
+
+/// Size in bytes of one `vec4<f32>` plane record in the `fog_planes` storage
+/// buffer. Each plane is `(nx, ny, nz, d)` little-endian.
+pub const FOG_PLANE_SIZE: usize = 16;
 
 pub struct FogPass {
     pub pixel_scale: u32,
@@ -53,6 +58,10 @@ pub struct FogPass {
     pub spots_buffer: wgpu::Buffer,
     /// Per-frame point-light subset marched by the fog shader.
     pub fog_points_buffer: wgpu::Buffer,
+    /// Per-frame `fog_planes` storage buffer — flat array of `vec4<f32>` planes
+    /// indexed by `(plane_offset, plane_count)` on each `FogVolume`. Sized for
+    /// the worst case (`MAX_FOG_VOLUMES * 16` planes) so it never reallocates.
+    pub fog_planes_buffer: wgpu::Buffer,
 
     // --- Scatter target ---
     scatter_view: wgpu::TextureView,
@@ -84,6 +93,15 @@ pub struct FogPass {
     /// Reusable scratch buffer for the per-frame dense repack — capacity
     /// retained between frames to avoid per-frame allocation.
     repack_scratch: Vec<FogVolume>,
+    /// Canonical bounding planes parallel to `canonical_volumes` (one entry per
+    /// canonical slot; empty inner vec for semantic / zero-plane volumes). The
+    /// dense repack patches `plane_offset` per `FogVolume` and accumulates
+    /// these into `planes_scratch` for upload.
+    canonical_planes: Vec<Vec<[f32; 4]>>,
+    /// Reusable scratch buffer for per-frame `fog_planes` upload bytes —
+    /// fixed capacity (`FOG_PLANES_BUFFER_CAPACITY` planes × 16 bytes), no
+    /// dynamic growth.
+    planes_scratch: Vec<[f32; 4]>,
     /// Most recent spot light count for dynamic beams.
     pub spot_count: u32,
     /// Most recent point-light count. Packed into `FogParams.point_count` so
@@ -172,6 +190,16 @@ impl FogPass {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: BIND_FOG_PLANES,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -212,6 +240,15 @@ impl FogPass {
             mapped_at_creation: false,
         });
 
+        // Plane payload buffer: every canonical fog volume's bounding planes
+        // packed contiguously, indexed via per-volume `plane_offset / plane_count`.
+        let fog_planes_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fog Planes Buffer"),
+            size: (FOG_PLANES_BUFFER_CAPACITY * FOG_PLANE_SIZE) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // --- Scatter target ---
         let (scatter_texture, scatter_view) =
             create_scatter_target(device, scatter_dims.0, scatter_dims.1);
@@ -226,6 +263,7 @@ impl FogPass {
             &params_buffer,
             &spots_buffer,
             &fog_points_buffer,
+            &fog_planes_buffer,
         );
 
         // --- Raymarch compute pipeline ---
@@ -364,6 +402,7 @@ impl FogPass {
             params_buffer,
             spots_buffer,
             fog_points_buffer,
+            fog_planes_buffer,
             scatter_view,
             scatter_texture,
             scatter_dims,
@@ -372,6 +411,8 @@ impl FogPass {
             canonical_volumes: Vec::new(),
             live_mask: 0,
             repack_scratch: Vec::new(),
+            canonical_planes: Vec::new(),
+            planes_scratch: Vec::with_capacity(FOG_PLANES_BUFFER_CAPACITY),
             spot_count: 0,
             point_count: 0,
         }
@@ -472,6 +513,7 @@ impl FogPass {
             &self.params_buffer,
             &self.spots_buffer,
             &self.fog_points_buffer,
+            &self.fog_planes_buffer,
         );
     }
 
@@ -499,7 +541,12 @@ impl FogPass {
     /// The buffer is *not* written here; `repack_active` does the dense
     /// repack-and-upload once the per-frame visible-cell mask is known.
     /// Truncates at `MAX_FOG_VOLUMES` with a warning.
-    pub fn set_canonical_volumes(&mut self, volumes: &[FogVolume], live_mask: u32) {
+    pub fn set_canonical_volumes(
+        &mut self,
+        volumes: &[FogVolume],
+        planes: &[Vec<[f32; 4]>],
+        live_mask: u32,
+    ) {
         let count = volumes.len().min(MAX_FOG_VOLUMES);
         if volumes.len() > MAX_FOG_VOLUMES {
             log::warn!(
@@ -510,6 +557,17 @@ impl FogPass {
         }
         self.canonical_volumes.clear();
         self.canonical_volumes.extend_from_slice(&volumes[..count]);
+        self.canonical_planes.clear();
+        // The bridge guarantees `planes.len() == volumes.len()`, but defend
+        // against truncation by zipping over the kept canonical slots.
+        self.canonical_planes
+            .extend(planes.iter().take(count).cloned());
+        // Pad with empty plane lists if the caller passed fewer planes than
+        // volumes — keeps `canonical_planes` and `canonical_volumes` indexed
+        // in lockstep so a malformed input degrades to AABB-only volumes.
+        while self.canonical_planes.len() < count {
+            self.canonical_planes.push(Vec::new());
+        }
         // Mask off any bits past `count` so a truncated canonical list cannot
         // leave a dangling live bit. This is belt-and-suspenders against
         // `compute_fog_cell_mask`'s `all_slots_mask`: the two operate on
@@ -537,13 +595,26 @@ impl FogPass {
     pub fn repack_active(&mut self, queue: &wgpu::Queue, cell_mask: u32) {
         let active_mask = cell_mask & self.live_mask;
         self.repack_scratch.clear();
+        self.planes_scratch.clear();
         // Iterate by bit so we naturally produce dense, source-order output.
+        // Each surviving canonical slot's `plane_offset` is patched to point
+        // at the current cursor in `planes_scratch`; planes are appended in
+        // dense order so the GPU layout matches.
         let mut bits = active_mask;
         while bits != 0 {
             let i = bits.trailing_zeros() as usize;
             bits &= bits - 1;
             if let Some(v) = self.canonical_volumes.get(i) {
-                self.repack_scratch.push(*v);
+                let mut packed = *v;
+                let plane_offset = self.planes_scratch.len() as u32;
+                packed.plane_offset = plane_offset;
+                if let Some(planes) = self.canonical_planes.get(i) {
+                    // Plane count was already set on the canonical record by
+                    // the bridge; trust it and copy that many entries.
+                    let n = (packed.plane_count as usize).min(planes.len());
+                    self.planes_scratch.extend_from_slice(&planes[..n]);
+                }
+                self.repack_scratch.push(packed);
             }
         }
         self.active_count = self.repack_scratch.len() as u32;
@@ -556,6 +627,10 @@ impl FogPass {
             // cannot skip the write even when the count happens to match.
             let bytes = fog_volume::pack_fog_volumes(&self.repack_scratch);
             queue.write_buffer(&self.volumes_buffer, 0, bytes);
+            if !self.planes_scratch.is_empty() {
+                let plane_bytes: &[u8] = bytemuck::cast_slice(&self.planes_scratch);
+                queue.write_buffer(&self.fog_planes_buffer, 0, plane_bytes);
+            }
         }
     }
 
@@ -674,6 +749,7 @@ fn build_group6(
     params_buffer: &wgpu::Buffer,
     spots_buffer: &wgpu::Buffer,
     points_buffer: &wgpu::Buffer,
+    planes_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Fog Group 6"),
@@ -702,6 +778,10 @@ fn build_group6(
             wgpu::BindGroupEntry {
                 binding: BIND_FOG_POINTS,
                 resource: points_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_FOG_PLANES,
+                resource: planes_buffer.as_entire_binding(),
             },
         ],
     })

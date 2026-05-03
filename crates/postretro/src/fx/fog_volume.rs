@@ -9,6 +9,14 @@ use glam::{Mat4, Vec3};
 // so the renderer can import from a single crate-local path.
 pub use postretro_level_format::fog_volumes::MAX_FOG_VOLUMES;
 
+/// Maximum number of bounding planes per fog volume. Brushes with more faces
+/// are rejected at compile time; the runtime never sees `plane_count > 16`.
+pub const MAX_PLANES_PER_VOLUME: usize = 16;
+
+/// Capacity (in `vec4<f32>` planes) of the global `fog_planes` storage buffer.
+/// Worst case: every fog volume slot active with the maximum plane budget.
+pub const FOG_PLANES_BUFFER_CAPACITY: usize = MAX_FOG_VOLUMES * MAX_PLANES_PER_VOLUME;
+
 /// Maximum number of fog point lights iterated per ray step. The point-light
 /// loop in `fog_volume.wgsl` runs over the buffer prefix gated by
 /// `FogParams.point_count`, so the CPU may upload anywhere from 0 to this many
@@ -37,7 +45,12 @@ pub struct FogVolume {
     pub min: [f32; 3],
     pub density: f32,
     pub max_v: [f32; 3],
-    pub falloff: f32,
+    /// World-unit fade band for primitive (plane-bounded) volumes. The shader
+    /// scales density by `saturate(min_signed_dist / edge_softness)`. `<= 0`
+    /// produces a hard cutoff. Reuses the slot the legacy `falloff` field
+    /// occupied — same offset, same 4 bytes; semantic entities (zero planes)
+    /// ignore this field and use `radial_falloff` instead.
+    pub edge_softness: f32,
     pub color: [f32; 3],
     pub scatter: f32,
     pub center: [f32; 3],
@@ -46,7 +59,13 @@ pub struct FogVolume {
     pub inv_height_extent: f32,
     pub height_gradient: f32,
     pub radial_falloff: f32,
-    pub _pad: [f32; 2],
+    /// Index of this volume's first plane in the global `fog_planes` storage
+    /// buffer. Cursor rebuilt each frame as the active set is packed; source
+    /// PRL index is irrelevant.
+    pub plane_offset: u32,
+    /// Number of planes that bound this volume. Zero means the volume is a
+    /// semantic entity (AABB-only membership + radial fade).
+    pub plane_count: u32,
 }
 
 /// Per-frame spot-light record consumed by the fog raymarch. 48 bytes;
@@ -204,15 +223,15 @@ mod tests {
     #[test]
     fn pack_fog_volumes_round_trips_all_baked_fields() {
         // Byte offsets follow the field order: min(0) density(12) max(16)
-        // falloff(28) color(32) scatter(44) center(48) half_diag(60)
+        // edge_softness(28) color(32) scatter(44) center(48) half_diag(60)
         // inv_half_ext(64) inv_height_extent(76) height_gradient(80)
-        // radial_falloff(84) pad(88..96). Asserting on each baked field
-        // catches silent layout drift between Rust and WGSL.
+        // radial_falloff(84) plane_offset(88) plane_count(92). Asserting on
+        // each baked field catches silent layout drift between Rust and WGSL.
         let v = FogVolume {
             min: [1.0, 2.0, 3.0],
             density: 0.75,
             max_v: [4.0, 5.0, 6.0],
-            falloff: 0.25,
+            edge_softness: 0.25,
             color: [0.1, 0.2, 0.3],
             scatter: 0.5,
             center: [2.5, 3.5, 4.5],
@@ -221,7 +240,8 @@ mod tests {
             inv_height_extent: 0.333_333_3,
             height_gradient: 0.0,
             radial_falloff: 0.0,
-            _pad: [0.0, 0.0],
+            plane_offset: 0,
+            plane_count: 0,
         };
         let volumes = [v];
         let bytes = pack_fog_volumes(&volumes);
@@ -229,16 +249,20 @@ mod tests {
         assert_eq!(FOG_VOLUME_SIZE, 96);
 
         let density = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
-        let falloff = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
+        let edge_softness = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
         let center_x = f32::from_le_bytes(bytes[48..52].try_into().unwrap());
         let half_diag = f32::from_le_bytes(bytes[60..64].try_into().unwrap());
         let inv_hx = f32::from_le_bytes(bytes[64..68].try_into().unwrap());
         let inv_h_ext = f32::from_le_bytes(bytes[76..80].try_into().unwrap());
+        let plane_offset = u32::from_le_bytes(bytes[88..92].try_into().unwrap());
+        let plane_count = u32::from_le_bytes(bytes[92..96].try_into().unwrap());
         assert_eq!(density, 0.75);
-        assert_eq!(falloff, 0.25);
+        assert_eq!(edge_softness, 0.25);
         assert_eq!(center_x, 2.5);
         assert!((half_diag - 2.598_076).abs() < 1e-5);
         assert!((inv_hx - 0.666_666_7).abs() < 1e-5);
         assert!((inv_h_ext - 0.333_333_3).abs() < 1e-5);
+        assert_eq!(plane_offset, 0);
+        assert_eq!(plane_count, 0);
     }
 }

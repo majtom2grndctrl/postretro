@@ -235,6 +235,15 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                     .get(entity_id)
                     .cloned()
                     .unwrap_or_default();
+                if brush_ids.len() > 1 {
+                    anyhow::bail!(
+                        "fog_volume entity must own exactly one brush (got {}); \
+                         multi-brush volumes would silently produce a plane intersection \
+                         rather than the union the author likely intended — split into \
+                         separate fog_volume entities",
+                        brush_ids.len()
+                    );
+                }
                 let volume = resolve_fog_volume(&geo_map, &brush_ids, &props, scale, &classname)?;
                 if let Some(v) = volume {
                     fog_volumes.push(v);
@@ -498,7 +507,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
 
 /// Compute a fog_volume brush entity's world-space AABB and bounding planes from its brush faces and
 /// parse its KVP-authored parameters. Returns `None` when the brush set
-/// produces no usable vertices (degenerate authoring).
+/// produces no usable vertices (degenerate authoring). Returns `Err` when the
+/// brush hull yields zero face planes (degenerate convex hull) or more than 16
+/// (exceeds the per-volume plane budget).
 fn resolve_fog_volume(
     geo_map: &GeoMap,
     brush_ids: &[BrushId],
@@ -575,18 +586,14 @@ fn resolve_fog_volume(
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.5);
-    let falloff = props
-        .get("falloff")
+    let edge_softness = props
+        .get("edge_softness")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
     let scatter = props
         .get("scatter")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
-    let height_gradient = props
-        .get("height_gradient")
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        .unwrap_or(0.0);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -608,9 +615,8 @@ fn resolve_fog_volume(
         max: [max.x as f32, max.y as f32, max.z as f32],
         color,
         density,
-        falloff,
+        edge_softness,
         scatter,
-        height_gradient,
         radial_falloff: 0.0,
         planes,
         tags,
@@ -641,18 +647,10 @@ fn resolve_fog_lamp(
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.5);
-    let falloff = props
-        .get("falloff")
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        .unwrap_or(1.0);
     let scatter = props
         .get("scatter")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
-    let height_gradient = props
-        .get("height_gradient")
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        .unwrap_or(0.0);
     let radial_falloff = props
         .get("radial_falloff")
         .and_then(|s| s.trim().parse::<f32>().ok())
@@ -677,9 +675,10 @@ fn resolve_fog_lamp(
         max,
         color,
         density,
-        falloff,
+        // Semantic point entities use `radial_falloff`; the primitive-only
+        // edge softness slot is unused.
+        edge_softness: 0.0,
         scatter,
-        height_gradient,
         radial_falloff,
         planes: Vec::new(),
         tags,
@@ -725,8 +724,9 @@ fn resolve_fog_tube(
     let pitch = pitch_deg.to_radians();
     let yaw = yaw_deg.to_radians();
 
-    // Local capsule axis is +Y; yaw rotates around +Y (no-op on +Y), then
-    // pitch around the resulting +X tilts the axis into the YZ plane.
+    // Local capsule axis is +Y in post-swizzle engine space; yaw rotates around
+    // +Y (no-op on +Y), then pitch around the resulting +X tilts the axis into
+    // the YZ plane. Engine space is Y-up after Quake-to-engine swizzle.
     let (sp, cp) = pitch.sin_cos();
     let (sy, cy) = yaw.sin_cos();
     let ax = -sp * sy;
@@ -750,18 +750,10 @@ fn resolve_fog_tube(
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.3);
-    let falloff = props
-        .get("falloff")
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        .unwrap_or(1.0);
     let scatter = props
         .get("scatter")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
-    let height_gradient = props
-        .get("height_gradient")
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        .unwrap_or(0.0);
     let radial_falloff = props
         .get("radial_falloff")
         .and_then(|s| s.trim().parse::<f32>().ok())
@@ -794,9 +786,10 @@ fn resolve_fog_tube(
         max,
         color,
         density,
-        falloff,
+        // Semantic point entities use `radial_falloff`; the primitive-only
+        // edge softness slot is unused.
+        edge_softness: 0.0,
         scatter,
-        height_gradient,
         radial_falloff,
         planes: Vec::new(),
         tags,
@@ -1086,5 +1079,110 @@ mod tests {
                 "brush {i} has no sides; parser should emit a textured polygon per bounding plane"
             );
         }
+    }
+
+    // -- fog_lamp / fog_tube resolution --
+
+    #[test]
+    fn resolve_fog_lamp_requires_radius() {
+        let props = HashMap::new();
+        let err = resolve_fog_lamp(&props, DVec3::ZERO, "fog_lamp")
+            .expect_err("missing radius must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("radius"), "error should mention radius: {msg}");
+    }
+
+    #[test]
+    fn resolve_fog_lamp_rejects_non_positive_radius() {
+        let mut props = HashMap::new();
+        props.insert("radius".to_string(), "0".to_string());
+        let err =
+            resolve_fog_lamp(&props, DVec3::ZERO, "fog_lamp").expect_err("zero radius must error");
+        assert!(format!("{err}").contains("positive"));
+
+        let mut props = HashMap::new();
+        props.insert("radius".to_string(), "-1".to_string());
+        let err = resolve_fog_lamp(&props, DVec3::ZERO, "fog_lamp")
+            .expect_err("negative radius must error");
+        assert!(format!("{err}").contains("positive"));
+    }
+
+    #[test]
+    fn resolve_fog_lamp_produces_centered_aabb_and_no_planes() {
+        let mut props = HashMap::new();
+        props.insert("radius".to_string(), "2.5".to_string());
+        let v = resolve_fog_lamp(&props, DVec3::new(1.0, 2.0, 3.0), "fog_lamp")
+            .expect("valid radius should resolve");
+        assert_eq!(v.min, [-1.5, -0.5, 0.5]);
+        assert_eq!(v.max, [3.5, 4.5, 5.5]);
+        assert!(
+            v.planes.is_empty(),
+            "fog_lamp is a semantic AABB; no planes"
+        );
+        assert_eq!(v.edge_softness, 0.0, "semantic entity uses radial_falloff");
+    }
+
+    #[test]
+    fn resolve_fog_tube_oriented_aabb_inflates_with_pitch_and_yaw() {
+        // Capsule: radius 1, height 4. Local axis is +Y; with pitch=0/yaw=0 the
+        // axis stays vertical, so the AABB is [-1, -2, -1] – [1, 2, 1].
+        let mut props = HashMap::new();
+        props.insert("radius".to_string(), "1".to_string());
+        props.insert("height".to_string(), "4".to_string());
+        let v = resolve_fog_tube(&props, DVec3::ZERO, "fog_tube").expect("axis-aligned tube");
+        assert_eq!(v.min, [-1.0, -2.0, -1.0]);
+        assert_eq!(v.max, [1.0, 2.0, 1.0]);
+
+        // Pitch 90° tilts the axis fully into the horizontal plane (pure -Z).
+        // The half-segment now extends along Z, and Y collapses to just the
+        // capsule radius. Pitch of 90° with yaw=0 → axis = (0, 0, -1).
+        let mut props = HashMap::new();
+        props.insert("radius".to_string(), "1".to_string());
+        props.insert("height".to_string(), "4".to_string());
+        props.insert("pitch".to_string(), "90".to_string());
+        let v = resolve_fog_tube(&props, DVec3::ZERO, "fog_tube").expect("tilted tube");
+        // half_segment = max(2 - 1, 0) = 1; axis ≈ (0, 0, -1).
+        // half_extent_x = 0*1 + 1 = 1; y = 0*1 + 1 = 1; z = 1*1 + 1 = 2.
+        assert!((v.min[0] - -1.0).abs() < 1e-5);
+        assert!((v.min[1] - -1.0).abs() < 1e-5);
+        assert!((v.min[2] - -2.0).abs() < 1e-5);
+        assert!((v.max[0] - 1.0).abs() < 1e-5);
+        assert!((v.max[1] - 1.0).abs() < 1e-5);
+        assert!((v.max[2] - 2.0).abs() < 1e-5);
+
+        // Yaw 90° rotates the (already pitched) axis around Y; with pitch=90 yaw=90
+        // the axis becomes (-1, 0, 0) so the long extent moves to X.
+        let mut props = HashMap::new();
+        props.insert("radius".to_string(), "1".to_string());
+        props.insert("height".to_string(), "4".to_string());
+        props.insert("pitch".to_string(), "90".to_string());
+        props.insert("yaw".to_string(), "90".to_string());
+        let v = resolve_fog_tube(&props, DVec3::ZERO, "fog_tube").expect("yawed tube");
+        assert!((v.min[0] - -2.0).abs() < 1e-5);
+        assert!((v.min[1] - -1.0).abs() < 1e-5);
+        assert!((v.min[2] - -1.0).abs() < 1e-5);
+        assert!((v.max[0] - 2.0).abs() < 1e-5);
+        assert!((v.max[1] - 1.0).abs() < 1e-5);
+        assert!((v.max[2] - 1.0).abs() < 1e-5);
+
+        assert!(
+            v.planes.is_empty(),
+            "fog_tube is a semantic AABB; no planes"
+        );
+    }
+
+    #[test]
+    fn resolve_fog_tube_requires_radius_and_height() {
+        let mut props = HashMap::new();
+        props.insert("height".to_string(), "4".to_string());
+        let err = resolve_fog_tube(&props, DVec3::ZERO, "fog_tube")
+            .expect_err("missing radius must error");
+        assert!(format!("{err}").contains("radius"));
+
+        let mut props = HashMap::new();
+        props.insert("radius".to_string(), "1".to_string());
+        let err = resolve_fog_tube(&props, DVec3::ZERO, "fog_tube")
+            .expect_err("missing height must error");
+        assert!(format!("{err}").contains("height"));
     }
 }

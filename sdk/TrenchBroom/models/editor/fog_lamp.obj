@@ -1,0 +1,17 @@
+# Minimal unit-radius placeholder for the fog_lamp FGD model() display.
+# Octahedron with vertices at ±1 along each axis. TrenchBroom scales this by
+# (radius, radius, radius) per the FGD's model() expression.
+v 1.0 0.0 0.0
+v -1.0 0.0 0.0
+v 0.0 1.0 0.0
+v 0.0 -1.0 0.0
+v 0.0 0.0 1.0
+v 0.0 0.0 -1.0
+f 1 3 5
+f 1 5 4
+f 1 4 6
+f 1 6 3
+f 2 5 3
+f 2 4 5
+f 2 6 4
+f 2 3 6

@@ -530,7 +530,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("density", "f32", "Volumetric fog density inside the AABB.")
         .field("color", "Vec3", "RGB fog color in linear [0, 1].")
         .field("scatter", "f32", "Fraction of in-scattering toward the camera.")
-        .field("falloff", "f32", "Edge fade: 0 = uniform to AABB boundary, 1 = linear ramp from face to center.")
+        .field("edge_softness", "f32", "Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.")
         .finish();
     registry
         .register_type("FogVolumeEntity")

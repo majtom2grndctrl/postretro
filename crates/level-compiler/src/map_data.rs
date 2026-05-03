@@ -414,9 +414,12 @@ pub struct MapFogVolume {
     /// Linear RGB 0–1.
     pub color: [f32; 3],
     pub density: f32,
-    pub falloff: f32,
+    /// World-unit fade band along brush face normals (primitive `fog_volume`
+    /// brushes only). Carried straight to `FogVolumeRecord::edge_softness` and
+    /// then to the GPU `FogVolume.edge_softness` slot. Semantic / zero-plane
+    /// volumes (`fog_lamp`, `fog_tube`) ignore this and use `radial_falloff`.
+    pub edge_softness: f32,
     pub scatter: f32,
-    pub height_gradient: f32,
     pub radial_falloff: f32,
     /// Convex bounding planes (engine space). A point `p` is inside the volume
     /// iff `dot(p, n) <= d` for every `(nx, ny, nz, d)` plane. Empty means the

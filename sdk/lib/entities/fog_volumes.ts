@@ -43,8 +43,8 @@ export interface FogVolumeHandle extends GeneratedFogVolumeEntity {
   /** Set the scatter fraction. Instant. */
   setScatter(scatter: number): void;
 
-  /** Set the edge falloff. Instant. */
-  setFalloff(falloff: number): void;
+  /** Set the edge softness (world units). Instant. */
+  setEdgeSoftness(edgeSoftness: number): void;
 }
 
 /** Controller returned by `pulseDensity` to cancel the running tick handler. */
@@ -117,7 +117,7 @@ function writeFogVolume(
   density: number,
   color: [number, number, number],
   scatter: number,
-  falloff: number,
+  edgeSoftness: number,
 ): void {
   // `kind` is required: the scripting runtime's `FromJs for ComponentValue`
   // reads the `kind` field first to dispatch to the correct component branch
@@ -128,7 +128,7 @@ function writeFogVolume(
     density,
     color: [color[0], color[1], color[2]],
     scatter,
-    falloff,
+    edge_softness: edgeSoftness,
   } as unknown as ComponentValuePayload);
 }
 
@@ -150,7 +150,7 @@ function startDensityTween(
     const t = Math.min(1, elapsedMs / durationMs);
     const value = startDensity + (target - startDensity) * t;
     const live = readFogVolumeComponent(id);
-    writeFogVolume(id, value, live.color as [number, number, number], live.scatter, live.falloff);
+    writeFogVolume(id, value, live.color as [number, number, number], live.scatter, live.edge_softness);
     if (t >= 1) {
       ctrl.stop();
       slots[DENSITY_TWEEN] = null;
@@ -182,7 +182,7 @@ function startColorTween(
       from[2] + (target[2] - from[2]) * t,
     ];
     const live = readFogVolumeComponent(id);
-    writeFogVolume(id, live.density, value, live.scatter, live.falloff);
+    writeFogVolume(id, live.density, value, live.scatter, live.edge_softness);
     if (t >= 1) {
       ctrl.stop();
       slots[COLOR_TWEEN] = null;
@@ -197,7 +197,7 @@ type ComponentValuePayload = {
   density: number;
   color: [number, number, number];
   scatter: number;
-  falloff: number;
+  edge_softness: number;
 };
 
 /**
@@ -219,7 +219,7 @@ export function wrapFogVolumeEntity(
       if (durationMs <= 0) {
         cancelExisting(slots, DENSITY_TWEEN);
         const live = readFogVolumeComponent(id);
-        writeFogVolume(id, density, live.color as [number, number, number], live.scatter, live.falloff);
+        writeFogVolume(id, density, live.color as [number, number, number], live.scatter, live.edge_softness);
         return;
       }
       startDensityTween(id, slots, density, durationMs);
@@ -232,7 +232,7 @@ export function wrapFogVolumeEntity(
       if (durationMs <= 0) {
         cancelExisting(slots, COLOR_TWEEN);
         const live = readFogVolumeComponent(id);
-        writeFogVolume(id, live.density, color, live.scatter, live.falloff);
+        writeFogVolume(id, live.density, color, live.scatter, live.edge_softness);
         return;
       }
       startColorTween(id, slots, color, durationMs);
@@ -240,12 +240,12 @@ export function wrapFogVolumeEntity(
 
     setScatter(scatter: number): void {
       const live = readFogVolumeComponent(id);
-      writeFogVolume(id, live.density, live.color as [number, number, number], scatter, live.falloff);
+      writeFogVolume(id, live.density, live.color as [number, number, number], scatter, live.edge_softness);
     },
 
-    setFalloff(falloff: number): void {
+    setEdgeSoftness(edgeSoftness: number): void {
       const live = readFogVolumeComponent(id);
-      writeFogVolume(id, live.density, live.color as [number, number, number], live.scatter, falloff);
+      writeFogVolume(id, live.density, live.color as [number, number, number], live.scatter, edgeSoftness);
     },
   };
 
@@ -287,6 +287,6 @@ export function pulseDensity(
     const phase = (elapsedMs % period) / period;
     const value = mid + amp * Math.sin(phase * Math.PI * 2);
     const live = readFogVolumeComponent(id);
-    writeFogVolume(id, value, live.color as [number, number, number], live.scatter, live.falloff);
+    writeFogVolume(id, value, live.color as [number, number, number], live.scatter, live.edge_softness);
   });
 }

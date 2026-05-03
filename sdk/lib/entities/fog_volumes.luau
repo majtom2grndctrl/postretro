@@ -31,8 +31,8 @@ export type FogVolumeHandle = {
   --- Set the scatter fraction. Instant.
   setScatter: (self: FogVolumeHandle, scatter: number) -> (),
 
-  --- Set the edge falloff. Instant.
-  setFalloff: (self: FogVolumeHandle, falloff: number) -> (),
+  --- Set the edge softness (world units). Instant.
+  setEdgeSoftness: (self: FogVolumeHandle, edgeSoftness: number) -> (),
 }
 
 --- Controller returned by `pulseDensity` to cancel the running animation.
@@ -81,7 +81,7 @@ local function writeFogVolume(
   density: number,
   color: {number},
   scatter: number,
-  falloff: number
+  edgeSoftness: number
 )
   -- `kind` is required: the scripting runtime's `FromLua for ComponentValue`
   -- reads the `kind` field first to dispatch to the correct component branch
@@ -92,7 +92,7 @@ local function writeFogVolume(
     density = density,
     color = { color[1], color[2], color[3] },
     scatter = scatter,
-    falloff = falloff,
+    edge_softness = edgeSoftness,
   } :: any)
 end
 
@@ -131,7 +131,7 @@ local function startDensityTween(
     local t = math.min(1.0, elapsedMs / durationMs)
     local value = startDensity + (target - startDensity) * t
     local live = readFogVolumeComponent(id)
-    writeFogVolume(id, value, (live.color :: any) :: {number}, live.scatter, live.falloff)
+    writeFogVolume(id, value, (live.color :: any) :: {number}, live.scatter, live.edge_softness)
     if t >= 1.0 then
       ctrl:stop()
       slots.density = nil
@@ -161,7 +161,7 @@ local function startColorTween(
       from[3] + (target[3] - from[3]) * t,
     }
     local live = readFogVolumeComponent(id)
-    writeFogVolume(id, live.density, value, live.scatter, live.falloff)
+    writeFogVolume(id, live.density, value, live.scatter, live.edge_softness)
     if t >= 1.0 then
       ctrl:stop()
       slots.color = nil
@@ -189,7 +189,7 @@ function FogVolumesSdk.wrapFogVolumeEntity(snapshot: FogVolumeEntity): FogVolume
       if ms <= 0 then
         cancelTween(slots, "density")
         local live = readFogVolumeComponent(id)
-        writeFogVolume(id, density, (live.color :: any) :: {number}, live.scatter, live.falloff)
+        writeFogVolume(id, density, (live.color :: any) :: {number}, live.scatter, live.edge_softness)
         return
       end
       startDensityTween(id, slots, density, ms)
@@ -200,7 +200,7 @@ function FogVolumesSdk.wrapFogVolumeEntity(snapshot: FogVolumeEntity): FogVolume
       if ms <= 0 then
         cancelTween(slots, "color")
         local live = readFogVolumeComponent(id)
-        writeFogVolume(id, live.density, color, live.scatter, live.falloff)
+        writeFogVolume(id, live.density, color, live.scatter, live.edge_softness)
         return
       end
       startColorTween(id, slots, color, ms)
@@ -208,12 +208,12 @@ function FogVolumesSdk.wrapFogVolumeEntity(snapshot: FogVolumeEntity): FogVolume
 
     setScatter = function(self: FogVolumeHandle, scatter: number)
       local live = readFogVolumeComponent(id)
-      writeFogVolume(id, live.density, (live.color :: any) :: {number}, scatter, live.falloff)
+      writeFogVolume(id, live.density, (live.color :: any) :: {number}, scatter, live.edge_softness)
     end,
 
-    setFalloff = function(self: FogVolumeHandle, falloff: number)
+    setEdgeSoftness = function(self: FogVolumeHandle, edgeSoftness: number)
       local live = readFogVolumeComponent(id)
-      writeFogVolume(id, live.density, (live.color :: any) :: {number}, live.scatter, falloff)
+      writeFogVolume(id, live.density, (live.color :: any) :: {number}, live.scatter, edgeSoftness)
     end,
   }
 
@@ -251,7 +251,7 @@ function FogVolumesSdk.pulseDensity(
     local phase = (elapsedMs % period) / period
     local value = mid + amp * math.sin(phase * math.pi * 2)
     local live = readFogVolumeComponent(id)
-    writeFogVolume(id, value, (live.color :: any) :: {number}, live.scatter, live.falloff)
+    writeFogVolume(id, value, (live.color :: any) :: {number}, live.scatter, live.edge_softness)
   end)
 end
 

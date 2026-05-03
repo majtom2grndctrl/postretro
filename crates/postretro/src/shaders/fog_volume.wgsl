@@ -86,10 +86,9 @@ struct FogVolume {
     min: vec3<f32>,
     density: f32,
     max_v: vec3<f32>,
-    // World-unit fade band for primitive (plane-bounded) volumes. Reuses the
-    // legacy `falloff` slot — same offset, same 4 bytes. Semantic / zero-plane
-    // volumes (`fog_lamp`, `fog_tube`) ignore this field and fall back to
-    // `radial_falloff` for soft falloff.
+    // World-unit fade band for primitive (plane-bounded) volumes. Semantic /
+    // zero-plane volumes (`fog_lamp`, `fog_tube`) ignore this field and fall
+    // back to `radial_falloff` for soft falloff.
     edge_softness: f32,
     color: vec3<f32>,
     scatter: f32,
@@ -97,7 +96,6 @@ struct FogVolume {
     half_diag: f32,
     inv_half_ext: vec3<f32>,
     inv_height_extent: f32,
-    height_gradient: f32,
     radial_falloff: f32,
     plane_offset: u32,
     plane_count: u32,
@@ -233,7 +231,6 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
             continue;
         }
 
-        var height_fade: f32;
         var fade: f32;
 
         if v.plane_count > 0u {
@@ -251,24 +248,14 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
                 continue;
             }
             // Hard cutoff when `edge_softness <= 0` — no division.
-            let soft = select(1.0, saturate(min_signed_dist / v.edge_softness), v.edge_softness > 0.0);
-
-            let height_t = clamp((pos.y - v.min.y) * v.inv_height_extent, 0.0, 1.0);
-            height_fade = clamp(1.0 - height_t * v.height_gradient, 0.0, 1.0);
-            fade = soft * height_fade;
+            fade = select(1.0, saturate(min_signed_dist / v.edge_softness), v.edge_softness > 0.0);
         } else {
-            // Semantic path: AABB-only membership with a spherical radial fade
-            // (`fog_lamp`, `fog_tube`). Behaviorally unchanged from the
-            // pre-plane-sweep code, minus the `box_fade` term that primitive
-            // entities now get from `edge_softness`.
-            let height_t = clamp((pos.y - v.min.y) * v.inv_height_extent, 0.0, 1.0);
-            height_fade = clamp(1.0 - height_t * v.height_gradient, 0.0, 1.0);
-
+            // Semantic path: AABB-only membership with a centered radial fade
+            // shaped by `radial_falloff` (`fog_lamp` sphere, `fog_tube` capsule).
             let radial_t = clamp(length(pos - v.center) / max(v.half_diag, 1.0e-6), 0.0, 1.0);
             let radial_inv = 1.0 - radial_t;
             // Guard against pow(0,0) NaN: clamp both base and exponent away from zero.
-            let radial_fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
-            fade = height_fade * radial_fade;
+            fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
         }
 
         out.density = out.density + v.density * fade;

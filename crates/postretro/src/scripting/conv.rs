@@ -389,14 +389,14 @@ impl<'js> FromJs<'js> for ComponentValue {
                 let scatter: f32 = o.get("scatter").map_err(|e| {
                     rquickjs::Exception::throw_type(ctx, &format!("FogVolume.scatter: {e}"))
                 })?;
-                let falloff: f32 = o.get("falloff").map_err(|e| {
-                    rquickjs::Exception::throw_type(ctx, &format!("FogVolume.falloff: {e}"))
+                let edge_softness: f32 = o.get("edge_softness").map_err(|e| {
+                    rquickjs::Exception::throw_type(ctx, &format!("FogVolume.edge_softness: {e}"))
                 })?;
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
                     color,
                     scatter,
-                    falloff,
+                    edge_softness,
                 }))
             }
             other => Err(rquickjs::Exception::throw_type(
@@ -488,14 +488,14 @@ impl FromLua for ComponentValue {
                 let scatter: f32 = t
                     .get("scatter")
                     .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.scatter: {e}")))?;
-                let falloff: f32 = t
-                    .get("falloff")
-                    .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.falloff: {e}")))?;
+                let edge_softness: f32 = t.get("edge_softness").map_err(|e| {
+                    mlua::Error::RuntimeError(format!("FogVolume.edge_softness: {e}"))
+                })?;
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
                     color,
                     scatter,
-                    falloff,
+                    edge_softness,
                 }))
             }
             other => Err(mlua::Error::RuntimeError(format!(
@@ -857,9 +857,9 @@ mod tests {
 
     #[test]
     fn fog_volume_component_round_trips_through_quickjs() {
-        // setComponent accepts {density, color, scatter, falloff}; getComponent
-        // returns all four under `kind: "fog_volume"`. AABB fields on the input
-        // are silently ignored.
+        // setComponent accepts {density, color, scatter, edge_softness};
+        // getComponent returns all four under `kind: "fog_volume"`. AABB fields
+        // on the input are silently ignored.
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
         jsctx.with(|jsctx| {
@@ -870,7 +870,7 @@ mod tests {
                         density: 0.4,
                         color: [0.1, 0.2, 0.3],
                         scatter: 0.5,
-                        falloff: 0.75,
+                        edge_softness: 0.75,
                         // AABB fields silently ignored
                         min: [0.0, 0.0, 0.0],
                         max: [1.0, 1.0, 1.0],
@@ -884,7 +884,7 @@ mod tests {
             assert!((f.density - 0.4).abs() < 1e-6);
             assert_eq!(f.color, [0.1, 0.2, 0.3]);
             assert!((f.scatter - 0.5).abs() < 1e-6);
-            assert!((f.falloff - 0.75).abs() < 1e-6);
+            assert!((f.edge_softness - 0.75).abs() < 1e-6);
 
             // Round-trip back to JS and read each field.
             let js_back = ComponentValue::FogVolume(f).into_js(&jsctx).unwrap();
@@ -895,8 +895,8 @@ mod tests {
             assert!((density - 0.4).abs() < 1e-6);
             let scatter: f32 = o.get("scatter").unwrap();
             assert!((scatter - 0.5).abs() < 1e-6);
-            let falloff: f32 = o.get("falloff").unwrap();
-            assert!((falloff - 0.75).abs() < 1e-6);
+            let edge_softness: f32 = o.get("edge_softness").unwrap();
+            assert!((edge_softness - 0.75).abs() < 1e-6);
         });
     }
 
@@ -910,7 +910,7 @@ mod tests {
                     density = 0.4,
                     color = { 0.1, 0.2, 0.3 },
                     scatter = 0.5,
-                    falloff = 0.75,
+                    edge_softness = 0.75,
                     -- AABB fields silently ignored
                     min = { 0.0, 0.0, 0.0 },
                     max = { 1.0, 1.0, 1.0 },
@@ -925,7 +925,7 @@ mod tests {
         assert!((f.density - 0.4).abs() < 1e-6);
         assert_eq!(f.color, [0.1, 0.2, 0.3]);
         assert!((f.scatter - 0.5).abs() < 1e-6);
-        assert!((f.falloff - 0.75).abs() < 1e-6);
+        assert!((f.edge_softness - 0.75).abs() < 1e-6);
 
         // Round-trip back to Lua and read each field.
         let lua_back = ComponentValue::FogVolume(f).into_lua(&lua).unwrap();
@@ -938,8 +938,8 @@ mod tests {
         assert!((density - 0.4).abs() < 1e-6);
         let scatter: f32 = tbl.get("scatter").unwrap();
         assert!((scatter - 0.5).abs() < 1e-6);
-        let falloff: f32 = tbl.get("falloff").unwrap();
-        assert!((falloff - 0.75).abs() < 1e-6);
+        let edge_softness: f32 = tbl.get("edge_softness").unwrap();
+        assert!((edge_softness - 0.75).abs() < 1e-6);
     }
 
     #[test]

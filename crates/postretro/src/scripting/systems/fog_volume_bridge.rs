@@ -2,15 +2,17 @@
 // See: context/lib/scripting.md
 //
 // Mirrors `light_bridge.rs`: per-frame, walks the entity registry to repack
-// GPU-ready bytes. `update_volumes` returns `Option<(&[u8], u32)>` — `None` means
-// `entity_ids` is empty (no fog volumes registered for this level), NOT "no active
-// volumes". A level with registered but zero-density fog volumes returns `Some`,
-// preserving the canonical index layout that `FogCellMasks` bit indices rely on.
-// The caller uses `None` to skip the entire fog-volume upload path.
+// GPU-ready bytes. `update_volumes` returns
+// `Option<(&[u8], &[Vec<[f32; 4]>], u32)>` — `None` means `entity_ids` is empty
+// (no fog volumes registered for this level), NOT "no active volumes". A level
+// with registered but zero-density fog volumes returns `Some`, preserving the
+// canonical index layout that `FogCellMasks` bit indices rely on. The caller
+// uses `None` to skip the entire fog-volume upload path.
 //
 // Fog volume AABBs are baked into the PRL at compile time (immutable at runtime)
-// and cached in `aabbs` here. Density / colour / scatter / falloff are runtime-tweakable
-// `FogVolumeComponent` fields read from the entity registry on every update.
+// and cached in `aabbs` here. Density / colour / scatter / edge_softness are
+// runtime-tweakable `FogVolumeComponent` fields read from the entity registry
+// on every update.
 
 use std::collections::HashMap;
 
@@ -21,10 +23,9 @@ use crate::prl::{LightType, MapLight};
 use crate::scripting::registry::{EntityId, EntityRegistry, FogVolumeComponent, Transform};
 use postretro_level_format::fog_volumes::FogVolumeRecord;
 
-/// Authoring-time AABB plus the two compile-time falloff parameters carried
-/// alongside it. These are not runtime-settable — surfacing them at runtime
-/// would require adding them to `FogVolumeComponent` and the scripting API —
-/// so they live in a side-table rather than on `FogVolumeComponent`.
+/// Authoring-time AABB plus the compile-time `radial_falloff` carried alongside
+/// it. Not runtime-settable — surfacing it would require adding it to
+/// `FogVolumeComponent` and the scripting API — so it lives in a side-table.
 ///
 /// `center`, `inv_half_ext`, `half_diag`, and `inv_height_extent` are baked
 /// into the PRL by the level compiler; they're cached here so per-frame fog
@@ -32,7 +33,6 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 pub struct FogVolumeAabb {
     pub min: Vec3,
     pub max: Vec3,
-    pub height_gradient: f32,
     pub radial_falloff: f32,
     pub center: Vec3,
     pub inv_half_ext: Vec3,
@@ -43,7 +43,7 @@ pub struct FogVolumeAabb {
 /// State carried across frames. Owned by the game layer so the renderer never
 /// holds component data.
 pub(crate) struct FogVolumeBridge {
-    /// Compile-time AABB + height/radial falloff per entity, keyed by `EntityId`.
+    /// Compile-time AABB + radial falloff per entity, keyed by `EntityId`.
     aabbs: HashMap<EntityId, FogVolumeAabb>,
     /// Map-volume index → `EntityId`. Fixed at level load.
     entity_ids: Vec<EntityId>,
@@ -81,8 +81,8 @@ impl FogVolumeBridge {
     }
 
     /// Populate the entity registry with one entity per fog-volume record.
-    /// Called once at level load. Stores the AABB + height/radial falloff in
-    /// the side-table; the four runtime-settable parameters become a
+    /// Called once at level load. Stores the AABB + radial falloff in the
+    /// side-table; the four runtime-settable parameters become a
     /// `FogVolumeComponent` on the spawned entity.
     pub(crate) fn populate_from_level(
         &mut self,
@@ -114,7 +114,7 @@ impl FogVolumeBridge {
                 density: entry.density,
                 color: entry.color,
                 scatter: entry.scatter,
-                falloff: entry.falloff,
+                edge_softness: entry.edge_softness,
             };
             // `set_component` only fails on stale id — the id was just returned.
             let _ = registry.set_component(id, component);
@@ -124,7 +124,6 @@ impl FogVolumeBridge {
                 FogVolumeAabb {
                     min: Vec3::from(entry.min),
                     max: Vec3::from(entry.max),
-                    height_gradient: entry.height_gradient,
                     radial_falloff: entry.radial_falloff,
                     center: Vec3::from(entry.center),
                     inv_half_ext: Vec3::from(entry.inv_half_ext),
@@ -208,17 +207,17 @@ impl FogVolumeBridge {
                     min: aabb.min.to_array(),
                     density: component.density,
                     max_v: aabb.max.to_array(),
-                    edge_softness: component.falloff,
+                    edge_softness: component.edge_softness,
                     color: component.color,
                     scatter: component.scatter,
                     center: aabb.center.to_array(),
                     half_diag: aabb.half_diag,
                     inv_half_ext: aabb.inv_half_ext.to_array(),
                     inv_height_extent: aabb.inv_height_extent,
-                    height_gradient: aabb.height_gradient,
                     radial_falloff: aabb.radial_falloff,
                     plane_offset: 0,
                     plane_count,
+                    _pad: 0,
                 },
                 _ => FogVolume {
                     min: [0.0; 3],
@@ -231,10 +230,10 @@ impl FogVolumeBridge {
                     half_diag: 0.0,
                     inv_half_ext: [0.0; 3],
                     inv_height_extent: 0.0,
-                    height_gradient: 0.0,
                     radial_falloff: 0.0,
                     plane_offset: 0,
                     plane_count: 0,
+                    _pad: 0,
                 },
             };
             self.volumes_bytes
@@ -360,10 +359,9 @@ mod tests {
             min: [-2.0, 0.0, -2.0],
             density: 0.5,
             max: [2.0, 3.0, 2.0],
-            falloff: 1.0,
+            edge_softness: 1.0,
             color: [0.6, 0.7, 0.8],
             scatter: 0.4,
-            height_gradient: 0.25,
             radial_falloff: 0.0,
             center: [0.0, 1.5, 0.0],
             inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
@@ -406,7 +404,6 @@ mod tests {
         assert_eq!(comp.scatter, 0.4);
         let aabb = bridge.aabbs.get(&id).unwrap();
         assert_eq!(aabb.min, Vec3::new(-2.0, 0.0, -2.0));
-        assert_eq!(aabb.height_gradient, 0.25);
         assert_eq!(aabb.center, Vec3::new(0.0, 1.5, 0.0));
         assert_eq!(aabb.inv_half_ext, Vec3::new(0.5, 1.0 / 1.5, 0.5));
         assert_eq!(aabb.half_diag, 2.5);
@@ -422,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn update_volumes_packs_density_and_falloff_from_component() {
+    fn update_volumes_packs_density_and_edge_softness_from_component() {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
         bridge.populate_from_level(&mut registry, &[sample_record()]);
@@ -436,7 +433,7 @@ mod tests {
                     density: 1.25,
                     color: [0.1, 0.2, 0.3],
                     scatter: 0.9,
-                    falloff: 0.5,
+                    edge_softness: 0.5,
                 },
             )
             .unwrap();
@@ -444,7 +441,7 @@ mod tests {
         let (bytes, _planes, live_mask) = bridge.update_volumes(&registry).expect("dirty volumes");
         assert_eq!(bytes.len(), std::mem::size_of::<FogVolume>());
         // density at byte offset 12, edge_softness at byte offset 28
-        // (component.falloff packs into FogVolume.edge_softness — same slot).
+        // (component.edge_softness packs into FogVolume.edge_softness).
         let density = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
         let edge_softness = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
         assert_eq!(density, 1.25);
@@ -472,7 +469,7 @@ mod tests {
                     density: 0.0,
                     color: [0.0; 3],
                     scatter: 0.0,
-                    falloff: 0.0,
+                    edge_softness: 0.0,
                 },
             )
             .unwrap();
@@ -558,7 +555,7 @@ mod tests {
                     density: 0.0,
                     color: [0.0; 3],
                     scatter: 0.0,
-                    falloff: 0.0,
+                    edge_softness: 0.0,
                 },
             )
             .unwrap();
@@ -587,7 +584,7 @@ mod tests {
                     density: 0.0,
                     color: [0.0; 3],
                     scatter: 0.0,
-                    falloff: 0.0,
+                    edge_softness: 0.0,
                 },
             )
             .unwrap();
@@ -596,6 +593,37 @@ mod tests {
             bridge.active_aabbs().is_empty(),
             "stale AABB must not survive into a frame where every volume is off"
         );
+    }
+
+    #[test]
+    fn update_volumes_propagates_plane_count_from_record() {
+        // A `FogVolumeRecord` carrying non-empty planes must surface its plane
+        // count on the packed `FogVolume` (plane_count is at byte offset 88).
+        // The renderer's dense repack patches plane_offset at upload time —
+        // here we only assert plane_count, which the bridge writes directly.
+        let mut record = sample_record();
+        record.planes = vec![
+            [1.0, 0.0, 0.0, 0.5],
+            [-1.0, 0.0, 0.0, 0.5],
+            [0.0, 1.0, 0.0, 0.5],
+            [0.0, -1.0, 0.0, 0.5],
+            [0.0, 0.0, 1.0, 0.5],
+            [0.0, 0.0, -1.0, 0.5],
+        ];
+        record.plane_count = record.planes.len() as u32;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[record.clone()]);
+
+        let (bytes, planes, _live_mask) = bridge.update_volumes(&registry).expect("one slot");
+        assert_eq!(bytes.len(), std::mem::size_of::<FogVolume>());
+        // FogVolume.plane_count sits at byte offset 88 (see fx/fog_volume.rs).
+        let plane_count = u32::from_le_bytes(bytes[88..92].try_into().unwrap());
+        assert_eq!(plane_count, record.plane_count);
+        // Side-table planes mirror the record exactly.
+        assert_eq!(planes.len(), 1);
+        assert_eq!(planes[0], record.planes);
     }
 
     #[test]

@@ -416,7 +416,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
       easing?: EasingCurve,
     ): void;
     setScatter(scatter: number): void;
-    setFalloff(falloff: number): void;
+    setEdgeSoftness(edgeSoftness: number): void;
   }
 
   /** Maps a component-name literal to the rich entity handle type. `"light"`
@@ -788,7 +788,7 @@ export type FogVolumeHandle = {
     easing: EasingCurve?
   ) -> (),
   setScatter: (self: FogVolumeHandle, scatter: number) -> (),
-  setFalloff: (self: FogVolumeHandle, falloff: number) -> (),
+  setEdgeSoftness: (self: FogVolumeHandle, edgeSoftness: number) -> (),
 }
 
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
@@ -797,7 +797,7 @@ export type FogVolumeHandle = {
 --- values carrying the full `BillboardEmitterComponent` snapshot under
 --- `component`; `"fog_volume"` returns `FogVolumeHandle` values (with
 --- tween-capable `:setDensity` / `:setColor` and instant `:setScatter` /
---- `:setFalloff`); other components fall back to the bare `EntityHandle`
+--- `:setEdgeSoftness`); other components fall back to the bare `EntityHandle`
 --- shape.
 export type World = {
   query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
@@ -1049,8 +1049,8 @@ declare module \"postretro\" {
     color: Vec3;
     /** Fraction of in-scattering toward the camera. */
     scatter: number;
-    /** Edge fade: 0 = uniform to AABB boundary, 1 = linear ramp from face to center. */
-    falloff: number;
+    /** Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face. */
+    edge_softness: number;
   };
 
   /** Entity handle returned by `world.query` when filtering for fog-volume entities. */
@@ -1140,8 +1140,8 @@ export type FogVolumeComponent = {
   color: Vec3,
   --- Fraction of in-scattering toward the camera.
   scatter: number,
-  --- Edge fade: 0 = uniform to AABB boundary, 1 = linear ramp from face to center.
-  falloff: number,
+  --- Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.
+  edge_softness: number,
 }
 
 --- Entity handle returned by `world.query` when filtering for fog-volume entities.

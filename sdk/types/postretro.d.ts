@@ -63,8 +63,8 @@ declare module "postretro" {
     color: Vec3;
     /** Fraction of in-scattering toward the camera. */
     scatter: number;
-    /** Edge fade: 0 = uniform to AABB boundary, 1 = linear ramp from face to center. */
-    falloff: number;
+    /** Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face. */
+    edge_softness: number;
   };
 
   /** Entity handle returned by `world.query` when filtering for fog-volume entities. */
@@ -224,7 +224,7 @@ declare module "postretro" {
       easing?: EasingCurve,
     ): void;
     setScatter(scatter: number): void;
-    setFalloff(falloff: number): void;
+    setEdgeSoftness(edgeSoftness: number): void;
   }
 
   /** Maps a component-name literal to the rich entity handle type. `"light"`

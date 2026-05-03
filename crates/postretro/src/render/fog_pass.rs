@@ -30,7 +30,7 @@ pub const BIND_FOG_POINTS: u32 = 5;
 pub const BIND_FOG_PLANES: u32 = 6;
 
 /// Size in bytes of one `vec4<f32>` plane record in the `fog_planes` storage
-/// buffer. Each plane is `(nx, ny, nz, d)` little-endian.
+/// buffer. Each plane is `(nx, ny, nz, d)` packed as four `f32`s.
 pub const FOG_PLANE_SIZE: usize = 16;
 
 pub struct FogPass {
@@ -82,7 +82,7 @@ pub struct FogPass {
     /// cell mask against the bridge's live mask. Shader loops against this.
     pub active_count: u32,
     /// Canonical fog-volume list in source order (one entry per
-    /// `env_fog_volume` brush in the PRL). The bytes are stored as raw
+    /// `fog_volume` brush / `fog_lamp` / `fog_tube` entity in the PRL). The bytes are stored as raw
     /// `FogVolume` records and re-packed per-frame in `repack_active`. Empty
     /// when no level is loaded or the level has no fog volumes.
     canonical_volumes: Vec<FogVolume>,
@@ -609,9 +609,12 @@ impl FogPass {
                 let plane_offset = self.planes_scratch.len() as u32;
                 packed.plane_offset = plane_offset;
                 if let Some(planes) = self.canonical_planes.get(i) {
-                    // Plane count was already set on the canonical record by
-                    // the bridge; trust it and copy that many entries.
+                    // Trust the bridge's plane_count but clamp against the
+                    // canonical plane list to defend against drift; on truncation
+                    // we must also correct the GPU-bound count so the shader
+                    // doesn't read past the planes we actually copied.
                     let n = (packed.plane_count as usize).min(planes.len());
+                    packed.plane_count = n as u32;
                     self.planes_scratch.extend_from_slice(&planes[..n]);
                 }
                 self.repack_scratch.push(packed);

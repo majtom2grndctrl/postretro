@@ -21,10 +21,14 @@ pub struct FogVolumeRecord {
     pub min: [f32; 3],
     pub density: f32,
     pub max: [f32; 3],
-    pub falloff: f32,
+    /// World-unit fade band along brush face normals, used by primitive
+    /// (plane-bounded) volumes. The renderer copies this into the GPU
+    /// `FogVolume.edge_softness` slot — the wire field carries the same name
+    /// so both sides of the layer boundary use one term. Semantic / zero-plane
+    /// volumes (`fog_lamp`, `fog_tube`) ignore this and use `radial_falloff`.
+    pub edge_softness: f32,
     pub color: [f32; 3],
     pub scatter: f32,
-    pub height_gradient: f32,
     pub radial_falloff: f32,
     /// AABB center: `(min + max) * 0.5`.
     pub center: [f32; 3],
@@ -57,10 +61,9 @@ pub struct FogVolumeRecord {
 ///     f32  min_x, min_y, min_z
 ///     f32  density
 ///     f32  max_x, max_y, max_z
-///     f32  falloff
+///     f32  edge_softness
 ///     f32  color_r, color_g, color_b
 ///     f32  scatter
-///     f32  height_gradient
 ///     f32  radial_falloff
 ///     f32  center_x, center_y, center_z
 ///     f32  inv_half_ext_x, inv_half_ext_y, inv_half_ext_z
@@ -74,7 +77,7 @@ pub struct FogVolumeRecord {
 ///       u32  tag_byte_len; u8[] tag_utf8
 ///
 /// Always emitted so the worldspawn `fog_pixel_scale` is honoured even when no
-/// `env_fog_volume` brushes are present (8-byte overhead for the empty case).
+/// `fog_volume` brushes are present (8-byte overhead for the empty case).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FogVolumesSection {
     pub pixel_scale: u32,
@@ -103,12 +106,11 @@ impl FogVolumesSection {
             for c in v.max {
                 buf.extend_from_slice(&c.to_le_bytes());
             }
-            buf.extend_from_slice(&v.falloff.to_le_bytes());
+            buf.extend_from_slice(&v.edge_softness.to_le_bytes());
             for c in v.color {
                 buf.extend_from_slice(&c.to_le_bytes());
             }
             buf.extend_from_slice(&v.scatter.to_le_bytes());
-            buf.extend_from_slice(&v.height_gradient.to_le_bytes());
             buf.extend_from_slice(&v.radial_falloff.to_le_bytes());
             for c in v.center {
                 buf.extend_from_slice(&c.to_le_bytes());
@@ -139,10 +141,10 @@ impl FogVolumesSection {
         let pixel_scale = read_u32(data, &mut o, "pixel_scale")?;
         let count = read_u32(data, &mut o, "volume count")? as usize;
 
-        // Sanity-check: each fixed payload is 22 × f32 + 2 × u32 = 96 bytes
+        // Sanity-check: each fixed payload is 21 × f32 + 2 × u32 = 92 bytes
         // (includes plane_count and tag_count headers; planes and tags are
         // variable-length and validated against remaining bytes below).
-        const MIN_RECORD_SIZE: usize = 96;
+        const MIN_RECORD_SIZE: usize = 92;
         let remaining = data.len().saturating_sub(o);
         if count > remaining / MIN_RECORD_SIZE {
             // FormatError has no Parse variant; Io is the closest proxy for
@@ -160,10 +162,9 @@ impl FogVolumesSection {
             let min = read_vec3(data, &mut o, &format!("volume {i} min"))?;
             let density = read_f32(data, &mut o, &format!("volume {i} density"))?;
             let max = read_vec3(data, &mut o, &format!("volume {i} max"))?;
-            let falloff = read_f32(data, &mut o, &format!("volume {i} falloff"))?;
+            let edge_softness = read_f32(data, &mut o, &format!("volume {i} edge_softness"))?;
             let color = read_vec3(data, &mut o, &format!("volume {i} color"))?;
             let scatter = read_f32(data, &mut o, &format!("volume {i} scatter"))?;
-            let height_gradient = read_f32(data, &mut o, &format!("volume {i} height_gradient"))?;
             let radial_falloff = read_f32(data, &mut o, &format!("volume {i} radial_falloff"))?;
             let center = read_vec3(data, &mut o, &format!("volume {i} center"))?;
             let inv_half_ext = read_vec3(data, &mut o, &format!("volume {i} inv_half_ext"))?;
@@ -211,10 +212,9 @@ impl FogVolumesSection {
                 min,
                 density,
                 max,
-                falloff,
+                edge_softness,
                 color,
                 scatter,
-                height_gradient,
                 radial_falloff,
                 center,
                 inv_half_ext,
@@ -316,10 +316,9 @@ mod tests {
                     min: [-2.0, 0.0, -2.0],
                     density: 0.5,
                     max: [2.0, 3.0, 2.0],
-                    falloff: 1.0,
+                    edge_softness: 1.0,
                     color: [0.6, 0.7, 0.8],
                     scatter: 0.4,
-                    height_gradient: 0.25,
                     radial_falloff: 0.0,
                     center: [0.0, 1.5, 0.0],
                     inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
@@ -333,10 +332,9 @@ mod tests {
                     min: [10.0, 0.0, -5.0],
                     density: 1.5,
                     max: [12.0, 4.0, -1.0],
-                    falloff: 0.5,
+                    edge_softness: 0.5,
                     color: [1.0, 0.2, 0.1],
                     scatter: 0.9,
-                    height_gradient: 0.0,
                     radial_falloff: 1.0,
                     center: [11.0, 2.0, -3.0],
                     inv_half_ext: [1.0, 0.5, 0.5],
@@ -384,10 +382,9 @@ mod tests {
             min: [-1.0, -1.0, -1.0],
             density: 0.5,
             max: [1.0, 1.0, 1.0],
-            falloff: 0.5,
+            edge_softness: 0.5,
             color: [0.5, 0.5, 0.5],
             scatter: 0.5,
-            height_gradient: 0.0,
             radial_falloff: 0.0,
             center: [0.0, 0.0, 0.0],
             inv_half_ext: [1.0, 1.0, 1.0],
@@ -491,10 +488,9 @@ mod tests {
                 min: [0.0, 0.0, 0.0],
                 density: 0.5,
                 max: [1.0, 1.0, 1.0],
-                falloff: 0.5,
+                edge_softness: 0.5,
                 color: [1.0, 1.0, 1.0],
                 scatter: 0.5,
-                height_gradient: 0.0,
                 radial_falloff: 0.0,
                 center: [0.5, 0.5, 0.5],
                 inv_half_ext: [2.0, 2.0, 2.0],

@@ -229,7 +229,7 @@ pub struct LevelWorld {
     /// Per-region volumetric fog volumes loaded from the FogVolumes section
     /// (ID 30). Each record carries an engine-space AABB plus density / colour
     /// / scatter parameters. Empty when the section is absent or the map
-    /// authored no `env_fog_volume` brushes.
+    /// authored no `fog_volume` brushes.
     pub fog_volumes: Vec<FogVolumeRecord>,
     /// Worldspawn `fog_pixel_scale` downscale factor for the volumetric fog
     /// pass (1=full-res, 8=coarsest). Defaults to 4 when the section is
@@ -779,7 +779,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 
     // FogVolumes section (ID 30, optional). Always emitted by current
     // `prl-build` runs so the worldspawn `fog_pixel_scale` is honoured even
-    // when no `env_fog_volume` brushes are present. Maps compiled before this
+    // when no `fog_volume` brushes are present. Maps compiled before this
     // section was introduced fall back to `pixel_scale = 4` and an empty
     // volume list.
     let (fog_volumes, fog_pixel_scale): (Vec<FogVolumeRecord>, u32) =
@@ -798,7 +798,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 
     // FogCellMasks section (ID 31, optional). Per-BSP-leaf bitmask of which
     // fog volumes overlap each leaf. Absent for legacy PRLs or maps with no
-    // `env_fog_volume` brushes. `None` triggers the legacy-PRL fallback in
+    // `fog_volume` brushes. `None` triggers the legacy-PRL fallback in
     // `compute_fog_cell_mask`: all canonical slots are treated as active via
     // `all_slots_mask`, so fog volumes still render on maps predating section 31.
     let fog_cell_masks: Option<Vec<u32>> =

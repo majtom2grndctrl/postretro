@@ -47,9 +47,8 @@ pub struct FogVolume {
     pub max_v: [f32; 3],
     /// World-unit fade band for primitive (plane-bounded) volumes. The shader
     /// scales density by `saturate(min_signed_dist / edge_softness)`. `<= 0`
-    /// produces a hard cutoff. Reuses the slot the legacy `falloff` field
-    /// occupied — same offset, same 4 bytes; semantic entities (zero planes)
-    /// ignore this field and use `radial_falloff` instead.
+    /// produces a hard cutoff. Semantic entities (zero planes) ignore this
+    /// field and use `radial_falloff` instead.
     pub edge_softness: f32,
     pub color: [f32; 3],
     pub scatter: f32,
@@ -57,7 +56,6 @@ pub struct FogVolume {
     pub half_diag: f32,
     pub inv_half_ext: [f32; 3],
     pub inv_height_extent: f32,
-    pub height_gradient: f32,
     pub radial_falloff: f32,
     /// Index of this volume's first plane in the global `fog_planes` storage
     /// buffer. Cursor rebuilt each frame as the active set is packed; source
@@ -66,6 +64,10 @@ pub struct FogVolume {
     /// Number of planes that bound this volume. Zero means the volume is a
     /// semantic entity (AABB-only membership + radial fade).
     pub plane_count: u32,
+    /// Explicit padding to keep the struct's size a multiple of 16 (WGSL
+    /// alignment for the largest member, `vec3<f32>`). Without it the WGSL
+    /// side rounds up but the Rust side does not, breaking the layout assert.
+    pub _pad: u32,
 }
 
 /// Per-frame spot-light record consumed by the fog raymarch. 48 bytes;
@@ -224,9 +226,9 @@ mod tests {
     fn pack_fog_volumes_round_trips_all_baked_fields() {
         // Byte offsets follow the field order: min(0) density(12) max(16)
         // edge_softness(28) color(32) scatter(44) center(48) half_diag(60)
-        // inv_half_ext(64) inv_height_extent(76) height_gradient(80)
-        // radial_falloff(84) plane_offset(88) plane_count(92). Asserting on
-        // each baked field catches silent layout drift between Rust and WGSL.
+        // inv_half_ext(64) inv_height_extent(76) radial_falloff(80)
+        // plane_offset(84) plane_count(88) _pad(92). Asserting on each baked
+        // field catches silent layout drift between Rust and WGSL.
         let v = FogVolume {
             min: [1.0, 2.0, 3.0],
             density: 0.75,
@@ -238,10 +240,10 @@ mod tests {
             half_diag: 2.598_076,
             inv_half_ext: [0.666_666_7, 0.666_666_7, 0.666_666_7],
             inv_height_extent: 0.333_333_3,
-            height_gradient: 0.0,
             radial_falloff: 0.0,
             plane_offset: 0,
             plane_count: 0,
+            _pad: 0,
         };
         let volumes = [v];
         let bytes = pack_fog_volumes(&volumes);
@@ -254,8 +256,8 @@ mod tests {
         let half_diag = f32::from_le_bytes(bytes[60..64].try_into().unwrap());
         let inv_hx = f32::from_le_bytes(bytes[64..68].try_into().unwrap());
         let inv_h_ext = f32::from_le_bytes(bytes[76..80].try_into().unwrap());
-        let plane_offset = u32::from_le_bytes(bytes[88..92].try_into().unwrap());
-        let plane_count = u32::from_le_bytes(bytes[92..96].try_into().unwrap());
+        let plane_offset = u32::from_le_bytes(bytes[84..88].try_into().unwrap());
+        let plane_count = u32::from_le_bytes(bytes[88..92].try_into().unwrap());
         assert_eq!(density, 0.75);
         assert_eq!(edge_softness, 0.25);
         assert_eq!(center_x, 2.5);

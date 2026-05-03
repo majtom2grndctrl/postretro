@@ -1806,11 +1806,8 @@ impl Renderer {
                 light.origin[1] as f32,
                 light.origin[2] as f32,
             );
-            if !sphere_intersects_any_fog_aabb(
-                center,
-                light.falloff_range,
-                &self.active_fog_aabbs,
-            ) {
+            if !sphere_intersects_any_fog_aabb(center, light.falloff_range, &self.active_fog_aabbs)
+            {
                 continue;
             }
             let intensity = light.intensity * multiplier;

@@ -110,6 +110,7 @@ mod tests {
             scatter: 0.6,
             height_gradient: 0.0,
             radial_falloff: 0.0,
+            planes: Vec::new(),
             tags: Vec::new(),
         }
     }

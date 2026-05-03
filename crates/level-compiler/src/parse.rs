@@ -145,10 +145,11 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut lights: Vec<MapLight> = Vec::new();
     // Generic map entities for runtime classname dispatch — non-light point
     // entities only. Brush entities (those with brushes attached) are resolved
-    // separately by their dedicated subsystems (e.g. `env_fog_volume`).
+    // separately by their dedicated subsystems (e.g. `fog_volume`).
     let mut map_entities: Vec<MapEntityRecord> = Vec::new();
-    // Resolved `env_fog_volume` brush entities. Walked alongside the entity
-    // pass; AABBs are computed from the entity's brush-face vertices.
+    // Resolved fog volume entities (brush `fog_volume` plus point `fog_lamp`
+    // and `fog_tube`). Walked alongside the entity pass; brush AABBs come from
+    // brush-face vertices, point-entity AABBs from origin + radius/height.
     let mut fog_volumes: Vec<MapFogVolume> = Vec::new();
 
     // Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest). Default 4 when
@@ -212,7 +213,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             continue;
         }
 
-        // Brush entities (e.g. env_fog_volume, env_reverb_zone) are resolved
+        // Brush entities (e.g. fog_volume, env_reverb_zone) are resolved
         // separately by their dedicated subsystems and do not flow through the
         // generic classname dispatch path.
         let has_brushes = geo_map
@@ -221,10 +222,10 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         if has_brushes {
-            if classname == "env_fog_volume" {
+            if classname == "fog_volume" {
                 if fog_volumes.len() >= MAX_FOG_VOLUMES {
                     log::warn!(
-                        "[Compiler] env_fog_volume cap reached ({MAX_FOG_VOLUMES}); skipping additional volume"
+                        "[Compiler] fog_volume cap reached ({MAX_FOG_VOLUMES}); skipping additional volume"
                     );
                     continue;
                 }
@@ -234,12 +235,33 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                     .get(entity_id)
                     .cloned()
                     .unwrap_or_default();
-                if let Some(volume) =
-                    resolve_fog_volume(&geo_map, &brush_ids, &props, scale, &classname)
-                {
-                    fog_volumes.push(volume);
+                let volume = resolve_fog_volume(&geo_map, &brush_ids, &props, scale, &classname)?;
+                if let Some(v) = volume {
+                    fog_volumes.push(v);
                 }
             }
+            continue;
+        }
+
+        if classname == "fog_lamp" || classname == "fog_tube" {
+            if fog_volumes.len() >= MAX_FOG_VOLUMES {
+                log::warn!(
+                    "[Compiler] {classname} cap reached ({MAX_FOG_VOLUMES}); skipping additional volume"
+                );
+                continue;
+            }
+            let entity_origin = origin.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{classname} missing origin — point fog entities must have an origin"
+                )
+            })?;
+            let props = collect_entity_properties(&geo_map, entity_id);
+            let volume = if classname == "fog_lamp" {
+                resolve_fog_lamp(&props, entity_origin, &classname)?
+            } else {
+                resolve_fog_tube(&props, entity_origin, &classname)?
+            };
+            fog_volumes.push(volume);
             continue;
         }
 
@@ -474,7 +496,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     })
 }
 
-/// Compute an env_fog_volume's world-space AABB from its brush faces and
+/// Compute a fog_volume brush entity's world-space AABB and bounding planes from its brush faces and
 /// parse its KVP-authored parameters. Returns `None` when the brush set
 /// produces no usable vertices (degenerate authoring).
 fn resolve_fog_volume(
@@ -483,7 +505,7 @@ fn resolve_fog_volume(
     props: &HashMap<String, String>,
     scale: f64,
     classname: &str,
-) -> Option<MapFogVolume> {
+) -> Result<Option<MapFogVolume>> {
     use shambler::brush::brush_hulls;
     use shambler::face::{face_planes, face_vertices};
 
@@ -505,17 +527,42 @@ fn resolve_fog_volume(
     let mut min = DVec3::splat(f64::INFINITY);
     let mut max = DVec3::splat(f64::NEG_INFINITY);
     let mut have_any = false;
-    for verts in face_verts.values() {
+    let mut planes: Vec<[f32; 4]> = Vec::new();
+    for (face_id, verts) in face_verts.iter() {
+        let mut face_seen_vertex = false;
         for v in verts {
             let p = quake_to_engine(shambler_to_dvec3(v)) * scale;
             min = min.min(p);
             max = max.max(p);
             have_any = true;
+            face_seen_vertex = true;
         }
+        if !face_seen_vertex {
+            continue;
+        }
+        let plane = match geo_planes.get(face_id) {
+            Some(p) => p,
+            None => continue,
+        };
+        let n = quake_to_engine(shambler_to_dvec3(plane.normal()));
+        let any_vertex = quake_to_engine(shambler_to_dvec3(&verts[0])) * scale;
+        let d = n.dot(any_vertex);
+        planes.push([n.x as f32, n.y as f32, n.z as f32, d as f32]);
     }
     if !have_any {
-        log::warn!("[Compiler] env_fog_volume has no usable brush vertices; skipping");
-        return None;
+        log::warn!("[Compiler] {classname} has no usable brush vertices; skipping");
+        return Ok(None);
+    }
+    if planes.is_empty() {
+        anyhow::bail!(
+            "{classname}: brush hull yielded zero face planes — fog volume needs a non-degenerate convex hull"
+        );
+    }
+    if planes.len() > 16 {
+        anyhow::bail!(
+            "{classname}: brush hull yielded {} face planes (max 16); simplify the brush",
+            planes.len()
+        );
     }
 
     // Colour authored as "R G B" 0–255; divide by 255 (no sRGB curve), to match
@@ -540,26 +587,23 @@ fn resolve_fog_volume(
         .get("height_gradient")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.0);
-    let radial_falloff = props
-        .get("radial_falloff")
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        .unwrap_or(0.0);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
         .unwrap_or_default();
 
     log::info!(
-        "[Compiler] {classname}: aabb [{:.3}, {:.3}, {:.3}]–[{:.3}, {:.3}, {:.3}], density={density}",
+        "[Compiler] {classname}: aabb [{:.3}, {:.3}, {:.3}]–[{:.3}, {:.3}, {:.3}], density={density}, planes={}",
         min.x,
         min.y,
         min.z,
         max.x,
         max.y,
         max.z,
+        planes.len(),
     );
 
-    Some(MapFogVolume {
+    Ok(Some(MapFogVolume {
         min: [min.x as f32, min.y as f32, min.z as f32],
         max: [max.x as f32, max.y as f32, max.z as f32],
         color,
@@ -567,7 +611,194 @@ fn resolve_fog_volume(
         falloff,
         scatter,
         height_gradient,
+        radial_falloff: 0.0,
+        planes,
+        tags,
+    }))
+}
+
+/// Resolve a `fog_lamp` point entity into a spherical fog volume.
+fn resolve_fog_lamp(
+    props: &HashMap<String, String>,
+    origin: DVec3,
+    classname: &str,
+) -> Result<MapFogVolume> {
+    let radius = props
+        .get("radius")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!("{classname}: missing or invalid `radius` (required, > 0)")
+        })?;
+    if !(radius.is_finite() && radius > 0.0) {
+        anyhow::bail!("{classname}: `radius` must be a finite positive number, got {radius}");
+    }
+
+    let color = props
+        .get("color")
+        .and_then(|s| parse_color255_local(s))
+        .unwrap_or([1.0, 0.85, 0.6]);
+    let density = props
+        .get("density")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.5);
+    let falloff = props
+        .get("falloff")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(1.0);
+    let scatter = props
+        .get("scatter")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.6);
+    let height_gradient = props
+        .get("height_gradient")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let radial_falloff = props
+        .get("radial_falloff")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(2.0);
+    let tags: Vec<String> = props
+        .get("_tags")
+        .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
+        .unwrap_or_default();
+
+    let ox = origin.x as f32;
+    let oy = origin.y as f32;
+    let oz = origin.z as f32;
+    let min = [ox - radius, oy - radius, oz - radius];
+    let max = [ox + radius, oy + radius, oz + radius];
+
+    log::info!(
+        "[Compiler] {classname}: origin ({ox:.3}, {oy:.3}, {oz:.3}) radius={radius}, density={density}",
+    );
+
+    Ok(MapFogVolume {
+        min,
+        max,
+        color,
+        density,
+        falloff,
+        scatter,
+        height_gradient,
         radial_falloff,
+        planes: Vec::new(),
+        tags,
+    })
+}
+
+/// Resolve a `fog_tube` point entity into a capsule-shaped fog volume.
+///
+/// Yaw rotates around +Y first; pitch then rotates around the resulting +X
+/// (intrinsic Y-X). The capsule axis starts as +Y in local space.
+fn resolve_fog_tube(
+    props: &HashMap<String, String>,
+    origin: DVec3,
+    classname: &str,
+) -> Result<MapFogVolume> {
+    let radius = props
+        .get("radius")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!("{classname}: missing or invalid `radius` (required, > 0)")
+        })?;
+    if !(radius.is_finite() && radius > 0.0) {
+        anyhow::bail!("{classname}: `radius` must be a finite positive number, got {radius}");
+    }
+    let height = props
+        .get("height")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!("{classname}: missing or invalid `height` (required, > 0)")
+        })?;
+    if !(height.is_finite() && height > 0.0) {
+        anyhow::bail!("{classname}: `height` must be a finite positive number, got {height}");
+    }
+
+    let pitch_deg = props
+        .get("pitch")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let yaw_deg = props
+        .get("yaw")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let pitch = pitch_deg.to_radians();
+    let yaw = yaw_deg.to_radians();
+
+    // Local capsule axis is +Y; yaw rotates around +Y (no-op on +Y), then
+    // pitch around the resulting +X tilts the axis into the YZ plane.
+    let (sp, cp) = pitch.sin_cos();
+    let (sy, cy) = yaw.sin_cos();
+    let ax = -sp * sy;
+    let ay = cp;
+    let az = -sp * cy;
+    let len = (ax * ax + ay * ay + az * az).sqrt().max(1.0e-6);
+    let a = [ax / len, ay / len, az / len];
+
+    let half_segment = (height * 0.5 - radius).max(0.0);
+    let half_extent = [
+        a[0].abs() * half_segment + radius,
+        a[1].abs() * half_segment + radius,
+        a[2].abs() * half_segment + radius,
+    ];
+
+    let color = props
+        .get("color")
+        .and_then(|s| parse_color255_local(s))
+        .unwrap_or([0.6, 0.85, 1.0]);
+    let density = props
+        .get("density")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.3);
+    let falloff = props
+        .get("falloff")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(1.0);
+    let scatter = props
+        .get("scatter")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.6);
+    let height_gradient = props
+        .get("height_gradient")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let radial_falloff = props
+        .get("radial_falloff")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(1.5);
+    let tags: Vec<String> = props
+        .get("_tags")
+        .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
+        .unwrap_or_default();
+
+    let ox = origin.x as f32;
+    let oy = origin.y as f32;
+    let oz = origin.z as f32;
+    let min = [
+        ox - half_extent[0],
+        oy - half_extent[1],
+        oz - half_extent[2],
+    ];
+    let max = [
+        ox + half_extent[0],
+        oy + half_extent[1],
+        oz + half_extent[2],
+    ];
+
+    log::info!(
+        "[Compiler] {classname}: origin ({ox:.3}, {oy:.3}, {oz:.3}) radius={radius} height={height} pitch={pitch_deg} yaw={yaw_deg}",
+    );
+
+    Ok(MapFogVolume {
+        min,
+        max,
+        color,
+        density,
+        falloff,
+        scatter,
+        height_gradient,
+        radial_falloff,
+        planes: Vec::new(),
         tags,
     })
 }

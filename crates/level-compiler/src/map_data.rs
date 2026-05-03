@@ -386,13 +386,13 @@ pub struct MapData {
     /// §Data context.
     pub data_script: Option<String>,
     /// Non-light, non-worldspawn map entities collected for the runtime
-    /// classname dispatch. Brush entities (e.g. `env_fog_volume`) are excluded
+    /// classname dispatch. Brush entities (e.g. `fog_volume`) are excluded
     /// — they are resolved separately during BSP construction. See the
     /// MapEntity PRL section in `context/lib/build_pipeline.md`.
     pub map_entities: Vec<MapEntityRecord>,
-    /// Per-region volumetric fog volumes resolved from `env_fog_volume` brush
-    /// entities. AABBs are in engine space (Y-up, meters); colour is linear
-    /// 0–1. Authored via the `env_fog_volume` FGD class — see
+    /// Per-region volumetric fog volumes resolved from `fog_volume` brush
+    /// entities and `fog_lamp` / `fog_tube` point entities. AABBs are in engine
+    /// space (Y-up, meters); colour is linear 0–1. See
     /// `context/lib/build_pipeline.md`.
     pub fog_volumes: Vec<MapFogVolume>,
     /// Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest); clamped to 1..=8.
@@ -400,12 +400,14 @@ pub struct MapData {
     pub fog_pixel_scale: u32,
 }
 
-/// One `env_fog_volume` brush entity, resolved to an AABB in engine space.
-/// Carries linear-RGB colour and the per-volume density/falloff parameters
-/// authored on the brush entity. See `parse::parse_map_file`.
+/// One fog volume entity, resolved to an AABB (and optionally a convex plane
+/// set) in engine space. Carries linear-RGB colour and the per-volume
+/// density/falloff parameters authored on the entity. See
+/// `parse::parse_map_file`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapFogVolume {
-    /// AABB minimum corner (engine space, meters).
+    /// AABB minimum corner (engine space, meters). Conservative bound used by
+    /// per-leaf mask computation and runtime culling.
     pub min: [f32; 3],
     /// AABB maximum corner (engine space, meters).
     pub max: [f32; 3],
@@ -416,6 +418,10 @@ pub struct MapFogVolume {
     pub scatter: f32,
     pub height_gradient: f32,
     pub radial_falloff: f32,
+    /// Convex bounding planes (engine space). A point `p` is inside the volume
+    /// iff `dot(p, n) <= d` for every `(nx, ny, nz, d)` plane. Empty means the
+    /// AABB is the only bound (semantic-entity / box case).
+    pub planes: Vec<[f32; 4]>,
     /// Author-supplied script tags (FGD `_tags`, pre-split on whitespace).
     pub tags: Vec<String>,
 }

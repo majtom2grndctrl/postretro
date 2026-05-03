@@ -114,17 +114,66 @@
     spin_rate(float) : "Spin rate (radians/sec)" : "0.0"
 ]
 
-// Per-region volumetric fog. Authored as a brush entity; faces are excluded
-// from worldspawn geometry. The brush's world-space AABB defines the volume.
+// Primitive volumetric fog brush. The brush's world-space convex hull defines
+// the volume; faces are excluded from worldspawn geometry. Use this when you
+// need an arbitrary brush-shaped fog region. For common shapes (sphere, capsule)
+// prefer the semantic point entities below — they are easier to place and
+// carry tuned defaults.
 // See context/lib/build_pipeline.md §Custom FGD.
-@SolidClass = env_fog_volume : "Per-region volumetric fog"
+@SolidClass = fog_volume : "Per-region volumetric fog (brush)"
 [
-    color(color255) : "Fog color (R G B)" : "255 255 255"
     density(float) : "Fog density" : "0.5"
-    falloff(float) : "Edge fade (0=hard, 1=linear ramp)" : "1.0"
+    color(color255) : "Fog color (R G B)" : "255 255 255"
     scatter(float) : "Scatter fraction toward camera" : "0.6"
-    height_gradient(float) : "Height density gradient (0=uniform, 1=dense at bottom)" : "0.0"
-    radial_falloff(float) : "Radial density falloff (0=none, 1=sphere-shaped cloud)" : "0.0"
+    edge_softness(float) : "Edge softness (0=hard, 1=soft fade)" : "1.0"
+    _tags(string) : "Space-delimited tags for script queries" : ""
+]
+
+// Semantic fog point entities.
+//
+// Modder pattern for adding a new fog shape:
+//   1. Define a `@PointClass` with a meaningful name (e.g. `fog_lamp`).
+//   2. Declare sizing KVPs (radius, height, axis angles) with defaults that
+//      match the unit-geometry asset you point at.
+//   3. Add a `model()` declaration referencing a unit-sized display asset
+//      (radius/extent 1) under `models/editor/`, and use the `scale`
+//      expression to size it from the sizing KVPs. Apply rotation via the
+//      same expression when the shape has an orientation.
+//   4. Set tuned defaults for `density`, `color`, and `radial_falloff`
+//      that match the visual the shape is named after.
+//
+// `fog_lamp` and `fog_tube` below are worked examples of this pattern.
+
+@PointClass
+    color(255 220 150)
+    size(-8 -8 -8, 8 8 8)
+    model({ "path": "models/editor/fog_lamp.obj", "scale": [radius, radius, radius] })
+    = fog_lamp : "Spherical volumetric fog (point)"
+[
+    origin(origin)
+    radius(float) : "Sphere radius (map units)" : "64"
+    density(float) : "Fog density" : "0.5"
+    color(color255) : "Fog color (R G B)" : "255 217 153"
+    scatter(float) : "Scatter fraction toward camera" : "0.6"
+    radial_falloff(float) : "Radial density falloff (0=uniform, 1=sphere-shaped cloud)" : "2.0"
+    _tags(string) : "Space-delimited tags for script queries" : ""
+]
+
+@PointClass
+    color(150 220 255)
+    size(-8 -8 -8, 8 8 8)
+    model({ "path": "models/editor/fog_tube.obj", "scale": [radius, height, radius], "angles": [pitch, yaw, 0] })
+    = fog_tube : "Capsule volumetric fog (point)"
+[
+    origin(origin)
+    radius(float) : "Capsule radius (map units)" : "32"
+    height(float) : "Capsule total height tip-to-tip (map units)" : "128"
+    pitch(float) : "Pitch (degrees, around +X after yaw)" : "0"
+    yaw(float) : "Yaw (degrees, around +Y first)" : "0"
+    density(float) : "Fog density" : "0.3"
+    color(color255) : "Fog color (R G B)" : "153 217 255"
+    scatter(float) : "Scatter fraction toward camera" : "0.6"
+    radial_falloff(float) : "Radial density falloff (0=uniform, 1=capsule-shaped cloud)" : "1.5"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 

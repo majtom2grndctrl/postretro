@@ -191,7 +191,7 @@ pub fn encode_map_entities(
     Some(MapEntitySection { entries })
 }
 
-/// Encode the resolved `env_fog_volume` brush entities and the worldspawn
+/// Encode the resolved fog volume entities and the worldspawn
 /// `fog_pixel_scale` into a `FogVolumesSection`. Always produces a section so
 /// the worldspawn pixel-scale is always honoured at runtime, even when the map
 /// carries no fog brushes (8-byte overhead for that case).
@@ -226,8 +226,8 @@ pub fn encode_fog_volumes(
                 inv_half_ext: inv_half_ext.to_array(),
                 half_diag,
                 inv_height_extent,
-                plane_count: 0,
-                planes: Vec::new(),
+                plane_count: v.planes.len() as u32,
+                planes: v.planes.clone(),
                 tags: v.tags.clone(),
             }
         })

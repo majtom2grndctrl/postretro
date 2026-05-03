@@ -127,7 +127,7 @@ Billboard instances come from `BillboardEmitterComponent` particles packed by `P
 
 ### 7.5 Fog Volume Composite
 
-Low-resolution raymarched pass over `env_fog_volume` brush regions. Resolution governed by `fog_pixel_scale` worldspawn property (default 4 — quarter resolution). Per sample: point-in-AABB membership test against the fog volume buffer; accumulates SH ambient scatter and dynamic spot beam scatter (with shadow map occlusion for visible shafts and shadow wedges). Composited over the scene additively via nearest-neighbor upscale. The pixelated blocks are intentional, not a compromise.
+Low-resolution raymarched pass over `env_fog_volume` brush regions. Resolution governed by `fog_pixel_scale` worldspawn property (default 4 — quarter resolution). Per sample: shape-based membership test (box/sphere/ellipsoid/capsule, AABB as conservative bound) followed by an optional half-space clip plane test; accumulates SH ambient scatter and dynamic spot beam scatter (with shadow map occlusion for visible shafts and shadow wedges). Composited over the scene additively via nearest-neighbor upscale. The pixelated blocks are intentional, not a compromise.
 
 **Portal-driven volume culling.** Each frame, before dispatching the raymarch, the renderer reduces the per-sample AABB-test loop to only volumes reachable from the camera cell. Per-leaf `u32` bitmasks are baked at compile time into PRL section 31 (`FogCellMasks`); bit `i` set in leaf `L`'s mask means volume `i` overlaps leaf `L`'s bounds (conservative AABB-vs-AABB, no boundary pop). At runtime:
 

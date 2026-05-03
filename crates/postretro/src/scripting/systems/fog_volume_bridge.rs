@@ -53,8 +53,9 @@ pub(crate) struct FogVolumeBridge {
     /// Reusable byte buffer for `FogPointLight` records.
     points_bytes: Vec<u8>,
     /// Per-frame cache of (min, max) AABBs for volumes that are currently active
-    /// (component present, density > 0). Populated by `update_volumes`; consumed
-    /// by the renderer's spot-light pre-cull. Empty when no volumes are active.
+    /// (component present, density > 0). Populated by `update_volumes`; cleared
+    /// by both `update_volumes` (frame reset) and `clear` (level reset).
+    /// Consumed by the renderer's spot-light pre-cull.
     active_aabbs: Vec<(Vec3, Vec3)>,
     /// Set to `true` the first time the point-light cap warning fires; suppresses
     /// per-frame log spam when the scene consistently exceeds `MAX_FOG_POINT_LIGHTS`.
@@ -157,8 +158,6 @@ impl FogVolumeBridge {
     /// portal-cull mask so density-zero slots never reach the GPU.
     pub(crate) fn update_volumes(&mut self, registry: &EntityRegistry) -> Option<(&[u8], u32)> {
         self.volumes_bytes.clear();
-        // Stale data from the previous frame must not leak into this frame's
-        // spot-light pre-cull — clear unconditionally before repopulating.
         self.active_aabbs.clear();
         if self.entity_ids.is_empty() {
             return None;
@@ -519,10 +518,6 @@ mod tests {
 
     #[test]
     fn active_aabbs_reflects_only_density_positive_volumes() {
-        // Two records, one with density zeroed via `set_component`. The
-        // active-AABB cache should contain only the live volume so the
-        // renderer's spot-light pre-cull doesn't keep spots alive against
-        // a fog volume that's currently invisible.
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
         bridge.populate_from_level(&mut registry, &[sample_record(), sample_record()]);
@@ -549,8 +544,6 @@ mod tests {
 
     #[test]
     fn active_aabbs_clears_when_all_volumes_go_dark() {
-        // A previously-live volume turns off → cache must drop, not retain
-        // stale data from the prior frame.
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
         bridge.populate_from_level(&mut registry, &[sample_record()]);

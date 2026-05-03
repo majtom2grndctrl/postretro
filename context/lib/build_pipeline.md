@@ -62,7 +62,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 ### Entity resolution
 
 - **`light`, `light_spot`, `light_sun`** — validated at compile time (falloff distance required, spotlight direction verified, intensity bounds checked). Static lights feed the SH irradiance volume baker and the directional lightmap baker. Dynamic lights feed the runtime direct lighting buffer. Compilation fails on validation errors.
-- **`env_fog_volume`** — resolved at load time to world-space AABBs, shape parameters, and fog parameters. Uploaded as a compact storage buffer (up to 16 entries). Runtime uses a shape-based membership test (box/sphere/ellipsoid/capsule) per raymarch sample; AABB is always the conservative bound. An optional half-space clip plane (normal points into the removed region; sentinel `(0,0,0,+inf)` = no clip) is applied after the shape test. No BSP traversal at runtime.
+- **`env_fog_volume`** — resolved at load time to world-space AABBs, shape, and fog parameters. Uploaded as a compact storage buffer (up to 16 entries). Per-sample test: shape membership (AABB as conservative bound), then optional half-space clip plane (normal points into the removed region). No BSP traversal at runtime.
 - **`billboard_emitter`** — resolved at level load via the built-in classname dispatch table. The engine spawns an ECS entity with a `BillboardEmitterComponent` configured from the map's KVPs. See §Built-in classname routing below.
 - **`env_cubemap`** — marks a position for offline cubemap baking. Bake tool is out of initial scope.
 - **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf gets spatial reverb parameters for the audio subsystem.

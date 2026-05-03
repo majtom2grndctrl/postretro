@@ -3,15 +3,16 @@
 // `L`. Used at runtime to OR together visible-cell masks into an active fog
 // volume set for the fog raymarch pass.
 // See: context/lib/build_pipeline.md §PRL section IDs
-// See: context/plans/ready/perf-portal-fog-culling/index.md
+// See: context/plans/in-progress/perf-portal-fog-culling/index.md
 //
 // On-disk layout (little-endian):
 //   u32  cell_count          — total BSP leaf count (solid + empty)
 //   u32  masks[cell_count]   — per-leaf fog volume bitmask
 //
 // Bits 0..16 carry the volume bitmap (`MAX_FOG_VOLUMES = 16`). Bits 16..32 are
-// reserved, written as zero, and ignored on read so the section can grow
-// without a format break.
+// reserved, written as zero, and ignored by the runtime fog-active computation
+// (AND-masked at union time, not stripped here) so the section can grow without
+// a format break.
 //
 // The section is optional: it is omitted from the PRL when the source map has
 // no `env_fog_volume` brushes. Absence at load time produces `None`.
@@ -39,6 +40,12 @@ pub struct FogCellMasksSection {
 pub fn union_active_mask(visible_leaves: &[u32], masks: &[u32]) -> u32 {
     let mut active = 0u32;
     for &leaf in visible_leaves {
+        // Non-empty masks with an OOB index means stale VisibleCells — assert
+        // in debug to surface the bug early without affecting release.
+        debug_assert!(
+            masks.is_empty() || (leaf as usize) < masks.len(),
+            "leaf index {leaf} OOB — stale VisibleCells?"
+        );
         if let Some(m) = masks.get(leaf as usize) {
             active |= *m;
         }
@@ -211,12 +218,27 @@ mod tests {
         assert_eq!(union_active_mask(&visible, &masks), 0b0101);
     }
 
+    // In debug builds, out-of-range leaf indices trigger a `debug_assert!` to
+    // surface stale-VisibleCells bugs early. In release, the `.get()` bounds
+    // check silently skips the OOB index so a stale VisibleCells from a
+    // previous level cannot crash a frame mid-load.
     #[test]
+    #[cfg(not(debug_assertions))]
     fn union_active_mask_skips_out_of_range_leaves() {
         let masks = vec![0b0001, 0b0010];
-        // leaf 99 is out of range — must not panic or affect the result.
+        // leaf 99 is out of range — must not affect the result (release only;
+        // debug build panics at the assert instead).
         let visible = vec![0u32, 99u32, 1u32];
         assert_eq!(union_active_mask(&visible, &masks), 0b0011);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "OOB")]
+    fn union_active_mask_panics_on_oob_in_debug() {
+        let masks = vec![0b0001, 0b0010];
+        let visible = vec![0u32, 99u32, 1u32];
+        union_active_mask(&visible, &masks);
     }
 
     #[test]

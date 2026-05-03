@@ -2,8 +2,8 @@
 // See: context/lib/scripting.md
 //
 // Mirrors `light_bridge.rs`: per-frame, walks the entity registry to repack
-// GPU-ready bytes. `update_volumes` returns `Option<&[u8]>` — `None` means no active volumes.
-// The caller uploads an empty slice on `None`, which zeroes `volume_count` and
+// GPU-ready bytes. `update_volumes` returns `Option<(&[u8], u32)>` — `None` means no active volumes.
+// The caller uploads an empty slice on `None`, which zeroes `active_count` and
 // causes `FogPass::active()` to return false, skipping the compute dispatch.
 //
 // Fog volume AABBs are baked into the PRL at compile time (immutable at runtime)

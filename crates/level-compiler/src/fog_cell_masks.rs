@@ -46,6 +46,8 @@ pub fn bake_fog_cell_masks(
         for (i, fog) in fog_aabbs.iter().enumerate() {
             // `MAX_FOG_VOLUMES` (16) keeps us inside u32 bit range; bits
             // 16..31 are reserved/zero by construction.
+            // `intersects` is inclusive on shared boundaries — conservative
+            // overlap prevents pop artifacts at leaf boundary edges.
             if leaf.bounds.intersects(fog) {
                 mask |= 1u32 << i;
             }

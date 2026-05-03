@@ -64,11 +64,12 @@ shape(choices) : "Volume shape" : "box" =
 ]
 capsule_pitch(float) : "Capsule axis pitch (degrees, -90..90)" : "0"
 capsule_yaw(float)   : "Capsule axis yaw (degrees, 0..360)" : "0"
-clip_normal(string)  : "Clip plane normal (world-space unit vector, e.g. '0 1 0')" : ""
-clip_offset(float)   : "Clip plane offset (world units along clip_normal)" : "0"
+clip_pitch(float)    : "Clip plane normal pitch (degrees, -90..90; leave absent for no clip)" : ""
+clip_yaw(float)      : "Clip plane normal yaw (degrees, 0..360)" : "0"
+clip_offset(float)   : "Clip plane offset (world units along clip normal)" : "0"
 ```
 
-`capsule_pitch` and `capsule_yaw` are ignored for non-capsule shapes. When both are absent (or zero on a capsule), the compiler falls back to longest-AABB-dimension inference. `clip_normal` empty string (default) means no clip plane — the sentinel is baked automatically.
+`capsule_pitch` and `capsule_yaw` are ignored for non-capsule shapes. When both are absent (or zero on a capsule), the compiler falls back to longest-AABB-dimension inference. `clip_pitch` absent (key not authored) means no clip plane — the sentinel is baked automatically. When `clip_pitch` is present, `clip_yaw` and `clip_offset` are read; the compiler converts pitch/yaw to a unit normal using the same convention as `capsule_pitch`/`capsule_yaw`. This matches the `angles` KVP pattern used by `light_spot` and `light_sun` in the same FGD.
 
 ### Task 3: Level compiler — parse + bake
 
@@ -77,7 +78,7 @@ clip_offset(float)   : "Clip plane offset (world units along clip_normal)" : "0"
 `resolve_fog_volume()` in `crates/level-compiler/src/parse.rs`:
 - Parses `shape` KVP; unknown values → compiler error; missing → `FogVolumeShape::Box`.
 - Parses `capsule_pitch` and `capsule_yaw` (degrees); stores as `Option<f32>` — `None` when the key is absent.
-- Parses `clip_normal` (space-separated "nx ny nz") and `clip_offset`; if `clip_normal` is empty or absent, stores `None`; if present, normalises the vector and rejects zero-length input with a compiler error.
+- Parses `clip_pitch` and `clip_yaw` (degrees) and `clip_offset`; if `clip_pitch` is absent, stores `None` (no clip); if present, converts pitch/yaw to a unit normal using the same formula as `capsule_axis` baking.
 
 `encode_fog_volumes()` in `crates/level-compiler/src/pack.rs`:
 
@@ -207,5 +208,5 @@ Previous format emitted no shape field. Loading an old PRL at this offset reads 
 - **Capsule radius tie-breaking:** when two non-axis half-extents are equal (on the auto-inferred path), the `min` of the two is used as radius. This preserves the tighter fit. A `max` rule would be looser. Current proposal: `min`.
 - **`height_fade` applicability:** for sphere and ellipsoid, `height_fade` is applied (same as box). This lets authors use `height_gradient` with non-box shapes. If this is confusing UX, disable `height_fade` for sphere/ellipsoid and force `height_fade = 1.0`. Current proposal: keep it, since it's author-controlled via `height_gradient = 0.0` default.
 - **`radial_falloff` for capsule:** the capsule uses `dist / capsule_radius` as `radial_t`. Setting `radial_falloff > 0` gives a soft interior. This matches the sphere/ellipsoid behavior. If capsule authors prefer a separate `edge_falloff` parameter, that's a follow-on.
-- **Clip plane authoring interface:** the proposed `clip_normal` string KVP (e.g. `"0 1 0"`) is flexible but requires the author to think in world-space vectors. An alternative is `clip_pitch` / `clip_yaw` angle KVPs (consistent with the capsule axis approach). Angles are more TrenchBroom-friendly; world-space normals are more precise for non-cardinal orientations. Resolve at implementation time.
+- ~~**Clip plane authoring interface:**~~ Resolved: use `clip_pitch`/`clip_yaw` angle KVPs, consistent with `capsule_pitch`/`capsule_yaw` and the `angles` pattern used by `light_spot`/`light_sun` in this FGD. Authors think in degrees, not world-space vectors.
 - **Capsule axis when both KVPs are zero:** `capsule_pitch = 0, capsule_yaw = 0` produces axis `(1, 0, 0)` (forward). If an author sets these to zero intentionally, that's fine. If they leave them at the default zero and expect auto-inference, they get a +X capsule instead. Current proposal: treat both KVPs as `Option` — if neither is authored (key absent), auto-infer; if either is present (even at value 0), use the explicit angle.

@@ -259,9 +259,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let leaf_count = 1024usize;
-        let masks: Vec<u32> = (0..leaf_count)
-            .map(|i| 1u32 << ((i as u32) % 16))
-            .collect();
+        let masks: Vec<u32> = (0..leaf_count).map(|i| 1u32 << ((i as u32) % 16)).collect();
         let visible: Vec<u32> = (0..200u32).map(|i| (i * 5) % leaf_count as u32).collect();
 
         // Warm caches.

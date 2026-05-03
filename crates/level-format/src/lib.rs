@@ -158,8 +158,8 @@ pub enum SectionId {
     FogVolumes = 30,
 
     /// Per-BSP-leaf bitmask of overlapping fog volumes (bit `i` = volume `i`
-    /// overlaps this leaf). Optional — emitted only when at least one
-    /// `env_fog_volume` brush entity is present.
+    /// overlaps this leaf). Solid leaves are always zero. Optional — emitted
+    /// only when at least one `env_fog_volume` brush entity is present.
     /// See `fog_cell_masks::FogCellMasksSection`.
     FogCellMasks = 31,
 }

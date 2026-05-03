@@ -1,8 +1,8 @@
 # Portal-Based Fog Volume Culling
 
-> **Status:** ready
+> **Status:** in-progress
 > **Builds on:** `fog-volumes` plan (already shipped) — specifically `FogVolume` GPU struct, `FogVolumeComponent`, and the `FogPass` compute pipeline. Also assumes per-frame `VisibleCells` bitmask from portal traversal (`context/lib/rendering_pipeline.md` §2, §7.1).
-> **Related:** `context/lib/rendering_pipeline.md` §2 (portal traversal), §7 (visibility prepasses), §7.5 (fog composite) · `context/lib/build_pipeline.md` (PRL section IDs) · `context/plans/drafts/fog-volumes/index.md` · `crates/postretro/src/visibility.rs` (VisibleCells) · `crates/postretro/src/render/fog_pass.rs` (raymarch compute)
+> **Related:** `context/lib/rendering_pipeline.md` §2 (portal traversal), §7 (visibility prepasses), §7.5 (fog composite) · `context/lib/build_pipeline.md` (PRL section IDs) · `context/plans/done/fog-volumes/index.md` · `crates/postretro/src/visibility.rs` (VisibleCells) · `crates/postretro/src/render/fog_pass.rs` (raymarch compute)
 
 ---
 
@@ -39,7 +39,7 @@ PRL section 31 (`FogCellMasks`). Optional. Present when at least one `env_fog_vo
 | `cell_count` | `u32` | Total BSP leaf count (solid + empty). Matches the leaf-array length in the `BspLeaves` section. |
 | `masks` | `[u32; cell_count]` | Index `i` is leaf `i`'s fog-volume bitmask. Bits `0..MAX_FOG_VOLUMES` (`MAX_FOG_VOLUMES = 16`): volume present in this cell. Bits `16..31`: reserved, written as `0`, ignored on read. Solid leaves are written as `0`. |
 
-Section absent ⇒ no fog volumes in the map (`volume_count == 0`). `FogPass::active()` returns false and the pass is skipped before any mask lookup.
+Section absent ⇒ legacy-PRL fallback: `active_mask = all_slots_mask`. Section 30 may still carry fog volumes — absence of section 31 is not proof of `volume_count == 0`. `FogPass::active()` returns false only when `active_count == 0` after the per-frame repack.
 
 Index `i` in `masks` is the full BSP leaf index, matching the leaf indices carried by `VisibleCells::Culled`. Solid leaves are `0` and never appear in `VisibleCells::Culled`, so they never contribute to `active_mask`.
 

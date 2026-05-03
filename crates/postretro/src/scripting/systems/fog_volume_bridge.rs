@@ -2,9 +2,11 @@
 // See: context/lib/scripting.md
 //
 // Mirrors `light_bridge.rs`: per-frame, walks the entity registry to repack
-// GPU-ready bytes. `update_volumes` returns `Option<(&[u8], u32)>` — `None` means no active volumes.
-// The caller uploads an empty slice on `None`, which zeroes `active_count` and
-// causes `FogPass::active()` to return false, skipping the compute dispatch.
+// GPU-ready bytes. `update_volumes` returns `Option<(&[u8], u32)>` — `None` means
+// `entity_ids` is empty (no fog volumes registered for this level), NOT "no active
+// volumes". A level with registered but zero-density fog volumes returns `Some`,
+// preserving the canonical index layout that `FogCellMasks` bit indices rely on.
+// The caller uses `None` to skip the entire fog-volume upload path.
 //
 // Fog volume AABBs are baked into the PRL at compile time (immutable at runtime)
 // and cached in `aabbs` here. Density / colour / scatter / falloff are runtime-tweakable
@@ -132,9 +134,12 @@ impl FogVolumeBridge {
     }
 
     /// Walk the registry and repack one `FogVolume` GPU record per tracked
-    /// entity, in original PRL record order. Returns `None` when there are no
-    /// fog volumes (empty `entity_ids`) — the renderer uses this to skip the
-    /// whole upload path.
+    /// entity, in original PRL record order. Returns `None` when `entity_ids`
+    /// is empty — i.e. no fog volumes were registered for this level. Returns
+    /// `Some` whenever at least one volume was registered, even if all volumes
+    /// currently have density ≤ 0; the `Some` case preserves the canonical
+    /// index layout that `FogCellMasks` bit indices rely on. The renderer uses
+    /// `None` to skip the entire fog-volume upload path.
     ///
     /// The returned byte slice has length `entity_ids.len() * FOG_VOLUME_SIZE`
     /// — every slot is emitted, in source order, even when the underlying

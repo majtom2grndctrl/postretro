@@ -45,7 +45,7 @@ pub fn bake_fog_cell_masks(
         let mut mask: u32 = 0;
         for (i, fog) in fog_aabbs.iter().enumerate() {
             // `MAX_FOG_VOLUMES` (16) keeps us inside u32 bit range; bits
-            // 16..31 are reserved/zero by construction.
+            // 16..=31 are reserved/zero by construction.
             // `intersects` is inclusive on shared boundaries — conservative
             // overlap prevents pop artifacts at leaf boundary edges.
             if leaf.bounds.intersects(fog) {
@@ -160,6 +160,28 @@ mod tests {
         ];
         let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
         assert_eq!(section.masks, vec![0b101, 0b010, 0]);
+    }
+
+    #[test]
+    fn fog_spanning_portal_boundary_overlaps_both_leaves() {
+        // Two leaves abutting on the x=10 plane (leaf A: x∈[0,10],
+        // leaf B: x∈[10,20]). A fog AABB whose face touches that plane
+        // (max.x = 10) should overlap *both* leaves under the inclusive
+        // intersects semantics — that's the no-pop guarantee at portal
+        // boundaries called out in the plan's Compile-time section.
+        let tree = make_tree(vec![
+            empty_leaf(aabb([0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            empty_leaf(aabb([10.0, 0.0, 0.0], [20.0, 10.0, 10.0])),
+        ]);
+        // Fog AABB sits in leaf A's interior but its max.x rests exactly
+        // on the shared plane.
+        let volumes = vec![fog([2.0, 2.0, 2.0], [10.0, 8.0, 8.0])];
+        let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
+        assert_eq!(
+            section.masks,
+            vec![0b1, 0b1],
+            "boundary-touching fog volume must light bit 0 in both leaves"
+        );
     }
 
     #[test]

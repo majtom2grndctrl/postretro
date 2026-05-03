@@ -133,14 +133,14 @@ pub struct MapLight {
     pub cone_angle_inner: f32,
     pub cone_angle_outer: f32,
     pub cone_direction: [f32; 3],
-    /// Reserved for sub-plan 4 (shadow maps). The direct-lighting path
-    /// built in sub-plan 3 does not consume this; the shader's
-    /// `shadow_info` slot is zeroed at upload time.
+    /// Whether this light should cast shadows. The direct-lighting path does
+    /// not consume this yet; the shader's `shadow_info` slot is zeroed at
+    /// upload time. Reserved for when shadow-map support is wired up.
     pub cast_shadows: bool,
     /// Runtime counterpart of the compiler's `MapLight.is_dynamic`. Sourced
     /// from the `_dynamic` key in the `.map` file via the AlphaLights wire
-    /// format. `pack_spec_lights` filters on `!is_dynamic` so dynamic lights
-    /// are driven by the dynamic `GpuLight` loop, not the static spec buffer.
+    /// format. Dynamic lights are excluded from the static spec buffer and
+    /// are instead handled by the per-frame dynamic light loop.
     pub is_dynamic: bool,
     /// Author-supplied script tags loaded from the `LightTags` section (ID
     /// 26). Space-delimited in the PRL wire format; split here into a
@@ -192,18 +192,17 @@ pub struct LevelWorld {
     /// (ID 22). `None` for maps without baked direct — the renderer binds a
     /// 1×1 white placeholder and bumped-Lambert degrades to flat white.
     pub lightmap: Option<LightmapSection>,
-    /// Chunk light list (ID 23). `None` for maps compiled before Task A of
-    /// `lighting-chunk-lists/` — the runtime falls back to iterating the
-    /// full spec buffer. See `chunk_light_list::ChunkGrid::fallback`.
+    /// Chunk light list (ID 23). `None` for legacy maps — the runtime falls
+    /// back to iterating the full spec buffer. See
+    /// `chunk_light_list::ChunkGrid::fallback`.
     pub chunk_light_list: Option<ChunkLightListSection>,
-    /// Per-face animated-light chunks (ID 24). Produced by the
-    /// `animated-light-chunks/` plan; consumed by the weight-map compose
+    /// Per-face animated-light chunks (ID 24). Produced by `prl-build` for
+    /// maps that carry animated lights; consumed by the weight-map compose
     /// pass to cross-check `AnimatedLightWeightMaps.chunk_rects.len()`.
     pub animated_light_chunks: Option<AnimatedLightChunksSection>,
-    /// Per-chunk atlas rectangles + per-texel weight lists (ID 25). Baked
-    /// by the `animated-light-weight-maps/` plan. `None` when the map has
-    /// no animated lights — the renderer falls back to a 1×1 zero atlas
-    /// for the animated-contribution slot.
+    /// Per-chunk atlas rectangles + per-texel weight lists (ID 25). `None`
+    /// when the map has no animated lights — the renderer falls back to a
+    /// 1×1 zero atlas for the animated-contribution slot.
     pub animated_light_weight_maps: Option<AnimatedLightWeightMapsSection>,
     /// Per-animated-light delta SH probe grids (ID 27). Each grid carries the
     /// peak (brightness = 1.0, base color) SH contribution for one animated
@@ -230,15 +229,11 @@ pub struct LevelWorld {
     /// Per-region volumetric fog volumes loaded from the FogVolumes section
     /// (ID 30). Each record carries an engine-space AABB plus density / colour
     /// / scatter parameters. Empty when the section is absent or the map
-    /// authored no `env_fog_volume` brushes. Task 5 of the fog-volumes plan
-    /// wires these into the renderer; the loader here just makes them
-    /// available on the level struct.
-    #[allow(dead_code)]
+    /// authored no `env_fog_volume` brushes.
     pub fog_volumes: Vec<FogVolumeRecord>,
     /// Worldspawn `fog_pixel_scale` downscale factor for the volumetric fog
     /// pass (1=full-res, 8=coarsest). Defaults to 4 when the section is
     /// absent.
-    #[allow(dead_code)]
     pub fog_pixel_scale: u32,
     /// Per-BSP-leaf bitmask of overlapping fog volumes loaded from the
     /// FogCellMasks section (ID 31). `masks[L]` has bit `i` set when fog
@@ -246,10 +241,13 @@ pub struct LevelWorld {
     /// visible cells to derive the active fog-volume set for the fog
     /// raymarch pass.
     ///
-    /// `None` when the section is absent — the map has no `env_fog_volume`
-    /// brushes, so the fog pass should be skipped entirely (the all-zero /
-    /// `DrawAll`-equivalent case).
-    #[allow(dead_code)]
+    /// `None` when the section is absent. This is the legacy-PRL fallback:
+    /// `compute_fog_cell_mask` treats `(Culled(_), None)` as "all canonical
+    /// slots active" (`all_slots_mask`) so a level baked before section 31
+    /// existed still renders all canonical fog volumes. `live_mask` continues
+    /// to gate density-zero slots. Section absence does not imply
+    /// `volume_count == 0` — section 30 (FogVolumes) may be present without
+    /// section 31.
     pub fog_cell_masks: Option<Vec<u32>>,
 }
 
@@ -575,8 +573,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         log::info!("[PRL] LightTags: {tagged} tagged lights");
     }
 
-    // LightInfluence section (optional). Missing for maps compiled before
-    // sub-plan 4 — fall back to empty (all lights treated as infinite-bound).
+    // LightInfluence section (optional). Missing for legacy maps — fall back
+    // to empty (all lights treated as infinite-bound).
     let light_influences: Vec<crate::lighting::influence::LightInfluence> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::LightInfluence as u32)? {
             Some(data) => {
@@ -610,8 +608,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
-    // ShVolume section (optional). Missing for maps compiled before sub-plan 2
-    // — the renderer falls back to `ambient_floor + direct_sum`.
+    // ShVolume section (optional). Missing for legacy maps — the renderer
+    // falls back to `ambient_floor + direct_sum`.
     let sh_volume: Option<ShVolumeSection> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::ShVolume as u32)? {
             Some(data) => {
@@ -799,9 +797,10 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         };
 
     // FogCellMasks section (ID 31, optional). Per-BSP-leaf bitmask of which
-    // fog volumes overlap each leaf. Absent when the source map authored no
-    // `env_fog_volume` brushes — the runtime treats `None` as "skip the fog
-    // pass" rather than "draw all volumes".
+    // fog volumes overlap each leaf. Absent for legacy PRLs or maps with no
+    // `env_fog_volume` brushes. `None` triggers the legacy-PRL fallback in
+    // `compute_fog_cell_mask`: all canonical slots are treated as active via
+    // `all_slots_mask`, so fog volumes still render on maps predating section 31.
     let fog_cell_masks: Option<Vec<u32>> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32)? {
             Some(data) => {

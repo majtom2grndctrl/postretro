@@ -3,13 +3,13 @@
 // `L`. Used at runtime to OR together visible-cell masks into an active fog
 // volume set for the fog raymarch pass.
 // See: context/lib/build_pipeline.md §PRL section IDs
-// See: context/plans/in-progress/perf-portal-fog-culling/index.md
+// See: context/lib/rendering_pipeline.md §7.5
 //
 // On-disk layout (little-endian):
 //   u32  cell_count          — total BSP leaf count (solid + empty)
 //   u32  masks[cell_count]   — per-leaf fog volume bitmask
 //
-// Bits 0..16 carry the volume bitmap (`MAX_FOG_VOLUMES = 16`). Bits 16..32 are
+// Bits 0..=15 carry the volume bitmap (`MAX_FOG_VOLUMES = 16`). Bits 16..=31 are
 // reserved, written as zero, and ignored by the runtime fog-active computation
 // (AND-masked at union time, not stripped here) so the section can grow without
 // a format break.
@@ -248,39 +248,25 @@ mod tests {
         assert_eq!(union_active_mask(&[], &[0xFFFF_FFFFu32]), 0);
     }
 
-    /// Algorithmic-regression guard for the per-frame OR loop. The plan's
-    /// performance target is < 10 µs on a 200-leaf input; criterion enforces
-    /// that statistically in the bench. This test uses a much more generous
-    /// 50 µs ceiling so it surfaces order-of-magnitude regressions in
-    /// `cargo test` without false-positives on loaded CI machines.
+    /// Correctness check on a 200-leaf input mirroring the bench's synthetic
+    /// shape. Performance is owned by the criterion bench
+    /// (`fog_cull_bench.rs`); this test only asserts the OR result is what we
+    /// expect across a realistic-sized visible set so a logic regression
+    /// surfaces in `cargo test` without timing-sensitive flakes on loaded CI
+    /// machines.
     #[test]
-    fn union_active_mask_under_50us_on_200_leaves() {
-        use std::hint::black_box;
-        use std::time::{Duration, Instant};
-
+    fn union_active_mask_correct_on_200_leaves() {
         let leaf_count = 1024usize;
         let masks: Vec<u32> = (0..leaf_count).map(|i| 1u32 << ((i as u32) % 16)).collect();
         let visible: Vec<u32> = (0..200u32).map(|i| (i * 5) % leaf_count as u32).collect();
 
-        // Warm caches.
-        for _ in 0..1000 {
-            black_box(union_active_mask(black_box(&visible), black_box(&masks)));
-        }
+        // Reference: OR every visible leaf's mask the simple way.
+        let expected: u32 = visible
+            .iter()
+            .map(|&leaf| masks[leaf as usize])
+            .fold(0u32, |acc, m| acc | m);
 
-        let iters = 10_000u32;
-        let start = Instant::now();
-        let mut acc = 0u32;
-        for _ in 0..iters {
-            acc ^= union_active_mask(black_box(&visible), black_box(&masks));
-        }
-        let elapsed = start.elapsed();
-        black_box(acc);
-        let per_call = elapsed / iters;
-        assert!(
-            per_call < Duration::from_micros(50),
-            "union_active_mask regressed past the 50 µs algorithmic ceiling: \
-             {per_call:?} per call ({iters} iters in {elapsed:?})"
-        );
+        assert_eq!(union_active_mask(&visible, &masks), expected);
     }
 
     #[test]

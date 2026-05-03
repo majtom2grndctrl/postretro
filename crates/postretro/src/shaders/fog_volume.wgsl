@@ -68,6 +68,10 @@ struct LightSpaceMatrices {
 }
 @group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
 
+// Maximum number of fog volumes the shader can process per frame.
+// Must match MAX_FOG_VOLUMES in the Rust fog_volume module.
+const MAX_FOG_VOLUMES: u32 = 16u;
+
 // --- Group 6: Fog resources ---
 
 // 96 bytes; layout must match `FogVolume` in fx/fog_volume.rs. Each `vec3<f32>`
@@ -325,10 +329,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // composition handles axis-aligned rays correctly without epsilon hacks.
     let inv_d = vec3<f32>(1.0) / ray.direction;
 
-    // MAX_FOG_VOLUMES = 16 (mirrors level-format constant). We track raw
-    // [enter, exit] hits, then sort-merge into a disjoint union.
-    var raw_enter: array<f32, 16>;
-    var raw_exit: array<f32, 16>;
+    // We track raw [enter, exit] hits per active volume, then sort-merge into
+    // a disjoint union. Array sized to MAX_FOG_VOLUMES.
+    var raw_enter: array<f32, MAX_FOG_VOLUMES>;
+    var raw_exit: array<f32, MAX_FOG_VOLUMES>;
     var raw_count: u32 = 0u;
 
     let vc = fog.active_count;
@@ -345,7 +349,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let enter = max(t_near, start_t);
             let exit = min(t_far, ray.max_t);
             if enter < exit {
-                if raw_count < 16u {
+                if raw_count < MAX_FOG_VOLUMES {
                     raw_enter[raw_count] = enter;
                     raw_exit[raw_count] = exit;
                     raw_count = raw_count + 1u;
@@ -355,13 +359,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // Merge raw hits into a disjoint, sorted union.
-    // `fog.active_count` is capped at MAX_FOG_VOLUMES (16), so raw_count <= 16
-    // is always satisfied — no overflow path is needed.
-    var union_enter: array<f32, 16>;
-    var union_exit: array<f32, 16>;
+    // `fog.active_count` is capped at MAX_FOG_VOLUMES, so raw_count <=
+    // MAX_FOG_VOLUMES is always satisfied — no overflow path is needed.
+    var union_enter: array<f32, MAX_FOG_VOLUMES>;
+    var union_exit: array<f32, MAX_FOG_VOLUMES>;
     var union_count: u32 = 0u;
 
-    // Selection sort by enter (raw_count <= 16, so O(n^2) is fine).
+    // Selection sort by enter (raw_count <= MAX_FOG_VOLUMES, so O(n^2) is fine).
     for (var a: u32 = 0u; a < raw_count; a = a + 1u) {
         var best = a;
         for (var b: u32 = a + 1u; b < raw_count; b = b + 1u) {

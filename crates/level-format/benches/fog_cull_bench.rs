@@ -1,13 +1,13 @@
 // Microbenchmark for the per-frame fog cell-mask OR loop.
-// See: context/plans/in-progress/perf-portal-fog-culling/index.md Task 4
+// See: context/lib/rendering_pipeline.md §7.5
 //
 // The fog pass calls `union_active_mask` once per frame on the visible-cell
 // list to decide which fog volumes the raymarch shader should iterate. The
 // plan target is < 10 µs on a synthetic 200-leaf input; this bench documents
-// that target via criterion's statistical estimate. A separate, more
-// generous (50 µs) ceiling lives as a `#[test]` in
-// `postretro-level-format::fog_cell_masks` so algorithmic regressions trip
-// `cargo test` without false-positives on loaded CI machines.
+// that target via criterion's statistical estimate and is the sole performance
+// gate. The correctness test `union_active_mask_correct_on_200_leaves` in
+// `postretro-level-format::fog_cell_masks` validates the OR result only; it
+// does not enforce any timing ceiling.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use postretro_level_format::fog_cell_masks::union_active_mask;

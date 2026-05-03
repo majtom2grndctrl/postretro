@@ -510,20 +510,22 @@ impl FogPass {
         }
         self.canonical_volumes.clear();
         self.canonical_volumes.extend_from_slice(&volumes[..count]);
-        // Mask off any bits past `count` so a truncated list cannot leave a
-        // dangling live bit.
+        // Mask off any bits past `count` so a truncated canonical list cannot
+        // leave a dangling live bit. This is belt-and-suspenders against
+        // `compute_fog_cell_mask`'s `all_slots_mask`: the two operate on
+        // different inputs (this caps `live_mask` at upload time;
+        // `all_slots_mask` caps the per-frame visibility-derived `cell_mask`),
+        // and we want reserved bits (16..=31) of a forward-compatible PRL
+        // stripped regardless of which call site sees them first.
         //
-        // The `(1 << count) - 1` pattern is intentionally redundant with the
-        // `all_slots_mask` computed in `compute_fog_cell_mask`. The duplication
-        // is belt-and-suspenders: a forward-compatible PRL may store reserved
-        // bits (16..31) in the baked per-leaf masks, and we want to guarantee
-        // they are stripped before they can reach the shader regardless of which
-        // call site is hit first.
-        let count_mask = if count >= 32 {
-            u32::MAX
-        } else {
-            (1u32 << count).wrapping_sub(1)
-        };
+        // `count` is bounded by `MAX_FOG_VOLUMES = 16` via the `.min` above,
+        // so the shift is always well-defined; the assert documents and
+        // enforces that invariant.
+        debug_assert!(
+            count <= MAX_FOG_VOLUMES,
+            "count {count} exceeds MAX_FOG_VOLUMES ({MAX_FOG_VOLUMES}); .min cap broken"
+        );
+        let count_mask = (1u32 << count).wrapping_sub(1);
         self.live_mask = live_mask & count_mask;
     }
 

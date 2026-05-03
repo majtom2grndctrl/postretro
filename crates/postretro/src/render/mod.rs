@@ -55,6 +55,9 @@ use crate::fx::smoke::SpriteFrame;
 /// `canonical_volume_count` is capped at `MAX_FOG_VOLUMES` (16) by
 /// `FogPass::set_canonical_volumes`, so the `1 << count` shift never reaches
 /// 32 and the result fits in `u32`.
+///
+/// Must be called after `FogPass::set_canonical_volumes`; if called before,
+/// `canonical_volume_count` is 0 and the mask silently returns 0.
 fn compute_fog_cell_mask(
     visible: &VisibleCells,
     fog_cell_masks: Option<&[u32]>,
@@ -66,6 +69,7 @@ fn compute_fog_cell_mask(
         (1u32 << canonical_volume_count).wrapping_sub(1)
     };
     match (visible, fog_cell_masks) {
+        // DrawAll: portal isolation doesn't apply — solid leaf, exterior camera, no-portals map, or empty world.
         (VisibleCells::DrawAll, _) => all_slots_mask,
         // AND against `all_slots_mask` so reserved bits 16..32 in the baked
         // mask (or trailing bits past the loaded canonical count) cannot set
@@ -76,6 +80,10 @@ fn compute_fog_cell_mask(
         // Culled visibility + missing baked masks: fall back to "all slots
         // visible" so a legacy PRL without section 31 still renders fog
         // — `live_mask` will gate density-zero slots either way.
+        // Note: when `canonical_volume_count == 0`, `all_slots_mask == 0` here,
+        // so `active_count` will be 0 after repack and the fog pass is skipped
+        // correctly via the `FogPass::active()` guard. No phantom slots are
+        // activated on a zero-volume level.
         (VisibleCells::Culled(_), None) => all_slots_mask,
     }
 }
@@ -421,9 +429,12 @@ pub struct Renderer {
     fog: FogPass,
 
     /// Per-BSP-leaf bitmask of overlapping fog volumes, loaded from PRL section
-    /// 31 at level load. `None` for maps with no `env_fog_volume` brushes (or
-    /// for legacy PRLs predating section 31). The fog pass OR's the masks of
-    /// visible leaves each frame to skip raymarching invisible fog volumes.
+    /// 31 at level load. When `Some`, the fog pass ORs the masks of visible
+    /// leaves each frame to derive the active fog-volume set, culling volumes
+    /// not reachable from the camera. When `None` (maps predating section 31 or
+    /// maps with no `env_fog_volume` brushes), culling is disabled and
+    /// `compute_fog_cell_mask` falls back to `all_slots_mask` — all canonical
+    /// slots are treated as active.
     fog_cell_masks: Option<Vec<u32>>,
 }
 

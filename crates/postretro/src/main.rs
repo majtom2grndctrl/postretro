@@ -1048,6 +1048,11 @@ impl ApplicationHandler for App {
                         } else {
                             renderer.upload_fog_volumes(&[], 0);
                         }
+                        // Sibling call to `upload_fog_volumes` (which has a
+                        // byte-only contract): hand the renderer the active
+                        // AABB list so it can pre-cull dynamic spots that
+                        // can't scatter into any fog volume this frame.
+                        renderer.set_fog_aabbs(self.fog_volume_bridge.active_aabbs());
                         self.light_bridge
                             .collect_all_as_map_lights(&registry, self.script_time)
                     };

@@ -52,6 +52,10 @@ pub(crate) struct FogVolumeBridge {
     volumes_bytes: Vec<u8>,
     /// Reusable byte buffer for `FogPointLight` records.
     points_bytes: Vec<u8>,
+    /// Per-frame cache of (min, max) AABBs for volumes that are currently active
+    /// (component present, density > 0). Populated by `update_volumes`; consumed
+    /// by the renderer's spot-light pre-cull. Empty when no volumes are active.
+    active_aabbs: Vec<(Vec3, Vec3)>,
     /// Set to `true` the first time the point-light cap warning fires; suppresses
     /// per-frame log spam when the scene consistently exceeds `MAX_FOG_POINT_LIGHTS`.
     warned_overflow: bool,
@@ -64,6 +68,7 @@ impl FogVolumeBridge {
             entity_ids: Vec::new(),
             volumes_bytes: Vec::new(),
             points_bytes: Vec::new(),
+            active_aabbs: Vec::new(),
             warned_overflow: false,
         }
     }
@@ -130,6 +135,7 @@ impl FogVolumeBridge {
         // Length cleared, capacity retained.
         self.volumes_bytes.clear();
         self.points_bytes.clear();
+        self.active_aabbs.clear();
         self.warned_overflow = false;
     }
 
@@ -151,6 +157,9 @@ impl FogVolumeBridge {
     /// portal-cull mask so density-zero slots never reach the GPU.
     pub(crate) fn update_volumes(&mut self, registry: &EntityRegistry) -> Option<(&[u8], u32)> {
         self.volumes_bytes.clear();
+        // Stale data from the previous frame must not leak into this frame's
+        // spot-light pre-cull — clear unconditionally before repopulating.
+        self.active_aabbs.clear();
         if self.entity_ids.is_empty() {
             return None;
         }
@@ -167,6 +176,9 @@ impl FogVolumeBridge {
             let live = component.is_some_and(|c| c.density > 0.0) && aabb.is_some();
             if live {
                 live_mask |= 1u32 << i;
+                if let Some(a) = aabb {
+                    self.active_aabbs.push((a.min, a.max));
+                }
             }
 
             let fv = match (component, aabb) {
@@ -277,6 +289,15 @@ impl FogVolumeBridge {
             );
         }
         &self.points_bytes
+    }
+
+    /// (min, max) AABBs of fog volumes that are currently active (component
+    /// present, density > 0). Refreshed each call to `update_volumes`. Empty
+    /// when no volumes are active. Consumed by the renderer to pre-cull
+    /// dynamic spot lights against the active fog set before they reach the
+    /// raymarch's per-step inner loop.
+    pub(crate) fn active_aabbs(&self) -> &[(Vec3, Vec3)] {
+        &self.active_aabbs
     }
 }
 
@@ -494,6 +515,66 @@ mod tests {
         let light = point_light([0.0, 1.0, 0.0], 5.0, true);
         let bytes = bridge.update_points(&[(light, 0.0)]);
         assert!(bytes.is_empty(), "dark light must be suppressed");
+    }
+
+    #[test]
+    fn active_aabbs_reflects_only_density_positive_volumes() {
+        // Two records, one with density zeroed via `set_component`. The
+        // active-AABB cache should contain only the live volume so the
+        // renderer's spot-light pre-cull doesn't keep spots alive against
+        // a fog volume that's currently invisible.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record(), sample_record()]);
+
+        let id1 = bridge.entity_ids[1];
+        registry
+            .set_component(
+                id1,
+                FogVolumeComponent {
+                    density: 0.0,
+                    color: [0.0; 3],
+                    scatter: 0.0,
+                    falloff: 0.0,
+                },
+            )
+            .unwrap();
+
+        let _ = bridge.update_volumes(&registry).expect("two slots");
+        let active = bridge.active_aabbs();
+        assert_eq!(active.len(), 1, "only the live volume contributes an AABB");
+        assert_eq!(active[0].0, Vec3::new(-2.0, 0.0, -2.0));
+        assert_eq!(active[0].1, Vec3::new(2.0, 3.0, 2.0));
+    }
+
+    #[test]
+    fn active_aabbs_clears_when_all_volumes_go_dark() {
+        // A previously-live volume turns off → cache must drop, not retain
+        // stale data from the prior frame.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+
+        let _ = bridge.update_volumes(&registry).expect("one slot");
+        assert_eq!(bridge.active_aabbs().len(), 1);
+
+        let id0 = bridge.entity_ids[0];
+        registry
+            .set_component(
+                id0,
+                FogVolumeComponent {
+                    density: 0.0,
+                    color: [0.0; 3],
+                    scatter: 0.0,
+                    falloff: 0.0,
+                },
+            )
+            .unwrap();
+        let _ = bridge.update_volumes(&registry).expect("still one slot");
+        assert!(
+            bridge.active_aabbs().is_empty(),
+            "stale AABB must not survive into a frame where every volume is off"
+        );
     }
 
     #[test]

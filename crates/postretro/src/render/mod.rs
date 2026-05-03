@@ -88,6 +88,33 @@ fn compute_fog_cell_mask(
     }
 }
 
+/// Sphere ↔ AABB pre-cull: returns `true` if the sphere centred at `center`
+/// with the given `radius` overlaps any AABB in `aabbs`. Mirrors
+/// `sphere_intersects_any_aabb` in `fog_volume_bridge.rs` — clamp the centre
+/// into each box and compare squared distance to `radius²`.
+///
+/// When `aabbs` is empty the function returns `true`: this is the safe
+/// fallback for early frames before `set_fog_aabbs` has been called and for
+/// the (unreachable in practice) case where `collect_fog_spot_lights` runs
+/// without an active fog pass. The fog pass itself is gated by
+/// `FogPass::active()`, so dropping spots here doesn't matter when the pass
+/// is skipped — but passing them through avoids surprising "no fog spots"
+/// regressions if the gating ever changes.
+fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec3)]) -> bool {
+    if aabbs.is_empty() {
+        return true;
+    }
+    let r2 = radius * radius;
+    for (min, max) in aabbs {
+        let clamped = center.clamp(*min, *max);
+        let d = center - clamped;
+        if d.length_squared() <= r2 {
+            return true;
+        }
+    }
+    false
+}
+
 // `curve_eval.wgsl` reads `anim_samples` by lexical name; `forward.wgsl`
 // declares that buffer. WGSL resolves references at module scope regardless of
 // textual order, so appending the helper after `forward.wgsl` is safe.
@@ -436,6 +463,13 @@ pub struct Renderer {
     /// `compute_fog_cell_mask` falls back to `all_slots_mask` — all canonical
     /// slots are treated as active.
     fog_cell_masks: Option<Vec<u32>>,
+
+    /// (min, max) AABBs of fog volumes that are active this frame. Refreshed
+    /// each frame via `set_fog_aabbs`; consumed by `collect_fog_spot_lights`
+    /// to drop dynamic spots whose influence sphere can't scatter into any
+    /// active volume. Empty = no volumes active (the fog pass is skipped
+    /// elsewhere; the cull short-circuits to "pass everything" for safety).
+    active_fog_aabbs: Vec<(Vec3, Vec3)>,
 }
 
 impl Renderer {
@@ -1562,6 +1596,7 @@ impl Renderer {
             smoke_pass,
             fog,
             fog_cell_masks: None,
+            active_fog_aabbs: Vec::new(),
         })
     }
 
@@ -1762,6 +1797,22 @@ impl Renderer {
             if multiplier < BRIGHTNESS_SUPPRESSION_THRESHOLD {
                 continue;
             }
+            // Spot's bounding sphere (center = origin, radius = falloff_range)
+            // must reach at least one active fog volume; otherwise the
+            // raymarch would iterate this spot every march step for zero
+            // scatter contribution.
+            let center = Vec3::new(
+                light.origin[0] as f32,
+                light.origin[1] as f32,
+                light.origin[2] as f32,
+            );
+            if !sphere_intersects_any_fog_aabb(
+                center,
+                light.falloff_range,
+                &self.active_fog_aabbs,
+            ) {
+                continue;
+            }
             let intensity = light.intensity * multiplier;
             out.push(crate::fx::fog_volume::FogSpotLight {
                 position: [
@@ -1824,6 +1875,16 @@ impl Renderer {
     /// suppresses any canonical slots whose density is zero.
     pub fn set_fog_cell_masks(&mut self, masks: Option<Vec<u32>>) {
         self.fog_cell_masks = masks;
+    }
+
+    /// Cache the active fog-volume AABB list for this frame. Called per frame
+    /// after `upload_fog_volumes`; the renderer uses these AABBs to pre-cull
+    /// dynamic spot lights before they reach the fog raymarch's per-step inner
+    /// loop. An empty slice clears the cache so stale AABBs from a previous
+    /// frame don't keep spots alive after their fog volume turns off.
+    pub fn set_fog_aabbs(&mut self, aabbs: &[(Vec3, Vec3)]) {
+        self.active_fog_aabbs.clear();
+        self.active_fog_aabbs.extend_from_slice(aabbs);
     }
 
     /// Upload the per-frame fog point-light buffer. Bytes must be a tightly
@@ -2554,6 +2615,54 @@ mod tests {
             compute_fog_cell_mask(&VisibleCells::Culled(vec![0]), Some(&[0xFFu32]), 0),
             0
         );
+    }
+
+    #[test]
+    fn sphere_intersects_any_fog_aabb_inside_passes() {
+        // Spot's bounding sphere overlaps the AABB → must pass the pre-cull.
+        let aabbs = vec![(Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0))];
+        assert!(sphere_intersects_any_fog_aabb(
+            Vec3::new(0.0, 0.0, 0.0),
+            0.1,
+            &aabbs,
+        ));
+    }
+
+    #[test]
+    fn sphere_intersects_any_fog_aabb_outside_all_drops() {
+        // Spot's bounding sphere can't reach any AABB → must be dropped.
+        let aabbs = vec![
+            (Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+            (Vec3::new(50.0, 50.0, 50.0), Vec3::new(52.0, 52.0, 52.0)),
+        ];
+        assert!(!sphere_intersects_any_fog_aabb(
+            Vec3::new(100.0, 100.0, 100.0),
+            5.0,
+            &aabbs,
+        ));
+    }
+
+    #[test]
+    fn sphere_intersects_any_fog_aabb_empty_list_passes_everything() {
+        // Empty AABB list = no fog active (or pre-`set_fog_aabbs`). Safe
+        // fallback: don't drop spots — the fog pass is gated elsewhere.
+        assert!(sphere_intersects_any_fog_aabb(
+            Vec3::new(0.0, 0.0, 0.0),
+            1.0,
+            &[],
+        ));
+    }
+
+    #[test]
+    fn sphere_intersects_any_fog_aabb_grazing_edge_passes() {
+        // Sphere just barely touches the AABB face: distance == radius
+        // counts as intersecting (matches sphere_intersects_any_aabb).
+        let aabbs = vec![(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0))];
+        assert!(sphere_intersects_any_fog_aabb(
+            Vec3::new(2.0, 0.5, 0.5),
+            1.0,
+            &aabbs,
+        ));
     }
 
     #[test]

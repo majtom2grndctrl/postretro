@@ -166,6 +166,7 @@ impl FogVolumeBridge {
     /// The returned `live_mask` has bit `i` set iff slot `i` has a present
     /// component with density > 0. The renderer ANDs this into the
     /// portal-cull mask so density-zero slots never reach the GPU.
+    #[allow(clippy::type_complexity)]
     pub(crate) fn update_volumes(
         &mut self,
         registry: &EntityRegistry,

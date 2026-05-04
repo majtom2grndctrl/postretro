@@ -60,7 +60,7 @@ The brush IS the fog shape. Semantic point entities are authoring sugar over the
 ### Wire format and round-trip
 
 - [ ] `FogVolumesSection::from_bytes(section.to_bytes())` round-trips for: a 6-plane box-brush record, a 5-plane wedge record, a zero-plane semantic record, and a record carrying both planes and tags.
-- [ ] `MIN_RECORD_SIZE` is updated from 92 to 96 to account for the added `plane_count: u32` field.
+- [ ] `MIN_RECORD_SIZE` remains 92: the added `plane_count: u32` (+4 bytes) is offset by the removal of `height_gradient: f32` (-4 bytes), net zero change.
 - [ ] `FOG_VOLUME_SIZE` remains 96. `_pad: [f32; 2]` is replaced by `plane_offset: u32, plane_count: u32` (same 8 bytes). The size assert does not change.
 
 ## Tasks
@@ -72,7 +72,7 @@ In `crates/level-format/src/fog_volumes.rs`:
 - `FogVolumeRecord` currently has no shape, capsule, or clip-plane fields. No removal needed.
 - Add `plane_count: u32` and `planes: Vec<[f32; 4]>` (each plane stored as `(nx, ny, nz, d)` in engine coordinates, with the convention that a point is inside the volume when `dot(pos, n) <= d` for every plane).
 - Serialize the planes after the existing fixed payload and before the tag list, using the same length-prefixed variable-length pattern the tag list already uses. The fixed payload carries `plane_count`; the variable section that follows carries `plane_count * 16` bytes of plane data.
-- Update `MIN_RECORD_SIZE` to reflect the new fixed-payload size (add 4 bytes for `plane_count`; current value is 92).
+- `MIN_RECORD_SIZE` remains 92: `plane_count: u32` (+4 bytes) is offset by the removal of `height_gradient: f32` (-4 bytes), net zero. No constant update needed.
 - Add round-trip tests for: 6-plane box, 5-plane wedge, zero-plane volume, volume with planes and tags coexisting. Each test asserts every plane component round-trips bit-for-bit.
 
 ### Task 2: FGD — primitive brush entity and semantic point entities
@@ -153,7 +153,7 @@ This eliminates the ambiguity at the shader level — `plane_count == 0` is neve
 | (variable) `planes` | `plane_count × 4 × f32` LE | Each plane is `(nx, ny, nz, d)`; inside iff `dot(pos, n) <= d` |
 | (variable) tag list | length-prefixed string list | Unchanged pattern |
 
-`MIN_RECORD_SIZE` grows by 4 bytes for `plane_count` (92 → 96). The implementor updates the constant. `radial_falloff` is always present in the record; primitive `fog_volume` records write `0.0`, semantic entity records write the KVP value.
+`MIN_RECORD_SIZE` remains 92: the added `plane_count: u32` (+4 bytes) is offset by the removal of `height_gradient: f32` (-4 bytes), net zero. `radial_falloff` is always present in the record; primitive `fog_volume` records write `0.0`, semantic entity records write the KVP value.
 
 The level-format crate has no version field. Existing PRLs must be recompiled; existing `.map` sources must be re-authored against the new entity names. Pre-release API policy.
 

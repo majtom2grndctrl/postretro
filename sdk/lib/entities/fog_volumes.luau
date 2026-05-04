@@ -32,6 +32,8 @@ export type FogVolumeHandle = {
   setScatter: (self: FogVolumeHandle, scatter: number) -> (),
 
   --- Set the edge softness (world units). Instant.
+  --- Note: `edge_softness` only affects brush `fog_volume` entities; it is
+  --- ignored by the shader for `fog_lamp` and `fog_tube`.
   setEdgeSoftness: (self: FogVolumeHandle, edgeSoftness: number) -> (),
 }
 

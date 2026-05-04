@@ -216,7 +216,7 @@ fn collect_emitter_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_jso
 }
 
 /// Build the JSON shape `[{ id, position, tags, component: { density, color,
-/// scatter, falloff } }, ...]` for every entity carrying a
+/// scatter, edge_softness } }, ...]` for every entity carrying a
 /// `FogVolumeComponent`. Position is read from the entity's `Transform`
 /// (volume center, baked at level load).
 fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {

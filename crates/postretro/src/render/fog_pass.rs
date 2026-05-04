@@ -82,9 +82,9 @@ pub struct FogPass {
     /// cell mask against the bridge's live mask. Shader loops against this.
     pub active_count: u32,
     /// Canonical fog-volume list in source order (one entry per
-    /// `fog_volume` brush / `fog_lamp` / `fog_tube` entity in the PRL). The bytes are stored as raw
-    /// `FogVolume` records and re-packed per-frame in `repack_active`. Empty
-    /// when no level is loaded or the level has no fog volumes.
+    /// `fog_volume` brush / `fog_lamp` / `fog_tube` entity in the PRL).
+    /// Re-packed per-frame by `repack_active`. Empty when no level is loaded
+    /// or the level has no fog volumes.
     canonical_volumes: Vec<FogVolume>,
     /// Bit `i` set ⇒ canonical slot `i` has density > 0 and is eligible for
     /// upload. ANDed with the visible-cell-derived mask to produce the
@@ -590,8 +590,10 @@ impl FogPass {
     /// Compute the per-frame `active_mask` from the visible-cell-derived
     /// `cell_mask` ANDed against `live_mask`, dense-pack the surviving
     /// canonical slots into the GPU buffer, and update `active_count`.
-    /// Idempotent and allocation-free on the steady state — the scratch
-    /// buffer's capacity is retained across frames.
+    /// The repack scratch buffers retain their capacity across frames, but
+    /// `set_canonical_volumes` clones `Vec<[f32; 4]>` per active volume each
+    /// frame (via `canonical_planes`), so this path is not fully allocation-free
+    /// on the steady state.
     pub fn repack_active(&mut self, queue: &wgpu::Queue, cell_mask: u32) {
         let active_mask = cell_mask & self.live_mask;
         self.repack_scratch.clear();
@@ -630,6 +632,13 @@ impl FogPass {
             // cannot skip the write even when the count happens to match.
             let bytes = fog_volume::pack_fog_volumes(&self.repack_scratch);
             queue.write_buffer(&self.volumes_buffer, 0, bytes);
+            // Conditional upload — asymmetric with the unconditional volumes
+            // write above. Semantic-only levels (e.g. fog_lamp / fog_tube
+            // with no bounding planes) produce no plane records, leaving
+            // `planes_scratch` empty. In that case we skip the write and let
+            // the buffer retain stale contents from a previous level; this is
+            // safe because the shader guards on `plane_count > 0u` before
+            // indexing `fog_planes`, so stale buffer data is never read.
             if !self.planes_scratch.is_empty() {
                 let plane_bytes: &[u8] = bytemuck::cast_slice(&self.planes_scratch);
                 queue.write_buffer(&self.fog_planes_buffer, 0, plane_bytes);

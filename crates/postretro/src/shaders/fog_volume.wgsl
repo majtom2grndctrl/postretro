@@ -15,7 +15,7 @@
 //   group 3  SH volume (shared with forward)
 //   group 4  Vacant (None in pipeline layout)
 //   group 5  Spot shadow maps (shared with forward)
-//   group 6  Fog resources: depth, AABB buffer, scatter output, fog params
+//   group 6  Fog resources: depth, AABB buffer, scatter output, fog params, spot lights, point lights, fog planes
 
 // --- Group 3: SH volume (subset of forward bindings) ---
 
@@ -94,8 +94,8 @@ struct FogVolume {
     scatter: f32,
     center: vec3<f32>,
     half_diag: f32,
-    inv_half_ext: vec3<f32>,
-    inv_height_extent: f32,
+    inv_half_ext: vec3<f32>,      // reserved; dead after height_gradient path removal
+    inv_height_extent: f32,       // reserved; dead after height_gradient path removal
     radial_falloff: f32,
     plane_offset: u32,
     plane_count: u32,

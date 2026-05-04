@@ -454,7 +454,7 @@ pub struct Renderer {
     /// 31 at level load. When `Some`, the fog pass ORs the masks of visible
     /// leaves each frame to derive the active fog-volume set, culling volumes
     /// not reachable from the camera. When `None` (maps predating section 31 or
-    /// maps with no `env_fog_volume` brushes), culling is disabled and
+    /// maps with no fog volume entities), culling is disabled and
     /// `compute_fog_cell_mask` falls back to `all_slots_mask` — all canonical
     /// slots are treated as active.
     fog_cell_masks: Option<Vec<u32>>,

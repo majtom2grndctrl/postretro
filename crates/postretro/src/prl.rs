@@ -797,8 +797,10 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         };
 
     // FogCellMasks section (ID 31, optional). Per-BSP-leaf bitmask of which
-    // fog volumes overlap each leaf. Absent for legacy PRLs or maps with no
-    // `fog_volume` brushes. `None` triggers the legacy-PRL fallback in
+    // fog volumes overlap each leaf. Absent for legacy PRLs or maps that
+    // authored no fog entities (`fog_volume` brushes, `fog_lamp` point
+    // entities, or `fog_tube` point entities). `None` triggers the legacy-PRL
+    // fallback in
     // `compute_fog_cell_mask`: all canonical slots are treated as active via
     // `all_slots_mask`, so fog volumes still render on maps predating section 31.
     let fog_cell_masks: Option<Vec<u32>> =

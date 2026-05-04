@@ -387,7 +387,9 @@ pub struct MapData {
     pub data_script: Option<String>,
     /// Non-light, non-worldspawn map entities collected for the runtime
     /// classname dispatch. Brush entities (e.g. `fog_volume`) are excluded
-    /// — they are resolved separately during BSP construction. See the
+    /// — they are resolved separately during BSP construction. Point fog
+    /// entities (`fog_lamp`, `fog_tube`) are also excluded — they are resolved
+    /// into `fog_volumes` during parsing rather than emitted here. See the
     /// MapEntity PRL section in `context/lib/build_pipeline.md`.
     pub map_entities: Vec<MapEntityRecord>,
     /// Per-region volumetric fog volumes resolved from `fog_volume` brush

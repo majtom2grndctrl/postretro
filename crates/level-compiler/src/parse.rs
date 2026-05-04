@@ -1306,7 +1306,7 @@ mod tests {
         );
     }
 
-    // TODO: the zero-plane rejection path in `resolve_fog_volume`
+    // NOTE: the zero-plane rejection path in `resolve_fog_volume`
     // (`planes.is_empty()` while `have_any == true`) is a defensive guard that
     // is not reachable via honest GeoMap construction: the FaceIds present in
     // `face_verts` are a subset of those registered in `geo_map.face_planes`,
@@ -1315,5 +1315,6 @@ mod tests {
     // vertices.  Testing this path would require either (a) manually constructing
     // an inconsistent GeoMap with a BrushId → FaceId mapping that refers to a
     // FaceId absent from `face_planes`, or (b) refactoring the guard into a
-    // testable helper.  Both are out of scope until the guard fires in practice.
+    // testable helper.  Both are out of scope for the structurally-unreachable
+    // case.
 }

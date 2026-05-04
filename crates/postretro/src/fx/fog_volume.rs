@@ -54,7 +54,9 @@ pub struct FogVolume {
     pub scatter: f32,
     pub center: [f32; 3],
     pub half_diag: f32,
+    /// Reserved; was used by height_gradient path (removed).
     pub inv_half_ext: [f32; 3],
+    /// Reserved; was used by height_gradient path (removed).
     pub inv_height_extent: f32,
     pub radial_falloff: f32,
     /// Index of this volume's first plane in the global `fog_planes` storage
@@ -67,6 +69,9 @@ pub struct FogVolume {
     /// Explicit padding to keep the struct's size a multiple of 16 (WGSL
     /// alignment for the largest member, `vec3<f32>`). Without it the WGSL
     /// side rounds up but the Rust side does not, breaking the layout assert.
+    /// `radial_falloff` + `plane_offset` + `plane_count` = 12 bytes; WGSL
+    /// rounds to the next 16-byte boundary (96 total); this u32 brings the
+    /// Rust struct to 96 bytes to match.
     pub _pad: u32,
 }
 

@@ -43,7 +43,12 @@ export interface FogVolumeHandle extends GeneratedFogVolumeEntity {
   /** Set the scatter fraction. Instant. */
   setScatter(scatter: number): void;
 
-  /** Set the edge softness (world units). Instant. */
+  /**
+   * Set the edge softness (world units). Instant.
+   *
+   * Note: `edge_softness` only affects brush `fog_volume` entities; it is
+   * ignored by the shader for `fog_lamp` and `fog_tube`.
+   */
   setEdgeSoftness(edgeSoftness: number): void;
 }
 

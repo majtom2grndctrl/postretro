@@ -125,7 +125,7 @@
     density(float) : "Fog density" : "0.5"
     color(color255) : "Fog color (R G B)" : "255 255 255"
     scatter(float) : "Scatter fraction toward camera" : "0.6"
-    edge_softness(float) : "Edge softness (0=hard, 1=soft fade)" : "1.0"
+    edge_softness(float) : "Edge softness in map units (0=hard cutoff at brush face, larger=wider fade inward)" : "1.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 

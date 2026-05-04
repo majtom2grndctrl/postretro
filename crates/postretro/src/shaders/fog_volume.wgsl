@@ -79,9 +79,9 @@ const MAX_FOG_VOLUMES: u32 = 16u;
 // without internal padding holes. The trailing `plane_offset / plane_count`
 // pair indexes into the `fog_planes` storage buffer (group 6 binding 6).
 //
-// `center`, `inv_half_ext`, `half_diag`, and `inv_height_extent` are baked at
-// compile time by the level compiler so the raymarch reads precomputed values
-// rather than deriving them per step.
+// `center` and `half_diag` are shader-active precomputed fields. `inv_half_ext`
+// and `inv_height_extent` occupy layout slots but are not read by the current
+// shader (reserved; dead after height_gradient path removal).
 struct FogVolume {
     min: vec3<f32>,
     density: f32,
@@ -247,7 +247,8 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
             if min_signed_dist < 0.0 {
                 continue;
             }
-            // Hard cutoff when `edge_softness <= 0` — no division.
+            // Strict `> 0.0` guard avoids divide-by-zero: when edge_softness == 0
+            // the volume is a hard cutoff — full density inside, no fade band.
             fade = select(1.0, saturate(min_signed_dist / v.edge_softness), v.edge_softness > 0.0);
         } else {
             // Semantic path: AABB-only membership with a centered radial fade

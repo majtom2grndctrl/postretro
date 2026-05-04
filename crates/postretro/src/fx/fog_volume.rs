@@ -31,9 +31,11 @@ pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 /// `max_v` (rather than `max`) avoids the WGSL `max` builtin shadowing a
 /// member field name.
 ///
-/// `center`, `inv_half_ext`, `half_diag`, and `inv_height_extent` are baked at
-/// compile time by the level compiler so the raymarch shader doesn't recompute
-/// them per ray step.
+/// `center` and `half_diag` are baked at compile time by the level compiler and
+/// actively consumed by the raymarch shader. `inv_half_ext` and
+/// `inv_height_extent` occupy reserved layout slots — baked into the wire
+/// format but not read by the current shader (remnants of the removed
+/// height_gradient path).
 ///
 /// Field order pairs each `vec3<f32>` with a trailing scalar so WGSL's 16-byte
 /// vec3 alignment slots fill naturally without internal padding holes.
@@ -230,8 +232,8 @@ mod tests {
         // Byte offsets follow the field order: min(0) density(12) max(16)
         // edge_softness(28) color(32) scatter(44) center(48) half_diag(60)
         // inv_half_ext(64) inv_height_extent(76) radial_falloff(80)
-        // plane_offset(84) plane_count(88) _pad(92). Asserting on each baked
-        // field catches silent layout drift between Rust and WGSL.
+        // plane_offset(84) plane_count(88) _pad(92). Spot-checking key baked
+        // fields catches silent layout drift between Rust and WGSL.
         let v = FogVolume {
             min: [1.0, 2.0, 3.0],
             density: 0.75,

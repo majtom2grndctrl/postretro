@@ -19,10 +19,11 @@ pub const MAX_PLANES_PER_VOLUME: usize = 16;
 /// meters); colour is linear 0–1 (no sRGB curve applied). The runtime spawns
 /// one ECS entity per record at level load.
 ///
-/// `center`, `inv_half_ext`, `half_diag`, and `inv_height_extent` are derived
-/// from `min`/`max` at compile time so the raymarch shader can skip recomputing
-/// them per ray step. They are baked into the PRL rather than rebuilt at level
-/// load to keep the wire format self-describing for tooling.
+/// `center` and `half_diag` are derived from `min`/`max` at compile time and
+/// actively consumed by the raymarch shader. `inv_half_ext` and
+/// `inv_height_extent` are also baked (for wire-format self-description) but
+/// are not read by the current shader — they occupied the height_gradient path
+/// that was removed and now occupy reserved layout slots.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FogVolumeRecord {
     pub min: [f32; 3],

@@ -159,6 +159,10 @@
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
+// `angles [pitch, yaw, 0]` uses intrinsic Y-X Euler order: yaw around +Y first,
+// then pitch around the resulting +X. `parse.rs::resolve_fog_tube` implements the
+// same convention to compute the runtime AABB — both must stay in sync so the
+// editor display model and the culling box rotate identically.
 @PointClass
     color(150 220 255)
     size(-8 -8 -8, 8 8 8)

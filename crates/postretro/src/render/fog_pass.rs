@@ -607,10 +607,8 @@ impl FogPass {
     /// Compute the per-frame `active_mask` from the visible-cell-derived
     /// `cell_mask` ANDed against `live_mask`, dense-pack the surviving
     /// canonical slots into the GPU buffer, and update `active_count`.
-    /// The repack scratch buffers retain their capacity across frames, but
-    /// `set_canonical_volumes` clones `Vec<[f32; 4]>` per active volume each
-    /// frame (via `canonical_planes`), so this path is not fully allocation-free
-    /// on the steady state.
+    /// The repack scratch buffers retain their capacity across frames, so no
+    /// allocation occurs on the steady-state per-frame path.
     pub fn repack_active(&mut self, queue: &wgpu::Queue, cell_mask: u32) {
         let active_mask = cell_mask & self.live_mask;
         self.repack_scratch.clear();

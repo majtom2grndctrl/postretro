@@ -734,9 +734,10 @@ fn resolve_fog_tube(
     let pitch = pitch_deg.to_radians();
     let yaw = yaw_deg.to_radians();
 
-    // Local capsule axis is +Y in post-swizzle engine space; yaw rotates around
-    // +Y (no-op on +Y), then pitch around the resulting +X tilts the axis into
-    // the YZ plane. Engine space is Y-up after Quake-to-engine swizzle.
+    // Intrinsic Y-X Euler: yaw rotates around +Y first, then pitch around the
+    // resulting +X. This is the same convention encoded in the `model()` `angles`
+    // expression in `postretro.fgd` — both must agree so the editor display model
+    // and the runtime AABB rotate identically when an author changes pitch or yaw.
     let (sp, cp) = pitch.sin_cos();
     let (sy, cy) = yaw.sin_cos();
     let ax = -sp * sy;

@@ -53,7 +53,9 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | `light` | point | Omnidirectional light | `light` (intensity), `_color` (RGB), `_fade` (falloff distance, required), `delay` (falloff model), `style` (animation), `_phase` (style cycle offset), `_dynamic` (static-baked vs. runtime dynamic; default 0 = static) |
 | `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles), `angles` (direction) |
 | `light_sun` | point | Directional sun light | + `angles` (direction vector) |
-| `env_fog_volume` | brush | Per-region fog | `color`, `density`, `falloff` (AABB edge softness; box shape only), `scatter` (scatter fraction toward camera; default 0.6), `height_gradient`, `radial_falloff`, `_tags`, `shape` (`"box"` default / `"sphere"` / `"ellipsoid"` / `"capsule"`), `capsule_pitch` / `capsule_yaw` (explicit axis; absent = auto-infer from longest AABB dim), `clip` (`"none"` default / `"plane"`), `clip_pitch` / `clip_yaw` (half-space normal into removed region), `clip_offset` (center-relative offset; 0 = cut through center) |
+| `env_fog_volume` | brush | Per-region fog; convex brush shape from geometry | `color`, `density`, `falloff` (AABB edge softness), `scatter` (scatter fraction toward camera; default 0.6), `height_gradient`, `radial_falloff`, `_tags`, `clip` (`"none"` default / `"plane"`), `clip_pitch` / `clip_yaw` (half-space normal into removed region), `clip_offset` (center-relative offset; 0 = cut through center) |
+| `fog_lamp` | point | Spherical halo fog emitter; default warm amber | `color`, `density`, `radius` (sphere radius; sizes AABB), `radial_falloff`, `_tags` |
+| `fog_tube` | point | Capsule-strip fog emitter; default cool blue-white | `color`, `density`, `radius` (capsule radius), `height` (capsule length), `pitch` / `yaw` (capsule axis), `radial_falloff`, `_tags` |
 | `billboard_emitter` | point | Billboard particle emitter | `rate` (particles/sec; default 6), `lifetime` (seconds; default 3), `spread` (cone half-angle radians; default 0.4), `buoyancy` (-1=falls, 0=floats, >0=rises; default 0.2), `drag` (velocity damping/sec; default 0.8), `sprite` (collection name; default "smoke"), `initial_velocity_x/y/z` (default 0/0.8/0), `color_r/g/b` (linear; default 1/1/1), `spin_rate` (radians/sec; default 0) |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
@@ -136,7 +138,7 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | DataScript | 28 | When `data_script` KVP present on `worldspawn`; compiled script bytes + original source path |
 | MapEntity | 29 | When the map has at least one non-light, non-worldspawn entity; per-entity classname, origin, angles, tags, and KVP bag for runtime classname dispatch |
 | FogVolumes | 30 | Always (8-byte overhead when no env_fog_volume brushes present; carries fog_pixel_scale) |
-| FogCellMasks | 31 | When at least one env_fog_volume brush entity is present |
+| FogCellMasks | 31 | When at least one fog volume entity is present (fog_volume brush, fog_lamp, or fog_tube) |
 
 ### Runtime visibility
 

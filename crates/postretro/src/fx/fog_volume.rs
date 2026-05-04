@@ -7,11 +7,9 @@ use glam::{Mat4, Vec3};
 /// Maximum number of fog volumes the raymarch shader iterates per frame.
 // Authoritative definition lives in `postretro_level_format::fog_volumes`; re-exported here
 // so the renderer can import from a single crate-local path.
-pub use postretro_level_format::fog_volumes::MAX_FOG_VOLUMES;
-
-/// Maximum number of bounding planes per fog volume. Brushes with more faces
-/// are rejected at compile time; the runtime never sees `plane_count > 16`.
-pub const MAX_PLANES_PER_VOLUME: usize = 16;
+// Authoritative definitions live in `postretro_level_format::fog_volumes`;
+// re-exported here so the renderer can import from a single crate-local path.
+pub use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
 
 /// Capacity (in `vec4<f32>` planes) of the global `fog_planes` storage buffer.
 /// Worst case: every fog volume slot active with the maximum plane budget.

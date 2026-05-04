@@ -565,8 +565,25 @@ impl FogPass {
         // Pad with empty plane lists if the caller passed fewer planes than
         // volumes — keeps `canonical_planes` and `canonical_volumes` indexed
         // in lockstep so a malformed input degrades to AABB-only volumes.
-        while self.canonical_planes.len() < count {
-            self.canonical_planes.push(Vec::new());
+        // The bridge contracts that `planes.len() == volumes.len()`; if we hit
+        // this path, a primitive (plane-bounded) brush volume is silently
+        // demoted to AABB-only. Surface that loudly so the upstream desync is
+        // diagnosable rather than hidden as visual fog drift.
+        if self.canonical_planes.len() < count {
+            log::error!(
+                "[FogPass] canonical plane list shorter than volume list ({} planes for {} volumes) — primitive volumes will degrade to AABB-only; check FogVolumeBridge",
+                self.canonical_planes.len(),
+                count,
+            );
+            debug_assert!(
+                self.canonical_planes.len() >= count,
+                "canonical plane list shorter than volume list: {} < {}",
+                self.canonical_planes.len(),
+                count,
+            );
+            while self.canonical_planes.len() < count {
+                self.canonical_planes.push(Vec::new());
+            }
         }
         // Mask off any bits past `count` so a truncated canonical list cannot
         // leave a dangling live bit. This is belt-and-suspenders against

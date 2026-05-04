@@ -8,6 +8,13 @@ use crate::FormatError;
 /// re-exports this via `crate::fx::fog_volume::MAX_FOG_VOLUMES`.
 pub const MAX_FOG_VOLUMES: usize = 16;
 
+/// Maximum number of bounding planes per fog volume. Brushes with more faces
+/// are rejected by the level compiler; the runtime never sees `plane_count`
+/// greater than this. Authoritative definition shared between the compiler
+/// (which enforces the cap) and the engine (which sizes the `fog_planes`
+/// storage buffer).
+pub const MAX_PLANES_PER_VOLUME: usize = 16;
+
 /// One fog volume baked into the PRL. AABB extents are in engine space (Y-up,
 /// meters); colour is linear 0–1 (no sRGB curve applied). The runtime spawns
 /// one ECS entity per record at level load.

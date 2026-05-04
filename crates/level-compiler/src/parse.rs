@@ -18,7 +18,7 @@ use crate::map_data::{
     MapLight, TextureProjection,
 };
 use crate::map_format::MapFormat;
-use postretro_level_format::fog_volumes::MAX_FOG_VOLUMES;
+use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
 ///
@@ -569,10 +569,11 @@ fn resolve_fog_volume(
             "{classname}: brush hull yielded zero face planes — fog volume needs a non-degenerate convex hull"
         );
     }
-    if planes.len() > 16 {
+    if planes.len() > MAX_PLANES_PER_VOLUME {
         anyhow::bail!(
-            "{classname}: brush hull yielded {} face planes (max 16); simplify the brush",
-            planes.len()
+            "{classname}: brush hull yielded {} face planes — exceeds the {}-plane limit; simplify the brush",
+            planes.len(),
+            MAX_PLANES_PER_VOLUME,
         );
     }
 
@@ -1303,6 +1304,80 @@ mod tests {
         assert!(
             msg.contains("16") || msg.contains("simplify"),
             "error should mention the plane limit or instruct simplification: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_fog_volume_box_brush_emits_planes_with_inside_when_dot_le_d() {
+        // 6-face axis-aligned box fog_volume brush in Quake coords (Z-up,
+        // inches). Outward face normals must satisfy `n·p ≤ d` for any
+        // interior point — this is the load-bearing invariant at the
+        // compiler↔shader seam: WGSL `sample_fog_volumes()` evaluates
+        // `dot(pos, plane.xyz) <= plane.w` to test membership and uses
+        // `plane.w - dot(pos, plane.xyz)` as the signed distance for the
+        // edge_softness fade. If the convention drifts (e.g. inward normals
+        // or sign flip on `d`), every primitive volume goes black on the
+        // wrong side of every face.
+        let map_text = r#"
+// entity 0
+{
+"classname" "worldspawn"
+}
+// entity 1
+{
+"classname" "fog_volume"
+{
+( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
+( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) tex 0 0 0 1 1
+(  64 0 0 ) (  64 0 1 ) (  64 1 0 ) tex 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) tex 0 0 0 1 1
+( 0  64 0 ) ( 1  64 0 ) ( 0  64 1 ) tex 0 0 0 1 1
+}
+}
+"#;
+        let (geo_map, brush_ids) = fog_volume_geo_map_from_str(map_text);
+        let props = HashMap::new();
+        let scale = MapFormat::IdTech2.units_to_meters();
+        let volume = resolve_fog_volume(&geo_map, &brush_ids, &props, scale, "fog_volume")
+            .expect("6-face axis-aligned box must resolve")
+            .expect("brush has vertices, must produce a volume");
+
+        assert_eq!(
+            volume.planes.len(),
+            6,
+            "6-face axis-aligned box must yield 6 face planes"
+        );
+
+        // Interior point: world AABB centre. The brush spans (-64,-64,-32)..(64,64,32)
+        // in Quake; after `quake_to_engine` swizzle and unit scale, the centre
+        // remains (0,0,0). Any reasonable interior point in engine space works
+        // for the convention check; (0,0,0) has the merit of being unambiguously
+        // inside an origin-centred box.
+        let interior = glam::Vec3::new(0.0, 0.0, 0.0);
+        for (i, p) in volume.planes.iter().enumerate() {
+            let n = glam::Vec3::new(p[0], p[1], p[2]);
+            let d = p[3];
+            let dot = n.dot(interior);
+            // Strict inequality (not <=): centre is strictly interior, so any
+            // outward-normal plane through a face must produce dot < d. Equality
+            // would indicate the centre lies on the plane, which would be a
+            // degenerate brush.
+            assert!(
+                dot <= d,
+                "plane {i} ({p:?}) violates inside-when-dot<=d at interior point {interior:?}: dot={dot} d={d}"
+            );
+        }
+
+        // Sanity: an exterior point must violate at least one plane.
+        let exterior = glam::Vec3::new(100.0, 0.0, 0.0);
+        let any_violated = volume.planes.iter().any(|p| {
+            let n = glam::Vec3::new(p[0], p[1], p[2]);
+            n.dot(exterior) > p[3]
+        });
+        assert!(
+            any_violated,
+            "exterior point {exterior:?} must violate at least one face plane (n·p > d)"
         );
     }
 

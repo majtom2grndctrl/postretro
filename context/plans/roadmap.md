@@ -123,17 +123,20 @@ Establish the entity model and scripting layer together. Scripting and entities 
 
 ## Milestone 7: Grounded Movement
 
-Player controller with world collision, gravity, and jumping. The player is an entity from Milestone 6. Movement behavior is a script — the engine exposes collision primitives, the reference movement script implements Quake-style grounded movement.
+Player controller with world collision, gravity, and jumping. The player is an entity. Movement behavior is scripts (TypeScript and Luau) with enforced parity; the engine exposes collision and gravity primitives. Quake-inspired grounded movement with air control as modder-configurable data parameters.
 
-**Prerequisite:** Milestone 6 (entity model + scripting). Player exists as a typed entity; collision API is exposed to scripts.
+**Prerequisite:** Milestone 6 (entity model + scripting) ✓
 
-- [ ] **Collision dependency** — add parry3d.
-- [ ] **World trimesh collider** — at level load, register PRL static geometry as a Parry trimesh collider.
-- [ ] **Engine collision primitives** — shape cast (sweep), ray cast, point-in-volume overlap — exposed to the script API.
-- [ ] **Reference movement script** — gravity, terminal velocity, wall slide, step-up, jump, strafe — written entirely in script using the collision primitives. Quake-style air control vs. grounded-only acceleration: decide during implementation.
-- [ ] **Hot reload** — movement script reloads during gameplay.
+Plans ship in this sequence:
 
-**Testable outcome:** player walks through a PRL level with full collision response — no clipping, wall slide, step-up, jump. Modder can edit and hot-reload the movement script.
+- [ ] **Scripting primitives folder** — refactor flat `primitives.rs` / `primitives_light.rs` into a `scripting/primitives/` domain folder. Prerequisite for collision and gravity plans. `context/plans/ready/scripting-primitives-folder/`
+- [ ] **Mod script layer** — mod-level script execution layer that runs before any level loads. Player entity types and update priority declared here; prerequisite for player spawn. `context/plans/drafts/mod-script-layer/`
+- [ ] **Collision foundation** — parry3d dependency; `CollisionWorld` backed by PRL static geometry; `capsuleCast`, `rayCast`, `overlapCapsule` primitives exposed to scripts. Depends on scripting primitives folder. `context/plans/drafts/collision-foundation/`
+- [ ] **Gravity primitives** — `initialGravity` worldspawn KVP; `world.getGravity()` / `world.setGravity()` behavior-scope primitives; SDK and docs updated. Depends on scripting primitives folder. `context/plans/drafts/gravity-primitives/`
+- [ ] **Player spawn** — `info_player_start` FGD entry with `entity_class` KVP; level load spawns player entities from it. Depends on mod script layer. `context/plans/drafts/player-spawn/`
+- [ ] **Movement scripts** — TypeScript and Luau reference movement scripts with full feature parity (gravity, wall slide, step-up, jump, strafe, air control); contract test asserts matching output. Depends on collision foundation, gravity primitives, player spawn. `context/plans/drafts/movement-scripts/`
+
+**Testable outcome:** player walks through a PRL level with full collision response — no clipping, wall slide, step-up, jump. Modder can edit and hot-reload the movement script in either TypeScript or Luau.
 
 ---
 

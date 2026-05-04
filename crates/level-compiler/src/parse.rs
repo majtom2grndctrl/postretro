@@ -1185,4 +1185,93 @@ mod tests {
             .expect_err("missing height must error");
         assert!(format!("{err}").contains("height"));
     }
+
+    // -- fog_volume brush rejection --
+
+    /// Build a GeoMap from inline .map text and return the fog_volume entity's
+    /// brush IDs. The caller's map must contain exactly one `fog_volume` entity
+    /// with at least one brush.
+    fn fog_volume_geo_map_from_str(map_text: &str) -> (GeoMap, Vec<shambler::brush::BrushId>) {
+        let shalrath_map: shambler::shalrath::repr::Map = map_text
+            .trim()
+            .parse()
+            .expect("inline map text should parse");
+        let geo_map = GeoMap::new(shalrath_map);
+        let fog_entity_id = geo_map
+            .entities
+            .iter()
+            .find(|id| get_property(&geo_map, id, "classname").as_deref() == Some("fog_volume"))
+            .copied()
+            .expect("test map must contain a fog_volume entity");
+        let brush_ids = geo_map
+            .entity_brushes
+            .get(&fog_entity_id)
+            .cloned()
+            .unwrap_or_default();
+        (geo_map, brush_ids)
+    }
+
+    #[test]
+    fn resolve_fog_volume_rejects_brush_with_more_than_16_planes() {
+        // A 15-sided prism (15 rectangular side faces + top cap + bottom cap = 17
+        // face planes) exceeds the per-volume budget of 16.  The brush is a valid
+        // convex polyhedron — shambler will compute all 17 planes in the hull.
+        //
+        // Points are in Quake coordinates (right-handed, Z-up).  Shambler
+        // converts the triangle (p0,p1,p2) to a Plane3d whose outward normal is
+        // (p2-p0) × (p1-p0), and then tests hull containment as n·v ≤ d.  The
+        // side-face planes are specified with p0 on the cylinder surface, p1 one
+        // unit above p0 (+Z), and p2 one step along the tangent, giving an
+        // outward normal that points away from the prism axis.
+        let map_text = r#"
+// entity 0
+{
+"classname" "worldspawn"
+}
+// entity 1
+{
+"classname" "fog_volume"
+{
+( 0 0 32 ) ( 0 1 32 ) ( 1 0 32 ) tex 0 0 0 1 1
+( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
+( 64.0000 0.0000 0 ) ( 64.0000 0.0000 1 ) ( 64.0000 1.0000 0 ) tex 0 0 0 1 1
+( 58.4669 26.0311 0 ) ( 58.4669 26.0311 1 ) ( 58.0602 26.9447 0 ) tex 0 0 0 1 1
+( 42.8244 47.5613 0 ) ( 42.8244 47.5613 1 ) ( 42.0812 48.2304 0 ) tex 0 0 0 1 1
+( 19.7771 60.8676 0 ) ( 19.7771 60.8676 1 ) ( 18.8260 61.1766 0 ) tex 0 0 0 1 1
+( -6.6898 63.6494 0 ) ( -6.6898 63.6494 1 ) ( -7.6843 63.5449 0 ) tex 0 0 0 1 1
+( -32.0000 55.4256 0 ) ( -32.0000 55.4256 1 ) ( -32.8660 54.9256 0 ) tex 0 0 0 1 1
+( -51.7771 37.6183 0 ) ( -51.7771 37.6183 1 ) ( -52.3649 36.8092 0 ) tex 0 0 0 1 1
+( -62.6014 13.3063 0 ) ( -62.6014 13.3063 1 ) ( -62.8094 12.3282 0 ) tex 0 0 0 1 1
+( -62.6014 -13.3063 0 ) ( -62.6014 -13.3063 1 ) ( -62.3935 -14.2845 0 ) tex 0 0 0 1 1
+( -51.7771 -37.6183 0 ) ( -51.7771 -37.6183 1 ) ( -51.1893 -38.4273 0 ) tex 0 0 0 1 1
+( -32.0000 -55.4256 0 ) ( -32.0000 -55.4256 1 ) ( -31.1340 -55.9256 0 ) tex 0 0 0 1 1
+( -6.6898 -63.6494 0 ) ( -6.6898 -63.6494 1 ) ( -5.6953 -63.7539 0 ) tex 0 0 0 1 1
+( 19.7771 -60.8676 0 ) ( 19.7771 -60.8676 1 ) ( 20.7281 -60.5586 0 ) tex 0 0 0 1 1
+( 42.8244 -47.5613 0 ) ( 42.8244 -47.5613 1 ) ( 43.5675 -46.8921 0 ) tex 0 0 0 1 1
+( 58.4669 -26.0311 0 ) ( 58.4669 -26.0311 1 ) ( 58.8736 -25.1176 0 ) tex 0 0 0 1 1
+}
+}
+"#;
+        let (geo_map, brush_ids) = fog_volume_geo_map_from_str(map_text);
+        let props = HashMap::new();
+        let scale = MapFormat::IdTech2.units_to_meters();
+        let err = resolve_fog_volume(&geo_map, &brush_ids, &props, scale, "fog_volume")
+            .expect_err("17-plane brush must exceed the 16-plane budget");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("16") || msg.contains("simplify"),
+            "error should mention the plane limit or instruct simplification: {msg}"
+        );
+    }
+
+    // TODO: the zero-plane rejection path in `resolve_fog_volume`
+    // (`planes.is_empty()` while `have_any == true`) is a defensive guard that
+    // is not reachable via honest GeoMap construction: the FaceIds present in
+    // `face_verts` are a subset of those registered in `geo_map.face_planes`,
+    // which is the same BTreeMap used to build `geo_planes`.  Therefore
+    // `geo_planes.get(face_id)` cannot return `None` for any face that produced
+    // vertices.  Testing this path would require either (a) manually constructing
+    // an inconsistent GeoMap with a BrushId → FaceId mapping that refers to a
+    // FaceId absent from `face_planes`, or (b) refactoring the guard into a
+    // testable helper.  Both are out of scope until the guard fires in practice.
 }

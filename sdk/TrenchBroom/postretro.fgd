@@ -155,7 +155,7 @@
     density(float) : "Fog density" : "0.5"
     color(color255) : "Fog color (R G B)" : "255 217 153"
     scatter(float) : "Scatter fraction toward camera" : "0.6"
-    radial_falloff(float) : "Radial density falloff (0=uniform, 1=sphere-shaped cloud)" : "2.0"
+    radial_falloff(float) : "Radial falloff exponent (0=uniform sphere, higher=more centre-concentrated)" : "2.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
@@ -177,7 +177,7 @@
     density(float) : "Fog density" : "0.3"
     color(color255) : "Fog color (R G B)" : "153 217 255"
     scatter(float) : "Scatter fraction toward camera" : "0.6"
-    radial_falloff(float) : "Radial density falloff (0=uniform, 1=capsule-shaped cloud)" : "1.5"
+    radial_falloff(float) : "Radial falloff exponent — approximate capsule shaping (0=uniform)" : "1.5"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 

@@ -210,7 +210,25 @@ pub fn encode_fog_volumes(
             let center = (min + max) * 0.5;
             let half_ext = ((max - min) * 0.5).max(Vec3::splat(1.0e-6));
             let inv_half_ext = Vec3::ONE / half_ext;
-            let half_diag = half_ext.length();
+            // Semantic point entities (fog_lamp sphere, fog_tube capsule) have
+            // no planes and use `radial_falloff` for their fade shape. For a
+            // sphere (isotropic AABB), normalise by the sphere radius so
+            // `radial_t == 1` at the actual sphere surface and the shader's
+            // `pow(1 - radial_t, radial_falloff)` reaches 0 exactly there.
+            // Using the AABB half-diagonal (= R*sqrt(3) for a sphere) would
+            // push the zero-density point to the AABB corners, leaving visible
+            // density at the sphere boundary and making the volume look boxy.
+            // For anisotropic volumes (fog_tube) keep the half-diagonal as
+            // before; improving capsule shaping requires a proper capsule SDF
+            // and is left for a future pass.
+            let is_sphere_semantic = v.planes.is_empty()
+                && (half_ext.x - half_ext.y).abs() < 1.0e-3
+                && (half_ext.y - half_ext.z).abs() < 1.0e-3;
+            let half_diag = if is_sphere_semantic {
+                half_ext.x
+            } else {
+                half_ext.length()
+            };
             let inv_height_extent = 1.0 / (max.y - min.y).max(1.0e-6);
 
             FogVolumeRecord {

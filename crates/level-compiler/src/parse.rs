@@ -266,9 +266,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             })?;
             let props = collect_entity_properties(&geo_map, entity_id);
             let volume = if classname == "fog_lamp" {
-                resolve_fog_lamp(&props, entity_origin, &classname)?
+                resolve_fog_lamp(&props, entity_origin, scale, &classname)?
             } else {
-                resolve_fog_tube(&props, entity_origin, &classname)?
+                resolve_fog_tube(&props, entity_origin, scale, &classname)?
             };
             fog_volumes.push(volume);
             continue;
@@ -627,17 +627,21 @@ fn resolve_fog_volume(
 fn resolve_fog_lamp(
     props: &HashMap<String, String>,
     origin: DVec3,
+    scale: f64,
     classname: &str,
 ) -> Result<MapFogVolume> {
-    let radius = props
+    let radius_raw = props
         .get("radius")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .ok_or_else(|| {
             anyhow::anyhow!("{classname}: missing or invalid `radius` (required, > 0)")
         })?;
-    if !(radius.is_finite() && radius > 0.0) {
-        anyhow::bail!("{classname}: `radius` must be a finite positive number, got {radius}");
+    if !(radius_raw.is_finite() && radius_raw > 0.0) {
+        anyhow::bail!("{classname}: `radius` must be a finite positive number, got {radius_raw}");
     }
+    // `radius` is authored in map units; convert to engine meters so it agrees
+    // with `origin`, which has already been unit-scaled by the caller.
+    let radius = (radius_raw as f64 * scale) as f32;
 
     let color = props
         .get("color")
@@ -692,26 +696,31 @@ fn resolve_fog_lamp(
 fn resolve_fog_tube(
     props: &HashMap<String, String>,
     origin: DVec3,
+    scale: f64,
     classname: &str,
 ) -> Result<MapFogVolume> {
-    let radius = props
+    let radius_raw = props
         .get("radius")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .ok_or_else(|| {
             anyhow::anyhow!("{classname}: missing or invalid `radius` (required, > 0)")
         })?;
-    if !(radius.is_finite() && radius > 0.0) {
-        anyhow::bail!("{classname}: `radius` must be a finite positive number, got {radius}");
+    if !(radius_raw.is_finite() && radius_raw > 0.0) {
+        anyhow::bail!("{classname}: `radius` must be a finite positive number, got {radius_raw}");
     }
-    let height = props
+    let height_raw = props
         .get("height")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .ok_or_else(|| {
             anyhow::anyhow!("{classname}: missing or invalid `height` (required, > 0)")
         })?;
-    if !(height.is_finite() && height > 0.0) {
-        anyhow::bail!("{classname}: `height` must be a finite positive number, got {height}");
+    if !(height_raw.is_finite() && height_raw > 0.0) {
+        anyhow::bail!("{classname}: `height` must be a finite positive number, got {height_raw}");
     }
+    // `radius` and `height` are authored in map units; convert to engine meters
+    // so they agree with `origin`, which has already been unit-scaled.
+    let radius = (radius_raw as f64 * scale) as f32;
+    let height = (height_raw as f64 * scale) as f32;
 
     let pitch_deg = props
         .get("pitch")
@@ -1086,7 +1095,7 @@ mod tests {
     #[test]
     fn resolve_fog_lamp_requires_radius() {
         let props = HashMap::new();
-        let err = resolve_fog_lamp(&props, DVec3::ZERO, "fog_lamp")
+        let err = resolve_fog_lamp(&props, DVec3::ZERO, 1.0, "fog_lamp")
             .expect_err("missing radius must error");
         let msg = format!("{err}");
         assert!(msg.contains("radius"), "error should mention radius: {msg}");
@@ -1096,13 +1105,13 @@ mod tests {
     fn resolve_fog_lamp_rejects_non_positive_radius() {
         let mut props = HashMap::new();
         props.insert("radius".to_string(), "0".to_string());
-        let err =
-            resolve_fog_lamp(&props, DVec3::ZERO, "fog_lamp").expect_err("zero radius must error");
+        let err = resolve_fog_lamp(&props, DVec3::ZERO, 1.0, "fog_lamp")
+            .expect_err("zero radius must error");
         assert!(format!("{err}").contains("positive"));
 
         let mut props = HashMap::new();
         props.insert("radius".to_string(), "-1".to_string());
-        let err = resolve_fog_lamp(&props, DVec3::ZERO, "fog_lamp")
+        let err = resolve_fog_lamp(&props, DVec3::ZERO, 1.0, "fog_lamp")
             .expect_err("negative radius must error");
         assert!(format!("{err}").contains("positive"));
     }
@@ -1111,7 +1120,7 @@ mod tests {
     fn resolve_fog_lamp_produces_centered_aabb_and_no_planes() {
         let mut props = HashMap::new();
         props.insert("radius".to_string(), "2.5".to_string());
-        let v = resolve_fog_lamp(&props, DVec3::new(1.0, 2.0, 3.0), "fog_lamp")
+        let v = resolve_fog_lamp(&props, DVec3::new(1.0, 2.0, 3.0), 1.0, "fog_lamp")
             .expect("valid radius should resolve");
         assert_eq!(v.min, [-1.5, -0.5, 0.5]);
         assert_eq!(v.max, [3.5, 4.5, 5.5]);
@@ -1123,13 +1132,46 @@ mod tests {
     }
 
     #[test]
+    fn resolve_fog_lamp_unit_scales_radius() {
+        // IdTech2 inches → meters: radius 64 in maps with scale 0.0254 must
+        // yield a 64 * 0.0254 = 1.6256 m sphere centred on the (already
+        // unit-scaled) origin.
+        let mut props = HashMap::new();
+        props.insert("radius".to_string(), "64".to_string());
+        let v = resolve_fog_lamp(&props, DVec3::ZERO, 0.0254, "fog_lamp")
+            .expect("valid radius should resolve");
+        let expected = 64.0_f32 * 0.0254;
+        assert!((v.max[0] - expected).abs() < 1e-5);
+        assert!((v.min[0] + expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn resolve_fog_tube_unit_scales_radius_and_height() {
+        // Authored radius 32 inches and height 256 inches with scale 0.0254
+        // must produce a 32 * 0.0254-radius capsule whose long axis is
+        // 256 * 0.0254 m tip-to-tip.
+        let mut props = HashMap::new();
+        props.insert("radius".to_string(), "32".to_string());
+        props.insert("height".to_string(), "256".to_string());
+        let v = resolve_fog_tube(&props, DVec3::ZERO, 0.0254, "fog_tube")
+            .expect("valid sizing should resolve");
+        let r = 32.0_f32 * 0.0254;
+        let h = 256.0_f32 * 0.0254;
+        // Default orientation: axis on +Y. AABB spans ±r on X/Z and ±h/2 on Y.
+        assert!((v.max[0] - r).abs() < 1e-5);
+        assert!((v.max[2] - r).abs() < 1e-5);
+        assert!((v.max[1] - h * 0.5).abs() < 1e-5);
+        assert!((v.min[1] + h * 0.5).abs() < 1e-5);
+    }
+
+    #[test]
     fn resolve_fog_tube_oriented_aabb_inflates_with_pitch_and_yaw() {
         // Capsule: radius 1, height 4. Local axis is +Y; with pitch=0/yaw=0 the
         // axis stays vertical, so the AABB is [-1, -2, -1] – [1, 2, 1].
         let mut props = HashMap::new();
         props.insert("radius".to_string(), "1".to_string());
         props.insert("height".to_string(), "4".to_string());
-        let v = resolve_fog_tube(&props, DVec3::ZERO, "fog_tube").expect("axis-aligned tube");
+        let v = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube").expect("axis-aligned tube");
         assert_eq!(v.min, [-1.0, -2.0, -1.0]);
         assert_eq!(v.max, [1.0, 2.0, 1.0]);
 
@@ -1140,7 +1182,7 @@ mod tests {
         props.insert("radius".to_string(), "1".to_string());
         props.insert("height".to_string(), "4".to_string());
         props.insert("pitch".to_string(), "90".to_string());
-        let v = resolve_fog_tube(&props, DVec3::ZERO, "fog_tube").expect("tilted tube");
+        let v = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube").expect("tilted tube");
         // half_segment = max(2 - 1, 0) = 1; axis ≈ (0, 0, -1).
         // half_extent_x = 0*1 + 1 = 1; y = 0*1 + 1 = 1; z = 1*1 + 1 = 2.
         assert!((v.min[0] - -1.0).abs() < 1e-5);
@@ -1157,7 +1199,7 @@ mod tests {
         props.insert("height".to_string(), "4".to_string());
         props.insert("pitch".to_string(), "90".to_string());
         props.insert("yaw".to_string(), "90".to_string());
-        let v = resolve_fog_tube(&props, DVec3::ZERO, "fog_tube").expect("yawed tube");
+        let v = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube").expect("yawed tube");
         assert!((v.min[0] - -2.0).abs() < 1e-5);
         assert!((v.min[1] - -1.0).abs() < 1e-5);
         assert!((v.min[2] - -1.0).abs() < 1e-5);
@@ -1175,13 +1217,13 @@ mod tests {
     fn resolve_fog_tube_requires_radius_and_height() {
         let mut props = HashMap::new();
         props.insert("height".to_string(), "4".to_string());
-        let err = resolve_fog_tube(&props, DVec3::ZERO, "fog_tube")
+        let err = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube")
             .expect_err("missing radius must error");
         assert!(format!("{err}").contains("radius"));
 
         let mut props = HashMap::new();
         props.insert("radius".to_string(), "1".to_string());
-        let err = resolve_fog_tube(&props, DVec3::ZERO, "fog_tube")
+        let err = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube")
             .expect_err("missing height must error");
         assert!(format!("{err}").contains("height"));
     }

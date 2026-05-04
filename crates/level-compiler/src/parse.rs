@@ -631,12 +631,13 @@ fn resolve_fog_lamp(
     scale: f64,
     classname: &str,
 ) -> Result<MapFogVolume> {
+    // TrenchBroom only writes KVPs that the author explicitly sets; FGD defaults
+    // are shown in the UI but not saved to the .map. Fall back to the FGD default
+    // (64 map units) so a freshly placed fog_lamp compiles without manual edits.
     let radius_raw = props
         .get("radius")
         .and_then(|s| s.trim().parse::<f32>().ok())
-        .ok_or_else(|| {
-            anyhow::anyhow!("{classname}: missing or invalid `radius` (required, > 0)")
-        })?;
+        .unwrap_or(64.0);
     if !(radius_raw.is_finite() && radius_raw > 0.0) {
         anyhow::bail!("{classname}: `radius` must be a finite positive number, got {radius_raw}");
     }
@@ -700,21 +701,20 @@ fn resolve_fog_tube(
     scale: f64,
     classname: &str,
 ) -> Result<MapFogVolume> {
+    // TrenchBroom only writes KVPs that the author explicitly sets; FGD defaults
+    // are shown in the UI but not saved to the .map. Fall back to FGD defaults
+    // so a freshly placed fog_tube compiles without manual edits.
     let radius_raw = props
         .get("radius")
         .and_then(|s| s.trim().parse::<f32>().ok())
-        .ok_or_else(|| {
-            anyhow::anyhow!("{classname}: missing or invalid `radius` (required, > 0)")
-        })?;
+        .unwrap_or(32.0);
     if !(radius_raw.is_finite() && radius_raw > 0.0) {
         anyhow::bail!("{classname}: `radius` must be a finite positive number, got {radius_raw}");
     }
     let height_raw = props
         .get("height")
         .and_then(|s| s.trim().parse::<f32>().ok())
-        .ok_or_else(|| {
-            anyhow::anyhow!("{classname}: missing or invalid `height` (required, > 0)")
-        })?;
+        .unwrap_or(128.0);
     if !(height_raw.is_finite() && height_raw > 0.0) {
         anyhow::bail!("{classname}: `height` must be a finite positive number, got {height_raw}");
     }
@@ -1095,12 +1095,14 @@ mod tests {
     // -- fog_lamp / fog_tube resolution --
 
     #[test]
-    fn resolve_fog_lamp_requires_radius() {
+    fn resolve_fog_lamp_uses_fgd_default_radius_when_not_set() {
+        // TrenchBroom does not write FGD default values to the .map file unless
+        // the author explicitly sets them. A freshly placed fog_lamp has no
+        // `radius` KVP; the compiler falls back to the FGD default of 64 units.
         let props = HashMap::new();
-        let err = resolve_fog_lamp(&props, DVec3::ZERO, 1.0, "fog_lamp")
-            .expect_err("missing radius must error");
-        let msg = format!("{err}");
-        assert!(msg.contains("radius"), "error should mention radius: {msg}");
+        let v = resolve_fog_lamp(&props, DVec3::ZERO, 1.0, "fog_lamp")
+            .expect("missing radius should fall back to FGD default of 64");
+        assert!((v.max[0] - 64.0).abs() < 1e-5, "default radius should be 64");
     }
 
     #[test]
@@ -1216,18 +1218,17 @@ mod tests {
     }
 
     #[test]
-    fn resolve_fog_tube_requires_radius_and_height() {
-        let mut props = HashMap::new();
-        props.insert("height".to_string(), "4".to_string());
-        let err = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube")
-            .expect_err("missing radius must error");
-        assert!(format!("{err}").contains("radius"));
-
-        let mut props = HashMap::new();
-        props.insert("radius".to_string(), "1".to_string());
-        let err = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube")
-            .expect_err("missing height must error");
-        assert!(format!("{err}").contains("height"));
+    fn resolve_fog_tube_uses_fgd_defaults_when_not_set() {
+        // TrenchBroom does not write FGD default values to the .map file unless
+        // the author explicitly sets them. A freshly placed fog_tube has no
+        // `radius` or `height` KVPs; the compiler falls back to the FGD defaults
+        // (radius=32, height=128).
+        let props = HashMap::new();
+        let v = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube")
+            .expect("missing sizing KVPs should fall back to FGD defaults");
+        // Default orientation: axis on +Y. AABB spans ±32 on X/Z, ±64 on Y.
+        assert!((v.max[0] - 32.0).abs() < 1e-5, "default radius should be 32");
+        assert!((v.max[1] - 64.0).abs() < 1e-5, "default half-height should be 64");
     }
 
     // -- fog_volume brush rejection --

@@ -17,6 +17,8 @@ Remove the Live VM scripting context: the `registerHandler` primitive, the behav
 - **`registerHandler` primitive** — removed from both QuickJS and Luau contexts. Scripts that call it receive a `ReferenceError`; no stub, no `WrongContext`.
 - **`Which::Behavior` context** — removed. `Which::Definition` remains as the sole persistent VM context.
 - **`ContextScope::BehaviorOnly`** — removed. Only `DefinitionOnly` and `Both` remain.
+- **All `BehaviorOnly` primitives** — deleted: `spawnEntity`, `despawnEntity`, `getComponent`, `setComponent`, `emitEvent`, `sendEvent`. All exist only to support the live VM tick pattern.
+- **Event infrastructure** — deleted: `ScriptEvent`, `GameEvent`, `EventQueue`, `GAME_EVENTS_CAPACITY`, and the `events`/`game_events` fields on `ScriptCtx` (all in `ctx.rs`). The `game_events` drain in `main.rs` goes with them.
 - **`event_dispatch.rs`** — deleted. All types it defines (`EventKind`, `Handler`, `HandlerCallable`, `HandlerTable`, `SharedHandlerTable`) are gone.
 - **`call_context.rs`** — deleted. Defines `ScriptCallContext`, which exists only to support tick handler arguments. (`HandlerFn` is in `typedef.rs`.)
 - **`ScriptRuntime` methods** — `fire_tick`, `fire_level_load`, `clear_level_handlers`, and `reload_behavior_context` removed.
@@ -24,7 +26,7 @@ Remove the Live VM scripting context: the `registerHandler` primitive, the behav
 - **Hot-reload watcher** — removed. `drain_reload_requests` and `ScriptWatcher` initialization removed; watcher targeted the behavior context.
 - **Level compiler** — `compile_worldspawn_script` and the `"script"` worldspawn KVP removed from `prl-build`. The `script` field removed from the parsed map data struct.
 - **Test content** — `content/tests/scripts/rotator-driver.ts` and `rotator-driver.js` deleted.
-- **SDK types** — `registerHandler`, `ScriptCallContext`, and `HandlerFn` removed from `postretro.d.ts` and `postretro.d.luau`.
+- **SDK types** — `registerHandler`, `ScriptCallContext`, `HandlerFn`, `ScriptEvent`, `spawnEntity`, `despawnEntity`, `getComponent`, `setComponent`, `emitEvent`, and `sendEvent` removed from `postretro.d.ts` and `postretro.d.luau`.
 - **Docs** — `scripting.md` and `boot_sequence.md` updated to reflect the removed context and load sequence changes.
 
 ### Out of scope
@@ -40,7 +42,7 @@ Remove the Live VM scripting context: the `registerHandler` primitive, the behav
 ## Acceptance criteria
 
 - `registerHandler` is absent from all scripting contexts. Calling it from a script raises an error (`ReferenceError` in QuickJS, `attempt to call a nil value` in Luau).
-- `ScriptCallContext` and `HandlerFn` are absent from `postretro.d.ts` and `postretro.d.luau`.
+- `ScriptCallContext`, `HandlerFn`, `ScriptEvent`, `spawnEntity`, `despawnEntity`, `getComponent`, `setComponent`, `emitEvent`, and `sendEvent` are absent from `postretro.d.ts` and `postretro.d.luau`.
 - The `scripts/` directory under a content root is not scanned at level load. Files placed there have no effect.
 - No file-watch thread starts in debug builds.
 - `content/tests/scripts/rotator-driver.ts` and `rotator-driver.js` do not exist.
@@ -56,11 +58,11 @@ Remove the Live VM scripting context: the `registerHandler` primitive, the behav
 
 ### Task 1: Remove Rust scripting infrastructure
 
-Delete `event_dispatch.rs` and `call_context.rs`. In `runtime.rs`: remove `Which::Behavior`, the `handlers` field, and the `fire_tick`, `fire_level_load`, `clear_level_handlers`, and `reload_behavior_context` methods. In `luau.rs`: remove `Which::Behavior`, the `behavior_lua` field/getter, the `reload_behavior_context` method, and the two `ContextScope::BehaviorOnly` call sites that construct and reload the behavior Lua state. In `quickjs.rs`: remove `behavior_ctx` and the `BehaviorOnly` install branch. In `primitives_registry.rs`: remove `ContextScope::BehaviorOnly` and all branches that install stubs for it. In `primitives.rs`: remove the install-count comment that references `registerHandler`. In `runtime.rs`: remove the `current_source` publish call site (~line 245) that exists only for `registerHandler` to stamp source filenames onto handlers. In `mod.rs`: remove the `pub(crate) mod event_dispatch;` and `pub(crate) mod call_context;` declarations. In `typedef.rs`: remove `ScriptCallContext` and `HandlerFn` type alias entries. Remove tests that exercise `Which::Behavior` or `registerHandler` in `runtime.rs`, `quickjs.rs`, and `luau.rs`.
+Delete `event_dispatch.rs` and `call_context.rs`. In `runtime.rs`: remove `Which::Behavior`, the `handlers` field, and the `fire_tick`, `fire_level_load`, `clear_level_handlers`, and `reload_behavior_context` methods. In `luau.rs`: remove `Which::Behavior`, the `behavior_lua` field/getter, the `reload_behavior_context` method, and the two `ContextScope::BehaviorOnly` call sites that construct and reload the behavior Lua state. In `quickjs.rs`: remove `behavior_ctx` and the `BehaviorOnly` install branch. In `primitives_registry.rs`: remove `ContextScope::BehaviorOnly` and all branches that install stubs for it. In `primitives.rs`: remove `spawnEntity`, `despawnEntity`, `getComponent`, `setComponent`, `emitEvent`, and `sendEvent` (all `BehaviorOnly`), plus the install-count comment that references `registerHandler`. In `ctx.rs`: remove `ScriptEvent`, `GameEvent`, `EventQueue`, `GAME_EVENTS_CAPACITY`, and the `events` and `game_events` fields from `ScriptCtx`. In `runtime.rs`: remove the `current_source` publish call site (~line 245) that exists only for `registerHandler` to stamp source filenames onto handlers. In `mod.rs`: remove the `pub(crate) mod event_dispatch;` and `pub(crate) mod call_context;` declarations. In `typedef.rs`: remove `ScriptCallContext`, `HandlerFn`, and `ScriptEvent` type alias entries. Remove tests that exercise `Which::Behavior`, `registerHandler`, or the deleted primitives in `runtime.rs`, `quickjs.rs`, and `luau.rs`.
 
 ### Task 2: Remove main.rs call sites and hot reload
 
-Remove `load_behavior_scripts` and all its call sites. Remove `fire_tick`, `fire_level_load`, `clear_level_handlers`, and `reload_behavior_context` call sites. Remove the hot-reload block (`drain_reload_requests` loop and `ScriptWatcher` initialization). Remove the `start_watcher` call and the `mod watcher` declaration in `scripting/mod.rs` (subject to the watcher TS-compilation decision — see architectural findings).
+Remove `load_behavior_scripts` and all its call sites. Remove `fire_tick`, `fire_level_load`, `clear_level_handlers`, and `reload_behavior_context` call sites. Remove the hot-reload block (`drain_reload_requests` loop and `ScriptWatcher` initialization). Remove the `game_events` drain block. Remove the `start_watcher` call and the `mod watcher` declaration in `scripting/mod.rs` (subject to the watcher TS-compilation decision — see open questions).
 
 ### Task 3: Remove level compiler support
 
@@ -73,6 +75,16 @@ Delete `content/tests/scripts/rotator-driver.ts` and `rotator-driver.js`. Regene
 ### Task 5: Update docs
 
 `scripting.md`: remove the Live VM row from the context model table (§2); fix the Data context lifecycle paragraph, which currently references Live VM ordering; remove the closing `registerHandler` sentence in §2; rewrite §1's 'escape hatch' sentence; rewrite §3 to describe the two remaining scopes (`DefinitionOnly`, `Both`); remove the hot-reload section (§8). `boot_sequence.md`: remove the Live VM script row from §2, remove the `scripts/` scan steps from the boot sequence (§3) and level load sequence (§4), and fix the cross-references at the 'Live VM scripts call `registerHandler`' line in §2 and the 'Hot reload targets the behavior context' line in §5. Also update `context/lib/index.md` to remove `hot reload` from the scripting routing entry.
+
+---
+
+## Open questions
+
+**Watcher TS compilation.** `watcher.rs` owns both hot-reload file watching AND dev-mode TypeScript compilation (`TsCompilerPath`, `run_ts_compiler` — auto-compiles `.ts` → `.js` on engine startup). The hot-reload half goes; the TS compilation half may not. Two options:
+- Split: move TS compilation helpers to a new module (e.g. `ts_compiler.rs`), delete only the file-watch/notify pieces.
+- Delete everything: dev workflow becomes "run `scripts-build` manually." The CLI already exists; debug auto-compilation is a convenience, not a requirement.
+
+Resolve before implementing Task 2.
 
 ---
 

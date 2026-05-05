@@ -1,4 +1,9 @@
-import { registerEntity, registerReaction, world } from "postretro";
+import {
+  type NamedReactionDescriptor,
+  registerEntity,
+  registerReaction,
+  world,
+} from "postretro";
 
 export function registerLevelManifest(_ctx: unknown) {
   // Reference behavior archetype registrations. Components are intentionally
@@ -12,7 +17,7 @@ export function registerLevelManifest(_ctx: unknown) {
     classname: "game_damage_source",
   });
 
-  const reactions = [];
+  const reactions: NamedReactionDescriptor[] = [];
 
   // Arena 1: angular sweep from the NW corner, counterclockwise.
   const arena1Raw = world.query({ component: "light", tag: "arena_1_light" });
@@ -34,9 +39,7 @@ export function registerLevelManifest(_ctx: unknown) {
 
     // Anchor at the NW corner: the light with the highest z (westernmost).
     const startAngle = lightsWithAngle.reduce((best, cur) =>
-      cur.light.position.z > best.light.position.z
-        ? cur
-        : best,
+      cur.light.position.z > best.light.position.z ? cur : best,
     ).angle;
 
     const TWO_PI = 2 * Math.PI;
@@ -82,9 +85,7 @@ export function registerLevelManifest(_ctx: unknown) {
   // Arena 2: west-wall wave, south → north (descending engine-x order).
   const arena2Raw = world.query({ component: "light", tag: "arena_wave_2" });
   if (arena2Raw.length > 0) {
-    const sorted = [...arena2Raw].sort(
-      (a, b) => b.position.x - a.position.x,
-    );
+    const sorted = [...arena2Raw].sort((a, b) => b.position.x - a.position.x);
 
     const pulseDurationMs = 200;
     const lightSpacingMs = 50;

@@ -1,4 +1,4 @@
-# Movement Scripts (M7)
+# Player Movement (M7)
 
 > **Status:** draft
 > **Depends on:** Collision Foundation (M7), Gravity Primitives (M7), Player Spawn (M7)
@@ -8,15 +8,15 @@
 
 ## Goal
 
-Reference player movement scripts in TypeScript and Luau, with enforced feature parity. The engine exposes collision and gravity primitives (prior plans); this plan delivers the scripts that use them. All movement parameters are modder-configurable data fields. A contract test asserts both scripts produce identical output.
+Player movement is a built-in Rust system. A declaration script registers the `"player"` entity type with the movement parameter fields below; Rust reads them at entity spawn and drives the movement loop each tick. All parameters are modder-configurable through `registerEntity` — no live VM involvement during movement.
 
 ---
 
 ## Tasks
 
-### 1. Data scripts
+### 1. Entity declaration
 
-`content/tests/scripts/player-movement-data.ts` and `player-movement-data.luau`. Each contains a `registerEntity` call for the `"player"` classname with these required fields:
+`content/tests/scripts/player.ts` (or `.luau`). One `registerEntity` call for the `"player"` classname with these required fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -34,37 +34,48 @@ Reference player movement scripts in TypeScript and Luau, with enforced feature 
 
 _Type column shows script-facing types. Engine coerces to f32/bool internally._
 
-Engine errors at entity spawn if any required field is absent.
+Engine errors at the `registerEntity` call if any required field is absent — registration fails fast, before any spawn.
 
-### 2. Behavior scripts
+### 2. Rust movement system
 
-`content/tests/scripts/player-movement.ts` and `player-movement.luau`. Each implements a `levelLoad` handler and per-tick loop. Both implement the full feature checklist:
+A Rust movement system reads movement parameters from the entity-type registry at player spawn and drives the per-tick movement loop. The system implements:
 
 - [ ] Walk on flat surfaces
 - [ ] Walk on slopes within `walkableAngle`
 - [ ] Cannot walk through walls or fall through floors
 - [ ] Wall slide — project remaining velocity onto collision plane
 - [ ] Step-up — automatically step over ledges up to `stepHeight`
-- [ ] Gravity accumulation (from `world.getGravity()`) + terminal velocity cap
+- [ ] Gravity accumulation (from the world gravity primitive) + terminal velocity cap
 - [ ] Jump — vertical impulse when grounded; re-establishes grounded state on landing
 - [ ] Strafe — move direction relative to player facing
 - [ ] Air control — `forwardSteer`, `strafeAccel`, `wishSpeedCap`, and `allowSpeedExceedMax` all respected
 
-### 3. Contract tests
+Movement events emitted by the system (provisional — enumerate fully before promoting to `ready/`):
 
-`crates/postretro/tests/movement_parity.rs`:
+| Event | When |
+|-------|------|
+| `landed` | Airborne → grounded transition |
+| `jumped` | Jump impulse applied |
+| `stepped` | Step-up triggered |
+| `wallSlide` | Velocity projected onto collision plane |
+
+Events emitted during the player-priority tick pass are dispatched before default-priority entities tick, so world entities can respond in the same frame. Dispatch model documented in `context/lib/entity_model.md` (pending update).
+
+### 3. Integration test
+
+`crates/postretro/tests/movement_integration.rs`:
 
 - Construct a minimal `CollisionWorld` with a known flat floor and a step-up ledge of exactly `stepHeight`.
-- Register both movement scripts in separate script runtime instances backed by that collision world.
-- Feed an identical deterministic input sequence (walk forward, jump, step up, slide into wall) to both runtimes tick-by-tick.
-- Assert position and velocity match at each tick within a tolerance of `1e-4` m on position and `1e-3` m/s on velocity.
-- Test fails if either script skips a feature or the outputs diverge.
+- Spawn a player entity with a known set of parameter values declared via `registerEntity`.
+- Feed a deterministic input sequence (walk forward, jump, step up, slide into wall) tick-by-tick.
+- Assert position and velocity at each tick within a tolerance of `1e-4` m on position and `1e-3` m/s on velocity.
+- Test verifies the Rust movement system honors the declared parameters.
 
 ---
 
 ## Acceptance criteria
 
 - Player walks through a PRL level: no clipping, wall slide, step-up, jump, gravity all work.
-- TypeScript and Luau scripts produce matching results on the contract test input sequence, including all four air control parameters.
-- Engine errors at entity spawn if any required physics field is absent from the data script.
-- Movement scripts hot-reload during gameplay (debug build).
+- Movement system reads all eleven parameters from the entity-type registry and respects them at runtime.
+- Engine errors at `registerEntity` call time if any required physics field is absent from the declaration.
+- Integration test passes against a known input sequence with the documented tolerances.

@@ -24,10 +24,11 @@ M7 needs: (1) player entity classname registered before any `info_player_start` 
 
 ### In scope
 
-- **Mod data script discovery** — path convention for the mod-level data script (e.g. `content/<mod>/scripts/mod-data.ts` / `mod-data.luau`). Engine loads it at init, before any level.
-- **Mod data context lifecycle** — single short-lived VM context at engine init; same `registerEntity` API surface as the existing level-load data context. Registrations land in the engine-global type registry and persist for the engine's lifetime.
-- **Update priority declaration** — mechanism for a classname to declare player-tier update priority (runs before all other entity ticks). Options: a field on `registerEntity`; a separate `declarePlayerClass` primitive; or a reserved classname convention. Decision required.
-- **SDK and scripting reference** — document the mod data script lifecycle and the update priority field.
+- **Mod entry point** — `content/<mod>/start-script.{ts,luau}` at the mod root. Engine loads it at init, before any level. Domain scripts (`actors/`, `weapons/`, etc.) are pulled in via `import`/`require` from start-script; no auto-scanning of domain folders. If both `start-script.ts` and `start-script.luau` exist in the same mod, the engine errors at init.
+- **Mod data context lifecycle** — single short-lived Definition-kind VM context at engine init. Same `registerEntity` API surface as the existing level-load data context, extended with the `updatePriority` field described below. `registerLevelManifest` is not invoked from this path. Registrations land in the engine-global type registry and persist for the engine's lifetime.
+- **Update priority declaration** — `updatePriority` field on `registerEntity`. Accepted values for M7: `"player"` (ticks before all other entities) and `"default"` (normal tick order). Engine errors at `registerEntity` call time if an unknown value is given. The entity registry maintains two tick queues (`player_priority` and `default_priority`), updated at spawn and despawn. M7 ships exactly two buckets. Future `updatePriority` values are out of scope for this plan.
+- **Absent start-script** — if a mod has no `start-script`, the engine continues with an empty mod-data context. No error.
+- **SDK and scripting reference** — document the mod entry point lifecycle and the `updatePriority` field.
 
 ### Out of scope
 
@@ -37,17 +38,13 @@ M7 needs: (1) player entity classname registered before any `info_player_start` 
 
 ---
 
-## Open decisions
-
-1. **Path convention** — how is the mod data script file discovered? Fixed path relative to content root? A KVP in a `postretro.mod` manifest? Something else?
-2. **Update priority mechanism** — new field on `registerEntity` (e.g. `updatePriority: "player" | "default"`)? A dedicated primitive? A reserved classname?
-3. **Multiple mod data scripts** — does a mod have one entry data script, or can multiple files contribute (lexicographic load order like behavior scripts)?
-
----
-
 ## Acceptance criteria
 
-- Mod data script runs at engine init before any level loads.
-- Entity types registered in the mod data script are available when the first level's `info_player_start` spawn logic fires.
-- Player-class entities tick before all other entities each frame.
-- Mod data script lifecycle documented in `docs/scripting-reference.md`.
+- `start-script.{ts,luau}` runs at engine init before any level loads.
+- Entity types registered in start-script (and domain scripts it imports) are available when the first level's `info_player_start` spawn logic fires.
+- Player-class entities (`updatePriority: "player"`) tick before all other entities each frame.
+- An entity type registered in a domain script imported by start-script (not directly in start-script itself) is available at first-level entity spawn.
+- Registering an entity with an unrecognized `updatePriority` value produces an engine error.
+- Mod entry point lifecycle and `updatePriority` field documented in `docs/scripting-reference.md`.
+- `EntityTypeDescriptor.updatePriority` present in generated SDK type definitions (`postretro.d.ts` and `postretro.d.luau`).
+- A mod with no `start-script.{ts,luau}` boots successfully with no error.

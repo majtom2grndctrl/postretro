@@ -212,7 +212,7 @@ fn script_to_sequence_error(err: ScriptError) -> SequenceError {
     }
 }
 
-/// Complements `register_shared_types` in `entity.rs`.
+/// Complements `register_shared_types` in `mod.rs`.
 pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_enum("LightKind")

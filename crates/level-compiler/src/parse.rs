@@ -1067,7 +1067,10 @@ mod tests {
         let props = HashMap::new();
         let v = resolve_fog_lamp(&props, DVec3::ZERO, 1.0, "fog_lamp")
             .expect("missing radius should fall back to FGD default of 64");
-        assert!((v.max[0] - 64.0).abs() < 1e-5, "default radius should be 64");
+        assert!(
+            (v.max[0] - 64.0).abs() < 1e-5,
+            "default radius should be 64"
+        );
     }
 
     #[test]
@@ -1192,8 +1195,14 @@ mod tests {
         let v = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube")
             .expect("missing sizing KVPs should fall back to FGD defaults");
         // Default orientation: axis on +Y. AABB spans ±32 on X/Z, ±64 on Y.
-        assert!((v.max[0] - 32.0).abs() < 1e-5, "default radius should be 32");
-        assert!((v.max[1] - 64.0).abs() < 1e-5, "default half-height should be 64");
+        assert!(
+            (v.max[0] - 32.0).abs() < 1e-5,
+            "default radius should be 32"
+        );
+        assert!(
+            (v.max[1] - 64.0).abs() < 1e-5,
+            "default half-height should be 64"
+        );
     }
 
     // -- fog_volume brush rejection --

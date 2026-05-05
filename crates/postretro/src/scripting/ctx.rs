@@ -27,7 +27,8 @@ pub(crate) struct ScriptCtx {
     /// no separate handle is held on `App`.
     pub(crate) data_registry: Rc<RefCell<DataRegistry>>,
     /// Engine frame counter, incremented once at the start of the Game logic
-    /// phase. Reserved for primitives that need a per-frame ordering stamp.
+    /// phase. No current consumers — reserved for future primitives that need
+    /// a per-frame ordering stamp.
     pub(crate) frame: Rc<Cell<u64>>,
 }
 

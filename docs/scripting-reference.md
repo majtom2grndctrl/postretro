@@ -1,5 +1,7 @@
 # Scripting Reference
 
+> **This document is partially stale.** The Live VM (`registerHandler`, `tick` callbacks, `emitEvent`, `ScriptCallContext`, "behavior context") has been removed from the engine. Any section referencing these APIs no longer applies. The definition-context and world-query sections remain accurate.
+
 ## Overview
 
 Behavior scripts are TypeScript (`.ts`) or Luau (`.lua` / `.luau`) files placed in `content/<mod>/scripts/`. The engine loads all scripts automatically when a level starts — no registration file needed. While the engine is running, changing a script file triggers a hot-reload: the new code takes effect on the next event dispatch without restarting the level.

@@ -706,7 +706,7 @@ export type LightEntityHandle = {
 }
 
 --- Generic entity handle returned by `world:query` when the component is
---- not "light" or "emitter". Use `getComponent` for component data.
+--- not "light", "emitter", or "fog_volume". Carries only id, position, and tags.
 export type EntityHandle = {
   id: EntityId,
   position: Vec3,

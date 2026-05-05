@@ -159,7 +159,7 @@ declare function getEntityProperty(id: EntityId, key: string): string?
 --- Register an entity type with optional component presets. Definition context only. Survives level unload.
 declare function registerEntity(descriptor: EntityTypeDescriptor): ()
 
---- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only.
+--- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Definition context.
 declare function setLightAnimation(id: EntityId, animation: LightAnimation | null): ()
 
 --- Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`.
@@ -184,7 +184,7 @@ export type LightEntityHandle = {
 }
 
 --- Generic entity handle returned by `world:query` when the component is
---- not "light" or "emitter". Use `getComponent` for component data.
+--- not "light", "emitter", or "fog_volume". Carries only id, position, and tags.
 export type EntityHandle = {
   id: EntityId,
   position: Vec3,

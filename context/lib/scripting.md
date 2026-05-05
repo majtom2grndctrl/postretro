@@ -41,7 +41,7 @@ The context is dropped after the data script completes. No live reference to the
 
 ## 3. Context Scope Enforcement
 
-Each primitive declares one of two scopes: definition-only or both. The registry installs the real function only in permitted contexts. Disallowed contexts get a stub that returns a `WrongContext` error. Scripts see a consistent call surface everywhere; stubs enforce restrictions at runtime, not via missing globals.
+Each primitive declares one of two scopes: definition-only or both. The definition context installs all primitives as real functions. Other contexts (data, pooled) install `Both`-scoped primitives as real and `DefinitionOnly` primitives as stubs — stubs throw a `WrongContext` error when called.
 
 ---
 

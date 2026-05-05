@@ -1,10 +1,9 @@
-// mlua/Luau subsystem: two sandboxed `mlua::Lua` states (definition and
-// behavior), driven by the shared primitive registry.
+// mlua/Luau subsystem: one sandboxed `mlua::Lua` definition state, driven by
+// the shared primitive registry.
 // See: context/lib/scripting.md
 //
 // Mirrors `QuickJsSubsystem` so `ScriptRuntime` can fan out symmetrically by
-// file extension. Two `Lua` states enforce the definition/behavior split; real
-// installers only land in the correct state.
+// file extension.
 
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -77,7 +76,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &["registerReaction", "registerEntities"];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed (the prelude
-/// references `worldQuery`, `setLightAnimation`, `getComponent`) and
+/// references `worldQuery`, `setLightAnimation`) and
 /// before `sandbox(true)` (which freezes `_G`).
 /// The prelude source uses type annotations declared in postretro.d.luau (luau-lsp only); the runtime evaluates the .luau source without loading the declaration file.
 pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
@@ -261,14 +260,15 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
     Ok(())
 }
 
-/// Deny-list: global names (and `os.<sub>` fields) we clear on both Lua states
-/// before any script runs. `sandbox(true)` makes `_G` read-only but does NOT
-/// remove these entries — the sandbox is about immutability, not capabilities.
+/// Deny-list: global names (and `os.<sub>` fields) we clear before any script
+/// runs. `sandbox(true)` makes `_G` read-only but does NOT remove these
+/// entries — the sandbox is about immutability, not capabilities. These APIs
+/// are blocked because they break sandboxing (filesystem, process, or
+/// wall-clock access that bypasses engine control).
 const DENIED_GLOBALS: &[&str] = &["io", "package", "require", "dofile", "loadfile", "load"];
-/// Sub-fields of the `os` table we nil out. `os.time` and `os.clock` are wall-
-/// clock sources — handlers must take their timing from `ScriptCallContext`,
-/// not from a free-running clock. `os.date` is denied alongside them because
-/// it exposes the same wall-clock surface in string form.
+/// Sub-fields of the `os` table we nil out. `os.time` and `os.clock` expose
+/// a free-running wall clock; `os.date` exposes the same surface in string
+/// form. All are blocked to keep scripts sandboxed.
 const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv", "time", "clock", "date"];
 
 /// Configuration for a [`LuauSubsystem`].
@@ -292,9 +292,8 @@ pub(crate) enum Which {
 }
 
 impl LuauSubsystem {
-    /// Construct a subsystem: build both Lua states, install the primitive
-    /// set with correct scope partitioning, and install the archetype sink
-    /// into the definition state. Order within each state is load-bearing:
+    /// Construct a subsystem: build the definition Lua state, install the
+    /// primitive set, and install the archetype sink. Order is load-bearing:
     ///
     ///   1. `Lua::new()` (luau feature active).
     ///   2. Scrub deny-list globals (write `nil` into `_G` entries; clear

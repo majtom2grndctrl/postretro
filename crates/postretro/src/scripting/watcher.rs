@@ -61,7 +61,7 @@ const DEBOUNCE_MS: u64 = 200;
 /// One reload request enqueued by the compile-worker for the frame loop.
 ///
 /// The request carries no payload: every reload triggers a full rebuild of all
-/// behavior scripts, so the specific changed path is not needed downstream.
+/// definition scripts, so the specific changed path is not needed downstream.
 #[derive(Debug, Clone)]
 pub(crate) struct ReloadRequest;
 
@@ -250,10 +250,9 @@ impl ScriptWatcher {
 
     /// Drain pending reload requests non-blockingly. Returns `Ok(true)` if at
     /// least one reload request was drained — the caller is responsible for
-    /// the actual reload sequence (clear handlers, re-run behavior scripts,
-    /// re-fire `levelLoad` if applicable).
+    /// the actual reload sequence (clear and re-evaluate definition scripts).
     ///
-    /// Every reload re-runs all behavior scripts (full rebuild; targeted
+    /// Every reload re-runs all definition scripts (full rebuild; targeted
     /// single-file reload not implemented).
     pub(crate) fn drain_reload_requests(&mut self) -> Result<bool, ScriptError> {
         let mut any = false;
@@ -337,8 +336,7 @@ fn handle_path(
             }
         }
         _ => {
-            // Not a definition file — ignore. Behavior-script hot reload is
-            // out of scope for this module.
+            // Not a definition script — ignore.
         }
     }
 }

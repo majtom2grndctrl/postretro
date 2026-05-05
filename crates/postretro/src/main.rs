@@ -783,9 +783,8 @@ impl ApplicationHandler for App {
                         .push_state(InterpolableState::new(self.camera.position));
                 }
 
-                // The Live VM has been removed; per-tick script callbacks no
-                // longer exist. `script_time` is still maintained for any
-                // primitive that wants a level-relative monotonic clock.
+                // Level-relative monotonic clock consumed by light_bridge.update,
+                // the emitter sim, and the map-light collector.
                 self.script_time += frame_dt;
 
                 // Position interpolated from tick-state slots; yaw/pitch from

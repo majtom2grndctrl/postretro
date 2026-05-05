@@ -778,11 +778,8 @@ mod tests {
         fs::write(
             &entry,
             r#"
-            import { registerHandler } from "postretro";
-            registerHandler("levelLoad", () => {
-                const x: number = 42;
-                return x;
-            });
+            import { world } from "postretro";
+            const lights = world.query({ component: "light" });
             "#,
         )
         .unwrap();
@@ -800,8 +797,8 @@ mod tests {
         );
         // The call to the engine-injected global must remain.
         assert!(
-            js.contains("registerHandler"),
-            "bundled output dropped the registerHandler call site: {js}"
+            js.contains("world"),
+            "bundled output dropped the world call site: {js}"
         );
 
         let _ = fs::remove_dir_all(&dir);

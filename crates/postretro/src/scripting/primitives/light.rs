@@ -1,4 +1,4 @@
-// Scripting primitives: `setLightAnimation` (behavior-only).
+// Scripting primitives: `setLightAnimation` (definition context).
 // See: context/lib/scripting.md
 
 use crate::scripting::components::light::{LightAnimation, LightComponent};
@@ -167,7 +167,7 @@ pub(crate) fn apply_light_animation_inner(
 const SET_LIGHT_ANIM_DOC: &str = "Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. \
      Non-unit direction samples are silently normalized; zero-length direction samples \
      and color animations on non-dynamic lights error with InvalidArgument. \
-     Behavior context only.";
+     Definition context.";
 
 #[allow(clippy::arc_with_non_send_sync)]
 pub(crate) fn register_light_entity_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {

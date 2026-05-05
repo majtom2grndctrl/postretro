@@ -846,7 +846,7 @@ mod tests {
         let ctx = rquickjs::Context::full(&rt).unwrap();
         ctx.with(|ctx| {
             for p in r.iter() {
-                // Install the stub (as the behavior context would).
+                // Install stubs directly to exercise the WrongContext error path.
                 (p.quickjs_stub_installer)(&ctx).unwrap();
             }
             let msg: String = ctx

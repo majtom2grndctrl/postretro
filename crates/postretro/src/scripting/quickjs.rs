@@ -32,7 +32,7 @@ const DEFAULT_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
 const COLLECT_FN_NAME: &str = "__collect_definitions";
 
 /// SDK library prelude bundled at compile time. Evaluated in every QuickJS
-/// context (definition + behavior) before user scripts run so the
+/// context (definition + pooled) before user scripts run so the
 /// vocabulary symbols (`world`, `flicker`, `pulse`, …) resolve as globals.
 /// Regenerate with: `cargo run -p postretro-script-compiler -- --prelude
 /// --sdk-root sdk/lib --out sdk/lib/prelude.js`.
@@ -190,8 +190,7 @@ fn build_definition_context_from_snapshot(
 
 /// Install each primitive into `ctx`. `target` names the scope this context
 /// represents:
-///   * `DefinitionOnly` → install `DefinitionOnly` + `Both` as real, install
-///     `BehaviorOnly` as stubs.
+///   * `DefinitionOnly` → install `DefinitionOnly` + `Both` as real.
 ///   * `Both` is not a valid target here — it only labels primitives.
 fn install_primitives(
     ctx: &Ctx<'_>,

@@ -127,7 +127,9 @@ Billboard instances come from `BillboardEmitterComponent` particles packed by `P
 
 ### 7.5 Fog Volume Composite
 
-Low-resolution raymarched pass over `env_fog_volume` brush regions. Resolution governed by `fog_pixel_scale` worldspawn property (default 4 — quarter resolution). Per sample: shape membership test (AABB as conservative bound), then optional half-space clip plane; accumulates SH ambient scatter and dynamic spot beam scatter (with shadow map occlusion for visible shafts and shadow wedges). Composited over the scene additively via nearest-neighbor upscale. The pixelated blocks are intentional, not a compromise.
+Low-resolution raymarched pass over `fog_volume` brush regions. Resolution governed by `fog_pixel_scale` worldspawn property (default 4 — quarter resolution). Per sample: shape membership test (AABB as conservative bound), then optional half-space clip plane; accumulates ambient scatter and dynamic spot beam scatter (with shadow map occlusion for visible shafts and shadow wedges). Composited over the scene additively via nearest-neighbor upscale. The pixelated blocks are intentional, not a compromise.
+
+**Ambient scatter.** Fog samples full L2 SH irradiance from the same composed SH volume (group 3) used by the forward and billboard passes. The evaluation normal is fixed to `vec3(0, 1, 0)` (world up) — fog is directionally isotropic; a fixed asymmetric normal captures overhead/ceiling ambient without view-direction dependence. When no SH volume is present (`has_sh_volume == 0`) the ambient contribution is zero. There is no per-volume color tint; fog entities do not expose a `color` KVP.
 
 **Portal-driven volume culling.** Each frame, before dispatching the raymarch, the renderer reduces the per-sample AABB-test loop to only volumes reachable from the camera cell. Per-leaf `u32` bitmasks are baked at compile time into PRL section 31 (`FogCellMasks`); bit `i` set in leaf `L`'s mask means volume `i` overlaps leaf `L`'s bounds (conservative AABB-vs-AABB, no boundary pop). At runtime:
 

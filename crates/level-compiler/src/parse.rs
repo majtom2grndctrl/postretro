@@ -103,18 +103,6 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         .copied()
         .context("no worldspawn entity found in .map file")?;
 
-    // Read the optional worldspawn `script` KVP. The level compiler resolves
-    // this relative to the `.map` file's directory and invokes scripts-build
-    // to produce a sibling `.js` artifact before packing.
-    let script = get_property(&geo_map, &worldspawn_id, "script").and_then(|s| {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
-
     // Read the optional worldspawn `data_script` KVP. The level compiler
     // resolves this relative to the `.map` file's directory, compiles `.ts`
     // sources via scripts-build (Luau passes through), and embeds the bytes as
@@ -497,7 +485,6 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         entity_brushes: entity_brushes_summary,
         entities,
         lights,
-        script,
         data_script,
         map_entities,
         fog_volumes,

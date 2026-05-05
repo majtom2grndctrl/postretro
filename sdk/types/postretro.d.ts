@@ -12,8 +12,6 @@ declare module "postretro" {
 
   export type ComponentValue = ({ kind: "transform" } & Transform) | ({ kind: "light" } & LightComponent) | ({ kind: "billboard_emitter" } & BillboardEmitterComponent) | ({ kind: "particle_state" } & ParticleState) | ({ kind: "sprite_visual" } & SpriteVisual) | ({ kind: "fog_volume" } & FogVolumeComponent);
 
-  export type ScriptEvent = { kind: string; payload: unknown };
-
   /** Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI. */
   export type LightDescriptor = {
     /** RGB color in [0, 1]. */
@@ -78,13 +76,6 @@ declare module "postretro" {
 
   /** Optional bag of component presets carried by `EntityTypeDescriptor.components`. */
   export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null };
-
-  export type ScriptCallContext = {
-    /** Seconds since the previous tick. */
-    delta: number;
-    /** Seconds since level load; monotonic within a level. */
-    time: number;
-  };
 
   export type LightKind = "Point" | "Spot" | "Directional";
 
@@ -160,17 +151,8 @@ declare module "postretro" {
     component: LightComponent;
   };
 
-  /** Despawns a previously-spawned entity. Errors if the id is stale. */
-  export function despawnEntity(id: EntityId): void;
-
-  /** Broadcasts an event to all listeners; drains at end of game logic. */
-  export function emitEvent(event: ScriptEvent): void;
-
   /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
-
-  /** Reads a component of the given kind from an entity. */
-  export function getComponent(id: EntityId, kind: ComponentKind): ComponentValue;
 
   /** Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in both behavior and data contexts. */
   export function getEntityProperty(id: EntityId, key: string): string | null;
@@ -178,20 +160,8 @@ declare module "postretro" {
   /** Register an entity type with optional component presets. Definition context only. Survives level unload. */
   export function registerEntity(descriptor: EntityTypeDescriptor): void;
 
-  /** Register a handler for an engine event. Currently accepts "levelLoad" or "tick". */
-  export function registerHandler(event: string, handler: (ctx?: ScriptCallContext) => void): void;
-
-  /** Sends an event to a single entity; drains at end of game logic. */
-  export function sendEvent(target: EntityId, event: ScriptEvent): void;
-
-  /** Writes a component of the given kind onto an entity. */
-  export function setComponent(id: EntityId, kind: ComponentKind, value: ComponentValue): void;
-
   /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only. */
   export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
-
-  /** Spawns a new entity with the given transform and returns its id. Optional `tags` attaches a tag list at creation time. */
-  export function spawnEntity(transform: Transform, tags?: ReadonlyArray<string>): EntityId;
 
   /** Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`. */
   export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<EntityForComponent<T>>;

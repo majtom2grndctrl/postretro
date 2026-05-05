@@ -10,14 +10,12 @@
 #![allow(dead_code)]
 
 pub(crate) mod builtins;
-pub(crate) mod call_context;
 pub(crate) mod components;
 pub(crate) mod conv;
 pub(crate) mod ctx;
 pub(crate) mod data_descriptors;
 pub(crate) mod data_registry;
 pub(crate) mod error;
-pub(crate) mod event_dispatch;
 pub(crate) mod luau;
 pub(crate) mod map_entity;
 pub(crate) mod pool;

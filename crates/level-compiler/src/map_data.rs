@@ -373,11 +373,6 @@ pub struct MapData {
     pub entity_brushes: Vec<(String, usize)>,
     pub entities: Vec<EntityInfo>,
     pub lights: Vec<MapLight>,
-    /// Optional path to the entry-point `.ts` script, taken verbatim from the
-    /// `script` worldspawn KVP. Resolved relative to the `.map` file's
-    /// directory by the compile pipeline. `None` when the worldspawn entity
-    /// has no `script` property. See `context/lib/scripting.md`.
-    pub script: Option<String>,
     /// Optional path to a data-script source file (`.ts`/`.js`/`.luau`), taken
     /// verbatim from the `data_script` worldspawn KVP. Resolved relative to the
     /// `.map` file's directory by the compile pipeline; the compiled output is

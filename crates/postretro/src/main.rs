@@ -43,7 +43,6 @@ use crate::scripting::builtins::{
     ClassnameDispatch, apply_classname_dispatch, apply_data_archetype_dispatch,
     register_builtins as register_builtin_classnames,
 };
-use crate::scripting::call_context::ScriptCallContext;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
@@ -54,7 +53,7 @@ use crate::scripting::reaction_dispatch::{
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
 };
-use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig, Which as ScriptWhich};
+use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::texture::TextureSet;
 use crate::visibility::{VisibilityPath, VisibilityStats, VisibleCells};
@@ -151,10 +150,8 @@ fn main() -> Result<()> {
 
     let initial_state = InterpolableState::new(initial_camera_pos);
 
-    // Scripting bootstrap. Behavior scripts load lexicographically so
-    // cross-file `registerHandler` order is deterministic. `fire_level_load`
-    // runs after world population but before the first frame; `fire_tick`
-    // each frame after game logic. See: context/lib/scripting.md
+    // Scripting bootstrap. The data script runs once per level load.
+    // See: context/lib/scripting.md
     let script_ctx = ScriptCtx::new();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
@@ -262,116 +259,6 @@ fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
     }
 }
 
-fn load_behavior_scripts(runtime: &ScriptRuntime, content_root: &Path) {
-    let root_buf = content_root.join("scripts");
-    let root = root_buf.as_path();
-    let entries = match std::fs::read_dir(root) {
-        Ok(e) => e,
-        Err(err) => {
-            log::debug!(
-                "[Scripting] `{}` not found ({err}); no behavior scripts loaded",
-                root.display(),
-            );
-            return;
-        }
-    };
-    let all_paths: Vec<std::path::PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && matches!(
-                    p.extension().and_then(|s| s.to_str()),
-                    Some("ts") | Some("js") | Some("luau")
-                )
-        })
-        .collect();
-
-    // Build the set of stems that have a `.ts` source so we can skip
-    // same-stem `.js` files (compiler artifacts). All paths share the same
-    // root so direct stem comparison (no canonicalize — the bare stem path
-    // does not exist on disk and would always fail to resolve) is sufficient.
-    let ts_stems: std::collections::HashSet<std::path::PathBuf> = all_paths
-        .iter()
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("ts"))
-        .map(|p| p.with_extension(""))
-        .collect();
-
-    let mut paths: Vec<std::path::PathBuf> = all_paths
-        .into_iter()
-        .filter(|p| {
-            if p.extension().and_then(|s| s.to_str()) == Some("js") {
-                // Skip `.js` files that are compiler artifacts — identified by
-                // the presence of a same-stem `.ts` sibling.
-                if ts_stems.contains(&p.with_extension("")) {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect();
-
-    // Sort by UTF-8 byte order — see context/lib/scripting.md §8 for the
-    // ordering contract.
-    paths.sort();
-
-    // In debug builds, compile `.ts` → `.js` before loading. The watcher
-    // module (and TsCompilerPath) is only compiled under debug_assertions.
-    #[cfg(debug_assertions)]
-    let ts_compiler = crate::scripting::watcher::TsCompilerPath::detect();
-
-    #[cfg(debug_assertions)]
-    if ts_compiler.is_none() {
-        log::warn!(
-            "[Scripting] `scripts-build` not found. `.ts` files will be passed to \
-             QuickJS as-is and will likely fail with \"Unexpected token\" errors. \
-             Install scripts-build or ship it next to the engine binary."
-        );
-    }
-
-    for path in &paths {
-        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-
-        // In debug builds, compile `.ts` to `.js` first.
-        #[cfg(debug_assertions)]
-        if ext == "ts" {
-            match &ts_compiler {
-                Some(compiler) => {
-                    let out_path = crate::scripting::watcher::compiled_output_for(path);
-                    match crate::scripting::watcher::run_ts_compiler(compiler, path, &out_path) {
-                        Ok(()) => {
-                            if let Err(err) =
-                                runtime.run_script_file(ScriptWhich::Behavior, &out_path)
-                            {
-                                log::error!(
-                                    "[Scripting] failed to load compiled `{}`: {err}",
-                                    out_path.display(),
-                                );
-                            }
-                        }
-                        Err(msg) => {
-                            log::error!(
-                                "[Scripting] TS compile failed for `{}`: {msg}",
-                                path.display(),
-                            );
-                        }
-                    }
-                    continue;
-                }
-                None => {
-                    // No compiler — fall through to loading the raw `.ts`
-                    // (preserves prior behavior; warning already logged above).
-                }
-            }
-        }
-
-        // `.js`, `.luau`, or `.ts` with no compiler available.
-        if let Err(err) = runtime.run_script_file(ScriptWhich::Behavior, path) {
-            log::error!("[Scripting] failed to load `{}`: {err}", path.display(),);
-        }
-    }
-}
-
 fn window_attributes() -> WindowAttributes {
     Window::default_attributes()
         .with_title("Postretro")
@@ -473,7 +360,8 @@ struct App {
     builtin_handled: Option<std::collections::HashSet<String>>,
 
     /// Seconds since level load, not wall clock. Resets to zero on level
-    /// unload; fed into `ScriptCallContext::time` each tick.
+    /// unload. Maintained for any future engine consumers that need a
+    /// level-relative monotonic clock.
     script_time: f32,
 }
 
@@ -720,31 +608,12 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
-                // Hot reload (debug builds only). `level_load_fired` is NOT
-                // reset — it gates first-frame init, not subsequent reloads.
-                // See: context/lib/scripting.md §8
+                // Drain pending reload requests so the watcher channel does
+                // not back up. The Live VM is gone, so there is no behavior
+                // context to rebuild — file edits are observed but no reload
+                // sequence runs. See: context/lib/scripting.md
                 match self.script_runtime.drain_reload_requests() {
-                    Ok(true) => {
-                        self.script_runtime.clear_level_handlers();
-                        if let Err(e) = self.script_runtime.reload_behavior_context() {
-                            log::error!(
-                                "[Scripting] hot reload: failed to rebuild behavior context: {e}",
-                            );
-                        } else {
-                            // Data script runs exactly once per level load (cold path
-                            // below), never here. The data registry and progress tracker
-                            // carry forward so in-flight subscriptions survive edits.
-                            // See: context/lib/scripting.md §2, §8
-                            load_behavior_scripts(&self.script_runtime, &self.content_root);
-                            if self.level_load_fired {
-                                self.script_runtime.fire_level_load();
-                            }
-                            log::info!(
-                                "[Scripting] hot reload finished (check earlier output for per-file errors)"
-                            );
-                        }
-                    }
-                    Ok(false) => {}
+                    Ok(_) => {}
                     Err(err) => {
                         log::error!("[Scripting] drain_reload_requests failed: {err}");
                     }
@@ -853,8 +722,6 @@ impl ApplicationHandler for App {
                         }
                     }
 
-                    load_behavior_scripts(&self.script_runtime, &self.content_root);
-                    self.script_runtime.fire_level_load();
                     fire_named_event_with_sequences(
                         "levelLoad",
                         &self.script_ctx.data_registry.borrow(),
@@ -880,10 +747,9 @@ impl ApplicationHandler for App {
                 self.camera
                     .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
 
-                // Bump the engine frame counter once per Game logic phase,
-                // before any tick handlers fire. `emitEvent` reads this to
-                // stamp `GameEvent.frame` so each `game_events` log line
-                // carries an ordering key. See: context/lib/scripting.md
+                // Bump the engine frame counter once per Game logic phase.
+                // Reserved for primitives that need a per-frame ordering stamp.
+                // See: context/lib/scripting.md
                 self.script_ctx
                     .frame
                     .set(self.script_ctx.frame.get().wrapping_add(1));
@@ -917,32 +783,10 @@ impl ApplicationHandler for App {
                         .push_state(InterpolableState::new(self.camera.position));
                 }
 
-                // Fire `tick` after game logic, before render. `delta` comes
-                // from the engine frame timer (not wall clock); `time` is
-                // seconds since level load, monotonic within a level.
+                // The Live VM has been removed; per-tick script callbacks no
+                // longer exist. `script_time` is still maintained for any
+                // primitive that wants a level-relative monotonic clock.
                 self.script_time += frame_dt;
-                self.script_runtime.fire_tick(ScriptCallContext {
-                    delta: frame_dt,
-                    time: self.script_time,
-                });
-
-                // Drain the `game_events` ring buffer that `emitEvent` writes
-                // to. Each entry surfaces as a single `log::info!` on the
-                // `game_events` target so authors can observe emissions with
-                // `RUST_LOG=game_events=info`. `payload` is rendered with
-                // `Display` so the line is canonical JSON, not Rust Debug.
-                {
-                    let mut buf = self.script_ctx.game_events.borrow_mut();
-                    while let Some(ev) = buf.pop_front() {
-                        log::info!(
-                            target: "game_events",
-                            "kind={} frame={} payload={}",
-                            ev.kind,
-                            ev.frame,
-                            ev.payload,
-                        );
-                    }
-                }
 
                 // Position interpolated from tick-state slots; yaw/pitch from
                 // `self.camera` directly so zero-tick frames still see this

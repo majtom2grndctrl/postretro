@@ -10,11 +10,9 @@ use rquickjs::{
     Value as JsValue,
 };
 
-use super::call_context::ScriptCallContext;
 use super::ctx::ScriptCtx;
 use super::data_descriptors::LevelManifest;
 use super::error::ScriptError;
-use super::event_dispatch::{self, SharedHandlerTable};
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use super::pool::{LuauContextPool, QuickJsContextPool};
 use super::primitives_registry::{ContextScope, PrimitiveRegistry, ScriptPrimitive};
@@ -28,14 +26,12 @@ use super::typedef;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Which {
     Definition,
-    Behavior,
 }
 
 impl From<Which> for LuauWhich {
     fn from(w: Which) -> Self {
         match w {
             Which::Definition => LuauWhich::Definition,
-            Which::Behavior => LuauWhich::Behavior,
         }
     }
 }
@@ -49,14 +45,10 @@ pub(crate) struct ScriptRuntimeConfig {
 pub(crate) struct ScriptRuntime {
     quickjs: QuickJsSubsystem,
     luau: LuauSubsystem,
-    /// Ephemeral-context pool for future per-entity QuickJS scripting. The
-    /// shared behavior context is NOT part of this pool (see `scripting::pool`).
+    /// Ephemeral-context pool for future per-entity QuickJS scripting.
     quickjs_pool: QuickJsContextPool,
     /// Ephemeral-context pool for future per-entity Luau scripting.
     luau_pool: LuauContextPool,
-    /// Handler table populated by `registerHandler` and drained on level
-    /// unload. Shared with the `ScriptCtx` the primitive registry captured.
-    handlers: SharedHandlerTable,
     /// Dev-mode hot-reload watcher. Debug builds only; release builds omit
     /// the field so `drain_reload_requests` is a no-op with no extra code.
     #[cfg(debug_assertions)]
@@ -69,7 +61,7 @@ impl ScriptRuntime {
     pub(crate) fn new(
         registry: &PrimitiveRegistry,
         cfg: &ScriptRuntimeConfig,
-        ctx: &ScriptCtx,
+        _ctx: &ScriptCtx,
     ) -> Result<Self, ScriptError> {
         let quickjs = QuickJsSubsystem::new(registry, &cfg.quickjs)?;
         let luau = LuauSubsystem::new(registry, &cfg.luau)?;
@@ -89,37 +81,9 @@ impl ScriptRuntime {
             luau,
             quickjs_pool,
             luau_pool,
-            handlers: ctx.handlers.clone(),
             #[cfg(debug_assertions)]
             watcher: None,
         })
-    }
-
-    /// Iterates registered handlers in registration order; a throwing handler
-    /// is logged and swallowed.
-    pub(crate) fn fire_level_load(&self) {
-        event_dispatch::fire_level_load(
-            &self.handlers,
-            self.quickjs.behavior_ctx(),
-            self.luau.behavior_lua(),
-        );
-    }
-
-    /// A throwing handler is logged and swallowed.
-    pub(crate) fn fire_tick(&self, ctx: ScriptCallContext) {
-        event_dispatch::fire_tick(
-            &self.handlers,
-            self.quickjs.behavior_ctx(),
-            self.luau.behavior_lua(),
-            ctx,
-        );
-    }
-
-    /// The handler registry is strictly per-level (see `scripting.md` §12
-    /// Non-Goals). On hot reload, scripts re-register from a clean slate so
-    /// handlers don't accumulate across reloads.
-    pub(crate) fn clear_level_handlers(&self) {
-        self.handlers.borrow_mut().clear();
     }
 
     pub(crate) fn quickjs_pool(&self) -> &QuickJsContextPool {
@@ -150,10 +114,8 @@ impl ScriptRuntime {
     }
 
     /// Call at the top of each frame. Returns `Ok(true)` when at least one
-    /// reload request was drained — the caller is responsible for the actual
-    /// reload sequence (clear handlers, re-run behavior scripts, re-fire
-    /// `levelLoad` if the level is loaded). No-op in release builds: always
-    /// returns `Ok(false)`.
+    /// reload request was drained. No-op in release builds: always returns
+    /// `Ok(false)`.
     pub(crate) fn drain_reload_requests(&mut self) -> Result<bool, ScriptError> {
         #[cfg(debug_assertions)]
         {
@@ -172,24 +134,12 @@ impl ScriptRuntime {
         &self.luau
     }
 
-    /// Rebuilding the contexts means top-level `const`/`let` (JS) or `local`
-    /// (Luau) declarations in user scripts don't collide with state left over
-    /// from the previous load. Handler tables live in `ScriptCtx`, not in the
-    /// contexts — callers must still call `clear_level_handlers` to drain them.
-    pub(crate) fn reload_behavior_context(&mut self) -> Result<(), ScriptError> {
-        self.quickjs.reload_behavior_context()?;
-        self.luau.reload_behavior_context()?;
-        Ok(())
-    }
-
     /// Evaluate a level's data script in a short-lived VM context and return
     /// the resulting `LevelManifest`. Errors are logged and converted to an
     /// empty manifest — the level loads with empty registries rather than
     /// failing.
     ///
-    /// The context is created and dropped within this call. Primitives install
-    /// with definition-context scope, so `registerHandler` (BehaviorOnly)
-    /// appears as a stub that throws `WrongContext`.
+    /// The context is created and dropped within this call.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     pub(crate) fn run_data_script(&self, section: &DataScriptSection) -> LevelManifest {
         // Anything that isn't `.luau` runs through QuickJS, mirroring
@@ -242,22 +192,10 @@ impl ScriptRuntime {
         })?;
         let name = path.to_string_lossy().into_owned();
 
-        // Publish the current script name so `registerHandler` can stamp it
-        // onto any handlers this script installs. Always cleared at scope exit,
-        // even on failure, so a thrown script cannot leak a stale name onto a
-        // later file's handlers.
-        self.handlers
-            .borrow_mut()
-            .set_current_source(Some(name.clone()));
-        let _source_guard = SourceGuard {
-            handlers: &self.handlers,
-        };
-
         match ext {
             "ts" | "js" => {
                 let ctx = match which {
                     Which::Definition => self.quickjs.definition_ctx(),
-                    Which::Behavior => self.quickjs.behavior_ctx(),
                 };
                 ctx.with(|ctx| run_script::<()>(&ctx, &source, &name))?;
                 Ok(())
@@ -276,19 +214,8 @@ impl ScriptRuntime {
     }
 }
 
-impl Drop for ScriptRuntime {
-    /// Each registered handler carries a `Persistent<Function>` that pins a JS
-    /// object in the QuickJS heap — letting it outlive the runtime would trip
-    /// QuickJS's `list_empty(&rt->gc_obj_list)` assertion during
-    /// `JS_FreeRuntime`.
-    fn drop(&mut self) {
-        self.handlers.borrow_mut().clear();
-    }
-}
-
 // A short-lived data context is built fresh for each level. It uses the same
-// primitive scope as the definition context (BehaviorOnly → stub) so
-// `registerHandler` correctly throws `WrongContext` from data scripts.
+// primitive scope as the definition context.
 
 fn run_data_script_quickjs(
     subsys: &QuickJsSubsystem,
@@ -313,7 +240,6 @@ fn run_data_script_quickjs(
     });
 
     ctx.with(|ctx| {
-        // BehaviorOnly primitives become stubs that throw WrongContext.
         for p in primitives {
             let use_real = matches!(
                 p.context_scope,
@@ -407,11 +333,10 @@ fn run_data_script_luau(
     })?;
 
     // Fresh `mlua::Lua`, dropped on return. We don't go through
-    // `LuauSubsystem::new` because it would also build the behavior state and
-    // archetype sink we don't need here.
+    // `LuauSubsystem::new` because it would also build the archetype sink we
+    // don't need here.
     let lua = mlua::Lua::new();
 
-    // BehaviorOnly primitives become stubs that throw WrongContext.
     for p in primitives {
         let use_real = matches!(
             p.context_scope,
@@ -471,19 +396,6 @@ fn run_data_script_luau(
     })
 }
 
-/// RAII guard that clears the handler table's `current_source` when the
-/// currently-loading script exits scope. Ensures a failing script does not
-/// leave a stale file name visible to the next script's handlers.
-struct SourceGuard<'a> {
-    handlers: &'a SharedHandlerTable,
-}
-
-impl<'a> Drop for SourceGuard<'a> {
-    fn drop(&mut self) {
-        self.handlers.borrow_mut().set_current_source(None);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,95 +434,10 @@ mod tests {
     }
 
     #[test]
-    fn run_script_file_dispatches_by_extension_luau() {
-        let (rt, ctx) = runtime();
-        let path = temp_script(
-            "dispatch.luau",
-            r#"
-            spawnEntity({
-                position = { x = 0, y = 0, z = 0 },
-                rotation = { pitch = 0, yaw = 0, roll = 0 },
-                scale    = { x = 1, y = 1, z = 1 },
-            })
-            "#,
-        );
-        rt.run_script_file(Which::Behavior, &path).unwrap();
-        assert!(
-            ctx.registry
-                .borrow()
-                .exists(crate::scripting::registry::EntityId::from_raw(0)),
-            "luau path should have spawned via QuickJs-symmetric primitives",
-        );
-        fs::remove_file(&path).ok();
-    }
-
-    /// Acceptance criterion for hot reload: re-running the same behavior script
-    /// after `clear_level_handlers` must not accumulate handlers. Three
-    /// simulated reloads each settle to the cold-load count.
-    #[test]
-    fn hot_reload_does_not_duplicate_handlers() {
-        let (mut rt, ctx) = runtime();
-        let path = temp_script(
-            "reload_dedup.js",
-            r#"
-            const tag = "reload-dedup";
-            registerHandler("levelLoad", function () {});
-            "#,
-        );
-
-        rt.run_script_file(Which::Behavior, &path).unwrap();
-        let cold_count = ctx.handlers.borrow().len();
-        assert!(
-            cold_count > 0,
-            "cold load should have registered at least one handler",
-        );
-
-        // Mirrors main.rs's reload sequence: clear handlers, rebuild the
-        // behavior context (so the top-level `const` doesn't trip
-        // `SyntaxError: redeclaration` on the second pass), then re-run all
-        // behavior scripts.
-        for i in 1..=3 {
-            rt.clear_level_handlers();
-            rt.reload_behavior_context().unwrap();
-            rt.run_script_file(Which::Behavior, &path).unwrap();
-            assert_eq!(
-                ctx.handlers.borrow().len(),
-                cold_count,
-                "after hot reload #{i}, handler count must equal cold-load count",
-            );
-        }
-
-        fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn run_script_file_dispatches_by_extension_js() {
-        let (rt, ctx) = runtime();
-        let path = temp_script(
-            "dispatch.js",
-            r#"
-            spawnEntity({
-                position: { x: 0, y: 0, z: 0 },
-                rotation: { pitch: 0, yaw: 0, roll: 0 },
-                scale:    { x: 1, y: 1, z: 1 },
-            });
-            "#,
-        );
-        rt.run_script_file(Which::Behavior, &path).unwrap();
-        assert!(
-            ctx.registry
-                .borrow()
-                .exists(crate::scripting::registry::EntityId::from_raw(0)),
-            "js path should have spawned through QuickJS",
-        );
-        fs::remove_file(&path).ok();
-    }
-
-    #[test]
     fn run_script_file_rejects_unknown_extension() {
         let (rt, _ctx) = runtime();
         let path = temp_script("dispatch.py", "print('nope')\n");
-        let err = rt.run_script_file(Which::Behavior, &path).unwrap_err();
+        let err = rt.run_script_file(Which::Definition, &path).unwrap_err();
         match err {
             ScriptError::InvalidArgument { reason } => {
                 assert!(reason.contains(".py"), "reason: {reason}");
@@ -653,12 +480,12 @@ mod tests {
         assert!(!v);
     }
 
-    // Perf budgets (20 ms / 5 ms) are release-build targets — debug builds
-    // will exceed them. Assertions gate on `!cfg!(debug_assertions)` so the
-    // tests still run and print timing in debug without failing CI.
+    // Perf budgets (20 ms) is a release-build target — debug builds will exceed
+    // it. Assertions gate on `!cfg!(debug_assertions)` so the tests still run
+    // and print timing in debug without failing CI.
 
     #[test]
-    fn shared_behavior_context_primitive_install_under_20ms_release() {
+    fn shared_definition_context_primitive_install_under_20ms_release() {
         use std::time::Instant;
         let ctx = ScriptCtx::new();
         let mut registry = PrimitiveRegistry::new();
@@ -735,111 +562,6 @@ mod tests {
     }
 
     #[test]
-    fn run_data_script_register_handler_throws_wrong_context_quickjs() {
-        // Calling `registerHandler` from a data context must surface as a
-        // catchable WrongContext error inside the script — proving the
-        // BehaviorOnly stub installed correctly.
-        let (rt, _ctx) = runtime();
-        let section = data_section(
-            "/maps/bad.js",
-            r#"
-            globalThis.registerLevelManifest = function() {
-                let msg = "no-throw";
-                try {
-                    registerHandler("levelLoad", function() {});
-                } catch (e) {
-                    msg = String(e.message || e);
-                }
-                globalThis.__wc_msg = msg;
-                return { reactions: [] };
-            };
-            "#,
-        );
-        let manifest = rt.run_data_script(&section);
-        assert!(manifest.reactions.is_empty());
-        // Re-run with a script that lets the throw propagate to verify the
-        // warn-and-empty fallback path.
-        let section = data_section(
-            "/maps/throw.js",
-            r#"
-            globalThis.registerLevelManifest = function() {
-                registerHandler("levelLoad", function() {});
-                return { reactions: [] };
-            };
-            "#,
-        );
-        let manifest = rt.run_data_script(&section);
-        assert!(
-            manifest.reactions.is_empty(),
-            "thrown registerHandler must surface as empty fallback manifest",
-        );
-    }
-
-    #[test]
-    fn run_data_script_register_handler_throws_wrong_context_luau() {
-        let (rt, _ctx) = runtime();
-        let section = data_section(
-            "/maps/bad.luau",
-            r#"
-            function registerLevelManifest(ctx)
-                local ok, err = pcall(registerHandler, "levelLoad", function() end)
-                assert(not ok, "registerHandler must throw in data context")
-                assert(string.find(tostring(err), "registerHandler") ~= nil,
-                       "WrongContext message must mention primitive name")
-                return { reactions = {} }
-            end
-            "#,
-        );
-        let manifest = rt.run_data_script(&section);
-        assert!(manifest.reactions.is_empty());
-    }
-
-    /// Policy: a behavior-script hot reload must not re-run the data script
-    /// or clear the data registry. Mirrors main.rs's reload sequence and
-    /// confirms that a `DataRegistry` populated at level load remains intact.
-    /// See: context/lib/scripting.md §2 (Data context lifecycle), §8 (Hot reload)
-    #[test]
-    fn data_script_not_rerun_on_behavior_reload() {
-        use crate::scripting::data_registry::DataRegistry;
-
-        let (mut rt, _ctx) = runtime();
-
-        let section = data_section(
-            "/maps/data.js",
-            r#"
-            globalThis.registerLevelManifest = function() {
-                return {
-                    reactions: [
-                        { name: "wave1Complete", primitive: "moveGeometry", tag: "reactor" },
-                    ],
-                };
-            };
-            "#,
-        );
-        let manifest = rt.run_data_script(&section);
-        let mut data_registry = DataRegistry::new();
-        data_registry.populate_from_manifest(manifest);
-        assert_eq!(data_registry.reactions.len(), 1);
-
-        let behavior = temp_script(
-            "data_persists.js",
-            r#"registerHandler("levelLoad", function() {});"#,
-        );
-        rt.run_script_file(Which::Behavior, &behavior).unwrap();
-
-        for _ in 0..3 {
-            rt.clear_level_handlers();
-            rt.reload_behavior_context().unwrap();
-            rt.run_script_file(Which::Behavior, &behavior).unwrap();
-        }
-
-        assert_eq!(data_registry.reactions.len(), 1);
-        assert_eq!(data_registry.reactions[0].name, "wave1Complete");
-
-        fs::remove_file(&behavior).ok();
-    }
-
-    #[test]
     fn run_data_script_missing_export_returns_empty_manifest() {
         let (rt, _ctx) = runtime();
         let section = data_section(
@@ -867,7 +589,7 @@ mod tests {
         let (rt, _ctx) = runtime();
 
         let start = Instant::now();
-        rt.quickjs().behavior_ctx().with(|ctx| {
+        rt.quickjs().definition_ctx().with(|ctx| {
             ctx.eval::<(), _>(
                 r#"
                 for (let i = 0; i < 1000; i++) {

@@ -182,7 +182,7 @@ fn register_set_light_animation(registry: &mut PrimitiveRegistry, ctx: ScriptCtx
                 apply_light_animation(&ctx, id, animation)
             }
         })
-        .scope(ContextScope::BehaviorOnly)
+        .scope(ContextScope::DefinitionOnly)
         .doc(SET_LIGHT_ANIM_DOC)
         .param("id", "EntityId")
         .param("animation", "LightAnimation | null")
@@ -999,7 +999,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("primitive {name} not found"))
         };
         assert_eq!(scope_of("worldQuery"), ContextScope::Both);
-        assert_eq!(scope_of("setLightAnimation"), ContextScope::BehaviorOnly);
+        assert_eq!(scope_of("setLightAnimation"), ContextScope::DefinitionOnly);
     }
 
     #[test]

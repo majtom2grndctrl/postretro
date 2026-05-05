@@ -1,16 +1,11 @@
-// QuickJS subsystem: one `rquickjs::Runtime` plus definition and behavior contexts.
+// QuickJS subsystem: one `rquickjs::Runtime` plus the definition context.
 // See: context/lib/scripting.md
 //
 // Lifecycle:
 //   * One `rquickjs::Runtime` per subsystem (owns GC, memory limit).
-//   * Three contexts per level:
+//   * Two contexts per level:
 //       - `definition_ctx`: long-lived context for cross-script definition-scope
-//         code. Carries DefinitionOnly/Both primitives as real functions;
-//         BehaviorOnly primitives install as stubs that throw
-//         `ScriptError::WrongContext`. NOT the entry point for level-load work.
-//       - `behavior_ctx`: long-lived context for the level's lifetime. Carries
-//         BehaviorOnly/Both primitives as real functions; DefinitionOnly stubs
-//         that throw `ScriptError::WrongContext`.
+//         code. Carries DefinitionOnly/Both primitives as real functions.
 //       - Ephemeral data context: a short-lived context created fresh per level
 //         in `run_data_script_quickjs`. This is the correct entry point for
 //         level-load data-script execution — not `definition_ctx`.
@@ -89,26 +84,23 @@ pub(crate) struct ArchetypeDescriptor {
 /// `scripting::ctx`) and `RefCell` does not poison.
 pub(crate) type ArchetypeAccumulator = Rc<RefCell<Vec<ArchetypeDescriptor>>>;
 
-/// rquickjs subsystem: one `Runtime`, one definition context, one behavior
-/// context, and the primitive registry handle used to reinstall primitives on
-/// context reload.
+/// rquickjs subsystem: one `Runtime`, one definition context, and the
+/// primitive registry handle used by short-lived data contexts.
 pub(crate) struct QuickJsSubsystem {
     runtime: Runtime,
     definition_ctx: Context,
-    behavior_ctx: Context,
-    /// Kept so `reload_behavior_context` can reinstall primitives without
+    /// Kept so short-lived data contexts can reinstall primitives without
     /// requiring the caller to pass the registry back in. Each `ScriptPrimitive`
     /// is `Clone` with `Arc`-backed closures — cheap shallow copy.
     primitives: Vec<ScriptPrimitive>,
     /// Shared with the `__collect_definitions` function installed into
-    /// `definition_ctx`. Kept here so reloads can swap in a fresh accumulator
-    /// without losing the Rust-side handle.
+    /// `definition_ctx`.
     archetypes: ArchetypeAccumulator,
 }
 
 impl QuickJsSubsystem {
     /// Construct a subsystem: build the runtime, set the memory limit, and
-    /// create both contexts with their primitives installed.
+    /// create the definition context with primitives installed.
     pub(crate) fn new(
         registry: &PrimitiveRegistry,
         cfg: &QuickJsConfig,
@@ -123,12 +115,10 @@ impl QuickJsSubsystem {
         let primitives_snapshot: Vec<ScriptPrimitive> = registry.iter().cloned().collect();
         let definition_ctx =
             build_definition_context_from_snapshot(&runtime, &primitives_snapshot, &archetypes)?;
-        let behavior_ctx = build_behavior_context_from_snapshot(&runtime, &primitives_snapshot)?;
 
         Ok(Self {
             runtime,
             definition_ctx,
-            behavior_ctx,
             primitives: primitives_snapshot,
             archetypes,
         })
@@ -139,14 +129,9 @@ impl QuickJsSubsystem {
         &self.definition_ctx
     }
 
-    /// Borrow the behavior context so callers can enter it via `ctx.with`.
-    pub(crate) fn behavior_ctx(&self) -> &Context {
-        &self.behavior_ctx
-    }
-
     /// Borrow the underlying `rquickjs::Runtime`. Used by the context pool
     /// so pooled contexts share the runtime (GC heap, memory limit) with the
-    /// shared behavior/definition contexts.
+    /// shared definition context.
     pub(crate) fn runtime(&self) -> &Runtime {
         &self.runtime
     }
@@ -162,17 +147,6 @@ impl QuickJsSubsystem {
     /// the caller that drains it after evaluating definition scripts.
     pub(crate) fn archetypes(&self) -> &ArchetypeAccumulator {
         &self.archetypes
-    }
-
-    /// Drop the current behavior context and build a fresh one. Used by the
-    /// dev-mode hot-reload path so re-running behavior scripts that contain
-    /// top-level `const`/`let` declarations does not throw `SyntaxError:
-    /// redeclaration` against state left over from the previous load.
-    /// Primitives, `Date` deletion, and the SDK prelude are reinstalled from
-    /// the snapshot.
-    pub(crate) fn reload_behavior_context(&mut self) -> Result<(), ScriptError> {
-        self.behavior_ctx = build_behavior_context_from_snapshot(&self.runtime, &self.primitives)?;
-        Ok(())
     }
 }
 
@@ -222,44 +196,10 @@ fn build_definition_context_from_snapshot(
     Ok(ctx)
 }
 
-fn build_behavior_context_from_snapshot(
-    runtime: &Runtime,
-    primitives: &[ScriptPrimitive],
-) -> Result<Context, ScriptError> {
-    let ctx = Context::full(runtime).map_err(|e| ScriptError::InvalidArgument {
-        reason: e.to_string(),
-    })?;
-    ctx.with(|ctx| -> Result<(), ScriptError> {
-        install_primitives(&ctx, primitives, ContextScope::BehaviorOnly)?;
-        deny_wall_clock(&ctx)?;
-        evaluate_prelude(&ctx)?;
-        Ok(())
-    })?;
-    Ok(ctx)
-}
-
-/// Remove wall-clock access from the behavior context globals. Scripts must
-/// take their timing from `ScriptCallContext` only, not from `Date.now()`.
-/// Deleting the global makes `Date` a `ReferenceError` on access.
-fn deny_wall_clock(ctx: &Ctx<'_>) -> Result<(), ScriptError> {
-    let globals = ctx.globals();
-    // `Object.remove` is the rquickjs API for true delete. Assigning
-    // `undefined` would leave the property present and `typeof Date` would
-    // still evaluate; `remove` causes a `ReferenceError` on bare access.
-    globals
-        .remove("Date")
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to delete `Date` global: {e}"),
-        })?;
-    Ok(())
-}
-
 /// Install each primitive into `ctx`. `target` names the scope this context
 /// represents:
 ///   * `DefinitionOnly` → install `DefinitionOnly` + `Both` as real, install
 ///     `BehaviorOnly` as stubs.
-///   * `BehaviorOnly` → install `BehaviorOnly` + `Both` as real, install
-///     `DefinitionOnly` as stubs.
 ///   * `Both` is not a valid target here — it only labels primitives.
 fn install_primitives(
     ctx: &Ctx<'_>,
@@ -267,10 +207,7 @@ fn install_primitives(
     target: ContextScope,
 ) -> Result<(), ScriptError> {
     debug_assert!(
-        matches!(
-            target,
-            ContextScope::DefinitionOnly | ContextScope::BehaviorOnly
-        ),
+        matches!(target, ContextScope::DefinitionOnly),
         "install_primitives target must name a concrete context, not `Both`",
     );
     for p in primitives {
@@ -278,7 +215,6 @@ fn install_primitives(
             (p.context_scope, target),
             (ContextScope::Both, _)
                 | (ContextScope::DefinitionOnly, ContextScope::DefinitionOnly)
-                | (ContextScope::BehaviorOnly, ContextScope::BehaviorOnly)
         );
         let installer = if use_real {
             &p.quickjs_installer
@@ -372,16 +308,11 @@ mod tests {
     }
 
     #[test]
-    fn new_constructs_runtime_and_both_contexts() {
+    fn new_constructs_runtime_and_definition_context() {
         let (subsys, _ctx) = setup();
-        // Both contexts must be independently usable.
         subsys.definition_ctx().with(|ctx| {
             let v: u32 = ctx.eval("1 + 2").unwrap();
             assert_eq!(v, 3);
-        });
-        subsys.behavior_ctx().with(|ctx| {
-            let v: u32 = ctx.eval("4 * 5").unwrap();
-            assert_eq!(v, 20);
         });
     }
 
@@ -430,69 +361,9 @@ mod tests {
     }
 
     #[test]
-    fn definition_context_rejects_behavior_only_primitive() {
-        // `emitEvent` is BehaviorOnly — in the definition context it must
-        // exist as a stub that throws WrongContext.
-        let (subsys, _ctx) = setup();
-        subsys.definition_ctx().with(|ctx| {
-            let msg: String = ctx
-                .eval(
-                    r#"
-                    try {
-                        emitEvent({ kind: "boom", payload: {} });
-                        "no-throw"
-                    } catch (e) { String(e.message || e) }
-                    "#,
-                )
-                .unwrap();
-            assert!(
-                msg.contains("emitEvent") && msg.contains("not available"),
-                "expected WrongContext message mentioning emitEvent, got: {msg}",
-            );
-        });
-    }
-
-    #[test]
-    fn behavior_context_rejects_definition_only_primitive() {
-        // The day-one set has no DefinitionOnly primitive. Register a
-        // throwaway one here to prove the stub install path.
-        let script_ctx = ScriptCtx::new();
-        let mut registry = PrimitiveRegistry::new();
-        register_all(&mut registry, script_ctx.clone());
-        registry
-            .register("test_def_only", || -> Result<u32, ScriptError> { Ok(7) })
-            .scope(ContextScope::DefinitionOnly)
-            .finish();
-
-        let subsys = QuickJsSubsystem::new(&registry, &QuickJsConfig::default()).unwrap();
-        subsys.behavior_ctx().with(|ctx| {
-            let msg: String = ctx
-                .eval(
-                    r#"
-                    try { test_def_only(); "no-throw" }
-                    catch (e) { String(e.message || e) }
-                    "#,
-                )
-                .unwrap();
-            assert!(
-                msg.contains("test_def_only") && msg.contains("not available"),
-                "expected WrongContext for test_def_only, got: {msg}",
-            );
-        });
-        // And available in the definition context.
-        subsys.definition_ctx().with(|ctx| {
-            let v: u32 = ctx.eval("test_def_only()").unwrap();
-            assert_eq!(v, 7);
-        });
-        // `script_ctx` is retained until test scope-end so the registry's Rc
-        // handles stay live for the duration of the subsystem under test.
-        let _ = script_ctx;
-    }
-
-    #[test]
     fn run_script_returns_script_threw_and_context_is_not_poisoned() {
         let (subsys, _ctx) = setup();
-        subsys.behavior_ctx().with(|ctx| {
+        subsys.definition_ctx().with(|ctx| {
             let err = run_script::<()>(&ctx, "throw new Error('boom');", "test.js")
                 .expect_err("script should throw");
             match err {
@@ -521,7 +392,7 @@ mod tests {
             .scope(ContextScope::Both)
             .finish();
         let subsys = QuickJsSubsystem::new(&registry, &QuickJsConfig::default()).unwrap();
-        subsys.behavior_ctx().with(|ctx| {
+        subsys.definition_ctx().with(|ctx| {
             let msg: String = ctx
                 .eval(
                     r#"
@@ -535,122 +406,27 @@ mod tests {
     }
 
     #[test]
-    fn end_to_end_transform_component_round_trip() {
-        // Behavior script spawns an entity, writes a fully-populated Transform
-        // via setComponent, reads it back via getComponent, and asserts the
-        // round-trip holds within float tolerance.
-        //
-        // `ComponentKind` crosses as a bare string (`"Transform"`) per
-        // `scripting::conv`.
-        let (subsys, ctx_handle) = setup();
-        subsys.behavior_ctx().with(|ctx| {
-            let out: rquickjs::Object = ctx
-                .eval(
-                    r#"
-                    const id = spawnEntity({
-                        position: { x: 0, y: 0, z: 0 },
-                        rotation: { pitch: 0, yaw: 0, roll: 0 },
-                        scale:    { x: 1, y: 1, z: 1 },
-                    });
-                    const input = {
-                        kind: "transform",
-                        position: { x: 1.5,  y: 2.5, z: -3.25 },
-                        rotation: { pitch: 15.0, yaw: 45.0, roll: -30.0 },
-                        scale:    { x: 2.0, y: 2.0, z: 2.0 },
-                    };
-                    setComponent(id, "transform", input);
-                    const out = getComponent(id, "transform");
-                    out
-                    "#,
-                )
-                .unwrap();
-
-            // Assert returned shape matches the input within float tolerance.
-            let kind: String = out.get("kind").unwrap();
-            assert_eq!(kind, "transform");
-            let pos: rquickjs::Object = out.get("position").unwrap();
-            let rot: rquickjs::Object = out.get("rotation").unwrap();
-            let scl: rquickjs::Object = out.get("scale").unwrap();
-
-            let px: f32 = pos.get("x").unwrap();
-            let py: f32 = pos.get("y").unwrap();
-            let pz: f32 = pos.get("z").unwrap();
-            assert!((px - 1.5).abs() < 1e-4);
-            assert!((py - 2.5).abs() < 1e-4);
-            assert!((pz - (-3.25)).abs() < 1e-4);
-
-            let pitch: f32 = rot.get("pitch").unwrap();
-            let yaw: f32 = rot.get("yaw").unwrap();
-            let roll: f32 = rot.get("roll").unwrap();
-            assert!((pitch - 15.0).abs() < 1e-2, "pitch: {pitch}");
-            assert!((yaw - 45.0).abs() < 1e-2, "yaw: {yaw}");
-            assert!((roll - (-30.0)).abs() < 1e-2, "roll: {roll}");
-
-            let sx: f32 = scl.get("x").unwrap();
-            let sy: f32 = scl.get("y").unwrap();
-            let sz: f32 = scl.get("z").unwrap();
-            assert!((sx - 2.0).abs() < 1e-4);
-            assert!((sy - 2.0).abs() < 1e-4);
-            assert!((sz - 2.0).abs() < 1e-4);
-        });
-
-        // And the registry actually stored something. The script spawned
-        // exactly one entity; its id is not exposed to Rust here, so we only
-        // assert that the first slot (index 0, generation 0) is now live.
-        assert!(
-            ctx_handle
-                .registry
-                .borrow()
-                .exists(crate::scripting::registry::EntityId::from_raw(0))
-        );
-    }
-
-    #[test]
     fn sdk_prelude_installs_globals() {
         // The prelude rewrites `export const world = ...` and friends as
-        // `globalThis.x = ...` assignments. Verify each surfaces in both
-        // shared contexts.
+        // `globalThis.x = ...` assignments. Verify each surfaces in the
+        // definition context.
         let (subsys, _ctx) = setup();
-        for ctx_label in ["definition", "behavior"] {
-            let ctx_handle = if ctx_label == "definition" {
-                subsys.definition_ctx()
-            } else {
-                subsys.behavior_ctx()
-            };
-            ctx_handle.with(|ctx| {
-                let typeof_world: String = ctx.eval("typeof world").unwrap();
-                assert_eq!(typeof_world, "object", "{ctx_label}: world missing");
-                for fn_name in [
-                    "flicker",
-                    "pulse",
-                    "colorShift",
-                    "sweep",
-                    "timeline",
-                    "sequence",
-                ] {
-                    let kind: String = ctx
-                        .eval(format!("typeof {fn_name}").as_str())
-                        .unwrap_or_else(|e| panic!("{ctx_label}/{fn_name}: {e}"));
-                    assert_eq!(kind, "function", "{ctx_label}/{fn_name}");
-                }
-            });
-        }
-    }
-
-    #[test]
-    fn reload_behavior_context_allows_const_redeclaration() {
-        // A script with a top-level `const` reused across hot reloads would
-        // throw `SyntaxError: redeclaration` on the second eval against the
-        // same context. Rebuilding the behavior context must produce a fresh
-        // global scope where the same source evaluates cleanly.
-        let (mut subsys, _ctx) = setup();
-        let script = "const x = 1;";
-        subsys.behavior_ctx().with(|ctx| {
-            ctx.eval::<(), _>(script).unwrap();
-        });
-        subsys.reload_behavior_context().unwrap();
-        subsys.behavior_ctx().with(|ctx| {
-            ctx.eval::<(), _>(script).unwrap();
+        subsys.definition_ctx().with(|ctx| {
+            let typeof_world: String = ctx.eval("typeof world").unwrap();
+            assert_eq!(typeof_world, "object", "world missing");
+            for fn_name in [
+                "flicker",
+                "pulse",
+                "colorShift",
+                "sweep",
+                "timeline",
+                "sequence",
+            ] {
+                let kind: String = ctx
+                    .eval(format!("typeof {fn_name}").as_str())
+                    .unwrap_or_else(|e| panic!("{fn_name}: {e}"));
+                assert_eq!(kind, "function", "{fn_name}");
+            }
         });
     }
 }

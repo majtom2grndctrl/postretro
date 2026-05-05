@@ -26,12 +26,6 @@ pub(crate) enum ScriptError {
     #[error("invalid argument: {reason}")]
     InvalidArgument { reason: String },
 
-    #[error("primitive `{primitive}` is not available in the {current} context")]
-    WrongContext {
-        primitive: &'static str,
-        current: &'static str,
-    },
-
     #[error("primitive `{name}` panicked")]
     Panicked { name: &'static str },
 

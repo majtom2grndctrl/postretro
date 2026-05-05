@@ -12,7 +12,7 @@ use std::rc::Rc;
 use mlua::{Compiler, Function, Lua, Table};
 
 use super::error::ScriptError;
-use super::primitives_registry::{ContextScope, PrimitiveRegistry, ScriptPrimitive};
+use super::primitives_registry::{PrimitiveRegistry, ScriptPrimitive};
 use super::quickjs::{ArchetypeAccumulator, ArchetypeDescriptor};
 
 /// Engine-internal sink function installed into the definition Lua state.
@@ -325,11 +325,7 @@ impl LuauSubsystem {
         let archetypes: ArchetypeAccumulator = Rc::new(RefCell::new(Vec::new()));
         let primitives_snapshot: Vec<ScriptPrimitive> = registry.iter().cloned().collect();
 
-        let definition_lua = build_lua_state(
-            &primitives_snapshot,
-            ContextScope::DefinitionOnly,
-            Some(&archetypes),
-        )?;
+        let definition_lua = build_lua_state(&primitives_snapshot, Some(&archetypes))?;
 
         Ok(Self {
             definition_lua,
@@ -413,7 +409,6 @@ impl LuauSubsystem {
 
 fn build_lua_state(
     primitives: &[ScriptPrimitive],
-    target: ContextScope,
     archetypes: Option<&ArchetypeAccumulator>,
 ) -> Result<Lua, ScriptError> {
     let lua = Lua::new();
@@ -425,8 +420,8 @@ fn build_lua_state(
     // sandbox freezes `_G` and any subsequent `globals().set` would fail.
     install_print_redirect(&lua)?;
 
-    // 3. Install primitives (real + stubs).
-    install_primitives(&lua, primitives, target)?;
+    // 3. Install primitives.
+    install_primitives(&lua, primitives)?;
 
     // 4. Archetype sink into the definition state only.
     if let Some(accum) = archetypes {
@@ -511,23 +506,9 @@ fn install_print_redirect(lua: &Lua) -> Result<(), ScriptError> {
 fn install_primitives(
     lua: &Lua,
     primitives: &[ScriptPrimitive],
-    target: ContextScope,
 ) -> Result<(), ScriptError> {
-    debug_assert!(
-        matches!(target, ContextScope::DefinitionOnly),
-        "install_primitives target must name a concrete context, not `Both`",
-    );
     for p in primitives {
-        let use_real = matches!(
-            (p.context_scope, target),
-            (ContextScope::Both, _) | (ContextScope::DefinitionOnly, ContextScope::DefinitionOnly)
-        );
-        let installer = if use_real {
-            &p.luau_installer
-        } else {
-            &p.luau_stub_installer
-        };
-        installer(lua).map_err(|e| ScriptError::InvalidArgument {
+        (p.luau_installer)(lua).map_err(|e| ScriptError::InvalidArgument {
             reason: e.to_string(),
         })?;
     }
@@ -581,6 +562,7 @@ mod tests {
     use super::*;
     use crate::scripting::ctx::ScriptCtx;
     use crate::scripting::primitives::register_all;
+    use crate::scripting::primitives_registry::ContextScope;
 
     fn setup() -> (LuauSubsystem, ScriptCtx) {
         let ctx = ScriptCtx::new();

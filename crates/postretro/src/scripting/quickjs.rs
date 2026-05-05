@@ -20,7 +20,7 @@ use rquickjs::{CatchResultExt, CaughtError, Context, Ctx, FromJs, Function, Into
 use serde::{Deserialize, Serialize};
 
 use super::error::ScriptError;
-use super::primitives_registry::{ContextScope, PrimitiveRegistry, ScriptPrimitive};
+use super::primitives_registry::{PrimitiveRegistry, ScriptPrimitive};
 
 /// Default memory cap per QuickJS `Runtime`. 100 MB is a comfortable ceiling
 /// for the single-level working set; tune after profiling real content.
@@ -180,7 +180,7 @@ fn build_definition_context_from_snapshot(
     })?;
     let archetypes = archetypes.clone();
     ctx.with(|ctx| -> Result<(), ScriptError> {
-        install_primitives(&ctx, primitives, ContextScope::DefinitionOnly)?;
+        install_primitives(&ctx, primitives)?;
         install_collect_definitions(&ctx, archetypes)?;
         evaluate_prelude(&ctx)?;
         Ok(())
@@ -188,30 +188,13 @@ fn build_definition_context_from_snapshot(
     Ok(ctx)
 }
 
-/// Install each primitive into `ctx`. `target` names the scope this context
-/// represents:
-///   * `DefinitionOnly` → install `DefinitionOnly` + `Both` as real.
-///   * `Both` is not a valid target here — it only labels primitives.
+/// Install each primitive into `ctx`.
 fn install_primitives(
     ctx: &Ctx<'_>,
     primitives: &[ScriptPrimitive],
-    target: ContextScope,
 ) -> Result<(), ScriptError> {
-    debug_assert!(
-        matches!(target, ContextScope::DefinitionOnly),
-        "install_primitives target must name a concrete context, not `Both`",
-    );
     for p in primitives {
-        let use_real = matches!(
-            (p.context_scope, target),
-            (ContextScope::Both, _) | (ContextScope::DefinitionOnly, ContextScope::DefinitionOnly)
-        );
-        let installer = if use_real {
-            &p.quickjs_installer
-        } else {
-            &p.quickjs_stub_installer
-        };
-        installer(ctx).map_err(|e| ScriptError::InvalidArgument {
+        (p.quickjs_installer)(ctx).map_err(|e| ScriptError::InvalidArgument {
             reason: e.to_string(),
         })?;
     }

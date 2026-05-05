@@ -1003,26 +1003,6 @@ mod tests {
     }
 
     #[test]
-    fn world_query_stub_throws_wrong_context_in_definition_context() {
-        let ctx = ScriptCtx::new();
-        let r = registry_for(ctx);
-        let rt = rquickjs::Runtime::new().unwrap();
-        let jsctx = rquickjs::Context::full(&rt).unwrap();
-        jsctx.with(|qjs| {
-            for p in r.iter() {
-                (p.quickjs_stub_installer)(&qjs).unwrap();
-            }
-            let msg: String = qjs
-                .eval::<String, _>(
-                    r#"try { worldQuery({component:"light"}); "no-throw" }
-                       catch (e) { String(e.message || e) }"#,
-                )
-                .unwrap();
-            assert!(msg.contains("not available"), "got: {msg}");
-        });
-    }
-
-    #[test]
     fn sequenced_set_light_animation_registers_under_expected_name() {
         let ctx = ScriptCtx::new();
         let mut seq_reg = SequencedPrimitiveRegistry::new();

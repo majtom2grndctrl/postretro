@@ -53,8 +53,6 @@ pub(crate) struct ScriptPrimitive {
     pub(crate) context_scope: ContextScope,
     pub(crate) quickjs_installer: QuickJsInstaller,
     pub(crate) luau_installer: LuauInstaller,
-    pub(crate) quickjs_stub_installer: QuickJsInstaller,
-    pub(crate) luau_stub_installer: LuauInstaller,
 }
 
 impl std::fmt::Debug for ScriptPrimitive {
@@ -74,8 +72,8 @@ impl std::fmt::Debug for ScriptPrimitive {
 /// invocation list is the one source of truth.
 pub(crate) trait RegisterablePrimitive<Args> {
     /// Wrap `self` into installer closures and return a fully-populated
-    /// `ScriptPrimitive`. The real installers call the user function; the
-    /// stub installers throw `ScriptError::WrongContext`.
+    /// `ScriptPrimitive`. The installers call the user function and translate
+    /// returned errors into the runtime's native error type.
     fn into_primitive(
         self,
         name: &'static str,
@@ -502,46 +500,6 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Stub installers — used when a primitive is prohibited in the target context.
-//
-// Both runtimes surface `ScriptError::WrongContext` as their native error so
-// scripts see a catchable exception / error with a clear message. The stub
-// installers bind the *same name* so the primitive is never silently "undefined"
-// in the wrong context.
-
-fn make_quickjs_stub(name: &'static str, stub_context: &'static str) -> QuickJsInstaller {
-    Arc::new(move |ctx: &rquickjs::Ctx<'_>| -> rquickjs::Result<()> {
-        let globals = ctx.globals();
-        let f = rquickjs::Function::new(ctx.clone(), move |ctx: rquickjs::Ctx<'_>| {
-            let err = ScriptError::WrongContext {
-                primitive: name,
-                current: stub_context,
-            };
-            Err::<rquickjs::Value, _>(
-                rquickjs::Exception::from_message(ctx, &err.to_string())?.throw(),
-            )
-        })?;
-        globals.set(name, f)?;
-        Ok(())
-    })
-}
-
-fn make_luau_stub(name: &'static str, stub_context: &'static str) -> LuauInstaller {
-    Arc::new(move |lua: &mlua::Lua| -> mlua::Result<()> {
-        let globals = lua.globals();
-        let f = lua.create_function(move |_lua: &mlua::Lua, _args: mlua::MultiValue| {
-            let err = ScriptError::WrongContext {
-                primitive: name,
-                current: stub_context,
-            };
-            Err::<mlua::Value, _>(mlua::Error::RuntimeError(err.to_string()))
-        })?;
-        globals.set(name, f)?;
-        Ok(())
-    })
-}
-
-// ---------------------------------------------------------------------------
 // Per-arity RegisterablePrimitive impls, 0 through 6.
 //
 // rquickjs `IntoJsFunc` and mlua `FromLuaMulti`/`IntoLuaMulti` are both
@@ -648,13 +606,6 @@ macro_rules! impl_registerable {
                     })
                 };
 
-                // Stub reports the context it is installed into. `Both` never
-                // has a stub invoked, but the type still requires a string.
-                let stub_context: &'static str = match scope {
-                    ContextScope::DefinitionOnly => "behavior",
-                    ContextScope::Both => "behavior",
-                };
-
                 ScriptPrimitive {
                     name,
                     doc,
@@ -662,8 +613,6 @@ macro_rules! impl_registerable {
                     context_scope: scope,
                     quickjs_installer,
                     luau_installer,
-                    quickjs_stub_installer: make_quickjs_stub(name, stub_context),
-                    luau_stub_installer: make_luau_stub(name, stub_context),
                 }
             }
         }
@@ -834,50 +783,4 @@ mod tests {
         assert!(msg.contains("panicked"), "unexpected error message: {msg}");
     }
 
-    #[test]
-    fn quickjs_stub_installer_throws_wrong_context() {
-        let mut r = PrimitiveRegistry::new();
-        r.register("toy_double", toy_double)
-            .scope(ContextScope::DefinitionOnly)
-            .param("x", "u32")
-            .finish();
-
-        let rt = rquickjs::Runtime::new().unwrap();
-        let ctx = rquickjs::Context::full(&rt).unwrap();
-        ctx.with(|ctx| {
-            for p in r.iter() {
-                // Install stubs directly to exercise the WrongContext error path.
-                (p.quickjs_stub_installer)(&ctx).unwrap();
-            }
-            let msg: String = ctx
-                .eval(
-                    r#"
-                    try { toy_double(1); "no-throw" }
-                    catch (e) { String(e.message || e) }
-                    "#,
-                )
-                .unwrap();
-            assert!(msg.contains("not available"), "unexpected: {msg}");
-        });
-    }
-
-    #[test]
-    fn luau_stub_installer_errors_wrong_context() {
-        let mut r = PrimitiveRegistry::new();
-        r.register("toy_double", toy_double)
-            .scope(ContextScope::DefinitionOnly)
-            .param("x", "u32")
-            .finish();
-
-        let lua = mlua::Lua::new();
-        for p in r.iter() {
-            (p.luau_stub_installer)(&lua).unwrap();
-        }
-        let (ok, msg): (bool, String) = lua
-            .load("local ok, err = pcall(toy_double, 1); return ok, tostring(err)")
-            .eval()
-            .unwrap();
-        assert!(!ok);
-        assert!(msg.contains("not available"), "unexpected: {msg}");
-    }
 }

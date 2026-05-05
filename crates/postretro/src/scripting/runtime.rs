@@ -14,7 +14,7 @@ use super::ctx::ScriptCtx;
 use super::data_descriptors::LevelManifest;
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
-use super::primitives_registry::{ContextScope, PrimitiveRegistry, ScriptPrimitive};
+use super::primitives_registry::{PrimitiveRegistry, ScriptPrimitive};
 use super::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 #[cfg(debug_assertions)]
 use super::typedef;
@@ -220,16 +220,7 @@ fn run_data_script_quickjs(
 
     ctx.with(|ctx| {
         for p in primitives {
-            let use_real = matches!(
-                p.context_scope,
-                ContextScope::Both | ContextScope::DefinitionOnly
-            );
-            let installer = if use_real {
-                &p.quickjs_installer
-            } else {
-                &p.quickjs_stub_installer
-            };
-            if let Err(e) = installer(&ctx) {
+            if let Err(e) = (p.quickjs_installer)(&ctx) {
                 manifest_out = Err(ScriptError::InvalidArgument {
                     reason: format!("failed to install primitive `{}`: {e}", p.name),
                 });
@@ -317,16 +308,7 @@ fn run_data_script_luau(
     let lua = mlua::Lua::new();
 
     for p in primitives {
-        let use_real = matches!(
-            p.context_scope,
-            ContextScope::Both | ContextScope::DefinitionOnly
-        );
-        let installer = if use_real {
-            &p.luau_installer
-        } else {
-            &p.luau_stub_installer
-        };
-        installer(&lua).map_err(|e| ScriptError::InvalidArgument {
+        (p.luau_installer)(&lua).map_err(|e| ScriptError::InvalidArgument {
             reason: format!("failed to install primitive `{}`: {e}", p.name),
         })?;
     }

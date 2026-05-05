@@ -1,7 +1,9 @@
 --!strict
 -- FogVolumeHandle: wraps FogVolumeEntity snapshots with mutating methods.
--- Density/color tweens are tick-handler loops; no engine-side fog
--- animation primitive exists (unlike lights). See docs/scripting-reference.md.
+-- Density tweens are tick-handler loops; no engine-side fog animation
+-- primitive exists (unlike lights). Fog ambient color is derived from the
+-- SH irradiance volume and is not settable via script.
+-- See docs/scripting-reference.md.
 
 -- `EntityId`, `FogVolumeComponent`, `FogVolumeEntity`,
 -- `ScriptCallContext`, `getComponent`, `setComponent`, and
@@ -9,7 +11,7 @@
 -- `sdk/types/postretro.d.luau` definitions file.
 
 --- Typed handle returned by `world:query` for a fog-volume entity.
---- Carries the query-time snapshot fields plus four mutating methods.
+--- Carries the query-time snapshot fields plus three mutating methods.
 --- Methods are called with `:` (e.g. `cloud:setDensity(0.4, 1000)`).
 export type FogVolumeHandle = {
   id: EntityId,
@@ -22,11 +24,6 @@ export type FogVolumeHandle = {
   --- `durationMs` milliseconds. Last call wins -- the previous tween
   --- (if any) is cancelled.
   setDensity: (self: FogVolumeHandle, density: number, durationMs: number?) -> (),
-
-  --- Set fog color. Instant when `durationMs` is 0 or omitted;
-  --- otherwise lerped each tick from the live color over `durationMs`
-  --- milliseconds. Last call wins.
-  setColor: (self: FogVolumeHandle, color: {number}, durationMs: number?) -> (),
 
   --- Set the scatter fraction. Instant.
   setScatter: (self: FogVolumeHandle, scatter: number) -> (),
@@ -81,7 +78,6 @@ end
 local function writeFogVolume(
   id: EntityId,
   density: number,
-  color: {number},
   scatter: number,
   edgeSoftness: number
 )
@@ -92,25 +88,23 @@ local function writeFogVolume(
   setComponent(id, "fog_volume", {
     kind = "fog_volume",
     density = density,
-    color = { color[1], color[2], color[3] },
     scatter = scatter,
     edge_softness = edgeSoftness,
   } :: any)
 end
 
--- Per-handle slots holding the active density / color tween (if any).
--- A new tween cancels any in-flight tween on the same field; an
--- "instant" setter also cancels its respective tween before writing.
+-- Per-handle slot holding the active density tween (if any).
+-- A new tween cancels any in-flight tween; an "instant" setter also
+-- cancels the tween before writing.
 type Slots = {
   density: AnimationController?,
-  color: AnimationController?,
 }
 
-local function cancelTween(slots: Slots, field: "density" | "color")
-  local existing = slots[field]
+local function cancelDensityTween(slots: Slots)
+  local existing = slots.density
   if existing ~= nil then
     existing:stop()
-    slots[field] = nil
+    slots.density = nil
   end
 end
 
@@ -120,20 +114,16 @@ local function startDensityTween(
   target: number,
   durationMs: number
 )
-  cancelTween(slots, "density")
+  cancelDensityTween(slots)
   local startDensity = readFogVolumeComponent(id).density
   local elapsedMs = 0.0
-  -- Both tweens call readFogVolumeComponent independently, so if they fire
-  -- on the same tick, the second write clobbers the first axis's update.
-  -- Each tween converges correctly over subsequent ticks; one setComponent
-  -- call per tick is wasted when both axes are animating simultaneously.
   local ctrl: AnimationController
   ctrl = tickSubscription(function(ctx: ScriptCallContext)
     elapsedMs += ctx.delta * 1000
     local t = math.min(1.0, elapsedMs / durationMs)
     local value = startDensity + (target - startDensity) * t
     local live = readFogVolumeComponent(id)
-    writeFogVolume(id, value, (live.color :: any) :: {number}, live.scatter, live.edge_softness)
+    writeFogVolume(id, value, live.scatter, live.edge_softness)
     if t >= 1.0 then
       ctrl:stop()
       slots.density = nil
@@ -142,43 +132,13 @@ local function startDensityTween(
   slots.density = ctrl
 end
 
-local function startColorTween(
-  id: EntityId,
-  slots: Slots,
-  target: {number},
-  durationMs: number
-)
-  cancelTween(slots, "color")
-  local liveStart = readFogVolumeComponent(id)
-  local startColor = (liveStart.color :: any) :: {number}
-  local from = { startColor[1], startColor[2], startColor[3] }
-  local elapsedMs = 0.0
-  local ctrl: AnimationController
-  ctrl = tickSubscription(function(ctx: ScriptCallContext)
-    elapsedMs += ctx.delta * 1000
-    local t = math.min(1.0, elapsedMs / durationMs)
-    local value = {
-      from[1] + (target[1] - from[1]) * t,
-      from[2] + (target[2] - from[2]) * t,
-      from[3] + (target[3] - from[3]) * t,
-    }
-    local live = readFogVolumeComponent(id)
-    writeFogVolume(id, live.density, value, live.scatter, live.edge_softness)
-    if t >= 1.0 then
-      ctrl:stop()
-      slots.color = nil
-    end
-  end)
-  slots.color = ctrl
-end
-
 --- Wrap a `FogVolumeEntity` snapshot returned by `worldQuery` as a
 --- mutating handle. Used by `world.luau` for `world:query({ component
 --- = "fog_volume" })`. The returned table preserves all snapshot fields
---- and adds the four mutating methods.
+--- and adds the three mutating methods.
 function FogVolumesSdk.wrapFogVolumeEntity(snapshot: FogVolumeEntity): FogVolumeHandle
   local id: EntityId = snapshot.id
-  local slots: Slots = { density = nil, color = nil }
+  local slots: Slots = { density = nil }
 
   local handle: FogVolumeHandle = {
     id = id,
@@ -189,33 +149,22 @@ function FogVolumesSdk.wrapFogVolumeEntity(snapshot: FogVolumeEntity): FogVolume
     setDensity = function(self: FogVolumeHandle, density: number, durationMs: number?)
       local ms = durationMs or 0
       if ms <= 0 then
-        cancelTween(slots, "density")
+        cancelDensityTween(slots)
         local live = readFogVolumeComponent(id)
-        writeFogVolume(id, density, (live.color :: any) :: {number}, live.scatter, live.edge_softness)
+        writeFogVolume(id, density, live.scatter, live.edge_softness)
         return
       end
       startDensityTween(id, slots, density, ms)
     end,
 
-    setColor = function(self: FogVolumeHandle, color: {number}, durationMs: number?)
-      local ms = durationMs or 0
-      if ms <= 0 then
-        cancelTween(slots, "color")
-        local live = readFogVolumeComponent(id)
-        writeFogVolume(id, live.density, color, live.scatter, live.edge_softness)
-        return
-      end
-      startColorTween(id, slots, color, ms)
-    end,
-
     setScatter = function(self: FogVolumeHandle, scatter: number)
       local live = readFogVolumeComponent(id)
-      writeFogVolume(id, live.density, (live.color :: any) :: {number}, scatter, live.edge_softness)
+      writeFogVolume(id, live.density, scatter, live.edge_softness)
     end,
 
     setEdgeSoftness = function(self: FogVolumeHandle, edgeSoftness: number)
       local live = readFogVolumeComponent(id)
-      writeFogVolume(id, live.density, (live.color :: any) :: {number}, live.scatter, edgeSoftness)
+      writeFogVolume(id, live.density, live.scatter, edgeSoftness)
     end,
   }
 
@@ -253,7 +202,7 @@ function FogVolumesSdk.pulseDensity(
     local phase = (elapsedMs % period) / period
     local value = mid + amp * math.sin(phase * math.pi * 2)
     local live = readFogVolumeComponent(id)
-    writeFogVolume(id, value, (live.color :: any) :: {number}, live.scatter, live.edge_softness)
+    writeFogVolume(id, value, live.scatter, live.edge_softness)
   end)
 end
 

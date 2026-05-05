@@ -19,10 +19,12 @@ import type {
 /**
  * Typed handle returned by `world.query({ component: "fog_volume" })`.
  * Wraps the generated `FogVolumeEntity` snapshot with mutating methods
- * that call `setComponent` directly. Density and color tweens are
- * driven from a per-handle `tick` callback registered with
- * `registerHandler` — there is no engine-side fog animation primitive,
- * unlike lights.
+ * that call `setComponent` directly. Density tweens are driven from a
+ * per-handle `tick` callback registered with `registerHandler` — there
+ * is no engine-side fog animation primitive, unlike lights. Fog ambient
+ * color is derived from the SH irradiance volume and is not settable
+ * via script. When no SH irradiance volume is baked, ambient scatter
+ * contribution is zero — fog is effectively invisible without dynamic lights nearby.
  */
 export interface FogVolumeHandle extends GeneratedFogVolumeEntity {
   /**
@@ -32,13 +34,6 @@ export interface FogVolumeHandle extends GeneratedFogVolumeEntity {
    * (if any) is cancelled.
    */
   setDensity(density: number, durationMs?: number): void;
-
-  /**
-   * Set fog color. Instant when `durationMs` is `0` or omitted;
-   * otherwise lerped each tick from the live color over `durationMs`
-   * milliseconds. Last call wins.
-   */
-  setColor(color: [number, number, number], durationMs?: number): void;
 
   /** Set the scatter fraction. Instant. */
   setScatter(scatter: number): void;
@@ -101,26 +96,22 @@ function tickSubscription(
  * calls cancel the previous tween before starting a new one.
  */
 const DENSITY_TWEEN = Symbol("fog_density_tween");
-const COLOR_TWEEN = Symbol("fog_color_tween");
 
 interface TweenSlots {
   [DENSITY_TWEEN]?: AnimationController | null;
-  [COLOR_TWEEN]?: AnimationController | null;
 }
 
-function cancelExisting(slots: TweenSlots, key: symbol): void {
-  const slotKey = key as keyof TweenSlots;
-  const existing = slots[slotKey];
+function cancelDensityTween(slots: TweenSlots): void {
+  const existing = slots[DENSITY_TWEEN];
   if (existing) {
     existing.stop();
-    slots[slotKey] = null;
+    slots[DENSITY_TWEEN] = null;
   }
 }
 
 function writeFogVolume(
   id: EntityId,
   density: number,
-  color: [number, number, number],
   scatter: number,
   edgeSoftness: number,
 ): void {
@@ -131,7 +122,6 @@ function writeFogVolume(
   setComponent(id, "fog_volume", {
     kind: "fog_volume",
     density,
-    color: [color[0], color[1], color[2]],
     scatter,
     edge_softness: edgeSoftness,
   } as unknown as ComponentValuePayload);
@@ -143,19 +133,15 @@ function startDensityTween(
   target: number,
   durationMs: number,
 ): void {
-  cancelExisting(slots, DENSITY_TWEEN);
+  cancelDensityTween(slots);
   const startDensity = readFogVolumeComponent(id).density;
   let elapsedMs = 0;
-  // Both tweens call readFogVolumeComponent independently, so if they fire
-  // on the same tick, the second write clobbers the first axis's update.
-  // Each tween converges correctly over subsequent ticks; one setComponent
-  // call per tick is wasted when both axes are animating simultaneously.
   const ctrl = tickSubscription((ctx) => {
     elapsedMs += ctx.delta * 1000;
     const t = Math.min(1, elapsedMs / durationMs);
     const value = startDensity + (target - startDensity) * t;
     const live = readFogVolumeComponent(id);
-    writeFogVolume(id, value, live.color as [number, number, number], live.scatter, live.edge_softness);
+    writeFogVolume(id, value, live.scatter, live.edge_softness);
     if (t >= 1) {
       ctrl.stop();
       slots[DENSITY_TWEEN] = null;
@@ -164,43 +150,10 @@ function startDensityTween(
   slots[DENSITY_TWEEN] = ctrl;
 }
 
-function startColorTween(
-  id: EntityId,
-  slots: TweenSlots,
-  target: [number, number, number],
-  durationMs: number,
-): void {
-  cancelExisting(slots, COLOR_TWEEN);
-  const liveStart = readFogVolumeComponent(id);
-  const from: [number, number, number] = [
-    liveStart.color[0],
-    liveStart.color[1],
-    liveStart.color[2],
-  ];
-  let elapsedMs = 0;
-  const ctrl = tickSubscription((ctx) => {
-    elapsedMs += ctx.delta * 1000;
-    const t = Math.min(1, elapsedMs / durationMs);
-    const value: [number, number, number] = [
-      from[0] + (target[0] - from[0]) * t,
-      from[1] + (target[1] - from[1]) * t,
-      from[2] + (target[2] - from[2]) * t,
-    ];
-    const live = readFogVolumeComponent(id);
-    writeFogVolume(id, live.density, value, live.scatter, live.edge_softness);
-    if (t >= 1) {
-      ctrl.stop();
-      slots[COLOR_TWEEN] = null;
-    }
-  });
-  slots[COLOR_TWEEN] = ctrl;
-}
-
 /** Local alias matching the runtime shape that `setComponent` accepts for fog volumes. */
 type ComponentValuePayload = {
   kind: "fog_volume";
   density: number;
-  color: [number, number, number];
   scatter: number;
   edge_softness: number;
 };
@@ -209,7 +162,7 @@ type ComponentValuePayload = {
  * Wrap a `FogVolumeEntity` snapshot returned by `worldQuery` as a
  * mutating handle. Used by `world.ts` for `world.query({ component:
  * "fog_volume" })`. The returned object preserves all snapshot fields
- * and adds the four mutating methods.
+ * and adds the three mutating methods.
  */
 export function wrapFogVolumeEntity(
   snapshot: GeneratedFogVolumeEntity,
@@ -222,35 +175,22 @@ export function wrapFogVolumeEntity(
 
     setDensity(density: number, durationMs: number = 0): void {
       if (durationMs <= 0) {
-        cancelExisting(slots, DENSITY_TWEEN);
+        cancelDensityTween(slots);
         const live = readFogVolumeComponent(id);
-        writeFogVolume(id, density, live.color as [number, number, number], live.scatter, live.edge_softness);
+        writeFogVolume(id, density, live.scatter, live.edge_softness);
         return;
       }
       startDensityTween(id, slots, density, durationMs);
     },
 
-    setColor(
-      color: [number, number, number],
-      durationMs: number = 0,
-    ): void {
-      if (durationMs <= 0) {
-        cancelExisting(slots, COLOR_TWEEN);
-        const live = readFogVolumeComponent(id);
-        writeFogVolume(id, live.density, color, live.scatter, live.edge_softness);
-        return;
-      }
-      startColorTween(id, slots, color, durationMs);
-    },
-
     setScatter(scatter: number): void {
       const live = readFogVolumeComponent(id);
-      writeFogVolume(id, live.density, live.color as [number, number, number], scatter, live.edge_softness);
+      writeFogVolume(id, live.density, scatter, live.edge_softness);
     },
 
     setEdgeSoftness(edgeSoftness: number): void {
       const live = readFogVolumeComponent(id);
-      writeFogVolume(id, live.density, live.color as [number, number, number], live.scatter, edgeSoftness);
+      writeFogVolume(id, live.density, live.scatter, edgeSoftness);
     },
   };
 
@@ -292,6 +232,6 @@ export function pulseDensity(
     const phase = (elapsedMs % period) / period;
     const value = mid + amp * Math.sin(phase * Math.PI * 2);
     const live = readFogVolumeComponent(id);
-    writeFogVolume(id, value, live.color as [number, number, number], live.scatter, live.edge_softness);
+    writeFogVolume(id, value, live.scatter, live.edge_softness);
   });
 }

@@ -39,6 +39,8 @@ pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 /// final 16-byte block packs four scalars (`radial_falloff`, `scatter`,
 /// `plane_offset`, `plane_count`) so the struct lands on an exact 16-byte
 /// multiple without trailing padding.
+///
+/// `color` was removed in PRL v2; old PRL files must be recompiled.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FogVolume {

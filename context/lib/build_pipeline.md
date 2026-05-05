@@ -53,9 +53,9 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | `light` | point | Omnidirectional light | `light` (intensity), `_color` (RGB), `_fade` (falloff distance, required), `delay` (falloff model), `style` (animation), `_phase` (style cycle offset), `_dynamic` (static-baked vs. runtime dynamic; default 0 = static) |
 | `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles), `angles` (direction) |
 | `light_sun` | point | Directional sun light | + `angles` (direction vector) |
-| `env_fog_volume` | brush | Per-region fog; convex brush shape from geometry | `color`, `density`, `falloff` (AABB edge softness), `scatter` (scatter fraction toward camera; default 0.6), `height_gradient`, `radial_falloff`, `_tags`, `clip` (`"none"` default / `"plane"`), `clip_pitch` / `clip_yaw` (half-space normal into removed region), `clip_offset` (center-relative offset; 0 = cut through center) |
-| `fog_lamp` | point | Spherical halo fog emitter; default warm amber | `color`, `density`, `radius` (sphere radius; sizes AABB), `radial_falloff`, `_tags` |
-| `fog_tube` | point | Capsule-strip fog emitter; default cool blue-white | `color`, `density`, `radius` (capsule radius), `height` (capsule length), `pitch` / `yaw` (capsule axis), `radial_falloff`, `_tags` |
+| `fog_volume` | brush | Per-region fog; convex brush shape from geometry | `density`, `edge_softness` (world-unit fade band inward from brush faces; 0 = hard cutoff), `scatter` (scatter fraction toward camera; default 0.6), `radial_falloff`, `_tags`, `clip` (`"none"` default / `"plane"`), `clip_pitch` / `clip_yaw` (half-space normal into removed region), `clip_offset` (center-relative offset; 0 = cut through center) (ambient color is SH-derived; no `color` KVP) |
+| `fog_lamp` | point | Spherical halo fog emitter; default warm amber | `density`, `radius` (sphere radius; sizes AABB), `radial_falloff`, `_tags` (ambient color is SH-derived; no `color` KVP) |
+| `fog_tube` | point | Capsule-strip fog emitter; default cool blue-white | `density`, `radius` (capsule radius), `height` (capsule length), `pitch` / `yaw` (capsule axis), `radial_falloff`, `_tags` (ambient color is SH-derived; no `color` KVP) |
 | `billboard_emitter` | point | Billboard particle emitter | `rate` (particles/sec; default 6), `lifetime` (seconds; default 3), `spread` (cone half-angle radians; default 0.4), `buoyancy` (-1=falls, 0=floats, >0=rises; default 0.2), `drag` (velocity damping/sec; default 0.8), `sprite` (collection name; default "smoke"), `initial_velocity_x/y/z` (default 0/0.8/0), `color_r/g/b` (linear; default 1/1/1), `spin_rate` (radians/sec; default 0) |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
@@ -64,7 +64,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 ### Entity resolution
 
 - **`light`, `light_spot`, `light_sun`** — validated at compile time (falloff distance required, spotlight direction verified, intensity bounds checked). Static lights feed the SH irradiance volume baker and the directional lightmap baker. Dynamic lights feed the runtime direct lighting buffer. Compilation fails on validation errors.
-- **`env_fog_volume`** — resolved at load time to world-space AABBs, shape, and fog parameters. Uploaded as a compact storage buffer (up to 16 entries). Per-sample test: shape membership (AABB as conservative bound), then optional half-space clip plane (normal points into the removed region). No BSP traversal at runtime.
+- **`fog_volume`** — resolved at load time to world-space AABBs, shape, and fog parameters. Uploaded as a compact storage buffer (up to 16 entries). Per-sample test: shape membership (AABB as conservative bound), then optional half-space clip plane (normal points into the removed region). No BSP traversal at runtime.
 - **`billboard_emitter`** — resolved at level load via the built-in classname dispatch table. The engine spawns an ECS entity with a `BillboardEmitterComponent` configured from the map's KVPs. See §Built-in classname routing below.
 - **`env_cubemap`** — marks a position for offline cubemap baking. Bake tool is out of initial scope.
 - **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf gets spatial reverb parameters for the audio subsystem.
@@ -137,7 +137,7 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | DeltaShVolumes | 27 | When the map has at least one animated light; per-light delta SH probe grids |
 | DataScript | 28 | When `data_script` KVP present on `worldspawn`; compiled script bytes + original source path |
 | MapEntity | 29 | When the map has at least one non-light, non-worldspawn entity; per-entity classname, origin, angles, tags, and KVP bag for runtime classname dispatch |
-| FogVolumes | 30 | Always (8-byte overhead when no env_fog_volume brushes present; carries fog_pixel_scale) |
+| FogVolumes | 30 | Always (8-byte overhead when no fog_volume brushes present; carries fog_pixel_scale) |
 | FogCellMasks | 31 | When at least one fog volume entity is present (fog_volume brush, fog_lamp, or fog_tube) |
 
 ### Runtime visibility

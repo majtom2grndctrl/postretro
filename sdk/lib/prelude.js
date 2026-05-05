@@ -228,7 +228,6 @@ function tickSubscription(fn) {
     };
 }
 const DENSITY_TWEEN = Symbol("fog_density_tween");
-const COLOR_TWEEN = Symbol("fog_color_tween");
 function cancelExisting(slots, key) {
     const slotKey = key;
     const existing = slots[slotKey];
@@ -237,17 +236,12 @@ function cancelExisting(slots, key) {
         slots[slotKey] = null;
     }
 }
-function writeFogVolume(id, density, color, scatter, falloff) {
+function writeFogVolume(id, density, scatter, edgeSoftness) {
     setComponent(id, "fog_volume", {
         kind: "fog_volume",
         density,
-        color: [
-            color[0],
-            color[1],
-            color[2]
-        ],
         scatter,
-        falloff
+        edge_softness: edgeSoftness
     });
 }
 function startDensityTween(id, slots, target, durationMs) {
@@ -259,39 +253,13 @@ function startDensityTween(id, slots, target, durationMs) {
         const t = Math.min(1, elapsedMs / durationMs);
         const value = startDensity + (target - startDensity) * t;
         const live = readFogVolumeComponent(id);
-        writeFogVolume(id, value, live.color, live.scatter, live.falloff);
+        writeFogVolume(id, value, live.scatter, live.edge_softness);
         if (t >= 1) {
             ctrl.stop();
             slots[DENSITY_TWEEN] = null;
         }
     });
     slots[DENSITY_TWEEN] = ctrl;
-}
-function startColorTween(id, slots, target, durationMs) {
-    cancelExisting(slots, COLOR_TWEEN);
-    const liveStart = readFogVolumeComponent(id);
-    const from = [
-        liveStart.color[0],
-        liveStart.color[1],
-        liveStart.color[2]
-    ];
-    let elapsedMs = 0;
-    const ctrl = tickSubscription((ctx)=>{
-        elapsedMs += ctx.delta * 1000;
-        const t = Math.min(1, elapsedMs / durationMs);
-        const value = [
-            from[0] + (target[0] - from[0]) * t,
-            from[1] + (target[1] - from[1]) * t,
-            from[2] + (target[2] - from[2]) * t
-        ];
-        const live = readFogVolumeComponent(id);
-        writeFogVolume(id, live.density, value, live.scatter, live.falloff);
-        if (t >= 1) {
-            ctrl.stop();
-            slots[COLOR_TWEEN] = null;
-        }
-    });
-    slots[COLOR_TWEEN] = ctrl;
 }
 function wrapFogVolumeEntity(snapshot) {
     const id = snapshot.id;
@@ -302,27 +270,18 @@ function wrapFogVolumeEntity(snapshot) {
             if (durationMs <= 0) {
                 cancelExisting(slots, DENSITY_TWEEN);
                 const live = readFogVolumeComponent(id);
-                writeFogVolume(id, density, live.color, live.scatter, live.falloff);
+                writeFogVolume(id, density, live.scatter, live.edge_softness);
                 return;
             }
             startDensityTween(id, slots, density, durationMs);
         },
-        setColor (color, durationMs = 0) {
-            if (durationMs <= 0) {
-                cancelExisting(slots, COLOR_TWEEN);
-                const live = readFogVolumeComponent(id);
-                writeFogVolume(id, live.density, color, live.scatter, live.falloff);
-                return;
-            }
-            startColorTween(id, slots, color, durationMs);
-        },
         setScatter (scatter) {
             const live = readFogVolumeComponent(id);
-            writeFogVolume(id, live.density, live.color, scatter, live.falloff);
+            writeFogVolume(id, live.density, scatter, live.edge_softness);
         },
-        setFalloff (falloff) {
+        setEdgeSoftness (edgeSoftness) {
             const live = readFogVolumeComponent(id);
-            writeFogVolume(id, live.density, live.color, live.scatter, falloff);
+            writeFogVolume(id, live.density, live.scatter, edgeSoftness);
         }
     };
     return handle;
@@ -343,7 +302,7 @@ function pulseDensity(handle, opts) {
         const phase = elapsedMs % period / period;
         const value = mid + amp * Math.sin(phase * Math.PI * 2);
         const live = readFogVolumeComponent(id);
-        writeFogVolume(id, value, live.color, live.scatter, live.falloff);
+        writeFogVolume(id, value, live.scatter, live.edge_softness);
     });
 }
 const world = {

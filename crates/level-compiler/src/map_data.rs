@@ -394,8 +394,7 @@ pub struct MapData {
     pub map_entities: Vec<MapEntityRecord>,
     /// Per-region volumetric fog volumes resolved from `fog_volume` brush
     /// entities and `fog_lamp` / `fog_tube` point entities. AABBs are in engine
-    /// space (Y-up, meters); colour is linear 0–1. See
-    /// `context/lib/build_pipeline.md`.
+    /// space (Y-up, meters). See `context/lib/build_pipeline.md`.
     pub fog_volumes: Vec<MapFogVolume>,
     /// Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest); clamped to 1..=8.
     /// Default 4 when the worldspawn entity does not author the key.

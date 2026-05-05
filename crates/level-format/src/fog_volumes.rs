@@ -23,6 +23,9 @@ pub const MAX_PLANES_PER_VOLUME: usize = 16;
 /// `inv_height_extent` are also baked (for wire-format self-description) but
 /// are not read by the current shader — they occupied the height_gradient path
 /// that was removed and now occupy reserved layout slots.
+///
+/// Fog color is not stored here — ambient scatter is derived at runtime from
+/// the SH irradiance volume sampled at each raymarch position (see `fog_volume.wgsl::sample_sh_fog`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FogVolumeRecord {
     pub min: [f32; 3],

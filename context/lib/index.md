@@ -68,7 +68,7 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 | Surface material types | Texture naming convention | Prefix lookup table → footsteps, impacts, decals |
 | Light entities | FGD entities (`light`, `light_spot`, `light_sun`) | Parsed and translated to canonical format at compile time |
 | Indirect lighting | prl-build (Milestone 5) | SH L2 irradiance volume baked from canonical lights; stored in PRL section |
-| Fog volumes | FGD entity (`env_fog_volume`) | Brush entity resolved to BSP leaves at load time |
+| Fog volumes | FGD entity (`fog_volume`) | Brush entity resolved to BSP leaves at load time |
 | Reflection probes | FGD entity (`env_cubemap`) | Point entity → baked cubemap |
 | Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |
 | Animated light weight maps | prl-build (animated-light-weight-maps plan) | SectionId 25 — per-texel light-weight data for the animated-lightmap compose pass; see `build_pipeline.md` for the full PRL section inventory |

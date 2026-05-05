@@ -3,7 +3,7 @@
 > **Status:** ready.
 > **Depends on:** `lighting-old-stack-retirement/` (clears old shadow paths). `lighting-chunk-lists/` (Blinn-Phong utility + chunk list for multi-source lit sprites and fog scatter). `lighting-spot-shadows/` (shadow maps required for visible beam shafts in Task B; Task B degrades gracefully without them).
 > **Concurrent with:** nothing — this plan consumes the completed lighting stack rather than contributing to it. Ship after the four concurrent lighting plans are complete.
-> **Related:** `context/lib/rendering_pipeline.md` §7.3 (billboards and fog volumes called out as deferred) · `context/lib/build_pipeline.md` §Custom FGD (`env_fog_volume` entity already defined) · `context/lib/resource_management.md` §4 (sprite sheet convention).
+> **Related:** `context/lib/rendering_pipeline.md` §7.3 (billboards and fog volumes called out as deferred) · `context/lib/build_pipeline.md` §Custom FGD (`fog_volume` entity already defined) · `context/lib/resource_management.md` §4 (sprite sheet convention).
 
 ---
 
@@ -13,7 +13,7 @@ The lighting stack (lightmaps, SH volumes, chunk-list specular, dynamic spot sha
 
 1. **Billboard smoke sprites** — camera-facing animated quads, lit by the full lighting stack (static multi-source specular, SH ambient, dynamic direct). Smoke sprites catch colored light from nearby neon signs, receive Blinn-Phong highlights from strong spots, and fill with SH-tinted ambient in shadow.
 
-2. **Volumetric fog beams** — a low-resolution raymarched pass over `env_fog_volume` brush regions. Each sample accumulates scatter from dynamic spot lights (with shadow map occlusion for visible beam shafts and shadow wedges) and SH-tinted ambient for unlit haze. Rendered at quarter-res and composited with nearest-neighbor upscaling — the stepped pixel blocks are aesthetic, not a compromise.
+2. **Volumetric fog beams** — a low-resolution raymarched pass over `fog_volume` brush regions. Each sample accumulates scatter from dynamic spot lights (with shadow map occlusion for visible beam shafts and shadow wedges) and SH-tinted ambient for unlit haze. Rendered at quarter-res and composited with nearest-neighbor upscaling — the stepped pixel blocks are aesthetic, not a compromise.
 
 Together: smoke billowing through a corridor lit by a sweeping searchlight picks up the neon colors from the chunk list, gets cut by hard-edged shadow wedges from pillars, glows with Blinn-Phong highlights on the sprite surfaces facing the beam, and fills SH-blue in the shadow. The volumetric beam itself is visible as a pixelated shaft.
 
@@ -22,7 +22,7 @@ Together: smoke billowing through a corridor lit by a sweeping searchlight picks
 ## Goal
 
 - **Task A:** Billboard smoke sprite rendering, lit by the full stack.
-- **Task B:** Low-resolution volumetric fog/beam pass over `env_fog_volume` regions.
+- **Task B:** Low-resolution volumetric fog/beam pass over `fog_volume` regions.
 
 Both render after the opaque world geometry pass (§7.3), before post-processing. Pass order within the render stage: opaque world geometry → billboard sprite pass (Task A) → fog volume composite (Task B) → Present.
 
@@ -96,9 +96,9 @@ Per billboard vertex (hoisted to the vertex shader where possible, refined in fr
 
 ### Fog data
 
-1. **`env_fog_volume` AABB buffer.** At level load, resolve each `env_fog_volume` brush to its world-space axis-aligned bounding box and fog parameters. Upload as a compact storage buffer of up to 16 fog volume entries (retro-scale maps rarely need more): `{ min: vec3<f32>, density: f32, max: vec3<f32>, falloff: f32, color: vec3<f32>, scatter: f32 }`. Per-sample membership test in the fog shader is a simple point-in-AABB check — no BSP traversal at runtime. If a sample falls inside multiple overlapping volumes, accumulate their contributions. The existing `env_fog_volume` BSP-leaf association from `build_pipeline.md` §Custom FGD drives the AABB extraction at load time; the runtime does not walk BSP nodes.
+1. **`fog_volume` AABB buffer.** At level load, resolve each `fog_volume` brush to its world-space axis-aligned bounding box and fog parameters. Upload as a compact storage buffer of up to 16 fog volume entries (retro-scale maps rarely need more): `{ min: vec3<f32>, density: f32, max: vec3<f32>, edge_softness: f32, scatter: f32 }`. Per-sample membership test in the fog shader is a simple point-in-AABB check — no BSP traversal at runtime. If a sample falls inside multiple overlapping volumes, accumulate their contributions. The existing `fog_volume` BSP-leaf association from `build_pipeline.md` §Custom FGD drives the AABB extraction at load time; the runtime does not walk BSP nodes.
 
-2. **FGD additions.** Extend `env_fog_volume` with one new optional property: `scatter: f32` (fraction of light that scatters toward the camera vs. is absorbed; default 0.6). Add `fog_pixel_scale: u32` to `worldspawn` (resolution divisor for the volumetric pass; default 4, valid range 1–8; higher = coarser, more retro-looking blocks). `fog_pixel_scale` is a global render-target property — it governs the single low-res allocation for the entire fog pass and cannot sensibly vary per-volume. Placing it on `worldspawn` follows the same convention as `ambient_color` and other scene-wide render parameters.
+2. **FGD additions.** Extend `fog_volume` with one new optional property: `scatter: f32` (fraction of light that scatters toward the camera vs. is absorbed; default 0.6). Add `fog_pixel_scale: u32` to `worldspawn` (resolution divisor for the volumetric pass; default 4, valid range 1–8; higher = coarser, more retro-looking blocks). `fog_pixel_scale` is a global render-target property — it governs the single low-res allocation for the entire fog pass and cannot sensibly vary per-volume. Placing it on `worldspawn` follows the same convention as `ambient_color` and other scene-wide render parameters.
 
 ### Volumetric pass
 
@@ -132,7 +132,7 @@ Per billboard vertex (hoisted to the vertex shader where possible, refined in fr
 
 ### Task B acceptance gates
 
-- `env_fog_volume` brush entity placed in a test scene produces visible pixelated haze when the player enters the volume.
+- `fog_volume` brush entity placed in a test scene produces visible pixelated haze when the player enters the volume.
 - A dynamic spot light aimed into a fog volume produces a visible pixelated beam shaft with a hard edge at the cone boundary.
 - Geometry inside the fog volume casts a visible shadow wedge into the beam (occlusion from the shadow map confirmed by toggling the shadow sample).
 - Toggling `fog_pixel_scale` (worldspawn) from 4 to 1 produces smooth fog; from 4 to 8 produces coarser, more blocky fog — confirming the resolution divisor is wired correctly.
@@ -149,7 +149,7 @@ Per billboard vertex (hoisted to the vertex shader where possible, refined in fr
 4. Task A and Task B acceptance gates above.
 5. Frame time regression on a scene with both systems active (smoke emitters + fog volume + active spot beams): total combined cost under 3 ms on dev hardware.
 6. `context/lib/rendering_pipeline.md` §7.3 updated to document the billboard and volumetric passes in the frame order.
-7. `context/lib/build_pipeline.md` §Custom FGD updated with `env_smoke_emitter` (all properties), the new `env_fog_volume` property (`scatter`), and the new `worldspawn` property (`fog_pixel_scale`).
+7. `context/lib/build_pipeline.md` §Custom FGD updated with `env_smoke_emitter` (all properties), the new `fog_volume` property (`scatter`), and the new `worldspawn` property (`fog_pixel_scale`).
 
 ---
 

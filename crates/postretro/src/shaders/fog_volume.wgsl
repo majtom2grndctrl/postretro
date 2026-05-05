@@ -1,12 +1,13 @@
 // Volumetric fog / beam raymarch.
 // See: context/lib/rendering_pipeline.md §7.5
 //
-// Runs as a compute pass over a low-resolution scatter target.
-// One thread per low-res texel. Reconstructs a world-space ray from the
-// camera and the full-resolution depth buffer, marches through the fog
-// volume AABB buffer accumulating SH ambient scatter + dynamic spot-light
-// beam scatter (with shadow map occlusion), and writes the accumulated
-// in-scattering radiance to an RGBA16F storage texture.
+// Compute pass over a low-resolution scatter target; one thread per low-res texel.
+// Reconstructs a world-space ray from the camera and the full-resolution depth buffer.
+// Marches through the fog volume AABB buffer accumulating:
+//   - Full L2 SH ambient scatter (world-up normal, composed SH volume)
+//   - Dynamic spot-light beam scatter (shadow map occlusion)
+//   - Dynamic point-light scatter
+// Writes accumulated in-scattering radiance to an RGBA16F storage texture.
 //
 // Bind groups:
 //   group 0  Camera uniforms (reserved; fog shader uses its own fog_params)
@@ -154,10 +155,10 @@ struct FogSpotLight {
 
 // --- SH ambient sampling ---
 //
-// Duplicated from forward.wgsl (sh_irradiance + sample_sh_indirect_fast).
-// WGSL has no shared-include mechanism; string-concat composition per
-// rendering_pipeline.md §8 is the established pattern. Extract to a shared
-// module only when a third shader needs the same helpers.
+// Copy-pasted from forward.wgsl (sh_irradiance + sample_sh_indirect_fast).
+// WGSL has no include mechanism — this is a source-level copy, not string-concat
+// composition. rendering_pipeline.md §8 is the extraction pattern when a third
+// consumer appears; two callers don't justify the indirection.
 
 fn sh_irradiance(
     b0: vec3<f32>, b1: vec3<f32>, b2: vec3<f32>, b3: vec3<f32>,
@@ -184,6 +185,8 @@ fn sample_sh_indirect_fast(
     gi: vec3<u32>,
     gfrac: vec3<f32>,
 ) -> vec3<f32> {
+    // Raw cell count used as the UV divisor. `gi` < `gdims_f` is guaranteed
+    // because sample_sh_fog pre-clamps gf to [0, gdims_u - 1].
     let gdims_f = max(vec3<f32>(sh_grid.grid_dimensions), vec3<f32>(1.0));
     let cell_center_uvw = (vec3<f32>(gi) + vec3<f32>(0.5) + gfrac) / gdims_f;
     let b0 = textureSampleLevel(sh_band0, sh_sampler, cell_center_uvw, 0.0).rgb;
@@ -212,6 +215,7 @@ fn sample_sh_fog(world_pos: vec3<f32>) -> vec3<f32> {
     }
     let normal = vec3<f32>(0.0, 1.0, 0.0);
     let gdims_u = sh_grid.grid_dimensions;
+    // Last valid cell index — clamp ceiling for the trilinear fetch in sample_sh_indirect_fast.
     let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
     let cell_coord = (world_pos - sh_grid.grid_origin) /
         max(sh_grid.cell_size, vec3<f32>(1.0e-6));

@@ -1,5 +1,5 @@
 // Scripting ↔ renderer bridge for fog volumes: entity registry → GPU fog buffers.
-// See: context/lib/rendering_pipeline.md
+// See: context/lib/rendering_pipeline.md §7.5
 
 use std::collections::HashMap;
 
@@ -575,7 +575,7 @@ mod tests {
     #[test]
     fn update_volumes_propagates_plane_count_from_record() {
         // A `FogVolumeRecord` carrying non-empty planes must surface its plane
-        // count on the packed `FogVolume` (plane_count is at byte offset 88).
+        // count on the packed `FogVolume` (plane_count is at byte offset 76).
         // The renderer's dense repack patches plane_offset at upload time —
         // here we only assert plane_count, which the bridge writes directly.
         let mut record = sample_record();

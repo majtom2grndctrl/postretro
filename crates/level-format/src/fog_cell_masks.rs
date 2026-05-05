@@ -15,7 +15,7 @@
 // a format break.
 //
 // The section is optional: it is omitted from the PRL when the source map has
-// no `env_fog_volume` brushes. Absence at load time produces `None`.
+// no `fog_volume` brushes. Absence at load time produces `None`.
 
 use crate::FormatError;
 

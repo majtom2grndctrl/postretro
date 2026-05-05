@@ -216,11 +216,6 @@ declare module "postretro" {
   /** Typed fog-volume handle returned by `world.query({ component: "fog_volume" })`. */
   export interface FogVolumeHandle extends FogVolumeEntity {
     setDensity(target: number, transitionMs?: number, easing?: EasingCurve): void;
-    setColor(
-      target: [number, number, number],
-      transitionMs?: number,
-      easing?: EasingCurve,
-    ): void;
     setScatter(scatter: number): void;
     setEdgeSoftness(edgeSoftness: number): void;
   }
@@ -229,7 +224,7 @@ declare module "postretro" {
    * yields `LightEntityHandle` (with convenience methods); `"emitter"` yields
    * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
    * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle` (with
-   * tween-capable density/color setters). Other component names fall back to
+   * tween-capable density setter). Other component names fall back to
    * the bare `Entity` shape (`id`, `position`, `tags`). */
   export type EntityForComponent<T extends WorldQueryComponent> =
     T extends "light" ? LightEntityHandle :

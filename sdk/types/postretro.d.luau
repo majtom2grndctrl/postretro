@@ -249,12 +249,6 @@ export type FogVolumeHandle = {
     transitionMs: number?,
     easing: EasingCurve?
   ) -> (),
-  setColor: (
-    self: FogVolumeHandle,
-    target: {number},
-    transitionMs: number?,
-    easing: EasingCurve?
-  ) -> (),
   setScatter: (self: FogVolumeHandle, scatter: number) -> (),
   setEdgeSoftness: (self: FogVolumeHandle, edgeSoftness: number) -> (),
 }
@@ -264,7 +258,7 @@ export type FogVolumeHandle = {
 --- `:setIntensity` / `:setColor`); `"emitter"` returns `EmitterEntity`
 --- values carrying the full `BillboardEmitterComponent` snapshot under
 --- `component`; `"fog_volume"` returns `FogVolumeHandle` values (with
---- tween-capable `:setDensity` / `:setColor` and instant `:setScatter` /
+--- tween-capable `:setDensity` and instant `:setScatter` /
 --- `:setEdgeSoftness`); other components fall back to the bare `EntityHandle`
 --- shape.
 export type World = {

@@ -150,16 +150,16 @@ pub enum SectionId {
     /// `map_entity::MapEntitySection`.
     MapEntity = 29,
 
-    /// Per-region volumetric fog volumes (AABB + density/colour/scatter
+    /// Per-region volumetric fog volumes (AABB + density/scatter
     /// parameters) plus the worldspawn `fog_pixel_scale` downscale factor.
     /// Always emitted by `prl-build` so the worldspawn pixel-scale is honoured
-    /// even when no `env_fog_volume` brushes are present.
+    /// even when no `fog_volume` brushes are present.
     /// See `fog_volumes::FogVolumesSection`.
     FogVolumes = 30,
 
     /// Per-BSP-leaf bitmask of overlapping fog volumes (bit `i` = volume `i`
     /// overlaps this leaf). Solid leaves are always zero. Optional — emitted
-    /// only when at least one `env_fog_volume` brush entity is present.
+    /// only when at least one `fog_volume` brush entity is present.
     /// See `fog_cell_masks::FogCellMasksSection`.
     FogCellMasks = 31,
 }

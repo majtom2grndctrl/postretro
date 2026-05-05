@@ -778,8 +778,10 @@ mod tests {
         fs::write(
             &entry,
             r#"
-            import { world } from "postretro";
-            const lights = world.query({ component: "light" });
+            import { registerEntity } from "postretro";
+            registerEntity({
+                classname: "light_point",
+            });
             "#,
         )
         .unwrap();
@@ -797,8 +799,8 @@ mod tests {
         );
         // The call to the engine-injected global must remain.
         assert!(
-            js.contains("world"),
-            "bundled output dropped the world call site: {js}"
+            js.contains("registerEntity"),
+            "bundled output dropped the registerEntity call site: {js}"
         );
 
         let _ = fs::remove_dir_all(&dir);

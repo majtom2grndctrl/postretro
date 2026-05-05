@@ -1,6 +1,23 @@
 # Scripting Reference
 
-> **This document is partially stale.** The Live VM (`registerHandler`, `tick` callbacks, `emitEvent`, `ScriptCallContext`, "behavior context") has been removed from the engine. Any section referencing these APIs no longer applies. The definition-context and world-query sections remain accurate.
+> **This document needs a full rewrite.** The Live VM was removed (see `context/plans/done/remove-live-vm`). Most of the content below is stale. Do not use it as a reference for current scripting.
+
+**Sections to delete entirely:**
+- Events (`registerHandler`, `tick`, `levelLoad` handler examples)
+- `ScriptCallContext` and `HandlerFn` type docs
+- `emitEvent` / `sendEvent` primitive docs
+- `spawnEntity` / `despawnEntity` / `getComponent` / `setComponent` primitive docs
+- Hot reload section (behavior-context reload is gone; file watching still works but triggers no action)
+- Any `pulseDensity`, fog `setDensity`/`setScatter`/`setEdgeSoftness`, light `setIntensity`/`setColor` examples
+- `EasingCurve` builder docs (removed from SDK)
+
+**Sections to keep and update:**
+- `registerEntity` — still accurate, update examples to remove `registerHandler` calls
+- `registerReaction` — still accurate
+- `registerLevelManifest` — still accurate
+- `world.query` — still accurate, remove `getComponent` follow-up guidance
+- Light animation primitives (`flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`, `setLightAnimation`) — still accurate
+- TypeScript/Luau toolchain setup — still accurate
 
 ## Overview
 

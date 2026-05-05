@@ -23,7 +23,7 @@ Remove the Live VM scripting context: the `registerHandler` primitive, the behav
 - **`call_context.rs`** — deleted. Defines `ScriptCallContext`, which exists only to support tick handler arguments. (`HandlerFn` is in `typedef.rs`.)
 - **`ScriptRuntime` methods** — `fire_tick`, `fire_level_load`, `clear_level_handlers`, and `reload_behavior_context` removed.
 - **`load_behavior_scripts`** — removed from `main.rs`. The `scripts/` directory is no longer scanned at level load.
-- **Hot-reload watcher** — removed. `drain_reload_requests` and `ScriptWatcher` initialization removed; watcher targeted the behavior context.
+- **Hot-reload watcher** — `watcher.rs` kept. Remove only the behavior-VM-reload logic: `reload_behavior_context` call and handler-clearing sequence inside `drain_reload_requests`. File watching and TS/Luau compilation infrastructure stays intact.
 - **Level compiler** — `compile_worldspawn_script` and the `"script"` worldspawn KVP removed from `prl-build`. The `script` field removed from the parsed map data struct.
 - **Test content** — `content/tests/scripts/rotator-driver.ts` and `rotator-driver.js` deleted.
 - **SDK types** — `registerHandler`, `ScriptCallContext`, `HandlerFn`, `ScriptEvent`, `spawnEntity`, `despawnEntity`, `getComponent`, `setComponent`, `emitEvent`, and `sendEvent` removed from `postretro.d.ts` and `postretro.d.luau`.
@@ -44,7 +44,7 @@ Remove the Live VM scripting context: the `registerHandler` primitive, the behav
 - `registerHandler` is absent from all scripting contexts. Calling it from a script raises an error (`ReferenceError` in QuickJS, `attempt to call a nil value` in Luau).
 - `ScriptCallContext`, `HandlerFn`, `ScriptEvent`, `spawnEntity`, `despawnEntity`, `getComponent`, `setComponent`, `emitEvent`, and `sendEvent` are absent from `postretro.d.ts` and `postretro.d.luau`.
 - The `scripts/` directory under a content root is not scanned at level load. Files placed there have no effect.
-- No file-watch thread starts in debug builds.
+- File-watch thread starts in debug builds; no behavior-VM-reload logic executes when files change.
 - `content/tests/scripts/rotator-driver.ts` and `rotator-driver.js` do not exist.
 - `prl-build` ignores a `"script"` worldspawn KVP without error.
 - Engine boots and loads a compiled `content/tests/maps/test-3.prl` without error (the `.prl` is not checked in; compile from `test-3.map` first).
@@ -62,7 +62,7 @@ Delete `event_dispatch.rs` and `call_context.rs`. In `runtime.rs`: remove `Which
 
 ### Task 2: Remove main.rs call sites and hot reload
 
-Remove `load_behavior_scripts` and all its call sites. Remove `fire_tick`, `fire_level_load`, `clear_level_handlers`, and `reload_behavior_context` call sites. Remove the hot-reload block (`drain_reload_requests` loop and `ScriptWatcher` initialization). Remove the `game_events` drain block. Remove the `start_watcher` call and the `mod watcher` declaration in `scripting/mod.rs` (subject to the watcher TS-compilation decision — see open questions).
+Remove `load_behavior_scripts` and all its call sites. Remove `fire_tick`, `fire_level_load`, `clear_level_handlers`, and `reload_behavior_context` call sites. Remove the behavior-VM-reload logic inside `drain_reload_requests` (the `reload_behavior_context` call and handler-clearing sequence); leave the `drain_reload_requests` call site in the game loop and the `ScriptWatcher` initialization intact. Remove the `game_events` drain block.
 
 ### Task 3: Remove level compiler support
 
@@ -80,11 +80,7 @@ Delete `content/tests/scripts/rotator-driver.ts` and `rotator-driver.js`. Regene
 
 ## Open questions
 
-**Watcher TS compilation.** `watcher.rs` owns both hot-reload file watching AND dev-mode TypeScript compilation (`TsCompilerPath`, `run_ts_compiler` — auto-compiles `.ts` → `.js` on engine startup). The hot-reload half goes; the TS compilation half may not. Two options:
-- Split: move TS compilation helpers to a new module (e.g. `ts_compiler.rs`), delete only the file-watch/notify pieces.
-- Delete everything: dev workflow becomes "run `scripts-build` manually." The CLI already exists; debug auto-compilation is a convenience, not a requirement.
-
-Resolve before implementing Task 2.
+None.
 
 ---
 

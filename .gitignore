@@ -38,3 +38,7 @@ dist/
 
 # Generated script SDK type declarations (rebuilt on debug startup).
 crates/postretro/sdk/
+
+# Compiled script artifacts (source is .ts/.lua; outputs are generated)
+*.js
+*.lua

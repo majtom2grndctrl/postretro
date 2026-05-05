@@ -8,6 +8,8 @@
 
 ## 1. Design
 
+**Scripts declare; Rust executes.** Mod-authored scripts register entity types, reactions, and parameters at load time. The VM is not live during normal gameplay — Rust reads the registrations and runs the game.
+
 Two runtimes run side by side: **QuickJS** (TypeScript/JavaScript, via rquickjs) and **Luau** (via mlua). Each serves the same primitive surface. Scripts dispatch by file extension: `.ts`/`.js` → QuickJS, `.luau` → Luau. Both runtimes are always present; no runtime selection.
 
 All engine capabilities are exposed through a **primitive registry** — a shared table of registered Rust functions. Register a primitive once and it installs in every future QuickJS and Luau context. Scripts call primitives as global functions.
@@ -18,31 +20,28 @@ Scripting is **strictly single-threaded**. Both rquickjs contexts and mlua state
 
 ## 2. Context Model
 
-Each runtime maintains two **shared contexts** (long-lived, level-scoped) and a **context pool** (pre-warmed, recycled).
+Each runtime maintains one **shared context** (long-lived) and a **context pool** (pre-warmed, recycled).
 
 | Context | Purpose | Lifetime |
 |---------|---------|----------|
-| Definition | Cross-script data declarations | Level lifetime |
-| Behavior | Cross-script global runtime logic | Level lifetime |
+| Definition | Cross-script data declarations | Engine lifetime |
 | Data | One-time data-script run: `registerEntity` calls plus `registerLevelManifest(ctx)` | Level load only — created once, dropped after the data script completes |
 | Pooled (ephemeral) | Per-entity or per-call isolation | Returned to pool after use |
 
-Shared contexts accumulate definitions across calls — cross-script globals are intentional. Pooled contexts are recycled and must be isolated: QuickJS pools freeze the global object on construction; Luau pools use the sandbox flag. All persistent state flows through Rust primitives, not script globals.
+Declaration contexts (Definition + Data) are the authoring path: scripts run once at load time and register intent. The shared Definition context accumulates definitions across calls; cross-script globals are intentional. Pooled contexts are recycled and must be isolated: QuickJS pools freeze the global object on construction; Luau pools use the sandbox flag. All persistent state flows through Rust primitives, not script globals.
 
-**Data context lifecycle.** At level load, after geometry and entities are ready but before `levelLoad` behavior handlers fire, the engine creates a short-lived VM context and runs the data script. During that run:
+**Data context lifecycle.** At level load, after geometry and entities are ready, the engine creates a short-lived VM context and runs the data script. During that run:
 
 - `registerEntity` calls register entity-type descriptors into the engine-global entity-type registry. These survive level unload — they describe types, not per-level state.
 - `registerLevelManifest(ctx)` is called once at the end. Its return bundle carries `{reactions}`; only those reactions land in the per-level reaction registry.
 
-The context is dropped after the data script completes. No live reference to the data VM remains. The reaction registry is per-level and clears on unload; the entity-type registry is engine-global. The two registries are separate Rust structures from behavior script state — each can be cleared and repopulated independently (hot reload path).
-
-`registerHandler` is behavior-only; calling it from a data context returns a `WrongContext` error.
+The context is dropped after the data script completes. No live reference to the data VM remains. The reaction registry is per-level and clears on unload; the entity-type registry is engine-global. The two registries are separate Rust structures — each can be cleared and repopulated independently (hot reload path).
 
 ---
 
 ## 3. Context Scope Enforcement
 
-Each primitive declares one of three scopes: definition-only, behavior-only, or both. The registry installs the real function only in permitted contexts. Disallowed contexts get a stub that returns a `WrongContext` error. Scripts see a consistent call surface everywhere; stubs enforce restrictions at runtime, not via missing globals.
+Each primitive declares one of two scopes: definition-only or both. The registry installs the real function only in permitted contexts. Disallowed contexts get a stub that returns a `WrongContext` error. Scripts see a consistent call surface everywhere; stubs enforce restrictions at runtime, not via missing globals.
 
 ---
 
@@ -101,23 +100,7 @@ Both preludes are baked at compile time. SDK library changes require an engine r
 
 ---
 
-## 8. Hot Reload and Load Order
-
-### Load order
-
-Behavior scripts under a content root's `scripts/` directory load in **lexicographic (UTF-8 byte) order** of their path. The ordering is deliberate: it pins cross-file `registerHandler` invocation order to a stable, file-name-driven sequence so authors can predict registration order without runtime introspection. A missing `scripts/` directory is a no-op; per-file failures are logged and swallowed so one bad script cannot kill the engine.
-
-### Hot reload
-
-A file watcher monitors the scripts directory. Changed scripts re-run in the behavior context on the next frame drain. Hot reload targets the behavior context only — definition-script changes (archetype declarations and other definition-context code) require an engine restart, the same restriction that applies to SDK prelude changes. Hot reload is debug-only. Reload sequence: clear level handlers → rebuild behavior context (drops the old context, reinstalls primitives + prelude in a fresh global scope so top-level `const`/`let`/`local` declarations don't collide with state from the previous load) → re-run all behavior scripts → if a level is currently loaded, re-fire `levelLoad` so newly registered handlers execute immediately. Reload errors are logged and swallowed; one failed reload does not kill the engine. The prelude is reinstalled as part of the context rebuild, but SDK library source changes still require an engine restart because the source is embedded at compile time.
-
-`clear_level_handlers` is called on both level unload and hot reload.
-
-Entry point: `drain_reload_requests` on `ScriptRuntime`, called at the top of each frame.
-
----
-
-## 9. Compilation Tooling
+## 8. Compilation Tooling
 
 `.ts` scripts compile to `.js` via `scripts-build` (`postretro-script-compiler` crate) — the sole TypeScript compiler. No tsc or npx dependency. `scripts-build` bundles the entry file with its relative imports, strips TypeScript-only syntax, and removes bare-specifier imports. Engine APIs and SDK library symbols arrive as QuickJS globals, not module imports.
 
@@ -143,7 +126,7 @@ The Luau prelude is not pre-bundled — each `sdk/lib/` source file is embedded 
 
 ---
 
-## 10. External API Shape
+## 9. External API Shape
 
 External scripting APIs stay close to internal data shapes by default. When internal naming, hardware constraints, or usability concerns diverge, the external API simplifies rather than exposes the constraint. The mapping should be traceable, not required to be identical. Examples: a `[f32; 3]` origin field becomes `transform.position` on an entity handle; a GPU loop-count convention (`0` = infinite) becomes `playCount` where omitting the field means forever.
 
@@ -151,7 +134,7 @@ Light entity handles expose `isDynamic` at the top level of the handle object an
 
 ---
 
-## 11. Emitter and Particles
+## 10. Emitter and Particles
 
 `BillboardEmitter` is a built-in engine entity type — the level loader handles `classname "billboard_emitter"` natively via the built-in classname dispatch table. Authors do not register it; the SDK's `BillboardEmitter` export is a TypeScript type for IDE safety, not a runtime value.
 
@@ -171,7 +154,7 @@ Each live particle is a full ECS entity carrying `Transform`, `ParticleState`, a
 
 ---
 
-## 12. Non-Goals
+## 11. Non-Goals
 
 - General-purpose scripting host (only explicitly registered Rust functions are callable)
 - Synchronous cross-VM communication (QuickJS and Luau are independent runtimes)

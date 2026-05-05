@@ -1,0 +1,137 @@
+# Boot Sequence
+
+> **Read this when:** wiring mod loading, level loading, the mod browser, or any startup-phase work; or when reasoning about where a new piece of init code belongs.
+> **Key invariant:** mods own scripts and assets; the engine owns the schedule. Mod code runs only inside phases the engine grants it.
+> **Related:** [Architecture Index](./index.md) · [Scripting](./scripting.md) · [Entity Model](./entity_model.md) · [Build Pipeline](./build_pipeline.md)
+
+---
+
+## 1. Folder Structure (planned)
+
+```
+content/
+  base/                          # base game (always present)
+    start-script.{ts,luau}       # mod entry point — fixed path at mod root
+    actors/                      # enemies, NPCs, any autonomous mobile entity
+      <actor-name>/
+        _sounds/                 # actor-specific sounds
+        <actor-name>.png         # actor-specific textures
+        <actor-name>.ts          # schema + reactions
+    weapons/
+      <weapon-name>/
+        _sounds/                 # weapon-specific sounds
+        <weapon-name>.png
+        <weapon-name>.ts
+    levels/
+      _textures/                 # shared level-surface textures (walls, floors, sky)
+      _sounds/                   # shared level ambient and music
+      <level-name>/
+        <level-name>.prl         # compiled level
+        <level-name>.ts          # level-specific entity definitions; auto-discovered by name
+  mods/
+    <mod-name>/                  # one folder per mod; same shape as base/
+      ...
+```
+
+| Concept | Definition |
+|---------|-----------|
+| Base game | The shipped game in `content/base/`. Loaded as a mod with implicit highest precedence. |
+| Mod | A folder under `content/mods/`. Augments or replaces base content. |
+| Total conversion | A mod that defines its own UI, menus, and full content set. |
+| Level pack | A loosely-defined mod — primarily maps, light scripting. |
+| Actor | Any autonomous mobile entity regardless of faction. Faction is a schema field, not a folder. |
+
+The domain folder structure, the fixed `start-script` entry, and the `mods/` directory are **planned**.
+
+---
+
+## 2. Script Roles
+
+| Role | Context | Lifetime | Discovery |
+|------|---------|----------|-----------|
+| Start script | Definition (one-shot) | Runs once at mod init | Fixed path: `<mod>/start-script.{ts,luau}` |
+| Domain script | Definition (one-shot) | Runs once at mod init via start-script imports | Explicit `import`/`require` from start-script |
+| Level script | Definition (one-shot) | Runs once at level load | Auto-discovered: `levels/<name>/<name>.{ts,luau}` |
+| UI definition script | Declarative (no VM at runtime) | Parsed once; rendered from data | **Open** — format and load point unspecified |
+
+Start scripts and domain scripts call `registerEntity` (writes to engine-global `DataRegistry`). Level scripts call `registerLevelManifest` (per-level reactions). See `scripting.md` §2.
+
+---
+
+## 3. Boot Sequence (planned full product)
+
+| Phase | Stage | Owner | Status |
+|-------|-------|-------|--------|
+| 0 | Engine init: wgpu adapter, audio, input, scripting runtimes constructed; SDK preludes installed | Engine | today |
+| 1 | Discover mods: scan `content/base/` and `content/mods/*/` for valid manifests | Engine | planned |
+| 2 | Mod browser UI: present discovered mods, user selects active set (or skip via CLI / saved selection) | Engine + UI system | planned |
+| 3 | Resolve load order: base first, then selected mods in user-specified order | Engine | planned |
+| 4 | Per-mod init: for each active mod in order — run `start-script` in a definition VM (module imports resolve domain scripts); fire `modLoad` event | Engine + scripts | planned |
+| 5 | Main menu: rendered from UI definitions contributed by active mods. User picks a level (mod-defined level selector / class chooser / etc.) | UI system | planned |
+| 6 | Level load (see §4) | Engine | partial today |
+| 7 | First game tick: Input → Game logic → Audio → Render → Present | Engine | today |
+
+**Open (D2):** how scripts declare tick order across mods. Leading candidate: `updatePriority` field on `registerEntity`.
+**Open (D3):** whether `data/` is a single entry file or a lexicographic multi-file scan.
+**Open:** mod manifest format (name, version, dependencies, UI contributions). Required by phase 1.
+**Open:** UI system — declarative format, where definitions live (per-mod `ui/` folder?), and how the renderer consumes them.
+
+---
+
+## 4. Level Load Sequence
+
+Today (per `postretro/src/level_loader` and the scripting runtime):
+
+| Order | Step |
+|-------|------|
+| 1 | PRL file read from disk |
+| 2 | Built-in classname dispatch (hardcoded engine entities — player_start, billboard_emitter, lights, etc.) |
+| 3 | Data script (bundled in PRL at build time) runs in short-lived `ContextScope::DefinitionOnly` VM; calls `registerEntity` → engine-global `DataRegistry`; calls `registerLevelManifest` → per-level reaction registry |
+| 4 | Entity spawn sweep: walk map entity list, match classnames against `DataRegistry`, spawn |
+
+Planned changes:
+
+| Order | Step | Delta |
+|-------|------|-------|
+| 1 | PRL load | unchanged |
+| 2 | Built-in classname dispatch | unchanged |
+| 3 | Level script runs | sourced from `levels/<name>/<name>.{ts,luau}` (auto-discovered by name convention) instead of bundled in PRL |
+| 4 | Entity spawn sweep | unchanged |
+
+**Open (D3):** if data scripts move out of PRL, level launch parameters (chosen by the mod's menu in phase 5) need a delivery channel into the data context.
+
+---
+
+## 5. Lifetimes
+
+| Scope | Cleared on |
+|-------|-----------|
+| Engine init (preludes, primitive registry) | Process exit |
+| Mod init state (start-script effects) | Mod unload / engine restart (planned) |
+| `DataRegistry` (entity-type descriptors from `registerEntity`) | Engine-global; survives level unload. Cleared on full reload of mod set. |
+| Per-level reaction registry | Level unload |
+| Pooled VM contexts | Returned to pool after each ephemeral call |
+
+Hot reload (debug only) triggers recompilation of changed script files; definition-context changes require an engine restart.
+
+---
+
+## 6. Mod Browser (planned)
+
+Phase 2 must run before any mod scripts execute. Constraints:
+
+- Cannot depend on mod-supplied UI definitions (they aren't loaded yet).
+- Renders in engine-native UI only (declarative, not VM-driven).
+- Output: ordered list of active mod paths handed to phase 3.
+- Skippable: CLI flag (`--mods base,foo,bar`) or persisted selection from previous session.
+
+Reachable from main menu (phase 5) for re-selection; triggers a full mod unload + reload cycle.
+
+---
+
+## 7. Non-Goals
+
+- Per-entity script lifecycle callbacks (see `entity_model.md` §9)
+- Networked mod sync
+- Runtime mod hot-swap mid-level
+- Sandboxing mods from each other (mods share the same VM contexts and `DataRegistry` by design)

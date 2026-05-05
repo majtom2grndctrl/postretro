@@ -1,6 +1,6 @@
 # Remove Live VM Context
 
-> **Status:** draft
+> **Status:** ready
 
 ---
 

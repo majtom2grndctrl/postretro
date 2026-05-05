@@ -533,8 +533,7 @@ fn install_primitives(
     for p in primitives {
         let use_real = matches!(
             (p.context_scope, target),
-            (ContextScope::Both, _)
-                | (ContextScope::DefinitionOnly, ContextScope::DefinitionOnly)
+            (ContextScope::Both, _) | (ContextScope::DefinitionOnly, ContextScope::DefinitionOnly)
         );
         let installer = if use_real {
             &p.luau_installer

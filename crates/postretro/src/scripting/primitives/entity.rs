@@ -1,9 +1,9 @@
 // Entity-domain scripting primitives. Composition entry point lives in `mod.rs`.
 // See: context/lib/scripting.md
 //
-// Every primitive captures `ScriptCtx` by `Rc` at registration time. To add a
-// new subsystem to the scripting surface: add one field to `ScriptCtx` and a
-// few `.register(...)` lines here.
+// Every primitive captures `ScriptCtx` by `Rc` at registration time. New
+// primitive domains belong in a new sibling module (e.g. `light.rs`), called
+// from `mod.rs::register_all` — not added here.
 
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::light::LightComponent;

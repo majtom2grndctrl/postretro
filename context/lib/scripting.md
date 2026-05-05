@@ -8,7 +8,7 @@
 
 ## 1. Design
 
-**Scripts declare; Rust executes.** Mod-authored scripts register entity types, reactions, and parameters at load time. The VM is not live during normal gameplay — Rust reads the registrations and runs the game.
+**Scripts declare; Rust executes.** Mod-authored scripts register entity types, reactions, and parameters at load time. The VM is not live during normal gameplay — Rust reads the registrations and runs the game. There is no live-VM escape hatch: behavior that the primitive surface cannot express belongs in Rust, not in scripts.
 
 Two runtimes run side by side: **QuickJS** (TypeScript/JavaScript, via rquickjs) and **Luau** (via mlua). Each serves the same primitive surface. Scripts dispatch by file extension: `.ts`/`.js` → QuickJS, `.luau` → Luau. Both runtimes are always present; no runtime selection.
 
@@ -35,7 +35,7 @@ Declaration contexts (Definition + Data) are the authoring path: scripts run onc
 - `registerEntity` calls register entity-type descriptors into the engine-global entity-type registry. These survive level unload — they describe types, not per-level state.
 - `registerLevelManifest(ctx)` is called once at the end. Its return bundle carries `{reactions}`; only those reactions land in the per-level reaction registry.
 
-The context is dropped after the data script completes. No live reference to the data VM remains. The reaction registry is per-level and clears on unload; the entity-type registry is engine-global. The two registries are separate Rust structures — each can be cleared and repopulated independently (hot reload path).
+The context is dropped after the data script completes. No live reference to the data VM remains. The reaction registry is per-level and clears on unload; the entity-type registry is engine-global. The two registries are separate Rust structures — each can be cleared and repopulated independently.
 
 ---
 
@@ -96,7 +96,7 @@ Higher-level vocabulary (`world`, `flicker`, `pulse`, `timeline`, etc.) is provi
 
 **Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Return values are destructured into bare globals — no import or require needed. Evaluation order matters: the only real ordering dependency is that `world.luau` needs `wrapLightEntity` from `entities/lights.luau`. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals. `entities/emitters.luau` is wired into the Luau prelude alongside `entities/lights.luau` (the emitter file existed prior to the lights restructure but was inadvertently absent from the prelude evaluation order; the lights restructure fixed this).
 
-Both preludes are baked at compile time. SDK library changes require an engine restart; hot reload does not reload the prelude.
+Both preludes are baked at compile time. SDK library changes require an engine restart.
 
 ---
 

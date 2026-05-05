@@ -45,8 +45,8 @@ use crate::scripting::builtins::{
 };
 use crate::scripting::call_context::ScriptCallContext;
 use crate::scripting::ctx::ScriptCtx;
+use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
-use crate::scripting::primitives_light::register_sequenced_light_primitives;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
 use crate::scripting::reaction_dispatch::{
     ProgressTracker, fire_named_event_with_sequences, validate_sequence_primitives,

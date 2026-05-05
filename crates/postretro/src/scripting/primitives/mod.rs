@@ -1,54 +1,28 @@
-// Engine primitives registered at startup, and the shared type definitions they reference.
+// Scripting primitives composition root.
 // See: context/lib/scripting.md
 //
-// Every primitive captures `ScriptCtx` by `Rc` at registration time. To add a
-// new subsystem to the scripting surface: add one field to `ScriptCtx` and a
-// few `.register(...)` lines here.
+// Per-domain primitive registration lives in sibling modules (`entity`,
+// `light`); this file owns the shared types, the cross-domain `worldQuery`
+// primitive, and the `register_all` entry point that the engine and tests
+// converge on.
 
-use super::components::billboard_emitter::BillboardEmitterComponent;
-use super::components::light::LightComponent;
-use super::components::particle::ParticleState;
-use super::components::sprite_visual::SpriteVisual;
-use super::conv::{json_to_js, json_to_lua};
-use super::ctx::{GAME_EVENTS_CAPACITY, GameEvent, ScriptCtx, ScriptEvent};
-use super::data_descriptors::EntityTypeDescriptor;
-use super::error::ScriptError;
-use super::primitives_registry::{ContextScope, PrimitiveRegistry};
-use super::registry::{ComponentKind, ComponentValue, EntityId, FogVolumeComponent, Transform};
+pub(crate) mod entity;
+pub(crate) mod light;
+
+use crate::scripting::conv::{json_to_js, json_to_lua};
+use crate::scripting::ctx::ScriptCtx;
+use crate::scripting::error::ScriptError;
+use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
+use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
 use mlua::{FromLua, IntoLua, Lua, Value as LuaValue};
 use rquickjs::{Ctx, FromJs, IntoJs, Value as JsValue};
 
-/// Newtype that maps `None` to JS `null` (rather than `undefined`) and Lua
-/// `nil`, so script-side `=== null` / `== nil` checks work without authors
-/// having to know which sentinel rquickjs / mlua picks for `Option::None`. The
-/// SDK type signature is `string | null` / `string?`; this newtype enforces
-/// it at the wire boundary.
-struct NullableString(Option<String>);
-
-impl<'js> IntoJs<'js> for NullableString {
-    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        match self.0 {
-            Some(s) => s.into_js(ctx),
-            None => Ok(JsValue::new_null(ctx.clone())),
-        }
-    }
-}
-
-impl IntoLua for NullableString {
-    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
-        match self.0 {
-            Some(s) => s.into_lua(lua),
-            None => Ok(LuaValue::Nil),
-        }
-    }
-}
-
 // --- worldQuery -------------------------------------------------------------
 //
-// `worldQuery` is a generic ECS query primitive. It lives here alongside the
-// other entity primitives (`entityExists`, `spawnEntity`, `getComponent`)
-// so that adding a second queryable component type only requires editing this
-// file, not the light-specific one.
+// `worldQuery` is a generic ECS query primitive. It lives here at the
+// composition root because it spans multiple component domains (light,
+// transform, emitter, fog volume); per-domain helpers live in the sibling
+// `entity` and `light` modules.
 
 /// Opaque newtype implementing `IntoJs` and `IntoLua` so we can return a
 /// serde_json-shaped value from a primitive closure without the caller having
@@ -265,9 +239,8 @@ pub(crate) fn register_world_query(registry: &mut PrimitiveRegistry, ctx: Script
                 let filter = parse_query_filter(&filter.component, filter.tag)?;
                 match filter {
                     QueryFilter::Light { tag } => {
-                        let handles =
-                            super::primitives_light::collect_light_handles(&ctx, tag.as_deref());
-                        Ok(JsonValue(super::primitives_light::handles_to_json(handles)))
+                        let handles = light::collect_light_handles(&ctx, tag.as_deref());
+                        Ok(JsonValue(light::handles_to_json(handles)))
                     }
                     QueryFilter::Transform { tag } => Ok(JsonValue(
                         collect_transform_handles_json(&ctx, tag.as_deref()),
@@ -287,146 +260,6 @@ pub(crate) fn register_world_query(registry: &mut PrimitiveRegistry, ctx: Script
         .doc(WORLD_QUERY_DOC)
         .param("filter", "WorldQueryFilter")
         .finish();
-}
-
-/// Hand-rolled `spawnEntity` registration. Required because the optional
-/// `tags` argument cannot ride through the generic `register()` path —
-/// rquickjs `Function::new` derives a strict arity from the closure's
-/// signature, so a generic registration with `tags: Option<Vec<String>>`
-/// would still reject `spawnEntity(t)` with one argument.
-#[allow(clippy::arc_with_non_send_sync)]
-fn register_spawn_entity(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
-    use super::primitives_registry::{
-        LuauInstaller, ParamInfo, PrimitiveSignature, QuickJsInstaller, ScriptPrimitive,
-    };
-    use rquickjs::function::Opt;
-    use std::sync::Arc;
-
-    const NAME: &str = "spawnEntity";
-    const DOC: &str = "Spawns a new entity with the given transform and returns its id. Optional `tags` attaches a tag list at creation time.";
-
-    let exhausted = || ScriptError::InvalidArgument {
-        reason: "entity slots exhausted".into(),
-    };
-
-    let quickjs_installer: QuickJsInstaller = {
-        let ctx = ctx.clone();
-        Arc::new(move |js_ctx: &rquickjs::Ctx<'_>| -> rquickjs::Result<()> {
-            let globals = js_ctx.globals();
-            let ctx = ctx.clone();
-            let f = rquickjs::Function::new(
-                js_ctx.clone(),
-                move |js_ctx: rquickjs::Ctx<'_>,
-                      transform: Transform,
-                      tags: Opt<Vec<String>>|
-                      -> rquickjs::Result<EntityId> {
-                    let ctx = ctx.clone();
-                    let tag_slice: &[String] = match &tags.0 {
-                        Some(v) => v.as_slice(),
-                        None => &[],
-                    };
-                    match ctx.registry.borrow_mut().try_spawn(transform, tag_slice) {
-                        Some(id) => Ok(id),
-                        None => Err(rquickjs::Exception::from_message(
-                            js_ctx.clone(),
-                            &exhausted().to_string(),
-                        )?
-                        .throw()),
-                    }
-                },
-            )?;
-            globals.set(NAME, f)?;
-            Ok(())
-        }) as QuickJsInstaller
-    };
-
-    let luau_installer: LuauInstaller = {
-        let ctx = ctx.clone();
-        Arc::new(move |lua: &mlua::Lua| -> mlua::Result<()> {
-            let globals = lua.globals();
-            let ctx = ctx.clone();
-            let f = lua.create_function(
-                move |_lua: &mlua::Lua,
-                      (transform, tags): (Transform, Option<Vec<String>>)|
-                      -> mlua::Result<EntityId> {
-                    let ctx = ctx.clone();
-                    let tag_slice: &[String] = match &tags {
-                        Some(v) => v.as_slice(),
-                        None => &[],
-                    };
-                    match ctx.registry.borrow_mut().try_spawn(transform, tag_slice) {
-                        Some(id) => Ok(id),
-                        None => Err(mlua::Error::RuntimeError(exhausted().to_string())),
-                    }
-                },
-            )?;
-            globals.set(NAME, f)?;
-            Ok(())
-        }) as LuauInstaller
-    };
-
-    // Stub installers throw WrongContext from the wrong context.
-    let quickjs_stub_installer: QuickJsInstaller = {
-        Arc::new(move |js_ctx: &rquickjs::Ctx<'_>| -> rquickjs::Result<()> {
-            let globals = js_ctx.globals();
-            let f = rquickjs::Function::new(js_ctx.clone(), move |js_ctx: rquickjs::Ctx<'_>| {
-                let err = ScriptError::WrongContext {
-                    primitive: NAME,
-                    current: "definition",
-                };
-                Err::<rquickjs::Value, _>(
-                    rquickjs::Exception::from_message(js_ctx, &err.to_string())?.throw(),
-                )
-            })?;
-            globals.set(NAME, f)?;
-            Ok(())
-        }) as QuickJsInstaller
-    };
-    let luau_stub_installer: LuauInstaller = {
-        Arc::new(move |lua: &mlua::Lua| -> mlua::Result<()> {
-            let globals = lua.globals();
-            let f = lua.create_function(move |_lua: &mlua::Lua, _: mlua::MultiValue| {
-                let err = ScriptError::WrongContext {
-                    primitive: NAME,
-                    current: "definition",
-                };
-                Err::<mlua::Value, _>(mlua::Error::RuntimeError(err.to_string()))
-            })?;
-            globals.set(NAME, f)?;
-            Ok(())
-        }) as LuauInstaller
-    };
-
-    let primitive = ScriptPrimitive {
-        name: NAME,
-        doc: DOC,
-        signature: PrimitiveSignature {
-            params: vec![
-                ParamInfo {
-                    name: "transform",
-                    ty_name: "Transform",
-                    optional: false,
-                },
-                // `optional: true` renders as `tags?: ReadonlyArray<string>` in
-                // TypeScript and `tags: {string}?` in Luau. The inner type is
-                // `Vec<String>` (no `Option<…>` wrapper) so the generator
-                // controls the optional spelling — matches the runtime, which
-                // accepts a one-arg call.
-                ParamInfo {
-                    name: "tags",
-                    ty_name: "Vec<String>",
-                    optional: true,
-                },
-            ],
-            return_ty_name: "Result<EntityId, ScriptError>",
-        },
-        context_scope: ContextScope::BehaviorOnly,
-        quickjs_installer,
-        luau_installer,
-        quickjs_stub_installer,
-        luau_stub_installer,
-    };
-    registry.push_manual(primitive);
 }
 
 /// Register the shared types referenced by day-one primitive signatures. These
@@ -563,224 +396,18 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
 /// before any script runtime is created.
 pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_shared_types(registry);
-    super::event_dispatch::register_shared_types(registry);
-    super::event_dispatch::register_register_handler(registry, ctx.handlers.clone());
-    super::primitives_light::register_shared_types(registry);
-    super::primitives_light::register_light_entity_primitives(registry, ctx.clone());
+    crate::scripting::event_dispatch::register_shared_types(registry);
+    crate::scripting::event_dispatch::register_register_handler(registry, ctx.handlers.clone());
+    light::register_shared_types(registry);
+    light::register_light_entity_primitives(registry, ctx.clone());
     register_world_query(registry, ctx.clone());
-
-    // entityExists ---------------------------------------------------------
-    registry
-        .register("entityExists", {
-            let ctx = ctx.clone();
-            move |id: EntityId| -> Result<bool, ScriptError> {
-                Ok(ctx.registry.borrow().exists(id))
-            }
-        })
-        .scope(ContextScope::Both)
-        .doc("Returns true if the entity id refers to a live entity.")
-        .param("id", "EntityId")
-        .finish();
-
-    // spawnEntity ----------------------------------------------------------
-    // Hand-rolled rather than going through the generic register() because
-    // the second parameter (`tags`) is truly optional at the call site:
-    // rquickjs's auto-derived FromParams enforces the function arity
-    // strictly, so a closure of the form `|t: Transform, tags: Option<...>|`
-    // would still reject `spawnEntity(t)` with one argument. Using
-    // `function::Opt<T>` for the QuickJS side and an `Option<Vec<String>>` for
-    // the second arg on the Lua side gives the script-level optional shape this
-    // primitive promises in its SDK signature.
-    register_spawn_entity(registry, ctx.clone());
-
-    // despawnEntity --------------------------------------------------------
-    registry
-        .register("despawnEntity", {
-            let ctx = ctx.clone();
-            move |id: EntityId| -> Result<(), ScriptError> {
-                ctx.registry.borrow_mut().despawn(id)?;
-                Ok(())
-            }
-        })
-        .scope(ContextScope::BehaviorOnly)
-        .doc("Despawns a previously-spawned entity. Errors if the id is stale.")
-        .param("id", "EntityId")
-        .finish();
-
-    // getComponent ---------------------------------------------------------
-    registry
-        .register("getComponent", {
-            let ctx = ctx.clone();
-            move |id: EntityId, kind: ComponentKind| -> Result<ComponentValue, ScriptError> {
-                let reg = ctx.registry.borrow();
-                match kind {
-                    ComponentKind::Transform => {
-                        let t = reg.get_component::<Transform>(id)?;
-                        Ok(ComponentValue::Transform(*t))
-                    }
-                    ComponentKind::Light => {
-                        let l = reg.get_component::<LightComponent>(id)?;
-                        Ok(ComponentValue::Light(l.clone()))
-                    }
-                    ComponentKind::BillboardEmitter => {
-                        let e = reg.get_component::<BillboardEmitterComponent>(id)?;
-                        Ok(ComponentValue::BillboardEmitter(e.clone()))
-                    }
-                    ComponentKind::ParticleState => {
-                        let p = reg.get_component::<ParticleState>(id)?;
-                        Ok(ComponentValue::ParticleState(p.clone()))
-                    }
-                    ComponentKind::SpriteVisual => {
-                        let s = reg.get_component::<SpriteVisual>(id)?;
-                        Ok(ComponentValue::SpriteVisual(s.clone()))
-                    }
-                    ComponentKind::FogVolume => {
-                        let f = reg.get_component::<FogVolumeComponent>(id)?;
-                        Ok(ComponentValue::FogVolume(*f))
-                    }
-                }
-            }
-        })
-        .scope(ContextScope::BehaviorOnly)
-        .doc("Reads a component of the given kind from an entity.")
-        .param("id", "EntityId")
-        .param("kind", "ComponentKind")
-        .finish();
-
-    // setComponent ---------------------------------------------------------
-    registry
-        .register("setComponent", {
-            let ctx = ctx.clone();
-            move |id: EntityId,
-                  kind: ComponentKind,
-                  value: ComponentValue|
-                  -> Result<(), ScriptError> {
-                // Enforce the `kind` and `value` discriminants agree. Mismatches
-                // are a script-side bug; we fail with a clear message rather
-                // than silently using one of the two.
-                // FromJs already rejects non-Transform variants; this guard catches kind/value disagreement only.
-                match (kind, &value) {
-                    (ComponentKind::Transform, ComponentValue::Transform(_)) => {}
-                    (ComponentKind::Light, ComponentValue::Light(_)) => {}
-                    (ComponentKind::BillboardEmitter, ComponentValue::BillboardEmitter(_)) => {}
-                    (ComponentKind::ParticleState, ComponentValue::ParticleState(_)) => {}
-                    (ComponentKind::SpriteVisual, ComponentValue::SpriteVisual(_)) => {}
-                    (ComponentKind::FogVolume, ComponentValue::FogVolume(_)) => {}
-                    _ => {
-                        return Err(ScriptError::InvalidArgument {
-                            reason: format!(
-                                "setComponent: kind {:?} does not match value discriminant",
-                                kind
-                            ),
-                        });
-                    }
-                }
-                let mut reg = ctx.registry.borrow_mut();
-                match value {
-                    ComponentValue::Transform(t) => reg.set_component(id, t)?,
-                    ComponentValue::Light(l) => reg.set_component(id, l)?,
-                    ComponentValue::BillboardEmitter(e) => reg.set_component(id, e)?,
-                    ComponentValue::ParticleState(p) => reg.set_component(id, p)?,
-                    ComponentValue::SpriteVisual(s) => reg.set_component(id, s)?,
-                    ComponentValue::FogVolume(f) => reg.set_component(id, f)?,
-                }
-                Ok(())
-            }
-        })
-        .scope(ContextScope::BehaviorOnly)
-        .doc("Writes a component of the given kind onto an entity.")
-        .param("id", "EntityId")
-        .param("kind", "ComponentKind")
-        .param("value", "ComponentValue")
-        .finish();
-
-    // emitEvent (broadcast) -----------------------------------------------
-    // Pushes the event to two destinations: (1) the broadcast handler queue
-    // for in-engine listeners, (2) the bounded `game_events` ring buffer
-    // that main.rs drains at the end of the Game logic phase as
-    // observability log lines. Capacity is enforced by popping the oldest
-    // entry when full so the most-recent emissions always survive.
-    registry
-        .register("emitEvent", {
-            let ctx = ctx.clone();
-            move |event: ScriptEvent| -> Result<(), ScriptError> {
-                let game_event = GameEvent {
-                    kind: event.kind.clone(),
-                    frame: ctx.frame.get(),
-                    payload: event.payload.clone(),
-                };
-                ctx.events.borrow_mut().broadcast.push_back(event);
-                let mut buf = ctx.game_events.borrow_mut();
-                while buf.len() >= GAME_EVENTS_CAPACITY {
-                    buf.pop_front();
-                }
-                buf.push_back(game_event);
-                Ok(())
-            }
-        })
-        .scope(ContextScope::BehaviorOnly)
-        .doc("Broadcasts an event to all listeners; drains at end of game logic.")
-        .param("event", "ScriptEvent")
-        .finish();
-
-    // getEntityProperty ----------------------------------------------------
-    // Reads a per-placement KVP from the FGD-authored map entity that spawned
-    // this entity. Returns null when the key is absent or the entity carries
-    // no KVP bag (e.g. spawned at runtime, not from a `.map` file).
-    registry
-        .register("getEntityProperty", {
-            let ctx = ctx.clone();
-            move |id: EntityId, key: String| -> Result<NullableString, ScriptError> {
-                let reg = ctx.registry.borrow();
-                Ok(NullableString(reg.get_map_kvp(id, &key)?))
-            }
-        })
-        .scope(ContextScope::Both)
-        .doc("Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in both behavior and data contexts.")
-        .param("id", "EntityId")
-        .param("key", "String")
-        .finish();
-
-    // registerEntity (data-context only) ----------------------------------
-    // Writes into the engine-global `DataRegistry.entities`. Identical
-    // re-inserts under the same classname are silent no-ops; differing
-    // re-inserts overwrite and log at `debug!`. Definition-only so behavior
-    // scripts never grow the registry mid-level.
-    registry
-        .register("registerEntity", {
-            let ctx = ctx.clone();
-            move |descriptor: EntityTypeDescriptor| -> Result<(), ScriptError> {
-                ctx.data_registry
-                    .borrow_mut()
-                    .upsert_entity_type(descriptor);
-                Ok(())
-            }
-        })
-        .scope(ContextScope::DefinitionOnly)
-        .doc("Register an entity type with optional component presets. Definition context only. Survives level unload.")
-        .param("descriptor", "EntityTypeDescriptor")
-        .finish();
-
-    // sendEvent (targeted) ------------------------------------------------
-    registry
-        .register("sendEvent", {
-            let ctx = ctx.clone();
-            move |target: EntityId, event: ScriptEvent| -> Result<(), ScriptError> {
-                ctx.events.borrow_mut().targeted.push_back((target, event));
-                Ok(())
-            }
-        })
-        .scope(ContextScope::BehaviorOnly)
-        .doc("Sends an event to a single entity; drains at end of game logic.")
-        .param("target", "EntityId")
-        .param("event", "ScriptEvent")
-        .finish();
+    entity::register_entity_primitives(registry, ctx);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::ctx::ScriptCtx;
+    use crate::scripting::ctx::{GAME_EVENTS_CAPACITY, ScriptCtx};
 
     fn registry_with_day_one() -> (PrimitiveRegistry, ScriptCtx) {
         let ctx = ScriptCtx::new();
@@ -946,7 +573,6 @@ mod tests {
     fn emit_event_drops_oldest_when_ring_buffer_at_capacity() {
         // Capacity is 1024; pushing 1025 must drop the oldest so the most-
         // recent emissions survive to the next end-of-tick drain.
-        use crate::scripting::ctx::GAME_EVENTS_CAPACITY;
         let (r, ctx) = registry_with_day_one();
 
         let rt = rquickjs::Runtime::new().unwrap();

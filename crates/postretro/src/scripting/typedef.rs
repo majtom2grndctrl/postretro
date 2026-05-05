@@ -82,12 +82,6 @@ fn rust_to_ts(ty_name: &str) -> String {
         "Transform" => "Transform".to_string(),
         "ComponentKind" => "ComponentKind".to_string(),
         "ComponentValue" => "ComponentValue".to_string(),
-        "ScriptEvent" => "ScriptEvent".to_string(),
-        "ScriptCallContext" => "ScriptCallContext".to_string(),
-        // `registerHandler`'s second argument is a script-side callable. The
-        // Rust side uses the placeholder `HandlerFn` type name rather than
-        // trying to spell a generic callable through the trait plumbing.
-        "HandlerFn" => "(ctx?: ScriptCallContext) => void".to_string(),
         // `worldQuery` returns a JSON-shaped array of entity handles. The
         // Rust return type is an opaque wrapper; the declared script surface
         // is `Entity[]` — the SDK layer narrows to a specific entity type
@@ -153,9 +147,6 @@ fn rust_to_luau(ty_name: &str) -> String {
         "Transform" => "Transform".to_string(),
         "ComponentKind" => "ComponentKind".to_string(),
         "ComponentValue" => "ComponentValue".to_string(),
-        "ScriptEvent" => "ScriptEvent".to_string(),
-        "ScriptCallContext" => "ScriptCallContext".to_string(),
-        "HandlerFn" => "(ctx: ScriptCallContext?) -> ()".to_string(),
         "JsonValue" => "{Entity}".to_string(),
         "NullableString" => "string?".to_string(),
         "WorldQueryFilter" => "WorldQueryFilter".to_string(),
@@ -933,11 +924,11 @@ mod tests {
     use crate::scripting::error::ScriptError;
     use crate::scripting::primitives::register_shared_types;
     use crate::scripting::primitives_registry::ContextScope;
-    use crate::scripting::registry::{EntityId, Transform};
+    use crate::scripting::registry::EntityId;
 
-    /// Build a tiny fixed registry: two primitives, one with a doc string,
-    /// one with an underscore-prefixed name (must be omitted). Also exercises
-    /// the shared-type registration path used by real `register_all`.
+    /// Build a tiny fixed registry: one primitive with a doc string, plus an
+    /// underscore-prefixed primitive that must be omitted. Also exercises the
+    /// shared-type registration path used by real `register_all`.
     fn mini_registry() -> PrimitiveRegistry {
         let mut r = PrimitiveRegistry::new();
         register_shared_types(&mut r);
@@ -948,15 +939,6 @@ mod tests {
         .scope(ContextScope::Both)
         .doc("Returns true if the entity id refers to a live entity.")
         .param("id", "EntityId")
-        .finish();
-
-        r.register(
-            "spawnEntity",
-            |_t: Transform| -> Result<EntityId, ScriptError> { Ok(EntityId::from_raw(0)) },
-        )
-        .scope(ContextScope::BehaviorOnly)
-        .doc("Spawns a new entity with the given transform.")
-        .param("transform", "Transform")
         .finish();
 
         // Engine-internal magic primitive — must NOT appear in output.
@@ -986,8 +968,6 @@ declare module \"postretro\" {
   export type ComponentKind = \"transform\" | \"light\" | \"billboard_emitter\" | \"particle_state\" | \"sprite_visual\" | \"fog_volume\";
 
   export type ComponentValue = ({ kind: \"transform\" } & Transform) | ({ kind: \"light\" } & LightComponent) | ({ kind: \"billboard_emitter\" } & BillboardEmitterComponent) | ({ kind: \"particle_state\" } & ParticleState) | ({ kind: \"sprite_visual\" } & SpriteVisual) | ({ kind: \"fog_volume\" } & FogVolumeComponent);
-
-  export type ScriptEvent = { kind: string; payload: unknown };
 
   /** Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI. */
   export type LightDescriptor = {
@@ -1056,9 +1036,6 @@ declare module \"postretro\" {
 
   /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
-
-  /** Spawns a new entity with the given transform. */
-  export function spawnEntity(transform: Transform): EntityId;
 }
 ";
 
@@ -1075,8 +1052,6 @@ export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 export type ComponentKind = \"transform\" | \"light\" | \"billboard_emitter\" | \"particle_state\" | \"sprite_visual\" | \"fog_volume\"
 
 export type ComponentValue = (Transform & { kind: \"transform\" }) | (LightComponent & { kind: \"light\" }) | (BillboardEmitterComponent & { kind: \"billboard_emitter\" }) | (ParticleState & { kind: \"particle_state\" }) | (SpriteVisual & { kind: \"sprite_visual\" }) | (FogVolumeComponent & { kind: \"fog_volume\" })
-
-export type ScriptEvent = { kind: string, payload: any }
 
 --- Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI.
 export type LightDescriptor = {
@@ -1145,9 +1120,6 @@ export type EntityTypeComponents = { light?: LightDescriptor?, emitter?: Billboa
 
 --- Returns true if the entity id refers to a live entity.
 declare function entityExists(id: EntityId): boolean
-
---- Spawns a new entity with the given transform.
-declare function spawnEntity(transform: Transform): EntityId
 ";
 
     /// Exercises every doc-emission path and the `"Any"` sentinel.
@@ -1346,20 +1318,47 @@ export type Event = {
         register_all(&mut r, ScriptCtx::new());
         let ts = generate_typescript(&r);
         let luau = generate_luau(&r);
-        for name in [
-            "entityExists",
+        for name in ["entityExists", "worldQuery", "registerEntity"] {
+            assert!(ts.contains(name), "ts missing primitive {name}:\n{ts}");
+            assert!(
+                luau.contains(name),
+                "luau missing primitive {name}:\n{luau}"
+            );
+        }
+        // Forbidden as exported symbols (declarations / exported types). Doc-
+        // comment mentions inside the SDK lib block are not symbols and don't
+        // count — the acceptance criterion is about author-visible types and
+        // primitives, not free-form prose.
+        for forbidden in [
             "spawnEntity",
             "despawnEntity",
             "getComponent",
             "setComponent",
             "emitEvent",
             "sendEvent",
+            "registerHandler",
+            "ScriptCallContext",
+            "HandlerFn",
+            "ScriptEvent",
         ] {
-            assert!(ts.contains(name), "ts missing primitive {name}:\n{ts}");
-            assert!(
-                luau.contains(name),
-                "luau missing primitive {name}:\n{luau}"
-            );
+            for line in ts.lines() {
+                if line.trim_start().starts_with("//") || line.trim_start().starts_with("*") {
+                    continue;
+                }
+                assert!(
+                    !line.contains(forbidden),
+                    "ts must not declare `{forbidden}`; offending line: {line}"
+                );
+            }
+            for line in luau.lines() {
+                if line.trim_start().starts_with("--") {
+                    continue;
+                }
+                assert!(
+                    !line.contains(forbidden),
+                    "luau must not declare `{forbidden}`; offending line: {line}"
+                );
+            }
         }
     }
 

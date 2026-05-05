@@ -11,8 +11,6 @@ export type ComponentKind = "transform" | "light" | "billboard_emitter" | "parti
 
 export type ComponentValue = (Transform & { kind: "transform" }) | (LightComponent & { kind: "light" }) | (BillboardEmitterComponent & { kind: "billboard_emitter" }) | (ParticleState & { kind: "particle_state" }) | (SpriteVisual & { kind: "sprite_visual" }) | (FogVolumeComponent & { kind: "fog_volume" })
 
-export type ScriptEvent = { kind: string, payload: any }
-
 --- Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI.
 export type LightDescriptor = {
   --- RGB color in [0, 1].
@@ -77,13 +75,6 @@ export type FogVolumeEntity = {
 
 --- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
 export type EntityTypeComponents = { light?: LightDescriptor?, emitter?: BillboardEmitterComponent? }
-
-export type ScriptCallContext = {
-  --- Seconds since the previous tick.
-  delta: number,
-  --- Seconds since level load; monotonic within a level.
-  time: number,
-}
 
 export type LightKind = "Point" | "Spot" | "Directional"
 
@@ -159,17 +150,8 @@ export type LightEntity = {
   component: LightComponent,
 }
 
---- Despawns a previously-spawned entity. Errors if the id is stale.
-declare function despawnEntity(id: EntityId): ()
-
---- Broadcasts an event to all listeners; drains at end of game logic.
-declare function emitEvent(event: ScriptEvent): ()
-
 --- Returns true if the entity id refers to a live entity.
 declare function entityExists(id: EntityId): boolean
-
---- Reads a component of the given kind from an entity.
-declare function getComponent(id: EntityId, kind: ComponentKind): ComponentValue
 
 --- Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in both behavior and data contexts.
 declare function getEntityProperty(id: EntityId, key: string): string?
@@ -177,20 +159,8 @@ declare function getEntityProperty(id: EntityId, key: string): string?
 --- Register an entity type with optional component presets. Definition context only. Survives level unload.
 declare function registerEntity(descriptor: EntityTypeDescriptor): ()
 
---- Register a handler for an engine event. Currently accepts "levelLoad" or "tick".
-declare function registerHandler(event: string, handler: (ctx: ScriptCallContext?) -> ()): ()
-
---- Sends an event to a single entity; drains at end of game logic.
-declare function sendEvent(target: EntityId, event: ScriptEvent): ()
-
---- Writes a component of the given kind onto an entity.
-declare function setComponent(id: EntityId, kind: ComponentKind, value: ComponentValue): ()
-
 --- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Behavior context only.
 declare function setLightAnimation(id: EntityId, animation: LightAnimation | null): ()
-
---- Spawns a new entity with the given transform and returns its id. Optional `tags` attaches a tag list at creation time.
-declare function spawnEntity(transform: Transform, tags: {string}?): EntityId
 
 --- Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`.
 declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEntity}) & ((filter: { component: "emitter", tag: string? }) -> {EmitterEntity}) & ((filter: { component: "fog_volume", tag: string? }) -> {FogVolumeEntity}) & ((filter: WorldQueryFilter) -> {Entity})

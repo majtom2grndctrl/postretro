@@ -304,11 +304,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("fog_volume", "FogVolumeComponent", "")
         .finish();
     registry
-        .register_type("ScriptEvent")
-        .field("kind", "String", "")
-        .field("payload", "Any", "")
-        .finish();
-    registry
         .register_type("LightDescriptor")
         .doc("Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI.")
         .field("color", "Vec3", "RGB color in [0, 1].")
@@ -396,8 +391,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
 /// before any script runtime is created.
 pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_shared_types(registry);
-    crate::scripting::event_dispatch::register_shared_types(registry);
-    crate::scripting::event_dispatch::register_register_handler(registry, ctx.handlers.clone());
     light::register_shared_types(registry);
     light::register_light_entity_primitives(registry, ctx.clone());
     register_world_query(registry, ctx.clone());
@@ -407,7 +400,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::ctx::{GAME_EVENTS_CAPACITY, ScriptCtx};
+    use crate::scripting::ctx::ScriptCtx;
 
     fn registry_with_day_one() -> (PrimitiveRegistry, ScriptCtx) {
         let ctx = ScriptCtx::new();
@@ -419,12 +412,18 @@ mod tests {
     #[test]
     fn register_all_installs_expected_primitives() {
         let (r, _ctx) = registry_with_day_one();
-        // 7 day-one primitives + `registerHandler` + `worldQuery` +
-        // `setLightAnimation` + `getEntityProperty` + `registerEntity`.
-        assert_eq!(r.len(), 12);
         let names: Vec<_> = r.iter().map(|p| p.name).collect();
         for expected in [
             "entityExists",
+            "worldQuery",
+            "setLightAnimation",
+            "getEntityProperty",
+            "registerEntity",
+        ] {
+            assert!(names.contains(&expected), "missing primitive {expected}");
+        }
+        // The Live VM primitives are gone — they must NOT appear.
+        for forbidden in [
             "spawnEntity",
             "despawnEntity",
             "getComponent",
@@ -432,12 +431,11 @@ mod tests {
             "emitEvent",
             "sendEvent",
             "registerHandler",
-            "worldQuery",
-            "setLightAnimation",
-            "getEntityProperty",
-            "registerEntity",
         ] {
-            assert!(names.contains(&expected), "missing primitive {expected}");
+            assert!(
+                !names.contains(&forbidden),
+                "primitive {forbidden} must be removed",
+            );
         }
     }
 
@@ -539,65 +537,6 @@ mod tests {
                 .unwrap();
             assert!(got);
         });
-    }
-
-    #[test]
-    fn emit_event_pushes_to_both_broadcast_queue_and_game_events_ring() {
-        // Two destinations, one call: every `emitEvent` lands in the
-        // broadcast queue (handler dispatch) AND the bounded `game_events`
-        // ring buffer (engine observability tap). The ring entry carries the
-        // current `frame` stamp.
-        let (r, ctx) = registry_with_day_one();
-        ctx.frame.set(7);
-
-        let rt = rquickjs::Runtime::new().unwrap();
-        let jsctx = rquickjs::Context::full(&rt).unwrap();
-        jsctx.with(|jsctx| {
-            for p in r.iter() {
-                (p.quickjs_installer)(&jsctx).unwrap();
-            }
-            let _: () = jsctx
-                .eval(r#"emitEvent({ kind: "damage", payload: { amount: 10 } })"#)
-                .unwrap();
-        });
-
-        assert_eq!(ctx.events.borrow().broadcast.len(), 1);
-        let buf = ctx.game_events.borrow();
-        assert_eq!(buf.len(), 1);
-        assert_eq!(buf[0].kind, "damage");
-        assert_eq!(buf[0].frame, 7);
-        assert_eq!(buf[0].payload, serde_json::json!({ "amount": 10 }));
-    }
-
-    #[test]
-    fn emit_event_drops_oldest_when_ring_buffer_at_capacity() {
-        // Capacity is 1024; pushing 1025 must drop the oldest so the most-
-        // recent emissions survive to the next end-of-tick drain.
-        let (r, ctx) = registry_with_day_one();
-
-        let rt = rquickjs::Runtime::new().unwrap();
-        let jsctx = rquickjs::Context::full(&rt).unwrap();
-        jsctx.with(|jsctx| {
-            for p in r.iter() {
-                (p.quickjs_installer)(&jsctx).unwrap();
-            }
-            let n = GAME_EVENTS_CAPACITY + 1;
-            let _: () = jsctx
-                .eval(format!(
-                    "for (let i = 0; i < {n}; i++) {{ emitEvent({{ kind: 'k', payload: i }}); }}"
-                ))
-                .unwrap();
-        });
-
-        let buf = ctx.game_events.borrow();
-        assert_eq!(buf.len(), GAME_EVENTS_CAPACITY);
-        // First survivor is the second emission (`i = 1`); the `i = 0`
-        // entry was popped when the 1025th push exceeded capacity.
-        assert_eq!(buf.front().unwrap().payload, serde_json::json!(1));
-        assert_eq!(
-            buf.back().unwrap().payload,
-            serde_json::json!(GAME_EVENTS_CAPACITY)
-        );
     }
 
     #[test]

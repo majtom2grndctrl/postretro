@@ -117,13 +117,6 @@ fn main() -> anyhow::Result<()> {
     let map_data = parse::parse_map_file(&args.input, args.format)?;
     timings.push(("Parsing", stage_start.elapsed()));
 
-    // Must run before any geometry bake: failures block the compile so the
-    // engine never loads a `.prl` whose paired `.js` is stale or missing.
-    progress.start_stage("Script compilation...");
-    let stage_start = Instant::now();
-    compile_worldspawn_script(&args.input, map_data.script.as_deref())?;
-    timings.push(("ScriptCompile", stage_start.elapsed()));
-
     progress.start_stage("Data script compilation...");
     let stage_start = Instant::now();
     let data_script_section =
@@ -541,101 +534,6 @@ fn find_scripts_build() -> Option<PathBuf> {
         }
     }
     None
-}
-
-/// Compile the worldspawn `script` if one is set, producing a sibling `.js`
-/// artifact next to the source `.ts`.
-///
-/// Behavior matrix:
-/// - `script_path == None` → no-op.
-/// - `.js` newer than `.ts` → skip (already up to date).
-/// - `scripts-build` found → invoke it; failure aborts the build.
-/// - `scripts-build` missing but stale-fresh `.js` exists → warn and continue
-///   (lets the engine ship without the sidecar in environments where the
-///   author has pre-compiled).
-/// - `scripts-build` missing and no `.js` → hard error.
-fn compile_worldspawn_script(
-    map_path: &std::path::Path,
-    script_path: Option<&str>,
-) -> anyhow::Result<()> {
-    let Some(script_rel) = script_path else {
-        return Ok(());
-    };
-
-    let map_dir = map_path
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let ts_path = map_dir.join(script_rel);
-    let js_path = ts_path.with_extension("js");
-
-    if !ts_path.is_file() {
-        anyhow::bail!(
-            "[prl-build] script = {script_rel} resolves to {} which does not exist",
-            ts_path.display()
-        );
-    }
-
-    if let Some(true) = js_is_fresh(&ts_path, &js_path) {
-        log::info!(
-            "[prl-build] script up to date: {} (skipping compile)",
-            js_path.display()
-        );
-        return Ok(());
-    }
-
-    match find_scripts_build() {
-        Some(compiler) => {
-            log::info!(
-                "[prl-build] compiling script {} -> {} via {}",
-                ts_path.display(),
-                js_path.display(),
-                compiler.display()
-            );
-            let out = std::process::Command::new(&compiler)
-                .arg("--in")
-                .arg(&ts_path)
-                .arg("--out")
-                .arg(&js_path)
-                .output()
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "[prl-build] failed to spawn scripts-build at {}: {e}",
-                        compiler.display()
-                    )
-                })?;
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                if !stderr.trim().is_empty() {
-                    eprintln!("[prl-build] scripts-build stderr:\n{stderr}");
-                }
-                if !stdout.trim().is_empty() {
-                    eprintln!("[prl-build] scripts-build stdout:\n{stdout}");
-                }
-                anyhow::bail!(
-                    "[prl-build] scripts-build failed for {}: exit status {}",
-                    ts_path.display(),
-                    out.status
-                );
-            }
-            Ok(())
-        }
-        None => {
-            if js_path.is_file() {
-                log::warn!(
-                    "[prl-build] scripts-build not found; using existing compiled artifact {} \
-                     (mtime > source). Install scripts-build or ship it next to prl-build to recompile.",
-                    js_path.display()
-                );
-                Ok(())
-            } else {
-                anyhow::bail!(
-                    "script = {script_rel} is set but scripts-build was not found and no compiled .js artifact exists beside the .ts file. Run scripts-build first or ship it next to prl-build."
-                );
-            }
-        }
-    }
 }
 
 /// Compile the worldspawn `data_script`, if present, and return the

@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize, Serializer};
 use std::fmt;
 
 use super::components::light::{LightAnimation, LightComponent};
-use super::ctx::ScriptEvent;
 use super::data_descriptors::{
     EntityTypeDescriptor, entity_descriptor_from_js, entity_descriptor_from_lua,
 };
@@ -678,55 +677,6 @@ pub(super) fn lua_to_json(value: LuaValue) -> mlua::Result<serde_json::Value> {
             }
         }
         _ => Ok(serde_json::Value::Null),
-    }
-}
-
-impl<'js> FromJs<'js> for ScriptEvent {
-    fn from_js(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
-        let o = Object::from_value(value).map_err(|_| {
-            rquickjs::Error::new_from_js("value", "ScriptEvent object { kind, payload }")
-        })?;
-        let kind: String = o.get("kind")?;
-        let payload_js: JsValue = o.get("payload")?;
-        let payload = js_to_json(ctx, payload_js)?;
-        Ok(ScriptEvent { kind, payload })
-    }
-}
-
-impl<'js> IntoJs<'js> for ScriptEvent {
-    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        let o = Object::new(ctx.clone())?;
-        o.set("kind", self.kind.as_str())?;
-        o.set("payload", json_to_js(ctx, &self.payload)?)?;
-        Ok(o.into_value())
-    }
-}
-
-impl FromLua for ScriptEvent {
-    fn from_lua(value: LuaValue, _lua: &Lua) -> mlua::Result<Self> {
-        let t = match value {
-            LuaValue::Table(t) => t,
-            other => {
-                return Err(mlua::Error::FromLuaConversionError {
-                    from: other.type_name(),
-                    to: "ScriptEvent".to_string(),
-                    message: Some("expected a table { kind, payload }".to_string()),
-                });
-            }
-        };
-        let kind: String = t.get("kind")?;
-        let payload_v: LuaValue = t.get("payload")?;
-        let payload = lua_to_json(payload_v)?;
-        Ok(ScriptEvent { kind, payload })
-    }
-}
-
-impl IntoLua for ScriptEvent {
-    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
-        let t = lua.create_table()?;
-        t.set("kind", self.kind.as_str())?;
-        t.set("payload", json_to_lua(lua, &self.payload)?)?;
-        Ok(LuaValue::Table(t))
     }
 }
 

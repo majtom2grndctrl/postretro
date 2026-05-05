@@ -170,7 +170,7 @@ fn install_pool_primitives(
     for p in primitives {
         let use_real = matches!(
             p.context_scope,
-            ContextScope::Both | ContextScope::BehaviorOnly,
+            ContextScope::Both | ContextScope::DefinitionOnly,
         );
         let installer = if use_real {
             &p.quickjs_installer
@@ -373,7 +373,7 @@ fn install_behavior_primitives(
     for p in primitives {
         let use_real = matches!(
             p.context_scope,
-            ContextScope::Both | ContextScope::BehaviorOnly,
+            ContextScope::Both | ContextScope::DefinitionOnly,
         );
         let installer = if use_real {
             &p.luau_installer
@@ -466,7 +466,10 @@ mod tests {
     }
 
     #[test]
-    fn quickjs_definition_primitive_is_stubbed_in_pool() {
+    fn quickjs_definition_primitive_is_real_in_pool() {
+        // Pooled QuickJS contexts mirror the definition context's primitive
+        // scope after the Live VM removal: DefinitionOnly + Both install as
+        // real functions.
         let ctx = ScriptCtx::new();
         let mut registry = PrimitiveRegistry::new();
         register_all(&mut registry, ctx.clone());
@@ -480,18 +483,8 @@ mod tests {
         let pool = QuickJsContextPool::new(&rt, &prims, 1).unwrap();
         let h = pool.acquire().unwrap();
         h.context().with(|ctx| {
-            let msg: String = ctx
-                .eval(
-                    r#"
-                    try { test_def_only(); "no-throw" }
-                    catch (e) { String(e.message || e) }
-                    "#,
-                )
-                .unwrap();
-            assert!(
-                msg.contains("test_def_only") && msg.contains("not available"),
-                "got: {msg}",
-            );
+            let v: u32 = ctx.eval("test_def_only()").unwrap();
+            assert_eq!(v, 7);
         });
         let _ = ctx;
     }
@@ -551,7 +544,10 @@ mod tests {
     }
 
     #[test]
-    fn luau_definition_primitive_is_stubbed_in_pool() {
+    fn luau_definition_primitive_is_real_in_pool() {
+        // Pooled Luau states mirror the definition state's primitive scope
+        // after the Live VM removal: DefinitionOnly + Both install as real
+        // functions.
         let ctx = ScriptCtx::new();
         let mut registry = PrimitiveRegistry::new();
         register_all(&mut registry, ctx.clone());
@@ -563,21 +559,8 @@ mod tests {
 
         let pool = LuauContextPool::new(&prims, 1).unwrap();
         let h = pool.acquire().unwrap();
-        let (ok, msg): (bool, String) = h
-            .lua()
-            .load(
-                r#"
-                local ok, err = pcall(test_def_only)
-                return ok, tostring(err)
-                "#,
-            )
-            .eval()
-            .unwrap();
-        assert!(!ok);
-        assert!(
-            msg.contains("test_def_only") && msg.contains("not available"),
-            "got: {msg}",
-        );
+        let v: u32 = h.lua().load("return test_def_only()").eval().unwrap();
+        assert_eq!(v, 7);
         let _ = ctx;
     }
 }

@@ -286,11 +286,10 @@ impl Default for LuauConfig {
     }
 }
 
-/// Luau subsystem: one `Lua` per scope, plus the primitive snapshot used on
-/// reload. Fields mirror `QuickJsSubsystem` one-for-one.
+/// Luau subsystem: one `Lua` definition state, plus the primitive snapshot.
+/// Fields mirror `QuickJsSubsystem` one-for-one.
 pub(crate) struct LuauSubsystem {
     definition_lua: Lua,
-    behavior_lua: Lua,
     primitives: Vec<ScriptPrimitive>,
     archetypes: ArchetypeAccumulator,
 }
@@ -301,7 +300,6 @@ pub(crate) struct LuauSubsystem {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Which {
     Definition,
-    Behavior,
 }
 
 impl LuauSubsystem {
@@ -344,11 +342,9 @@ impl LuauSubsystem {
             ContextScope::DefinitionOnly,
             Some(&archetypes),
         )?;
-        let behavior_lua = build_lua_state(&primitives_snapshot, ContextScope::BehaviorOnly, None)?;
 
         Ok(Self {
             definition_lua,
-            behavior_lua,
             primitives: primitives_snapshot,
             archetypes,
         })
@@ -357,11 +353,6 @@ impl LuauSubsystem {
     /// Borrow the definition Lua state.
     pub(crate) fn definition_lua(&self) -> &Lua {
         &self.definition_lua
-    }
-
-    /// Borrow the behavior Lua state.
-    pub(crate) fn behavior_lua(&self) -> &Lua {
-        &self.behavior_lua
     }
 
     /// Borrow the primitive snapshot. Used by the context pool to pre-warm
@@ -374,15 +365,6 @@ impl LuauSubsystem {
     /// the caller that drains it after evaluating definition scripts.
     pub(crate) fn archetypes(&self) -> &ArchetypeAccumulator {
         &self.archetypes
-    }
-
-    /// Drop the current behavior Lua state and rebuild it. Dev-mode hot-reload
-    /// path: ensures re-running behavior scripts always sees a fresh global
-    /// table, so top-level declarations from a previous load can't conflict
-    /// with the next.
-    pub(crate) fn reload_behavior_context(&mut self) -> Result<(), ScriptError> {
-        self.behavior_lua = build_lua_state(&self.primitives, ContextScope::BehaviorOnly, None)?;
-        Ok(())
     }
 
     /// Compile and evaluate `source` inside the chosen state. Compile errors
@@ -400,7 +382,6 @@ impl LuauSubsystem {
     {
         let lua = match which {
             Which::Definition => &self.definition_lua,
-            Which::Behavior => &self.behavior_lua,
         };
 
         // Compile step — surfaces as SyntaxError (or InvalidArgument for the
@@ -546,10 +527,7 @@ fn install_primitives(
     target: ContextScope,
 ) -> Result<(), ScriptError> {
     debug_assert!(
-        matches!(
-            target,
-            ContextScope::DefinitionOnly | ContextScope::BehaviorOnly
-        ),
+        matches!(target, ContextScope::DefinitionOnly),
         "install_primitives target must name a concrete context, not `Both`",
     );
     for p in primitives {
@@ -557,7 +535,6 @@ fn install_primitives(
             (p.context_scope, target),
             (ContextScope::Both, _)
                 | (ContextScope::DefinitionOnly, ContextScope::DefinitionOnly)
-                | (ContextScope::BehaviorOnly, ContextScope::BehaviorOnly)
         );
         let installer = if use_real {
             &p.luau_installer
@@ -628,16 +605,12 @@ mod tests {
     }
 
     #[test]
-    fn new_constructs_both_states() {
+    fn new_constructs_definition_state() {
         let (subsys, _ctx) = setup();
         let v: u32 = subsys
             .run_source(Which::Definition, "return 1 + 2", "def.luau")
             .unwrap();
         assert_eq!(v, 3);
-        let v: u32 = subsys
-            .run_source(Which::Behavior, "return 4 * 5", "beh.luau")
-            .unwrap();
-        assert_eq!(v, 20);
     }
 
     #[test]
@@ -648,7 +621,7 @@ mod tests {
         let (subsys, _ctx) = setup();
         subsys
             .run_source::<()>(
-                Which::Behavior,
+                Which::Definition,
                 r#"
                 assert(type(print) == "function", "print must be a function")
                 print("hello from luau")
@@ -667,7 +640,7 @@ mod tests {
         let (subsys, _ctx) = setup();
         let results: mlua::MultiValue = subsys
             .run_source(
-                Which::Behavior,
+                Which::Definition,
                 r#"
                 return
                   io == nil,
@@ -700,68 +673,10 @@ mod tests {
     }
 
     #[test]
-    fn definition_context_rejects_behavior_only_primitive() {
-        // `emitEvent` is BehaviorOnly — in the definition state it's a stub.
-        let (subsys, _ctx) = setup();
-        let (ok, msg): (bool, String) = subsys
-            .run_source(
-                Which::Definition,
-                r#"
-                local ok, err = pcall(emitEvent, { kind = "boom", payload = {} })
-                return ok, tostring(err)
-                "#,
-                "wc.luau",
-            )
-            .unwrap();
-        assert!(!ok);
-        assert!(
-            msg.contains("emitEvent") && msg.contains("not available"),
-            "unexpected: {msg}",
-        );
-    }
-
-    #[test]
-    fn behavior_context_rejects_definition_only_primitive() {
-        let script_ctx = ScriptCtx::new();
-        let mut registry = PrimitiveRegistry::new();
-        register_all(&mut registry, script_ctx.clone());
-        registry
-            .register("test_def_only", || -> Result<u32, ScriptError> { Ok(7) })
-            .scope(ContextScope::DefinitionOnly)
-            .finish();
-
-        let subsys = LuauSubsystem::new(&registry, &LuauConfig::default()).unwrap();
-        let (ok, msg): (bool, String) = subsys
-            .run_source(
-                Which::Behavior,
-                r#"
-                local ok, err = pcall(test_def_only)
-                return ok, tostring(err)
-                "#,
-                "wc2.luau",
-            )
-            .unwrap();
-        assert!(!ok);
-        assert!(
-            msg.contains("test_def_only") && msg.contains("not available"),
-            "unexpected: {msg}",
-        );
-
-        // And available in the definition state.
-        let v: u32 = subsys
-            .run_source(Which::Definition, "return test_def_only()", "def2.luau")
-            .unwrap();
-        assert_eq!(v, 7);
-
-        // Keep script_ctx alive.
-        let _ = script_ctx;
-    }
-
-    #[test]
     fn run_source_returns_script_threw_on_runtime_error() {
         let (subsys, _ctx) = setup();
         let err = subsys
-            .run_source::<()>(Which::Behavior, "error('boom')", "test.luau")
+            .run_source::<()>(Which::Definition, "error('boom')", "test.luau")
             .expect_err("script should error");
         match err {
             ScriptError::ScriptThrew { msg, source_name } => {
@@ -772,7 +687,7 @@ mod tests {
         }
         // State must still be usable.
         let v: u32 = subsys
-            .run_source(Which::Behavior, "return 1 + 1", "after.luau")
+            .run_source(Which::Definition, "return 1 + 1", "after.luau")
             .unwrap();
         assert_eq!(v, 2);
     }
@@ -781,7 +696,7 @@ mod tests {
     fn run_source_returns_script_threw_on_compile_error() {
         let (subsys, _ctx) = setup();
         let err = subsys
-            .run_source::<()>(Which::Behavior, "this is not valid luau ===", "bad.luau")
+            .run_source::<()>(Which::Definition, "this is not valid luau ===", "bad.luau")
             .expect_err("compile should fail");
         match err {
             ScriptError::ScriptThrew { source_name, .. } => {
@@ -803,7 +718,7 @@ mod tests {
         let subsys = LuauSubsystem::new(&registry, &LuauConfig::default()).unwrap();
         let (ok, msg): (bool, String) = subsys
             .run_source(
-                Which::Behavior,
+                Which::Definition,
                 r#"
                 local ok, err = pcall(boom)
                 return ok, tostring(err)
@@ -813,69 +728,6 @@ mod tests {
             .unwrap();
         assert!(!ok);
         assert!(msg.contains("panicked"), "got: {msg}");
-    }
-
-    #[test]
-    fn end_to_end_transform_component_round_trip() {
-        // Mirrors the QuickJS end-to-end test. `ComponentKind` is a bare
-        // string (`"Transform"`); the returned `ComponentValue` table has a
-        // top-level `kind = "Transform"` plus the Transform fields.
-        let (subsys, ctx_handle) = setup();
-        let (px, py, pz, pitch, yaw, roll, sx, sy, sz, kind): (
-            f32,
-            f32,
-            f32,
-            f32,
-            f32,
-            f32,
-            f32,
-            f32,
-            f32,
-            String,
-        ) = subsys
-            .run_source(
-                Which::Behavior,
-                r#"
-                local id = spawnEntity({
-                    position = { x = 0, y = 0, z = 0 },
-                    rotation = { pitch = 0, yaw = 0, roll = 0 },
-                    scale    = { x = 1, y = 1, z = 1 },
-                })
-                local input = {
-                    kind = "transform",
-                    position = { x = 1.5,  y = 2.5, z = -3.25 },
-                    rotation = { pitch = 15.0, yaw = 45.0, roll = -30.0 },
-                    scale    = { x = 2.0, y = 2.0, z = 2.0 },
-                }
-                setComponent(id, "transform", input)
-                local out = getComponent(id, "transform")
-                return
-                  out.position.x, out.position.y, out.position.z,
-                  out.rotation.pitch, out.rotation.yaw, out.rotation.roll,
-                  out.scale.x, out.scale.y, out.scale.z,
-                  out.kind
-                "#,
-                "roundtrip.luau",
-            )
-            .unwrap();
-
-        assert_eq!(kind, "transform");
-        assert!((px - 1.5).abs() < 1e-4);
-        assert!((py - 2.5).abs() < 1e-4);
-        assert!((pz - (-3.25)).abs() < 1e-4);
-        assert!((pitch - 15.0).abs() < 1e-2, "pitch: {pitch}");
-        assert!((yaw - 45.0).abs() < 1e-2, "yaw: {yaw}");
-        assert!((roll - (-30.0)).abs() < 1e-2, "roll: {roll}");
-        assert!((sx - 2.0).abs() < 1e-4);
-        assert!((sy - 2.0).abs() < 1e-4);
-        assert!((sz - 2.0).abs() < 1e-4);
-
-        assert!(
-            ctx_handle
-                .registry
-                .borrow()
-                .exists(crate::scripting::registry::EntityId::from_raw(0))
-        );
     }
 
     #[test]
@@ -927,7 +779,7 @@ mod tests {
         // `util/keyframes.luau`, and `entities/emitters.luau` each return
         // records whose fields we promote to globals.
         let (subsys, _ctx) = setup();
-        for which in [Which::Definition, Which::Behavior] {
+        for which in [Which::Definition] {
             let (
                 world_ty,
                 flicker_ty,

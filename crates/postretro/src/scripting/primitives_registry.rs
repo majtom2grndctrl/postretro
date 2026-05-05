@@ -7,13 +7,10 @@ use std::sync::Arc;
 
 use super::error::ScriptError;
 
-/// Where a primitive is legal to call. Registering a `DefinitionOnly`
-/// primitive into a behavior context installs the *stub* installer, which
-/// unconditionally returns `ScriptError::WrongContext` to script.
+/// Where a primitive is legal to call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ContextScope {
     DefinitionOnly,
-    BehaviorOnly,
     Both,
 }
 
@@ -655,7 +652,6 @@ macro_rules! impl_registerable {
                 // has a stub invoked, but the type still requires a string.
                 let stub_context: &'static str = match scope {
                     ContextScope::DefinitionOnly => "behavior",
-                    ContextScope::BehaviorOnly => "definition",
                     ContextScope::Both => "behavior",
                 };
 

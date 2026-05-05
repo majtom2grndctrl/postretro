@@ -153,25 +153,72 @@ struct FogSpotLight {
 // `dot(pos, n) <= d` for every plane in the volume's range.
 @group(6) @binding(6) var<storage, read> fog_planes: array<vec4<f32>>;
 
-// --- SH ambient sampling (positional only — cosine-lobe evaluation with a
-// neutral "up" normal gives a reasonable fog ambient tint) ---
+// --- SH ambient sampling ---
+//
+// Duplicated from forward.wgsl (sh_irradiance + sample_sh_indirect_fast).
+// WGSL compilation units don't share helpers; the rendering pipeline endorses
+// string-concat composition for now and a shared module is a follow-up.
 
-fn sh_reconstruct_l0(b0: vec3<f32>) -> vec3<f32> {
-    // L0 band alone is a uniform ambient scalar; no directional shaping.
-    return b0 * 0.282095;
+fn sh_irradiance(
+    b0: vec3<f32>, b1: vec3<f32>, b2: vec3<f32>, b3: vec3<f32>,
+    b4: vec3<f32>, b5: vec3<f32>, b6: vec3<f32>, b7: vec3<f32>, b8: vec3<f32>,
+    normal: vec3<f32>,
+) -> vec3<f32> {
+    let nx = normal.x;
+    let ny = normal.y;
+    let nz = normal.z;
+    var r: vec3<f32> = b0 * 0.282095;
+    r = r + b1 * (-0.488603 * ny);
+    r = r + b2 * ( 0.488603 * nz);
+    r = r + b3 * (-0.488603 * nx);
+    r = r + b4 * ( 1.092548 * nx * ny);
+    r = r + b5 * (-1.092548 * ny * nz);
+    r = r + b6 * ( 0.315392 * (3.0 * nz * nz - 1.0));
+    r = r + b7 * (-1.092548 * nx * nz);
+    r = r + b8 * ( 0.546274 * (nx * nx - ny * ny));
+    return r;
 }
 
-fn sample_sh_ambient(world_pos: vec3<f32>) -> vec3<f32> {
+fn sample_sh_indirect_fast(
+    normal: vec3<f32>,
+    gi: vec3<u32>,
+    gfrac: vec3<f32>,
+) -> vec3<f32> {
+    let gdims_f = max(vec3<f32>(sh_grid.grid_dimensions), vec3<f32>(1.0));
+    let cell_center_uvw = (vec3<f32>(gi) + vec3<f32>(0.5) + gfrac) / gdims_f;
+    let b0 = textureSampleLevel(sh_band0, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b1 = textureSampleLevel(sh_band1, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b2 = textureSampleLevel(sh_band2, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b3 = textureSampleLevel(sh_band3, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b4 = textureSampleLevel(sh_band4, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b5 = textureSampleLevel(sh_band5, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b6 = textureSampleLevel(sh_band6, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b7 = textureSampleLevel(sh_band7, sh_sampler, cell_center_uvw, 0.0).rgb;
+    let b8 = textureSampleLevel(sh_band8, sh_sampler, cell_center_uvw, 0.0).rgb;
+
+    return max(
+        sh_irradiance(b0, b1, b2, b3, b4, b5, b6, b7, b8, normal),
+        vec3<f32>(0.0),
+    );
+}
+
+// World-up normal: fog is directionally isotropic, and an overhead-ambient
+// reading is the most stable single-direction probe for the L2 reconstruction.
+// No surface-normal offset — the wall-bleed mitigation in forward.wgsl has no
+// meaning in fog.
+fn sample_sh_fog(world_pos: vec3<f32>) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
     }
-    let gdims_f = max(vec3<f32>(sh_grid.grid_dimensions), vec3<f32>(1.0));
-    let grid_pos = (world_pos - sh_grid.grid_origin) / max(sh_grid.cell_size, vec3<f32>(1.0e-6));
-    let clamped = clamp(grid_pos, vec3<f32>(0.0), gdims_f - vec3<f32>(1.0));
-    let uvw = (clamped + vec3<f32>(0.5)) / gdims_f;
-    let b0 = textureSampleLevel(sh_band0, sh_sampler, uvw, 0.0).rgb;
-    // L0 is the DC (ambient) term — sufficient as the isotropic fog base.
-    return max(sh_reconstruct_l0(b0), vec3<f32>(0.0));
+    let normal = vec3<f32>(0.0, 1.0, 0.0);
+    let gdims_u = sh_grid.grid_dimensions;
+    let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
+    let cell_coord = (world_pos - sh_grid.grid_origin) /
+        max(sh_grid.cell_size, vec3<f32>(1.0e-6));
+    let gf = clamp(cell_coord, vec3<f32>(0.0), gdims_f);
+    let gi = vec3<u32>(floor(gf));
+    let gfrac = fract(gf);
+    return sample_sh_indirect_fast(normal, gi, gfrac);
 }
 
 // --- Shadow sampling (matches forward.wgsl::sample_spot_shadow) ---
@@ -449,9 +496,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // Scatter weight for this step.
                 let weight = vs.density * vs.scatter * step;
 
-                // SH ambient contribution (tinted by the fog color).
-                let sh_amb = sample_sh_ambient(pos);
-                accum = accum + transmittance * weight * vs.color * sh_amb;
+                let sh_color = sample_sh_fog(pos);
+                accum = accum + transmittance * weight * sh_color;
 
                 // Dynamic spot beams.
                 for (var li: u32 = 0u; li < spot_count; li = li + 1u) {
@@ -481,7 +527,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     );
                     if lit <= 0.0 { continue; }
 
-                    accum = accum + transmittance * weight * vs.color * spot.color * atten * lit;
+                    accum = accum + transmittance * weight * spot.color * atten * lit;
                 }
 
                 // Loop over the CPU-tracked prefix (`fog.point_count`) instead of

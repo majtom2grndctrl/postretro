@@ -1,13 +1,13 @@
 // Scripting primitives: `setLightAnimation` (behavior-only).
 // See: context/lib/scripting.md
 
-use super::components::light::{LightAnimation, LightComponent};
-use super::conv::Vec3Lit;
-use super::ctx::ScriptCtx;
-use super::error::ScriptError;
-use super::primitives_registry::{ContextScope, PrimitiveRegistry};
-use super::registry::{Component, ComponentKind, EntityId};
-use super::sequence::{SequenceError, SequencedPrimitiveRegistry};
+use crate::scripting::components::light::{LightAnimation, LightComponent};
+use crate::scripting::conv::Vec3Lit;
+use crate::scripting::ctx::ScriptCtx;
+use crate::scripting::error::ScriptError;
+use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
+use crate::scripting::registry::{Component, ComponentKind, EntityId};
+use crate::scripting::sequence::{SequenceError, SequencedPrimitiveRegistry};
 
 /// A single entity-handle snapshot produced by `world.query`. Carries the
 /// `EntityId` plus a read-only copy of the live component data at query time.
@@ -142,7 +142,7 @@ fn apply_light_animation(
 
 /// Takes an already-borrowed registry to avoid a second `borrow_mut` on the same `RefCell` guard.
 pub(crate) fn apply_light_animation_inner(
-    registry: &mut super::registry::EntityRegistry,
+    registry: &mut crate::scripting::registry::EntityRegistry,
     id: EntityId,
     animation: Option<LightAnimation>,
 ) -> Result<(), ScriptError> {
@@ -212,7 +212,7 @@ fn script_to_sequence_error(err: ScriptError) -> SequenceError {
     }
 }
 
-/// Complements `register_shared_types` in `primitives.rs`.
+/// Complements `register_shared_types` in `entity.rs`.
 pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_enum("LightKind")

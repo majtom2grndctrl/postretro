@@ -22,7 +22,6 @@ pub(crate) mod luau;
 pub(crate) mod map_entity;
 pub(crate) mod pool;
 pub(crate) mod primitives;
-pub(crate) mod primitives_light;
 pub(crate) mod primitives_registry;
 pub(crate) mod quickjs;
 pub(crate) mod reaction_dispatch;

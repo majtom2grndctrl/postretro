@@ -4,9 +4,6 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
-/// Maximum number of fog volumes the raymarch shader iterates per frame.
-// Authoritative definition lives in `postretro_level_format::fog_volumes`; re-exported here
-// so the renderer can import from a single crate-local path.
 // Authoritative definitions live in `postretro_level_format::fog_volumes`;
 // re-exported here so the renderer can import from a single crate-local path.
 pub use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};

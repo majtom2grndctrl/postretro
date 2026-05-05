@@ -155,8 +155,9 @@ struct FogSpotLight {
 // --- SH ambient sampling ---
 //
 // Duplicated from forward.wgsl (sh_irradiance + sample_sh_indirect_fast).
-// WGSL compilation units don't share helpers; the rendering pipeline endorses
-// string-concat composition for now and a shared module is a follow-up.
+// WGSL has no shared-include mechanism; string-concat composition per
+// rendering_pipeline.md §8 is the established pattern. Extract to a shared
+// module only when a third shader needs the same helpers.
 
 fn sh_irradiance(
     b0: vec3<f32>, b1: vec3<f32>, b2: vec3<f32>, b3: vec3<f32>,

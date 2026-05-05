@@ -69,8 +69,8 @@ impl FogVolumeBridge {
 
     /// Populate the entity registry with one entity per fog-volume record.
     /// Called once at level load. Stores the AABB + radial falloff in the
-    /// side-table; the four runtime-settable parameters become a
-    /// `FogVolumeComponent` on the spawned entity.
+    /// side-table; the three runtime-settable parameters (`density`, `scatter`,
+    /// `edge_softness`) become a `FogVolumeComponent` on the spawned entity.
     pub(crate) fn populate_from_level(
         &mut self,
         registry: &mut EntityRegistry,

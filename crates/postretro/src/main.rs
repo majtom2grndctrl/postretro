@@ -322,9 +322,8 @@ struct App {
     /// See: context/lib/scripting.md §2
     reaction_registry: ReactionPrimitiveRegistry,
 
-    /// Per-tag kill-count subscriptions. Cleared on level unload
-    /// independently of the behavior `HandlerTable`.
-    /// See: context/lib/scripting.md §2
+    /// Per-tag kill-count subscriptions. Cleared on level unload; survives
+    /// hot-reload. See: context/lib/scripting.md §2
     progress_tracker: ProgressTracker,
 
     /// Maps `classname` strings to engine spawn handlers. Survives level
@@ -341,16 +340,15 @@ struct App {
     /// context/lib/rendering_pipeline.md §7.5
     fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge,
 
-    /// Walks every `BillboardEmitterComponent` after script `tick` handler and
-    /// before particle sim. See: context/lib/scripting.md
+    /// Walks every `BillboardEmitterComponent` after game logic and before
+    /// particle sim. See: context/lib/scripting.md
     emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
 
     /// Packs `SpriteInstance` bytes per collection in the Render stage;
     /// never touches wgpu directly. See: context/lib/scripting.md
     particle_render: scripting_systems::particle_render::ParticleRenderCollector,
 
-    /// Gates first-frame work: ensures `levelLoad` handlers run before the
-    /// first `tick` and before the first render.
+    /// Gates first-frame work: ensures `levelLoad` fires before the first render.
     level_load_fired: bool,
 
     /// Classnames the built-in dispatch handled at level open. Captured in
@@ -623,8 +621,8 @@ impl ApplicationHandler for App {
                 // world is already populated (load_level ran before the event loop).
                 // See: context/lib/scripting.md
                 if !self.level_load_fired {
-                    // Data script fires before behavior handlers register. Errors
-                    // surface as an empty manifest so the level still loads.
+                    // Data script runs once at level open. Errors surface as an
+                    // empty manifest so the level still loads.
                     // See: context/lib/scripting.md §2
                     if let Some(world) = &self.level {
                         if let Some(data_script) = &world.data_script {

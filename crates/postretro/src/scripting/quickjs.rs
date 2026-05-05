@@ -32,7 +32,7 @@ const DEFAULT_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
 const COLLECT_FN_NAME: &str = "__collect_definitions";
 
 /// SDK library prelude bundled at compile time. Evaluated in every QuickJS
-/// context (definition + pooled) before user scripts run so the
+/// context (definition + ephemeral data) before user scripts run so the
 /// vocabulary symbols (`world`, `flicker`, `pulse`, …) resolve as globals.
 /// Regenerate with: `cargo run -p postretro-script-compiler -- --prelude
 /// --sdk-root sdk/lib --out sdk/lib/prelude.js`.

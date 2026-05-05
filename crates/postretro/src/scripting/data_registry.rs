@@ -2,11 +2,8 @@
 // engine-global entity types from registerEntity().
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
-// Lives separate from the behavior `HandlerTable` so a hot reload of the
-// behavior surface (which clears handlers) does not invalidate descriptor
-// state, and vice versa. Held inside `ScriptCtx` (not directly on `App`) so
-// primitive closures can access it via the same captured handle they use for
-// the entity registry.
+// Held inside `ScriptCtx` (not directly on `App`) so primitive closures can
+// access it via the same captured handle they use for the entity registry.
 
 use super::data_descriptors::{EntityTypeDescriptor, LevelManifest, NamedReaction};
 

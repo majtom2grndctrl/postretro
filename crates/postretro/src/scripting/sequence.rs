@@ -4,7 +4,7 @@
 // triples that fire one after another when the reaction's named event is
 // dispatched. This is **separate** from the script-facing primitive registry
 // — sequenced primitives are Rust-only handlers keyed by name, invoked by the
-// reaction dispatcher rather than by behavior scripts.
+// reaction dispatcher rather than by scripts.
 //
 // See: context/lib/scripting.md §4 (primitives) and §5 (shared engine state).
 

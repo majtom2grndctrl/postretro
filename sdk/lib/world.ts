@@ -17,9 +17,7 @@ import type { FogVolumeHandle } from "./entities/fog_volumes";
 /**
  * Extend this as new component types gain dedicated handles; unknown
  * component names fall back to `Entity`. `"emitter"` yields a handle
- * carrying the full `BillboardEmitterComponent` snapshot under
- * `component` — use it to read live emitter fields without a follow-up
- * `getComponent` call.
+ * carrying the full `BillboardEmitterComponent` snapshot under `component`.
  */
 export type EntityForComponent<T extends string> =
   T extends "light" ? LightEntity :
@@ -32,9 +30,9 @@ export interface World {
   /**
    * Query entities matching the filter. The return type is selected by
    * the literal `component` string: `"light"` yields `LightEntity[]`
-   * (with convenience method `setAnimation`); any other component name
-   * yields base `Entity[]` (id, position, tags) — use `getComponent` to
-   * access component data.
+   * (with convenience method `setAnimation`); `"emitter"` yields handles
+   * carrying the full `BillboardEmitterComponent` snapshot under `component`;
+   * any other component name yields base `Entity[]` (id, position, tags).
    *
    * Supported component strings: `"light"`, `"transform"`, `"emitter"`,
    * `"particle"`, `"sprite_visual"`. Note that `"particle"` and

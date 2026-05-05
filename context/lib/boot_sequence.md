@@ -110,7 +110,6 @@ Planned changes:
 | Mod init state (start-script effects) | Mod unload / engine restart (planned) |
 | `DataRegistry` (entity-type descriptors from `registerEntity`) | Engine-global; survives level unload. Cleared on full reload of mod set. |
 | Per-level reaction registry | Level unload |
-| Pooled VM contexts | Returned to pool after each ephemeral call |
 
 Hot reload (debug only) triggers recompilation of changed script files; definition-context changes require an engine restart.
 

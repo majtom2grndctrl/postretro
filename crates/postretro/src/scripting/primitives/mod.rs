@@ -116,7 +116,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
     }
 }
 
-const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Available in behavior and data contexts. \
+const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Available in definition and data contexts. \
      Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"particle\" | \"sprite_visual\", tag?: string }. \
      `\"particle\"` and `\"sprite_visual\"` always return `[]` (engine-managed; scripts never iterate individual particles). \
      Unknown component values raise InvalidArgument. \

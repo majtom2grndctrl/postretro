@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use super::error::ScriptError;
 
-/// Where a primitive is legal to call.
+/// Advisory scope annotation for a primitive. Both variants install identically
+/// — there is no install-time enforcement. The annotation feeds the SDK typedef
+/// generator so emitted docs describe which contexts a primitive is available in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ContextScope {
     DefinitionOnly,

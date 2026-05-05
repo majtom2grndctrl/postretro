@@ -544,8 +544,8 @@ fn find_scripts_build() -> Option<PathBuf> {
 /// - source file missing → hard error (no `.js` fallback).
 /// - `.luau` source → read raw bytes, no compilation.
 /// - `.ts`/`.js` source → compile via `scripts-build` (or fall back to a
-///   freshly-modified sibling `.js` when the compiler is absent — same policy
-///   as the behavior-script stage), then read the resulting `.js` bytes.
+///   freshly-modified sibling `.js` when the compiler is absent), then read
+///   the resulting `.js` bytes.
 ///
 /// The stored `source_path` is the resolved absolute path captured at compile
 /// time, reserved for the future hot-reload watcher.

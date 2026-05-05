@@ -1,6 +1,4 @@
 // Reaction dispatch: fires named events and tracks per-tag kill progress.
-// Lives separate from the behavior `HandlerTable`; a behavior hot-reload does
-// not clear or rebuild the reaction registry.
 
 use std::collections::HashMap;
 

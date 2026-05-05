@@ -28,7 +28,7 @@
 //!                                            ┌──────────────────────────────┐
 //!                                            │ frame loop                   │
 //!                                            │  drain_reload_requests()     │
-//!                                            │  clear + reload + levelLoad   │
+//!                                            │  (no reload action today)    │
 //!                                            └──────────────────────────────┘
 //! ```
 //!
@@ -249,8 +249,7 @@ impl ScriptWatcher {
     }
 
     /// Drain pending reload requests non-blockingly. Returns `Ok(true)` if at
-    /// least one reload request was drained — the caller is responsible for
-    /// the actual reload sequence (clear and re-evaluate definition scripts).
+    /// least one reload request was drained.
     ///
     /// Every reload re-runs all definition scripts (full rebuild; targeted
     /// single-file reload not implemented).

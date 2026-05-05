@@ -67,7 +67,7 @@ pub(crate) fn register_entity_primitives(registry: &mut PrimitiveRegistry, ctx: 
             }
         })
         .scope(ContextScope::Both)
-        .doc("Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in both behavior and data contexts.")
+        .doc("Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in definition and data contexts.")
         .param("id", "EntityId")
         .param("key", "String")
         .finish();

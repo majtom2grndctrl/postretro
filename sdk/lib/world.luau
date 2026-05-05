@@ -13,8 +13,7 @@
 -- scripts never see it. See `luau.rs` `evaluate_prelude`.
 
 --- Base entity handle returned by `world:query` when the component type
---- is not "light". Carries id, transform, and tags; use `getComponent`
---- to access the component data for non-light entities.
+--- is not "light". Carries id, position, and tags.
 export type EntityHandle = {
   id: EntityId,
   position: Vec3,
@@ -26,7 +25,7 @@ export type EntityHandle = {
 --- values with `:setAnimation`; `{ component = "emitter", ... }` yields
 --- handles carrying the full `BillboardEmitterComponent` snapshot under
 --- `component`; any other component filter returns `EntityHandle` values
---- (id, position, tags) -- use `getComponent` to access the component data.
+--- (id, position, tags).
 ---
 --- Supported component strings: `"light"`, `"transform"`, `"emitter"`,
 --- `"particle"`, `"sprite_visual"`. `"particle"` and `"sprite_visual"`

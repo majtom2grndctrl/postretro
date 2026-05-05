@@ -301,7 +301,7 @@ impl LuauSubsystem {
     ///   3. Install the `print` redirect forwarding to `log::info!` with the
     ///      `[Script/Luau]` prefix. Must be before `sandbox(true)` — once
     ///      sandboxed, `_G` is read-only.
-    ///   4. Install real/stub primitives, scope-partitioned.
+    ///   4. Install primitives.
     ///   5. `lua.sandbox(true)?` — freezes `_G` and moves subsequent globals
     ///      to a per-thread sandbox table.
     ///

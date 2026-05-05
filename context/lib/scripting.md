@@ -20,15 +20,12 @@ Scripting is **strictly single-threaded**. Both rquickjs contexts and mlua state
 
 ## 2. Context Model
 
-Each runtime maintains one **shared context** (long-lived) and a **context pool** (pre-warmed, recycled).
-
 | Context | Purpose | Lifetime |
 |---------|---------|----------|
 | Definition | Cross-script data declarations | Engine lifetime |
 | Data | One-time data-script run: `registerEntity` calls plus `registerLevelManifest(ctx)` | Level load only — created once, dropped after the data script completes |
-| Pooled (ephemeral) | Per-entity or per-call isolation | Returned to pool after use |
 
-Declaration contexts (Definition + Data) are the authoring path: scripts run once at load time and register intent. The shared Definition context accumulates definitions across calls; cross-script globals are intentional. Pooled contexts are recycled and must be isolated: QuickJS pools freeze the global object on construction; Luau pools use the sandbox flag. All persistent state flows through Rust primitives, not script globals.
+Both are the authoring path: scripts run once at load time and register intent. The shared Definition context accumulates definitions across calls; cross-script globals are intentional. All persistent state flows through Rust primitives, not script globals.
 
 **Data context lifecycle.** At level load, after geometry and entities are ready, the engine creates a short-lived VM context and runs the data script. During that run:
 
@@ -39,9 +36,9 @@ The context is dropped after the data script completes. No live reference to the
 
 ---
 
-## 3. Context Scope Enforcement
+## 3. Context Scope
 
-Each primitive declares one of two scopes: definition-only or both. The definition context installs all primitives as real functions. Other contexts (data, pooled) install `Both`-scoped primitives as real and `DefinitionOnly` primitives as stubs — stubs throw a `WrongContext` error when called.
+Each primitive declares one of two scopes: `DefinitionOnly` or `Both`. Both the definition context and the data context install all primitives as real functions — there is no stub install and no enforcement at call time. Scope is advisory metadata: the typedef generator uses it to document which contexts a primitive is available in, producing accurate SDK type definitions and developer guidance.
 
 ---
 
@@ -49,7 +46,7 @@ Each primitive declares one of two scopes: definition-only or both. The definiti
 
 Register primitives before constructing the runtime. Each registration captures the Rust implementation, context scope, parameter names and types (for SDK generation), and a doc string.
 
-Once registered, the runtime installs each primitive into every context it creates — including pre-warmed pool contexts. Primitives cannot be added after construction.
+Once registered, the runtime installs each primitive into every context it creates. Primitives cannot be added after construction.
 
 **Naming convention:** Primitive names are camelCase, matching the idiom of the target languages (TypeScript, JavaScript, Luau). Wire format field names match the script-facing API; internal Rust representation may differ. Named entity instance constants in user scripts follow the same camelCase rule (`const exhaustPort = defineEntity({...})`, `const campfire = defineEntity({...})`). PascalCase is reserved for types and interfaces only.
 

@@ -1,6 +1,5 @@
 // Transform-only entity vocabulary: lightweight handle exposed by
-// `world.query({ component: "transform" })`. Carries id + position + tags
-// only; scripts pull component data through `getComponent` if they need it.
+// `world.query({ component: "transform" })`. Carries id + position + tags.
 //
 // Same shape as `Entity` from the generated SDK types — declared here as
 // `TransformHandle` so the per-entity-type module structure stays consistent

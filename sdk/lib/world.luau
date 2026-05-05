@@ -23,11 +23,10 @@ export type EntityHandle = {
 
 --- Typed vocabulary object returned from `world:query`.
 --- Pass `{ component = "light", tag = "..." }` to get light handle
---- values with `:setAnimation` / `:setIntensity` / `:setColor`;
---- `{ component = "emitter", ... }` yields handles carrying the full
---- `BillboardEmitterComponent` snapshot under `component`; any other
---- component filter returns `EntityHandle` values (id, position, tags)
---- -- use `getComponent` to access the component data.
+--- values with `:setAnimation`; `{ component = "emitter", ... }` yields
+--- handles carrying the full `BillboardEmitterComponent` snapshot under
+--- `component`; any other component filter returns `EntityHandle` values
+--- (id, position, tags) -- use `getComponent` to access the component data.
 ---
 --- Supported component strings: `"light"`, `"transform"`, `"emitter"`,
 --- `"particle"`, `"sprite_visual"`. `"particle"` and `"sprite_visual"`

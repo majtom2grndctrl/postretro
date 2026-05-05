@@ -172,9 +172,6 @@ declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEnt
 -- light-vocabulary globals (`flicker`, `pulse`, `colorShift`, `sweep`);
 -- `util/keyframes.luau` supplies `timeline` and `sequence`.
 
---- Easing family used by `LightEntityHandle:setIntensity` / `:setColor`.
-export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
-
 --- Typed light handle returned by `world:query({ component = "light" })`.
 export type LightEntityHandle = {
   id: EntityId,
@@ -184,18 +181,6 @@ export type LightEntityHandle = {
   component: LightComponent,
 
   setAnimation: (self: LightEntityHandle, anim: LightAnimation?) -> (),
-  setIntensity: (
-    self: LightEntityHandle,
-    target: number,
-    transitionMs: number?,
-    easing: EasingCurve?
-  ) -> (),
-  setColor: (
-    self: LightEntityHandle,
-    target: {number},
-    transitionMs: number?,
-    easing: EasingCurve?
-  ) -> (),
 }
 
 --- Generic entity handle returned by `world:query` when the component is
@@ -207,30 +192,22 @@ export type EntityHandle = {
 }
 
 --- Typed fog-volume handle returned by `world:query({ component = "fog_volume" })`.
+--- Currently a pass-through alias for the snapshot — fog has no engine-side
+--- animation primitive and the tick-callback helpers were removed alongside
+--- the Live VM API.
 export type FogVolumeHandle = {
   id: EntityId,
   position: Vec3,
   tags: {string},
   component: FogVolumeComponent,
-
-  setDensity: (
-    self: FogVolumeHandle,
-    target: number,
-    transitionMs: number?,
-    easing: EasingCurve?
-  ) -> (),
-  setScatter: (self: FogVolumeHandle, scatter: number) -> (),
-  setEdgeSoftness: (self: FogVolumeHandle, edgeSoftness: number) -> (),
 }
 
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
---- `"light"` returns `LightEntityHandle` values (with `:setAnimation` /
---- `:setIntensity` / `:setColor`); `"emitter"` returns `EmitterEntity`
---- values carrying the full `BillboardEmitterComponent` snapshot under
---- `component`; `"fog_volume"` returns `FogVolumeHandle` values (with
---- tween-capable `:setDensity` and instant `:setScatter` /
---- `:setEdgeSoftness`); other components fall back to the bare `EntityHandle`
---- shape.
+--- `"light"` returns `LightEntityHandle` values (with `:setAnimation`);
+--- `"emitter"` returns `EmitterEntity` values carrying the full
+--- `BillboardEmitterComponent` snapshot under `component`; `"fog_volume"`
+--- returns `FogVolumeHandle` values; other components fall back to the
+--- bare `EntityHandle` shape.
 export type World = {
   query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
        & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
@@ -254,21 +231,6 @@ declare function colorShift(colors: {{number}}, periodMs: number): LightAnimatio
 
 --- Sweeps the light's `direction` through normalized vectors over `periodMs`.
 declare function sweep(directions: {{number}}, periodMs: number): LightAnimation
-
---- Controller returned by `pulseDensity` to cancel the running animation.
-export type AnimationController = {
-  stop: (self: AnimationController) -> (),
-}
-
---- Oscillates a fog volume's density between `min` and `max` with `period`
---- milliseconds. Implemented as a tick handler that writes
---- `setComponent(id, "fog_volume", ...)` each frame; cancel via the returned
---- controller's `:stop()`. No engine-side fog animation primitive exists --
---- this is pure script-side animation.
-declare function pulseDensity(
-  handle: FogVolumeHandle,
-  opts: { min: number, max: number, period: number }
-): AnimationController
 
 --- Validate `{absolute_ms, ...value}` keyframes; pass-through on success.
 declare function timeline(keyframes: {Keyframe}): {Keyframe}

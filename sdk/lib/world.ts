@@ -32,9 +32,9 @@ export interface World {
   /**
    * Query entities matching the filter. The return type is selected by
    * the literal `component` string: `"light"` yields `LightEntity[]`
-   * (with convenience methods `setAnimation`, `setIntensity`,
-   * `setColor`); any other component name yields base `Entity[]`
-   * (id, position, tags) — use `getComponent` to access component data.
+   * (with convenience method `setAnimation`); any other component name
+   * yields base `Entity[]` (id, position, tags) — use `getComponent` to
+   * access component data.
    *
    * Supported component strings: `"light"`, `"transform"`, `"emitter"`,
    * `"particle"`, `"sprite_visual"`. Note that `"particle"` and

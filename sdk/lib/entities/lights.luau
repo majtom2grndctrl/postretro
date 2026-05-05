@@ -4,13 +4,17 @@
 -- constructors (`flicker`, `pulse`, `colorShift`, `sweep`) that
 -- produce `LightAnimation` tables for `light:setAnimation`.
 --
--- The handle wraps the generated `LightEntity` snapshot with
--- convenience methods (`setAnimation`, `setIntensity`, `setColor`)
--- that call the underlying scripting primitives. `wrapLightEntity`
--- is included in the returned table; the Luau prelude evaluator
--- (`luau.rs`) extracts it and installs it as a temporary global
--- before `world.luau` evaluates. It is nil'd out by the prelude
--- after `world.luau` has been evaluated.
+-- The handle wraps the generated `LightEntity` snapshot with a single
+-- convenience method (`setAnimation`) that calls the underlying
+-- scripting primitive. `wrapLightEntity` is included in the returned
+-- table; the Luau prelude evaluator (`luau.rs`) extracts it and installs
+-- it as a temporary global before `world.luau` evaluates. It is nil'd
+-- out by the prelude after `world.luau` has been evaluated.
+--
+-- `setIntensity` / `setColor` transition helpers were removed alongside
+-- the Live VM tick API — they relied on `getComponent` to read live
+-- state. Callers that need a transition build a one-cycle
+-- `LightAnimation` themselves and hand it to `setAnimation`.
 --
 -- ---------------------------------------------------------------------
 -- Canonical modder example -- rolling pulse down a hallway, 10s loop.
@@ -22,7 +26,7 @@
 -- ```lua
 -- registerHandler("levelLoad", function()
 --   -- world:query dispatches on component; passing component = "light"
---   -- returns LightEntityHandle values with :setAnimation / :setIntensity / :setColor.
+--   -- returns LightEntityHandle values with :setAnimation.
 --   local lights = world:query({ component = "light", tag = "hallway_wave" })
 --   table.sort(lights, function(a, b)
 --     return a.position.x < b.position.x
@@ -49,17 +53,14 @@
 -- ```
 -- ---------------------------------------------------------------------
 
--- `EntityId`, `LightAnimation`, `LightComponent`, `LightEntity` (the
--- generated snapshot shape), `Vec3`, and the `getComponent`/
--- `setLightAnimation` primitives are provided ambiently by the
--- generated `sdk/types/postretro.d.luau` definitions file.
-
---- Easing family used by `setIntensity` / `setColor` transitions.
-export type EasingCurve = "linear" | "easeIn" | "easeOut" | "easeInOut"
+-- `EntityId`, `LightAnimation`, `LightEntity` (the generated snapshot
+-- shape), `Vec3`, and the `setLightAnimation` primitive are provided
+-- ambiently by the generated `sdk/types/postretro.d.luau` definitions
+-- file.
 
 --- Typed handle returned by `world:query` for a light entity. Carries
---- the query-time snapshot fields plus convenience methods that call
---- the underlying scripting primitives. Methods are called with `:`
+--- the query-time snapshot fields plus a convenience method that calls
+--- the underlying scripting primitive. Methods are called with `:`
 --- (e.g. `light:setAnimation(anim)`).
 export type LightEntityHandle = {
   id: EntityId,
@@ -71,143 +72,9 @@ export type LightEntityHandle = {
   --- Replace the light's animation. Pass `nil` to clear it. Last call
   --- wins -- lights are always interruptible.
   setAnimation: (self: LightEntityHandle, anim: LightAnimation?) -> (),
-
-  --- Transition the light's intensity to `target` over `transitionMs`
-  --- milliseconds (default 0, which applies the target instantly).
-  ---
-  --- Re-reads the live `LightComponent.intensity` from the registry at
-  --- call time rather than the handle's query-time snapshot, so chained
-  --- transitions compose correctly. `easing` defaults to `"easeInOut"`
-  --- when `transitionMs > 0`; it is ignored for instant transitions.
-  ---
-  --- Internally constructs a one-cycle `LightAnimation` (`playCount = 1`)
-  --- and hands it to `setAnimation`.
-  setIntensity: (
-    self: LightEntityHandle,
-    target: number,
-    transitionMs: number?,
-    easing: EasingCurve?
-  ) -> (),
-
-  --- Transition the light's RGB color to `target` over `transitionMs`
-  --- milliseconds (default 0). Same live-read / one-cycle pattern as
-  --- `setIntensity`.
-  ---
-  --- Raises a descriptive error on non-dynamic lights (baked lights
-  --- cannot have their color animated because their indirect SH was
-  --- baked with the compile-time color).
-  setColor: (
-    self: LightEntityHandle,
-    target: {number},
-    transitionMs: number?,
-    easing: EasingCurve?
-  ) -> (),
 }
 
 local LightsSdk = {}
-
--- ---------------------------------------------------------------------
--- Easing + one-cycle animation builders
--- ---------------------------------------------------------------------
-
--- 8-sample resolution for transitions. Fine enough for a smooth ease
--- without bloating the primitive call payload.
-local EASE_SAMPLES = 8
-
-local function resolveEasing(transitionMs: number, easing: EasingCurve?): EasingCurve
-  if transitionMs <= 0 then
-    -- Irrelevant for step transitions, but pick a stable default.
-    return "linear"
-  end
-  return easing or "easeInOut"
-end
-
-local function easeAt(curve: EasingCurve, t: number): number
-  -- t is the normalized sample position in [0, 1].
-  if curve == "linear" then
-    return t
-  elseif curve == "easeIn" then
-    return t * t
-  elseif curve == "easeOut" then
-    return 1 - (1 - t) * (1 - t)
-  else
-    -- Smoothstep-style ease-in-out.
-    if t < 0.5 then
-      return 2 * t * t
-    else
-      return 1 - ((-2 * t + 2) ^ 2) / 2
-    end
-  end
-end
-
-local function buildIntensityAnimation(
-  from: number,
-  to: number,
-  transitionMs: number,
-  easing: EasingCurve?
-): LightAnimation
-  if transitionMs <= 0 then
-    return {
-      periodMs = 1,
-      phase = nil,
-      playCount = 1,
-      brightness = { to },
-      color = nil,
-      direction = nil,
-    }
-  end
-  local curve = resolveEasing(transitionMs, easing)
-  local brightness: {number} = {}
-  for i = 1, EASE_SAMPLES do
-    local t = (i - 1) / (EASE_SAMPLES - 1)
-    brightness[i] = from + (to - from) * easeAt(curve, t)
-  end
-  return {
-    periodMs = transitionMs,
-    phase = nil,
-    playCount = 1,
-    brightness = brightness,
-    color = nil,
-    direction = nil,
-  }
-end
-
-local function buildColorAnimation(
-  from: Vec3,
-  to: Vec3,
-  transitionMs: number,
-  easing: EasingCurve?
-): LightAnimation
-  if transitionMs <= 0 then
-    return {
-      periodMs = 1,
-      phase = nil,
-      playCount = 1,
-      brightness = nil,
-      color = { { x = to.x, y = to.y, z = to.z } },
-      direction = nil,
-    }
-  end
-  local curve = resolveEasing(transitionMs, easing)
-  local color: {Vec3} = {}
-  for i = 1, EASE_SAMPLES do
-    local t = (i - 1) / (EASE_SAMPLES - 1)
-    local k = easeAt(curve, t)
-    color[i] = {
-      x = from.x + (to.x - from.x) * k,
-      y = from.y + (to.y - from.y) * k,
-      z = from.z + (to.z - from.z) * k,
-    }
-  end
-  return {
-    periodMs = transitionMs,
-    phase = nil,
-    playCount = 1,
-    brightness = nil,
-    color = color,
-    direction = nil,
-  }
-end
 
 -- ---------------------------------------------------------------------
 -- Handle construction
@@ -217,15 +84,6 @@ local function idDebug(id: EntityId): string
   -- `EntityId` is a branded number -- print the underlying value for
   -- error messages.
   return tostring(id)
-end
-
-local function readLightComponent(id: EntityId): LightComponent
-  local c = getComponent(id, "light")
-  if c.kind ~= "light" then
-    error(`expected Light component on entity {idDebug(id)}, got {c.kind}`)
-  end
-  -- Flat ComponentValue: kind + LightComponent fields are siblings.
-  return (c :: any) :: LightComponent
 end
 
 function LightsSdk.wrapLightEntity(snapshot: LightEntity): LightEntityHandle
@@ -243,34 +101,6 @@ function LightsSdk.wrapLightEntity(snapshot: LightEntity): LightEntityHandle
       if anim ~= nil and anim.color ~= nil and not isDynamic then
         error(`setAnimation: light {idDebug(id)} is not dynamic; color animation is only valid on dynamic lights`)
       end
-      setLightAnimation(id, anim)
-    end,
-
-    setIntensity = function(
-      self: LightEntityHandle,
-      target: number,
-      transitionMs: number?,
-      easing: EasingCurve?
-    )
-      local ms = transitionMs or 0
-      local live = readLightComponent(id)
-      local anim = buildIntensityAnimation(live.intensity, target, ms, easing)
-      setLightAnimation(id, anim)
-    end,
-
-    setColor = function(
-      self: LightEntityHandle,
-      target: {number},
-      transitionMs: number?,
-      easing: EasingCurve?
-    )
-      if not isDynamic then
-        error(`setColor: light {idDebug(id)} is not dynamic; color can only be animated on dynamic lights`)
-      end
-      local ms = transitionMs or 0
-      local live = readLightComponent(id)
-      local to: Vec3 = { x = target[1], y = target[2], z = target[3] }
-      local anim = buildColorAnimation(live.color, to, ms, easing)
       setLightAnimation(id, anim)
     end,
   }

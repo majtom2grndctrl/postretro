@@ -14,7 +14,6 @@ use super::ctx::ScriptCtx;
 use super::data_descriptors::LevelManifest;
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
-use super::pool::{LuauContextPool, QuickJsContextPool};
 use super::primitives_registry::{ContextScope, PrimitiveRegistry, ScriptPrimitive};
 use super::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 #[cfg(debug_assertions)]
@@ -45,10 +44,6 @@ pub(crate) struct ScriptRuntimeConfig {
 pub(crate) struct ScriptRuntime {
     quickjs: QuickJsSubsystem,
     luau: LuauSubsystem,
-    /// Ephemeral-context pool for future per-entity QuickJS scripting.
-    quickjs_pool: QuickJsContextPool,
-    /// Ephemeral-context pool for future per-entity Luau scripting.
-    luau_pool: LuauContextPool,
     /// Dev-mode hot-reload watcher. Debug builds only; release builds omit
     /// the field so `drain_reload_requests` is a no-op with no extra code.
     #[cfg(debug_assertions)]
@@ -66,33 +61,17 @@ impl ScriptRuntime {
         let quickjs = QuickJsSubsystem::new(registry, &cfg.quickjs)?;
         let luau = LuauSubsystem::new(registry, &cfg.luau)?;
 
-        let quickjs_pool = QuickJsContextPool::new(
-            quickjs.runtime(),
-            quickjs.primitives(),
-            cfg.quickjs.pool_size,
-        )?;
-        let luau_pool = LuauContextPool::new(luau.primitives(), cfg.luau.pool_size)?;
-
         #[cfg(debug_assertions)]
         typedef::emit_sdk_types_in_debug(registry);
 
         Ok(Self {
             quickjs,
             luau,
-            quickjs_pool,
-            luau_pool,
             #[cfg(debug_assertions)]
             watcher: None,
         })
     }
 
-    pub(crate) fn quickjs_pool(&self) -> &QuickJsContextPool {
-        &self.quickjs_pool
-    }
-
-    pub(crate) fn luau_pool(&self) -> &LuauContextPool {
-        &self.luau_pool
-    }
 
     /// No-op in release builds (the method still exists so the frame-loop
     /// caller doesn't need a `cfg` gate). Calling twice replaces the previous
@@ -447,42 +426,9 @@ mod tests {
         fs::remove_file(&path).ok();
     }
 
-    #[test]
-    fn new_prewarms_pools_with_default_size() {
-        let (rt, _ctx) = runtime();
-        assert_eq!(
-            rt.quickjs_pool().idle_len(),
-            crate::scripting::pool::DEFAULT_POOL_SIZE,
-        );
-        assert_eq!(
-            rt.luau_pool().idle_len(),
-            crate::scripting::pool::DEFAULT_POOL_SIZE,
-        );
-        assert_eq!(rt.quickjs_pool().in_flight(), 0);
-        assert_eq!(rt.luau_pool().in_flight(), 0);
-    }
-
-    #[test]
-    fn pooled_quickjs_context_calls_entity_exists() {
-        let (rt, _ctx) = runtime();
-        let handle = rt.quickjs_pool().acquire().unwrap();
-        handle.context().with(|ctx| {
-            let v: bool = ctx.eval("entityExists(0)").unwrap();
-            assert!(!v);
-        });
-    }
-
-    #[test]
-    fn pooled_luau_context_calls_entity_exists() {
-        let (rt, _ctx) = runtime();
-        let handle = rt.luau_pool().acquire().unwrap();
-        let v: bool = handle.lua().load("return entityExists(0)").eval().unwrap();
-        assert!(!v);
-    }
-
-    // Perf budgets (20 ms) is a release-build target — debug builds will exceed
-    // it. Assertions gate on `!cfg!(debug_assertions)` so the tests still run
-    // and print timing in debug without failing CI.
+    // Perf budgets (20 ms / 5 ms) are release-build targets — debug builds
+    // will exceed them. Assertions gate on `!cfg!(debug_assertions)` so the
+    // tests still run and print timing in debug without failing CI.
 
     #[test]
     fn shared_definition_context_primitive_install_under_20ms_release() {
@@ -491,14 +437,11 @@ mod tests {
         let mut registry = PrimitiveRegistry::new();
         register_all(&mut registry, ctx.clone());
 
-        // Build subsystems with pool_size = 0 so we're only timing the
-        // shared-context install cost, not the pool pre-warm.
         let cfg = ScriptRuntimeConfig {
             quickjs: crate::scripting::quickjs::QuickJsConfig {
                 memory_limit_bytes: 100 * 1024 * 1024,
-                pool_size: 0,
             },
-            luau: crate::scripting::luau::LuauConfig { pool_size: 0 },
+            luau: crate::scripting::luau::LuauConfig::default(),
         };
 
         let start = Instant::now();

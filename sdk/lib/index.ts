@@ -7,11 +7,10 @@
 export type { EntityForComponent, World } from "./world";
 export { world } from "./world";
 
-export type { EasingCurve, LightEntity } from "./entities/lights";
+export type { LightEntity } from "./entities/lights";
 export { flicker, pulse, colorShift, sweep } from "./entities/lights";
 
-export type { AnimationController, FogVolumeHandle } from "./entities/fog_volumes";
-export { pulseDensity } from "./entities/fog_volumes";
+export type { FogVolumeHandle } from "./entities/fog_volumes";
 
 export type { Keyframe } from "./util/keyframes";
 export { timeline, sequence } from "./util/keyframes";

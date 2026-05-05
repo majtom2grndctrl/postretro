@@ -18,7 +18,6 @@ pub(crate) mod data_registry;
 pub(crate) mod error;
 pub(crate) mod luau;
 pub(crate) mod map_entity;
-pub(crate) mod pool;
 pub(crate) mod primitives;
 pub(crate) mod primitives_registry;
 pub(crate) mod quickjs;

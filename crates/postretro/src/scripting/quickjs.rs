@@ -32,7 +32,7 @@ const DEFAULT_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
 const COLLECT_FN_NAME: &str = "__collect_definitions";
 
 /// SDK library prelude bundled at compile time. Evaluated in every QuickJS
-/// context (definition + behavior + pooled) before user scripts run so the
+/// context (definition + behavior) before user scripts run so the
 /// vocabulary symbols (`world`, `flicker`, `pulse`, …) resolve as globals.
 /// Regenerate with: `cargo run -p postretro-script-compiler -- --prelude
 /// --sdk-root sdk/lib --out sdk/lib/prelude.js`.
@@ -51,20 +51,16 @@ pub(crate) fn evaluate_prelude(ctx: &Ctx<'_>) -> Result<(), ScriptError> {
 }
 
 /// Configuration for a [`QuickJsSubsystem`]. `memory_limit_bytes` defaults to
-/// 100 MB; override for measured workloads. `pool_size` tunes the ephemeral-
-/// context pool; it does NOT affect the shared behavior context, which is never
-/// pooled.
+/// 100 MB; override for measured workloads.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QuickJsConfig {
     pub(crate) memory_limit_bytes: usize,
-    pub(crate) pool_size: usize,
 }
 
 impl Default for QuickJsConfig {
     fn default() -> Self {
         Self {
             memory_limit_bytes: DEFAULT_MEMORY_LIMIT,
-            pool_size: super::pool::DEFAULT_POOL_SIZE,
         }
     }
 }
@@ -129,16 +125,12 @@ impl QuickJsSubsystem {
         &self.definition_ctx
     }
 
-    /// Borrow the underlying `rquickjs::Runtime`. Used by the context pool
-    /// so pooled contexts share the runtime (GC heap, memory limit) with the
-    /// shared definition context.
+    /// Borrow the underlying `rquickjs::Runtime`.
     pub(crate) fn runtime(&self) -> &Runtime {
         &self.runtime
     }
 
-    /// Borrow the primitive snapshot. Used by the context pool to pre-warm
-    /// its contexts with the same primitive set the subsystem was built
-    /// against.
+    /// Borrow the primitive snapshot.
     pub(crate) fn primitives(&self) -> &[ScriptPrimitive] {
         &self.primitives
     }

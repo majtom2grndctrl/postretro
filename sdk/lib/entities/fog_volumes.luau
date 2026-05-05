@@ -1,209 +1,38 @@
 --!strict
--- FogVolumeHandle: wraps FogVolumeEntity snapshots with mutating methods.
--- Density tweens are tick-handler loops; no engine-side fog animation
--- primitive exists (unlike lights). Fog ambient color is derived from the
--- SH irradiance volume and is not settable via script.
+-- FogVolumeHandle: type alias for the query-time FogVolumeEntity snapshot.
+-- No engine-side fog animation primitive exists (unlike lights), and the
+-- Live VM script tick API has been removed, so the handle exposes only
+-- the snapshot fields until a declarative fog-animation primitive lands.
+-- Fog ambient color is derived from the SH irradiance volume and is not
+-- settable via script.
 -- See docs/scripting-reference.md.
 
--- `EntityId`, `FogVolumeComponent`, `FogVolumeEntity`,
--- `ScriptCallContext`, `getComponent`, `setComponent`, and
--- `registerHandler` are provided ambiently by the generated
--- `sdk/types/postretro.d.luau` definitions file.
+-- `FogVolumeComponent` and `FogVolumeEntity` are provided ambiently by
+-- the generated `sdk/types/postretro.d.luau` definitions file.
 
 --- Typed handle returned by `world:query` for a fog-volume entity.
---- Carries the query-time snapshot fields plus three mutating methods.
---- Methods are called with `:` (e.g. `cloud:setDensity(0.4, 1000)`).
 export type FogVolumeHandle = {
   id: EntityId,
   position: Vec3,
   tags: {string},
   component: FogVolumeComponent,
-
-  --- Set fog density. Instant when `durationMs` is 0 or omitted;
-  --- otherwise lerped each tick from the live density value over
-  --- `durationMs` milliseconds. Last call wins -- the previous tween
-  --- (if any) is cancelled.
-  setDensity: (self: FogVolumeHandle, density: number, durationMs: number?) -> (),
-
-  --- Set the scatter fraction. Instant.
-  setScatter: (self: FogVolumeHandle, scatter: number) -> (),
-
-  --- Set the edge softness (world units). Instant.
-  --- Note: `edge_softness` only affects brush `fog_volume` entities; it is
-  --- ignored by the shader for `fog_lamp` and `fog_tube`.
-  setEdgeSoftness: (self: FogVolumeHandle, edgeSoftness: number) -> (),
-}
-
---- Controller returned by `pulseDensity` to cancel the running animation.
-export type AnimationController = {
-  --- Stop the animation. Idempotent -- subsequent calls are no-ops.
-  stop: (self: AnimationController) -> (),
 }
 
 local FogVolumesSdk = {}
 
-local function idDebug(id: EntityId): string
-  return tostring(id)
-end
-
-local function readFogVolumeComponent(id: EntityId): FogVolumeComponent
-  local c = getComponent(id, "fog_volume")
-  if c.kind ~= "fog_volume" then
-    error(`expected FogVolume component on entity {idDebug(id)}, got {c.kind}`)
-  end
-  -- Flat ComponentValue: kind + FogVolumeComponent fields are siblings.
-  return (c :: any) :: FogVolumeComponent
-end
-
--- A cancelable tick subscription. `registerHandler` itself has no
--- unregister primitive, so we wrap the user callback in a closure that
--- checks a `cancelled` flag on each tick -- the handler stays installed
--- for the life of the level but becomes a no-op once stopped.
-local function tickSubscription(fn: (ScriptCallContext) -> ()): AnimationController
-  local cancelled = false
-  registerHandler("tick", function(ctx: ScriptCallContext?)
-    if cancelled then return end
-    if ctx == nil then return end
-    fn(ctx :: ScriptCallContext)
-  end)
-  local ctrl: AnimationController
-  ctrl = {
-    stop = function(self: AnimationController)
-      cancelled = true
-    end,
-  }
-  return ctrl
-end
-
-local function writeFogVolume(
-  id: EntityId,
-  density: number,
-  scatter: number,
-  edgeSoftness: number
-)
-  -- `kind` is required: the scripting runtime's `FromLua for ComponentValue`
-  -- reads the `kind` field first to dispatch to the correct component branch
-  -- (see `scripting/conv.rs`). Omitting it would produce "missing field `kind`"
-  -- at the Rust boundary and silently drop the setComponent call.
-  setComponent(id, "fog_volume", {
-    kind = "fog_volume",
-    density = density,
-    scatter = scatter,
-    edge_softness = edgeSoftness,
-  } :: any)
-end
-
--- Per-handle slot holding the active density tween (if any).
--- A new tween cancels any in-flight tween; an "instant" setter also
--- cancels the tween before writing.
-type Slots = {
-  density: AnimationController?,
-}
-
-local function cancelDensityTween(slots: Slots)
-  local existing = slots.density
-  if existing ~= nil then
-    existing:stop()
-    slots.density = nil
-  end
-end
-
-local function startDensityTween(
-  id: EntityId,
-  slots: Slots,
-  target: number,
-  durationMs: number
-)
-  cancelDensityTween(slots)
-  local startDensity = readFogVolumeComponent(id).density
-  local elapsedMs = 0.0
-  local ctrl: AnimationController
-  ctrl = tickSubscription(function(ctx: ScriptCallContext)
-    elapsedMs += ctx.delta * 1000
-    local t = math.min(1.0, elapsedMs / durationMs)
-    local value = startDensity + (target - startDensity) * t
-    local live = readFogVolumeComponent(id)
-    writeFogVolume(id, value, live.scatter, live.edge_softness)
-    if t >= 1.0 then
-      ctrl:stop()
-      slots.density = nil
-    end
-  end)
-  slots.density = ctrl
-end
-
---- Wrap a `FogVolumeEntity` snapshot returned by `worldQuery` as a
---- mutating handle. Used by `world.luau` for `world:query({ component
---- = "fog_volume" })`. The returned table preserves all snapshot fields
---- and adds the three mutating methods.
+--- Wrap a `FogVolumeEntity` snapshot returned by `worldQuery`. Used by
+--- `world.luau` for `world:query({ component = "fog_volume" })`. With
+--- the tick-callback helpers removed, this is a pass-through; it is
+--- retained so the world.query code path stays symmetric with
+--- `wrapLightEntity` and so a future fog-animation primitive can
+--- re-introduce mutating methods without touching the call site.
 function FogVolumesSdk.wrapFogVolumeEntity(snapshot: FogVolumeEntity): FogVolumeHandle
-  local id: EntityId = snapshot.id
-  local slots: Slots = { density = nil }
-
-  local handle: FogVolumeHandle = {
-    id = id,
+  return {
+    id = snapshot.id,
     position = snapshot.position,
     tags = snapshot.tags,
     component = snapshot.component,
-
-    setDensity = function(self: FogVolumeHandle, density: number, durationMs: number?)
-      local ms = durationMs or 0
-      if ms <= 0 then
-        cancelDensityTween(slots)
-        local live = readFogVolumeComponent(id)
-        writeFogVolume(id, density, live.scatter, live.edge_softness)
-        return
-      end
-      startDensityTween(id, slots, density, ms)
-    end,
-
-    setScatter = function(self: FogVolumeHandle, scatter: number)
-      local live = readFogVolumeComponent(id)
-      writeFogVolume(id, live.density, scatter, live.edge_softness)
-    end,
-
-    setEdgeSoftness = function(self: FogVolumeHandle, edgeSoftness: number)
-      local live = readFogVolumeComponent(id)
-      writeFogVolume(id, live.density, live.scatter, edgeSoftness)
-    end,
   }
-
-  return handle
-end
-
---- Oscillates `handle.density` sinusoidally between `min` and `max`
---- with the given `period` (milliseconds). Returns a controller whose
---- `:stop()` cancels the animation. Multiple `pulseDensity` calls on
---- the same handle stack -- call `:stop()` on the previous controller
---- before starting a new one if you do not want overlap.
----
---- Note: cancelling via `:stop()` stops density updates but the tick
---- handler remains registered until the level unloads. Avoid calling
---- `pulseDensity` repeatedly on the same handle -- prefer reusing the
---- controller returned from the first call.
-function FogVolumesSdk.pulseDensity(
-  handle: FogVolumeHandle,
-  opts: { min: number, max: number, period: number }
-): AnimationController
-  local minV = opts.min
-  local maxV = opts.max
-  local period = opts.period
-  if not (period > 0) then
-    error("pulseDensity: `period` must be a positive number")
-  end
-  local lo = math.min(minV, maxV)
-  local hi = math.max(minV, maxV)
-  local mid = (lo + hi) * 0.5
-  local amp = (hi - lo) * 0.5
-  local id: EntityId = handle.id
-  local elapsedMs = 0.0
-  return tickSubscription(function(ctx: ScriptCallContext)
-    elapsedMs += ctx.delta * 1000
-    local phase = (elapsedMs % period) / period
-    local value = mid + amp * math.sin(phase * math.pi * 2)
-    local live = readFogVolumeComponent(id)
-    writeFogVolume(id, value, live.scatter, live.edge_softness)
-  end)
 end
 
 return FogVolumesSdk

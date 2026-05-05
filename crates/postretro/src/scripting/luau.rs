@@ -40,8 +40,7 @@ const KEYFRAMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/util/keyframe
 const EMITTERS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/emitters.luau");
 
 /// SDK library prelude — `entities/fog_volumes.luau` returns a table whose
-/// fields (`pulseDensity`, `wrapFogVolumeEntity`) are used during prelude
-/// evaluation. `wrapFogVolumeEntity` is installed as a temporary global for
+/// `wrapFogVolumeEntity` field is installed as a temporary global for
 /// `world.luau` to capture, then nil'd out before the sandbox freezes.
 const FOG_VOLUMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/fog_volumes.luau");
 
@@ -68,8 +67,9 @@ const EMITTERS_LUAU_FIELDS: &[&str] = &["emitter", "smokeEmitter", "sparkEmitter
 /// Fog-volume SDK fields lifted to globals after evaluating
 /// `entities/fog_volumes.luau`. `wrapFogVolumeEntity` is NOT a bare global —
 /// it is installed as a temporary bridge before `world.luau` evaluates and
-/// nil'd out afterward.
-const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &["pulseDensity"];
+/// nil'd out afterward. No public bare-globals remain after the
+/// tick-callback helpers were removed.
+const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
@@ -121,10 +121,11 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             })?;
     }
 
-    // Step 2b: evaluate `entities/fog_volumes.luau`. Like
-    // `entities/lights.luau`, it returns a table containing both public
-    // helpers (`pulseDensity`) and the private `wrapFogVolumeEntity` bridge
-    // that `world.luau` needs as a bare global during its closure setup.
+    // Step 2b: evaluate `entities/fog_volumes.luau`. It returns a table
+    // containing the private `wrapFogVolumeEntity` bridge that `world.luau`
+    // needs as a bare global during its closure setup. There are no public
+    // fog-volume helpers — the tick-callback helpers were removed alongside
+    // the Live VM API.
     let fog_volumes_sdk: Table = lua
         .load(FOG_VOLUMES_LUAU_SRC)
         .set_name("postretro/sdk/entities/fog_volumes.luau")
@@ -270,21 +271,9 @@ const DENIED_GLOBALS: &[&str] = &["io", "package", "require", "dofile", "loadfil
 /// it exposes the same wall-clock surface in string form.
 const DENIED_OS_FIELDS: &[&str] = &["execute", "exit", "getenv", "time", "clock", "date"];
 
-/// Configuration for a [`LuauSubsystem`]. `pool_size` tunes the ephemeral-
-/// context pool. Does NOT affect the shared behavior `Lua` state, which is
-/// never pooled.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct LuauConfig {
-    pub(crate) pool_size: usize,
-}
-
-impl Default for LuauConfig {
-    fn default() -> Self {
-        Self {
-            pool_size: super::pool::DEFAULT_POOL_SIZE,
-        }
-    }
-}
+/// Configuration for a [`LuauSubsystem`].
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LuauConfig {}
 
 /// Luau subsystem: one `Lua` definition state, plus the primitive snapshot.
 /// Fields mirror `QuickJsSubsystem` one-for-one.
@@ -355,8 +344,7 @@ impl LuauSubsystem {
         &self.definition_lua
     }
 
-    /// Borrow the primitive snapshot. Used by the context pool to pre-warm
-    /// Lua states with the same primitive set.
+    /// Borrow the primitive snapshot.
     pub(crate) fn primitives(&self) -> &[ScriptPrimitive] {
         &self.primitives
     }

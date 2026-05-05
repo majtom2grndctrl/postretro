@@ -16,8 +16,7 @@ pub const MAX_FOG_VOLUMES: usize = 16;
 pub const MAX_PLANES_PER_VOLUME: usize = 16;
 
 /// One fog volume baked into the PRL. AABB extents are in engine space (Y-up,
-/// meters); colour is linear 0–1 (no sRGB curve applied). The runtime spawns
-/// one ECS entity per record at level load.
+/// meters). The runtime spawns one ECS entity per record at level load.
 ///
 /// `center` and `half_diag` are derived from `min`/`max` at compile time and
 /// actively consumed by the raymarch shader. `inv_half_ext` and
@@ -35,7 +34,6 @@ pub struct FogVolumeRecord {
     /// so both sides of the layer boundary use one term. Semantic / zero-plane
     /// volumes (`fog_lamp`, `fog_tube`) ignore this and use `radial_falloff`.
     pub edge_softness: f32,
-    pub color: [f32; 3],
     pub scatter: f32,
     pub radial_falloff: f32,
     /// AABB center: `(min + max) * 0.5`.
@@ -70,7 +68,6 @@ pub struct FogVolumeRecord {
 ///     f32  density
 ///     f32  max_x, max_y, max_z
 ///     f32  edge_softness
-///     f32  color_r, color_g, color_b
 ///     f32  scatter
 ///     f32  radial_falloff
 ///     f32  center_x, center_y, center_z
@@ -115,9 +112,6 @@ impl FogVolumesSection {
                 buf.extend_from_slice(&c.to_le_bytes());
             }
             buf.extend_from_slice(&v.edge_softness.to_le_bytes());
-            for c in v.color {
-                buf.extend_from_slice(&c.to_le_bytes());
-            }
             buf.extend_from_slice(&v.scatter.to_le_bytes());
             buf.extend_from_slice(&v.radial_falloff.to_le_bytes());
             for c in v.center {
@@ -149,10 +143,10 @@ impl FogVolumesSection {
         let pixel_scale = read_u32(data, &mut o, "pixel_scale")?;
         let count = read_u32(data, &mut o, "volume count")? as usize;
 
-        // Sanity-check: each fixed payload is 21 × f32 + 2 × u32 = 92 bytes
+        // Sanity-check: each fixed payload is 18 × f32 + 2 × u32 = 80 bytes
         // (includes plane_count and tag_count headers; planes and tags are
         // variable-length and validated against remaining bytes below).
-        const MIN_RECORD_SIZE: usize = 92;
+        const MIN_RECORD_SIZE: usize = 80;
         let remaining = data.len().saturating_sub(o);
         if count > remaining / MIN_RECORD_SIZE {
             // FormatError has no Parse variant; Io is the closest proxy for
@@ -171,7 +165,6 @@ impl FogVolumesSection {
             let density = read_f32(data, &mut o, &format!("volume {i} density"))?;
             let max = read_vec3(data, &mut o, &format!("volume {i} max"))?;
             let edge_softness = read_f32(data, &mut o, &format!("volume {i} edge_softness"))?;
-            let color = read_vec3(data, &mut o, &format!("volume {i} color"))?;
             let scatter = read_f32(data, &mut o, &format!("volume {i} scatter"))?;
             let radial_falloff = read_f32(data, &mut o, &format!("volume {i} radial_falloff"))?;
             let center = read_vec3(data, &mut o, &format!("volume {i} center"))?;
@@ -221,7 +214,6 @@ impl FogVolumesSection {
                 density,
                 max,
                 edge_softness,
-                color,
                 scatter,
                 radial_falloff,
                 center,
@@ -325,7 +317,6 @@ mod tests {
                     density: 0.5,
                     max: [2.0, 3.0, 2.0],
                     edge_softness: 1.0,
-                    color: [0.6, 0.7, 0.8],
                     scatter: 0.4,
                     radial_falloff: 0.0,
                     center: [0.0, 1.5, 0.0],
@@ -341,7 +332,6 @@ mod tests {
                     density: 1.5,
                     max: [12.0, 4.0, -1.0],
                     edge_softness: 0.5,
-                    color: [1.0, 0.2, 0.1],
                     scatter: 0.9,
                     radial_falloff: 1.0,
                     center: [11.0, 2.0, -3.0],
@@ -391,7 +381,6 @@ mod tests {
             density: 0.5,
             max: [1.0, 1.0, 1.0],
             edge_softness: 0.5,
-            color: [0.5, 0.5, 0.5],
             scatter: 0.5,
             radial_falloff: 0.0,
             center: [0.0, 0.0, 0.0],
@@ -497,7 +486,6 @@ mod tests {
                 density: 0.5,
                 max: [1.0, 1.0, 1.0],
                 edge_softness: 0.5,
-                color: [1.0, 1.0, 1.0],
                 scatter: 0.5,
                 radial_falloff: 0.0,
                 center: [0.5, 0.5, 0.5],

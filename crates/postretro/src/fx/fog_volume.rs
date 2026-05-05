@@ -25,7 +25,7 @@ pub const MAX_FOG_POINT_LIGHTS: usize = 32;
 /// and GPU cost; larger values are faster but produce visible banding.
 pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 
-/// Packed AABB + scattering parameters for a single fog volume. 96 bytes,
+/// Packed AABB + scattering parameters for a single fog volume. 80 bytes,
 /// matches the `FogVolume` struct in fog_volume.wgsl.
 ///
 /// `max_v` (rather than `max`) avoids the WGSL `max` builtin shadowing a
@@ -38,7 +38,10 @@ pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 /// height_gradient path).
 ///
 /// Field order pairs each `vec3<f32>` with a trailing scalar so WGSL's 16-byte
-/// vec3 alignment slots fill naturally without internal padding holes.
+/// vec3 alignment slots fill naturally without internal padding holes. The
+/// final 16-byte block packs four scalars (`radial_falloff`, `scatter`,
+/// `plane_offset`, `plane_count`) so the struct lands on an exact 16-byte
+/// multiple without trailing padding.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FogVolume {
@@ -50,8 +53,6 @@ pub struct FogVolume {
     /// produces a hard cutoff. Semantic entities (zero planes) ignore this
     /// field and use `radial_falloff` instead.
     pub edge_softness: f32,
-    pub color: [f32; 3],
-    pub scatter: f32,
     pub center: [f32; 3],
     pub half_diag: f32,
     /// Reserved; was used by height_gradient path (removed).
@@ -59,6 +60,7 @@ pub struct FogVolume {
     /// Reserved; was used by height_gradient path (removed).
     pub inv_height_extent: f32,
     pub radial_falloff: f32,
+    pub scatter: f32,
     /// Index of this volume's first plane in the global `fog_planes` storage
     /// buffer. Cursor rebuilt each frame as the active set is packed; source
     /// PRL index is irrelevant.
@@ -66,13 +68,6 @@ pub struct FogVolume {
     /// Number of planes that bound this volume. Zero means the volume is a
     /// semantic entity (AABB-only membership + radial fade).
     pub plane_count: u32,
-    /// Explicit padding to keep the struct's size a multiple of 16 (WGSL
-    /// alignment for the largest member, `vec3<f32>`). Without it the WGSL
-    /// side rounds up but the Rust side does not, breaking the layout assert.
-    /// `radial_falloff` + `plane_offset` + `plane_count` = 12 bytes; WGSL
-    /// rounds to the next 16-byte boundary (96 total); this u32 brings the
-    /// Rust struct to 96 bytes to match.
-    pub _pad: u32,
 }
 
 /// Per-frame spot-light record consumed by the fog raymarch. 48 bytes;
@@ -142,7 +137,7 @@ pub const FOG_POINT_LIGHT_SIZE: usize = std::mem::size_of::<FogPointLight>();
 pub const FOG_PARAMS_SIZE: usize = std::mem::size_of::<FogParams>();
 
 // Compile-time guards against accidental layout drift.
-const _: () = assert!(FOG_VOLUME_SIZE == 96);
+const _: () = assert!(FOG_VOLUME_SIZE == 80);
 const _: () = assert!(FOG_SPOT_LIGHT_SIZE == 48);
 const _: () = assert!(FOG_POINT_LIGHT_SIZE == 32);
 const _: () = assert!(FOG_PARAMS_SIZE == 112);
@@ -229,46 +224,48 @@ mod tests {
 
     #[test]
     fn pack_fog_volumes_round_trips_all_baked_fields() {
-        // Byte offsets follow the field order: min(0) density(12) max(16)
-        // edge_softness(28) color(32) scatter(44) center(48) half_diag(60)
-        // inv_half_ext(64) inv_height_extent(76) radial_falloff(80)
-        // plane_offset(84) plane_count(88) _pad(92). Spot-checking key baked
-        // fields catches silent layout drift between Rust and WGSL.
+        // Byte offsets follow the field order: min(0) density(12) max_v(16)
+        // edge_softness(28) center(32) half_diag(44) inv_half_ext(48)
+        // inv_height_extent(60) radial_falloff(64) scatter(68)
+        // plane_offset(72) plane_count(76). Spot-checking key baked fields
+        // catches silent layout drift between Rust and WGSL.
         let v = FogVolume {
             min: [1.0, 2.0, 3.0],
             density: 0.75,
             max_v: [4.0, 5.0, 6.0],
             edge_softness: 0.25,
-            color: [0.1, 0.2, 0.3],
-            scatter: 0.5,
             center: [2.5, 3.5, 4.5],
             half_diag: 2.598_076,
             inv_half_ext: [0.666_666_7, 0.666_666_7, 0.666_666_7],
             inv_height_extent: 0.333_333_3,
             radial_falloff: 0.0,
+            scatter: 0.5,
             plane_offset: 0,
             plane_count: 0,
-            _pad: 0,
         };
         let volumes = [v];
         let bytes = pack_fog_volumes(&volumes);
         assert_eq!(bytes.len(), FOG_VOLUME_SIZE);
-        assert_eq!(FOG_VOLUME_SIZE, 96);
+        assert_eq!(FOG_VOLUME_SIZE, 80);
 
         let density = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
         let edge_softness = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
-        let center_x = f32::from_le_bytes(bytes[48..52].try_into().unwrap());
-        let half_diag = f32::from_le_bytes(bytes[60..64].try_into().unwrap());
-        let inv_hx = f32::from_le_bytes(bytes[64..68].try_into().unwrap());
-        let inv_h_ext = f32::from_le_bytes(bytes[76..80].try_into().unwrap());
-        let plane_offset = u32::from_le_bytes(bytes[84..88].try_into().unwrap());
-        let plane_count = u32::from_le_bytes(bytes[88..92].try_into().unwrap());
+        let center_x = f32::from_le_bytes(bytes[32..36].try_into().unwrap());
+        let half_diag = f32::from_le_bytes(bytes[44..48].try_into().unwrap());
+        let inv_hx = f32::from_le_bytes(bytes[48..52].try_into().unwrap());
+        let inv_h_ext = f32::from_le_bytes(bytes[60..64].try_into().unwrap());
+        let radial_falloff = f32::from_le_bytes(bytes[64..68].try_into().unwrap());
+        let scatter = f32::from_le_bytes(bytes[68..72].try_into().unwrap());
+        let plane_offset = u32::from_le_bytes(bytes[72..76].try_into().unwrap());
+        let plane_count = u32::from_le_bytes(bytes[76..80].try_into().unwrap());
         assert_eq!(density, 0.75);
         assert_eq!(edge_softness, 0.25);
         assert_eq!(center_x, 2.5);
         assert!((half_diag - 2.598_076).abs() < 1e-5);
         assert!((inv_hx - 0.666_666_7).abs() < 1e-5);
         assert!((inv_h_ext - 0.333_333_3).abs() < 1e-5);
+        assert_eq!(radial_falloff, 0.0);
+        assert_eq!(scatter, 0.5);
         assert_eq!(plane_offset, 0);
         assert_eq!(plane_count, 0);
     }

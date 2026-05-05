@@ -577,12 +577,6 @@ fn resolve_fog_volume(
         );
     }
 
-    // Colour authored as "R G B" 0–255; divide by 255 (no sRGB curve), to match
-    // the convention used across the FGD ecosystem.
-    let color = props
-        .get("color")
-        .and_then(|s| parse_color255_local(s))
-        .unwrap_or([1.0, 1.0, 1.0]);
     let density = props
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
@@ -614,7 +608,6 @@ fn resolve_fog_volume(
     Ok(Some(MapFogVolume {
         min: [min.x as f32, min.y as f32, min.z as f32],
         max: [max.x as f32, max.y as f32, max.z as f32],
-        color,
         density,
         edge_softness,
         scatter,
@@ -645,10 +638,6 @@ fn resolve_fog_lamp(
     // with `origin`, which has already been unit-scaled by the caller.
     let radius = (radius_raw as f64 * scale) as f32;
 
-    let color = props
-        .get("color")
-        .and_then(|s| parse_color255_local(s))
-        .unwrap_or([1.0, 0.85, 0.6]);
     let density = props
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
@@ -679,7 +668,6 @@ fn resolve_fog_lamp(
     Ok(MapFogVolume {
         min,
         max,
-        color,
         density,
         // Semantic point entities use `radial_falloff`; the primitive-only
         // edge softness slot is unused.
@@ -753,10 +741,6 @@ fn resolve_fog_tube(
         a[2].abs() * half_segment + radius,
     ];
 
-    let color = props
-        .get("color")
-        .and_then(|s| parse_color255_local(s))
-        .unwrap_or([0.6, 0.85, 1.0]);
     let density = props
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
@@ -795,7 +779,6 @@ fn resolve_fog_tube(
     Ok(MapFogVolume {
         min,
         max,
-        color,
         density,
         // Semantic point entities use `radial_falloff`; the primitive-only
         // edge softness slot is unused.
@@ -805,24 +788,6 @@ fn resolve_fog_tube(
         planes: Vec::new(),
         tags,
     })
-}
-
-/// Local "R G B" 0–255 to linear 0–1 parser. Mirrors `format::quake_map::parse_color255`
-/// without crossing module visibility boundaries.
-fn parse_color255_local(s: &str) -> Option<[f32; 3]> {
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let mut out = [0.0f32; 3];
-    for (i, p) in parts.iter().enumerate() {
-        let v: i32 = p.parse().ok()?;
-        if !(0..=255).contains(&v) {
-            return None;
-        }
-        out[i] = v as f32 / 255.0;
-    }
-    Some(out)
 }
 
 /// Re-export `quake_to_engine` for cross-module tests (geometry round-trip).

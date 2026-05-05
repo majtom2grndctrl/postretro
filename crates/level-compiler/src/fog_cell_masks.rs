@@ -104,7 +104,6 @@ mod tests {
         MapFogVolume {
             min,
             max,
-            color: [1.0, 1.0, 1.0],
             density: 0.5,
             edge_softness: 1.0,
             scatter: 0.6,

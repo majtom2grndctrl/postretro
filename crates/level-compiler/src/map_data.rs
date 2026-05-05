@@ -403,9 +403,8 @@ pub struct MapData {
 }
 
 /// One fog volume entity, resolved to an AABB (and optionally a convex plane
-/// set) in engine space. Carries linear-RGB colour and the per-volume
-/// density/falloff parameters authored on the entity. See
-/// `parse::parse_map_file`.
+/// set) in engine space. Carries the per-volume density/falloff parameters
+/// authored on the entity. See `parse::parse_map_file`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapFogVolume {
     /// AABB minimum corner (engine space, meters). Conservative bound used by
@@ -413,8 +412,6 @@ pub struct MapFogVolume {
     pub min: [f32; 3],
     /// AABB maximum corner (engine space, meters).
     pub max: [f32; 3],
-    /// Linear RGB 0–1.
-    pub color: [f32; 3],
     pub density: f32,
     /// World-unit fade band along brush face normals (primitive `fog_volume`
     /// brushes only). Carried straight to `FogVolumeRecord::edge_softness` and

@@ -99,7 +99,6 @@ impl FogVolumeBridge {
             };
             let component = FogVolumeComponent {
                 density: entry.density,
-                color: entry.color,
                 scatter: entry.scatter,
                 edge_softness: entry.edge_softness,
             };
@@ -195,32 +194,28 @@ impl FogVolumeBridge {
                     density: component.density,
                     max_v: aabb.max.to_array(),
                     edge_softness: component.edge_softness,
-                    color: component.color,
-                    scatter: component.scatter,
                     center: aabb.center.to_array(),
                     half_diag: aabb.half_diag,
                     inv_half_ext: aabb.inv_half_ext.to_array(),
                     inv_height_extent: aabb.inv_height_extent,
                     radial_falloff: aabb.radial_falloff,
+                    scatter: component.scatter,
                     plane_offset: 0,
                     plane_count,
-                    _pad: 0,
                 },
                 _ => FogVolume {
                     min: [0.0; 3],
                     density: 0.0,
                     max_v: [0.0; 3],
                     edge_softness: 0.0,
-                    color: [0.0; 3],
-                    scatter: 0.0,
                     center: [0.0; 3],
                     half_diag: 0.0,
                     inv_half_ext: [0.0; 3],
                     inv_height_extent: 0.0,
                     radial_falloff: 0.0,
+                    scatter: 0.0,
                     plane_offset: 0,
                     plane_count: 0,
-                    _pad: 0,
                 },
             };
             self.volumes_bytes
@@ -347,7 +342,6 @@ mod tests {
             density: 0.5,
             max: [2.0, 3.0, 2.0],
             edge_softness: 1.0,
-            color: [0.6, 0.7, 0.8],
             scatter: 0.4,
             radial_falloff: 0.0,
             center: [0.0, 1.5, 0.0],
@@ -418,7 +412,6 @@ mod tests {
                 id,
                 FogVolumeComponent {
                     density: 1.25,
-                    color: [0.1, 0.2, 0.3],
                     scatter: 0.9,
                     edge_softness: 0.5,
                 },
@@ -454,7 +447,6 @@ mod tests {
                 id1,
                 FogVolumeComponent {
                     density: 0.0,
-                    color: [0.0; 3],
                     scatter: 0.0,
                     edge_softness: 0.0,
                 },
@@ -540,7 +532,6 @@ mod tests {
                 id1,
                 FogVolumeComponent {
                     density: 0.0,
-                    color: [0.0; 3],
                     scatter: 0.0,
                     edge_softness: 0.0,
                 },
@@ -569,7 +560,6 @@ mod tests {
                 id0,
                 FogVolumeComponent {
                     density: 0.0,
-                    color: [0.0; 3],
                     scatter: 0.0,
                     edge_softness: 0.0,
                 },
@@ -605,8 +595,8 @@ mod tests {
 
         let (bytes, planes, _live_mask) = bridge.update_volumes(&registry).expect("one slot");
         assert_eq!(bytes.len(), std::mem::size_of::<FogVolume>());
-        // FogVolume.plane_count sits at byte offset 88 (see fx/fog_volume.rs).
-        let plane_count = u32::from_le_bytes(bytes[88..92].try_into().unwrap());
+        // FogVolume.plane_count sits at byte offset 76 (see fx/fog_volume.rs).
+        let plane_count = u32::from_le_bytes(bytes[76..80].try_into().unwrap());
         assert_eq!(plane_count, record.plane_count);
         // Side-table planes mirror the record exactly.
         assert_eq!(planes.len(), 1);

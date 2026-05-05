@@ -74,7 +74,7 @@ const MAX_FOG_VOLUMES: u32 = 16u;
 
 // --- Group 6: Fog resources ---
 
-// 96 bytes; layout must match `FogVolume` in fx/fog_volume.rs. Each `vec3<f32>`
+// 80 bytes; layout must match `FogVolume` in fx/fog_volume.rs. Each `vec3<f32>`
 // is paired with a trailing scalar so WGSL's 16-byte vec3 alignment slots fill
 // without internal padding holes. The trailing `plane_offset / plane_count`
 // pair indexes into the `fog_planes` storage buffer (group 6 binding 6).
@@ -90,13 +90,12 @@ struct FogVolume {
     // zero-plane volumes (`fog_lamp`, `fog_tube`) ignore this field and fall
     // back to `radial_falloff` for soft falloff.
     edge_softness: f32,
-    color: vec3<f32>,
-    scatter: f32,
     center: vec3<f32>,
     half_diag: f32,
     inv_half_ext: vec3<f32>,      // reserved; dead after height_gradient path removal
     inv_height_extent: f32,       // reserved; dead after height_gradient path removal
     radial_falloff: f32,
+    scatter: f32,
     plane_offset: u32,
     plane_count: u32,
 }
@@ -255,7 +254,6 @@ fn sample_spot_shadow_pt(
 
 struct VolumeSample {
     density: f32,
-    color: vec3<f32>,
     scatter: f32,
     hits: u32,
 }
@@ -263,7 +261,6 @@ struct VolumeSample {
 fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
     var out: VolumeSample;
     out.density = 0.0;
-    out.color = vec3<f32>(0.0);
     out.scatter = 0.0;
     out.hits = 0u;
     let n = fog.active_count;
@@ -307,12 +304,8 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
         }
 
         out.density = out.density + v.density * fade;
-        out.color = out.color + v.color * v.density * fade;
         out.scatter = max(out.scatter, v.scatter);
         out.hits = out.hits + 1u;
-    }
-    if out.density > 0.0 {
-        out.color = out.color / out.density;
     }
     return out;
 }

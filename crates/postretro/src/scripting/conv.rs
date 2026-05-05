@@ -380,12 +380,6 @@ impl<'js> FromJs<'js> for ComponentValue {
                 let density: f32 = o.get("density").map_err(|e| {
                     rquickjs::Exception::throw_type(ctx, &format!("FogVolume.density: {e}"))
                 })?;
-                let color_v: JsValue = o.get("color")?;
-                let color = serde_json::from_value::<Vec3Lit>(js_to_json(ctx, color_v)?)
-                    .map_err(|e| {
-                        rquickjs::Exception::throw_type(ctx, &format!("FogVolume.color: {e}"))
-                    })?
-                    .as_f32_3();
                 let scatter: f32 = o.get("scatter").map_err(|e| {
                     rquickjs::Exception::throw_type(ctx, &format!("FogVolume.scatter: {e}"))
                 })?;
@@ -394,7 +388,6 @@ impl<'js> FromJs<'js> for ComponentValue {
                 })?;
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
-                    color,
                     scatter,
                     edge_softness,
                 }))
@@ -481,10 +474,6 @@ impl FromLua for ComponentValue {
                 let density: f32 = t
                     .get("density")
                     .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.density: {e}")))?;
-                let color_v: LuaValue = t.get("color")?;
-                let color = serde_json::from_value::<Vec3Lit>(lua_to_json(color_v)?)
-                    .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.color: {e}")))?
-                    .as_f32_3();
                 let scatter: f32 = t
                     .get("scatter")
                     .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.scatter: {e}")))?;
@@ -493,7 +482,6 @@ impl FromLua for ComponentValue {
                 })?;
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
-                    color,
                     scatter,
                     edge_softness,
                 }))
@@ -857,8 +845,8 @@ mod tests {
 
     #[test]
     fn fog_volume_component_round_trips_through_quickjs() {
-        // setComponent accepts {density, color, scatter, edge_softness};
-        // getComponent returns all four under `kind: "fog_volume"`. AABB fields
+        // setComponent accepts {density, scatter, edge_softness};
+        // getComponent returns all three under `kind: "fog_volume"`. AABB fields
         // on the input are silently ignored.
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
@@ -868,7 +856,6 @@ mod tests {
                     r#"({
                         kind: "fog_volume",
                         density: 0.4,
-                        color: [0.1, 0.2, 0.3],
                         scatter: 0.5,
                         edge_softness: 0.75,
                         // AABB fields silently ignored
@@ -882,7 +869,6 @@ mod tests {
                 panic!("expected FogVolume variant, got {cv:?}");
             };
             assert!((f.density - 0.4).abs() < 1e-6);
-            assert_eq!(f.color, [0.1, 0.2, 0.3]);
             assert!((f.scatter - 0.5).abs() < 1e-6);
             assert!((f.edge_softness - 0.75).abs() < 1e-6);
 
@@ -908,7 +894,6 @@ mod tests {
                 r#"return {
                     kind = "fog_volume",
                     density = 0.4,
-                    color = { 0.1, 0.2, 0.3 },
                     scatter = 0.5,
                     edge_softness = 0.75,
                     -- AABB fields silently ignored
@@ -923,7 +908,6 @@ mod tests {
             panic!("expected FogVolume variant, got {cv:?}");
         };
         assert!((f.density - 0.4).abs() < 1e-6);
-        assert_eq!(f.color, [0.1, 0.2, 0.3]);
         assert!((f.scatter - 0.5).abs() < 1e-6);
         assert!((f.edge_softness - 0.75).abs() < 1e-6);
 

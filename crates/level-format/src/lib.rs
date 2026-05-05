@@ -26,7 +26,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use thiserror::Error;
 
 pub const MAGIC: [u8; 4] = *b"PRL\0";
-pub const CURRENT_VERSION: u16 = 1;
+pub const CURRENT_VERSION: u16 = 2;
 
 const HEADER_SIZE: usize = 8;
 const SECTION_ENTRY_SIZE: usize = 22;
@@ -416,7 +416,7 @@ mod tests {
         let mut cursor = Cursor::new(&buf);
         let meta = read_container(&mut cursor).unwrap();
 
-        assert_eq!(meta.header.version, 1);
+        assert_eq!(meta.header.version, CURRENT_VERSION);
         assert_eq!(meta.header.section_count, 2);
         assert_eq!(meta.sections.len(), 2);
         assert_eq!(meta.sections[0].section_id, SectionId::Geometry as u32);
@@ -533,9 +533,10 @@ mod tests {
         // Magic: b"PRL\0" at offset 0
         assert_eq!(&buf[0..4], b"PRL\0");
 
-        // Version (u16 LE) at offset 4: value 1 => [0x01, 0x00]
-        assert_eq!(buf[4], 0x01);
-        assert_eq!(buf[5], 0x00);
+        // Version (u16 LE) at offset 4 reflects CURRENT_VERSION.
+        let version_bytes = CURRENT_VERSION.to_le_bytes();
+        assert_eq!(buf[4], version_bytes[0]);
+        assert_eq!(buf[5], version_bytes[1]);
 
         // Section count (u16 LE) at offset 6: value 1 => [0x01, 0x00]
         assert_eq!(buf[6], 0x01);
@@ -573,7 +574,7 @@ mod tests {
     fn truncated_section_table() {
         let mut buf = vec![0u8; HEADER_SIZE + 5]; // header + partial entry
         buf[0..4].copy_from_slice(&MAGIC);
-        buf[4..6].copy_from_slice(&1u16.to_le_bytes());
+        buf[4..6].copy_from_slice(&CURRENT_VERSION.to_le_bytes());
         buf[6..8].copy_from_slice(&1u16.to_le_bytes()); // 1 section claimed
 
         let mut cursor = Cursor::new(&buf);

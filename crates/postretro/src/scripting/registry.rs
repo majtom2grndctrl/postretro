@@ -148,7 +148,6 @@ pub(crate) enum ComponentValue {
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub(crate) struct FogVolumeComponent {
     pub(crate) density: f32,
-    pub(crate) color: [f32; 3],
     pub(crate) scatter: f32,
     pub(crate) edge_softness: f32,
 }

@@ -236,7 +236,6 @@ pub fn encode_fog_volumes(
                 density: v.density,
                 max: v.max,
                 edge_softness: v.edge_softness,
-                color: v.color,
                 scatter: v.scatter,
                 radial_falloff: v.radial_falloff,
                 center: center.to_array(),

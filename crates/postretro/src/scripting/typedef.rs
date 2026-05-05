@@ -1045,8 +1045,6 @@ declare module \"postretro\" {
   export type FogVolumeComponent = {
     /** Volumetric fog density inside the AABB. */
     density: number;
-    /** RGB fog color in linear [0, 1]. */
-    color: Vec3;
     /** Fraction of in-scattering toward the camera. */
     scatter: number;
     /** Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face. */
@@ -1136,8 +1134,6 @@ export type SpinAnimation = { duration: number, rate_curve: {number} }
 export type FogVolumeComponent = {
   --- Volumetric fog density inside the AABB.
   density: number,
-  --- RGB fog color in linear [0, 1].
-  color: Vec3,
   --- Fraction of in-scattering toward the camera.
   scatter: number,
   --- Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.

@@ -215,7 +215,7 @@ fn collect_emitter_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_jso
     Value::Array(arr)
 }
 
-/// Build the JSON shape `[{ id, position, tags, component: { density, color,
+/// Build the JSON shape `[{ id, position, tags, component: { density,
 /// scatter, edge_softness } }, ...]` for every entity carrying a
 /// `FogVolumeComponent`. Position is read from the entity's `Transform`
 /// (volume center, baked at level load).
@@ -528,7 +528,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .register_type("FogVolumeComponent")
         .doc("Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable.")
         .field("density", "f32", "Volumetric fog density inside the AABB.")
-        .field("color", "Vec3", "RGB fog color in linear [0, 1].")
         .field("scatter", "f32", "Fraction of in-scattering toward the camera.")
         .field("edge_softness", "f32", "Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.")
         .finish();

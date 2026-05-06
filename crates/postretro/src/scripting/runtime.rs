@@ -893,7 +893,11 @@ mod tests {
             "#,
         );
         let m = rt.run_data_script(&section_ok, &std::env::temp_dir());
-        assert_eq!(m.reactions.len(), 1, "deny-list assert + manifest should round-trip");
+        assert_eq!(
+            m.reactions.len(),
+            1,
+            "deny-list assert + manifest should round-trip"
+        );
     }
 
     #[test]

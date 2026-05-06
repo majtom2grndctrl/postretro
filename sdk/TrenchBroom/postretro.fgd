@@ -130,6 +130,25 @@
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
+// Ellipsoidal volumetric fog brush. The brush's world-space axis-aligned
+// bounding box defines an ellipsoid (radii = AABB half-extents) that is filled
+// with radially-falling-off fog. Use this for large, axis-non-uniform radial
+// fog where each axis needs its own radius — e.g. jumbotron glows or tall
+// streetlight haze that wants a stretched bulb shape. Prefer `fog_volume`
+// (plane-sweep) when you need an arbitrary convex brush hull with hard-edged
+// planes and explicit `edge_softness` control. Prefer `fog_lamp` / `fog_tube`
+// when a uniform-scale sphere or capsule source fits — they are easier to
+// place and carry tuned defaults.
+// Ambient fog color is derived from the scene's SH irradiance volume — there
+// is no per-entity color KVP.
+@SolidClass = fog_ellipsoid : "Ellipsoidal volumetric fog (brush)"
+[
+    density(float) : "Fog density at the ellipsoid center" : "0.5"
+    scatter(float) : "Scattering coefficient" : "0.6"
+    falloff(float) : "Radial falloff exponent (higher = sharper edge)" : "2.0"
+    _tags(string) : "Space-separated tags for scripting queries" : ""
+]
+
 // Semantic fog point entities.
 //
 // Modder pattern for adding a new fog shape:

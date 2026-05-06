@@ -210,10 +210,10 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         if has_brushes {
-            if classname == "fog_volume" {
+            if classname == "fog_volume" || classname == "fog_ellipsoid" {
                 if fog_volumes.len() >= MAX_FOG_VOLUMES {
                     log::warn!(
-                        "[Compiler] fog_volume cap reached ({MAX_FOG_VOLUMES}); skipping additional volume"
+                        "[Compiler] {classname} cap reached ({MAX_FOG_VOLUMES}); skipping additional volume"
                     );
                     continue;
                 }
@@ -223,18 +223,25 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                     .get(entity_id)
                     .cloned()
                     .unwrap_or_default();
-                if brush_ids.len() > 1 {
-                    anyhow::bail!(
-                        "fog_volume entity must own exactly one brush (got {}); \
-                         multi-brush volumes would silently produce a plane intersection \
-                         rather than the union the author likely intended — split into \
-                         separate fog_volume entities",
-                        brush_ids.len()
-                    );
-                }
-                let volume = resolve_fog_volume(&geo_map, &brush_ids, &props, scale, &classname)?;
-                if let Some(v) = volume {
-                    fog_volumes.push(v);
+                if classname == "fog_volume" {
+                    if brush_ids.len() > 1 {
+                        anyhow::bail!(
+                            "fog_volume entity must own exactly one brush (got {}); \
+                             multi-brush volumes would silently produce a plane intersection \
+                             rather than the union the author likely intended — split into \
+                             separate fog_volume entities",
+                            brush_ids.len()
+                        );
+                    }
+                    let volume =
+                        resolve_fog_volume(&geo_map, &brush_ids, &props, scale, &classname)?;
+                    if let Some(v) = volume {
+                        fog_volumes.push(v);
+                    }
+                } else {
+                    let volume =
+                        resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, &classname)?;
+                    fog_volumes.push(volume);
                 }
             }
             continue;
@@ -603,6 +610,100 @@ fn resolve_fog_volume(
         tags,
         is_ellipsoid: false,
     }))
+}
+
+/// Resolve a `fog_ellipsoid` brush entity into an AABB-based ellipsoidal fog volume.
+///
+/// Mirrors `resolve_fog_volume`'s vertex walk but skips face-plane collection.
+/// Multi-brush entities are accepted; their AABBs are unioned into one record.
+fn resolve_fog_ellipsoid(
+    geo_map: &GeoMap,
+    brush_ids: &[BrushId],
+    props: &HashMap<String, String>,
+    scale: f64,
+    classname: &str,
+) -> Result<MapFogVolume> {
+    use shambler::brush::brush_hulls;
+    use shambler::face::{face_planes, face_vertices};
+
+    let geo_planes = face_planes(&geo_map.face_planes);
+    let entity_brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = brush_ids
+        .iter()
+        .filter_map(|bid| {
+            geo_map
+                .brush_faces
+                .get(bid)
+                .map(|faces| (*bid, faces.clone()))
+        })
+        .collect();
+    let hulls = brush_hulls(&entity_brush_faces, &geo_planes);
+    let (face_verts, _) = face_vertices(&entity_brush_faces, &geo_planes, &hulls);
+
+    let mut min = DVec3::splat(f64::INFINITY);
+    let mut max = DVec3::splat(f64::NEG_INFINITY);
+    let mut have_any = false;
+    for verts in face_verts.values() {
+        for v in verts {
+            let p = quake_to_engine(shambler_to_dvec3(v)) * scale;
+            min = min.min(p);
+            max = max.max(p);
+            have_any = true;
+        }
+    }
+    if !have_any {
+        anyhow::bail!(
+            "{classname}: brushes produced no usable vertices — fog_ellipsoid needs a non-degenerate brush"
+        );
+    }
+
+    let extent = max - min;
+    if extent.x <= 0.0 || extent.y <= 0.0 || extent.z <= 0.0 {
+        anyhow::bail!(
+            "{classname}: brush AABB has zero extent on at least one axis ({:.6}, {:.6}, {:.6}) — fog_ellipsoid needs a non-degenerate volume on all three axes",
+            extent.x,
+            extent.y,
+            extent.z,
+        );
+    }
+
+    let density = props
+        .get("density")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.5);
+    let scatter = props
+        .get("scatter")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.6);
+    let radial_falloff = props
+        .get("falloff")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(2.0);
+    let tags: Vec<String> = props
+        .get("_tags")
+        .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
+        .unwrap_or_default();
+
+    log::info!(
+        "[Compiler] {classname}: aabb [{:.3}, {:.3}, {:.3}]–[{:.3}, {:.3}, {:.3}], density={density}, falloff={radial_falloff}",
+        min.x,
+        min.y,
+        min.z,
+        max.x,
+        max.y,
+        max.z,
+    );
+
+    Ok(MapFogVolume {
+        min: [min.x as f32, min.y as f32, min.z as f32],
+        max: [max.x as f32, max.y as f32, max.z as f32],
+        density,
+        edge_softness: 0.0,
+        scatter,
+        radial_falloff,
+        planes: Vec::new(),
+        tags,
+        is_ellipsoid: true,
+    })
 }
 
 /// Resolve a `fog_lamp` point entity into a spherical fog volume.
@@ -1358,4 +1459,113 @@ mod tests {
     // FaceId absent from `face_planes`, or (b) refactoring the guard into a
     // testable helper.  Both are out of scope for the structurally-unreachable
     // case.
+
+    // -- fog_ellipsoid resolution --
+
+    fn fog_ellipsoid_geo_map_from_str(map_text: &str) -> (GeoMap, Vec<shambler::brush::BrushId>) {
+        let shalrath_map: shambler::shalrath::repr::Map = map_text
+            .trim()
+            .parse()
+            .expect("inline map text should parse");
+        let geo_map = GeoMap::new(shalrath_map);
+        let entity_id = geo_map
+            .entities
+            .iter()
+            .find(|id| get_property(&geo_map, id, "classname").as_deref() == Some("fog_ellipsoid"))
+            .copied()
+            .expect("test map must contain a fog_ellipsoid entity");
+        let brush_ids = geo_map
+            .entity_brushes
+            .get(&entity_id)
+            .cloned()
+            .unwrap_or_default();
+        (geo_map, brush_ids)
+    }
+
+    #[test]
+    fn resolve_fog_ellipsoid_box_brush_emits_aabb_and_no_planes() {
+        let map_text = r#"
+// entity 0
+{
+"classname" "worldspawn"
+}
+// entity 1
+{
+"classname" "fog_ellipsoid"
+"falloff" "3.0"
+"density" "0.25"
+"scatter" "0.7"
+{
+( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
+( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) tex 0 0 0 1 1
+(  64 0 0 ) (  64 0 1 ) (  64 1 0 ) tex 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) tex 0 0 0 1 1
+( 0  64 0 ) ( 1  64 0 ) ( 0  64 1 ) tex 0 0 0 1 1
+}
+}
+"#;
+        let (geo_map, brush_ids) = fog_ellipsoid_geo_map_from_str(map_text);
+        let mut props = HashMap::new();
+        props.insert("falloff".to_string(), "3.0".to_string());
+        props.insert("density".to_string(), "0.25".to_string());
+        props.insert("scatter".to_string(), "0.7".to_string());
+        let scale = MapFormat::IdTech2.units_to_meters();
+        let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_ellipsoid")
+            .expect("box brush must resolve");
+
+        assert!(
+            v.is_ellipsoid,
+            "fog_ellipsoid resolver must set is_ellipsoid"
+        );
+        assert!(
+            v.planes.is_empty(),
+            "fog_ellipsoid emits no planes; got {}",
+            v.planes.len()
+        );
+        assert_eq!(v.edge_softness, 0.0);
+        assert!((v.radial_falloff - 3.0).abs() < 1e-6);
+        assert!((v.density - 0.25).abs() < 1e-6);
+        assert!((v.scatter - 0.7).abs() < 1e-6);
+        for i in 0..3 {
+            assert!(
+                v.max[i] > v.min[i],
+                "axis {i} must have positive extent: min={} max={}",
+                v.min[i],
+                v.max[i]
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_fog_ellipsoid_uses_fgd_default_falloff_when_not_set() {
+        let map_text = r#"
+// entity 0
+{
+"classname" "worldspawn"
+}
+// entity 1
+{
+"classname" "fog_ellipsoid"
+{
+( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
+( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) tex 0 0 0 1 1
+(  64 0 0 ) (  64 0 1 ) (  64 1 0 ) tex 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) tex 0 0 0 1 1
+( 0  64 0 ) ( 1  64 0 ) ( 0  64 1 ) tex 0 0 0 1 1
+}
+}
+"#;
+        let (geo_map, brush_ids) = fog_ellipsoid_geo_map_from_str(map_text);
+        let props = HashMap::new();
+        let scale = MapFormat::IdTech2.units_to_meters();
+        let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_ellipsoid")
+            .expect("box brush must resolve");
+        assert!(
+            (v.radial_falloff - 2.0).abs() < 1e-6,
+            "default falloff should be 2.0, got {}",
+            v.radial_falloff
+        );
+    }
 }

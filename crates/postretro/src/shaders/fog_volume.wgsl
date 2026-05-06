@@ -302,12 +302,23 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
             // the volume is a hard cutoff — full density inside, no fade band.
             fade = select(1.0, saturate(min_signed_dist / v.edge_softness), v.edge_softness > 0.0);
         } else {
-            // Semantic path: AABB-only membership with a centered radial fade
-            // shaped by `radial_falloff` (`fog_lamp` sphere, `fog_tube` capsule).
-            let radial_t = clamp(length(pos - v.center) / max(v.half_diag, 1.0e-6), 0.0, 1.0);
-            let radial_inv = 1.0 - radial_t;
-            // Guard against pow(0,0) NaN: clamp both base and exponent away from zero.
-            fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
+            if v.shape_mode > 0.5 {
+                // Ellipsoid path: normalize the offset by per-axis half-extents,
+                // so |rel * inv_half_ext| == 1 traces the ellipsoid surface.
+                // AABB corners outside the ellipsoid still evaluate this math
+                // but reach near-zero density quickly via the `pow` falloff.
+                let rel = pos - v.center;
+                let ellipsoid_t = clamp(length(rel * v.inv_half_ext), 0.0, 1.0);
+                let radial_inv = 1.0 - ellipsoid_t;
+                fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
+            } else {
+                // Semantic path: AABB-only membership with a centered radial fade
+                // shaped by `radial_falloff` (`fog_lamp` sphere, `fog_tube` capsule).
+                let radial_t = clamp(length(pos - v.center) / max(v.half_diag, 1.0e-6), 0.0, 1.0);
+                let radial_inv = 1.0 - radial_t;
+                // Guard against pow(0,0) NaN: clamp both base and exponent away from zero.
+                fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
+            }
         }
 
         out.density = out.density + v.density * fade;

@@ -81,10 +81,11 @@ const MAX_FOG_VOLUMES: u32 = 16u;
 // pair indexes into the `fog_planes` storage buffer (group 6 binding 6).
 //
 // `center` and `half_diag` are shader-active precomputed fields. `inv_half_ext`
-// occupies a layout slot but is not read by the current shader (reserved; dead
-// after height_gradient path removal). `shape_mode` is a discriminant flag
-// (0.0 = legacy radial sphere/capsule fade against `half_diag`, 1.0 = ellipsoid
-// using `inv_half_ext`); compared with `> 0.5` to avoid float precision issues.
+// stores the reciprocal per-axis half-extent and is live on the ellipsoid path
+// (`shape_mode == 1.0`); the legacy radial path (`shape_mode == 0.0`) ignores
+// it. `shape_mode` is a discriminant flag (0.0 = legacy radial sphere/capsule
+// fade against `half_diag`, 1.0 = ellipsoid using `inv_half_ext`); compared
+// with `> 0.5` to avoid float precision issues.
 struct FogVolume {
     min: vec3<f32>,
     density: f32,
@@ -95,7 +96,7 @@ struct FogVolume {
     edge_softness: f32,
     center: vec3<f32>,
     half_diag: f32,
-    inv_half_ext: vec3<f32>,      // reserved; reused by ellipsoid shape mode
+    inv_half_ext: vec3<f32>,      // live when shape_mode == 1.0 (ellipsoid)
     shape_mode: f32,              // 0.0 = radial, 1.0 = ellipsoid (compare `> 0.5`)
     radial_falloff: f32,
     scatter: f32,

@@ -19,11 +19,12 @@ pub const MAX_PLANES_PER_VOLUME: usize = 16;
 /// meters). The runtime spawns one ECS entity per record at level load.
 ///
 /// `center` and `half_diag` are derived from `min`/`max` at compile time and
-/// actively consumed by the raymarch shader. `inv_half_ext` is also baked (for
-/// wire-format self-description) but is not read by the current shader — it
-/// occupied the height_gradient path that was removed. `shape_mode` is a
-/// discriminant flag (0.0 = legacy radial sphere/capsule fade against
-/// `half_diag`, 1.0 = ellipsoid using `inv_half_ext`).
+/// actively consumed by the raymarch shader. `inv_half_ext` (the reciprocal
+/// per-axis half-extent) is also baked from `min`/`max`; the shader reads it
+/// only on the ellipsoid path (`shape_mode == 1.0`) and ignores it on the
+/// legacy radial path (`shape_mode == 0.0`). `shape_mode` is a discriminant
+/// flag (0.0 = legacy radial sphere/capsule fade against `half_diag`, 1.0 =
+/// ellipsoid using `inv_half_ext`).
 ///
 /// Fog color is not stored here — ambient scatter is derived at runtime from
 /// the SH irradiance volume sampled at each raymarch position (see `fog_volume.wgsl::sample_sh_fog`).
@@ -44,7 +45,8 @@ pub struct FogVolumeRecord {
     pub center: [f32; 3],
     /// Reciprocal of the AABB half-extent: `1.0 / max((max - min) * 0.5, 1e-6)`.
     /// Clamped away from zero so degenerate (zero-thickness) volumes don't
-    /// produce infinities in the shader.
+    /// produce infinities in the shader. Consumed only when `shape_mode == 1.0`
+    /// (ellipsoid path); ignored on the legacy radial path.
     pub inv_half_ext: [f32; 3],
     /// Length of the AABB half-extent vector — used as the radial-falloff
     /// normalization radius.

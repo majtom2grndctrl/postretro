@@ -14,10 +14,10 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 /// it. Not runtime-settable — surfacing it would require adding it to
 /// `FogVolumeComponent` and the scripting API — so it lives in a side-table.
 ///
-/// `center`, `inv_half_ext`, and `half_diag` are baked into the PRL by the
-/// level compiler; they're cached here so per-frame fog uploads can copy
-/// precomputed values without recomputing them from min/max. `shape_mode` is
-/// a discriminant flag (0.0 = legacy radial sphere/capsule fade against
+/// `center`, `inv_half_ext`, `half_diag`, and `shape_mode` are baked into the
+/// PRL by the level compiler; they're cached here so per-frame fog uploads can
+/// copy precomputed values without recomputing them from min/max. `shape_mode`
+/// is a discriminant flag (0.0 = legacy radial sphere/capsule fade against
 /// `half_diag`, 1.0 = ellipsoid using `inv_half_ext`); the shader compares
 /// with `> 0.5` to avoid float precision issues.
 pub struct FogVolumeAabb {
@@ -604,6 +604,31 @@ mod tests {
         // Side-table planes mirror the record exactly.
         assert_eq!(planes.len(), 1);
         assert_eq!(planes[0], record.planes);
+    }
+
+    #[test]
+    fn fog_volume_bridge_round_trips_ellipsoid_shape_mode() {
+        // Ellipsoid volumes (`shape_mode == 1.0`) must round-trip from PRL
+        // record → side-table → packed `FogVolume`. The shader compares
+        // `> 0.5` to pick the ellipsoid path, so an inadvertent rename or
+        // reorder on the bridge boundary would silently regress every
+        // ellipsoid volume to the legacy radial fade.
+        let mut record = sample_record();
+        record.shape_mode = 1.0;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[record]);
+
+        let (bytes, _planes, live_mask) = bridge.update_volumes(&registry).expect("one slot");
+        assert_eq!(bytes.len(), std::mem::size_of::<FogVolume>());
+        assert_eq!(live_mask, 0b1);
+        // FogVolume.shape_mode sits at byte offset 60 — see fx/fog_volume.rs.
+        let shape_mode = f32::from_le_bytes(bytes[60..64].try_into().unwrap());
+        assert!(
+            (shape_mode - 1.0).abs() < 1e-6,
+            "ellipsoid shape_mode must survive the bridge; got {shape_mode}"
+        );
     }
 
     #[test]

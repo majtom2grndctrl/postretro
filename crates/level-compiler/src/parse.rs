@@ -1538,6 +1538,115 @@ mod tests {
     }
 
     #[test]
+    fn resolve_fog_ellipsoid_rejects_zero_extent_brush() {
+        // A brush whose top and bottom Z faces sit at the same plane has zero
+        // thickness on the Z axis. shambler computes hull vertices from face
+        // planes, so a zero-thickness slab typically produces no vertices at
+        // all — exercising the "no usable vertices" defensive rejection that
+        // sits in front of the explicit zero-extent check. Either path is an
+        // actionable rejection of a degenerate volume, and naming this test
+        // for the zero-extent symptom keeps the acceptance criterion legible.
+        let map_text = r#"
+// entity 0
+{
+"classname" "worldspawn"
+}
+// entity 1
+{
+"classname" "fog_ellipsoid"
+{
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) tex 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) tex 0 0 0 1 1
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) tex 0 0 0 1 1
+(  64 0 0 ) (  64 0 1 ) (  64 1 0 ) tex 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) tex 0 0 0 1 1
+( 0  64 0 ) ( 1  64 0 ) ( 0  64 1 ) tex 0 0 0 1 1
+}
+}
+"#;
+        let (geo_map, brush_ids) = fog_ellipsoid_geo_map_from_str(map_text);
+        let props = HashMap::new();
+        let scale = MapFormat::IdTech2.units_to_meters();
+        let err = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_ellipsoid")
+            .expect_err("zero-thickness brush must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("fog_ellipsoid")
+                && (msg.contains("no usable vertices") || msg.contains("zero extent")),
+            "error message must name fog_ellipsoid and the degenerate condition; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_fog_ellipsoid_inv_half_ext_matches_aabb_half_extents() {
+        // The acceptance criterion is `inv_half_ext[i] = 1 / ((max[i] - min[i]) * 0.5)`.
+        // The resolver produces `min`/`max`; pack.rs derives `inv_half_ext` from
+        // those. Compose both stages so this test locks the contract end-to-end.
+        //
+        // Quake brush spans (-64..64, -64..64, -32..32). After `quake_to_engine`
+        // (x=-y, y=z, z=-x) and the IdTech2 scale, expected engine extents are:
+        //   x: ±64 * 0.0254, y: ±32 * 0.0254, z: ±64 * 0.0254.
+        let map_text = r#"
+// entity 0
+{
+"classname" "worldspawn"
+}
+// entity 1
+{
+"classname" "fog_ellipsoid"
+{
+( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
+( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) tex 0 0 0 1 1
+(  64 0 0 ) (  64 0 1 ) (  64 1 0 ) tex 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) tex 0 0 0 1 1
+( 0  64 0 ) ( 1  64 0 ) ( 0  64 1 ) tex 0 0 0 1 1
+}
+}
+"#;
+        let (geo_map, brush_ids) = fog_ellipsoid_geo_map_from_str(map_text);
+        let props = HashMap::new();
+        let scale = MapFormat::IdTech2.units_to_meters();
+        let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_ellipsoid")
+            .expect("box brush must resolve");
+
+        let s = scale as f32;
+        let expected_min = [-64.0 * s, -32.0 * s, -64.0 * s];
+        let expected_max = [64.0 * s, 32.0 * s, 64.0 * s];
+        let eps = 1e-5;
+        for i in 0..3 {
+            assert!(
+                (v.min[i] - expected_min[i]).abs() < eps,
+                "min[{i}] = {} expected {}",
+                v.min[i],
+                expected_min[i]
+            );
+            assert!(
+                (v.max[i] - expected_max[i]).abs() < eps,
+                "max[{i}] = {} expected {}",
+                v.max[i],
+                expected_max[i]
+            );
+        }
+
+        // Compose with pack.rs to confirm `inv_half_ext` lands at
+        // `1 / ((max - min) * 0.5)`. This locks the end-to-end contract that
+        // the ellipsoid shader path depends on.
+        let section = crate::pack::encode_fog_volumes(std::slice::from_ref(&v), 1);
+        assert_eq!(section.volumes.len(), 1);
+        let rec = &section.volumes[0];
+        for i in 0..3 {
+            let expected = 1.0 / ((v.max[i] - v.min[i]) * 0.5);
+            assert!(
+                (rec.inv_half_ext[i] - expected).abs() < eps,
+                "inv_half_ext[{i}] = {} expected {}",
+                rec.inv_half_ext[i],
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn resolve_fog_ellipsoid_uses_fgd_default_falloff_when_not_set() {
         let map_text = r#"
 // entity 0

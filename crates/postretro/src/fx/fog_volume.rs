@@ -29,10 +29,12 @@ pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 /// member field name.
 ///
 /// `center` and `half_diag` are baked at compile time by the level compiler and
-/// actively consumed by the raymarch shader. `inv_half_ext` occupies a reserved
-/// layout slot — baked into the wire format but not read by the current shader
-/// (remnant of the removed height_gradient path). `shape_mode` is a discriminant
-/// flag (0.0 = legacy radial sphere/capsule fade against `half_diag`, 1.0 =
+/// actively consumed by the raymarch shader. `inv_half_ext` stores the
+/// reciprocal per-axis half-extent (`1 / ((max - min) * 0.5)`) and is live on
+/// the ellipsoid path: the shader reads it when `shape_mode > 0.5` to scale
+/// `point - center` into the unit-sphere domain. It is ignored on the legacy
+/// radial path (`shape_mode == 0.0`). `shape_mode` is a discriminant flag
+/// (0.0 = legacy radial sphere/capsule fade against `half_diag`, 1.0 =
 /// ellipsoid using `inv_half_ext`).
 ///
 /// Field order pairs each `vec3<f32>` with a trailing scalar so WGSL's 16-byte
@@ -55,8 +57,9 @@ pub struct FogVolume {
     pub edge_softness: f32,
     pub center: [f32; 3],
     pub half_diag: f32,
-    /// Reserved; was used by height_gradient path (removed). Reused by the
-    /// future ellipsoid shape mode.
+    /// Reciprocal per-axis half-extent (`1 / ((max - min) * 0.5)`). Live on
+    /// the ellipsoid path (`shape_mode == 1.0`); ignored on the legacy radial
+    /// path (`shape_mode == 0.0`).
     pub inv_half_ext: [f32; 3],
     /// Shape discriminant: `0.0` = legacy radial (sphere/capsule fade against
     /// `half_diag`), `1.0` = ellipsoid (uses `inv_half_ext`). The shader

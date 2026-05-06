@@ -29,10 +29,11 @@ pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 /// member field name.
 ///
 /// `center` and `half_diag` are baked at compile time by the level compiler and
-/// actively consumed by the raymarch shader. `inv_half_ext` and
-/// `inv_height_extent` occupy reserved layout slots — baked into the wire
-/// format but not read by the current shader (remnants of the removed
-/// height_gradient path).
+/// actively consumed by the raymarch shader. `inv_half_ext` occupies a reserved
+/// layout slot — baked into the wire format but not read by the current shader
+/// (remnant of the removed height_gradient path). `shape_mode` is a discriminant
+/// flag (0.0 = legacy radial sphere/capsule fade against `half_diag`, 1.0 =
+/// ellipsoid using `inv_half_ext`).
 ///
 /// Field order pairs each `vec3<f32>` with a trailing scalar so WGSL's 16-byte
 /// vec3 alignment slots fill naturally without internal padding holes. The
@@ -54,10 +55,13 @@ pub struct FogVolume {
     pub edge_softness: f32,
     pub center: [f32; 3],
     pub half_diag: f32,
-    /// Reserved; was used by height_gradient path (removed).
+    /// Reserved; was used by height_gradient path (removed). Reused by the
+    /// future ellipsoid shape mode.
     pub inv_half_ext: [f32; 3],
-    /// Reserved; was used by height_gradient path (removed).
-    pub inv_height_extent: f32,
+    /// Shape discriminant: `0.0` = legacy radial (sphere/capsule fade against
+    /// `half_diag`), `1.0` = ellipsoid (uses `inv_half_ext`). The shader
+    /// compares with `> 0.5` to avoid float precision issues.
+    pub shape_mode: f32,
     pub radial_falloff: f32,
     pub scatter: f32,
     /// Index of this volume's first plane in the global `fog_planes` storage
@@ -225,7 +229,7 @@ mod tests {
     fn pack_fog_volumes_round_trips_all_baked_fields() {
         // Byte offsets follow the field order: min(0) density(12) max_v(16)
         // edge_softness(28) center(32) half_diag(44) inv_half_ext(48)
-        // inv_height_extent(60) radial_falloff(64) scatter(68)
+        // shape_mode(60) radial_falloff(64) scatter(68)
         // plane_offset(72) plane_count(76). Spot-checking key baked fields
         // catches silent layout drift between Rust and WGSL.
         let v = FogVolume {
@@ -236,7 +240,7 @@ mod tests {
             center: [2.5, 3.5, 4.5],
             half_diag: 2.598_076,
             inv_half_ext: [0.666_666_7, 0.666_666_7, 0.666_666_7],
-            inv_height_extent: 0.333_333_3,
+            shape_mode: 0.0,
             radial_falloff: 0.0,
             scatter: 0.5,
             plane_offset: 0,
@@ -252,7 +256,7 @@ mod tests {
         let center_x = f32::from_le_bytes(bytes[32..36].try_into().unwrap());
         let half_diag = f32::from_le_bytes(bytes[44..48].try_into().unwrap());
         let inv_hx = f32::from_le_bytes(bytes[48..52].try_into().unwrap());
-        let inv_h_ext = f32::from_le_bytes(bytes[60..64].try_into().unwrap());
+        let shape_mode = f32::from_le_bytes(bytes[60..64].try_into().unwrap());
         let radial_falloff = f32::from_le_bytes(bytes[64..68].try_into().unwrap());
         let scatter = f32::from_le_bytes(bytes[68..72].try_into().unwrap());
         let plane_offset = u32::from_le_bytes(bytes[72..76].try_into().unwrap());
@@ -262,7 +266,7 @@ mod tests {
         assert_eq!(center_x, 2.5);
         assert!((half_diag - 2.598_076).abs() < 1e-5);
         assert!((inv_hx - 0.666_666_7).abs() < 1e-5);
-        assert!((inv_h_ext - 0.333_333_3).abs() < 1e-5);
+        assert_eq!(shape_mode, 0.0);
         assert_eq!(radial_falloff, 0.0);
         assert_eq!(scatter, 0.5);
         assert_eq!(plane_offset, 0);

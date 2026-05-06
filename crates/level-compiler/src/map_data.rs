@@ -420,6 +420,11 @@ pub struct MapFogVolume {
     pub planes: Vec<[f32; 4]>,
     /// Author-supplied script tags (FGD `_tags`, pre-split on whitespace).
     pub tags: Vec<String>,
+    /// When `true`, the level compiler bakes `shape_mode = 1.0` into the
+    /// `FogVolumeRecord` so the raymarch shader fades against an ellipsoid
+    /// derived from `inv_half_ext`. When `false` (default for every existing
+    /// producer), the shader uses the legacy radial sphere/capsule fade.
+    pub is_ellipsoid: bool,
 }
 
 #[cfg(test)]

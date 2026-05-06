@@ -14,9 +14,12 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 /// it. Not runtime-settable — surfacing it would require adding it to
 /// `FogVolumeComponent` and the scripting API — so it lives in a side-table.
 ///
-/// `center`, `inv_half_ext`, `half_diag`, and `inv_height_extent` are baked
-/// into the PRL by the level compiler; they're cached here so per-frame fog
-/// uploads can copy precomputed values without recomputing them from min/max.
+/// `center`, `inv_half_ext`, and `half_diag` are baked into the PRL by the
+/// level compiler; they're cached here so per-frame fog uploads can copy
+/// precomputed values without recomputing them from min/max. `shape_mode` is
+/// a discriminant flag (0.0 = legacy radial sphere/capsule fade against
+/// `half_diag`, 1.0 = ellipsoid using `inv_half_ext`); the shader compares
+/// with `> 0.5` to avoid float precision issues.
 pub struct FogVolumeAabb {
     pub min: Vec3,
     pub max: Vec3,
@@ -24,7 +27,7 @@ pub struct FogVolumeAabb {
     pub center: Vec3,
     pub inv_half_ext: Vec3,
     pub half_diag: f32,
-    pub inv_height_extent: f32,
+    pub shape_mode: f32,
 }
 
 /// State carried across frames. Owned by the game layer so the renderer never
@@ -114,7 +117,7 @@ impl FogVolumeBridge {
                     center: Vec3::from(entry.center),
                     inv_half_ext: Vec3::from(entry.inv_half_ext),
                     half_diag: entry.half_diag,
-                    inv_height_extent: entry.inv_height_extent,
+                    shape_mode: entry.shape_mode,
                 },
             );
             self.canonical_planes.push(entry.planes.clone());
@@ -197,7 +200,7 @@ impl FogVolumeBridge {
                     center: aabb.center.to_array(),
                     half_diag: aabb.half_diag,
                     inv_half_ext: aabb.inv_half_ext.to_array(),
-                    inv_height_extent: aabb.inv_height_extent,
+                    shape_mode: aabb.shape_mode,
                     radial_falloff: aabb.radial_falloff,
                     scatter: component.scatter,
                     plane_offset: 0,
@@ -211,7 +214,7 @@ impl FogVolumeBridge {
                     center: [0.0; 3],
                     half_diag: 0.0,
                     inv_half_ext: [0.0; 3],
-                    inv_height_extent: 0.0,
+                    shape_mode: 0.0,
                     radial_falloff: 0.0,
                     scatter: 0.0,
                     plane_offset: 0,
@@ -347,7 +350,7 @@ mod tests {
             center: [0.0, 1.5, 0.0],
             inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
             half_diag: 2.5,
-            inv_height_extent: 1.0 / 3.0,
+            shape_mode: 0.0,
             plane_count: 0,
             planes: vec![],
             tags: vec![],
@@ -388,7 +391,7 @@ mod tests {
         assert_eq!(aabb.center, Vec3::new(0.0, 1.5, 0.0));
         assert_eq!(aabb.inv_half_ext, Vec3::new(0.5, 1.0 / 1.5, 0.5));
         assert_eq!(aabb.half_diag, 2.5);
-        assert_eq!(aabb.inv_height_extent, 1.0 / 3.0);
+        assert_eq!(aabb.shape_mode, 0.0);
     }
 
     #[test]

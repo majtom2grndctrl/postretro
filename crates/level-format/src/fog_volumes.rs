@@ -19,10 +19,11 @@ pub const MAX_PLANES_PER_VOLUME: usize = 16;
 /// meters). The runtime spawns one ECS entity per record at level load.
 ///
 /// `center` and `half_diag` are derived from `min`/`max` at compile time and
-/// actively consumed by the raymarch shader. `inv_half_ext` and
-/// `inv_height_extent` are also baked (for wire-format self-description) but
-/// are not read by the current shader — they occupied the height_gradient path
-/// that was removed and now occupy reserved layout slots.
+/// actively consumed by the raymarch shader. `inv_half_ext` is also baked (for
+/// wire-format self-description) but is not read by the current shader — it
+/// occupied the height_gradient path that was removed. `shape_mode` is a
+/// discriminant flag (0.0 = legacy radial sphere/capsule fade against
+/// `half_diag`, 1.0 = ellipsoid using `inv_half_ext`).
 ///
 /// Fog color is not stored here — ambient scatter is derived at runtime from
 /// the SH irradiance volume sampled at each raymarch position (see `fog_volume.wgsl::sample_sh_fog`).
@@ -48,8 +49,10 @@ pub struct FogVolumeRecord {
     /// Length of the AABB half-extent vector — used as the radial-falloff
     /// normalization radius.
     pub half_diag: f32,
-    /// Reciprocal of `max.y - min.y`, clamped away from zero.
-    pub inv_height_extent: f32,
+    /// Shape discriminant: `0.0` = legacy radial (sphere/capsule fade against
+    /// `half_diag`), `1.0` = ellipsoid (uses `inv_half_ext`). The shader
+    /// compares with `> 0.5` to avoid float precision issues.
+    pub shape_mode: f32,
     /// Number of bounding planes; mirrors `planes.len()` and is baked into the
     /// fixed payload so the wire format header is self-describing.
     pub plane_count: u32,
@@ -76,7 +79,7 @@ pub struct FogVolumeRecord {
 ///     f32  center_x, center_y, center_z
 ///     f32  inv_half_ext_x, inv_half_ext_y, inv_half_ext_z
 ///     f32  half_diag
-///     f32  inv_height_extent
+///     f32  shape_mode
 ///     u32  plane_count
 ///     repeat plane_count:
 ///       f32  nx, ny, nz, d
@@ -124,7 +127,7 @@ impl FogVolumesSection {
                 buf.extend_from_slice(&c.to_le_bytes());
             }
             buf.extend_from_slice(&v.half_diag.to_le_bytes());
-            buf.extend_from_slice(&v.inv_height_extent.to_le_bytes());
+            buf.extend_from_slice(&v.shape_mode.to_le_bytes());
             buf.extend_from_slice(&(v.planes.len() as u32).to_le_bytes());
             for plane in &v.planes {
                 for c in plane {
@@ -173,8 +176,7 @@ impl FogVolumesSection {
             let center = read_vec3(data, &mut o, &format!("volume {i} center"))?;
             let inv_half_ext = read_vec3(data, &mut o, &format!("volume {i} inv_half_ext"))?;
             let half_diag = read_f32(data, &mut o, &format!("volume {i} half_diag"))?;
-            let inv_height_extent =
-                read_f32(data, &mut o, &format!("volume {i} inv_height_extent"))?;
+            let shape_mode = read_f32(data, &mut o, &format!("volume {i} shape_mode"))?;
 
             let plane_count = read_u32(data, &mut o, &format!("volume {i} plane count"))? as usize;
             const PLANE_SIZE: usize = 16;
@@ -222,7 +224,7 @@ impl FogVolumesSection {
                 center,
                 inv_half_ext,
                 half_diag,
-                inv_height_extent,
+                shape_mode,
                 plane_count: plane_count as u32,
                 planes,
                 tags,
@@ -325,7 +327,7 @@ mod tests {
                     center: [0.0, 1.5, 0.0],
                     inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
                     half_diag: 2.5,
-                    inv_height_extent: 1.0 / 3.0,
+                    shape_mode: 0.0,
                     plane_count: 0,
                     planes: vec![],
                     tags: vec!["smoke".to_string(), "ambient".to_string()],
@@ -340,7 +342,7 @@ mod tests {
                     center: [11.0, 2.0, -3.0],
                     inv_half_ext: [1.0, 0.5, 0.5],
                     half_diag: 3.0,
-                    inv_height_extent: 0.25,
+                    shape_mode: 0.0,
                     plane_count: 0,
                     planes: vec![],
                     tags: vec![],
@@ -389,7 +391,7 @@ mod tests {
             center: [0.0, 0.0, 0.0],
             inv_half_ext: [1.0, 1.0, 1.0],
             half_diag: 1.732_050_8,
-            inv_height_extent: 0.5,
+            shape_mode: 0.0,
             plane_count,
             planes,
             tags,
@@ -494,7 +496,7 @@ mod tests {
                 center: [0.5, 0.5, 0.5],
                 inv_half_ext: [2.0, 2.0, 2.0],
                 half_diag: 0.866_025_4,
-                inv_height_extent: 1.0,
+                shape_mode: 0.0,
                 plane_count: 0,
                 planes: vec![],
                 tags: vec![],

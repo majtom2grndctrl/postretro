@@ -601,6 +601,7 @@ fn resolve_fog_volume(
         radial_falloff: 0.0,
         planes,
         tags,
+        is_ellipsoid: false,
     }))
 }
 
@@ -663,6 +664,7 @@ fn resolve_fog_lamp(
         radial_falloff,
         planes: Vec::new(),
         tags,
+        is_ellipsoid: false,
     })
 }
 
@@ -774,6 +776,7 @@ fn resolve_fog_tube(
         radial_falloff,
         planes: Vec::new(),
         tags,
+        is_ellipsoid: false,
     })
 }
 

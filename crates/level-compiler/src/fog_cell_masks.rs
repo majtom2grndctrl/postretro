@@ -110,6 +110,7 @@ mod tests {
             radial_falloff: 0.0,
             planes: Vec::new(),
             tags: Vec::new(),
+            is_ellipsoid: false,
         }
     }
 

@@ -229,7 +229,11 @@ pub fn encode_fog_volumes(
             } else {
                 half_ext.length()
             };
-            let inv_height_extent = 1.0 / (max.y - min.y).max(1.0e-6);
+            // `shape_mode` is a discriminant: 0.0 = legacy radial fade (used by
+            // every existing fog producer — `fog_volume`, `fog_lamp`, `fog_tube`),
+            // 1.0 = ellipsoid. The `is_ellipsoid` boolean on `MapFogVolume` maps
+            // to this float at write time.
+            let shape_mode = if v.is_ellipsoid { 1.0 } else { 0.0 };
 
             FogVolumeRecord {
                 min: v.min,
@@ -241,7 +245,7 @@ pub fn encode_fog_volumes(
                 center: center.to_array(),
                 inv_half_ext: inv_half_ext.to_array(),
                 half_diag,
-                inv_height_extent,
+                shape_mode,
                 plane_count: v.planes.len() as u32,
                 planes: v.planes.clone(),
                 tags: v.tags.clone(),

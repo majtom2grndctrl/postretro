@@ -355,6 +355,9 @@ fn compile_worker_loop(
 /// A path counts as `ModInit` if its parent directory equals `mod_root` and
 /// its file stem is `start-script` (any extension), OR if it is any `.ts`
 /// file directly at the mod root (treated as a likely start-script import).
+/// `.luau` siblings at the mod root are not treated as likely imports — only
+/// `start-script.luau` itself triggers `ModInit` (Luau scripts are loaded by
+/// the VM at require-time, not pre-watched as separate FS events).
 /// Everything else under the watched scripts subtree is a `Scripts` reload.
 fn classify_reload(path: &Path, mod_root: &Path) -> ReloadKind {
     if path.parent() == Some(mod_root) {
@@ -400,7 +403,7 @@ fn handle_path(
             // TS compile path below; observing them in isolation would
             // double-fire, so we only react to mod-root `.js` files.
             //
-            // Self-trigger note: when the `.ts` arm above compiles
+            // Self-trigger note: when the `.ts` arm below compiles
             // `start-script.ts` and writes `start-script.js`, that write fires
             // a second FS event which arrives here as another `ModInit`. The
             // two requests are collapsed by `drain_reload_requests` into a

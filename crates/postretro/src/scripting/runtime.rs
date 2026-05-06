@@ -1034,6 +1034,79 @@ mod tests {
     }
 
     #[test]
+    fn mod_init_luau_missing_setup_mod_errors() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_no_setup");
+        // Module-style script that returns a table with no `setupMod` key —
+        // and never assigns a global `setupMod` either.
+        std::fs::write(dir.join("start-script.luau"), "local x = 1\n").unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("missing setupMod");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(reason.contains("setupMod"), "{reason}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mod_init_luau_setup_mod_throws_errors() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_throws");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() error(\"boom\") end\n",
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("setupMod throws");
+        match err {
+            ScriptError::ScriptThrew { msg, .. } => {
+                assert!(msg.contains("boom"), "{msg}");
+            }
+            other => panic!("expected ScriptThrew, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mod_init_luau_setup_mod_non_table_return_errors() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_non_table");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return 42 end\n",
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("non-table return");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("table"),
+                    "expected 'table' in error reason, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mod_init_luau_setup_mod_missing_name_errors() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_no_name");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return {} end\n",
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("missing name");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(reason.contains("name"), "{reason}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn mod_init_both_js_and_lua_errors() {
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("both");

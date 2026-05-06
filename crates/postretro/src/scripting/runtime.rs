@@ -51,6 +51,10 @@ pub(crate) struct ScriptRuntimeConfig {
 pub(crate) struct ScriptRuntime {
     quickjs: QuickJsSubsystem,
     luau: LuauSubsystem,
+    /// Validated `setupMod()` return value, populated by `run_mod_init`.
+    /// `None` until `run_mod_init` succeeds; in debug builds may also remain
+    /// `None` if no `start-script.{js,luau}` was found at the mod root.
+    mod_manifest: Option<ModManifestResult>,
     /// Dev-mode hot-reload watcher. Debug builds only; release builds omit
     /// the field so `drain_reload_requests` is a no-op with no extra code.
     #[cfg(debug_assertions)]
@@ -74,6 +78,7 @@ impl ScriptRuntime {
         Ok(Self {
             quickjs,
             luau,
+            mod_manifest: None,
             #[cfg(debug_assertions)]
             watcher: None,
         })
@@ -173,13 +178,12 @@ impl ScriptRuntime {
     /// - `setupMod()` throws or returns a non-object value
     /// - the returned object is missing the required `name` field
     ///
-    /// Returns `Ok(None)` only in debug builds when no start-script is found.
+    /// On success, the validated manifest is stored on `self`; access it via
+    /// [`ScriptRuntime::mod_manifest`]. In debug builds when no start-script
+    /// is found, the call still succeeds and the stored manifest stays `None`.
     ///
     /// See: context/lib/scripting.md §2 (Mod-init context lifecycle)
-    pub(crate) fn run_mod_init(
-        &self,
-        mod_root: &Path,
-    ) -> Result<Option<ModManifestResult>, ScriptError> {
+    pub(crate) fn run_mod_init(&mut self, mod_root: &Path) -> Result<(), ScriptError> {
         let js_path = mod_root.join("start-script.js");
         let ts_path = mod_root.join("start-script.ts");
         let luau_path = mod_root.join("start-script.luau");
@@ -236,7 +240,8 @@ impl ScriptRuntime {
                     "[Mod-init] no start-script at `{}` — skipping (debug)",
                     mod_root.display(),
                 );
-                return Ok(None);
+                self.mod_manifest = None;
+                return Ok(());
             }
             #[cfg(not(debug_assertions))]
             {
@@ -270,7 +275,15 @@ impl ScriptRuntime {
         };
 
         log::info!("[Mod-init] mod `{}` initialized", manifest.name);
-        Ok(Some(manifest))
+        self.mod_manifest = Some(manifest);
+        Ok(())
+    }
+
+    /// Returns the validated manifest captured by the most recent successful
+    /// [`ScriptRuntime::run_mod_init`] call. `None` until then, and may also
+    /// remain `None` in debug builds when no start-script was found.
+    pub(crate) fn mod_manifest(&self) -> Option<&ModManifestResult> {
+        self.mod_manifest.as_ref()
     }
 
     /// Read `path` from disk and run it in the appropriate subsystem, chosen
@@ -870,15 +883,35 @@ mod tests {
     #[test]
     #[cfg(debug_assertions)]
     fn mod_init_missing_start_script_debug_returns_none() {
-        let (rt, _ctx) = runtime();
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("missing");
-        let got = rt.run_mod_init(&dir).unwrap();
-        assert!(got.is_none());
+        rt.run_mod_init(&dir).unwrap();
+        assert!(rt.mod_manifest().is_none());
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn mod_init_missing_start_script_release_errors() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("missing_release");
+        let err = rt
+            .run_mod_init(&dir)
+            .expect_err("release builds must require a start-script");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("no `start-script"),
+                    "expected missing-start-script error, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        assert!(rt.mod_manifest().is_none());
     }
 
     #[test]
     fn mod_init_quickjs_registers_entity_type() {
-        let (rt, ctx) = runtime();
+        let (mut rt, ctx) = runtime();
         let dir = temp_mod_root("js_register");
         // start-script.js: registers a player type, then exports `setupMod`.
         std::fs::write(
@@ -890,7 +923,8 @@ mod tests {
         )
         .unwrap();
 
-        let manifest = rt.run_mod_init(&dir).unwrap().expect("Some manifest");
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "TestMod");
         let dr = ctx.data_registry.borrow();
         assert!(
@@ -903,7 +937,7 @@ mod tests {
 
     #[test]
     fn mod_init_luau_registers_entity_type() {
-        let (rt, ctx) = runtime();
+        let (mut rt, ctx) = runtime();
         let dir = temp_mod_root("luau_register");
         std::fs::write(
             dir.join("start-script.luau"),
@@ -916,7 +950,8 @@ mod tests {
         )
         .unwrap();
 
-        let manifest = rt.run_mod_init(&dir).unwrap().expect("Some manifest");
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "TestMod");
         let dr = ctx.data_registry.borrow();
         assert!(
@@ -929,7 +964,7 @@ mod tests {
 
     #[test]
     fn mod_init_missing_setup_mod_errors() {
-        let (rt, _ctx) = runtime();
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("no_setup");
         std::fs::write(dir.join("start-script.js"), "var x = 1;\n").unwrap();
         let err = rt.run_mod_init(&dir).expect_err("missing setupMod");
@@ -943,7 +978,7 @@ mod tests {
 
     #[test]
     fn mod_init_setup_mod_missing_name_errors() {
-        let (rt, _ctx) = runtime();
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("no_name");
         std::fs::write(
             dir.join("start-script.js"),
@@ -961,7 +996,7 @@ mod tests {
 
     #[test]
     fn mod_init_setup_mod_throws_errors() {
-        let (rt, _ctx) = runtime();
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("throws");
         std::fs::write(
             dir.join("start-script.js"),
@@ -979,7 +1014,7 @@ mod tests {
 
     #[test]
     fn mod_init_setup_mod_non_object_return_errors() {
-        let (rt, _ctx) = runtime();
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("non_obj");
         std::fs::write(
             dir.join("start-script.js"),
@@ -1000,7 +1035,7 @@ mod tests {
 
     #[test]
     fn mod_init_both_js_and_lua_errors() {
-        let (rt, _ctx) = runtime();
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("both");
         std::fs::write(
             dir.join("start-script.js"),
@@ -1023,7 +1058,7 @@ mod tests {
 
     #[test]
     fn mod_init_luau_require_resolves_from_mod_root() {
-        let (rt, ctx) = runtime();
+        let (mut rt, ctx) = runtime();
         let dir = temp_mod_root("luau_require");
         // Sub-module returns a descriptor; start-script imports it and registers.
         std::fs::write(
@@ -1045,7 +1080,8 @@ mod tests {
         )
         .unwrap();
 
-        let manifest = rt.run_mod_init(&dir).unwrap().expect("Some manifest");
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "Imported");
         let dr = ctx.data_registry.borrow();
         assert!(
@@ -1058,7 +1094,7 @@ mod tests {
 
     #[test]
     fn mod_init_luau_require_rejects_parent_dir_traversal() {
-        let (rt, _ctx) = runtime();
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("luau_require_traversal");
         std::fs::write(
             dir.join("start-script.luau"),
@@ -1071,7 +1107,8 @@ mod tests {
             "#,
         )
         .unwrap();
-        let manifest = rt.run_mod_init(&dir).unwrap().expect("Some manifest");
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "GuardedMod");
     }
 }

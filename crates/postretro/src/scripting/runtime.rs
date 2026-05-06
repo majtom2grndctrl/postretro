@@ -154,7 +154,8 @@ impl ScriptRuntime {
     ///
     /// `mod_root` is forwarded to the Luau VM so `require("./shared/loot")`
     /// inside data scripts resolves against the mod root, matching the
-    /// mod-init VM's resolver wiring.
+    /// mod-init VM's resolver wiring. For `.js` scripts, `mod_root` is not
+    /// used — the QuickJS data context has no `require` resolver.
     ///
     /// The context is created and dropped within this call.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
@@ -887,7 +888,9 @@ mod tests {
         );
         let manifest = rt.run_data_script(&section, &std::env::temp_dir());
         // No reactions returned, but the asserts above are the contract:
-        // if any pass, the script throws and the manifest comes back empty.
+        // if the deny-list is NOT active, any `assert(x == nil)` call will
+        // throw (condition is false because x is reachable), and the manifest
+        // comes back empty.
         // Re-assert via a positive check that the script ran to completion
         // by looking at logs is not feasible, so this test passes trivially
         // when the deny-list is active. If the deny-list is NOT installed,

@@ -520,6 +520,24 @@ fn resolve_require_path(mod_root: &Path, path: &str) -> Result<PathBuf, String> 
     if trimmed.is_empty() {
         return Err("require: empty path".to_string());
     }
+    // Reject backslashes outright. On Unix `Path` treats `\` as an ordinary
+    // filename character, so a Windows-style `..\escape` would slip past the
+    // `Component::ParentDir` scan below. Rejecting at the string level keeps
+    // behavior consistent across platforms.
+    if trimmed.contains('\\') {
+        return Err(format!(
+            "require(`{path}`): backslashes are not permitted in require paths"
+        ));
+    }
+    // Belt-and-suspenders: also scan the raw string for `..` segments. The
+    // component-level check below is the canonical guard, but the platform
+    // divergence around path separators makes a string-level check cheap
+    // insurance against future regressions.
+    if trimmed.split('/').any(|seg| seg == "..") {
+        return Err(format!(
+            "require(`{path}`): `..` segments are not permitted (mod root escape)"
+        ));
+    }
     let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
     let candidate = Path::new(stripped);
     if candidate.is_absolute() {
@@ -907,5 +925,24 @@ mod tests {
             // must not be visible to author scripts.
             assert_eq!(wrap_ty, "nil", "{which:?}: wrapLightEntity");
         }
+    }
+
+    #[test]
+    fn resolve_require_path_rejects_backslash_path() {
+        // Backslashes never appear in valid mod-root-relative paths. Rejecting
+        // at the string level catches Windows-style `..\escape` traversals
+        // that the Unix `Component::ParentDir` scan would silently accept.
+        let mod_root = Path::new("/tmp/mod");
+        let err = resolve_require_path(mod_root, "..\\escape")
+            .expect_err("backslash path must be rejected");
+        assert!(err.contains("backslash"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_require_path_rejects_literal_dotdot_string() {
+        let mod_root = Path::new("/tmp/mod");
+        let err = resolve_require_path(mod_root, "../escape")
+            .expect_err("`..` traversal must be rejected");
+        assert!(err.contains(".."), "got: {err}");
     }
 }

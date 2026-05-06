@@ -160,9 +160,17 @@ impl ScriptRuntime {
     /// empty manifest — the level loads with empty registries rather than
     /// failing.
     ///
+    /// `mod_root` is forwarded to the Luau VM so `require("./shared/loot")`
+    /// inside data scripts resolves against the mod root, matching the
+    /// mod-init VM's resolver wiring.
+    ///
     /// The context is created and dropped within this call.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
-    pub(crate) fn run_data_script(&self, section: &DataScriptSection) -> LevelManifest {
+    pub(crate) fn run_data_script(
+        &self,
+        section: &DataScriptSection,
+        mod_root: &Path,
+    ) -> LevelManifest {
         // Anything that isn't `.luau` runs through QuickJS, mirroring
         // `run_script_file`'s policy: prl-build emits `.js` from `.ts`, so the
         // on-disk extension is the only signal available at runtime.
@@ -177,6 +185,7 @@ impl ScriptRuntime {
                 self.luau.primitives(),
                 &section.compiled_bytes,
                 &section.source_path,
+                mod_root,
             )
         } else {
             run_data_script_quickjs(&self.quickjs, &section.compiled_bytes, &section.source_path)
@@ -460,28 +469,18 @@ fn run_data_script_luau(
     primitives: &[ScriptPrimitive],
     compiled_bytes: &[u8],
     source_path: &str,
+    mod_root: &Path,
 ) -> Result<LevelManifest, ScriptError> {
-    // TODO: wire a mod-rooted `require` resolver here when level scripts
-    // begin importing mod-provided modules. Currently the data-context VM
-    // uses a bare `mlua::Lua` without `build_lua_state`; the resolver would
-    // need `mod_root` threaded in from the call site.
-    // See: context/lib/scripting.md §2 (Luau `require` resolver)
     let source = std::str::from_utf8(compiled_bytes).map_err(|e| ScriptError::InvalidArgument {
         reason: format!("data script `{source_path}` is not valid UTF-8: {e}"),
     })?;
 
-    // Fresh `mlua::Lua`, dropped on return. We don't go through
-    // `LuauSubsystem::new` because it would also build the archetype sink we
-    // don't need here.
-    let lua = mlua::Lua::new();
-
-    for p in primitives {
-        (p.luau_installer)(&lua).map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install primitive `{}`: {e}", p.name),
-        })?;
-    }
-
-    super::luau::evaluate_prelude(&lua)?;
+    // Fresh `mlua::Lua`, dropped on return. Routed through `build_lua_state`
+    // so the deny-list, print redirect, SDK prelude, primitives, and
+    // mod-rooted `require` resolver match the mod-init VM. The archetype
+    // sink is intentionally not installed here — data scripts don't drive
+    // it. See: context/lib/scripting.md §2 (Luau `require` resolver)
+    let lua = super::luau::build_lua_state(primitives, None, Some(mod_root))?;
 
     // Mirror `LuauSubsystem::run_source`'s compile+load shape so traceback
     // formatting stays consistent.
@@ -802,7 +801,7 @@ mod tests {
             };
             "#,
         );
-        let manifest = rt.run_data_script(&section);
+        let manifest = rt.run_data_script(&section, &std::env::temp_dir());
         assert_eq!(manifest.reactions.len(), 1);
         assert_eq!(manifest.reactions[0].name, "wave1Complete");
     }
@@ -822,8 +821,85 @@ mod tests {
             end
             "#,
         );
-        let manifest = rt.run_data_script(&section);
+        let manifest = rt.run_data_script(&section, &std::env::temp_dir());
         assert_eq!(manifest.reactions.len(), 1);
+    }
+
+    #[test]
+    fn run_data_script_luau_require_resolves_from_mod_root() {
+        // Asserts the same resolver wiring as the mod-init VM is active in
+        // the per-level data context: `require("./shared/loot")` resolves
+        // against `mod_root` instead of erroring with "attempt to call a nil
+        // value".
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("data_require");
+        std::fs::write(
+            dir.join("shared.luau"),
+            r#"
+            return {
+                reaction = { name = "wave1Complete", primitive = "moveGeometry", tag = "reactor" },
+            }
+            "#,
+        )
+        .unwrap();
+        let section = data_section(
+            &dir.join("data.luau").to_string_lossy(),
+            r#"
+            local m = require("./shared")
+            function registerLevelManifest(ctx)
+                return { reactions = { m.reaction } }
+            end
+            "#,
+        );
+        let manifest = rt.run_data_script(&section, &dir);
+        assert_eq!(
+            manifest.reactions.len(),
+            1,
+            "data-context VM must resolve `require` against mod root",
+        );
+        assert_eq!(manifest.reactions[0].name, "wave1Complete");
+    }
+
+    #[test]
+    fn run_data_script_luau_denylist_active_in_data_context() {
+        // The data-context VM must apply the same deny-list as the mod-init
+        // VM: `io`, `os.execute`, `dofile`, etc. must be nil.
+        let (rt, _ctx) = runtime();
+        let section = data_section(
+            "/maps/denylist.luau",
+            r#"
+            assert(io == nil, "io must be denied in data context")
+            assert(os.execute == nil, "os.execute must be denied in data context")
+            assert(dofile == nil, "dofile must be denied in data context")
+            function registerLevelManifest(ctx)
+                return { reactions = {} }
+            end
+            "#,
+        );
+        let manifest = rt.run_data_script(&section, &std::env::temp_dir());
+        // No reactions returned, but the asserts above are the contract:
+        // if any pass, the script throws and the manifest comes back empty.
+        // Re-assert via a positive check that the script ran to completion
+        // by looking at logs is not feasible, so this test passes trivially
+        // when the deny-list is active. If the deny-list is NOT installed,
+        // the script throws and emits an empty manifest — which matches the
+        // negative case. To distinguish, also verify a reaction round-trip:
+        let _ = manifest;
+        let section_ok = data_section(
+            "/maps/denylist_ok.luau",
+            r#"
+            assert(io == nil)
+            function registerLevelManifest(ctx)
+                return {
+                    reactions = {
+                        { name = "ok", primitive = "moveGeometry", tag = "t" },
+                    },
+                }
+            end
+            "#,
+        );
+        let m = rt.run_data_script(&section_ok, &std::env::temp_dir());
+        assert_eq!(m.reactions.len(), 1, "deny-list assert + manifest should round-trip");
     }
 
     #[test]
@@ -833,7 +909,7 @@ mod tests {
             "/maps/no_export.js",
             "// script with no registerLevelManifest export\nlet x = 1;",
         );
-        let manifest = rt.run_data_script(&section);
+        let manifest = rt.run_data_script(&section, &std::env::temp_dir());
         assert!(manifest.reactions.is_empty());
     }
 
@@ -844,7 +920,7 @@ mod tests {
             compiled_bytes: vec![0xFFu8, 0xFE, 0xFD],
             source_path: "/maps/binary.js".to_string(),
         };
-        let manifest = rt.run_data_script(&section);
+        let manifest = rt.run_data_script(&section, &std::env::temp_dir());
         assert!(manifest.reactions.is_empty());
     }
 

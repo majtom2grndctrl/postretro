@@ -645,7 +645,9 @@ impl ApplicationHandler for App {
                     // See: context/lib/scripting.md §2
                     if let Some(world) = &self.level {
                         if let Some(data_script) = &world.data_script {
-                            let mut manifest = self.script_runtime.run_data_script(data_script);
+                            let mut manifest = self
+                                .script_runtime
+                                .run_data_script(data_script, &self.content_root);
                             manifest.reactions = validate_sequence_primitives(
                                 manifest.reactions,
                                 &self.sequence_registry,

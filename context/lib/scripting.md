@@ -23,6 +23,7 @@ Scripting is **strictly single-threaded**. Both rquickjs contexts and mlua state
 | Context | Purpose | Lifetime |
 |---------|---------|----------|
 | Definition | Cross-script data declarations | Engine lifetime |
+| Mod-init | One-time mod entry-point run: `start-script.{ts,luau}` evaluates, then `setupMod()` is called and its `ModManifest` validated; `registerEntity` calls land in the engine-global type registry | Engine init only — created once, dropped after `setupMod` returns |
 | Data | One-time data-script run: `registerEntity` calls plus `registerLevelManifest(ctx)` | Level load only — created once, dropped after the data script completes |
 
 Both are the authoring path: scripts run once at load time and register intent. The shared Definition context accumulates definitions across calls; cross-script globals are intentional. All persistent state flows through Rust primitives, not script globals.
@@ -33,6 +34,10 @@ Both are the authoring path: scripts run once at load time and register intent. 
 - `registerLevelManifest(ctx)` is called once at the end. Its return bundle carries `{reactions}`; only those reactions land in the per-level reaction registry.
 
 The context is dropped after the data script completes. No live reference to the data VM remains. The reaction registry is per-level and clears on unload; the entity-type registry is engine-global. The two registries are separate Rust structures — each can be cleared and repopulated independently.
+
+**Mod-init context lifecycle.** Engine init runs `start-script.{ts,luau}` at the mod root (the content root resolved from the loaded map's path). The script must export a `setupMod()` function that returns a `ModManifest` (`{ name: string }` minimum). The engine errors at init if: both `.js` and `.lua[u]` start-scripts exist; in release builds, neither exists; `setupMod` is not exported; `setupMod` throws; or its return value is missing `name`. In debug builds, an absent start-script is a no-op (no mod-init context is created). Domain scripts (actors, weapons, etc.) are pulled in by the start-script via `import` (TS) or `require` (Luau) — there is no auto-scan. `registerEntity` calls from start-script and its imports populate the engine-global entity-type registry and survive level loads.
+
+**Luau `require` resolver.** The mod-init Luau VM and the per-level data-context Luau VM (added when level scripts begin importing mod-provided modules) install a `require` global rooted at the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau`, compiles it, and returns its export. `..` segments and absolute paths are rejected (mods must not escape their root). Module caching, init-file conventions, and upward search are deliberately omitted — the resolver is the minimum needed to share descriptors across files. The long-lived definition Luau state has no `require` (the deny-list nil's it out); only short-lived VMs with a known mod root install the resolver.
 
 ---
 

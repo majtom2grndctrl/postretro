@@ -189,10 +189,7 @@ fn build_definition_context_from_snapshot(
 }
 
 /// Install each primitive into `ctx`.
-fn install_primitives(
-    ctx: &Ctx<'_>,
-    primitives: &[ScriptPrimitive],
-) -> Result<(), ScriptError> {
+fn install_primitives(ctx: &Ctx<'_>, primitives: &[ScriptPrimitive]) -> Result<(), ScriptError> {
     for p in primitives {
         (p.quickjs_installer)(ctx).map_err(|e| ScriptError::InvalidArgument {
             reason: e.to_string(),

@@ -76,6 +76,12 @@ export type FogVolumeEntity = {
 --- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
 export type EntityTypeComponents = { light?: LightDescriptor?, emitter?: BillboardEmitterComponent? }
 
+--- Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod at engine init. Validation is minimal today (`name` is required); additional fields will be added as the mod system grows.
+export type ModManifest = {
+  --- Human-readable mod name. Required. Used in logs and (eventually) the mod browser UI.
+  name: string,
+}
+
 export type LightKind = "Point" | "Spot" | "Directional"
 
 export type FalloffKind = "Linear" | "InverseDistance" | "InverseSquared"
@@ -153,7 +159,7 @@ export type LightEntity = {
 --- Returns true if the entity id refers to a live entity.
 declare function entityExists(id: EntityId): boolean
 
---- Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in both behavior and data contexts.
+--- Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in definition and data contexts.
 declare function getEntityProperty(id: EntityId, key: string): string?
 
 --- Register an entity type with optional component presets. Definition context only. Survives level unload.
@@ -162,7 +168,7 @@ declare function registerEntity(descriptor: EntityTypeDescriptor): ()
 --- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Definition context.
 declare function setLightAnimation(id: EntityId, animation: LightAnimation | null): ()
 
---- Return an array of entity handles matching the filter. Available in behavior and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`.
+--- Return an array of entity handles matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`.
 declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEntity}) & ((filter: { component: "emitter", tag: string? }) -> {EmitterEntity}) & ((filter: { component: "fog_volume", tag: string? }) -> {FogVolumeEntity}) & ((filter: WorldQueryFilter) -> {Entity})
 
 -- ---------------------------------------------------------------------------

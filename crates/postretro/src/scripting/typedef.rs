@@ -107,6 +107,7 @@ fn rust_to_ts(ty_name: &str) -> String {
         "EntityTypeComponents" => "EntityTypeComponents".to_string(),
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
+        "ModManifest" => "ModManifest".to_string(),
         other => {
             if warned_once(&format!("ts:{other}")) {
                 log::warn!(
@@ -165,6 +166,7 @@ fn rust_to_luau(ty_name: &str) -> String {
         "EntityTypeComponents" => "EntityTypeComponents".to_string(),
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
+        "ModManifest" => "ModManifest".to_string(),
         other => {
             if warned_once(&format!("luau:{other}")) {
                 log::warn!(
@@ -970,6 +972,12 @@ declare module \"postretro\" {
   /** Optional bag of component presets carried by `EntityTypeDescriptor.components`. */
   export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null };
 
+  /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod at engine init. Validation is minimal today (`name` is required); additional fields will be added as the mod system grows. */
+  export type ModManifest = {
+    /** Human-readable mod name. Required. Used in logs and (eventually) the mod browser UI. */
+    name: string;
+  };
+
   /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
 }
@@ -1053,6 +1061,12 @@ export type FogVolumeEntity = {
 
 --- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
 export type EntityTypeComponents = { light?: LightDescriptor?, emitter?: BillboardEmitterComponent? }
+
+--- Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod at engine init. Validation is minimal today (`name` is required); additional fields will be added as the mod system grows.
+export type ModManifest = {
+  --- Human-readable mod name. Required. Used in logs and (eventually) the mod browser UI.
+  name: string,
+}
 
 --- Returns true if the entity id refers to a live entity.
 declare function entityExists(id: EntityId): boolean

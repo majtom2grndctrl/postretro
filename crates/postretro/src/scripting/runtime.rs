@@ -19,6 +19,14 @@ use super::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 #[cfg(debug_assertions)]
 use super::typedef;
 
+/// Validated `setupMod()` return value. Today the engine reads only `name`;
+/// additional fields will appear here as the mod system grows. Construct via
+/// [`ScriptRuntime::run_mod_init`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModManifestResult {
+    pub(crate) name: String,
+}
+
 /// Which scripting scope a given call targets. The subsystem-level `Which`
 /// types (QuickJS, Luau) are private to their modules; this is the
 /// engine-facing selector.
@@ -71,7 +79,6 @@ impl ScriptRuntime {
             watcher: None,
         })
     }
-
 
     /// No-op in release builds (the method still exists so the frame-loop
     /// caller doesn't need a `cfg` gate). Calling twice replaces the previous
@@ -150,6 +157,106 @@ impl ScriptRuntime {
                 LevelManifest::default()
             }
         }
+    }
+
+    /// Run the mod entry point at `mod_root`.
+    ///
+    /// Looks for `start-script.js` (TypeScript-compiled) or `start-script.luau`
+    /// at the mod root. In debug builds, a missing/stale `start-script.js`
+    /// is regenerated from `start-script.ts` if present (skipped in release).
+    /// Both engines run in a short-lived VM context that is created and
+    /// dropped within this call.
+    ///
+    /// Errors:
+    /// - both `start-script.js` and `start-script.luau` exist
+    /// - in release builds, no `start-script.{js,luau}` exists
+    /// - `setupMod` is not exported by the script
+    /// - `setupMod()` throws or returns a non-object value
+    /// - the returned object is missing the required `name` field
+    ///
+    /// Returns `Ok(None)` only in debug builds when no start-script is found.
+    ///
+    /// See: context/lib/scripting.md §2 (Mod-init context lifecycle)
+    pub(crate) fn run_mod_init(
+        &self,
+        mod_root: &Path,
+    ) -> Result<Option<ModManifestResult>, ScriptError> {
+        let js_path = mod_root.join("start-script.js");
+        let ts_path = mod_root.join("start-script.ts");
+        let luau_path = mod_root.join("start-script.luau");
+
+        // In debug, ensure `start-script.js` is up-to-date with `start-script.ts`.
+        // This mirrors the freshness check used by the level-load TS path.
+        #[cfg(debug_assertions)]
+        {
+            if ts_path.is_file() {
+                if let Err(e) = compile_start_script_if_stale(&ts_path, &js_path) {
+                    return Err(ScriptError::InvalidArgument {
+                        reason: format!("mod-init: failed to compile `{}`: {e}", ts_path.display()),
+                    });
+                }
+            }
+        }
+        // `ts_path` is only consulted in debug builds; suppress the unused
+        // binding warning otherwise.
+        #[cfg(not(debug_assertions))]
+        let _ = ts_path;
+
+        let has_js = js_path.is_file();
+        let has_luau = luau_path.is_file();
+
+        if has_js && has_luau {
+            return Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: both `start-script.js` and `start-script.luau` exist at `{}`; \
+                     pick one (the TS->JS compile path is preferred)",
+                    mod_root.display(),
+                ),
+            });
+        }
+
+        if !has_js && !has_luau {
+            #[cfg(debug_assertions)]
+            {
+                log::info!(
+                    "[Mod-init] no start-script at `{}` — skipping (debug)",
+                    mod_root.display(),
+                );
+                return Ok(None);
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                return Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: no `start-script.{{js,luau}}` found at `{}`; \
+                         release builds require a pre-compiled start-script",
+                        mod_root.display(),
+                    ),
+                });
+            }
+        }
+
+        let manifest = if has_js {
+            let source =
+                fs::read_to_string(&js_path).map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("mod-init: failed to read `{}`: {e}", js_path.display()),
+                })?;
+            run_mod_init_quickjs(&self.quickjs, &source, &js_path.to_string_lossy())?
+        } else {
+            let source =
+                fs::read_to_string(&luau_path).map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("mod-init: failed to read `{}`: {e}", luau_path.display()),
+                })?;
+            run_mod_init_luau(
+                self.luau.primitives(),
+                &source,
+                &luau_path.to_string_lossy(),
+                mod_root,
+            )?
+        };
+
+        log::info!("[Mod-init] mod `{}` initialized", manifest.name);
+        Ok(Some(manifest))
     }
 
     /// Read `path` from disk and run it in the appropriate subsystem, chosen
@@ -357,6 +464,178 @@ fn run_data_script_luau(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Mod-init helpers.
+
+/// In debug builds: compile `ts_path` to `js_path` if `js_path` is missing or
+/// older than `ts_path`. Reuses the `scripts-build` sidecar detection cascade
+/// from the watcher.
+#[cfg(debug_assertions)]
+fn compile_start_script_if_stale(ts_path: &Path, js_path: &Path) -> Result<(), String> {
+    let ts_mtime = fs::metadata(ts_path)
+        .and_then(|m| m.modified())
+        .map_err(|e| format!("stat `{}`: {e}", ts_path.display()))?;
+    let needs_build = match fs::metadata(js_path).and_then(|m| m.modified()) {
+        Ok(js_mtime) => js_mtime < ts_mtime,
+        Err(_) => true,
+    };
+    if !needs_build {
+        return Ok(());
+    }
+    let compiler = super::watcher::TsCompilerPath::detect().ok_or_else(|| {
+        "scripts-build not found — install it on PATH or ship it next to the engine binary"
+            .to_string()
+    })?;
+    super::watcher::run_ts_compiler(&compiler, ts_path, js_path)
+}
+
+fn run_mod_init_quickjs(
+    subsys: &QuickJsSubsystem,
+    source: &str,
+    source_path: &str,
+) -> Result<ModManifestResult, ScriptError> {
+    let ctx = JsContext::full(subsys.runtime()).map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: failed to create context: {e}"),
+    })?;
+
+    let primitives = subsys.primitives();
+    let mut out: Result<ModManifestResult, ScriptError> = Err(ScriptError::InvalidArgument {
+        reason: "mod-init: setupMod did not produce a manifest".to_string(),
+    });
+
+    ctx.with(|ctx| {
+        for p in primitives {
+            if let Err(e) = (p.quickjs_installer)(&ctx) {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: failed to install primitive `{}`: {e}", p.name),
+                });
+                return;
+            }
+        }
+
+        if let Err(e) = super::quickjs::evaluate_prelude(&ctx) {
+            out = Err(e);
+            return;
+        }
+
+        if let Err(e) = run_script::<()>(&ctx, source, source_path) {
+            out = Err(e);
+            return;
+        }
+
+        let globals = ctx.globals();
+        let func: JsFunction = match globals.get("setupMod") {
+            Ok(f) => f,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` did not export `setupMod`: {e}"),
+                });
+                return;
+            }
+        };
+
+        let returned: JsValue = match func.call(()).catch(&ctx) {
+            Ok(v) => v,
+            Err(caught) => {
+                let msg = caught.to_string();
+                log::error!(
+                    target: "script/quickjs",
+                    "mod-init: `{source_path}` setupMod threw: {msg}",
+                );
+                out = Err(ScriptError::ScriptThrew {
+                    msg,
+                    source_name: source_path.to_string(),
+                });
+                return;
+            }
+        };
+
+        let obj = match JsObject::from_value(returned) {
+            Ok(o) => o,
+            Err(_) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` setupMod must return an object"),
+                });
+                return;
+            }
+        };
+
+        let name: String = match obj.get("name") {
+            Ok(s) => s,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` setupMod return value missing `name`: {e}"
+                    ),
+                });
+                return;
+            }
+        };
+
+        out = Ok(ModManifestResult { name });
+    });
+
+    out
+}
+
+fn run_mod_init_luau(
+    primitives: &[ScriptPrimitive],
+    source: &str,
+    source_path: &str,
+    mod_root: &Path,
+) -> Result<ModManifestResult, ScriptError> {
+    // The mod-init Luau VM gets a working `require` resolver rooted at the
+    // mod root so start-script can pull in domain scripts.
+    let lua = super::luau::build_lua_state(primitives, None, Some(mod_root))?;
+
+    let bytecode = mlua::Compiler::new()
+        .compile(source)
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: e.to_string(),
+            source_name: source_path.to_string(),
+        })?;
+    lua.load(&bytecode)
+        .set_name(source_path)
+        .set_mode(mlua::ChunkMode::Binary)
+        .exec()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: e.to_string(),
+            source_name: source_path.to_string(),
+        })?;
+
+    let func: mlua::Function =
+        lua.globals()
+            .get("setupMod")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("mod-init: `{source_path}` did not export `setupMod`: {e}"),
+            })?;
+
+    let returned: mlua::Value = func.call(()).map_err(|e| ScriptError::ScriptThrew {
+        msg: e.to_string(),
+        source_name: source_path.to_string(),
+    })?;
+
+    let table = match returned {
+        mlua::Value::Table(t) => t,
+        other => {
+            return Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` setupMod must return a table, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+
+    let name: String = table
+        .get("name")
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod return value missing `name`: {e}"),
+        })?;
+
+    Ok(ModManifestResult { name })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,5 +813,239 @@ mod tests {
         } else {
             eprintln!("1000 primitive calls (debug build, not asserting): {elapsed:?}",);
         }
+    }
+
+    // --- mod-init tests ----------------------------------------------------
+
+    fn temp_mod_root(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "postretro_mod_init_test_{}_{}_{name}",
+            std::process::id(),
+            n,
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn mod_init_missing_start_script_debug_returns_none() {
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("missing");
+        let got = rt.run_mod_init(&dir).unwrap();
+        assert!(got.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_init_quickjs_registers_entity_type() {
+        let (rt, ctx) = runtime();
+        let dir = temp_mod_root("js_register");
+        // start-script.js: registers a player type, then exports `setupMod`.
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            registerEntity({ classname: "info_player_start" });
+            globalThis.setupMod = function() { return { name: "TestMod" }; };
+            "#,
+        )
+        .unwrap();
+
+        let manifest = rt.run_mod_init(&dir).unwrap().expect("Some manifest");
+        assert_eq!(manifest.name, "TestMod");
+        let dr = ctx.data_registry.borrow();
+        assert!(
+            dr.entities
+                .iter()
+                .any(|e| e.classname == "info_player_start"),
+            "registerEntity from start-script must populate the data registry"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_init_luau_registers_entity_type() {
+        let (rt, ctx) = runtime();
+        let dir = temp_mod_root("luau_register");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            registerEntity({ classname = "info_player_start" })
+            function setupMod()
+                return { name = "TestMod" }
+            end
+            "#,
+        )
+        .unwrap();
+
+        let manifest = rt.run_mod_init(&dir).unwrap().expect("Some manifest");
+        assert_eq!(manifest.name, "TestMod");
+        let dr = ctx.data_registry.borrow();
+        assert!(
+            dr.entities
+                .iter()
+                .any(|e| e.classname == "info_player_start"),
+            "registerEntity from start-script.luau must populate the data registry"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_init_missing_setup_mod_errors() {
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("no_setup");
+        std::fs::write(dir.join("start-script.js"), "var x = 1;\n").unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("missing setupMod");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(reason.contains("setupMod"), "{reason}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_init_setup_mod_missing_name_errors() {
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("no_name");
+        std::fs::write(
+            dir.join("start-script.js"),
+            "globalThis.setupMod = function() { return {}; };\n",
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("missing name");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(reason.contains("name"), "{reason}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_init_setup_mod_throws_errors() {
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("throws");
+        std::fs::write(
+            dir.join("start-script.js"),
+            "globalThis.setupMod = function() { throw new Error('boom'); };\n",
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("setupMod throws");
+        match err {
+            ScriptError::ScriptThrew { msg, .. } => {
+                assert!(msg.contains("boom"), "{msg}");
+            }
+            other => panic!("expected ScriptThrew, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_init_setup_mod_non_object_return_errors() {
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("non_obj");
+        std::fs::write(
+            dir.join("start-script.js"),
+            "globalThis.setupMod = function() { return 42; };\n",
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("non-object return");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("object") || reason.contains("name"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_init_both_js_and_lua_errors() {
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("both");
+        std::fs::write(
+            dir.join("start-script.js"),
+            "globalThis.setupMod = function() { return { name: 'A' }; };\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return { name = 'A' } end\n",
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("both present");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(reason.contains("both"), "{reason}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_init_luau_require_resolves_from_mod_root() {
+        let (rt, ctx) = runtime();
+        let dir = temp_mod_root("luau_require");
+        // Sub-module returns a descriptor; start-script imports it and registers.
+        std::fs::write(
+            dir.join("sub.luau"),
+            r#"
+            return { descriptor = { classname = "info_player_start" } }
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            local m = require("./sub")
+            registerEntity(m.descriptor)
+            function setupMod()
+                return { name = "Imported" }
+            end
+            "#,
+        )
+        .unwrap();
+
+        let manifest = rt.run_mod_init(&dir).unwrap().expect("Some manifest");
+        assert_eq!(manifest.name, "Imported");
+        let dr = ctx.data_registry.borrow();
+        assert!(
+            dr.entities
+                .iter()
+                .any(|e| e.classname == "info_player_start"),
+            "domain script imported via require must register its entity type"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_init_luau_require_rejects_parent_dir_traversal() {
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_require_traversal");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            local ok, err = pcall(require, "../escape")
+            if ok then error("expected require to reject ../") end
+            function setupMod()
+                return { name = "GuardedMod" }
+            end
+            "#,
+        )
+        .unwrap();
+        let manifest = rt.run_mod_init(&dir).unwrap().expect("Some manifest");
+        assert_eq!(manifest.name, "GuardedMod");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

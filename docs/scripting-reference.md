@@ -19,6 +19,54 @@
 - Light animation primitives (`flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`, `setLightAnimation`) — still accurate
 - TypeScript/Luau toolchain setup — still accurate
 
+## Mod entry point
+
+Every mod has a single `start-script` at its root that runs once at engine init, before any level loads. This is where cross-level concerns — entity-type registration, game-wide setup — live.
+
+**File location.** Place exactly one of these at the mod root (the `content/<mod>/` directory):
+
+- `start-script.ts` — TypeScript source. Compiled to `start-script.js` automatically in debug builds; ship the compiled `.js` in release builds.
+- `start-script.luau` — Luau source. Read directly.
+
+If both `start-script.js` and `start-script.luau` exist, the engine errors at init.
+
+If neither exists: in debug builds, the engine boots normally with no mod-declared types. In release builds, the engine errors at init.
+
+**`setupMod()` contract.** The script must export a `setupMod()` function that takes no arguments and returns a `ModManifest`:
+
+```typescript
+// start-script.ts
+import { registerEntity } from "postretro";
+import { playerDescriptor } from "./actors/player";
+
+registerEntity(playerDescriptor);
+
+export function setupMod() {
+  return { name: "MyMod" };
+}
+```
+
+```lua
+-- start-script.luau
+local player = require("./actors/player")
+registerEntity(player.descriptor)
+
+function setupMod()
+  return { name = "MyMod" }
+end
+```
+
+`ModManifest` requires a `name` field (string). Additional fields will be added as the mod system grows. The engine errors at init if `setupMod` is missing, throws, returns a non-object, or returns an object without `name`.
+
+**Imports and `require`.**
+
+- TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` symbols are stripped (the symbols arrive as runtime globals).
+- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau` (the `.luau` extension is appended automatically). `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
+
+**Lifecycle.** Entity types registered from `start-script` (and any domain scripts it imports) survive level loads — they live in the engine-global type registry. Reactions are not registered here; those belong in per-level data scripts via `registerLevelManifest`. The mod-init VM is dropped after `setupMod` returns; no script state persists past that point.
+
+---
+
 ## Overview
 
 Behavior scripts are TypeScript (`.ts`) or Luau (`.lua` / `.luau`) files placed in `content/<mod>/scripts/`. The engine loads all scripts automatically when a level starts — no registration file needed. While the engine is running, changing a script file triggers a hot-reload: the new code takes effect on the next event dispatch without restarting the level.

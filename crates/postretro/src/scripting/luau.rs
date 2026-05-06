@@ -7,6 +7,7 @@
 
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use mlua::{Compiler, Function, Lua, Table};
@@ -325,7 +326,10 @@ impl LuauSubsystem {
         let archetypes: ArchetypeAccumulator = Rc::new(RefCell::new(Vec::new()));
         let primitives_snapshot: Vec<ScriptPrimitive> = registry.iter().cloned().collect();
 
-        let definition_lua = build_lua_state(&primitives_snapshot, Some(&archetypes))?;
+        // The long-lived definition state has no mod root — `require` stays
+        // nil'd-out by the deny-list. Mod-init and per-level data-context VMs
+        // are short-lived and built separately with their own mod root.
+        let definition_lua = build_lua_state(&primitives_snapshot, Some(&archetypes), None)?;
 
         Ok(Self {
             definition_lua,
@@ -407,9 +411,17 @@ impl LuauSubsystem {
 // ---------------------------------------------------------------------------
 // Construction helpers.
 
-fn build_lua_state(
+/// Construct an mlua Lua state with the deny-list applied, the `print` redirect
+/// installed, the SDK prelude evaluated, and primitives installed.
+///
+/// `mod_root`, when `Some`, installs a `require` global resolved against the
+/// mod root (see [`install_require_resolver`]). When `None`, `require` stays
+/// nil'd-out by the deny-list — appropriate for the long-lived definition
+/// state and for any helper VM that has no associated mod.
+pub(crate) fn build_lua_state(
     primitives: &[ScriptPrimitive],
     archetypes: Option<&ArchetypeAccumulator>,
+    mod_root: Option<&Path>,
 ) -> Result<Lua, ScriptError> {
     let lua = Lua::new();
 
@@ -428,18 +440,103 @@ fn build_lua_state(
         install_collect_definitions(&lua, accum.clone())?;
     }
 
-    // 5. SDK prelude — installs `world`, `flicker`, `pulse`, etc. as globals.
+    // 5. Mod-rooted `require` resolver. Installed after the deny-list scrub
+    //    overwrites the inherited `require` slot with `nil`. Without a mod
+    //    root, `require` stays nil — matching the definition-context contract.
+    if let Some(root) = mod_root {
+        install_require_resolver(&lua, root)?;
+    }
+
+    // 6. SDK prelude — installs `world`, `flicker`, `pulse`, etc. as globals.
     //    Must run before `sandbox(true)` because the prelude writes to `_G`,
     //    and after primitive install because the prelude calls them.
     evaluate_prelude(&lua)?;
 
-    // 6. Freeze `_G`.
+    // 7. Freeze `_G`.
     lua.sandbox(true)
         .map_err(|e| ScriptError::InvalidArgument {
             reason: e.to_string(),
         })?;
 
     Ok(lua)
+}
+
+/// Install a `require` global rooted at `mod_root`.
+///
+/// # Resolution rules
+///
+/// - The path argument is treated as a relative path. A leading `./` is
+///   stripped; `../` segments are rejected (mods must not escape their root).
+/// - Absolute paths are rejected.
+/// - If the resolved path lacks a `.luau` extension, one is appended.
+/// - The resolved file is read, compiled with `mlua::Compiler`, and executed
+///   in the same Lua state. Its return value (typically a table) is the
+///   value of the `require` call.
+/// - File-not-found, IO failure, compile failure, and runtime error all
+///   surface as `mlua::Error::RuntimeError` so scripts can `pcall` them.
+///
+/// This is intentionally simpler than Luau's full `require()` semantics: no
+/// module caching, no upward path search, no init-file convention. It exists
+/// today to wire `start-script.luau` to its sibling domain scripts; richer
+/// semantics arrive when mods need them.
+fn install_require_resolver(lua: &Lua, mod_root: &Path) -> Result<(), ScriptError> {
+    let mod_root: PathBuf = mod_root.to_path_buf();
+    let f = lua
+        .create_function(move |lua, path: String| -> mlua::Result<mlua::Value> {
+            let resolved =
+                resolve_require_path(&mod_root, &path).map_err(mlua::Error::RuntimeError)?;
+            let source = std::fs::read_to_string(&resolved).map_err(|e| {
+                mlua::Error::RuntimeError(format!(
+                    "require(`{path}`): failed to read `{}`: {e}",
+                    resolved.display()
+                ))
+            })?;
+            let bytecode = Compiler::new().compile(&source).map_err(|e| {
+                mlua::Error::RuntimeError(format!("require(`{path}`): compile failed: {e}"))
+            })?;
+            lua.load(&bytecode)
+                .set_name(resolved.to_string_lossy().as_ref())
+                .set_mode(mlua::ChunkMode::Binary)
+                .eval::<mlua::Value>()
+        })
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
+    lua.globals()
+        .set("require", f)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: e.to_string(),
+        })?;
+    Ok(())
+}
+
+/// Resolve a `require(...)` argument to an absolute path under `mod_root`.
+/// Rejects absolute paths and `..` traversal. Appends `.luau` if missing.
+fn resolve_require_path(mod_root: &Path, path: &str) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("require: empty path".to_string());
+    }
+    let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
+    let candidate = Path::new(stripped);
+    if candidate.is_absolute() {
+        return Err(format!(
+            "require(`{path}`): absolute paths are not permitted"
+        ));
+    }
+    if candidate
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "require(`{path}`): `..` segments are not permitted (mod root escape)"
+        ));
+    }
+    let mut joined = mod_root.join(candidate);
+    if joined.extension().is_none() {
+        joined.set_extension("luau");
+    }
+    Ok(joined)
 }
 
 fn apply_denylist(lua: &Lua) -> Result<(), ScriptError> {
@@ -503,10 +600,7 @@ fn install_print_redirect(lua: &Lua) -> Result<(), ScriptError> {
     Ok(())
 }
 
-fn install_primitives(
-    lua: &Lua,
-    primitives: &[ScriptPrimitive],
-) -> Result<(), ScriptError> {
+fn install_primitives(lua: &Lua, primitives: &[ScriptPrimitive]) -> Result<(), ScriptError> {
     for p in primitives {
         (p.luau_installer)(lua).map_err(|e| ScriptError::InvalidArgument {
             reason: e.to_string(),

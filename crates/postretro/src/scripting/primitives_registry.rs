@@ -784,5 +784,4 @@ mod tests {
         assert!(!ok, "pcall should report failure");
         assert!(msg.contains("panicked"), "unexpected error message: {msg}");
     }
-
 }

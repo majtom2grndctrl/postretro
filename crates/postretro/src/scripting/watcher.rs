@@ -28,7 +28,6 @@
 //!                                            ┌──────────────────────────────┐
 //!                                            │ frame loop                   │
 //!                                            │  drain_reload_requests()     │
-//!                                            │  (no reload action today)    │
 //!                                            └──────────────────────────────┘
 //! ```
 //!
@@ -60,8 +59,9 @@ const DEBOUNCE_MS: u64 = 200;
 
 /// What kind of reload was triggered.
 ///
-/// `Scripts` — a file under the scripts root changed; the engine should
-/// re-run definition scripts (today this is just channel housekeeping).
+/// `Scripts` — a file under the scripts root changed. The frame loop drains
+/// this flag but takes no rebuild action; definition-script hot-reload is not
+/// implemented.
 ///
 /// `ModInit` — `start-script.{ts,js,luau}` (or a `.ts` sibling at the mod
 /// root, treated as a likely import) changed; the engine should re-run
@@ -303,9 +303,10 @@ impl ScriptWatcher {
     /// Drain pending reload requests non-blockingly. Returns a
     /// [`ReloadSummary`] describing which kinds of reload were observed.
     ///
-    /// Every `Scripts` reload re-runs all definition scripts (full rebuild;
-    /// targeted single-file reload not implemented). Every `ModInit` reload
-    /// signals that `run_mod_init` should be re-run.
+    /// A `Scripts` reload sets `summary.scripts = true`; the caller drains it
+    /// but takes no rebuild action — definition-script hot-reload is not
+    /// implemented. A `ModInit` reload signals that `run_mod_init` should be
+    /// re-run.
     pub(crate) fn drain_reload_requests(&mut self) -> Result<ReloadSummary, ScriptError> {
         let mut summary = ReloadSummary::default();
         loop {
@@ -398,6 +399,14 @@ fn handle_path(
             // under `scripts/` are emitted next to their `.ts` source by the
             // TS compile path below; observing them in isolation would
             // double-fire, so we only react to mod-root `.js` files.
+            //
+            // Self-trigger note: when the `.ts` arm above compiles
+            // `start-script.ts` and writes `start-script.js`, that write fires
+            // a second FS event which arrives here as another `ModInit`. The
+            // two requests are collapsed by `drain_reload_requests` into a
+            // single `summary.mod_init = true`. On the re-run,
+            // `compile_start_script_if_stale` sees the `.js` is already fresh
+            // and skips compilation. The double-event is benign.
             if kind == ReloadKind::ModInit {
                 let _ = reload_tx.send(ReloadRequest { kind });
             }

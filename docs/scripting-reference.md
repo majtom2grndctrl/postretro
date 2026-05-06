@@ -1,27 +1,5 @@
 # Scripting Reference
 
-> **This document needs a full rewrite.** The Live VM was removed (see `context/plans/done/remove-live-vm`). Most of the content below is stale. Do not use it as a reference for current scripting.
-
-**Sections to delete entirely:**
-- Events (`registerHandler`, `tick`, `levelLoad` handler examples)
-- `ScriptCallContext` and `HandlerFn` type docs
-- `emitEvent` / `sendEvent` primitive docs
-- `spawnEntity` / `despawnEntity` / `getComponent` / `setComponent` primitive docs
-- Hot reload section (behavior-context reload is gone; file watching still works but triggers no action)
-- Any `pulseDensity`, fog `setDensity`/`setScatter`/`setEdgeSoftness`, light `setIntensity`/`setColor` examples
-- `EasingCurve` builder docs (removed from SDK)
-- Fog volume handle methods (`setDensity`, `setColor`, `setScatter`, `setFalloff`, `pulseDensity`) — Live VM APIs, removed; section should be deleted in the rewrite
-- `FogVolumeHandle` field table — `color` and `falloff` fields corrected (Fix 1), but the full section may have other stale content; review in rewrite
-- `world.query` restriction note ("only valid inside registerHandler callback") — incorrect; available in definition and data contexts; remove or replace in rewrite
-
-**Sections to keep and update:**
-- `registerEntity` — still accurate, update examples to remove `registerHandler` calls
-- `registerReaction` — still accurate
-- `registerLevelManifest` — still accurate
-- `world.query` — still accurate, remove `getComponent` follow-up guidance
-- Light animation primitives (`flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, `sequence`, `setLightAnimation`) — still accurate
-- TypeScript/Luau toolchain setup — still accurate
-
 ## Mod entry point
 
 Every mod has a single `start-script` at its root that runs once at engine init, before any level loads. This is where cross-level concerns — entity-type registration, game-wide setup — live.
@@ -70,52 +48,46 @@ end
 
 ---
 
-## Overview
+## registerEntity
 
-Behavior scripts are TypeScript (`.ts`) or Luau (`.lua` / `.luau`) files placed in `content/<mod>/scripts/`. The engine loads all scripts automatically when a level starts — no registration file needed. While the engine is running, changing a script file triggers a hot-reload: the new code takes effect on the next event dispatch without restarting the level.
+`registerEntity(descriptor)` registers a script-defined entity archetype for use across all levels. Call this from a `start-script` (mod scope), before level load.
 
-Scripts respond to engine events via `registerHandler`. They can query light entities, attach animations, and drive transitions. The GPU evaluates animation curves each frame; scripts only need to set up the animation once.
+| Field | Type | Description |
+|-------|------|-------------|
+| `classname` | `string` | The `.map` classname this archetype matches. Must not conflict with a built-in classname (e.g. `billboard_emitter`) — built-ins take precedence and a warning is logged. |
+| `components.emitter` | `ComponentValue` (optional) | Emitter component attached at spawn. Use `smokeEmitter`, `sparkEmitter`, or `emitter()`. |
+| `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
+
+**Idempotency:** calling `registerEntity` again with the same classname and descriptor is a silent no-op. If the descriptor differs, the new one wins and a debug log is emitted.
+
+**Archetype spawn order:** after built-in classname dispatch runs at level load, the engine sweeps `world.map_entities` a second time and spawns script-registered archetypes for any entity whose classname matched a `registerEntity` call and was not handled as a built-in.
+
+**KVP overrides with `initial_` prefix:** any `initial_`-prefixed key on a `.map` placement (e.g. `initial_rate`, `initial_range`, `initial_is_dynamic`) overrides the matching descriptor field at spawn time. On parse failure the descriptor default is kept and a warning is logged. The key is `initial_` followed by the descriptor's field name (e.g. `initial_range` overrides `LightDescriptor.range`).
+
+> **Naming note:** `BillboardEmitterComponent.initial_velocity` already starts with `initial_`, so the mechanical override key would be `initial_initial_velocity` (prefix doubled). Both `initial_initial_velocity` and the friendlier alias `initial_velocity` are accepted; either writes to `BillboardEmitterComponent.initial_velocity` at spawn. The shortest alias `velocity` is also accepted and writes the same field.
+
+```typescript
+registerEntity({
+  classname: "exhaustPort",
+  components: {
+    emitter: smokeEmitter({ rate: 8, spread: 0.3, lifetime: 2.0 }),
+  },
+});
+
+registerEntity({
+  classname: "campfire",
+  components: {
+    light: { color: [1.0, 0.5, 0.1], range: 256, intensity: 1.2, is_dynamic: true },
+    emitter: sparkEmitter({ rate: 4, spread: 0.5, lifetime: 0.8 }),
+  },
+});
+```
 
 ---
 
-## Events
+## registerLevelManifest
 
-`registerHandler(event, fn)` is the entry point for all script logic.
-
-| Event | Context parameter | When it fires |
-|-------|-------------------|---------------|
-| `"levelLoad"` | none | Once when the level starts. Use this to set up light animations. |
-| `"tick"` | `{ delta: number, time: number }` | Once per frame. `delta` is seconds since the last frame; `time` is seconds since level load. |
-
-Lighting animations do not need `"tick"` — the GPU evaluates the curves each frame without per-frame script involvement. Use `"tick"` only when you need to compute something that cannot be expressed as a pre-built curve.
-
-**TypeScript**
-
-```typescript
-import { registerHandler } from "postretro";
-
-registerHandler("levelLoad", () => {
-  // runs once at level start
-});
-
-registerHandler("tick", (ctx) => {
-  const elapsed = ctx!.time;
-  // runs every frame
-});
-```
-
-**Luau**
-
-```lua
-registerHandler("levelLoad", function()
-  -- runs once at level start
-end)
-
-registerHandler("tick", function(ctx)
-  local elapsed = ctx.time
-  -- runs every frame
-end)
-```
+Per-level data scripts register reactions and other level-scoped state via `registerLevelManifest`. These run when the level starts and apply only to that level.
 
 ---
 
@@ -128,15 +100,15 @@ world.query({ component: "light" })            // all lights → LightEntity[]
 world.query({ component: "light", tag: "foo" }) // only lights tagged "foo"
 ```
 
-Providing a `tag` narrows the result to entities whose tag matches exactly. `world.query` is only valid inside a `registerHandler` callback (behavior context). Calling it outside that context is an error.
+Providing a `tag` narrows the result to entities whose tag matches exactly.
 
 ### LightEntity
 
-Returned when `component` is `"light"`. All fields are a snapshot at query time. `setAnimation`, `setIntensity`, and `setColor` operate on the **live** entity by id and do not require a fresh `world.query`.
+Returned when `component` is `"light"`. All fields are a snapshot at query time. `setAnimation` operates on the **live** entity by id and does not require a fresh `world.query`.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `EntityId` | Stable entity id. Pass to `set_light_animation` and other primitives. |
+| `id` | `EntityId` | Stable entity id. Pass to `setLightAnimation` and other primitives. |
 | `transform.position` | `{ x, y, z }` | Light origin in world space at query time. |
 | `isDynamic` | `boolean` | Whether the light is runtime-dynamic. Sourced from the `_dynamic` key in the `.map` file. Dynamic lights participate in the per-fragment GPU light loop and the shadow-slot scheduler; use this to gate color animations (color animation is only valid on dynamic lights). |
 | `tags` | `string[]` | The entity's tags at query time. Empty array if untagged. |
@@ -144,32 +116,30 @@ Returned when `component` is `"light"`. All fields are a snapshot at query time.
 
 #### Example — rolling wave down a hallway
 
-Tag the hallway lights `"hallway_wave"` in TrenchBroom. The script queries them at level load, sorts along the x axis, and staggers `phase` so the pulse travels.
+Tag the hallway lights `"hallway_wave"` in TrenchBroom. The data script queries them, sorts along the x axis, and staggers `phase` so the pulse travels.
 
 **TypeScript**
 
 ```typescript
-import { registerHandler, world } from "postretro";
+import { world } from "postretro";
 import type { LightAnimation } from "postretro";
 
-registerHandler("levelLoad", () => {
-  const lights = world
-    .query({ component: "light", tag: "hallway_wave" })
-    .sort((a, b) => a.transform.position.x - b.transform.position.x);
+const lights = world
+  .query({ component: "light", tag: "hallway_wave" })
+  .sort((a, b) => a.transform.position.x - b.transform.position.x);
 
-  const pulse: LightAnimation = {
-    periodMs: 10000,
-    brightness: [
-      0.1, 0.1, 0.1, 0.1, 0.1,
-      0.3, 0.8, 1.0, 0.8, 0.3,
-      0.1, 0.1, 0.1, 0.1, 0.1,
-      0.1, 0.1, 0.1, 0.1, 0.1,
-    ],
-  };
+const pulse: LightAnimation = {
+  periodMs: 10000,
+  brightness: [
+    0.1, 0.1, 0.1, 0.1, 0.1,
+    0.3, 0.8, 1.0, 0.8, 0.3,
+    0.1, 0.1, 0.1, 0.1, 0.1,
+    0.1, 0.1, 0.1, 0.1, 0.1,
+  ],
+};
 
-  lights.forEach((light, i) => {
-    light.setAnimation({ ...pulse, phase: i / lights.length });
-  });
+lights.forEach((light, i) => {
+  light.setAnimation({ ...pulse, phase: i / lights.length });
 });
 ```
 
@@ -177,30 +147,28 @@ registerHandler("levelLoad", () => {
 
 ```lua
 -- `world` is a bare global installed by the engine prelude — no require needed.
-registerHandler("levelLoad", function()
-  local lights = world:query({ component = "light", tag = "hallway_wave" })
-  table.sort(lights, function(a, b)
-    return a.transform.position.x < b.transform.position.x
-  end)
-
-  local pulse = {
-    periodMs = 10000,
-    brightness = {
-      0.1, 0.1, 0.1, 0.1, 0.1,
-      0.3, 0.8, 1.0, 0.8, 0.3,
-      0.1, 0.1, 0.1, 0.1, 0.1,
-      0.1, 0.1, 0.1, 0.1, 0.1,
-    },
-  }
-
-  for i, light in ipairs(lights) do
-    light:setAnimation({
-      periodMs = pulse.periodMs,
-      brightness = pulse.brightness,
-      phase = (i - 1) / #lights,
-    })
-  end
+local lights = world:query({ component = "light", tag = "hallway_wave" })
+table.sort(lights, function(a, b)
+  return a.transform.position.x < b.transform.position.x
 end)
+
+local pulse = {
+  periodMs = 10000,
+  brightness = {
+    0.1, 0.1, 0.1, 0.1, 0.1,
+    0.3, 0.8, 1.0, 0.8, 0.3,
+    0.1, 0.1, 0.1, 0.1, 0.1,
+    0.1, 0.1, 0.1, 0.1, 0.1,
+  },
+}
+
+for i, light in ipairs(lights) do
+  light:setAnimation({
+    periodMs = pulse.periodMs,
+    brightness = pulse.brightness,
+    phase = (i - 1) / #lights,
+  })
+end
 ```
 
 ---
@@ -223,7 +191,7 @@ A `LightAnimation` describes one looping (or finite) animation cycle. All fields
 
 ## LightComponent
 
-The full component state returned in `LightEntity.component`. All fields are read-only on the snapshot; use `setAnimation`, `setIntensity`, or `setColor` to mutate the live entity.
+The full component state returned in `LightEntity.component`. All fields are read-only on the snapshot; use `setAnimation` to mutate the live entity.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -377,423 +345,12 @@ light.setAnimation(pulse(0.4, 1.0, 2000));
 light.setAnimation(null); // clears it
 ```
 
-### `setIntensity(target, transitionMs?, easing?)`
-
-Transitions the light's intensity to `target` over `transitionMs` milliseconds. `transitionMs` defaults to `0` (instant). `easing` defaults to `"easeInOut"` when `transitionMs > 0`; ignored for instant transitions.
-
-Reads the **live** intensity from the registry at call time (not the query-time snapshot), so chained transitions compose correctly. Internally constructs a one-cycle `LightAnimation` (`playCount: 1`).
-
-```typescript
-light.setIntensity(0.0, 1500, "easeOut"); // fade to black over 1.5 s
-```
-
-Available easing values: `"linear"`, `"easeIn"`, `"easeOut"`, `"easeInOut"`.
-
-### `setColor(target, transitionMs?, easing?)`
-
-Transitions the light's color to `target` (`[r, g, b]` in TypeScript, `{r, g, b}` positional array in Luau — e.g. `{1.0, 0.4, 0.8}`) over `transitionMs` milliseconds. Same live-read / one-cycle pattern as `setIntensity`. **Dynamic lights only** — throws on baked lights.
-
-```typescript
-light.setColor([1, 0.3, 0], 800); // shift to orange over 800 ms
-```
-
----
-
-## Fog volumes
-
-`env_fog_volume` brush entities placed in TrenchBroom render as localized volumetric haze. The `_tags` FGD key (space-delimited) attaches script-queryable tags to a volume — for example, `_tags neon_haze pulse_slow`.
-
-### `world.query({ component: "fog_volume" })`
-
-Returns an array of `FogVolumeHandle` values, one per `env_fog_volume` entity in the loaded map. Pass an optional `tag` to narrow the result to volumes carrying that tag.
-
-```typescript
-world.query({ component: "fog_volume" });                       // all volumes
-world.query({ component: "fog_volume", tag: "neon_haze" });     // only tagged volumes
-```
-
-```lua
-world:query({ component = "fog_volume" })
-world:query({ component = "fog_volume", tag = "neon_haze" })
-```
-
-### `FogVolumeHandle`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `EntityId` | Stable entity id. |
-| `position` | `{ x, y, z }` | Volume centre at query time (AABB midpoint, baked at level load). |
-| `tags` | `string[]` | The entity's `_tags` at query time. Empty if untagged. |
-| `component` | `FogVolumeComponent` | Snapshot at query time. Carries `density`, `scatter`, `edge_softness`. |
-
-The AABB itself is **not** exposed through `FogVolumeComponent` — it is baked level geometry, not runtime-settable. The bounds live in the engine-side `FogVolumeBridge` side-table and feed the GPU raymarch directly.
-
-#### `setDensity(density, durationMs?)`
-
-Sets the volume's density. `durationMs` defaults to `0` (instant). With a positive duration the value is lerped each tick from the live density to `target` over the given milliseconds. Last call wins — a previous density tween on the same handle is cancelled before the new tween begins.
-
-```typescript
-volume.setDensity(0.0, 1500);   // fade out over 1.5 s
-volume.setDensity(0.6);         // snap back instantly
-```
-
-#### `setColor(color, durationMs?)`
-
-Same pattern for the volume's RGB color. `color` is `[r, g, b]` in TypeScript, `{r, g, b}` positional array in Luau — e.g. `{1.0, 0.4, 0.8}`. `durationMs` defaults to `0` (instant).
-
-```typescript
-volume.setColor([1.0, 0.4, 0.8], 2000); // slow shift to magenta
-```
-
-#### `setScatter(scatter)` / `setFalloff(falloff)`
-
-Instant. `scatter` controls the camera-direction in-scattering fraction; `falloff` sets the AABB edge fade (`0` = uniform to the boundary, `1` = linear ramp from face to centre, larger values = sharper interior dropoff).
-
-```typescript
-volume.setScatter(0.8);
-volume.setFalloff(0.0); // hard box boundary
-```
-
-### `pulseDensity(handle, opts)`
-
-Module-level animation constructor. Oscillates the volume's density sinusoidally between `opts.min` and `opts.max` with `opts.period` milliseconds. Returns an `AnimationController` whose `.stop()` cancels the animation.
-
-```typescript
-import { pulseDensity } from "postretro";
-
-const ctrl = pulseDensity(volume, { min: 0.2, max: 0.6, period: 4000 });
-// later:
-ctrl.stop();
-```
-
-```lua
-local ctrl = pulseDensity(volume, { min = 0.2, max = 0.6, period = 4000 })
--- later:
-ctrl:stop()
-```
-
-`pulseDensity` is implemented as a tick handler that writes `setComponent(id, "fog_volume", ...)` each frame — there is no engine-side fog animation primitive (unlike lights). Multiple `pulseDensity` calls on the same handle stack; call `.stop()` on the previous controller before starting a new one if you do not want overlap.
-
 ---
 
 ## Constraints and errors
 
 | Situation | Result |
 |-----------|--------|
-| Color animation (`color` field or `setColor`) on a non-dynamic light | Throws at the `setAnimation` / `setColor` call site with a message naming the light's entity id. |
+| Color animation (`color` field) on a non-dynamic light | Throws at the `setAnimation` call site with a message naming the light's entity id. |
 | Zero-length vector in `direction` samples | Rejected by `setLightAnimation` with `InvalidArgument`. |
 | Non-unit direction vectors | Silently normalized by the engine. |
-| Calling `world.query` outside a `registerHandler` callback | Error — behavior context only. |
-
----
-
-## Complete example
-
-### TypeScript
-
-Drop this into `content/base/scripts/hallway_wave.ts`. Tag the hallway lights `"hallway_wave"` in TrenchBroom and one additional light `"boss_light"` somewhere in the map.
-
-```typescript
-import { registerHandler, world, pulse, flicker } from "postretro";
-import type { LightAnimation } from "postretro";
-
-registerHandler("levelLoad", () => {
-  // Rolling brightness wave across the hallway
-  const hallway = world
-    .query({ component: "light", tag: "hallway_wave" })
-    .sort((a, b) => a.transform.position.x - b.transform.position.x);
-
-  const wave: LightAnimation = {
-    periodMs: 10000,
-    brightness: [
-      0.1, 0.1, 0.1, 0.1, 0.1,
-      0.3, 0.8, 1.0, 0.8, 0.3,
-      0.1, 0.1, 0.1, 0.1, 0.1,
-      0.1, 0.1, 0.1, 0.1, 0.1,
-    ],
-  };
-
-  hallway.forEach((light, i) => {
-    light.setAnimation({ ...wave, phase: i / hallway.length });
-  });
-
-  // A single flickering boss-room light with a staggered start
-  const [boss] = world.query({ component: "light", tag: "boss_light" });
-  if (boss) {
-    boss.setAnimation({ ...flicker(0.1, 0.9, 12), phase: 0.3 });
-  }
-});
-```
-
-### Luau
-
-```lua
--- `world`, `flicker`, etc. are bare globals installed by the engine prelude — no require needed.
-registerHandler("levelLoad", function()
-  -- Rolling brightness wave across the hallway
-  local hallway = world:query({ component = "light", tag = "hallway_wave" })
-  table.sort(hallway, function(a, b)
-    return a.transform.position.x < b.transform.position.x
-  end)
-
-  local wave = {
-    periodMs = 10000,
-    brightness = {
-      0.1, 0.1, 0.1, 0.1, 0.1,
-      0.3, 0.8, 1.0, 0.8, 0.3,
-      0.1, 0.1, 0.1, 0.1, 0.1,
-      0.1, 0.1, 0.1, 0.1, 0.1,
-    },
-  }
-
-  for i, light in ipairs(hallway) do
-    light:setAnimation({
-      periodMs = wave.periodMs,
-      brightness = wave.brightness,
-      phase = (i - 1) / #hallway,
-    })
-  end
-
-  -- A single flickering boss-room light with a staggered start
-  local bossLights = world:query({ component = "light", tag = "boss_light" })
-  if #bossLights > 0 then
-    local boss = bossLights[1]
-    local anim = flicker(0.1, 0.9, 12)
-    anim.phase = 0.3
-    boss:setAnimation(anim)
-  end
-end)
-```
-
----
-
-## Entity lifecycle
-
-### `spawnEntity(transform, tags?)`
-
-Spawns a new entity at the given transform. `tags` is an optional array of tag strings attached at creation time. Returns an `EntityId`.
-
-```typescript
-const id = spawnEntity(
-  {
-    position: { x: 0, y: 0, z: 64 },
-    rotation: { pitch: 0, yaw: 0, roll: 0 },
-    scale: { x: 1, y: 1, z: 1 },
-  },
-  ["myTag"]
-);
-```
-
-### `despawnEntity(id)`
-
-Removes an entity from the world. The entity stops responding to queries immediately; deferred cleanup runs at end-of-tick.
-
-```typescript
-despawnEntity(id);
-```
-
-### `entityExists(id)`
-
-Returns `true` if the entity is alive, `false` if it has been despawned or was never valid.
-
-```typescript
-if (entityExists(id)) { /* safe to use */ }
-```
-
----
-
-## Query and component access
-
-### `worldQuery(filter)`
-
-Returns an array of entity handles matching the filter. Valid `filter` shapes:
-
-| Filter | Returns | Notes |
-|--------|---------|-------|
-| `{ component: "transform" }` | `{ id, position, tags }[]` | Returns **every** live entity. Filter by `tag` when you need a subset. The returned handle exposes only `id` (`EntityId`), `position` (`{ x, y, z }` in world space at query time), and `tags` (`string[]`). There is no `rotation` or `scale` field on the handle — use `getComponent(id, "transform")` to read the full `Transform` if you need those. |
-| `{ component: "light" }` | `{ id, position, tags, isDynamic, component: LightComponent }[]` | |
-| `{ component: "emitter" }` | `{ id, position, tags, component: BillboardEmitterComponent }[]` | |
-| `{ component: "particle" }` | `[]` | Always empty — particles are not individually observable by scripts. |
-| `{ component: "sprite_visual" }` | `[]` | Always empty — internal rendering detail. |
-| `{ tag: "someTag" }` | filtered subset | Narrows any of the above by tag (exact match). |
-
-Unknown `component` strings throw a `ScriptError`.
-
-> **Note:** `worldQuery({ component: "transform" })` returns every live entity with no cap. Use `{ tag: "..." }` to retrieve a targeted subset.
-
-```typescript
-const all   = worldQuery({ component: "transform" });
-const emitters = worldQuery({ component: "emitter", tag: "campfire" });
-```
-
-### `getComponent(id, kind)`
-
-Returns the current component value for the given entity and component kind string (`"light"`, `"billboard_emitter"`, etc.). Throws a `ScriptError` if the entity does not carry that component — use `entityExists` and `worldQuery` to check presence before calling.
-
-```typescript
-const emitter = getComponent(id, "billboard_emitter");
-```
-
-### `setComponent(id, kind, value)`
-
-Writes a component value onto an entity. The `value` must match the component kind's shape. Changes take effect at the next tick.
-
-> **Note:** `"light"`, `"billboard_emitter"`, `"particle_state"`, and `"sprite_visual"` are read-only via `setComponent`. Use dedicated primitives (`setLightAnimation`, reaction primitives) to mutate those components. Only `"transform"` writes are supported.
-
-```typescript
-setComponent(id, "transform", { kind: "transform", position: { x: 0, y: 0, z: 0 }, rotation: { pitch: 0, yaw: 0, roll: 0 }, scale: { x: 1, y: 1, z: 1 } });
-```
-
-### `getEntityProperty(id, key)`
-
-Reads a per-placement key-value pair authored on the `.map` entity that spawned this entity. Returns the string value for `key`, or `null` if the key was not set. Available on entities spawned via `registerEntity` archetypes and on built-in classname entities (e.g. `billboard_emitter`).
-
-```typescript
-const label = getEntityProperty(id, "display_name"); // null if unset
-```
-
----
-
-## Events
-
-### `emitEvent(event)`
-
-Emits a game event. The event is appended to the `game_events` ring buffer (capacity 1024; oldest entry is evicted when full). The engine drains the buffer at the end of the Game logic phase and logs each entry at `game_events=info`. The event is also broadcast to any script-side handler registered for `kind` via `registerHandler`. Safe to call for event kinds with no registered handler — the call completes cleanly.
-
-```typescript
-emitEvent({ kind: "damage", payload: { source: id, amount: 10 } });
-```
-
-### `sendEvent(targetId, event)`
-
-Sends an event directly to a specific entity. The entity must be alive; calling with a dead id is a no-op.
-
-```typescript
-sendEvent(targetId, { kind: "activate", payload: {} });
-```
-
-### `registerHandler(kind, fn)`
-
-Registers a callback for an event kind. Multiple handlers for the same kind all fire. Valid event kinds:
-
-| Kind | Context parameter | When it fires |
-|------|-------------------|---------------|
-| `"levelLoad"` | none | Once when the level starts. |
-| `"tick"` | `{ delta: number, time: number }` | Once per frame. `delta` is seconds since the last tick; `time` is seconds since level load. |
-
-```typescript
-registerHandler("tick", (ctx) => {
-  const dt = ctx!.delta;
-});
-```
-
----
-
-## Data context
-
-### `registerEntity(descriptor)`
-
-Registers a script-defined entity archetype for use across all levels. Call this from a data script (mod scope), before level load.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `classname` | `string` | The `.map` classname this archetype matches. Must not conflict with a built-in classname (e.g. `billboard_emitter`) — built-ins take precedence and a warning is logged. |
-| `components.emitter` | `ComponentValue` (optional) | Emitter component attached at spawn. Use `smokeEmitter`, `sparkEmitter`, or `emitter()`. |
-| `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
-
-**Idempotency:** calling `registerEntity` again with the same classname and descriptor is a silent no-op. If the descriptor differs, the new one wins and a debug log is emitted.
-
-**Archetype spawn order:** after built-in classname dispatch runs at level load, the engine sweeps `world.map_entities` a second time and spawns script-registered archetypes for any entity whose classname matched a `registerEntity` call and was not handled as a built-in.
-
-**KVP overrides with `initial_` prefix:** any `initial_`-prefixed key on a `.map` placement (e.g. `initial_rate`, `initial_range`, `initial_is_dynamic`) overrides the matching descriptor field at spawn time. On parse failure the descriptor default is kept and a warning is logged. The key is `initial_` followed by the descriptor's field name (e.g. `initial_range` overrides `LightDescriptor.range`).
-
-> **Naming note:** `BillboardEmitterComponent.initial_velocity` already starts with `initial_`, so the mechanical override key would be `initial_initial_velocity` (prefix doubled). Both `initial_initial_velocity` and the friendlier alias `initial_velocity` are accepted; either writes to `BillboardEmitterComponent.initial_velocity` at spawn. The shortest alias `velocity` is also accepted and writes the same field.
-
-**KVP read access:** `getEntityProperty` (see above) is available on entities spawned this way, as well as on entities spawned by built-in classname handlers.
-
-```typescript
-registerEntity({
-  classname: "exhaustPort",
-  components: {
-    emitter: smokeEmitter({ rate: 8, spread: 0.3, lifetime: 2.0 }),
-  },
-});
-
-registerEntity({
-  classname: "campfire",
-  components: {
-    light: { color: [1.0, 0.5, 0.1], range: 256, intensity: 1.2, is_dynamic: true },
-    emitter: sparkEmitter({ rate: 4, spread: 0.5, lifetime: 0.8 }),
-  },
-});
-```
-
----
-
-## Entity API examples
-
-### Data script — registering archetypes
-
-```typescript
-// content/mymod/scripts/entities.ts
-// Runs at mod init (before level load). No import needed — registerEntity,
-// smokeEmitter, and sparkEmitter are engine globals.
-
-registerEntity({
-  classname: "exhaustPort",
-  components: {
-    emitter: smokeEmitter({ rate: 8, spread: 0.3, lifetime: 2.0 }),
-  },
-});
-
-registerEntity({
-  classname: "campfire",
-  components: {
-    light: { color: [1.0, 0.5, 0.1], range: 256, intensity: 1.2, is_dynamic: true },
-    emitter: sparkEmitter({ rate: 4, spread: 0.5, lifetime: 0.8 }),
-  },
-});
-```
-
-### Behavior script — query, get, set, and emit
-
-```typescript
-// content/mymod/scripts/smoke_manager.ts
-import { registerHandler } from "postretro";
-
-registerHandler("levelLoad", () => {
-  // Find all exhaust emitters and boost their rate
-  const ports = worldQuery({ component: "emitter", tag: "boost" });
-  for (const port of ports) {
-    // getComponent is safe here — worldQuery already guarantees the emitter component is present.
-    const comp = getComponent(port.id, "emitter");
-    setComponent(port.id, "emitter", { ...comp, rate: comp.rate * 2 });
-  }
-});
-
-registerHandler("tick", (ctx) => {
-  // Every 5 seconds, emit a gameplay event
-  if (Math.floor(ctx!.time) % 5 === 0 && Math.floor(ctx!.time - ctx!.delta) % 5 !== 0) {
-    emitEvent("ambientPulse", { time: ctx!.time });
-  }
-});
-```
-
-### Level script — levelLoad and tick handlers
-
-```typescript
-// content/mymod/scripts/level_01.ts
-import { registerHandler } from "postretro";
-
-registerHandler("levelLoad", () => {
-  const campfires = worldQuery({ component: "light", tag: "campfire" });
-  for (const fire of campfires) {
-    fire.setAnimation(flicker(0.6, 1.0, 6));
-  }
-});
-
-registerHandler("tick", (ctx) => {
-  const elapsed = ctx!.time;
-  // Tick-driven logic here — prefer pre-built animations over per-tick mutation.
-});
-```

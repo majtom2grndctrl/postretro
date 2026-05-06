@@ -309,16 +309,26 @@ fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
                 // AABB corners outside the ellipsoid still evaluate this math
                 // but reach near-zero density quickly via the `pow` falloff.
                 let rel = pos - v.center;
-                let ellipsoid_t = clamp(length(rel * v.inv_half_ext), 0.0, 1.0);
-                let radial_inv = 1.0 - ellipsoid_t;
-                fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
+                let d = rel * v.inv_half_ext;
+                let ellipsoid_t2 = saturate(dot(d, d));
+                let radial_inv = 1.0 - ellipsoid_t2;
+                if v.radial_falloff <= 0.0 {
+                    fade = 1.0;
+                } else {
+                    fade = pow(max(radial_inv, 1.0e-6), v.radial_falloff);
+                }
             } else {
                 // Semantic path: AABB-only membership with a centered radial fade
                 // shaped by `radial_falloff` (`fog_lamp` sphere, `fog_tube` capsule).
                 let radial_t = clamp(length(pos - v.center) / max(v.half_diag, 1.0e-6), 0.0, 1.0);
                 let radial_inv = 1.0 - radial_t;
-                // Guard against pow(0,0) NaN: clamp both base and exponent away from zero.
-                fade = select(pow(max(radial_inv, 1.0e-6), max(v.radial_falloff, 1.0e-6)), 1.0, v.radial_falloff <= 0.0);
+                // Guard against pow(0,0) NaN: clamp base away from zero.
+                // `pow` is only reached when radial_falloff > 0 (wave-uniform branch).
+                if v.radial_falloff <= 0.0 {
+                    fade = 1.0;
+                } else {
+                    fade = pow(max(radial_inv, 1.0e-6), v.radial_falloff);
+                }
             }
         }
 

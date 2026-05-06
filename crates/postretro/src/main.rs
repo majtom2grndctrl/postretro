@@ -189,10 +189,11 @@ fn main() -> Result<()> {
     // Failure to start the watcher is logged and swallowed — a missing or
     // unwatchable scripts directory must not prevent engine startup.
     let scripts_root = content_root.join("scripts");
-    if let Err(err) = script_runtime.start_watcher(&scripts_root) {
+    if let Err(err) = script_runtime.start_watcher(&scripts_root, &content_root) {
         log::warn!(
-            "[Scripting] failed to start hot-reload watcher on `{}`: {err}",
+            "[Scripting] failed to start hot-reload watcher on `{}` / `{}`: {err}",
             scripts_root.display(),
+            content_root.display(),
         );
     }
 
@@ -616,11 +617,26 @@ impl ApplicationHandler for App {
                 let ticks = frame_result.ticks;
 
                 // Drain pending reload requests so the watcher channel does
-                // not back up. The Live VM is gone, so there is no behavior
-                // context to rebuild — file edits are observed but no reload
-                // sequence runs. See: context/lib/scripting.md
+                // not back up. Definition-script edits are observed but no
+                // behavior-context rebuild runs (Live VM is gone). When a
+                // mod-init reload fires (start-script edited), re-run
+                // `run_mod_init` so the mod manifest stays current without
+                // restarting the engine. See: context/lib/scripting.md
                 match self.script_runtime.drain_reload_requests() {
-                    Ok(_) => {}
+                    Ok(summary) => {
+                        if summary.mod_init {
+                            log::info!(
+                                "[Scripting] start-script changed — re-running mod init",
+                            );
+                            if let Err(err) =
+                                self.script_runtime.run_mod_init(&self.content_root)
+                            {
+                                log::error!(
+                                    "[Scripting] mod-init re-run failed: {err}",
+                                );
+                            }
+                        }
+                    }
                     Err(err) => {
                         log::error!("[Scripting] drain_reload_requests failed: {err}");
                     }

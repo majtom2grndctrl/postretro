@@ -26,6 +26,28 @@ pub(crate) struct ModManifestResult {
     pub(crate) name: String,
 }
 
+/// Aggregated reload signal returned by
+/// [`ScriptRuntime::drain_reload_requests`]. Defined here (rather than under
+/// the debug-only `watcher` module) so release builds can refer to it
+/// without `cfg` gates at every call site.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReloadSummary {
+    /// At least one definition-script change was observed under
+    /// `<mod>/scripts/`.
+    pub(crate) scripts: bool,
+    /// At least one change touched `start-script.{ts,js,luau}` (or a likely
+    /// import sibling) at the mod root; the engine should re-run mod-init.
+    pub(crate) mod_init: bool,
+}
+
+impl ReloadSummary {
+    /// True iff any reload kind fired.
+    #[allow(dead_code)] // used in tests / future call sites
+    pub(crate) fn any(self) -> bool {
+        self.scripts || self.mod_init
+    }
+}
+
 /// Which scripting scope a given call targets. The subsystem-level `Which`
 /// types (QuickJS, Luau) are private to their modules; this is the
 /// engine-facing selector.
@@ -87,11 +109,19 @@ impl ScriptRuntime {
     /// No-op in release builds (the method still exists so the frame-loop
     /// caller doesn't need a `cfg` gate). Calling twice replaces the previous
     /// watcher.
-    pub(crate) fn start_watcher(&mut self, script_root: &Path) -> Result<(), ScriptError> {
+    ///
+    /// `script_root` is watched recursively for definition-script edits;
+    /// `mod_root` is watched non-recursively so changes to
+    /// `start-script.{ts,js,luau}` re-trigger `run_mod_init`.
+    pub(crate) fn start_watcher(
+        &mut self,
+        script_root: &Path,
+        mod_root: &Path,
+    ) -> Result<(), ScriptError> {
         #[cfg(debug_assertions)]
         {
             let ts_compiler = super::watcher::TsCompilerPath::detect();
-            let w = super::watcher::ScriptWatcher::spawn(script_root, ts_compiler)?;
+            let w = super::watcher::ScriptWatcher::spawn(script_root, mod_root, ts_compiler)?;
             self.watcher = Some(w);
         }
         #[cfg(not(debug_assertions))]
@@ -99,21 +129,22 @@ impl ScriptRuntime {
             // In release builds, hot reload is intentionally unavailable;
             // silently ignore so the caller can unconditionally invoke this.
             let _ = script_root;
+            let _ = mod_root;
         }
         Ok(())
     }
 
-    /// Call at the top of each frame. Returns `Ok(true)` when at least one
-    /// reload request was drained. No-op in release builds: always returns
-    /// `Ok(false)`.
-    pub(crate) fn drain_reload_requests(&mut self) -> Result<bool, ScriptError> {
+    /// Call at the top of each frame. Returns a [`ReloadSummary`] describing
+    /// what kinds of reload (if any) were observed. No-op in release builds:
+    /// always returns the default (all flags `false`).
+    pub(crate) fn drain_reload_requests(&mut self) -> Result<ReloadSummary, ScriptError> {
         #[cfg(debug_assertions)]
         {
             if let Some(w) = self.watcher.as_mut() {
                 return w.drain_reload_requests();
             }
         }
-        Ok(false)
+        Ok(ReloadSummary::default())
     }
 
     pub(crate) fn quickjs(&self) -> &QuickJsSubsystem {

@@ -58,12 +58,27 @@ use super::error::ScriptError;
 /// compile step on the critical path.
 const DEBOUNCE_MS: u64 = 200;
 
-/// One reload request enqueued by the compile-worker for the frame loop.
+/// What kind of reload was triggered.
 ///
-/// The request carries no payload: every reload triggers a full rebuild of all
-/// definition scripts, so the specific changed path is not needed downstream.
+/// `Scripts` — a file under the scripts root changed; the engine should
+/// re-run definition scripts (today this is just channel housekeeping).
+///
+/// `ModInit` — `start-script.{ts,js,luau}` (or a `.ts` sibling at the mod
+/// root, treated as a likely import) changed; the engine should re-run
+/// `run_mod_init` so the mod manifest stays current without restarting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReloadKind {
+    Scripts,
+    ModInit,
+}
+
+/// One reload request enqueued by the compile-worker for the frame loop.
 #[derive(Debug, Clone)]
-pub(crate) struct ReloadRequest;
+pub(crate) struct ReloadRequest {
+    pub(crate) kind: ReloadKind,
+}
+
+pub(crate) use super::runtime::ReloadSummary;
 
 /// Where to find the `scripts-build` sidecar, chosen once at startup via the
 /// detection cascade in [`TsCompilerPath::detect`].
@@ -179,13 +194,25 @@ pub(crate) struct ScriptWatcher {
 }
 
 impl ScriptWatcher {
-    /// Start the watcher against `script_root`. `ts_compiler = None` is valid
-    /// — `.ts` files fail to reload with a logged message, `.luau` still works.
+    /// Start the watcher against `script_root` plus the mod root.
+    ///
+    /// `script_root` is watched recursively for `.ts`/`.luau` changes
+    /// (definition scripts under `<mod>/scripts/`).
+    ///
+    /// `mod_root` is watched non-recursively so changes to
+    /// `start-script.{ts,js,luau}` (and any `.ts` siblings, treated as likely
+    /// start-script imports) trigger a `ReloadKind::ModInit` request.
+    /// Non-recursive watching avoids double-watching `<mod>/scripts/`.
+    ///
+    /// `ts_compiler = None` is valid — `.ts` files fail to reload with a
+    /// logged message, `.luau` still works.
     pub(crate) fn spawn(
         script_root: &Path,
+        mod_root: &Path,
         ts_compiler: Option<TsCompilerPath>,
     ) -> Result<Self, ScriptError> {
         let script_root = script_root.to_path_buf();
+        let mod_root = mod_root.to_path_buf();
 
         if let Some(ref c) = ts_compiler {
             info!("[Scripting] TS compiler = {}", c.describe());
@@ -233,10 +260,33 @@ impl ScriptWatcher {
                 reason: format!("failed to watch `{}`: {e}", script_root.display(),),
             })?;
 
-        // Spawn the compile-worker. This thread runs the slow path.
+        // Watch the mod root non-recursively so `start-script.{ts,js,luau}`
+        // edits are observed without double-watching `<mod>/scripts/`.
+        // Skipped silently when mod_root == script_root or when the mod root
+        // does not exist as a directory (uncommon, but possible during tests).
+        if mod_root != script_root && mod_root.is_dir() {
+            debouncer
+                .watch(&mod_root, RecursiveMode::NonRecursive)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!(
+                        "failed to watch mod root `{}`: {e}",
+                        mod_root.display(),
+                    ),
+                })?;
+        }
+
+        // The compile-worker classifies events by comparing the parent of
+        // each changed path against `mod_root`. On macOS, `notify` reports
+        // canonical paths (e.g. `/private/tmp/...`) while a caller may pass
+        // a symlinked path (`/tmp/...`). Canonicalize once up front so the
+        // comparison is path-form-agnostic; fall back to the original on
+        // failure (e.g. directory removed).
+        let mod_root_for_worker = std::fs::canonicalize(&mod_root).unwrap_or_else(|_| mod_root.clone());
         let compile_worker = std::thread::Builder::new()
             .name("postretro-scripting-compile-worker".to_string())
-            .spawn(move || compile_worker_loop(event_rx, reload_tx, ts_compiler))
+            .spawn(move || {
+                compile_worker_loop(event_rx, reload_tx, ts_compiler, mod_root_for_worker)
+            })
             .map_err(|e| ScriptError::InvalidArgument {
                 reason: format!("failed to spawn compile-worker thread: {e}"),
             })?;
@@ -248,22 +298,24 @@ impl ScriptWatcher {
         })
     }
 
-    /// Drain pending reload requests non-blockingly. Returns `Ok(true)` if at
-    /// least one reload request was drained.
+    /// Drain pending reload requests non-blockingly. Returns a
+    /// [`ReloadSummary`] describing which kinds of reload were observed.
     ///
-    /// Every reload re-runs all definition scripts (full rebuild; targeted
-    /// single-file reload not implemented).
-    pub(crate) fn drain_reload_requests(&mut self) -> Result<bool, ScriptError> {
-        let mut any = false;
+    /// Every `Scripts` reload re-runs all definition scripts (full rebuild;
+    /// targeted single-file reload not implemented). Every `ModInit` reload
+    /// signals that `run_mod_init` should be re-run.
+    pub(crate) fn drain_reload_requests(&mut self) -> Result<ReloadSummary, ScriptError> {
+        let mut summary = ReloadSummary::default();
         loop {
             match self.reload_rx.try_recv() {
-                Ok(_req) => {
-                    any = true;
-                }
-                Err(TryRecvError::Empty) => return Ok(any),
+                Ok(req) => match req.kind {
+                    ReloadKind::Scripts => summary.scripts = true,
+                    ReloadKind::ModInit => summary.mod_init = true,
+                },
+                Err(TryRecvError::Empty) => return Ok(summary),
                 Err(TryRecvError::Disconnected) => {
                     // Compile-worker exited; channel is closed.
-                    return Ok(any);
+                    return Ok(summary);
                 }
             }
         }
@@ -276,6 +328,7 @@ fn compile_worker_loop(
     event_rx: Receiver<DebouncedEvent>,
     reload_tx: Sender<ReloadRequest>,
     ts_compiler: Option<TsCompilerPath>,
+    mod_root: PathBuf,
 ) {
     while let Ok(ev) = event_rx.recv() {
         // Filter out event kinds that can't represent a content edit. Modify
@@ -289,9 +342,32 @@ fn compile_worker_loop(
         }
 
         for path in &ev.event.paths {
-            handle_path(path, &reload_tx, ts_compiler.as_ref());
+            handle_path(path, &reload_tx, ts_compiler.as_ref(), &mod_root);
         }
     }
+}
+
+/// Classify a changed path as a `ModInit` or `Scripts` reload.
+///
+/// A path counts as `ModInit` if its parent directory equals `mod_root` and
+/// its file stem is `start-script` (any extension), OR if it is any `.ts`
+/// file directly at the mod root (treated as a likely start-script import).
+/// Everything else under the watched scripts subtree is a `Scripts` reload.
+fn classify_reload(path: &Path, mod_root: &Path) -> ReloadKind {
+    if path.parent() == Some(mod_root) {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        if stem == "start-script" || ext == "ts" {
+            return ReloadKind::ModInit;
+        }
+    }
+    ReloadKind::Scripts
 }
 
 /// Handle one changed path. Decides by extension whether to compile or
@@ -300,16 +376,29 @@ fn handle_path(
     path: &Path,
     reload_tx: &Sender<ReloadRequest>,
     ts_compiler: Option<&TsCompilerPath>,
+    mod_root: &Path,
 ) {
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or_default();
+    let kind = classify_reload(path, mod_root);
 
     match ext {
         "luau" => {
             // Straight-through: Luau reads source directly.
-            let _ = reload_tx.send(ReloadRequest);
+            let _ = reload_tx.send(ReloadRequest { kind });
+        }
+        "js" => {
+            // A `.js` change at the mod root (typically `start-script.js`,
+            // possibly hand-shipped or freshly emitted by `compile_start_script_if_stale`)
+            // should still trigger mod-init re-run. Definition `.js` artifacts
+            // under `scripts/` are emitted next to their `.ts` source by the
+            // TS compile path below; observing them in isolation would
+            // double-fire, so we only react to mod-root `.js` files.
+            if kind == ReloadKind::ModInit {
+                let _ = reload_tx.send(ReloadRequest { kind });
+            }
         }
         "ts" => {
             let Some(compiler) = ts_compiler else {
@@ -324,7 +413,7 @@ fn handle_path(
             let out_path = compiled_output_for(path);
             match run_ts_compiler(compiler, path, &out_path) {
                 Ok(()) => {
-                    let _ = reload_tx.send(ReloadRequest);
+                    let _ = reload_tx.send(ReloadRequest { kind });
                 }
                 Err(msg) => {
                     // Compiler stderr already logged inside run_ts_compiler;
@@ -414,13 +503,75 @@ mod tests {
         false
     }
 
+    /// Like [`wait_for_reload`] but returns the kind of the first request.
+    fn wait_for_reload_kind(watcher: &ScriptWatcher, deadline: Duration) -> Option<ReloadKind> {
+        let start = Instant::now();
+        while start.elapsed() < deadline {
+            if let Ok(req) = watcher.reload_rx.try_recv() {
+                return Some(req.kind);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+
+    #[test]
+    fn classify_reload_mod_root_start_script_is_mod_init() {
+        let mod_root = PathBuf::from("/tmp/fake-mod");
+        // start-script.{ts,js,luau} at the mod root → ModInit.
+        for name in ["start-script.ts", "start-script.js", "start-script.luau"] {
+            let p = mod_root.join(name);
+            assert_eq!(
+                classify_reload(&p, &mod_root),
+                ReloadKind::ModInit,
+                "{name} at mod root should classify as ModInit"
+            );
+        }
+        // Any `.ts` at the mod root is a likely start-script import → ModInit.
+        let import = mod_root.join("helpers.ts");
+        assert_eq!(classify_reload(&import, &mod_root), ReloadKind::ModInit);
+    }
+
+    #[test]
+    fn classify_reload_scripts_subdir_is_scripts() {
+        let mod_root = PathBuf::from("/tmp/fake-mod");
+        let p = mod_root.join("scripts").join("archetypes.ts");
+        assert_eq!(classify_reload(&p, &mod_root), ReloadKind::Scripts);
+        let p = mod_root.join("scripts").join("nested").join("a.luau");
+        assert_eq!(classify_reload(&p, &mod_root), ReloadKind::Scripts);
+    }
+
+    #[test]
+    fn start_script_luau_edit_at_mod_root_triggers_mod_init_reload() {
+        // mod_root has a `scripts/` subdir (watched recursively) and a
+        // `start-script.luau` at the mod root (covered by the non-recursive
+        // mod-root watch).
+        let mod_root = temp_dir("mod_init_luau");
+        let scripts_root = mod_root.join("scripts");
+        fs::create_dir_all(&scripts_root).unwrap();
+        let start = mod_root.join("start-script.luau");
+        fs::write(&start, "-- initial\n").unwrap();
+
+        let watcher = ScriptWatcher::spawn(&scripts_root, &mod_root, None).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+
+        fs::write(&start, "-- edited\n").unwrap();
+
+        let kind = wait_for_reload_kind(&watcher, Duration::from_secs(2));
+        assert_eq!(
+            kind,
+            Some(ReloadKind::ModInit),
+            "editing start-script.luau at the mod root should produce a ModInit reload",
+        );
+    }
+
     #[test]
     fn luau_edit_triggers_reload() {
         let dir = temp_dir("luau_edit");
         let file = dir.join("archetypes.luau");
         fs::write(&file, "-- initial\n").unwrap();
 
-        let watcher = ScriptWatcher::spawn(&dir, None).unwrap();
+        let watcher = ScriptWatcher::spawn(&dir, &dir, None).unwrap();
         // Give the watcher a moment to install itself before mutating.
         std::thread::sleep(Duration::from_millis(100));
 
@@ -441,7 +592,7 @@ mod tests {
         let file = dir.join("archetypes.luau");
         fs::write(&file, "-- initial\n").unwrap();
 
-        let watcher = ScriptWatcher::spawn(&dir, None).unwrap();
+        let watcher = ScriptWatcher::spawn(&dir, &dir, None).unwrap();
         std::thread::sleep(Duration::from_millis(100));
 
         let staging = dir.join("archetypes.luau.tmp");
@@ -504,6 +655,7 @@ mod tests {
 
         let watcher = ScriptWatcher::spawn(
             &dir,
+            &dir,
             Some(TsCompilerPath::ScriptsBuildOnPath(compiler_path.clone())),
         )
         .unwrap();
@@ -533,6 +685,7 @@ mod tests {
         fs::write(&file, "export const x: number = 1;\n").unwrap();
 
         let watcher = ScriptWatcher::spawn(
+            &dir,
             &dir,
             Some(TsCompilerPath::ScriptsBuildOnPath(compiler_path.clone())),
         )

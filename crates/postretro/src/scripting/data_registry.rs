@@ -26,12 +26,14 @@ impl DataRegistry {
         Self::default()
     }
 
-    /// Append a manifest's reactions. Existing reactions are preserved — call
-    /// [`Self::clear`] first for a fresh population. Entity-type descriptors
+    /// Replace the current level's reactions with those from `manifest`.
+    /// Always clears the previous reaction list first — there is one data
+    /// script per level and no append use case. Entity-type descriptors
     /// arrive separately via the `registerEntity` primitive (they outlive
     /// level unload).
-    pub(crate) fn populate_from_manifest(&mut self, manifest: LevelManifest) {
+    pub(crate) fn set_manifest(&mut self, manifest: LevelManifest) {
         let LevelManifest { reactions } = manifest;
+        self.reactions.clear();
         self.reactions.extend(reactions);
     }
 
@@ -116,17 +118,25 @@ mod tests {
     }
 
     #[test]
-    fn populate_appends_manifest_entries() {
+    fn set_manifest_loads_reactions() {
         let mut r = DataRegistry::new();
-        r.populate_from_manifest(sample_manifest());
+        r.set_manifest(sample_manifest());
         assert_eq!(r.reactions.len(), 1);
         assert!(!r.is_empty());
     }
 
     #[test]
+    fn set_manifest_replaces_previous_reactions() {
+        let mut r = DataRegistry::new();
+        r.set_manifest(sample_manifest());
+        r.set_manifest(sample_manifest());
+        assert_eq!(r.reactions.len(), 1, "second set_manifest must not append");
+    }
+
+    #[test]
     fn clear_drops_reactions_but_keeps_entity_descriptors() {
         let mut r = DataRegistry::new();
-        r.populate_from_manifest(sample_manifest());
+        r.set_manifest(sample_manifest());
         r.upsert_entity_type(grunt_descriptor());
         r.clear();
         assert_eq!(r.reactions.len(), 0);

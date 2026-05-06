@@ -634,7 +634,7 @@ impl ApplicationHandler for App {
                             self.script_ctx
                                 .data_registry
                                 .borrow_mut()
-                                .populate_from_manifest(manifest);
+                                .set_manifest(manifest);
                             // Independent of the behavior HandlerTable — a
                             // hot-reload leaves these subscriptions intact.
                             self.progress_tracker.initialize(

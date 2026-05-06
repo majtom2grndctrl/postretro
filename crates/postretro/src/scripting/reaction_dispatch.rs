@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn progress_threshold_fires_when_all_dead_at_full_ratio() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
         });
 
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn progress_does_not_fire_before_threshold() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
         });
 
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn progress_fires_at_partial_ratio_when_at_below_one() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![progress_reaction("half", "wave1", 0.5, "midwave")],
         });
 
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn multi_tag_entity_decrements_both_buckets_independently() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![
                 progress_reaction("waveDone", "wave1", 1.0, "powerOn"),
                 progress_reaction("reactorDown", "reactorMonster", 1.0, "reactorOff"),
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn multi_tag_entity_fires_both_subscriptions() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![
                 progress_reaction("waveDone", "wave1", 0.5, "powerOn"),
                 progress_reaction("reactorDown", "reactorMonster", 0.5, "reactorOff"),
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn clear_drops_all_subscriptions() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
         });
         let mut entities = EntityRegistry::new();
@@ -449,7 +449,7 @@ mod tests {
     fn progress_with_zero_total_never_fires() {
         // `total == 0` at init: no division-by-zero and threshold never fires.
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "ghosts", 1.0, "spooky")],
         });
         let entities = EntityRegistry::new();
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn fire_named_event_on_primitive_returns_on_complete_chain() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![primitive_reaction(
                 "wave1Complete",
                 "moveGeometry",
@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn fire_named_event_on_primitive_without_on_complete_returns_empty() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![primitive_reaction(
                 "wave2Revealed",
                 "activateGroup",
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn fire_named_event_on_progress_is_a_noop() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
         });
         let chained = fire_named_event("waveDone", &data);
@@ -567,7 +567,7 @@ mod tests {
         });
 
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![sequence_reaction(
                 "go",
                 vec![
@@ -614,7 +614,7 @@ mod tests {
         });
 
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![sequence_reaction(
                 "go",
                 vec![
@@ -663,7 +663,7 @@ mod tests {
         });
 
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
+        data.set_manifest(LevelManifest {
             reactions: vec![sequence_reaction(
                 "go",
                 vec![

@@ -404,6 +404,11 @@ fn run_data_script_luau(
     compiled_bytes: &[u8],
     source_path: &str,
 ) -> Result<LevelManifest, ScriptError> {
+    // TODO: wire a mod-rooted `require` resolver here when level scripts
+    // begin importing mod-provided modules. Currently the data-context VM
+    // uses a bare `mlua::Lua` without `build_lua_state`; the resolver would
+    // need `mod_root` threaded in from the call site.
+    // See: context/lib/scripting.md §2 (Luau `require` resolver)
     let source = std::str::from_utf8(compiled_bytes).map_err(|e| ScriptError::InvalidArgument {
         reason: format!("data script `{source_path}` is not valid UTF-8: {e}"),
     })?;
@@ -959,8 +964,8 @@ mod tests {
         match err {
             ScriptError::InvalidArgument { reason } => {
                 assert!(
-                    reason.contains("object") || reason.contains("name"),
-                    "{reason}"
+                    reason.contains("object"),
+                    "expected 'object' in error reason, got: {reason}"
                 );
             }
             other => panic!("expected InvalidArgument, got {other:?}"),

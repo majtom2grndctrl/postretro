@@ -10,6 +10,9 @@
 - Hot reload section (behavior-context reload is gone; file watching still works but triggers no action)
 - Any `pulseDensity`, fog `setDensity`/`setScatter`/`setEdgeSoftness`, light `setIntensity`/`setColor` examples
 - `EasingCurve` builder docs (removed from SDK)
+- Fog volume handle methods (`setDensity`, `setColor`, `setScatter`, `setFalloff`, `pulseDensity`) — Live VM APIs, removed; section should be deleted in the rewrite
+- `FogVolumeHandle` field table — `color` and `falloff` fields corrected (Fix 1), but the full section may have other stale content; review in rewrite
+- `world.query` restriction note ("only valid inside registerHandler callback") — incorrect; available in definition and data contexts; remove or replace in rewrite
 
 **Sections to keep and update:**
 - `registerEntity` — still accurate, update examples to remove `registerHandler` calls
@@ -421,7 +424,7 @@ world:query({ component = "fog_volume", tag = "neon_haze" })
 | `id` | `EntityId` | Stable entity id. |
 | `position` | `{ x, y, z }` | Volume centre at query time (AABB midpoint, baked at level load). |
 | `tags` | `string[]` | The entity's `_tags` at query time. Empty if untagged. |
-| `component` | `FogVolumeComponent` | Snapshot at query time. Carries `density`, `color` (RGB triplet), `scatter`, `falloff`. |
+| `component` | `FogVolumeComponent` | Snapshot at query time. Carries `density`, `scatter`, `edge_softness`. |
 
 The AABB itself is **not** exposed through `FogVolumeComponent` — it is baked level geometry, not runtime-settable. The bounds live in the engine-side `FogVolumeBridge` side-table and feed the GPU raymarch directly.
 

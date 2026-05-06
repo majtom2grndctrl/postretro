@@ -692,8 +692,7 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
 
 /// Static type declarations for the Luau SDK library globals installed by
 /// the embedded `world.luau`, `entities/lights.luau`, `entities/emitters.luau`,
-/// `entities/fog_volumes.luau` (provides the temporary
-/// `wrapFogVolumeEntity` bridge), and `util/keyframes.luau` preludes. Appended to the generated
+/// `entities/fog_volumes.luau`, and `util/keyframes.luau` preludes. Appended to the generated
 /// `postretro.d.luau` so `luau-lsp` resolves the symbols without an explicit
 /// `require`. See: context/lib/scripting.md §7.
 // Source of truth for this static block:
@@ -702,7 +701,7 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
 //   sdk/lib/entities/emitters.luau
 //   sdk/lib/entities/fog_volumes.luau
 //   sdk/lib/util/keyframes.luau
-//   sdk/lib/data_script.luau  (re-exported via index.luau)
+//   sdk/lib/data_script.luau  (embedded directly via include_str! in luau.rs)
 // Drift between this block and those files causes IDE types that don't match
 // runtime behavior. Update this block whenever an SDK lib signature changes.
 const LUAU_SDK_LIB_BLOCK: &str = r#"

@@ -19,8 +19,7 @@ use super::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 #[cfg(debug_assertions)]
 use super::typedef;
 
-/// Validated `setupMod()` return value. Today the engine reads only `name`;
-/// additional fields will appear here as the mod system grows. Construct via
+/// Validated `setupMod()` return value. Construct via
 /// [`ScriptRuntime::run_mod_init`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ModManifestResult {
@@ -164,8 +163,8 @@ impl ScriptRuntime {
     /// Looks for `start-script.js` (TypeScript-compiled) or `start-script.luau`
     /// at the mod root. In debug builds, a missing/stale `start-script.js`
     /// is regenerated from `start-script.ts` if present (skipped in release).
-    /// Both engines run in a short-lived VM context that is created and
-    /// dropped within this call.
+    /// The selected engine (QuickJS for `.js`, Luau for `.luau`) runs in a
+    /// short-lived VM context that is created and dropped within this call.
     ///
     /// Errors:
     /// - both `start-script.js` and `start-script.luau` exist

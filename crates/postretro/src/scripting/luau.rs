@@ -441,8 +441,10 @@ pub(crate) fn build_lua_state(
     }
 
     // 5. Mod-rooted `require` resolver. Installed after the deny-list scrub
-    //    overwrites the inherited `require` slot with `nil`. Without a mod
-    //    root, `require` stays nil — matching the definition-context contract.
+    //    overwrites the inherited `require` slot with `nil`, and before the SDK
+    //    prelude (step 6) so that any prelude chunk that calls `require` resolves
+    //    correctly. Without a mod root, `require` stays nil — matching the
+    //    definition-context contract.
     if let Some(root) = mod_root {
         install_require_resolver(&lua, root)?;
     }
@@ -477,8 +479,9 @@ pub(crate) fn build_lua_state(
 ///
 /// This is intentionally simpler than Luau's full `require()` semantics: no
 /// module caching, no upward path search, no init-file convention. It exists
-/// today to wire `start-script.luau` to its sibling domain scripts; richer
-/// semantics arrive when mods need them.
+/// to wire `start-script.luau` to its sibling domain scripts. Richer semantics
+/// (caching, upward search) can be added when mods require them — see
+/// `context/lib/scripting.md` §2.
 fn install_require_resolver(lua: &Lua, mod_root: &Path) -> Result<(), ScriptError> {
     let mod_root: PathBuf = mod_root.to_path_buf();
     let f = lua

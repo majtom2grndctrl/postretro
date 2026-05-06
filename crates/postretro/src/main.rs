@@ -180,7 +180,7 @@ fn main() -> Result<()> {
     // Mod-init: run start-script before any level loads. Entity types
     // registered here populate the engine-global registry so the first
     // level's spawn sweep sees them. See: context/lib/scripting.md §2,
-    // context/lib/boot_sequence.md §3.
+    // context/lib/boot_sequence.md §4.
     if let Err(err) = script_runtime.run_mod_init(&content_root) {
         log::error!("[Engine] Mod init failed: {err}");
         anyhow::bail!("mod init failed: {err}");

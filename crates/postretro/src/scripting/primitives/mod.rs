@@ -387,8 +387,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModManifest")
-        .doc("Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod at engine init. Validation is minimal today (`name` is required); additional fields will be added as the mod system grows.")
-        .field("name", "String", "Human-readable mod name. Required. Used in logs and (eventually) the mod browser UI.")
+        .doc("Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.")
+        .field("name", "String", "Human-readable mod name. Required.")
         .finish();
 }
 

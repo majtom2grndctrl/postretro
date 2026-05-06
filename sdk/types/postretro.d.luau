@@ -76,9 +76,9 @@ export type FogVolumeEntity = {
 --- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
 export type EntityTypeComponents = { light?: LightDescriptor?, emitter?: BillboardEmitterComponent? }
 
---- Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod at engine init. Validation is minimal today (`name` is required); additional fields will be added as the mod system grows.
+--- Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.
 export type ModManifest = {
-  --- Human-readable mod name. Required. Used in logs and (eventually) the mod browser UI.
+  --- Human-readable mod name. Required.
   name: string,
 }
 

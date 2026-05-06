@@ -625,15 +625,9 @@ impl ApplicationHandler for App {
                 match self.script_runtime.drain_reload_requests() {
                     Ok(summary) => {
                         if summary.mod_init {
-                            log::info!(
-                                "[Scripting] start-script changed — re-running mod init",
-                            );
-                            if let Err(err) =
-                                self.script_runtime.run_mod_init(&self.content_root)
-                            {
-                                log::error!(
-                                    "[Scripting] mod-init re-run failed: {err}",
-                                );
+                            log::info!("[Scripting] start-script changed — re-running mod init",);
+                            if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
+                                log::error!("[Scripting] mod-init re-run failed: {err}",);
                             }
                         }
                     }

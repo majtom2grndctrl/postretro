@@ -268,10 +268,7 @@ impl ScriptWatcher {
             debouncer
                 .watch(&mod_root, RecursiveMode::NonRecursive)
                 .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!(
-                        "failed to watch mod root `{}`: {e}",
-                        mod_root.display(),
-                    ),
+                    reason: format!("failed to watch mod root `{}`: {e}", mod_root.display(),),
                 })?;
         }
 
@@ -281,7 +278,8 @@ impl ScriptWatcher {
         // a symlinked path (`/tmp/...`). Canonicalize once up front so the
         // comparison is path-form-agnostic; fall back to the original on
         // failure (e.g. directory removed).
-        let mod_root_for_worker = std::fs::canonicalize(&mod_root).unwrap_or_else(|_| mod_root.clone());
+        let mod_root_for_worker =
+            std::fs::canonicalize(&mod_root).unwrap_or_else(|_| mod_root.clone());
         let compile_worker = std::thread::Builder::new()
             .name("postretro-scripting-compile-worker".to_string())
             .spawn(move || {

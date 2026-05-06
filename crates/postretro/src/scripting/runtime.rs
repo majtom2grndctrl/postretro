@@ -246,9 +246,7 @@ impl ScriptRuntime {
             // reference to a `.js` file they never wrote.
             #[cfg(debug_assertions)]
             let js_source_hint = if ts_path.is_file() {
-                format!(
-                    "`start-script.js` (auto-compiled from `start-script.ts`)",
-                )
+                "`start-script.js` (auto-compiled from `start-script.ts`)".to_string()
             } else {
                 "`start-script.js`".to_string()
             };

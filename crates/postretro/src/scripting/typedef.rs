@@ -381,7 +381,15 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
 /// etc.) installed by the prelude. The block is appended verbatim inside
 /// `declare module "postretro" { ... }` so authors can `import { world }
 /// from "postretro"`. See: context/lib/scripting.md §7.
-// Source of truth: sdk/lib/world.ts, sdk/lib/entities/lights.ts, sdk/lib/entities/emitters.ts, sdk/lib/entities/fog_volumes.ts, sdk/lib/util/keyframes.ts, sdk/lib/data_script.ts (re-exported via index.ts). Drift causes IDE types that don't match runtime behavior.
+// Source of truth for this static block:
+//   sdk/lib/world.ts
+//   sdk/lib/entities/lights.ts
+//   sdk/lib/entities/emitters.ts
+//   sdk/lib/entities/fog_volumes.ts
+//   sdk/lib/util/keyframes.ts
+//   sdk/lib/data_script.ts  (re-exported via index.ts)
+// Drift between this block and those files causes IDE types that don't match
+// runtime behavior. Update this block whenever an SDK lib signature changes.
 const TS_SDK_LIB_BLOCK: &str = r#"
   // -------------------------------------------------------------------------
   // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.
@@ -688,6 +696,15 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
 /// `wrapFogVolumeEntity` bridge), and `util/keyframes.luau` preludes. Appended to the generated
 /// `postretro.d.luau` so `luau-lsp` resolves the symbols without an explicit
 /// `require`. See: context/lib/scripting.md §7.
+// Source of truth for this static block:
+//   sdk/lib/world.luau
+//   sdk/lib/entities/lights.luau
+//   sdk/lib/entities/emitters.luau
+//   sdk/lib/entities/fog_volumes.luau
+//   sdk/lib/util/keyframes.luau
+//   sdk/lib/data_script.luau  (re-exported via index.luau)
+// Drift between this block and those files causes IDE types that don't match
+// runtime behavior. Update this block whenever an SDK lib signature changes.
 const LUAU_SDK_LIB_BLOCK: &str = r#"
 -- ---------------------------------------------------------------------------
 -- SDK library — embedded into every Luau context via `include_str!` and

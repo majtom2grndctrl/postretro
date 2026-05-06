@@ -205,10 +205,25 @@ impl ScriptRuntime {
         let has_luau = luau_path.is_file();
 
         if has_js && has_luau {
+            // In debug, `start-script.js` may have been auto-generated from
+            // `start-script.ts` moments ago — surface that in the message so a
+            // user who only authored `.ts` + `.luau` isn't confused by a
+            // reference to a `.js` file they never wrote.
+            #[cfg(debug_assertions)]
+            let js_source_hint = if ts_path.is_file() {
+                format!(
+                    "`start-script.js` (auto-compiled from `start-script.ts`)",
+                )
+            } else {
+                "`start-script.js`".to_string()
+            };
+            #[cfg(not(debug_assertions))]
+            let js_source_hint = "`start-script.js`".to_string();
+
             return Err(ScriptError::InvalidArgument {
                 reason: format!(
-                    "mod-init: both `start-script.js` and `start-script.luau` exist at `{}`; \
-                     pick one (the TS->JS compile path is preferred)",
+                    "mod-init: both {js_source_hint} and `start-script.luau` exist at `{}`; \
+                     pick one (delete the unwanted file; the TS->JS path is preferred)",
                     mod_root.display(),
                 ),
             });
@@ -821,7 +836,24 @@ mod tests {
 
     // --- mod-init tests ----------------------------------------------------
 
-    fn temp_mod_root(name: &str) -> std::path::PathBuf {
+    /// RAII wrapper: removes the temp directory when dropped, so an assertion
+    /// panic doesn't leak state under `std::env::temp_dir()`.
+    struct TempModRoot(std::path::PathBuf);
+
+    impl std::ops::Deref for TempModRoot {
+        type Target = std::path::Path;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl Drop for TempModRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_mod_root(name: &str) -> TempModRoot {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -832,7 +864,7 @@ mod tests {
             n,
         ));
         std::fs::create_dir_all(&p).unwrap();
-        p
+        TempModRoot(p)
     }
 
     #[test]
@@ -842,7 +874,6 @@ mod tests {
         let dir = temp_mod_root("missing");
         let got = rt.run_mod_init(&dir).unwrap();
         assert!(got.is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -868,7 +899,6 @@ mod tests {
                 .any(|e| e.classname == "info_player_start"),
             "registerEntity from start-script must populate the data registry"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -895,7 +925,6 @@ mod tests {
                 .any(|e| e.classname == "info_player_start"),
             "registerEntity from start-script.luau must populate the data registry"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -910,7 +939,6 @@ mod tests {
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -929,7 +957,6 @@ mod tests {
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -948,7 +975,6 @@ mod tests {
             }
             other => panic!("expected ScriptThrew, got {other:?}"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -970,7 +996,6 @@ mod tests {
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -994,7 +1019,6 @@ mod tests {
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1030,7 +1054,6 @@ mod tests {
                 .any(|e| e.classname == "info_player_start"),
             "domain script imported via require must register its entity type"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1050,6 +1073,5 @@ mod tests {
         .unwrap();
         let manifest = rt.run_mod_init(&dir).unwrap().expect("Some manifest");
         assert_eq!(manifest.name, "GuardedMod");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

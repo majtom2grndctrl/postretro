@@ -144,9 +144,9 @@
 @SolidClass = fog_ellipsoid : "Ellipsoidal volumetric fog (brush)"
 [
     density(float) : "Fog density at the ellipsoid center" : "0.5"
-    scatter(float) : "Scattering coefficient" : "0.6"
+    scatter(float) : "Scatter fraction toward camera" : "0.6"
     falloff(float) : "Radial falloff exponent (higher = sharper edge)" : "2.0"
-    _tags(string) : "Space-separated tags for scripting queries" : ""
+    _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
 // Semantic fog point entities.

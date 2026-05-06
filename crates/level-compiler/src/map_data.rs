@@ -424,6 +424,10 @@ pub struct MapFogVolume {
     /// `FogVolumeRecord` so the raymarch shader fades against an ellipsoid
     /// derived from `inv_half_ext`. When `false` (default for every existing
     /// producer), the shader uses the legacy radial sphere/capsule fade.
+    ///
+    /// Kept as a typed `bool` rather than `shape_mode: f32` so the conversion
+    /// to a float discriminant happens exactly once, in `pack.rs::encode_fog_volumes`,
+    /// rather than in every resolver that produces a `MapFogVolume`.
     pub is_ellipsoid: bool,
 }
 

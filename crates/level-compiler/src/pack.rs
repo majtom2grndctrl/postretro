@@ -229,10 +229,9 @@ pub fn encode_fog_volumes(
             } else {
                 half_ext.length()
             };
-            // `shape_mode` is a discriminant: 0.0 = legacy radial fade (used by
-            // every existing fog producer — `fog_volume`, `fog_lamp`, `fog_tube`),
-            // 1.0 = ellipsoid. The `is_ellipsoid` boolean on `MapFogVolume` maps
-            // to this float at write time.
+            // Typed bool in IR → float discriminant at write time: radial-fade
+            // producers (`fog_volume`, `fog_lamp`, `fog_tube`) → 0.0; ellipsoid
+            // producer (`fog_ellipsoid`) → 1.0.
             let shape_mode = if v.is_ellipsoid { 1.0 } else { 0.0 };
 
             FogVolumeRecord {

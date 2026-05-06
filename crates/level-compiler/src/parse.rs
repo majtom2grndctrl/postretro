@@ -612,10 +612,9 @@ fn resolve_fog_volume(
     }))
 }
 
-/// Resolve a `fog_ellipsoid` brush entity into an AABB-based ellipsoidal fog volume.
-///
-/// Mirrors `resolve_fog_volume`'s vertex walk but skips face-plane collection.
-/// Multi-brush entities are accepted; their AABBs are unioned into one record.
+/// Produces a `MapFogVolume` with `is_ellipsoid: true` and no bounding planes.
+/// AABB derived by walking all vertices across all brushes; multi-brush entities are
+/// accepted and their AABBs unioned. Zero-extent AABB on any axis is an error.
 fn resolve_fog_ellipsoid(
     geo_map: &GeoMap,
     brush_ids: &[BrushId],
@@ -641,16 +640,14 @@ fn resolve_fog_ellipsoid(
 
     let mut min = DVec3::splat(f64::INFINITY);
     let mut max = DVec3::splat(f64::NEG_INFINITY);
-    let mut have_any = false;
     for verts in face_verts.values() {
         for v in verts {
             let p = quake_to_engine(shambler_to_dvec3(v)) * scale;
             min = min.min(p);
             max = max.max(p);
-            have_any = true;
         }
     }
-    if !have_any {
+    if min.x == f64::INFINITY {
         anyhow::bail!(
             "{classname}: brushes produced no usable vertices — fog_ellipsoid needs a non-degenerate brush"
         );

@@ -266,6 +266,76 @@ struct VolumeSample {
     hits: u32,
 }
 
+// Cached variant: reads `FogVolume` records from a function-private array
+// loaded once per union sub-interval, instead of re-fetching from the
+// `fog_volumes` storage buffer on every march step. Behavior (AABB gate,
+// primitive/ellipsoid/semantic fade math, accumulation rules) is identical
+// to `sample_fog_volumes` — only the source of `v` differs.
+//
+// The AABB containment test below is still required: the cache may include
+// volumes that only partially overlap the merged sub-interval, so per-step
+// membership filtering remains correct.
+fn sample_fog_volumes_cached(
+    pos: vec3<f32>,
+    cache: ptr<function, array<FogVolume, MAX_FOG_VOLUMES>>,
+    cache_count: u32,
+) -> VolumeSample {
+    var out: VolumeSample;
+    out.density = 0.0;
+    out.scatter = 0.0;
+    out.hits = 0u;
+    for (var i: u32 = 0u; i < cache_count; i = i + 1u) {
+        let v = (*cache)[i];
+        // AABB still gates entry — it's the conservative bound for both the
+        // primitive and semantic paths and matches the slab-clip prologue.
+        if pos.x < v.min.x || pos.y < v.min.y || pos.z < v.min.z {
+            continue;
+        }
+        if pos.x > v.max_v.x || pos.y > v.max_v.y || pos.z > v.max_v.z {
+            continue;
+        }
+
+        var fade: f32;
+
+        if v.plane_count > 0u {
+            var min_signed_dist: f32 = 1.0e30;
+            for (var pi: u32 = 0u; pi < v.plane_count; pi = pi + 1u) {
+                let p = fog_planes[v.plane_offset + pi];
+                min_signed_dist = min(min_signed_dist, p.w - dot(pos, p.xyz));
+            }
+            if min_signed_dist < 0.0 {
+                continue;
+            }
+            fade = select(1.0, saturate(min_signed_dist / v.edge_softness), v.edge_softness > 0.0);
+        } else {
+            if v.shape_mode > 0.5 {
+                let rel = pos - v.center;
+                let d = rel * v.inv_half_ext;
+                let ellipsoid_t2 = saturate(dot(d, d));
+                let radial_inv = 1.0 - ellipsoid_t2;
+                if v.radial_falloff <= 0.0 {
+                    fade = 1.0;
+                } else {
+                    fade = pow(max(radial_inv, 1.0e-6), v.radial_falloff);
+                }
+            } else {
+                let radial_t = clamp(length(pos - v.center) / max(v.half_diag, 1.0e-6), 0.0, 1.0);
+                let radial_inv = 1.0 - radial_t;
+                if v.radial_falloff <= 0.0 {
+                    fade = 1.0;
+                } else {
+                    fade = pow(max(radial_inv, 1.0e-6), v.radial_falloff);
+                }
+            }
+        }
+
+        out.density = out.density + v.density * fade;
+        out.scatter = max(out.scatter, v.scatter);
+        out.hits = out.hits + 1u;
+    }
+    return out;
+}
+
 fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
     var out: VolumeSample;
     out.density = 0.0;
@@ -424,8 +494,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // We track raw [enter, exit] hits per active volume, then sort-merge into
     // a disjoint union. Array sized to MAX_FOG_VOLUMES.
+    //
+    // `raw_index[k]` records which `fog_volumes[]` entry produced sorted slot
+    // `k`, so per-union-slot caching can pull only the contributing volumes
+    // out of the storage buffer once and then sample from a function-private
+    // copy across every march step inside that sub-interval.
     var raw_enter: array<f32, MAX_FOG_VOLUMES>;
     var raw_exit: array<f32, MAX_FOG_VOLUMES>;
+    var raw_index: array<u32, MAX_FOG_VOLUMES>;
     var raw_count: u32 = 0u;
 
     let vc = fog.active_count;
@@ -445,6 +521,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if raw_count < MAX_FOG_VOLUMES {
                     raw_enter[raw_count] = enter;
                     raw_exit[raw_count] = exit;
+                    raw_index[raw_count] = i;
                     raw_count = raw_count + 1u;
                 }
             }
@@ -454,11 +531,20 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Merge raw hits into a disjoint, sorted union.
     // `fog.active_count` is capped at MAX_FOG_VOLUMES, so raw_count <=
     // MAX_FOG_VOLUMES is always satisfied — no overflow path is needed.
+    //
+    // `union_raw_lo[ui]` / `union_raw_hi[ui]` record the half-open range of
+    // sorted raw slots that contributed to union slot `ui`. Used below to
+    // load only the relevant `FogVolume` records into a function-private
+    // cache before the inner march step loop.
     var union_enter: array<f32, MAX_FOG_VOLUMES>;
     var union_exit: array<f32, MAX_FOG_VOLUMES>;
+    var union_raw_lo: array<u32, MAX_FOG_VOLUMES>;
+    var union_raw_hi: array<u32, MAX_FOG_VOLUMES>;
     var union_count: u32 = 0u;
 
     // Selection sort by enter (raw_count <= MAX_FOG_VOLUMES, so O(n^2) is fine).
+    // Swap `raw_index` in lockstep so the index parallel to each (enter, exit)
+    // pair survives the reorder.
     for (var a: u32 = 0u; a < raw_count; a = a + 1u) {
         var best = a;
         for (var b: u32 = a + 1u; b < raw_count; b = b + 1u) {
@@ -469,22 +555,30 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if best != a {
             let te = raw_enter[a];
             let tx = raw_exit[a];
+            let ti = raw_index[a];
             raw_enter[a] = raw_enter[best];
             raw_exit[a] = raw_exit[best];
+            raw_index[a] = raw_index[best];
             raw_enter[best] = te;
             raw_exit[best] = tx;
+            raw_index[best] = ti;
         }
     }
-    // Sweep-merge overlapping/touching intervals.
+    // Sweep-merge overlapping/touching intervals. For each raw slot `k` we
+    // either open a new union entry (lo = k) or extend the current one; in
+    // both cases hi = k + 1 (half-open upper bound past the absorbed slot).
     for (var k: u32 = 0u; k < raw_count; k = k + 1u) {
         let e = raw_enter[k];
         let x = raw_exit[k];
         if union_count == 0u || e > union_exit[union_count - 1u] {
             union_enter[union_count] = e;
             union_exit[union_count] = x;
+            union_raw_lo[union_count] = k;
+            union_raw_hi[union_count] = k + 1u;
             union_count = union_count + 1u;
         } else {
             union_exit[union_count - 1u] = max(union_exit[union_count - 1u], x);
+            union_raw_hi[union_count - 1u] = k + 1u;
         }
     }
 
@@ -496,12 +590,29 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var step_count: u32 = 0u;
 
+    // Per-thread cache of the volumes contributing to the current union
+    // sub-interval. Sized at MAX_FOG_VOLUMES × sizeof(FogVolume) (16 × 80 B
+    // = 1,280 B) — register/private-memory pressure is acceptable in exchange
+    // for eliminating ~16 storage-buffer reads per inner march step.
+    var cache: array<FogVolume, MAX_FOG_VOLUMES>;
+    var cache_count: u32 = 0u;
+
     for (var ui: u32 = 0u; ui < union_count; ui = ui + 1u) {
         if transmittance < 0.01 { break; }
         if step_count >= max_steps { break; }
 
         let sub_enter = union_enter[ui];
         let sub_exit = union_exit[ui];
+
+        // Load only the volumes that contributed to this union sub-interval
+        // into the function-private cache. The inner step loop then samples
+        // from `cache` instead of re-reading `fog_volumes[i]` per step.
+        cache_count = 0u;
+        for (var k = union_raw_lo[ui]; k < union_raw_hi[ui]; k = k + 1u) {
+            cache[cache_count] = fog_volumes[raw_index[k]];
+            cache_count = cache_count + 1u;
+        }
+
         // Align the first step inside the sub-interval to a half-step offset
         // (matches the original `start_t = step * 0.5` cadence).
         var t = sub_enter + step * 0.5;
@@ -513,7 +624,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             step_count = step_count + 1u;
 
             let pos = ray.origin + ray.direction * t;
-            let vs = sample_fog_volumes(pos);
+            let vs = sample_fog_volumes_cached(pos, &cache, cache_count);
             if vs.density > 0.0 {
                 // Scatter weight for this step.
                 let weight = vs.density * vs.scatter * step;

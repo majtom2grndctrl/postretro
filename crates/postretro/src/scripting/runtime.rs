@@ -220,8 +220,47 @@ impl ScriptRuntime {
         let ts_path = mod_root.join("start-script.ts");
         let luau_path = mod_root.join("start-script.luau");
 
+        let has_luau = luau_path.is_file();
+
+        // Both-present check runs BEFORE any debug compile so we don't write a
+        // `.js` the user never authored when they have `.ts` + `.luau` and
+        // intended the Luau path. The compile step would otherwise materialize
+        // `start-script.js` and force the user to manually delete it.
+        let has_ts_or_js_source = js_path.is_file() || {
+            #[cfg(debug_assertions)]
+            {
+                ts_path.is_file()
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                false
+            }
+        };
+        if has_ts_or_js_source && has_luau {
+            #[cfg(debug_assertions)]
+            let js_source_hint = if ts_path.is_file() && !js_path.is_file() {
+                "`start-script.ts`".to_string()
+            } else if ts_path.is_file() {
+                "`start-script.js` (compiled from `start-script.ts`)".to_string()
+            } else {
+                "`start-script.js`".to_string()
+            };
+            #[cfg(not(debug_assertions))]
+            let js_source_hint = "`start-script.js`".to_string();
+
+            return Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: both {js_source_hint} and `start-script.luau` exist at `{}`; \
+                     pick one (delete the unwanted file; the TS->JS path is preferred)",
+                    mod_root.display(),
+                ),
+            });
+        }
+
         // In debug, ensure `start-script.js` is up-to-date with `start-script.ts`.
         // This mirrors the freshness check used by the level-load TS path.
+        // Only runs once we've confirmed the user isn't in the both-present
+        // ambiguous state above.
         #[cfg(debug_assertions)]
         {
             if ts_path.is_file() {
@@ -238,30 +277,6 @@ impl ScriptRuntime {
         let _ = ts_path;
 
         let has_js = js_path.is_file();
-        let has_luau = luau_path.is_file();
-
-        if has_js && has_luau {
-            // In debug, `start-script.js` may have been auto-generated from
-            // `start-script.ts` moments ago — surface that in the message so a
-            // user who only authored `.ts` + `.luau` isn't confused by a
-            // reference to a `.js` file they never wrote.
-            #[cfg(debug_assertions)]
-            let js_source_hint = if ts_path.is_file() {
-                "`start-script.js` (auto-compiled from `start-script.ts`)".to_string()
-            } else {
-                "`start-script.js`".to_string()
-            };
-            #[cfg(not(debug_assertions))]
-            let js_source_hint = "`start-script.js`".to_string();
-
-            return Err(ScriptError::InvalidArgument {
-                reason: format!(
-                    "mod-init: both {js_source_hint} and `start-script.luau` exist at `{}`; \
-                     pick one (delete the unwanted file; the TS->JS path is preferred)",
-                    mod_root.display(),
-                ),
-            });
-        }
 
         if !has_js && !has_luau {
             #[cfg(debug_assertions)]
@@ -1264,6 +1279,40 @@ mod tests {
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn mod_init_both_ts_and_luau_errors_without_writing_js() {
+        // Regression: previously the debug TS->JS auto-compile ran before the
+        // both-present check, so a user with `start-script.ts` + `.luau`
+        // would get an unwanted `start-script.js` materialized on disk and
+        // have to delete it manually to switch to the Luau path. The check
+        // must short-circuit before any compilation.
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("both_ts_luau");
+        std::fs::write(
+            dir.join("start-script.ts"),
+            "globalThis.setupMod = function() { return { name: 'A' }; };\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return { name = 'A' } end\n",
+        )
+        .unwrap();
+
+        let err = rt.run_mod_init(&dir).expect_err("both present");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(reason.contains("both"), "{reason}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        assert!(
+            !dir.join("start-script.js").exists(),
+            "both-present error must short-circuit before TS->JS compile writes start-script.js",
+        );
     }
 
     #[test]

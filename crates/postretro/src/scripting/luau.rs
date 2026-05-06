@@ -65,10 +65,10 @@ const KEYFRAMES_LUAU_FIELDS: &[&str] = &["timeline", "sequence"];
 const EMITTERS_LUAU_FIELDS: &[&str] = &["emitter", "smokeEmitter", "sparkEmitter", "dustEmitter"];
 
 /// Fog-volume SDK fields lifted to globals after evaluating
-/// `entities/fog_volumes.luau`. `wrapFogVolumeEntity` is NOT a bare global —
-/// it is installed as a temporary bridge before `world.luau` evaluates and
-/// nil'd out afterward. No public bare-globals remain after the
-/// tick-callback helpers were removed.
+/// `entities/fog_volumes.luau`. The returned table has no public fields —
+/// fog volumes contribute no bare globals. `wrapFogVolumeEntity` is an
+/// internal bridge only: installed temporarily for `world.luau` to capture
+/// as an upvalue, then nil'd out before the sandbox freezes.
 const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 
 /// Data-script SDK fields lifted to globals after evaluating
@@ -123,9 +123,9 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
 
     // Step 2b: evaluate `entities/fog_volumes.luau`. It returns a table
     // containing the private `wrapFogVolumeEntity` bridge that `world.luau`
-    // needs as a bare global during its closure setup. There are no public
-    // fog-volume helpers — the tick-callback helpers were removed alongside
-    // the Live VM API.
+    // needs as a bare global during its closure setup. The returned table
+    // has no public fields; `wrapFogVolumeEntity` is nil'd out in step 4
+    // after `world.luau` has captured it as an upvalue.
     let fog_volumes_sdk: Table = lua
         .load(FOG_VOLUMES_LUAU_SRC)
         .set_name("postretro/sdk/entities/fog_volumes.luau")

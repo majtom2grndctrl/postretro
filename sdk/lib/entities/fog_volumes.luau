@@ -80,12 +80,8 @@ end
 function FogVolumesSdk.fogPulse(
   id: EntityId,
   min: number,
-  max: number,
-  periodMs: number
+  max: number
 ): {SetFogDensityStep}
-  -- `periodMs` is reserved for future timing semantics on the sequence
-  -- dispatcher; the constructor itself produces sample values only.
-  local _ = periodMs
   local SAMPLES = 16
   local lo = math.min(min, max)
   local hi = math.max(min, max)
@@ -106,7 +102,7 @@ function FogVolumesSdk.fogPulse(
 end
 
 --- Returns a sequence-step array that linearly interpolates `density`
---- from `from` to `to` over `durationMs` in evenly-spaced steps.
+--- from `from` to `to` in evenly-spaced steps.
 ---
 --- Step count is 16 (matching `fogPulse` / `pulse` for symmetry).
 --- Sample `i` is evaluated at `(i - 1) / (SAMPLES - 1)` of the way from
@@ -118,10 +114,8 @@ end
 function FogVolumesSdk.fogFade(
   id: EntityId,
   from: number,
-  to: number,
-  durationMs: number
+  to: number
 ): {SetFogDensityStep}
-  local _ = durationMs
   local SAMPLES = 16
   local steps: {SetFogDensityStep} = {}
   for i = 1, SAMPLES do

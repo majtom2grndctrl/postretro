@@ -69,13 +69,13 @@ export function wrapFogVolumeEntity(
  * ```ts
  * const handle = world.query({ component: "fog_volume", tag: "haze" })[0];
  * registerReaction("levelLoad", {
- *   sequence: fogPulse(handle.id, 0.2, 1.0, 2000),
+ *   sequence: fogPulse(handle.id, 0.2, 1.0),
  * });
  * ```
  *
- * Step count is 16 (matching `pulse`). `periodMs` is accepted for
- * call-site symmetry with `fogFade`; how steps are paced is the
- * reaction dispatcher's concern.
+ * Step count is fixed at 16. The dispatcher fires every step on one
+ * frame, so the curve plays back in shader-time, not wall-clock time —
+ * pacing isn't a parameter the constructor controls.
  *
  * Returns the generated `SetFogDensityStep` shape from `postretro.d.ts`,
  * so the steps slot directly into a `SequenceStep[]` without a separate
@@ -85,7 +85,6 @@ export function fogPulse(
   id: EntityId,
   min: number,
   max: number,
-  _periodMs: number,
 ): SetFogDensityStep[] {
   const SAMPLES = 16;
   const lo = Math.min(min, max);
@@ -107,7 +106,7 @@ export function fogPulse(
 
 /**
  * Returns a sequence-step array that linearly interpolates `density`
- * from `from` to `to` over `durationMs` in evenly-spaced steps.
+ * from `from` to `to` in evenly-spaced steps.
  *
  * Step count is 16 (matching `fogPulse` / `pulse` for symmetry). Sample
  * `i` is evaluated at `i / (SAMPLES - 1)` of the way from `from` to
@@ -122,7 +121,6 @@ export function fogFade(
   id: EntityId,
   from: number,
   to: number,
-  _durationMs: number,
 ): SetFogDensityStep[] {
   const SAMPLES = 16;
   const steps: SetFogDensityStep[] = new Array(SAMPLES);

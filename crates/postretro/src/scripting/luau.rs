@@ -941,7 +941,7 @@ mod tests {
             .run_source(
                 Which::Definition,
                 r#"
-                local steps = fogPulse(7, 0.2, 1.0, 2000)
+                local steps = fogPulse(7, 0.2, 1.0)
                 assert(#steps == 16, "expected 16 steps, got " .. tostring(#steps))
                 for i, s in ipairs(steps) do
                     assert(s.id == 7, "expected id == 7 on step " .. tostring(i))
@@ -982,7 +982,7 @@ mod tests {
             .run_source(
                 Which::Definition,
                 r#"
-                local steps = fogFade(11, 0.0, 4.0, 1000)
+                local steps = fogFade(11, 0.0, 4.0)
                 assert(#steps == 16, "expected 16 steps, got " .. tostring(#steps))
                 for i, s in ipairs(steps) do
                     assert(s.id == 11, "expected id == 11 on step " .. tostring(i))

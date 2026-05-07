@@ -10,7 +10,11 @@ export { world } from "./world";
 export type { LightEntity } from "./entities/lights";
 export { flicker, pulse, colorShift, sweep } from "./entities/lights";
 
-export type { FogVolumeHandle } from "./entities/fog_volumes";
+export type {
+  FogSequenceStep,
+  FogVolumeHandle,
+} from "./entities/fog_volumes";
+export { fogFade, fogPulse } from "./entities/fog_volumes";
 
 export type { Keyframe } from "./util/keyframes";
 export { timeline, sequence } from "./util/keyframes";

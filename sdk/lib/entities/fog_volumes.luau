@@ -1,16 +1,38 @@
 --!strict
--- FogVolumeHandle: type alias for the query-time FogVolumeEntity snapshot.
--- No engine-side fog animation primitive exists (unlike lights), and the
--- Live VM script tick API has been removed, so the handle exposes only
--- the snapshot fields until a declarative fog-animation primitive lands.
+-- Fog volume entity vocabulary: the `FogVolumeHandle` returned by
+-- `world:query({ component = "fog_volume" })`, plus the pure animation
+-- constructors (`fogPulse`, `fogFade`) that produce sequence-step
+-- arrays for `registerReaction("levelLoad", { sequence = ... })`.
+--
+-- The handle is read-only — fog volumes have no per-component animation
+-- channel (unlike lights, which carry `LightAnimation`), and the Live VM
+-- script tick API has been removed. Authors animate fog by registering
+-- sequenced reactions whose steps invoke `setFogDensity`,
+-- `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`, or
+-- `setFogParams`. `fogPulse` and `fogFade` are pure builders that emit
+-- those step arrays.
+--
+-- `wrapFogVolumeEntity` is included in the returned table; the Luau
+-- prelude evaluator (`luau.rs`) extracts it and installs it as a
+-- temporary global before `world.luau` evaluates. It is nil'd out by the
+-- prelude after `world.luau` has been evaluated. The public builders
+-- (`fogPulse`, `fogFade`) are lifted to bare globals via the
+-- `FOG_VOLUMES_LUAU_FIELDS` slice in `luau.rs` — same mechanism that
+-- promotes `flicker` / `pulse` / `colorShift` / `sweep` from
+-- `entities/lights.luau`.
+--
 -- Fog ambient color is derived from the SH irradiance volume and is not
 -- settable via script.
 -- See docs/scripting-reference.md.
+-- ---------------------------------------------------------------------
 
--- `FogVolumeComponent` and `FogVolumeEntity` are provided ambiently by
--- the generated `sdk/types/postretro.d.luau` definitions file.
+-- `EntityId`, `FogVolumeComponent`, `FogVolumeEntity`, and `Vec3` are
+-- provided ambiently by the generated `sdk/types/postretro.d.luau`
+-- definitions file.
 
 --- Typed handle returned by `world:query` for a fog-volume entity.
+--- Read-only; authors animate fog through sequenced reactions, not
+--- methods on the handle.
 export type FogVolumeHandle = {
   id: EntityId,
   position: Vec3,
@@ -18,14 +40,25 @@ export type FogVolumeHandle = {
   component: FogVolumeComponent,
 }
 
+--- One step in a fog-density sequence reaction. Mirrors the inline
+--- `{ id, primitive, args }` shape used in
+--- `content/tests/scripts/arena-lights.ts`.
+export type FogSequenceStep = {
+  id: EntityId,
+  primitive: string,
+  args: { density: number },
+}
+
 local FogVolumesSdk = {}
 
+-- ---------------------------------------------------------------------
+-- Handle construction
+-- ---------------------------------------------------------------------
+
 --- Wrap a `FogVolumeEntity` snapshot returned by `worldQuery`. Used by
---- `world.luau` for `world:query({ component = "fog_volume" })`. With
---- the tick-callback helpers removed, this is a pass-through; it is
---- retained so the world.query code path stays symmetric with
---- `wrapLightEntity` and so a future fog-animation primitive can
---- re-introduce mutating methods without touching the call site.
+--- `world.luau` for `world:query({ component = "fog_volume" })`.
+--- Read-only -- no mutation methods. Authors register reactions to
+--- animate fog.
 function FogVolumesSdk.wrapFogVolumeEntity(snapshot: FogVolumeEntity): FogVolumeHandle
   return {
     id = snapshot.id,
@@ -33,6 +66,78 @@ function FogVolumesSdk.wrapFogVolumeEntity(snapshot: FogVolumeEntity): FogVolume
     tags = snapshot.tags,
     component = snapshot.component,
   }
+end
+
+-- ---------------------------------------------------------------------
+-- Density curves
+-- ---------------------------------------------------------------------
+
+--- Returns a sequence-step array whose steps emit `setFogDensity` calls
+--- sampled along a half-cosine curve between `min` and `max`. Mirrors the
+--- 16-sample `pulse` constructor in `entities/lights.luau`: sample `i`
+--- is evaluated at `(i - 1) / 16` of the period (1-indexed Luau,
+--- 0-indexed math), and the curve is the same `mid + amp * sin(theta)`
+--- shape.
+---
+--- The caller supplies the target `id`; the same `id` is stamped onto
+--- every step.
+function FogVolumesSdk.fogPulse(
+  id: EntityId,
+  min: number,
+  max: number,
+  periodMs: number
+): {FogSequenceStep}
+  -- `periodMs` is reserved for future timing semantics on the sequence
+  -- dispatcher; the constructor itself produces sample values only.
+  local _ = periodMs
+  local SAMPLES = 16
+  local lo = math.min(min, max)
+  local hi = math.max(min, max)
+  local mid = (lo + hi) * 0.5
+  local amp = (hi - lo) * 0.5
+  local steps: {FogSequenceStep} = {}
+  for i = 1, SAMPLES do
+    -- `(i - 1) / SAMPLES` reproduces the 0-indexed TypeScript sampling.
+    local theta = ((i - 1) / SAMPLES) * math.pi * 2
+    local density = mid + amp * math.sin(theta)
+    steps[i] = {
+      id = id,
+      primitive = "setFogDensity",
+      args = { density = density },
+    }
+  end
+  return steps
+end
+
+--- Returns a sequence-step array that linearly interpolates `density`
+--- from `from` to `to` over `durationMs` in evenly-spaced steps.
+---
+--- Step count is 16 (matching `fogPulse` / `pulse` for symmetry).
+--- Sample `i` is evaluated at `(i - 1) / (SAMPLES - 1)` of the way from
+--- `from` to `to`, so the first step carries `from` and the last step
+--- carries `to` exactly.
+---
+--- The caller supplies the target `id`; the same `id` is stamped onto
+--- every step.
+function FogVolumesSdk.fogFade(
+  id: EntityId,
+  from: number,
+  to: number,
+  durationMs: number
+): {FogSequenceStep}
+  local _ = durationMs
+  local SAMPLES = 16
+  local steps: {FogSequenceStep} = {}
+  for i = 1, SAMPLES do
+    local t = (i - 1) / (SAMPLES - 1)
+    local density = from + (to - from) * t
+    steps[i] = {
+      id = id,
+      primitive = "setFogDensity",
+      args = { density = density },
+    }
+  end
+  return steps
 end
 
 return FogVolumesSdk

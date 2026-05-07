@@ -1,36 +1,151 @@
-// Fog volume entity handle.
+// Fog volume entity handle and pure animation constructors (fogPulse, fogFade).
 // Mirrors the LightEntity vocabulary in `./lights`, adapted to the
 // fog_volume ComponentValue surface.
 // See: context/lib/scripting.md §10 (external API shape)
 // and docs/scripting-reference.md (public API surface).
 
 import type {
+  EntityId,
+  FogVolumeComponent,
   FogVolumeEntity as GeneratedFogVolumeEntity,
+  Vec3,
 } from "postretro";
 
 /**
  * Typed handle returned by `world.query({ component: "fog_volume" })`.
  *
- * Fog volumes have no engine-side animation primitive (unlike lights),
- * and the Live VM script tick API has been removed. Until a declarative
- * fog-animation primitive lands, the handle exposes only the query-time
- * snapshot. Fog ambient color is derived from the SH irradiance volume
- * and is not settable via script. When no SH irradiance volume is baked,
- * ambient scatter contribution is zero — fog is effectively invisible
- * without dynamic lights nearby.
+ * Fog volume parameters are not mutated through methods on this handle —
+ * the Live VM tick API has been removed and fog has no per-component
+ * animation channel (unlike lights, which carry `LightAnimation`).
+ * Authors animate fog by registering sequenced reactions via
+ * `registerReaction("levelLoad", { sequence: [...] })`, where the steps
+ * are built with the `fogPulse` / `fogFade` constructors below or with
+ * raw `setFogDensity` / `setFogScatter` / `setFogEdgeSoftness` /
+ * `setFogFalloff` / `setFogParams` step descriptors.
+ *
+ * The handle exposes only the read-only query-time snapshot. Fog ambient
+ * color is derived from the SH irradiance volume and is not settable
+ * via script. When no SH irradiance volume is baked, ambient scatter
+ * contribution is zero — fog is effectively invisible without dynamic
+ * lights nearby.
  */
-export type FogVolumeHandle = GeneratedFogVolumeEntity;
+export interface FogVolumeHandle {
+  readonly id: EntityId;
+  /** Volume center at query time (AABB midpoint, baked at level load). */
+  readonly position: Vec3;
+  /** The entity's tags at query time. Empty array if untagged. */
+  readonly tags: ReadonlyArray<string>;
+  /** Full fog-volume component snapshot at query time. */
+  readonly component: FogVolumeComponent;
+}
 
 /**
  * Wrap a `FogVolumeEntity` snapshot returned by `worldQuery`. Used by
- * `world.ts` for `world.query({ component: "fog_volume" })`. With the
- * tick-callback helpers removed, this is a pass-through; it is retained
- * so the world.query code path stays symmetric with `wrapLightEntity`
- * and so a future fog-animation primitive can re-introduce mutating
- * methods without touching the call site.
+ * `world.ts` for `world.query({ component: "fog_volume" })`. Read-only —
+ * no mutation methods. Authors register reactions to animate fog.
  */
 export function wrapFogVolumeEntity(
   snapshot: GeneratedFogVolumeEntity,
 ): FogVolumeHandle {
-  return snapshot;
+  return {
+    id: snapshot.id,
+    position: snapshot.position,
+    tags: snapshot.tags,
+    component: snapshot.component,
+  };
+}
+
+/**
+ * Sequence step shape returned by `fogPulse` / `fogFade`. Mirrors the
+ * inline `{ id, primitive, args }` shape used in
+ * `content/tests/scripts/arena-lights.ts`. Authors wrap an array of
+ * these in `registerReaction("levelLoad", { sequence: [...] })`.
+ */
+export interface FogSequenceStep {
+  id: EntityId;
+  primitive: "setFogDensity";
+  args: { density: number };
+}
+
+/**
+ * Returns a sequence-step array whose steps emit `setFogDensity` calls
+ * sampled along a half-cosine curve between `min` and `max` over
+ * `periodMs`. Mirrors the 16-sample `pulse` constructor in
+ * `sdk/lib/entities/lights.ts`: sample `i` is evaluated at `i / 16` of
+ * the period, and the curve is the same `mid + amp * sin(theta)` shape
+ * (a half-cosine sweep between `min` and `max` per full period).
+ *
+ * The caller supplies the target `id`; the same `id` is stamped onto
+ * every step. Authors typically use this against a single fog entity:
+ *
+ * ```ts
+ * const handle = world.query({ component: "fog_volume", tag: "haze" })[0];
+ * registerReaction("levelLoad", {
+ *   sequence: fogPulse(handle.id, 0.2, 1.0, 2000),
+ * });
+ * ```
+ *
+ * Step count is 16 (matching `pulse`). Each step's `periodMs` is the
+ * fraction of the full period that step represents — but unlike
+ * `LightAnimation`, sequence steps run as a serial timeline; the
+ * caller threads `periodMs / 16` between steps if they want pacing.
+ * For now the constructor returns the density-sample array; how steps
+ * are paced is the reaction dispatcher's concern.
+ */
+export function fogPulse(
+  id: EntityId,
+  min: number,
+  max: number,
+  periodMs: number,
+): FogSequenceStep[] {
+  void periodMs;
+  const SAMPLES = 16;
+  const lo = Math.min(min, max);
+  const hi = Math.max(min, max);
+  const mid = (lo + hi) * 0.5;
+  const amp = (hi - lo) * 0.5;
+  const steps: FogSequenceStep[] = new Array(SAMPLES);
+  for (let i = 0; i < SAMPLES; i++) {
+    const theta = (i / SAMPLES) * Math.PI * 2;
+    const density = mid + amp * Math.sin(theta);
+    steps[i] = {
+      id,
+      primitive: "setFogDensity",
+      args: { density },
+    };
+  }
+  return steps;
+}
+
+/**
+ * Returns a sequence-step array that linearly interpolates `density`
+ * from `from` to `to` over `durationMs` in evenly-spaced steps.
+ *
+ * Step count is 16 (matching `fogPulse` / `pulse` for symmetry). Sample
+ * `i` is evaluated at `i / (SAMPLES - 1)` of the way from `from` to
+ * `to`, so the first step carries `from` and the last step carries
+ * `to` exactly.
+ *
+ * The caller supplies the target `id`; the same `id` is stamped onto
+ * every step.
+ */
+export function fogFade(
+  id: EntityId,
+  from: number,
+  to: number,
+  durationMs: number,
+): FogSequenceStep[] {
+  void durationMs;
+  const SAMPLES = 16;
+  const steps: FogSequenceStep[] = new Array(SAMPLES);
+  for (let i = 0; i < SAMPLES; i++) {
+    const t = i / (SAMPLES - 1);
+    const density = from + (to - from) * t;
+    steps[i] = {
+      id,
+      primitive: "setFogDensity",
+      args: { density },
+    };
+  }
+  return steps;
 }

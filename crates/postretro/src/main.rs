@@ -52,6 +52,7 @@ use crate::scripting::reaction_dispatch::{
 };
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
+    register_fog_reaction_primitives,
 };
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
@@ -171,6 +172,7 @@ fn main() -> Result<()> {
     // fires. Populated once at startup; survives level reloads.
     let mut reaction_registry = ReactionPrimitiveRegistry::new();
     register_emitter_reaction_primitives(&mut reaction_registry);
+    register_fog_reaction_primitives(&mut reaction_registry);
 
     // Built-in classname dispatch — survives level unload because handlers
     // describe engine types, not per-level state. See: context/lib/scripting.md

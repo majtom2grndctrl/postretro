@@ -65,11 +65,10 @@ const KEYFRAMES_LUAU_FIELDS: &[&str] = &["timeline", "sequence"];
 const EMITTERS_LUAU_FIELDS: &[&str] = &["emitter", "smokeEmitter", "sparkEmitter", "dustEmitter"];
 
 /// Fog-volume SDK fields lifted to globals after evaluating
-/// `entities/fog_volumes.luau`. The returned table has no public fields —
-/// fog volumes contribute no bare globals. `wrapFogVolumeEntity` is an
-/// internal bridge only: installed temporarily for `world.luau` to capture
-/// as an upvalue, then nil'd out before the sandbox freezes.
-const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
+/// `entities/fog_volumes.luau`. `wrapFogVolumeEntity` is an internal bridge:
+/// installed temporarily for `world.luau` to capture as an upvalue, then
+/// nil'd out before the sandbox freezes.
+const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &["fogPulse", "fogFade"];
 
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.

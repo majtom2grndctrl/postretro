@@ -347,6 +347,74 @@ light.setAnimation(null); // clears it
 
 ---
 
+## FogVolumeComponent
+
+Returned in `FogVolumeHandle.component` from `world.query({ component: "fog_volume" })`. All fields are read-only on the snapshot; mutate the live entity by registering a sequenced reaction whose steps invoke the fog reaction primitives below.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `density` | `number` | Optical density of the volume. `0` is transparent; values above `1` saturate quickly. Wire default: `0.5`. |
+| `scatter` | `number` | Mie scattering anisotropy in `[0.0, 1.0]`. Higher values bias scattered light forward. Wire default: `0.6`. |
+| `edgeSoftness` | `number` | Soft falloff width at the volume boundary, in meters. `0` is a hard edge. |
+| `falloff` | `number` | Radial falloff exponent. Used by `fog_lamp` / `fog_tube` / `fog_ellipsoid`. Stored on `fog_volume` (plane-sweep) entities but not consulted by their shader path. Wire default per FGD: `fog_lamp` = `2.0`, `fog_tube` = `1.5`. |
+
+---
+
+## Reaction primitives
+
+Reaction primitives are dispatched from sequenced reactions registered via `registerReaction("levelLoad", { sequence: [...] })`. Each step in the sequence carries `{ id, primitive, args }`. The scripting VM is not live at runtime — primitives execute entirely in Rust against the entity registry.
+
+The fog reaction primitives are tag-targeted: when the surrounding reaction's `tag` filter resolves to a list of fog-bearing entities, every match receives the update. Entities matched by tag but lacking a `FogVolumeComponent` are skipped with `log::warn!` (typo guard). Empty target sets are a debug-log no-op.
+
+### `setFogDensity`
+
+```typescript
+{ density: number }
+```
+
+Overwrites `FogVolumeComponent.density` on every target. `density` must be finite and `>= 0`; out-of-range values clamp to `0.0` with a `log::warn!`. There is no upper clamp — large values saturate the shader.
+
+### `setFogScatter`
+
+```typescript
+{ scatter: number }
+```
+
+Overwrites `FogVolumeComponent.scatter` on every target. `scatter` must be finite and within `[0.0, 1.0]`; out-of-range values clamp into range with a `log::warn!`.
+
+### `setFogEdgeSoftness`
+
+```typescript
+{ edgeSoftness: number }
+```
+
+Overwrites `FogVolumeComponent.edge_softness` on every target. `edgeSoftness` must be finite and `>= 0`; out-of-range values clamp to `0.0` with a `log::warn!`.
+
+### `setFogFalloff`
+
+```typescript
+{ falloff: number }
+```
+
+Overwrites `FogVolumeComponent.falloff` on every target. `falloff` must be finite and strictly `> 0`; out-of-range values are dropped (the target's existing `falloff` is preserved) with a `log::warn!`. Accepted on every fog entity type — `fog_volume` plane-sweep volumes store the value but their shader path does not read it.
+
+### `setFogParams`
+
+```typescript
+{
+  density?: number,
+  scatter?: number,
+  edgeSoftness?: number,
+  falloff?: number,
+}
+```
+
+Combined partial-update primitive. Any subset of the four fields may be present. Each field is validated independently per the rules above (out-of-range `density` / `scatter` / `edgeSoftness` clamp; out-of-range `falloff` is dropped). Absent fields preserve the target's current component value. The component is mutated once per target with the merged result; if every supplied field is invalid for a given target, no write occurs.
+
+Use `setFogParams` when an author wants to change two or more fields atomically — adjacent single-field steps would briefly observe a partial update on the GPU.
+
+---
+
 ## Constraints and errors
 
 | Situation | Result |
@@ -354,3 +422,5 @@ light.setAnimation(null); // clears it
 | Color animation (`color` field) on a non-dynamic light | Throws at the `setAnimation` call site with a message naming the light's entity id. |
 | Zero-length vector in `direction` samples | Rejected by `setLightAnimation` with `InvalidArgument`. |
 | Non-unit direction vectors | Silently normalized by the engine. |
+| Fog reaction primitive targets a tag with no matching entities | Debug-log no-op. |
+| Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |

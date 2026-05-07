@@ -351,4 +351,86 @@ mod tests {
         assert_eq!(parsed.edge_softness, Some(0.3));
         assert_eq!(parsed.falloff, Some(1.25));
     }
+
+    /// Cross-runtime parity: same `setFogParams` args dispatched through the
+    /// reaction primitive registry — once with the JSON value produced by
+    /// QuickJS evaluating a JS object literal, once with the JSON value
+    /// produced by Luau evaluating a Lua table — must mutate
+    /// `FogVolumeComponent` to identical state.
+    ///
+    /// Mirrors the two input shapes used by
+    /// `set_light_animation_quickjs_and_luau_produce_identical_output` in
+    /// `crates/postretro/src/scripting/primitives/light.rs`: a JS object
+    /// literal with camelCase keys, and a Luau table with the same keys.
+    #[test]
+    fn set_fog_params_quickjs_and_luau_produce_identical_output() {
+        use crate::scripting::reactions::registry::{
+            ReactionPrimitiveRegistry, register_fog_reaction_primitives,
+        };
+
+        // 1) Capture the JSON produced by QuickJS evaluating a JS object
+        //    literal mirroring the shape an author would call setFogParams
+        //    with.
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        let from_quickjs: serde_json::Value = jsctx.with(|qjs| {
+            let val: rquickjs::Value = qjs
+                .eval(
+                    r#"
+                    ({
+                        density: 1.25,
+                        scatter: 0.4,
+                        edgeSoftness: 0.5,
+                        falloff: 3.0,
+                    })
+                    "#,
+                )
+                .unwrap();
+            crate::scripting::conv::js_to_json(&qjs, val).unwrap()
+        });
+
+        // 2) Capture the JSON produced by Luau evaluating an equivalent table.
+        let lua = mlua::Lua::new();
+        let lua_val: mlua::Value = lua
+            .load(
+                r#"
+                return {
+                    density = 1.25,
+                    scatter = 0.4,
+                    edgeSoftness = 0.5,
+                    falloff = 3.0,
+                }
+                "#,
+            )
+            .eval()
+            .unwrap();
+        let from_luau = crate::scripting::conv::lua_to_json(lua_val).unwrap();
+
+        // 3) Dispatch each through the reaction registry against a freshly
+        //    spawned fog volume; assert the resulting components match.
+        let mut prim_reg = ReactionPrimitiveRegistry::new();
+        register_fog_reaction_primitives(&mut prim_reg);
+
+        let mut reg_a = EntityRegistry::new();
+        let id_a = spawn_fog(&mut reg_a);
+        prim_reg
+            .dispatch("setFogParams", &mut reg_a, &[id_a], &from_quickjs)
+            .unwrap();
+        let after_a = *reg_a.get_component::<FogVolumeComponent>(id_a).unwrap();
+
+        let mut reg_b = EntityRegistry::new();
+        let id_b = spawn_fog(&mut reg_b);
+        prim_reg
+            .dispatch("setFogParams", &mut reg_b, &[id_b], &from_luau)
+            .unwrap();
+        let after_b = *reg_b.get_component::<FogVolumeComponent>(id_b).unwrap();
+
+        assert_eq!(
+            after_a, after_b,
+            "QuickJS and Luau must produce identical FogVolumeComponent state \
+             for the same setFogParams input"
+        );
+        // Sanity: the dispatch actually changed at least one field.
+        assert_ne!(after_a, sample_fog());
+    }
 }

@@ -931,6 +931,88 @@ mod tests {
     }
 
     #[test]
+    fn fog_pulse_returns_16_step_cosine_array() {
+        // fogPulse mirrors the 16-sample `pulse` constructor: each step is
+        // `{ id, primitive = "setFogDensity", args = { density } }`, and the
+        // density values are sampled from `mid + amp * sin(2*pi*i/16)`.
+        let (subsys, _ctx) = setup();
+        let densities: Vec<f64> = subsys
+            .run_source(
+                Which::Definition,
+                r#"
+                local steps = fogPulse(7, 0.2, 1.0, 2000)
+                assert(#steps == 16, "expected 16 steps, got " .. tostring(#steps))
+                for i, s in ipairs(steps) do
+                    assert(s.id == 7, "expected id == 7 on step " .. tostring(i))
+                    assert(s.primitive == "setFogDensity",
+                        "expected primitive == setFogDensity on step " .. tostring(i))
+                end
+                local out = {}
+                for i, s in ipairs(steps) do
+                    out[i] = s.args.density
+                end
+                return out
+                "#,
+                "fog_pulse_unit.luau",
+            )
+            .unwrap();
+        assert_eq!(densities.len(), 16);
+        let lo = 0.2_f64;
+        let hi = 1.0_f64;
+        let mid = (lo + hi) * 0.5;
+        let amp = (hi - lo) * 0.5;
+        for (i, &got) in densities.iter().enumerate() {
+            let theta = (i as f64 / 16.0) * std::f64::consts::PI * 2.0;
+            let expected = mid + amp * theta.sin();
+            assert!(
+                (got - expected).abs() < 1e-5,
+                "step {i}: expected {expected}, got {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn fog_fade_returns_16_step_linearly_interpolated_array() {
+        // fogFade evaluates sample `i` at `(i - 1) / (SAMPLES - 1)` of the
+        // way from `from` to `to`, so step 1 carries `from` and step 16
+        // carries `to` exactly.
+        let (subsys, _ctx) = setup();
+        let densities: Vec<f64> = subsys
+            .run_source(
+                Which::Definition,
+                r#"
+                local steps = fogFade(11, 0.0, 4.0, 1000)
+                assert(#steps == 16, "expected 16 steps, got " .. tostring(#steps))
+                for i, s in ipairs(steps) do
+                    assert(s.id == 11, "expected id == 11 on step " .. tostring(i))
+                    assert(s.primitive == "setFogDensity",
+                        "expected primitive == setFogDensity on step " .. tostring(i))
+                end
+                local out = {}
+                for i, s in ipairs(steps) do
+                    out[i] = s.args.density
+                end
+                return out
+                "#,
+                "fog_fade_unit.luau",
+            )
+            .unwrap();
+        assert_eq!(densities.len(), 16);
+        let from = 0.0_f64;
+        let to = 4.0_f64;
+        for (i, &got) in densities.iter().enumerate() {
+            let t = i as f64 / 15.0;
+            let expected = from + (to - from) * t;
+            assert!(
+                (got - expected).abs() < 1e-5,
+                "step {i}: expected {expected}, got {got}"
+            );
+        }
+        assert!((densities[0] - from).abs() < 1e-6);
+        assert!((densities[15] - to).abs() < 1e-6);
+    }
+
+    #[test]
     fn resolve_require_path_rejects_backslash_path() {
         // Backslashes never appear in valid mod-root-relative paths. Rejecting
         // at the string level catches Windows-style `..\escape` traversals

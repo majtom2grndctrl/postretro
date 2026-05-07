@@ -2,7 +2,6 @@
 // GpuLight byte layout consumed by the forward pass storage buffer.
 //
 // See: context/lib/rendering_pipeline.md §4
-//      context/plans/in-progress/lighting-foundation/3-direct-lighting.md
 
 pub mod chunk_list;
 pub mod influence;
@@ -115,17 +114,25 @@ pub fn pack_lights(lights: &[MapLight]) -> Vec<u8> {
     bytes
 }
 
-/// Pack the full light list with per-light shadow slot assignments.
+/// Pack the full light list with per-light shadow slot assignments into `bytes`,
+/// reusing the allocation. Clears the buffer first so the caller can memcompare
+/// against a previous frame's bytes to skip a redundant `queue.write_buffer`.
 ///
 /// `slot_indices` must have the same length as `lights`.
 /// Each entry is a slot index (0..8) or `NO_SHADOW_SLOT` for unshadowed.
-#[allow(dead_code)]
-pub fn pack_lights_with_slots(lights: &[MapLight], slot_indices: &[u32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(lights.len() * GPU_LIGHT_SIZE);
+pub fn pack_lights_with_slots_into(bytes: &mut Vec<u8>, lights: &[MapLight], slot_indices: &[u32]) {
+    debug_assert_eq!(
+        lights.len(),
+        slot_indices.len(),
+        "lights and slot_indices must be the same length"
+    );
+    bytes.clear();
+    // Reserve after clear so growth only happens when the light count increases;
+    // if the Vec already has enough capacity this is a no-op.
+    bytes.reserve(lights.len() * GPU_LIGHT_SIZE);
     for (light, &slot) in lights.iter().zip(slot_indices.iter()) {
         bytes.extend_from_slice(&pack_light_with_slot(light, slot));
     }
-    bytes
 }
 
 #[inline]
@@ -309,7 +316,8 @@ mod tests {
     fn pack_lights_with_slots_encodes_slot_indices() {
         let lights = vec![sample_point(), sample_spot()];
         let slots = vec![0u32, 1u32];
-        let bytes = pack_lights_with_slots(&lights, &slots);
+        let mut bytes = Vec::new();
+        pack_lights_with_slots_into(&mut bytes, &lights, &slots);
 
         // First light at slot 0.
         assert_eq!(read_u32(&bytes, 56), 0);
@@ -321,7 +329,8 @@ mod tests {
     fn pack_lights_with_slots_no_slot_sentinel() {
         let lights = vec![sample_point(), sample_spot()];
         let slots = vec![crate::lighting::spot_shadow::NO_SHADOW_SLOT, 2u32];
-        let bytes = pack_lights_with_slots(&lights, &slots);
+        let mut bytes = Vec::new();
+        pack_lights_with_slots_into(&mut bytes, &lights, &slots);
 
         // First light unshadowed.
         assert_eq!(
@@ -330,5 +339,52 @@ mod tests {
         );
         // Second light at slot 2.
         assert_eq!(read_u32(&bytes, GPU_LIGHT_SIZE + 56), 2);
+    }
+
+    #[test]
+    fn pack_lights_with_slots_into_identical_inputs_produce_byte_equal_outputs() {
+        let lights = vec![sample_point(), sample_spot(), sample_directional()];
+        let slots = vec![0u32, 1u32, crate::lighting::spot_shadow::NO_SHADOW_SLOT];
+
+        let mut first = Vec::new();
+        pack_lights_with_slots_into(&mut first, &lights, &slots);
+        let snapshot = first.clone();
+
+        let mut second = Vec::new();
+        pack_lights_with_slots_into(&mut second, &lights, &slots);
+
+        assert_eq!(snapshot, second);
+    }
+
+    #[test]
+    fn pack_lights_with_slots_into_clears_prepopulated_buffer_before_packing() {
+        let lights = vec![sample_point()];
+        let slots = vec![0u32];
+
+        // Pre-fill with garbage so we can confirm the output is clean.
+        let mut bytes = vec![0xFFu8; 512];
+        pack_lights_with_slots_into(&mut bytes, &lights, &slots);
+
+        assert_eq!(bytes.len(), GPU_LIGHT_SIZE);
+        // The first record's type field should be Point (0), not the garbage 0xFF pattern.
+        assert_eq!(read_u32(&bytes, 12), 0);
+    }
+
+    #[test]
+    fn pack_lights_with_slots_into_shorter_list_produces_shorter_buffer() {
+        let lights_two = vec![sample_point(), sample_spot()];
+        let slots_two = vec![0u32, 1u32];
+        let mut bytes = Vec::new();
+        pack_lights_with_slots_into(&mut bytes, &lights_two, &slots_two);
+        let len_two = bytes.len();
+
+        let lights_one = vec![sample_point()];
+        let slots_one = vec![0u32];
+        pack_lights_with_slots_into(&mut bytes, &lights_one, &slots_one);
+
+        // A shorter list must produce a shorter buffer so the byte-comparison
+        // in the renderer detects the change and issues a write_buffer.
+        assert!(bytes.len() < len_two);
+        assert_eq!(bytes.len(), GPU_LIGHT_SIZE);
     }
 }

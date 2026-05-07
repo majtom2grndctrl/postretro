@@ -26,7 +26,7 @@ use crate::lighting::influence::{self, LightInfluence};
 use crate::lighting::lightmap::LightmapResources;
 use crate::lighting::spec_buffer::{SPEC_LIGHT_SIZE, pack_spec_lights};
 use crate::lighting::spot_shadow::SpotShadowPool;
-use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots};
+use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots_into};
 use crate::material::Material;
 use crate::prl::MapLight;
 use crate::texture::{LoadedTexture, TextureSet};
@@ -398,6 +398,13 @@ pub struct Renderer {
 
     #[allow(dead_code)]
     lights_buffer: wgpu::Buffer,
+    /// Last bytes uploaded to `lights_buffer`. Reused each frame to skip a
+    /// redundant `queue.write_buffer` when the packed bytes are unchanged.
+    last_lights_upload: Vec<u8>,
+    /// Scratch buffer for repacking each frame. On change, contents are swapped
+    /// into `last_lights_upload` and the old bytes become the new scratch, so
+    /// no allocation happens in either branch.
+    lights_pack_scratch: Vec<u8>,
     #[allow(dead_code)]
     level_lights: Vec<MapLight>,
     /// Lights near zero are excluded from shadow slot ranking. Empty = no suppression.
@@ -1563,6 +1570,8 @@ impl Renderer {
             lightmap_resources,
             animated_lightmap,
             lights_buffer,
+            last_lights_upload: Vec::new(),
+            lights_pack_scratch: Vec::new(),
             level_lights,
             light_effective_brightness: Vec::new(),
             last_camera_position: Vec3::ZERO,
@@ -1967,9 +1976,17 @@ impl Renderer {
             light_influences,
         );
 
-        let lights_data = pack_lights_with_slots(&self.level_lights, &slot_assignment);
-        self.queue
-            .write_buffer(&self.lights_buffer, 0, &lights_data);
+        // Why: most frames the packed bytes are identical to the previous
+        // upload (no light moved, no animation tick changed values). Skip the
+        // queue.write_buffer in that case. The scratch Vec is reused across
+        // frames so the pack itself does not allocate.
+        let mut scratch = std::mem::take(&mut self.lights_pack_scratch);
+        pack_lights_with_slots_into(&mut scratch, &self.level_lights, &slot_assignment);
+        if scratch != self.last_lights_upload {
+            self.queue.write_buffer(&self.lights_buffer, 0, &scratch);
+            std::mem::swap(&mut scratch, &mut self.last_lights_upload);
+        }
+        self.lights_pack_scratch = scratch;
 
         // Upload each slot's light-space matrix to both the fragment-side storage buffer
         // (group 5 binding 2) and the vertex-side dynamic-offset uniform buffer.
@@ -1995,6 +2012,8 @@ impl Renderer {
             vertex_uniforms[slot_usize * stride..slot_usize * stride + MAT_BYTES]
                 .copy_from_slice(&bytes);
         }
+        // Note: these two writes follow the same per-frame pattern as lights_buffer above;
+        // future work could apply the same skip-when-unchanged caching.
         self.queue.write_buffer(
             &self.spot_shadow_pool.matrices_buffer,
             0,

@@ -170,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn args_deserialize_camelcase() {
+    fn set_fog_density_args_deserialize_density_from_camelcase_json() {
         let v = serde_json::json!({ "density": 0.75 });
         let parsed: SetFogDensityArgs = serde_json::from_value(v).unwrap();
         assert_eq!(parsed.density, 0.75);

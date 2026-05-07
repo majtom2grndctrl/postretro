@@ -429,15 +429,12 @@ mod tests {
 
         let (bytes, _planes, live_mask) = bridge.update_volumes(&registry).expect("dirty volumes");
         assert_eq!(bytes.len(), std::mem::size_of::<FogVolume>());
-        // density at byte offset 12, edge_softness at byte offset 28
-        // (component.edge_softness packs into FogVolume.edge_softness).
-        let density = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
-        let edge_softness = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
-        assert_eq!(density, 1.25);
-        assert_eq!(edge_softness, 0.5);
-        // FogVolume.radial_falloff sits at byte offset 64 — see fx/fog_volume.rs.
-        let radial_falloff = f32::from_le_bytes(bytes[64..68].try_into().unwrap());
-        assert_eq!(radial_falloff, 3.5);
+        // FogVolume: Pod (see fx/fog_volume.rs) — read fields by name rather
+        // than chasing byte offsets, which silently drift if the struct grows.
+        let volume: &FogVolume = bytemuck::from_bytes(&bytes);
+        assert_eq!(volume.density, 1.25);
+        assert_eq!(volume.edge_softness, 0.5);
+        assert_eq!(volume.radial_falloff, 3.5);
         assert_eq!(
             live_mask, 0b1,
             "single non-zero-density slot should be live"

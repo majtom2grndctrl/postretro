@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn args_deserialize_camelcase_partial() {
+    fn set_fog_params_args_deserialize_partial_camelcase_json_with_omitted_fields_as_none() {
         let v = serde_json::json!({ "edgeSoftness": 0.3, "falloff": 1.25 });
         let parsed: SetFogParamsArgs = serde_json::from_value(v).unwrap();
         assert_eq!(parsed.density, None);

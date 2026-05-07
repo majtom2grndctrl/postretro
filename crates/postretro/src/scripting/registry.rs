@@ -153,6 +153,22 @@ pub(crate) struct FogVolumeComponent {
     pub(crate) falloff: f32,
 }
 
+impl FogVolumeComponent {
+    /// Script-facing field list, paired with the camelCase keys the FFI
+    /// boundary uses. Centralized so adding a runtime-tweakable field updates
+    /// every read/write site (`into_js`, `into_lua`, `world.query` JSON shape)
+    /// in one place. The wire-shared struct keeps snake_case Rust idents; the
+    /// camelCase mapping lives only here.
+    pub(crate) fn camel_fields(&self) -> [(&'static str, f32); 4] {
+        [
+            ("density", self.density),
+            ("scatter", self.scatter),
+            ("edgeSoftness", self.edge_softness),
+            ("falloff", self.falloff),
+        ]
+    }
+}
+
 /// Trait implemented by concrete component structs so they can be stored
 /// and looked up in the registry without a string key.
 ///

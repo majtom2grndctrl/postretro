@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn args_deserialize_camelcase() {
+    fn set_fog_edge_softness_args_deserialize_edge_softness_from_camelcase_json() {
         let v = serde_json::json!({ "edgeSoftness": 0.42 });
         let parsed: SetFogEdgeSoftnessArgs = serde_json::from_value(v).unwrap();
         assert_eq!(parsed.edge_softness, 0.42);

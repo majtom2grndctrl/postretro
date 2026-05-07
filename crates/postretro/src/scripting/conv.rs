@@ -429,10 +429,9 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 // the wire-shared `FogVolumeComponent` struct.
                 let o = Object::new(ctx.clone())?;
                 o.set("kind", "fog_volume")?;
-                o.set("density", fog.density)?;
-                o.set("scatter", fog.scatter)?;
-                o.set("edgeSoftness", fog.edge_softness)?;
-                o.set("falloff", fog.falloff)?;
+                for (key, value) in fog.camel_fields() {
+                    o.set(key, value)?;
+                }
                 Ok(o.into_value())
             }
             other @ (ComponentValue::BillboardEmitter(_)
@@ -537,10 +536,9 @@ impl IntoLua for ComponentValue {
                 // the wire-shared `FogVolumeComponent` struct.
                 let tbl = lua.create_table()?;
                 tbl.set("kind", "fog_volume")?;
-                tbl.set("density", fog.density)?;
-                tbl.set("scatter", fog.scatter)?;
-                tbl.set("edgeSoftness", fog.edge_softness)?;
-                tbl.set("falloff", fog.falloff)?;
+                for (key, value) in fog.camel_fields() {
+                    tbl.set(key, value)?;
+                }
                 Ok(LuaValue::Table(tbl))
             }
             other @ (ComponentValue::BillboardEmitter(_)

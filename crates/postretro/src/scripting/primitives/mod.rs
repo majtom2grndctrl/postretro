@@ -216,13 +216,9 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
         };
         let comp = {
             let mut c = Map::with_capacity(4);
-            c.insert("density".to_string(), Value::from(f.density as f64));
-            c.insert("scatter".to_string(), Value::from(f.scatter as f64));
-            c.insert(
-                "edgeSoftness".to_string(),
-                Value::from(f.edge_softness as f64),
-            );
-            c.insert("falloff".to_string(), Value::from(f.falloff as f64));
+            for (key, value) in f.camel_fields() {
+                c.insert(key.to_string(), Value::from(value as f64));
+            }
             Value::Object(c)
         };
         let mut obj = Map::with_capacity(4);

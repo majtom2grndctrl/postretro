@@ -1376,7 +1376,8 @@ mod tests {
         // 6-face axis-aligned box fog_volume brush in Quake coords (Z-up,
         // inches). Outward face normals must satisfy `n·p ≤ d` for any
         // interior point — this is the load-bearing invariant at the
-        // compiler↔shader seam: WGSL `sample_fog_volumes()` evaluates
+        // compiler↔shader seam: the inlined per-step volume test in
+        // `fog_volume.wgsl::cs_main` evaluates
         // `dot(pos, plane.xyz) <= plane.w` to test membership and uses
         // `plane.w - dot(pos, plane.xyz)` as the signed distance for the
         // edge_softness fade. If the convention drifts (e.g. inward normals

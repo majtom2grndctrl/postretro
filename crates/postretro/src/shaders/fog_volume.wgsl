@@ -73,6 +73,25 @@ struct LightSpaceMatrices {
 // Must match MAX_FOG_VOLUMES in the Rust fog_volume module.
 const MAX_FOG_VOLUMES: u32 = 16u;
 
+// Upper bound for the runtime-derived SH resample stride. The dynamic
+// expression in `cs_main` divides `SH_COVERAGE_METERS / fog.step_size`; if a
+// map ships with a pathologically small `fog_step_size` the quotient could
+// climb high enough to violate the band-limit assumption (one sample per ~4
+// SH cells). 32 keeps the worst case bounded at ~16m of coverage per sample
+// — still defensible visually, and far below the runaway values a tiny step
+// could otherwise produce.
+const MAX_SH_RESAMPLE_STRIDE: u32 = 32u;
+
+// World-space coverage budget per cached SH sample, expressed as a multiple of
+// the SH grid cell size. SH irradiance is band-limited and the historical
+// quality bar (hardcoded stride 8 with default 1m probes / 0.5m step) cached
+// one sample for every 4 cells of march distance — that ratio is what this
+// constant preserves. Tightening `--probe-spacing` shrinks the cell, which
+// shrinks coverage and shortens the stride proportionally; tightening
+// `fog.step_size` lengthens the stride to keep meters-per-cache-sample roughly
+// constant, capped by `MAX_SH_RESAMPLE_STRIDE`.
+const SH_COVERAGE_CELLS: f32 = 4.0;
+
 // --- Group 6: Fog resources ---
 
 // 80 bytes; layout must match `FogVolume` in fx/fog_volume.rs. Each `vec3<f32>`
@@ -258,87 +277,6 @@ fn sample_spot_shadow_pt(
     return select(0.0, 1.0, light_ndc.z <= stored_depth);
 }
 
-// --- AABB membership + accumulated volume lookup ---
-
-struct VolumeSample {
-    density: f32,
-    scatter: f32,
-    hits: u32,
-}
-
-fn sample_fog_volumes(pos: vec3<f32>) -> VolumeSample {
-    var out: VolumeSample;
-    out.density = 0.0;
-    out.scatter = 0.0;
-    out.hits = 0u;
-    let n = fog.active_count;
-    for (var i: u32 = 0u; i < n; i = i + 1u) {
-        let v = fog_volumes[i];
-        // AABB still gates entry — it's the conservative bound for both the
-        // primitive and semantic paths and matches the slab-clip prologue.
-        if pos.x < v.min.x || pos.y < v.min.y || pos.z < v.min.z {
-            continue;
-        }
-        if pos.x > v.max_v.x || pos.y > v.max_v.y || pos.z > v.max_v.z {
-            continue;
-        }
-
-        var fade: f32;
-
-        if v.plane_count > 0u {
-            // Primitive path: convex brush bounded by `plane_count` half-spaces.
-            // `min_signed_dist` is the signed distance to the nearest face
-            // boundary — positive inside, negative outside. We iterate every
-            // plane (no early-exit) so the same value drives both the inside
-            // test and the edge-softness fade.
-            var min_signed_dist: f32 = 1.0e30;
-            for (var pi: u32 = 0u; pi < v.plane_count; pi = pi + 1u) {
-                let p = fog_planes[v.plane_offset + pi];
-                min_signed_dist = min(min_signed_dist, p.w - dot(pos, p.xyz));
-            }
-            if min_signed_dist < 0.0 {
-                continue;
-            }
-            // Strict `> 0.0` guard avoids divide-by-zero: when edge_softness == 0
-            // the volume is a hard cutoff — full density inside, no fade band.
-            fade = select(1.0, saturate(min_signed_dist / v.edge_softness), v.edge_softness > 0.0);
-        } else {
-            if v.shape_mode > 0.5 {
-                // Ellipsoid path: normalize the offset by per-axis half-extents,
-                // so |rel * inv_half_ext| == 1 traces the ellipsoid surface.
-                // AABB corners outside the ellipsoid still evaluate this math
-                // but reach near-zero density quickly via the `pow` falloff.
-                let rel = pos - v.center;
-                let d = rel * v.inv_half_ext;
-                let ellipsoid_t2 = saturate(dot(d, d));
-                let radial_inv = 1.0 - ellipsoid_t2;
-                if v.radial_falloff <= 0.0 {
-                    fade = 1.0;
-                } else {
-                    fade = pow(max(radial_inv, 1.0e-6), v.radial_falloff);
-                }
-            } else {
-                // Semantic path: AABB-only membership with a centered radial fade
-                // shaped by `radial_falloff` (`fog_lamp` sphere, `fog_tube` capsule).
-                let radial_t = clamp(length(pos - v.center) / max(v.half_diag, 1.0e-6), 0.0, 1.0);
-                let radial_inv = 1.0 - radial_t;
-                // Guard against pow(0,0) NaN: clamp base away from zero.
-                // `pow` is only reached when radial_falloff > 0 (wave-uniform branch).
-                if v.radial_falloff <= 0.0 {
-                    fade = 1.0;
-                } else {
-                    fade = pow(max(radial_inv, 1.0e-6), v.radial_falloff);
-                }
-            }
-        }
-
-        out.density = out.density + v.density * fade;
-        out.scatter = max(out.scatter, v.scatter);
-        out.hits = out.hits + 1u;
-    }
-    return out;
-}
-
 // --- World ray reconstruction from low-res fragment UV + full-res depth ---
 
 struct ViewRay {
@@ -423,9 +361,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let inv_d = vec3<f32>(1.0) / ray.direction;
 
     // We track raw [enter, exit] hits per active volume, then sort-merge into
-    // a disjoint union. Array sized to MAX_FOG_VOLUMES.
+    // a disjoint union. Array sized to MAX_FOG_VOLUMES. `raw_idx` carries the
+    // original `fog_volumes` index for each hit so the inlined per-step volume
+    // sampling can iterate only volumes whose AABB the ray crosses (a strict
+    // subset of `fog.active_count`).
     var raw_enter: array<f32, MAX_FOG_VOLUMES>;
     var raw_exit: array<f32, MAX_FOG_VOLUMES>;
+    var raw_idx: array<u32, MAX_FOG_VOLUMES>;
     var raw_count: u32 = 0u;
 
     let vc = fog.active_count;
@@ -445,6 +387,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if raw_count < MAX_FOG_VOLUMES {
                     raw_enter[raw_count] = enter;
                     raw_exit[raw_count] = exit;
+                    raw_idx[raw_count] = i;
                     raw_count = raw_count + 1u;
                 }
             }
@@ -469,10 +412,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if best != a {
             let te = raw_enter[a];
             let tx = raw_exit[a];
+            let ti = raw_idx[a];
             raw_enter[a] = raw_enter[best];
             raw_exit[a] = raw_exit[best];
+            raw_idx[a] = raw_idx[best];
             raw_enter[best] = te;
             raw_exit[best] = tx;
+            raw_idx[best] = ti;
         }
     }
     // Sweep-merge overlapping/touching intervals.
@@ -496,6 +442,34 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var step_count: u32 = 0u;
 
+    // SH irradiance is band-limited and the SH grid is much coarser than the
+    // march step size. Sampling 9 trilinear 3D fetches per step is wasted
+    // bandwidth — we cache one sample and refresh every `sh_stride` steps
+    // (reset at each sub-interval boundary) to bound drift without per-step cost.
+    // The cache lives in scalar locals (no array, no callee pointer) so it stays
+    // in registers and never hits the Metal private-memory trap.
+    //
+    // `sh_stride` is derived once per ray from the SH grid cell size and the
+    // fog march step size, so the meters-per-cache-sample budget stays
+    // proportional to the baked SH resolution regardless of `--probe-spacing`
+    // or `fog_step_size`. `cell_size` is a per-axis world-space length
+    // (matches `probe_spacing_meters` on the host); taking the minimum
+    // component is the conservative choice for anisotropic grids. Floored at
+    // 1 (a stride of 0 would loop) and capped at `MAX_SH_RESAMPLE_STRIDE` to
+    // keep pathological inputs (very small `step_size`) bounded.
+    //
+    // Default-case sanity: cell_size = 1.0m, step = 0.5m →
+    //   stride = clamp(4.0 * 1.0 / 0.5, 1, 32) = 8 — matches the previous
+    //   hardcoded value, so default visual output is unchanged.
+    let cell_min = min(min(sh_grid.cell_size.x, sh_grid.cell_size.y), sh_grid.cell_size.z);
+    let sh_stride = clamp(
+        u32(SH_COVERAGE_CELLS * cell_min / step),
+        1u,
+        MAX_SH_RESAMPLE_STRIDE,
+    );
+    var cached_sh: vec3<f32> = vec3<f32>(0.0);
+    var sh_steps_since_sample: u32 = 0u;
+
     for (var ui: u32 = 0u; ui < union_count; ui = ui + 1u) {
         if transmittance < 0.01 { break; }
         if step_count >= max_steps { break; }
@@ -505,6 +479,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Align the first step inside the sub-interval to a half-step offset
         // (matches the original `start_t = step * 0.5` cadence).
         var t = sub_enter + step * 0.5;
+        // Force a fresh SH sample at the first eligible step in each new
+        // sub-interval (gaps between sub-intervals can be large).
+        sh_steps_since_sample = sh_stride;
 
         loop {
             if t >= sub_exit { break; }
@@ -513,13 +490,98 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             step_count = step_count + 1u;
 
             let pos = ray.origin + ray.direction * t;
-            let vs = sample_fog_volumes(pos);
-            if vs.density > 0.0 {
-                // Scatter weight for this step.
-                let weight = vs.density * vs.scatter * step;
 
-                let sh_color = sample_sh_fog(pos);
-                accum = accum + transmittance * weight * sh_color;
+            // Inlined per-step volume sampling (Metal/Apple Silicon constraint).
+            // A callee taking `ptr<function, array<...>>` for the per-ray
+            // active-volume index list cannot be register-promoted on Metal —
+            // the array spills to device-private memory, replacing well-coalesced
+            // storage-buffer reads with poorly-coalesced private reads. A previous
+            // attempt at a function-local cache (commit b93d31e, reverted by
+            // bda93f4) hit exactly this trap. Keeping the body inline keeps the
+            // index array in registers/local scope. Iterates only volumes whose
+            // AABB the ray crosses (`raw_idx[0..raw_count]`, a strict subset of
+            // `fog.active_count`), reading each volume from the storage buffer
+            // with the same coalesced loads as before — just fewer of them per step.
+            var vs_density: f32 = 0.0;
+            var vs_scatter: f32 = 0.0;
+            for (var rk: u32 = 0u; rk < raw_count; rk = rk + 1u) {
+                let v = fog_volumes[raw_idx[rk]];
+                // AABB still gates entry — the slab-clip prologue narrowed the
+                // ray-vs-volume box, but a step inside the union envelope can
+                // still fall outside an individual volume's box.
+                if pos.x < v.min.x || pos.y < v.min.y || pos.z < v.min.z {
+                    continue;
+                }
+                if pos.x > v.max_v.x || pos.y > v.max_v.y || pos.z > v.max_v.z {
+                    continue;
+                }
+
+                var fade: f32;
+
+                if v.plane_count > 0u {
+                    // Primitive path: convex brush bounded by `plane_count`
+                    // half-spaces. `min_signed_dist` is the signed distance to
+                    // the nearest face boundary — positive inside, negative
+                    // outside. We iterate every plane (no early-exit) so the
+                    // same value drives both the inside test and the
+                    // edge-softness fade.
+                    var min_signed_dist: f32 = 1.0e30;
+                    for (var pi: u32 = 0u; pi < v.plane_count; pi = pi + 1u) {
+                        let p = fog_planes[v.plane_offset + pi];
+                        min_signed_dist = min(min_signed_dist, p.w - dot(pos, p.xyz));
+                    }
+                    if min_signed_dist < 0.0 {
+                        continue;
+                    }
+                    // Strict `> 0.0` guard avoids divide-by-zero: when
+                    // edge_softness == 0 the volume is a hard cutoff — full
+                    // density inside, no fade band.
+                    fade = select(1.0, saturate(min_signed_dist / v.edge_softness), v.edge_softness > 0.0);
+                } else {
+                    if v.shape_mode > 0.5 {
+                        // Ellipsoid path: normalize the offset by per-axis
+                        // half-extents so |rel * inv_half_ext| == 1 traces
+                        // the ellipsoid surface.
+                        let rel = pos - v.center;
+                        let d = rel * v.inv_half_ext;
+                        let ellipsoid_t2 = saturate(dot(d, d));
+                        let radial_inv = 1.0 - ellipsoid_t2;
+                        if v.radial_falloff <= 0.0 {
+                            fade = 1.0;
+                        } else {
+                            fade = pow(max(radial_inv, 1.0e-6), v.radial_falloff);
+                        }
+                    } else {
+                        // Semantic path: AABB-only membership with a centered
+                        // radial fade shaped by `radial_falloff` (`fog_lamp`
+                        // sphere, `fog_tube` capsule).
+                        let radial_t = clamp(length(pos - v.center) / max(v.half_diag, 1.0e-6), 0.0, 1.0);
+                        let radial_inv = 1.0 - radial_t;
+                        // Guard against pow(0,0) NaN: clamp base away from
+                        // zero. `pow` is only reached when radial_falloff > 0
+                        // (wave-uniform branch).
+                        if v.radial_falloff <= 0.0 {
+                            fade = 1.0;
+                        } else {
+                            fade = pow(max(radial_inv, 1.0e-6), v.radial_falloff);
+                        }
+                    }
+                }
+
+                vs_density = vs_density + v.density * fade;
+                vs_scatter = max(vs_scatter, v.scatter);
+            }
+
+            if vs_density > 0.0 {
+                // Scatter weight for this step.
+                let weight = vs_density * vs_scatter * step;
+
+                if sh_steps_since_sample >= sh_stride {
+                    cached_sh = sample_sh_fog(pos);
+                    sh_steps_since_sample = 0u;
+                }
+                sh_steps_since_sample = sh_steps_since_sample + 1u;
+                accum = accum + transmittance * weight * cached_sh;
 
                 // Dynamic spot beams.
                 for (var li: u32 = 0u; li < spot_count; li = li + 1u) {
@@ -565,7 +627,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     accum = accum + transmittance * weight * pt.color * atten;
                 }
 
-                transmittance = transmittance * exp(-vs.density * step);
+                transmittance = transmittance * exp(-vs_density * step);
             }
 
             t = t + step;

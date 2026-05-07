@@ -863,7 +863,11 @@ pub(crate) fn write_type_definitions(
 /// permission must not crash the engine.
 #[cfg(debug_assertions)]
 pub(crate) fn emit_sdk_types_in_debug(registry: &PrimitiveRegistry) {
-    let out = Path::new("sdk/types");
+    // Why: anchor at this crate's manifest dir so the path resolves to the
+    // repo-root `sdk/types/` regardless of the engine's CWD. A relative
+    // "sdk/types" silently writes a stale duplicate under the package dir
+    // when launched from anywhere other than the workspace root.
+    let out = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/types"));
     if let Err(e) = write_type_definitions(registry, out) {
         log::warn!("failed to emit SDK type definitions to {out:?}: {e}");
     }

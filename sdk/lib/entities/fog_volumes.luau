@@ -40,14 +40,10 @@ export type FogVolumeHandle = {
   component: FogVolumeComponent,
 }
 
---- One step in a fog-density sequence reaction. Mirrors the inline
---- `{ id, primitive, args }` shape used in
---- `content/tests/scripts/arena-lights.ts`.
-export type FogSequenceStep = {
-  id: EntityId,
-  primitive: string,
-  args: { density: number },
-}
+-- The fog density step shape is exported by the generated
+-- `postretro.d.luau` definitions file as `SetFogDensityStep`. The SDK
+-- builders below return that shape directly so steps slot into
+-- `SequenceStep` without an SDK-only step alias.
 
 local FogVolumesSdk = {}
 
@@ -86,7 +82,7 @@ function FogVolumesSdk.fogPulse(
   min: number,
   max: number,
   periodMs: number
-): {FogSequenceStep}
+): {SetFogDensityStep}
   -- `periodMs` is reserved for future timing semantics on the sequence
   -- dispatcher; the constructor itself produces sample values only.
   local _ = periodMs
@@ -95,7 +91,7 @@ function FogVolumesSdk.fogPulse(
   local hi = math.max(min, max)
   local mid = (lo + hi) * 0.5
   local amp = (hi - lo) * 0.5
-  local steps: {FogSequenceStep} = {}
+  local steps: {SetFogDensityStep} = {}
   for i = 1, SAMPLES do
     -- `(i - 1)` converts the 1-indexed Luau counter to 0-indexed theta, matching the TypeScript fogPulse sampling.
     local theta = ((i - 1) / SAMPLES) * math.pi * 2
@@ -124,10 +120,10 @@ function FogVolumesSdk.fogFade(
   from: number,
   to: number,
   durationMs: number
-): {FogSequenceStep}
+): {SetFogDensityStep}
   local _ = durationMs
   local SAMPLES = 16
-  local steps: {FogSequenceStep} = {}
+  local steps: {SetFogDensityStep} = {}
   for i = 1, SAMPLES do
     local t = (i - 1) / (SAMPLES - 1)
     local density = from + (to - from) * t

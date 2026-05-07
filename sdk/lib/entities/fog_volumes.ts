@@ -8,6 +8,7 @@ import type {
   EntityId,
   FogVolumeComponent,
   FogVolumeEntity as GeneratedFogVolumeEntity,
+  SetFogDensityStep,
   Vec3,
 } from "postretro";
 
@@ -56,18 +57,6 @@ export function wrapFogVolumeEntity(
 }
 
 /**
- * Sequence step shape returned by `fogPulse` / `fogFade`. Mirrors the
- * inline `{ id, primitive, args }` shape used in
- * `content/tests/scripts/arena-lights.ts`. Authors wrap an array of
- * these in `registerReaction("levelLoad", { sequence: [...] })`.
- */
-export interface FogSequenceStep {
-  id: EntityId;
-  primitive: "setFogDensity";
-  args: { density: number };
-}
-
-/**
  * Returns a sequence-step array whose steps emit `setFogDensity` calls
  * sampled along a full sine cycle between `min` and `max`. Mirrors the
  * 16-sample `pulse` constructor in `sdk/lib/entities/lights.ts`: sample
@@ -87,19 +76,23 @@ export interface FogSequenceStep {
  * Step count is 16 (matching `pulse`). `periodMs` is accepted for
  * call-site symmetry with `fogFade`; how steps are paced is the
  * reaction dispatcher's concern.
+ *
+ * Returns the generated `SetFogDensityStep` shape from `postretro.d.ts`,
+ * so the steps slot directly into a `SequenceStep[]` without a separate
+ * SDK-only step interface.
  */
 export function fogPulse(
   id: EntityId,
   min: number,
   max: number,
   _periodMs: number,
-): FogSequenceStep[] {
+): SetFogDensityStep[] {
   const SAMPLES = 16;
   const lo = Math.min(min, max);
   const hi = Math.max(min, max);
   const mid = (lo + hi) * 0.5;
   const amp = (hi - lo) * 0.5;
-  const steps: FogSequenceStep[] = new Array(SAMPLES);
+  const steps: SetFogDensityStep[] = new Array(SAMPLES);
   for (let i = 0; i < SAMPLES; i++) {
     const theta = (i / SAMPLES) * Math.PI * 2;
     const density = mid + amp * Math.sin(theta);
@@ -122,16 +115,17 @@ export function fogPulse(
  * `to` exactly.
  *
  * The caller supplies the target `id`; the same `id` is stamped onto
- * every step.
+ * every step. Returns the generated `SetFogDensityStep` shape — the
+ * step type is shared with `fogPulse` and any author-built density step.
  */
 export function fogFade(
   id: EntityId,
   from: number,
   to: number,
   _durationMs: number,
-): FogSequenceStep[] {
+): SetFogDensityStep[] {
   const SAMPLES = 16;
-  const steps: FogSequenceStep[] = new Array(SAMPLES);
+  const steps: SetFogDensityStep[] = new Array(SAMPLES);
   for (let i = 0; i < SAMPLES; i++) {
     const t = i / (SAMPLES - 1);
     const density = from + (to - from) * t;

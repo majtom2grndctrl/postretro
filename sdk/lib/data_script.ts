@@ -25,8 +25,26 @@ export type SetLightAnimationStep = {
   args: import("postretro").LightAnimation;
 };
 
-/** Union of supported sequence step shapes. */
-export type SequenceStep = SetLightAnimationStep;
+/** Re-exported fog sequence step shapes — generated from the Rust primitive
+ * registry. The SDK exposes them through this module so authors do not have to
+ * import directly from `"postretro"` for the common "build a sequence step
+ * array" path. */
+export type SetFogDensityStep = import("postretro").SetFogDensityStep;
+export type SetFogScatterStep = import("postretro").SetFogScatterStep;
+export type SetFogEdgeSoftnessStep = import("postretro").SetFogEdgeSoftnessStep;
+export type SetFogFalloffStep = import("postretro").SetFogFalloffStep;
+export type SetFogParamsStep = import("postretro").SetFogParamsStep;
+
+/** Union of supported sequence step shapes. Mirrors the generated
+ * `SequenceStep` in `postretro.d.ts`; new sequenced primitives extend
+ * both ends of the union together. */
+export type SequenceStep =
+  | SetLightAnimationStep
+  | SetFogDensityStep
+  | SetFogScatterStep
+  | SetFogEdgeSoftnessStep
+  | SetFogFalloffStep
+  | SetFogParamsStep;
 
 /** Ordered per-entity primitive invocations. Steps run in array order at dispatch time. */
 export type SequenceReactionDescriptor = {

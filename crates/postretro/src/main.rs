@@ -52,7 +52,7 @@ use crate::scripting::reaction_dispatch::{
 };
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
-    register_fog_reaction_primitives,
+    register_fog_reaction_primitives, register_sequenced_fog_primitives,
 };
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
@@ -167,6 +167,7 @@ fn main() -> Result<()> {
     // script-facing primitive registry (these never run inside QuickJS/Luau).
     let mut sequence_registry = SequencedPrimitiveRegistry::new();
     register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
+    register_sequenced_fog_primitives(&mut sequence_registry, script_ctx.clone());
 
     // Reaction-primitive handlers invoked by name when a `Primitive` reaction
     // fires. Populated once at startup; survives level reloads.

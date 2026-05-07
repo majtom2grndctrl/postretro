@@ -277,9 +277,47 @@ export type SetLightAnimationStep = {
   args: LightAnimation,
 }
 
+--- Sequence step targeting a single fog volume's `density`. Built by the
+--- SDK `fogPulse` / `fogFade` constructors.
+export type SetFogDensityStep = {
+  id: EntityId,
+  primitive: "setFogDensity",
+  args: { density: number },
+}
+
+--- Sequence step targeting a single fog volume's `scatter`.
+export type SetFogScatterStep = {
+  id: EntityId,
+  primitive: "setFogScatter",
+  args: { scatter: number },
+}
+
+--- Sequence step targeting a single fog volume's `edgeSoftness`.
+export type SetFogEdgeSoftnessStep = {
+  id: EntityId,
+  primitive: "setFogEdgeSoftness",
+  args: { edgeSoftness: number },
+}
+
+--- Sequence step targeting a single fog volume's `falloff`.
+export type SetFogFalloffStep = {
+  id: EntityId,
+  primitive: "setFogFalloff",
+  args: { falloff: number },
+}
+
+--- Sequence step that updates any subset of
+--- `{density, scatter, edgeSoftness, falloff}` on a single fog volume in
+--- one component write.
+export type SetFogParamsStep = {
+  id: EntityId,
+  primitive: "setFogParams",
+  args: { density: number?, scatter: number?, edgeSoftness: number?, falloff: number? },
+}
+
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.

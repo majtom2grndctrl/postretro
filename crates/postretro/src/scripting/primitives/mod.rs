@@ -190,9 +190,11 @@ fn collect_emitter_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_jso
 }
 
 /// Build the JSON shape `[{ id, position, tags, component: { density,
-/// scatter, edge_softness } }, ...]` for every entity carrying a
+/// scatter, edgeSoftness, falloff } }, ...]` for every entity carrying a
 /// `FogVolumeComponent`. Position is read from the entity's `Transform`
-/// (volume center, baked at level load).
+/// (volume center, baked at level load). The component object is hand-rolled
+/// rather than driven by serde so the script-facing camelCase boundary
+/// (`edgeSoftness`) does not require a wire-affecting `#[serde(rename)]`.
 fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
     use serde_json::{Map, Value};
     let reg = ctx.registry.borrow();
@@ -212,7 +214,17 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
             }
             Err(_) => Value::Null,
         };
-        let comp = serde_json::to_value(f).expect("FogVolumeComponent always serializes");
+        let comp = {
+            let mut c = Map::with_capacity(4);
+            c.insert("density".to_string(), Value::from(f.density as f64));
+            c.insert("scatter".to_string(), Value::from(f.scatter as f64));
+            c.insert(
+                "edgeSoftness".to_string(),
+                Value::from(f.edge_softness as f64),
+            );
+            c.insert("falloff".to_string(), Value::from(f.falloff as f64));
+            Value::Object(c)
+        };
         let mut obj = Map::with_capacity(4);
         obj.insert("id".to_string(), Value::from(id.to_raw()));
         obj.insert("position".to_string(), position);
@@ -357,7 +369,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable.")
         .field("density", "f32", "Volumetric fog density inside the AABB.")
         .field("scatter", "f32", "Fraction of in-scattering toward the camera.")
-        .field("edge_softness", "f32", "Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.")
+        .field("edgeSoftness", "f32", "Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.")
+        .field("falloff", "f32", "Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (`fog_ellipsoid`) shader paths; stored but ignored by the plane-sweep `fog_volume` path.")
         .finish();
     registry
         .register_type("FogVolumeEntity")

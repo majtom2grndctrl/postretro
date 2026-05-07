@@ -10,9 +10,9 @@ use crate::prl::{LightType, MapLight};
 use crate::scripting::registry::{EntityId, EntityRegistry, FogVolumeComponent, Transform};
 use postretro_level_format::fog_volumes::FogVolumeRecord;
 
-/// Authoring-time AABB plus the compile-time `radial_falloff` carried alongside
-/// it. Not runtime-settable — surfacing it would require adding it to
-/// `FogVolumeComponent` and the scripting API — so it lives in a side-table.
+/// Authoring-time AABB and shape parameters cached alongside the entity. Not
+/// runtime-settable — these are baked at compile time and live in a side-table
+/// rather than the `FogVolumeComponent`.
 ///
 /// `center`, `inv_half_ext`, `half_diag`, and `shape_mode` are baked into the
 /// PRL by the level compiler; they're cached here so per-frame fog uploads can
@@ -20,10 +20,12 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 /// is a discriminant flag (0.0 = legacy radial sphere/capsule fade against
 /// `half_diag`, 1.0 = ellipsoid using `inv_half_ext`); the shader compares
 /// with `> 0.5` to avoid float precision issues.
+///
+/// Note: `radial_falloff` lives on `FogVolumeComponent.falloff` (runtime-
+/// settable) and is read from the component at GPU pack time.
 pub struct FogVolumeAabb {
     pub min: Vec3,
     pub max: Vec3,
-    pub radial_falloff: f32,
     pub center: Vec3,
     pub inv_half_ext: Vec3,
     pub half_diag: f32,
@@ -33,7 +35,7 @@ pub struct FogVolumeAabb {
 /// State carried across frames. Owned by the game layer so the renderer never
 /// holds component data.
 pub(crate) struct FogVolumeBridge {
-    /// Compile-time AABB + radial falloff per entity, keyed by `EntityId`.
+    /// Compile-time AABB and shape parameters per entity, keyed by `EntityId`.
     aabbs: HashMap<EntityId, FogVolumeAabb>,
     /// Map-volume index → `EntityId`. Fixed at level load.
     entity_ids: Vec<EntityId>,
@@ -71,9 +73,10 @@ impl FogVolumeBridge {
     }
 
     /// Populate the entity registry with one entity per fog-volume record.
-    /// Called once at level load. Stores the AABB + radial falloff in the
-    /// side-table; the three runtime-settable parameters (`density`, `scatter`,
-    /// `edge_softness`) become a `FogVolumeComponent` on the spawned entity.
+    /// Called once at level load. Stores the AABB and shape parameters in the
+    /// side-table; the four runtime-settable parameters (`density`, `scatter`,
+    /// `edge_softness`, `falloff`) become a `FogVolumeComponent` on the spawned
+    /// entity.
     pub(crate) fn populate_from_level(
         &mut self,
         registry: &mut EntityRegistry,
@@ -104,6 +107,7 @@ impl FogVolumeBridge {
                 density: entry.density,
                 scatter: entry.scatter,
                 edge_softness: entry.edge_softness,
+                falloff: entry.radial_falloff,
             };
             // `set_component` only fails on stale id — the id was just returned.
             let _ = registry.set_component(id, component);
@@ -113,7 +117,6 @@ impl FogVolumeBridge {
                 FogVolumeAabb {
                     min: Vec3::from(entry.min),
                     max: Vec3::from(entry.max),
-                    radial_falloff: entry.radial_falloff,
                     center: Vec3::from(entry.center),
                     inv_half_ext: Vec3::from(entry.inv_half_ext),
                     half_diag: entry.half_diag,
@@ -201,7 +204,7 @@ impl FogVolumeBridge {
                     half_diag: aabb.half_diag,
                     inv_half_ext: aabb.inv_half_ext.to_array(),
                     shape_mode: aabb.shape_mode,
-                    radial_falloff: aabb.radial_falloff,
+                    radial_falloff: component.falloff,
                     scatter: component.scatter,
                     plane_offset: 0,
                     plane_count,
@@ -346,7 +349,7 @@ mod tests {
             max: [2.0, 3.0, 2.0],
             edge_softness: 1.0,
             scatter: 0.4,
-            radial_falloff: 0.0,
+            radial_falloff: 2.0,
             center: [0.0, 1.5, 0.0],
             inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
             half_diag: 2.5,
@@ -386,6 +389,8 @@ mod tests {
         let comp = registry.get_component::<FogVolumeComponent>(id).unwrap();
         assert_eq!(comp.density, 0.5);
         assert_eq!(comp.scatter, 0.4);
+        assert_eq!(comp.edge_softness, 1.0);
+        assert_eq!(comp.falloff, 2.0);
         let aabb = bridge.aabbs.get(&id).unwrap();
         assert_eq!(aabb.min, Vec3::new(-2.0, 0.0, -2.0));
         assert_eq!(aabb.center, Vec3::new(0.0, 1.5, 0.0));
@@ -417,6 +422,7 @@ mod tests {
                     density: 1.25,
                     scatter: 0.9,
                     edge_softness: 0.5,
+                    falloff: 3.5,
                 },
             )
             .unwrap();
@@ -429,6 +435,9 @@ mod tests {
         let edge_softness = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
         assert_eq!(density, 1.25);
         assert_eq!(edge_softness, 0.5);
+        // FogVolume.radial_falloff sits at byte offset 64 — see fx/fog_volume.rs.
+        let radial_falloff = f32::from_le_bytes(bytes[64..68].try_into().unwrap());
+        assert_eq!(radial_falloff, 3.5);
         assert_eq!(
             live_mask, 0b1,
             "single non-zero-density slot should be live"
@@ -452,6 +461,7 @@ mod tests {
                     density: 0.0,
                     scatter: 0.0,
                     edge_softness: 0.0,
+                    falloff: 1.0,
                 },
             )
             .unwrap();
@@ -537,6 +547,7 @@ mod tests {
                     density: 0.0,
                     scatter: 0.0,
                     edge_softness: 0.0,
+                    falloff: 1.0,
                 },
             )
             .unwrap();
@@ -565,6 +576,7 @@ mod tests {
                     density: 0.0,
                     scatter: 0.0,
                     edge_softness: 0.0,
+                    falloff: 1.0,
                 },
             )
             .unwrap();

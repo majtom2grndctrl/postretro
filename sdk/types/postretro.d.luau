@@ -59,7 +59,9 @@ export type FogVolumeComponent = {
   --- Fraction of in-scattering toward the camera.
   scatter: number,
   --- Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.
-  edge_softness: number,
+  edgeSoftness: number,
+  --- Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (`fog_ellipsoid`) shader paths; stored but ignored by the plane-sweep `fog_volume` path.
+  falloff: number,
 }
 
 --- Entity handle returned by `world.query` when filtering for fog-volume entities.

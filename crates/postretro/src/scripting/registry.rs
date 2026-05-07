@@ -150,6 +150,7 @@ pub(crate) struct FogVolumeComponent {
     pub(crate) density: f32,
     pub(crate) scatter: f32,
     pub(crate) edge_softness: f32,
+    pub(crate) falloff: f32,
 }
 
 /// Trait implemented by concrete component structs so they can be stored

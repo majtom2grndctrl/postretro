@@ -373,22 +373,28 @@ impl<'js> FromJs<'js> for ComponentValue {
                 ))
             }
             "fog_volume" => {
-                // setComponent accepts the four runtime-tweakable fields;
-                // any AABB fields (`min`, `max`) on the input are baked
-                // geometry and silently ignored.
+                // The four runtime-tweakable fields. Any AABB fields
+                // (`min`, `max`) on the input are baked geometry and silently
+                // ignored. Script-facing key names are camelCase
+                // (`edgeSoftness`); wire/Rust-internal name stays
+                // `edge_softness`. Likewise, `falloff` ↔ `radial_falloff`.
                 let density: f32 = o.get("density").map_err(|e| {
                     rquickjs::Exception::throw_type(ctx, &format!("FogVolume.density: {e}"))
                 })?;
                 let scatter: f32 = o.get("scatter").map_err(|e| {
                     rquickjs::Exception::throw_type(ctx, &format!("FogVolume.scatter: {e}"))
                 })?;
-                let edge_softness: f32 = o.get("edge_softness").map_err(|e| {
-                    rquickjs::Exception::throw_type(ctx, &format!("FogVolume.edge_softness: {e}"))
+                let edge_softness: f32 = o.get("edgeSoftness").map_err(|e| {
+                    rquickjs::Exception::throw_type(ctx, &format!("FogVolume.edgeSoftness: {e}"))
+                })?;
+                let falloff: f32 = o.get("falloff").map_err(|e| {
+                    rquickjs::Exception::throw_type(ctx, &format!("FogVolume.falloff: {e}"))
                 })?;
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
                     scatter,
                     edge_softness,
+                    falloff,
                 }))
             }
             other => Err(rquickjs::Exception::throw_type(
@@ -417,10 +423,21 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 })?;
                 json_to_js(ctx, &json)
             }
+            ComponentValue::FogVolume(fog) => {
+                // Hand-roll the script-facing object so the camelCase boundary
+                // (`edgeSoftness`, `falloff`) does not need a serde rename on
+                // the wire-shared `FogVolumeComponent` struct.
+                let o = Object::new(ctx.clone())?;
+                o.set("kind", "fog_volume")?;
+                o.set("density", fog.density)?;
+                o.set("scatter", fog.scatter)?;
+                o.set("edgeSoftness", fog.edge_softness)?;
+                o.set("falloff", fog.falloff)?;
+                Ok(o.into_value())
+            }
             other @ (ComponentValue::BillboardEmitter(_)
             | ComponentValue::ParticleState(_)
-            | ComponentValue::SpriteVisual(_)
-            | ComponentValue::FogVolume(_)) => {
+            | ComponentValue::SpriteVisual(_)) => {
                 let json = serde_json::to_value(&other).map_err(|e| {
                     rquickjs::Exception::throw_type(
                         ctx,
@@ -467,22 +484,28 @@ impl FromLua for ComponentValue {
                 )))
             }
             "fog_volume" => {
-                // setComponent accepts the four runtime-tweakable fields;
-                // any AABB fields (`min`, `max`) on the input are baked
-                // geometry and silently ignored.
+                // The four runtime-tweakable fields. Any AABB fields
+                // (`min`, `max`) on the input are baked geometry and silently
+                // ignored. Script-facing key names are camelCase
+                // (`edgeSoftness`); wire/Rust-internal name stays
+                // `edge_softness`. Likewise, `falloff` ↔ `radial_falloff`.
                 let density: f32 = t
                     .get("density")
                     .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.density: {e}")))?;
                 let scatter: f32 = t
                     .get("scatter")
                     .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.scatter: {e}")))?;
-                let edge_softness: f32 = t.get("edge_softness").map_err(|e| {
-                    mlua::Error::RuntimeError(format!("FogVolume.edge_softness: {e}"))
+                let edge_softness: f32 = t.get("edgeSoftness").map_err(|e| {
+                    mlua::Error::RuntimeError(format!("FogVolume.edgeSoftness: {e}"))
                 })?;
+                let falloff: f32 = t
+                    .get("falloff")
+                    .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.falloff: {e}")))?;
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
                     scatter,
                     edge_softness,
+                    falloff,
                 }))
             }
             other => Err(mlua::Error::RuntimeError(format!(
@@ -508,10 +531,21 @@ impl IntoLua for ComponentValue {
                 })?;
                 json_to_lua(lua, &json)
             }
+            ComponentValue::FogVolume(fog) => {
+                // Hand-roll the script-facing object so the camelCase boundary
+                // (`edgeSoftness`, `falloff`) does not need a serde rename on
+                // the wire-shared `FogVolumeComponent` struct.
+                let tbl = lua.create_table()?;
+                tbl.set("kind", "fog_volume")?;
+                tbl.set("density", fog.density)?;
+                tbl.set("scatter", fog.scatter)?;
+                tbl.set("edgeSoftness", fog.edge_softness)?;
+                tbl.set("falloff", fog.falloff)?;
+                Ok(LuaValue::Table(tbl))
+            }
             other @ (ComponentValue::BillboardEmitter(_)
             | ComponentValue::ParticleState(_)
-            | ComponentValue::SpriteVisual(_)
-            | ComponentValue::FogVolume(_)) => {
+            | ComponentValue::SpriteVisual(_)) => {
                 let json = serde_json::to_value(&other).map_err(|e| {
                     mlua::Error::RuntimeError(format!("ComponentValue serialization failed: {e}"))
                 })?;
@@ -795,9 +829,10 @@ mod tests {
 
     #[test]
     fn fog_volume_component_round_trips_through_quickjs() {
-        // setComponent accepts {density, scatter, edge_softness};
-        // getComponent returns all three under `kind: "fog_volume"`. AABB fields
-        // on the input are silently ignored.
+        // The script-facing FogVolume component carries
+        // {density, scatter, edgeSoftness, falloff} — all four are read on
+        // `from_js` and emitted on `into_js` under `kind: "fog_volume"`. AABB
+        // fields on the input are silently ignored.
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
         jsctx.with(|jsctx| {
@@ -807,7 +842,8 @@ mod tests {
                         kind: "fog_volume",
                         density: 0.4,
                         scatter: 0.5,
-                        edge_softness: 0.75,
+                        edgeSoftness: 0.75,
+                        falloff: 2.5,
                         // AABB fields silently ignored
                         min: [0.0, 0.0, 0.0],
                         max: [1.0, 1.0, 1.0],
@@ -821,6 +857,7 @@ mod tests {
             assert!((f.density - 0.4).abs() < 1e-6);
             assert!((f.scatter - 0.5).abs() < 1e-6);
             assert!((f.edge_softness - 0.75).abs() < 1e-6);
+            assert!((f.falloff - 2.5).abs() < 1e-6);
 
             // Round-trip back to JS and read each field.
             let js_back = ComponentValue::FogVolume(f).into_js(&jsctx).unwrap();
@@ -831,8 +868,10 @@ mod tests {
             assert!((density - 0.4).abs() < 1e-6);
             let scatter: f32 = o.get("scatter").unwrap();
             assert!((scatter - 0.5).abs() < 1e-6);
-            let edge_softness: f32 = o.get("edge_softness").unwrap();
+            let edge_softness: f32 = o.get("edgeSoftness").unwrap();
             assert!((edge_softness - 0.75).abs() < 1e-6);
+            let falloff: f32 = o.get("falloff").unwrap();
+            assert!((falloff - 2.5).abs() < 1e-6);
         });
     }
 
@@ -845,7 +884,8 @@ mod tests {
                     kind = "fog_volume",
                     density = 0.4,
                     scatter = 0.5,
-                    edge_softness = 0.75,
+                    edgeSoftness = 0.75,
+                    falloff = 2.5,
                     -- AABB fields silently ignored
                     min = { 0.0, 0.0, 0.0 },
                     max = { 1.0, 1.0, 1.0 },
@@ -860,6 +900,7 @@ mod tests {
         assert!((f.density - 0.4).abs() < 1e-6);
         assert!((f.scatter - 0.5).abs() < 1e-6);
         assert!((f.edge_softness - 0.75).abs() < 1e-6);
+        assert!((f.falloff - 2.5).abs() < 1e-6);
 
         // Round-trip back to Lua and read each field.
         let lua_back = ComponentValue::FogVolume(f).into_lua(&lua).unwrap();
@@ -872,8 +913,10 @@ mod tests {
         assert!((density - 0.4).abs() < 1e-6);
         let scatter: f32 = tbl.get("scatter").unwrap();
         assert!((scatter - 0.5).abs() < 1e-6);
-        let edge_softness: f32 = tbl.get("edge_softness").unwrap();
+        let edge_softness: f32 = tbl.get("edgeSoftness").unwrap();
         assert!((edge_softness - 0.75).abs() < 1e-6);
+        let falloff: f32 = tbl.get("falloff").unwrap();
+        assert!((falloff - 2.5).abs() < 1e-6);
     }
 
     #[test]

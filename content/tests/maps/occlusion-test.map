@@ -1234,33 +1234,20 @@
 }
 // entity 7
 {
-"classname" "env_fog_volume"
+"classname" "fog_volume"
 // brush 0
 {
-( 704 1776 288 ) ( 704 1544 288 ) ( 704 1544 48 ) debug_wall_yellow 0 0 0 1 1
-( 704 1544 288 ) ( 800 1528 288 ) ( 800 1528 48 ) debug_wall_yellow 0 0 180 1 -1
-( 800 1528 48 ) ( 800 1760 48 ) ( 704 1776 48 ) debug_wall_yellow 0 0 180 1 -1
-( 704 1776 288 ) ( 800 1760 288 ) ( 800 1528 288 ) debug_wall_yellow 0 0 180 1 -1
-( 800 1760 48 ) ( 800 1760 288 ) ( 704 1776 288 ) debug_wall_yellow 0 0 180 1 -1
-( 800 1528 288 ) ( 800 1760 288 ) ( 800 1760 48 ) debug_wall_yellow 0 0 0 1 1
+( 392 2128 288 ) ( 376 2032 288 ) ( 376 2032 48 ) debug_wall_yellow 0 0 0 1 1
+( 376 2032 288 ) ( 608 2032 288 ) ( 608 2032 48 ) debug_wall_yellow 0 0 0 1 1
+( 376 2032 48 ) ( 608 2032 48 ) ( 624 2128 48 ) debug_wall_yellow 0 0 90 1 -1
+( 624 2128 288 ) ( 608 2032 288 ) ( 376 2032 288 ) debug_wall_yellow 0 0 90 1 -1
+( 624 2128 288 ) ( 392 2128 288 ) ( 392 2128 48 ) debug_wall_yellow 0 0 0 1 1
+( 608 2032 48 ) ( 608 2032 288 ) ( 624 2128 288 ) debug_wall_yellow 0 0 0 1 1
 }
 }
 // entity 8
 {
-"classname" "env_fog_volume"
-// brush 0
-{
-( 880 1744 288 ) ( 880 1512 288 ) ( 880 1512 48 ) debug_wall_yellow 0 0 0 1 1
-( 976 1760 48 ) ( 976 1760 288 ) ( 880 1744 288 ) debug_wall_yellow 0 0 0 1 1
-( 976 1528 48 ) ( 976 1760 48 ) ( 880 1744 48 ) debug_wall_yellow 0 0 0 1 1
-( 880 1744 288 ) ( 976 1760 288 ) ( 976 1528 288 ) debug_wall_yellow 0 0 0 1 1
-( 880 1512 288 ) ( 976 1528 288 ) ( 976 1528 48 ) debug_wall_yellow 0 0 0 1 1
-( 976 1528 288 ) ( 976 1760 288 ) ( 976 1760 48 ) debug_wall_yellow 0 0 0 1 1
-}
-}
-// entity 9
-{
-"classname" "env_fog_volume"
+"classname" "fog_volume"
 // brush 0
 {
 ( 360 1952 288 ) ( 376 1856 288 ) ( 376 1856 48 ) debug_wall_yellow 0 0 180 1 -1
@@ -1271,16 +1258,29 @@
 ( 608 1856 48 ) ( 608 1856 288 ) ( 592 1952 288 ) debug_wall_yellow 0 0 180 1 -1
 }
 }
-// entity 10
+// entity 9
 {
-"classname" "env_fog_volume"
+"classname" "fog_volume"
 // brush 0
 {
-( 392 2128 288 ) ( 376 2032 288 ) ( 376 2032 48 ) debug_wall_yellow 0 0 0 1 1
-( 376 2032 288 ) ( 608 2032 288 ) ( 608 2032 48 ) debug_wall_yellow 0 0 0 1 1
-( 376 2032 48 ) ( 608 2032 48 ) ( 624 2128 48 ) debug_wall_yellow 0 0 90 1 -1
-( 624 2128 288 ) ( 608 2032 288 ) ( 376 2032 288 ) debug_wall_yellow 0 0 90 1 -1
-( 624 2128 288 ) ( 392 2128 288 ) ( 392 2128 48 ) debug_wall_yellow 0 0 0 1 1
-( 608 2032 48 ) ( 608 2032 288 ) ( 624 2128 288 ) debug_wall_yellow 0 0 0 1 1
+( 704 1776 288 ) ( 704 1544 288 ) ( 704 1544 48 ) debug_wall_yellow 0 0 0 1 1
+( 704 1544 288 ) ( 800 1528 288 ) ( 800 1528 48 ) debug_wall_yellow 0 0 180 1 -1
+( 800 1528 48 ) ( 800 1760 48 ) ( 704 1776 48 ) debug_wall_yellow 0 0 180 1 -1
+( 704 1776 288 ) ( 800 1760 288 ) ( 800 1528 288 ) debug_wall_yellow 0 0 180 1 -1
+( 800 1760 48 ) ( 800 1760 288 ) ( 704 1776 288 ) debug_wall_yellow 0 0 180 1 -1
+( 800 1528 288 ) ( 800 1760 288 ) ( 800 1760 48 ) debug_wall_yellow 0 0 0 1 1
+}
+}
+// entity 10
+{
+"classname" "fog_volume"
+// brush 0
+{
+( 880 1744 288 ) ( 880 1512 288 ) ( 880 1512 48 ) debug_wall_yellow 0 0 0 1 1
+( 976 1760 48 ) ( 976 1760 288 ) ( 880 1744 288 ) debug_wall_yellow 0 0 0 1 1
+( 976 1528 48 ) ( 976 1760 48 ) ( 880 1744 48 ) debug_wall_yellow 0 0 0 1 1
+( 880 1744 288 ) ( 976 1760 288 ) ( 976 1528 288 ) debug_wall_yellow 0 0 0 1 1
+( 880 1512 288 ) ( 976 1528 288 ) ( 976 1528 48 ) debug_wall_yellow 0 0 0 1 1
+( 976 1528 288 ) ( 976 1760 288 ) ( 976 1760 48 ) debug_wall_yellow 0 0 0 1 1
 }
 }

@@ -1,8 +1,8 @@
 // `setFogParams` reaction primitive: combined partial-update path that
 // applies any subset of `{density, scatter, edgeSoftness, falloff}` to every
-// fog volume matching the reaction's tag. Each field is validated
-// independently; invalid fields are dropped, valid fields applied; the
-// component is mutated once per target with the merged result.
+// fog volume matching the reaction's tag. density/scatter/edgeSoftness clamp
+// on invalid input; falloff is dropped on invalid input (component preserved).
+// Valid fields are applied in a single write per target.
 // See: context/lib/scripting.md
 
 use serde::{Deserialize, Serialize};
@@ -74,18 +74,21 @@ fn validate(args: &SetFogParamsArgs) -> ValidatedFields {
     }
 
     if let Some(s) = args.scatter {
-        if s.is_finite() && (0.0..=1.0).contains(&s) {
-            out.scatter = Some(s);
-        } else if s.is_finite() {
-            let clamped = s.clamp(0.0, 1.0);
-            log::warn!(
-                "[Scripting] setFogParams: scatter {s} is outside [0.0, 1.0]; clamping to {clamped}"
-            );
-            out.scatter = Some(clamped);
+        // NaN cannot be clamped to a meaningful value; treat it as 0.0.
+        // Infinities are handled naturally by clamp (+inf → 1.0, -inf → 0.0).
+        let clamped = if s.is_nan() {
+            log::warn!("[Scripting] setFogParams: scatter is NaN; clamping to 0.0");
+            0.0
         } else {
-            log::warn!("[Scripting] setFogParams: scatter {s} is non-finite; clamping to 0.0");
-            out.scatter = Some(0.0);
-        }
+            let c = s.clamp(0.0, 1.0);
+            if !(0.0..=1.0).contains(&s) {
+                log::warn!(
+                    "[Scripting] setFogParams: scatter {s} is outside [0.0, 1.0]; clamping to {c}"
+                );
+            }
+            c
+        };
+        out.scatter = Some(clamped);
     }
 
     if let Some(e) = args.edge_softness {
@@ -259,6 +262,44 @@ mod tests {
         let after = reg.get_component::<FogVolumeComponent>(id).unwrap();
         assert_eq!(after.density, 0.0);
         assert_eq!(after.scatter, 1.0);
+    }
+
+    #[test]
+    fn pos_infinity_scatter_clamps_to_one() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_fog(&mut reg);
+        dispatch(
+            &mut reg,
+            &[id],
+            &SetFogParamsArgs {
+                scatter: Some(f32::INFINITY),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reg.get_component::<FogVolumeComponent>(id).unwrap().scatter,
+            1.0
+        );
+    }
+
+    #[test]
+    fn neg_infinity_scatter_clamps_to_zero() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_fog(&mut reg);
+        dispatch(
+            &mut reg,
+            &[id],
+            &SetFogParamsArgs {
+                scatter: Some(f32::NEG_INFINITY),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reg.get_component::<FogVolumeComponent>(id).unwrap().scatter,
+            0.0
+        );
     }
 
     #[test]

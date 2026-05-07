@@ -19,7 +19,8 @@ pub(crate) struct SetFogDensityArgs {
 /// Per-target behavior:
 /// - Missing component → `log::warn!`, skip (tag matched a non-fog entity —
 ///   most likely a tag typo).
-/// - Out-of-range / non-finite density → `log::warn!` once and clamp to `0.0`.
+/// - Density outside `[0, +∞)` or non-finite → `log::warn!` once and clamp to
+///   `0.0`.
 /// - Empty target set → no-op, debug log.
 pub(crate) fn dispatch(
     registry: &mut EntityRegistry,
@@ -35,7 +36,7 @@ pub(crate) fn dispatch(
         args.density
     } else {
         log::warn!(
-            "[Scripting] setFogDensity: density {} is negative or non-finite; clamping to 0.0",
+            "[Scripting] setFogDensity: density {} is outside [0, +\u{221e}) and finite; clamping to 0.0",
             args.density
         );
         0.0

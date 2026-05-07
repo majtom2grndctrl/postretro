@@ -934,7 +934,8 @@ mod tests {
     fn fog_pulse_returns_16_step_cosine_array() {
         // fogPulse mirrors the 16-sample `pulse` constructor: each step is
         // `{ id, primitive = "setFogDensity", args = { density } }`, and the
-        // density values are sampled from `mid + amp * sin(2*pi*i/16)`.
+        // density values are sampled from `mid + amp * sin(2*pi*(i-1)/16)`
+        // where `i` is the 1-indexed Luau loop counter (so `i=1` → theta=0).
         let (subsys, _ctx) = setup();
         let densities: Vec<f64> = subsys
             .run_source(

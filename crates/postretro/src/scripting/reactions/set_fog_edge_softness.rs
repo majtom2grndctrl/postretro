@@ -20,7 +20,8 @@ pub(crate) struct SetFogEdgeSoftnessArgs {
 ///
 /// Per-target behavior:
 /// - Missing component → `log::warn!`, skip.
-/// - Negative or non-finite → `log::warn!` once and clamp to `0.0`.
+/// - Edge-softness outside `[0, +∞)` or non-finite → `log::warn!` once and
+///   clamp to `0.0`.
 /// - Empty target set → no-op, debug log.
 pub(crate) fn dispatch(
     registry: &mut EntityRegistry,
@@ -36,7 +37,7 @@ pub(crate) fn dispatch(
         args.edge_softness
     } else {
         log::warn!(
-            "[Scripting] setFogEdgeSoftness: edgeSoftness {} is negative or non-finite; clamping to 0.0",
+            "[Scripting] setFogEdgeSoftness: edgeSoftness {} is outside [0, +\u{221e}) and finite; clamping to 0.0",
             args.edge_softness
         );
         0.0

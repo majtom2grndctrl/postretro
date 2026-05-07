@@ -136,7 +136,9 @@ Light entity handles expose `isDynamic` at the top level of the handle object an
 
 ---
 
-## 10. Emitter and Particles
+## 10. Reaction Primitives
+
+### 10.1 Emitter and Particles
 
 `BillboardEmitter` is a built-in engine entity type — the level loader handles `classname "billboard_emitter"` natively via the built-in classname dispatch table. Authors do not register it; the SDK's `BillboardEmitter` export is a TypeScript type for IDE safety, not a runtime value.
 
@@ -153,6 +155,28 @@ Each live particle is a full ECS entity carrying `Transform`, `ParticleState`, a
 **Reaction primitives:** `setEmitterRate` sets the continuous spawn rate (`rate = 0` is the inactive state — there is no separate `setEmitterActive`). `setSpinRate` sets the per-emitter rotation rate, with an optional `SpinAnimation` tween. Both are tag-targeted named reaction primitives in the Rust reaction registry.
 
 **Buoyancy sign convention:** `-1` = normal gravity (falls). `0` = floats. `> 0` = rises. `< -1` = falls faster than gravity. Formula: `vertical_accel = WORLD_GRAVITY * -buoyancy` with `WORLD_GRAVITY = -9.81`.
+
+### 10.2 Fog Reaction Primitives
+
+Five tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDensity`, `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`, and `setFogParams`. Each resolves the reaction tag to a set of entities and applies the change to every matching fog volume.
+
+`setFogParams` is the partial-update path: any subset of `{density, scatter, edgeSoftness, falloff}` may be supplied; absent fields are left unchanged. Valid fields are merged in a single component write per target.
+
+**Script-facing keys and naming asymmetries.** The wire/serde layer uses `#[serde(rename_all = "camelCase")]` — script authors use camelCase keys throughout. Two fields have deliberate naming asymmetries between the script surface and the underlying representation:
+
+- `edgeSoftness` (script key) → `edge_softness` (Rust component field)
+- `falloff` (script key) → `radial_falloff` (WGSL/wire field)
+
+**Validation.** All invalid inputs emit `log::warn!` before taking effect.
+
+| Field | Constraint | On violation |
+|-------|-----------|--------------|
+| `density` | `[0, +∞)`, finite | Clamp to `0.0` |
+| `scatter` | `[0, 1]`, NaN treated as `0.0` | Clamp to range |
+| `edgeSoftness` | `[0, +∞)`, finite | Clamp to `0.0` |
+| `falloff` | `(0, +∞)`, finite | Drop field (component value preserved) |
+
+`falloff` is the only field that drops on invalid input rather than clamping — clamping to zero or a small epsilon would silently change shader output in ways that are harder to diagnose than an explicit drop.
 
 ---
 

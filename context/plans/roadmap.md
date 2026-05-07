@@ -130,11 +130,11 @@ Player controller with world collision, gravity, and jumping. The player is an e
 Plans ship in this sequence:
 
 - [ ] **Scripting primitives folder** — refactor flat `primitives.rs` / `primitives_light.rs` into a `scripting/primitives/` domain folder. Prerequisite for collision and gravity plans. `context/plans/ready/scripting-primitives-folder/`
-- [ ] **Mod script layer** — mod-level script execution layer that runs before any level loads. Player entity types and update priority declared here; prerequisite for player spawn. `context/plans/drafts/mod-script-layer/`
-- [ ] **Collision foundation** — parry3d dependency; `CollisionWorld` backed by PRL static geometry; `capsuleCast`, `rayCast`, `overlapCapsule` primitives exposed to scripts. Depends on scripting primitives folder. `context/plans/drafts/collision-foundation/`
-- [ ] **Gravity primitives** — `initialGravity` worldspawn KVP; `world.getGravity()` / `world.setGravity()` behavior-scope primitives; SDK and docs updated. Depends on scripting primitives folder. `context/plans/drafts/gravity-primitives/`
-- [ ] **Player spawn** — `info_player_start` FGD entry with `entity_class` KVP; level load spawns player entities from it. Depends on mod script layer. `context/plans/drafts/player-spawn/`
-- [ ] **Movement scripts** — TypeScript and Luau reference movement scripts with full feature parity (gravity, wall slide, step-up, jump, strafe, air control); contract test asserts matching output. Depends on collision foundation, gravity primitives, player spawn. `context/plans/drafts/movement-scripts/`
+- [ ] **Mod script layer** — mod-level script execution layer that runs before any level loads. Player entity types declared here; prerequisite for player spawn. `context/plans/ready/M7--mod-script-layer/`
+- [ ] **Collision foundation** — parry3d dependency; `CollisionWorld` backed by PRL static geometry trimesh; Rust-owned, not script-visible. `context/plans/ready/M7--collision-foundation/`
+- [ ] **Gravity primitives** — `initialGravity` worldspawn KVP; `world.getGravity()` / `world.setGravity()` behavior-scope primitives; SDK and docs updated. Depends on scripting primitives folder. `context/plans/drafts/M7--gravity-primitives/`
+- [ ] **Player spawn** — `info_player_start` FGD entry with `entity_class` KVP; level load spawns player entities from it. Depends on mod script layer. `context/plans/drafts/M7--player-spawn/`
+- [ ] **Movement scripts** — TypeScript and Luau reference movement scripts with full feature parity (gravity, wall slide, step-up, jump, strafe, air control); contract test asserts matching output. Depends on collision foundation, gravity primitives, player spawn. `context/plans/drafts/M7--movement-scripts/`
 
 **Testable outcome:** player walks through a PRL level with full collision response — no clipping, wall slide, step-up, jump. Modder can edit and hot-reload the movement script in either TypeScript or Luau.
 

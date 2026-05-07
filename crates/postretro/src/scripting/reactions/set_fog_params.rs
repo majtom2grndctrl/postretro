@@ -3,8 +3,7 @@
 // fog volume matching the reaction's tag. Each field is validated
 // independently; invalid fields are dropped, valid fields applied; the
 // component is mutated once per target with the merged result.
-// See: context/lib/scripting.md §11 (Reaction primitives) and
-// `context/plans/in-progress/fog-volume-reactions/index.md`.
+// See: context/lib/scripting.md
 
 use serde::{Deserialize, Serialize};
 
@@ -150,9 +149,6 @@ pub(crate) fn dispatch(
         };
         let mut next = current;
         fields.apply_to(&mut next);
-        if next == current {
-            continue;
-        }
         if let Err(e) = registry.set_component(id, next) {
             log::warn!("[Scripting] setFogParams: failed to write component on {id}: {e:?}");
         }

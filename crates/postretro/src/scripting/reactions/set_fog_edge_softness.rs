@@ -1,8 +1,7 @@
 // `setFogEdgeSoftness` reaction primitive: set the edge-softness value on
 // every fog volume matching the reaction's tag. Script-facing field name is
 // `edgeSoftness` (camelCase); the Rust-side struct uses `edge_softness`.
-// See: context/lib/scripting.md §11 (Reaction primitives) and
-// `context/plans/in-progress/fog-volume-reactions/index.md`.
+// See: context/lib/scripting.md
 
 use serde::{Deserialize, Serialize};
 
@@ -128,6 +127,27 @@ mod tests {
                 .edge_softness,
             0.0
         );
+    }
+
+    #[test]
+    fn non_finite_edge_softness_clamps_to_zero() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut reg = EntityRegistry::new();
+            let id = spawn_fog(&mut reg);
+            dispatch(
+                &mut reg,
+                &[id],
+                &SetFogEdgeSoftnessArgs { edge_softness: bad },
+            )
+            .unwrap();
+            assert_eq!(
+                reg.get_component::<FogVolumeComponent>(id)
+                    .unwrap()
+                    .edge_softness,
+                0.0,
+                "expected 0.0 for non-finite input {bad}"
+            );
+        }
     }
 
     #[test]

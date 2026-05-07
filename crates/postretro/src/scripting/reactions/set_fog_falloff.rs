@@ -1,8 +1,7 @@
 // `setFogFalloff` reaction primitive: set the radial-falloff exponent on
 // every fog volume matching the reaction's tag. Out-of-range values skip the
 // write entirely (component unchanged for that target).
-// See: context/lib/scripting.md §11 (Reaction primitives) and
-// `context/plans/in-progress/fog-volume-reactions/index.md`.
+// See: context/lib/scripting.md
 
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +32,7 @@ pub(crate) fn dispatch(
         return Ok(());
     }
 
+    // Falloff is a strictly positive exponent; clamping to 0/ε would silently change shader output. Skip on invalid.
     let valid = args.falloff.is_finite() && args.falloff > 0.0;
     if !valid {
         log::warn!(

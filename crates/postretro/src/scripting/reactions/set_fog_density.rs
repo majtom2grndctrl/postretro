@@ -1,7 +1,6 @@
 // `setFogDensity` reaction primitive: set the density on every fog volume
 // matching the reaction's tag.
-// See: context/lib/scripting.md §11 (Reaction primitives) and
-// `context/plans/in-progress/fog-volume-reactions/index.md`.
+// See: context/lib/scripting.md
 
 use serde::{Deserialize, Serialize};
 

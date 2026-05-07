@@ -69,11 +69,10 @@ export interface FogSequenceStep {
 
 /**
  * Returns a sequence-step array whose steps emit `setFogDensity` calls
- * sampled along a half-cosine curve between `min` and `max` over
- * `periodMs`. Mirrors the 16-sample `pulse` constructor in
- * `sdk/lib/entities/lights.ts`: sample `i` is evaluated at `i / 16` of
- * the period, and the curve is the same `mid + amp * sin(theta)` shape
- * (a half-cosine sweep between `min` and `max` per full period).
+ * sampled along a full sine cycle between `min` and `max`. Mirrors the
+ * 16-sample `pulse` constructor in `sdk/lib/entities/lights.ts`: sample
+ * `i` is evaluated at `i / 16` of the period using the same
+ * `mid + amp * sin(theta)` formula with `theta` in `[0, 2π)`.
  *
  * The caller supplies the target `id`; the same `id` is stamped onto
  * every step. Authors typically use this against a single fog entity:
@@ -85,20 +84,16 @@ export interface FogSequenceStep {
  * });
  * ```
  *
- * Step count is 16 (matching `pulse`). Each step's `periodMs` is the
- * fraction of the full period that step represents — but unlike
- * `LightAnimation`, sequence steps run as a serial timeline; the
- * caller threads `periodMs / 16` between steps if they want pacing.
- * For now the constructor returns the density-sample array; how steps
- * are paced is the reaction dispatcher's concern.
+ * Step count is 16 (matching `pulse`). `periodMs` is accepted for
+ * call-site symmetry with `fogFade`; how steps are paced is the
+ * reaction dispatcher's concern.
  */
 export function fogPulse(
   id: EntityId,
   min: number,
   max: number,
-  periodMs: number,
+  _periodMs: number,
 ): FogSequenceStep[] {
-  void periodMs;
   const SAMPLES = 16;
   const lo = Math.min(min, max);
   const hi = Math.max(min, max);
@@ -133,9 +128,8 @@ export function fogFade(
   id: EntityId,
   from: number,
   to: number,
-  durationMs: number,
+  _durationMs: number,
 ): FogSequenceStep[] {
-  void durationMs;
   const SAMPLES = 16;
   const steps: FogSequenceStep[] = new Array(SAMPLES);
   for (let i = 0; i < SAMPLES; i++) {

@@ -388,7 +388,7 @@ Overwrites `FogVolumeComponent.scatter` on every target. `scatter` must be finit
 { edgeSoftness: number }
 ```
 
-Overwrites `FogVolumeComponent.edge_softness` on every target. `edgeSoftness` must be finite and `>= 0`; out-of-range values clamp to `0.0` with a `log::warn!`.
+Overwrites `FogVolumeComponent.edgeSoftness` on every target. `edgeSoftness` must be finite and `>= 0`; out-of-range values clamp to `0.0` with a `log::warn!`.
 
 ### `setFogFalloff`
 
@@ -409,7 +409,7 @@ Overwrites `FogVolumeComponent.falloff` on every target. `falloff` must be finit
 }
 ```
 
-Combined partial-update primitive. Any subset of the four fields may be present. Each field is validated independently per the rules above (out-of-range `density` / `scatter` / `edgeSoftness` clamp; out-of-range `falloff` is dropped). Absent fields preserve the target's current component value. The component is mutated once per target with the merged result; if every supplied field is invalid for a given target, no write occurs.
+Combined partial-update primitive. Any subset of the four fields may be present. Each field is validated independently per the rules above (out-of-range `density` / `scatter` / `edgeSoftness` clamp; out-of-range `falloff` is dropped). Absent fields preserve the target's current component value. The component is mutated once per target with the merged result; if all supplied fields fail validation, no write occurs for any target.
 
 Use `setFogParams` when an author wants to change two or more fields atomically — adjacent single-field steps would briefly observe a partial update on the GPU.
 

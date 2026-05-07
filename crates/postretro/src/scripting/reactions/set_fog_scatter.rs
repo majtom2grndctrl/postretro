@@ -1,7 +1,6 @@
 // `setFogScatter` reaction primitive: set the scatter value on every fog
 // volume matching the reaction's tag.
-// See: context/lib/scripting.md §11 (Reaction primitives) and
-// `context/plans/in-progress/fog-volume-reactions/index.md`.
+// See: context/lib/scripting.md
 
 use serde::{Deserialize, Serialize};
 
@@ -19,8 +18,10 @@ pub(crate) struct SetFogScatterArgs {
 ///
 /// Per-target behavior:
 /// - Missing component → `log::warn!`, skip.
-/// - Out-of-range / non-finite scatter → `log::warn!` once and clamp into
-///   `[0.0, 1.0]`.
+/// - NaN scatter → `log::warn!` once and use 0.0 (NaN does not clamp
+///   predictably).
+/// - Out-of-range / infinite scatter → `log::warn!` once and clamp into
+///   `[0.0, 1.0]` (so `+inf → 1.0`, `-inf → 0.0`).
 /// - Empty target set → no-op, debug log.
 pub(crate) fn dispatch(
     registry: &mut EntityRegistry,
@@ -32,22 +33,21 @@ pub(crate) fn dispatch(
         return Ok(());
     }
 
-    let scatter = if args.scatter.is_finite() && (0.0..=1.0).contains(&args.scatter) {
-        args.scatter
-    } else if args.scatter.is_finite() {
-        let clamped = args.scatter.clamp(0.0, 1.0);
-        log::warn!(
-            "[Scripting] setFogScatter: scatter {} is outside [0.0, 1.0]; clamping to {}",
-            args.scatter,
-            clamped
-        );
-        clamped
-    } else {
-        log::warn!(
-            "[Scripting] setFogScatter: scatter {} is non-finite; clamping to 0.0",
-            args.scatter
-        );
+    // NaN cannot be clamped to a meaningful value; treat it as 0.0. Infinities
+    // are handled naturally by clamp below.
+    let scatter = if args.scatter.is_nan() {
+        log::warn!("[Scripting] setFogScatter: scatter is NaN; clamping to 0.0");
         0.0
+    } else {
+        let clamped = args.scatter.clamp(0.0, 1.0);
+        if !(0.0..=1.0).contains(&args.scatter) {
+            log::warn!(
+                "[Scripting] setFogScatter: scatter {} is outside [0.0, 1.0]; clamping to {}",
+                args.scatter,
+                clamped
+            );
+        }
+        clamped
     };
 
     for &id in targets {
@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn non_finite_scatter_clamps_to_zero() {
+    fn pos_infinity_scatter_clamps_to_one() {
         let mut reg = EntityRegistry::new();
         let id = spawn_fog(&mut reg);
         dispatch(
@@ -137,6 +137,35 @@ mod tests {
             &[id],
             &SetFogScatterArgs {
                 scatter: f32::INFINITY,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reg.get_component::<FogVolumeComponent>(id).unwrap().scatter,
+            1.0
+        );
+    }
+
+    #[test]
+    fn nan_scatter_clamps_to_zero() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_fog(&mut reg);
+        dispatch(&mut reg, &[id], &SetFogScatterArgs { scatter: f32::NAN }).unwrap();
+        assert_eq!(
+            reg.get_component::<FogVolumeComponent>(id).unwrap().scatter,
+            0.0
+        );
+    }
+
+    #[test]
+    fn neg_infinity_scatter_clamps_to_zero() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_fog(&mut reg);
+        dispatch(
+            &mut reg,
+            &[id],
+            &SetFogScatterArgs {
+                scatter: f32::NEG_INFINITY,
             },
         )
         .unwrap();

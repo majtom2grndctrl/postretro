@@ -73,7 +73,7 @@ end
 -- ---------------------------------------------------------------------
 
 --- Returns a sequence-step array whose steps emit `setFogDensity` calls
---- sampled along a half-cosine curve between `min` and `max`. Mirrors the
+--- sampled along a full sine cycle between `min` and `max`. Mirrors the
 --- 16-sample `pulse` constructor in `entities/lights.luau`: sample `i`
 --- is evaluated at `(i - 1) / 16` of the period (1-indexed Luau,
 --- 0-indexed math), and the curve is the same `mid + amp * sin(theta)`
@@ -97,7 +97,7 @@ function FogVolumesSdk.fogPulse(
   local amp = (hi - lo) * 0.5
   local steps: {FogSequenceStep} = {}
   for i = 1, SAMPLES do
-    -- `(i - 1) / SAMPLES` reproduces the 0-indexed TypeScript sampling.
+    -- `(i - 1)` converts the 1-indexed Luau counter to 0-indexed theta, matching the TypeScript fogPulse sampling.
     local theta = ((i - 1) / SAMPLES) * math.pi * 2
     local density = mid + amp * math.sin(theta)
     steps[i] = {

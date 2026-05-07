@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn update_volumes_packs_density_and_edge_softness_from_component() {
+    fn update_volumes_packs_runtime_fields_from_component() {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
         bridge.populate_from_level(&mut registry, &[sample_record()]);

@@ -376,23 +376,30 @@ mod tests {
     }
 
     #[test]
-    fn fog_pulse_returns_16_step_sine_array() {
-        // fogPulse must emit exactly 16 setFogDensity steps whose density
-        // values trace a full sine cycle — same contract as the Luau-side test,
-        // verified here against the JS implementation path.
+    fn fog_pulse_returns_single_step_set_fog_animation() {
+        // fogPulse must emit exactly one `setFogAnimation` step whose
+        // `args.density` is a 16-sample sine curve, with `playCount = null`
+        // (loop forever). The previous contract (16 `setFogDensity` steps)
+        // was wrong: the sequence dispatcher fires every step on the same
+        // frame, so the 16-step array collapsed to its last value with no
+        // time-varying playback. The animation channel evaluates per-frame
+        // on the bridge side instead.
         let (subsys, _ctx) = setup();
         subsys.definition_ctx().with(|ctx| {
             let json: String = ctx
                 .eval(
                     r#"
-                    const steps = fogPulse(7, 0.2, 1.0);
-                    if (steps.length !== 16) throw new Error("expected 16 steps, got " + steps.length);
-                    for (let i = 0; i < steps.length; i++) {
-                        if (steps[i].id !== 7) throw new Error("expected id == 7 on step " + i);
-                        if (steps[i].primitive !== "setFogDensity")
-                            throw new Error("expected primitive == setFogDensity on step " + i);
-                    }
-                    JSON.stringify(steps.map(s => s.args.density))
+                    const steps = fogPulse(7, 0.2, 1.0, 1500);
+                    if (steps.length !== 1) throw new Error("expected 1 step, got " + steps.length);
+                    const s = steps[0];
+                    if (s.id !== 7) throw new Error("expected id == 7");
+                    if (s.primitive !== "setFogAnimation")
+                        throw new Error("expected primitive == setFogAnimation, got " + s.primitive);
+                    if (s.args === null) throw new Error("expected args !== null");
+                    if (s.args.periodMs !== 1500) throw new Error("expected periodMs == 1500");
+                    if (s.args.phase !== null) throw new Error("expected phase === null");
+                    if (s.args.playCount !== null) throw new Error("expected playCount === null (loop forever)");
+                    JSON.stringify(s.args.density)
                     "#,
                 )
                 .unwrap();
@@ -407,29 +414,35 @@ mod tests {
                 let expected = mid + amp * theta.sin();
                 assert!(
                     (got - expected).abs() < 1e-5,
-                    "step {i}: expected {expected}, got {got}"
+                    "sample {i}: expected {expected}, got {got}"
                 );
             }
         });
     }
 
     #[test]
-    fn fog_fade_returns_16_step_linearly_interpolated_array() {
-        // fogFade must emit exactly 16 setFogDensity steps that linearly
-        // interpolate from `from` to `to`, with step 0 == from and step 15 == to.
+    fn fog_fade_returns_single_step_one_shot_set_fog_animation() {
+        // fogFade must emit exactly one `setFogAnimation` step whose
+        // `args.density` is a 16-sample linear ramp from `from` to `to`,
+        // with `playCount = 1` (one-shot). See the matching note on
+        // `fog_pulse_returns_single_step_set_fog_animation` for the shape
+        // rewrite.
         let (subsys, _ctx) = setup();
         subsys.definition_ctx().with(|ctx| {
             let json: String = ctx
                 .eval(
                     r#"
-                    const steps = fogFade(11, 0.0, 4.0);
-                    if (steps.length !== 16) throw new Error("expected 16 steps, got " + steps.length);
-                    for (let i = 0; i < steps.length; i++) {
-                        if (steps[i].id !== 11) throw new Error("expected id == 11 on step " + i);
-                        if (steps[i].primitive !== "setFogDensity")
-                            throw new Error("expected primitive == setFogDensity on step " + i);
-                    }
-                    JSON.stringify(steps.map(s => s.args.density))
+                    const steps = fogFade(11, 0.0, 4.0, 750);
+                    if (steps.length !== 1) throw new Error("expected 1 step, got " + steps.length);
+                    const s = steps[0];
+                    if (s.id !== 11) throw new Error("expected id == 11");
+                    if (s.primitive !== "setFogAnimation")
+                        throw new Error("expected primitive == setFogAnimation, got " + s.primitive);
+                    if (s.args === null) throw new Error("expected args !== null");
+                    if (s.args.periodMs !== 750) throw new Error("expected periodMs == 750");
+                    if (s.args.phase !== null) throw new Error("expected phase === null");
+                    if (s.args.playCount !== 1) throw new Error("expected playCount === 1 (one-shot)");
+                    JSON.stringify(s.args.density)
                     "#,
                 )
                 .unwrap();
@@ -442,7 +455,7 @@ mod tests {
                 let expected = from + (to - from) * t;
                 assert!(
                     (got - expected).abs() < 1e-5,
-                    "step {i}: expected {expected}, got {got}"
+                    "sample {i}: expected {expected}, got {got}"
                 );
             }
             assert!((densities[0] - from).abs() < 1e-6);

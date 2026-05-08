@@ -53,6 +53,18 @@ declare module "postretro" {
   /** Spin tween shape consumed by `setSpinRate`. */
   export type SpinAnimation = { duration: number; rate_curve: ReadonlyArray<number> };
 
+  /** Density-channel animation curve attached to a fog volume by the `setFogAnimation` reaction primitive. Single-channel: `density` is sampled uniformly across `periodMs`; `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back the final keyframe as static density on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state. */
+  export type FogAnimation = {
+    /** Total period of the loop, in milliseconds. */
+    periodMs: number;
+    /** Starting phase in [0.0, 1.0). Values outside this range are normalized via rem_euclid. */
+    phase: number | null;
+    /** Total full periods to play; null loops forever. */
+    playCount: number | null;
+    /** Per-sample density curve. null holds the static density. */
+    density: ReadonlyArray<number> | null;
+  };
+
   /** Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable. */
   export type FogVolumeComponent = {
     /** Volumetric fog density inside the AABB. */
@@ -63,6 +75,8 @@ declare module "postretro" {
     edgeSoftness: number;
     /** Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (`fog_ellipsoid`) shader paths; stored but ignored by the plane-sweep `fog_volume` path. */
     falloff: number;
+    /** Density-channel animation curve. null holds the static density. */
+    animation: FogAnimation | null;
   };
 
   /** Entity handle returned by `world.query` when filtering for fog-volume entities. */
@@ -274,7 +288,7 @@ declare module "postretro" {
     args: LightAnimation;
   };
 
-  /** Sequence step targeting a single fog volume's `density`. Built by the SDK `fogPulse` / `fogFade` constructors. */
+  /** Sequence step targeting a single fog volume's `density`. Use directly for a one-shot density change. */
   export type SetFogDensityStep = {
     id: EntityId;
     primitive: "setFogDensity";
@@ -314,6 +328,13 @@ declare module "postretro" {
     };
   };
 
+  /** Sequence step that installs (or clears, when `args` is `null`) a density-channel animation on a single fog volume. Emitted by the SDK `fogPulse` / `fogFade` constructors. */
+  export type SetFogAnimationStep = {
+    id: EntityId;
+    primitive: "setFogAnimation";
+    args: FogAnimation | null;
+  };
+
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
   export type SequenceStep =
     | SetLightAnimationStep
@@ -321,7 +342,8 @@ declare module "postretro" {
     | SetFogScatterStep
     | SetFogEdgeSoftnessStep
     | SetFogFalloffStep
-    | SetFogParamsStep;
+    | SetFogParamsStep
+    | SetFogAnimationStep;
 
   /** Sequence reaction body: ordered per-entity primitive invocations. Steps run in array order at dispatch. */
   export type SequenceReactionDescriptor = {

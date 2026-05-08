@@ -1,6 +1,6 @@
 // `setFogFalloff` reaction primitive: set the radial-falloff exponent on
-// every fog volume matching the reaction's tag. Out-of-range values skip the
-// write entirely (component unchanged for that target).
+// every fog volume matching the reaction's tag. Invalid args return early
+// after one warn; the write loop is skipped entirely.
 // See: context/lib/scripting.md
 
 use serde::{Deserialize, Serialize};
@@ -17,10 +17,9 @@ pub(crate) struct SetFogFalloffArgs {
 
 /// Apply `args.falloff` to every target's `FogVolumeComponent.falloff`.
 ///
-/// Per-target behavior:
+/// - `falloff` not in `(0.0, +∞)` (or non-finite) → one `log::warn!`, return
+///   early; no targets are visited.
 /// - Missing component → `log::warn!`, skip.
-/// - `falloff` not in `(0.0, +∞)` (or non-finite) → `log::warn!` and skip the
-///   write entirely; component unchanged for this target.
 /// - Empty target set → no-op, debug log.
 pub(crate) fn dispatch(
     registry: &mut EntityRegistry,
@@ -33,21 +32,25 @@ pub(crate) fn dispatch(
     }
 
     // Clamping to 0 or ε would silently alter the fog curve in the shader, so
-    // there is no safe fallback value — skip the write on invalid falloff.
-    // The per-target loop still runs so missing-component warns are not
-    // suppressed by an invalid falloff value.
-    let valid = args.falloff.is_finite() && args.falloff > 0.0;
-    if !valid {
+    // there is no safe fallback value — reject before touching any target.
+    // Early return here means a tag-typo (targets matching no fog entities)
+    // won't emit missing-component warns when falloff is also invalid. That's
+    // an accepted tradeoff: one invalid-arg warn is enough signal. The test
+    // `invalid_falloff_does_not_suppress_missing_component_warn` covered the
+    // old per-target behavior and was intentionally removed when this path
+    // changed to a single early return.
+    if !args.falloff.is_finite() || args.falloff <= 0.0 {
         log::warn!(
             "[Scripting] setFogFalloff: falloff {} is non-positive or non-finite; \
              skipping write for all targets",
             args.falloff
         );
+        return Ok(());
     }
 
     for &id in targets {
-        let current = match registry.get_component::<FogVolumeComponent>(id) {
-            Ok(c) => *c,
+        let mut next = match registry.get_component::<FogVolumeComponent>(id) {
+            Ok(c) => c.clone(),
             Err(_) => {
                 log::warn!(
                     "[Scripting] setFogFalloff: entity {id} has no FogVolumeComponent; skipping"
@@ -55,10 +58,6 @@ pub(crate) fn dispatch(
                 continue;
             }
         };
-        if !valid {
-            continue;
-        }
-        let mut next = current;
         next.falloff = args.falloff;
         if let Err(e) = registry.set_component(id, next) {
             log::warn!("[Scripting] setFogFalloff: failed to write component on {id}: {e:?}");
@@ -79,6 +78,7 @@ mod tests {
             scatter: 0.6,
             edge_softness: 0.25,
             falloff: 2.0,
+            animation: None,
         }
     }
 
@@ -184,24 +184,6 @@ mod tests {
             captured.iter().any(|(lvl, msg)| *lvl == log::Level::Warn
                 && msg.contains("no FogVolumeComponent")),
             "expected a warn-level log naming the missing component, got: {captured:?}"
-        );
-    }
-
-    // Invalid falloff should not suppress missing-component warns: even when
-    // falloff is bad, targets without a FogVolumeComponent still emit a warn.
-    #[test]
-    fn invalid_falloff_does_not_suppress_missing_component_warn() {
-        let mut reg = EntityRegistry::new();
-        let bare = reg.spawn(Transform::default());
-
-        let captured = crate::scripting::reactions::log_capture::capture(|| {
-            dispatch(&mut reg, &[bare], &SetFogFalloffArgs { falloff: 0.0 }).unwrap();
-        });
-
-        assert!(
-            captured.iter().any(|(lvl, msg)| *lvl == log::Level::Warn
-                && msg.contains("no FogVolumeComponent")),
-            "expected a missing-component warn even for invalid falloff, got: {captured:?}"
         );
     }
 }

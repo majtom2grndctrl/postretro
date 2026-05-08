@@ -4,13 +4,13 @@
 -- constructors (`fogPulse`, `fogFade`) that produce sequence-step
 -- arrays for `registerReaction("levelLoad", { sequence = ... })`.
 --
--- The handle is read-only — fog volumes have no per-component animation
--- channel (unlike lights, which carry `LightAnimation`), and the Live VM
--- script tick API has been removed. Authors animate fog by registering
--- sequenced reactions whose steps invoke `setFogDensity`,
--- `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`, or
--- `setFogParams`. `fogPulse` and `fogFade` are pure builders that emit
--- those step arrays.
+-- The handle is read-only — fog volumes carry their density-channel
+-- animation through the `setFogAnimation` reaction primitive (which
+-- installs a `FogAnimation` curve), and the Live VM script tick API
+-- has been removed. Static one-shot tweaks still go through
+-- `setFogDensity`, `setFogScatter`, `setFogEdgeSoftness`,
+-- `setFogFalloff`, or `setFogParams`. `fogPulse` and `fogFade` are pure
+-- builders that emit `setFogAnimation` step arrays.
 --
 -- `wrapFogVolumeEntity` is included in the returned table; the Luau
 -- prelude evaluator (`luau.rs`) extracts it and installs it as a
@@ -26,9 +26,9 @@
 -- See docs/scripting-reference.md.
 -- ---------------------------------------------------------------------
 
--- `EntityId`, `FogVolumeComponent`, `FogVolumeEntity`, and `Vec3` are
--- provided ambiently by the generated `sdk/types/postretro.d.luau`
--- definitions file.
+-- `EntityId`, `FogAnimation`, `FogVolumeComponent`, `FogVolumeEntity`,
+-- `SetFogAnimationStep`, and `Vec3` are provided ambiently by the
+-- generated `sdk/types/postretro.d.luau` definitions file.
 
 --- Typed handle returned by `world:query` for a fog-volume entity.
 --- Read-only; authors animate fog through sequenced reactions, not
@@ -39,11 +39,6 @@ export type FogVolumeHandle = {
   tags: {string},
   component: FogVolumeComponent,
 }
-
--- The fog density step shape is exported by the generated
--- `postretro.d.luau` definitions file as `SetFogDensityStep`. The SDK
--- builders below return that shape directly so steps slot into
--- `SequenceStep` without an SDK-only step alias.
 
 local FogVolumesSdk = {}
 
@@ -68,66 +63,88 @@ end
 -- Density curves
 -- ---------------------------------------------------------------------
 
---- Returns a sequence-step array whose steps emit `setFogDensity` calls
---- sampled along a full sine cycle between `min` and `max`. Mirrors the
---- 16-sample `pulse` constructor in `entities/lights.luau`: sample `i`
---- is evaluated at `(i - 1) / 16` of the period (1-indexed Luau,
---- 0-indexed math), and the curve is the same `mid + amp * sin(theta)`
---- shape.
+--- Returns a single-step sequence array installing a looping sine-curve
+--- `FogAnimation` on the target fog volume, oscillating between `min`
+--- and `max` over `periodMs`.
 ---
---- The caller supplies the target `id`; the same `id` is stamped onto
---- every step.
+--- One `setFogAnimation` step, not N `setFogDensity` steps: the sequence
+--- dispatcher fires every step on the same frame, so a multi-step density
+--- array collapses to its last value. Time-varying playback is the fog
+--- bridge's job via the `FogAnimation` channel. Greps for the old
+--- "16 setFogDensity steps" pattern land here.
+---
+--- The curve is 16 samples of `mid + amp * sin(2*pi*i/16)` for `i` in
+--- `[0, 16)`; the 1-indexed Luau loop converts via `(i - 1)`.
+--- `min` / `max` are normalized so the caller may pass them in either
+--- order. `playCount` is `nil` — a pulse loops forever.
+---
+--- Note: the curve definition matches `pulse` on lights, but the
+--- runtime sampling differs — fog is sampled with linear interpolation
+--- on CPU each frame, while lights are sampled with Catmull-Rom on
+--- GPU. The two produce visually similar motion but are not
+--- mathematically identical at keyframe boundaries.
 function FogVolumesSdk.fogPulse(
   id: EntityId,
   min: number,
-  max: number
-): {SetFogDensityStep}
+  max: number,
+  periodMs: number
+): {SetFogAnimationStep}
   local SAMPLES = 16
   local lo = math.min(min, max)
   local hi = math.max(min, max)
   local mid = (lo + hi) * 0.5
   local amp = (hi - lo) * 0.5
-  local steps: {SetFogDensityStep} = {}
+  local density: {number} = {}
   for i = 1, SAMPLES do
     -- `(i - 1)` converts the 1-indexed Luau counter to 0-indexed theta, matching the TypeScript fogPulse sampling.
     local theta = ((i - 1) / SAMPLES) * math.pi * 2
-    local density = mid + amp * math.sin(theta)
-    steps[i] = {
-      id = id,
-      primitive = "setFogDensity",
-      args = { density = density },
-    }
+    density[i] = mid + amp * math.sin(theta)
   end
-  return steps
+  local animation: FogAnimation = {
+    periodMs = periodMs,
+    phase = nil,
+    playCount = nil,
+    density = density,
+  }
+  return { { id = id, primitive = "setFogAnimation", args = animation } }
 end
 
---- Returns a sequence-step array that linearly interpolates `density`
---- from `from` to `to` in evenly-spaced steps.
+--- Returns a single-step sequence array installing a one-shot linear
+--- `FogAnimation` that ramps density from `from` to `to` over
+--- `periodMs`.
 ---
---- Step count is 16 (matching `fogPulse` / `pulse` for symmetry).
---- Sample `i` is evaluated at `(i - 1) / (SAMPLES - 1)` of the way from
---- `from` to `to`, so the first step carries `from` and the last step
---- carries `to` exactly.
+--- One `setFogAnimation` step — see the note on `fogPulse` for why
+--- multiple `setFogDensity` steps don't produce interpolation.
+--- `playCount = 1` so the curve plays exactly once; the bridge writes
+--- the final keyframe back as static density.
 ---
---- The caller supplies the target `id`; the same `id` is stamped onto
---- every step.
+--- The curve is 16 evenly-spaced samples; sample `i` (1-indexed) is
+--- `from + (to - from) * ((i - 1) / 15)`, so the first sample carries
+--- `from` exactly and the last carries `to` exactly.
+---
+--- Note: fog density curves are sampled with linear interpolation on
+--- CPU each frame. Light curves use Catmull-Rom on GPU, so a fog fade
+--- and a light fade with the same shape are visually similar but not
+--- mathematically identical at keyframe boundaries.
 function FogVolumesSdk.fogFade(
   id: EntityId,
   from: number,
-  to: number
-): {SetFogDensityStep}
+  to: number,
+  periodMs: number
+): {SetFogAnimationStep}
   local SAMPLES = 16
-  local steps: {SetFogDensityStep} = {}
+  local density: {number} = {}
   for i = 1, SAMPLES do
     local t = (i - 1) / (SAMPLES - 1)
-    local density = from + (to - from) * t
-    steps[i] = {
-      id = id,
-      primitive = "setFogDensity",
-      args = { density = density },
-    }
+    density[i] = from + (to - from) * t
   end
-  return steps
+  local animation: FogAnimation = {
+    periodMs = periodMs,
+    phase = nil,
+    playCount = 1,
+    density = density,
+  }
+  return { { id = id, primitive = "setFogAnimation", args = animation } }
 end
 
 return FogVolumesSdk

@@ -5,9 +5,10 @@
 
 import type {
   EntityId,
+  FogAnimation,
   FogVolumeComponent,
   FogVolumeEntity as GeneratedFogVolumeEntity,
-  SetFogDensityStep,
+  SetFogAnimationStep,
   Vec3,
 } from "postretro";
 
@@ -15,12 +16,14 @@ import type {
  * Typed handle returned by `world.query({ component: "fog_volume" })`.
  *
  * Fog volume parameters are not mutated through methods on this handle —
- * the Live VM tick API has been removed and fog has no per-component
- * animation channel (unlike lights, which carry `LightAnimation`).
- * Authors animate fog by registering sequenced reactions via
- * `registerReaction("levelLoad", { sequence: [...] })`, where the steps
- * are built with the `fogPulse` / `fogFade` constructors below or with
- * raw `setFogDensity` / `setFogScatter` / `setFogEdgeSoftness` /
+ * the Live VM tick API has been removed. Authors animate fog by
+ * registering sequenced reactions via
+ * `registerReaction("levelLoad", { sequence: [...] })`. The
+ * density-channel animation channel is `setFogAnimation`, which installs
+ * a `FogAnimation` curve onto the fog volume; the `fogPulse` / `fogFade`
+ * constructors below build single-step `setFogAnimation` reactions for
+ * the common cases. Static one-shot tweaks still go through the
+ * `setFogDensity` / `setFogScatter` / `setFogEdgeSoftness` /
  * `setFogFalloff` / `setFogParams` step descriptors.
  *
  * The handle exposes only the read-only query-time snapshot. Fog ambient
@@ -50,81 +53,88 @@ export function wrapFogVolumeEntity(
 }
 
 /**
- * Returns a sequence-step array whose steps emit `setFogDensity` calls
- * sampled along a full sine cycle between `min` and `max`. Mirrors the
- * 16-sample `pulse` constructor in `sdk/lib/entities/lights.ts`: sample
- * `i` is evaluated at `i / 16` of the period using the same
- * `mid + amp * sin(theta)` formula with `theta` in `[0, 2π)`.
+ * Returns a single-step sequence array installing a looping sine-curve
+ * `FogAnimation` on the target fog volume, oscillating between `min` and
+ * `max` over `periodMs`.
  *
- * The caller supplies the target `id`; the same `id` is stamped onto
- * every step. Authors typically use this against a single fog entity:
+ * One `setFogAnimation` step, not N `setFogDensity` steps: the sequence
+ * dispatcher fires every step on the same frame, so a multi-step density
+ * array collapses to its last value. Time-varying playback is the fog
+ * bridge's job via the `FogAnimation` channel. Greps for the old
+ * "16 setFogDensity steps" pattern land here.
  *
- * ```ts
- * const handle = world.query({ component: "fog_volume", tag: "haze" })[0];
- * registerReaction("levelLoad", {
- *   sequence: fogPulse(handle.id, 0.2, 1.0),
- * });
- * ```
+ * The curve is 16 samples of `mid + amp * sin(2π·i/16)` for `i` in
+ * `[0, 16)` (sample 0 is at `theta = 0`, matching the `pulse`
+ * constructor in `./lights`). `min` / `max` are normalized so the
+ * caller may pass them in either order. `playCount` is `null` — a
+ * pulse loops forever.
  *
- * Step count is fixed at 16. The dispatcher fires every step on one
- * frame, so the curve plays back in shader-time, not wall-clock time —
- * pacing isn't a parameter the constructor controls.
- *
- * Returns the generated `SetFogDensityStep` shape from `postretro.d.ts`,
- * so the steps slot directly into a `SequenceStep[]` without a separate
- * SDK-only step interface.
+ * Note: the curve definition matches `pulse` on lights, but the runtime
+ * sampling differs — fog is sampled with linear interpolation on CPU
+ * each frame, while lights are sampled with Catmull-Rom on GPU. The two
+ * produce visually similar motion but are not mathematically identical
+ * at keyframe boundaries.
  */
 export function fogPulse(
   id: EntityId,
   min: number,
   max: number,
-): SetFogDensityStep[] {
+  periodMs: number,
+): SetFogAnimationStep[] {
   const SAMPLES = 16;
   const lo = Math.min(min, max);
   const hi = Math.max(min, max);
   const mid = (lo + hi) * 0.5;
   const amp = (hi - lo) * 0.5;
-  const steps: SetFogDensityStep[] = new Array(SAMPLES);
+  const density: number[] = new Array(SAMPLES);
   for (let i = 0; i < SAMPLES; i++) {
     const theta = (i / SAMPLES) * Math.PI * 2;
-    const density = mid + amp * Math.sin(theta);
-    steps[i] = {
-      id,
-      primitive: "setFogDensity",
-      args: { density },
-    };
+    density[i] = mid + amp * Math.sin(theta);
   }
-  return steps;
+  const animation: FogAnimation = {
+    periodMs,
+    phase: null,
+    playCount: null,
+    density,
+  };
+  return [{ id, primitive: "setFogAnimation", args: animation }];
 }
 
 /**
- * Returns a sequence-step array that linearly interpolates `density`
- * from `from` to `to` in evenly-spaced steps.
+ * Returns a single-step sequence array installing a one-shot linear
+ * `FogAnimation` that ramps density from `from` to `to` over `periodMs`.
  *
- * Step count is 16 (matching `fogPulse` / `pulse` for symmetry). Sample
- * `i` is evaluated at `i / (SAMPLES - 1)` of the way from `from` to
- * `to`, so the first step carries `from` and the last step carries
- * `to` exactly.
+ * One `setFogAnimation` step — see the note on `fogPulse` for why
+ * multiple `setFogDensity` steps don't produce interpolation.
+ * `playCount: 1` so the curve plays exactly once; the bridge writes the
+ * final keyframe back as static density.
  *
- * The caller supplies the target `id`; the same `id` is stamped onto
- * every step. Returns the generated `SetFogDensityStep` shape — the
- * step type is shared with `fogPulse` and any author-built density step.
+ * The curve is 16 evenly-spaced samples; sample `i` is
+ * `from + (to - from) * (i / 15)`, so the first sample carries `from`
+ * exactly and the last carries `to` exactly.
+ *
+ * Note: fog density curves are sampled with linear interpolation on
+ * CPU each frame. Light curves use Catmull-Rom on GPU, so a fog fade
+ * and a light fade with the same shape are visually similar but not
+ * mathematically identical at keyframe boundaries.
  */
 export function fogFade(
   id: EntityId,
   from: number,
   to: number,
-): SetFogDensityStep[] {
+  periodMs: number,
+): SetFogAnimationStep[] {
   const SAMPLES = 16;
-  const steps: SetFogDensityStep[] = new Array(SAMPLES);
+  const density: number[] = new Array(SAMPLES);
   for (let i = 0; i < SAMPLES; i++) {
     const t = i / (SAMPLES - 1);
-    const density = from + (to - from) * t;
-    steps[i] = {
-      id,
-      primitive: "setFogDensity",
-      args: { density },
-    };
+    density[i] = from + (to - from) * t;
   }
-  return steps;
+  const animation: FogAnimation = {
+    periodMs,
+    phase: null,
+    playCount: 1,
+    density,
+  };
+  return [{ id, primitive: "setFogAnimation", args: animation }];
 }

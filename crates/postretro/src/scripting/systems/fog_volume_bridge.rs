@@ -7,7 +7,10 @@ use glam::{Quat, Vec3};
 
 use crate::fx::fog_volume::{FogPointLight, FogVolume, MAX_FOG_POINT_LIGHTS};
 use crate::prl::{LightType, MapLight};
-use crate::scripting::registry::{EntityId, EntityRegistry, FogVolumeComponent, Transform};
+use crate::scripting::components::fog_volume::FogAnimation;
+use crate::scripting::registry::{
+    ComponentKind, EntityId, EntityRegistry, FogVolumeComponent, Transform,
+};
 use postretro_level_format::fog_volumes::FogVolumeRecord;
 
 /// Authoring-time AABB and shape parameters cached alongside the entity. Not
@@ -32,6 +35,15 @@ pub struct FogVolumeAabb {
     pub shape_mode: f32,
 }
 
+/// Per-entity bookkeeping for the per-frame fog animation evaluator. Stored
+/// in a side-table because animation start time is engine state — it must not
+/// round-trip through the script-visible `FogVolumeComponent` where each
+/// `setFogAnimation` would clobber the moment a curve was installed.
+struct FogAnimSlot {
+    animation_start_time_ms: f32,
+    cached_animation: FogAnimation,
+}
+
 /// State carried across frames. Owned by the game layer so the renderer never
 /// holds component data.
 pub(crate) struct FogVolumeBridge {
@@ -54,6 +66,12 @@ pub(crate) struct FogVolumeBridge {
     /// by both `update_volumes` (frame reset) and `clear` (level reset).
     /// Consumed by the renderer's spot-light pre-cull.
     active_aabbs: Vec<(Vec3, Vec3)>,
+    /// Per-entity start times for `FogVolumeComponent.animation`. Populated
+    /// lazily by `tick` the first frame an animation is observed; cleared
+    /// when an animation goes away (script clears it, or `play_count`
+    /// settles). Start time is also reset when the animation payload changes
+    /// mid-flight (detected by value comparison in `tick`).
+    anim_slots: HashMap<EntityId, FogAnimSlot>,
     /// Set to `true` the first time the point-light cap warning fires; suppresses
     /// per-frame log spam when the scene consistently exceeds `MAX_FOG_POINT_LIGHTS`.
     warned_overflow: bool,
@@ -68,6 +86,7 @@ impl FogVolumeBridge {
             canonical_planes: Vec::new(),
             points_bytes: Vec::new(),
             active_aabbs: Vec::new(),
+            anim_slots: HashMap::new(),
             warned_overflow: false,
         }
     }
@@ -108,6 +127,7 @@ impl FogVolumeBridge {
                 scatter: entry.scatter,
                 edge_softness: entry.edge_softness,
                 falloff: entry.radial_falloff,
+                animation: None,
             };
             // `set_component` only fails on stale id — the id was just returned.
             let _ = registry.set_component(id, component);
@@ -138,7 +158,72 @@ impl FogVolumeBridge {
         self.canonical_planes.clear();
         self.points_bytes.clear();
         self.active_aabbs.clear();
+        self.anim_slots.clear();
         self.warned_overflow = false;
+    }
+
+    /// Evaluate every fog volume's `animation` curve for the current frame
+    /// and write the sampled value back into `FogVolumeComponent.density`.
+    /// Called once per frame, immediately before `update_volumes`, so the GPU
+    /// pack picks up the freshly evaluated density unchanged.
+    ///
+    /// `time_seconds` is engine wall-clock time; sampling is done in
+    /// milliseconds because `FogAnimation.period_ms` is millisecond-keyed.
+    pub(crate) fn tick(&mut self, registry: &mut EntityRegistry, time_seconds: f32) {
+        let now_ms = time_seconds * 1000.0;
+        let mut updates: Vec<(EntityId, FogVolumeComponent)> = Vec::new();
+        let mut clear_slots: Vec<EntityId> = Vec::new();
+        for (id, value) in registry.iter_with_kind(ComponentKind::FogVolume) {
+            let crate::scripting::registry::ComponentValue::FogVolume(component) = value else {
+                continue;
+            };
+            let Some(animation) = component.animation.as_ref() else {
+                if self.anim_slots.contains_key(&id) {
+                    clear_slots.push(id);
+                }
+                continue;
+            };
+            // Defensive: validate() rejects period_ms <= 0 at install time;
+            // this guard keeps the evaluator safe if that invariant breaks.
+            if animation.period_ms <= 0.0 {
+                continue;
+            }
+
+            let slot = self.anim_slots.entry(id).or_insert_with(|| FogAnimSlot {
+                animation_start_time_ms: now_ms,
+                cached_animation: animation.clone(),
+            });
+            if &slot.cached_animation != animation {
+                slot.animation_start_time_ms = now_ms;
+                slot.cached_animation = animation.clone();
+            }
+            let start_ms = slot.animation_start_time_ms;
+
+            if let Some(settled) = settle_play_count(animation, start_ms, now_ms) {
+                let mut next = component.clone();
+                next.density = settled;
+                next.animation = None;
+                updates.push((id, next));
+                clear_slots.push(id);
+                continue;
+            }
+
+            let Some(sampled) = sample_animation(animation, start_ms, now_ms) else {
+                continue;
+            };
+            let mut next = component.clone();
+            next.density = sampled;
+            updates.push((id, next));
+        }
+
+        for id in clear_slots {
+            self.anim_slots.remove(&id);
+        }
+        for (id, component) in updates {
+            // `set_component` only fails on a stale id — the id was just
+            // yielded by `iter_with_kind`, so any failure here is unreachable.
+            let _ = registry.set_component(id, component);
+        }
     }
 
     /// Walk the registry and repack one `FogVolume` GPU record per tracked
@@ -337,6 +422,65 @@ fn sphere_intersects_any_aabb<'a>(
     false
 }
 
+/// Sample `animation.density` at the current wall-clock time. Returns `None`
+/// when the animation carries no density curve — the component's static
+/// density is left untouched in that case.
+///
+/// Phase math uses `rem_euclid(1.0)` rather than `fract()` so a negative
+/// `phase` (or one larger than 1.0) lands cleanly inside `[0.0, 1.0)`.
+fn sample_animation(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Option<f32> {
+    let curve = animation.density.as_ref()?;
+    let phase_offset = animation.phase.unwrap_or(0.0);
+    let t = ((now_ms - start_ms) / animation.period_ms + phase_offset).rem_euclid(1.0);
+    Some(sample_density_curve(curve, t))
+}
+
+/// Linear interpolation across an N-sample density curve, where samples are
+/// uniformly spaced over `[0.0, 1.0]`. Deliberately simpler than the shader's
+/// Catmull-Rom path: fog density is a single scalar per frame and the visual
+/// difference at curve boundaries is imperceptible at the cadence reactions
+/// drive fog at.
+fn sample_density_curve(curve: &[f32], t: f32) -> f32 {
+    match curve.len() {
+        // Defensive: validation rejects empty curves at install time, so this
+        // arm is unreachable in practice. Return the no-fog identity rather
+        // than panicking from a hot path.
+        0 => 0.0,
+        1 => curve[0],
+        n => {
+            let pos = t * (n - 1) as f32;
+            let lo_idx = (pos as usize).min(n - 1);
+            let hi_idx = (lo_idx + 1).min(n - 1);
+            let frac = pos - lo_idx as f32;
+            let lo = curve[lo_idx];
+            let hi = curve[hi_idx];
+            lo + (hi - lo) * frac
+        }
+    }
+}
+
+/// Returns `Some(final_density)` when `animation` is `play_count`-bounded and
+/// has elapsed past its end. The caller writes the value back as static
+/// density and clears `animation`. See also `light_bridge::check_play_count_completion`.
+/// Unlike the light bridge (which accommodates GPU evaluators by treating
+/// `play_count == 0` as "never completes"), `play_count == 0` is coerced to `1`
+/// at install time by `set_fog_animation::validate` — so it never reaches here.
+fn settle_play_count(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Option<f32> {
+    let play_count = animation.play_count?;
+    debug_assert!(play_count > 0, "play_count coerced to >= 1 at install time");
+    if animation.period_ms <= 0.0 {
+        return None;
+    }
+    let elapsed_periods = (now_ms - start_ms) / animation.period_ms;
+    if elapsed_periods < play_count as f32 {
+        return None;
+    }
+    // Defensive fallback: validation rejects `density: None` paired with a
+    // `play_count`, so this `?` should be unreachable in practice.
+    let curve = animation.density.as_ref()?;
+    curve.last().copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +567,7 @@ mod tests {
                     scatter: 0.9,
                     edge_softness: 0.5,
                     falloff: 3.5,
+                    animation: None,
                 },
             )
             .unwrap();
@@ -459,6 +604,7 @@ mod tests {
                     scatter: 0.0,
                     edge_softness: 0.0,
                     falloff: 1.0,
+                    animation: None,
                 },
             )
             .unwrap();
@@ -545,6 +691,7 @@ mod tests {
                     scatter: 0.0,
                     edge_softness: 0.0,
                     falloff: 1.0,
+                    animation: None,
                 },
             )
             .unwrap();
@@ -574,6 +721,7 @@ mod tests {
                     scatter: 0.0,
                     edge_softness: 0.0,
                     falloff: 1.0,
+                    animation: None,
                 },
             )
             .unwrap();
@@ -655,5 +803,236 @@ mod tests {
         // Capacity invariant — best-effort, only meaningful when something was
         // actually packed.
         assert!(bridge.volumes_bytes.capacity() >= cap_before);
+    }
+
+    /// 16-sample sine curve over [0.0, 1.0) for animation evaluator tests.
+    fn sine_curve(samples: usize) -> Vec<f32> {
+        (0..samples)
+            .map(|i| {
+                let phase = (i as f32 / samples as f32) * std::f32::consts::TAU;
+                0.5 + 0.5 * phase.sin()
+            })
+            .collect()
+    }
+
+    fn install_fog_animation(registry: &mut EntityRegistry, id: EntityId, animation: FogAnimation) {
+        let mut comp = registry
+            .get_component::<FogVolumeComponent>(id)
+            .unwrap()
+            .clone();
+        comp.animation = Some(animation);
+        registry.set_component(id, comp).unwrap();
+    }
+
+    #[test]
+    fn evaluator_writes_curve_sample_into_component_density() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let id = bridge.entity_ids[0];
+
+        let curve = sine_curve(16);
+        // Capture the expected value at t = 0.5 from the linear-interp sampler
+        // — the same path the evaluator uses, so this is a self-consistency
+        // check rather than a transcendental approximation.
+        let expected_at_half = sample_density_curve(&curve, 0.5);
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 1000.0,
+                phase: None,
+                play_count: None,
+                density: Some(curve),
+            },
+        );
+
+        // First tick at t=0 anchors the start time. Second tick at half-period
+        // samples t=0.5 (no phase offset).
+        bridge.tick(&mut registry, 0.0);
+        bridge.tick(&mut registry, 0.5);
+
+        let density = registry
+            .get_component::<FogVolumeComponent>(id)
+            .unwrap()
+            .density;
+        assert!(
+            (density - expected_at_half).abs() < 0.01,
+            "density at t=0.5 expected ~{expected_at_half}, got {density}"
+        );
+
+        // Hand-computed check: 2-sample curve [0.0, 1.0] at t=0.5.
+        // pos = 0.5 * 1 = 0.5, lo = 0.0, hi = 1.0, result = 0.0 + 0.5 = 0.5.
+        // Pins the linear interpolation formula independently of the evaluator path.
+        let two_sample_curve = [0.0_f32, 1.0_f32];
+        let hand_computed = sample_density_curve(&two_sample_curve, 0.5);
+        assert!(
+            (hand_computed - 0.5_f32).abs() < 0.01,
+            "linear interp of [0.0, 1.0] at t=0.5 must equal 0.5; got {hand_computed}"
+        );
+    }
+
+    #[test]
+    fn evaluator_settles_play_count_bounded_animation_and_clears_field() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let id = bridge.entity_ids[0];
+
+        let curve = vec![0.1, 0.5, 0.9];
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 1000.0,
+                phase: None,
+                play_count: Some(1),
+                density: Some(curve.clone()),
+            },
+        );
+
+        bridge.tick(&mut registry, 0.0);
+        // Past one period — must settle to the final keyframe and clear `animation`.
+        bridge.tick(&mut registry, 1.5);
+
+        let comp = registry.get_component::<FogVolumeComponent>(id).unwrap();
+        assert!(
+            comp.animation.is_none(),
+            "animation field must be cleared after settle"
+        );
+        assert!(
+            (comp.density - *curve.last().unwrap()).abs() < 1e-6,
+            "settled density must equal the final keyframe; got {}",
+            comp.density
+        );
+        assert!(
+            !bridge.anim_slots.contains_key(&id),
+            "side-table entry must be removed once settled"
+        );
+    }
+
+    #[test]
+    fn evaluator_skips_components_without_animation() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let id = bridge.entity_ids[0];
+
+        let original = registry
+            .get_component::<FogVolumeComponent>(id)
+            .unwrap()
+            .clone();
+
+        bridge.tick(&mut registry, 0.0);
+        bridge.tick(&mut registry, 0.5);
+
+        let after = registry.get_component::<FogVolumeComponent>(id).unwrap();
+        assert_eq!(after, &original);
+        assert!(bridge.anim_slots.is_empty());
+    }
+
+    #[test]
+    fn set_fog_animation_resets_start_time() {
+        // Installing a second animation while one is in flight must phase the
+        // new curve from t=0 — otherwise the first animation's elapsed time
+        // bleeds into the second's sampling, which would manifest as an
+        // unexpected "jump" the moment a script swaps curves.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let id = bridge.entity_ids[0];
+
+        let original_curve = vec![0.0, 1.0];
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 1000.0,
+                phase: None,
+                play_count: None,
+                density: Some(original_curve),
+            },
+        );
+
+        bridge.tick(&mut registry, 0.0);
+        bridge.tick(&mut registry, 0.3);
+
+        let new_curve = vec![0.7, 0.2];
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 1000.0,
+                phase: None,
+                play_count: None,
+                density: Some(new_curve.clone()),
+            },
+        );
+        // Second tick at the same wall-clock as the install — the new
+        // animation should sample at t≈0, i.e. `new_curve[0]`. The bridge
+        // detects the density-curve swap and resets the start time without
+        // an explicit clear from the reaction.
+        bridge.tick(&mut registry, 0.3);
+
+        let density = registry
+            .get_component::<FogVolumeComponent>(id)
+            .unwrap()
+            .density;
+        let expected_first = new_curve[0];
+        let expected_old = sample_density_curve(&[0.0, 1.0], 0.3);
+        assert!(
+            (density - expected_first).abs() < 1e-4,
+            "density should sample new curve at t=0 (~{expected_first}), \
+             not the old curve at t=0.3 (~{expected_old}); got {density}"
+        );
+    }
+
+    #[test]
+    fn set_fog_animation_resets_start_time_when_only_period_changes() {
+        // Reinstalling with the same density curve but a different `period_ms`
+        // must still reset the start anchor — otherwise a script tweaking only
+        // the period would keep the prior animation's accumulated phase.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let id = bridge.entity_ids[0];
+
+        let curve = vec![0.0, 1.0];
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 1000.0,
+                phase: None,
+                play_count: None,
+                density: Some(curve.clone()),
+            },
+        );
+
+        bridge.tick(&mut registry, 0.0);
+        bridge.tick(&mut registry, 0.4);
+
+        // Same density curve, different period.
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 500.0,
+                phase: None,
+                play_count: None,
+                density: Some(curve.clone()),
+            },
+        );
+        bridge.tick(&mut registry, 0.4);
+
+        let density = registry
+            .get_component::<FogVolumeComponent>(id)
+            .unwrap()
+            .density;
+        let expected_first = curve[0];
+        assert!(
+            (density - expected_first).abs() < 1e-4,
+            "period-only change must reset start anchor and sample at t=0 (~{expected_first}); got {density}"
+        );
     }
 }

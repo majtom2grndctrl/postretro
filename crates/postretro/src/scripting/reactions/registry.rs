@@ -123,6 +123,13 @@ pub(crate) fn register_fog_reaction_primitives(registry: &mut ReactionPrimitiveR
             })?;
         super::set_fog_params::dispatch(reg, targets, &parsed)
     });
+    registry.register("setFogAnimation", |reg, targets, args| {
+        let parsed: super::set_fog_animation::SetFogAnimationArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("setFogAnimation: failed to deserialize args: {e}"),
+            })?;
+        super::set_fog_animation::dispatch(reg, targets, &parsed)
+    });
 }
 
 // Bridges the reaction error type into the sequenced-dispatch error surface
@@ -185,7 +192,7 @@ pub(crate) fn register_sequenced_fog_primitives(
             .map_err(reaction_to_sequence_error)
     });
 
-    let ctx_params = ctx;
+    let ctx_params = ctx.clone();
     registry.register("setFogParams", move |id, args| {
         let parsed: super::set_fog_params::SetFogParamsArgs = serde_json::from_value(args.clone())
             .map_err(|e| SequenceError::InvalidArgument {
@@ -193,6 +200,17 @@ pub(crate) fn register_sequenced_fog_primitives(
             })?;
         let mut reg = ctx_params.registry.borrow_mut();
         super::set_fog_params::dispatch(&mut reg, &[id], &parsed)
+            .map_err(reaction_to_sequence_error)
+    });
+
+    let ctx_animation = ctx;
+    registry.register("setFogAnimation", move |id, args| {
+        let parsed: super::set_fog_animation::SetFogAnimationArgs =
+            serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
+                reason: format!("setFogAnimation: failed to deserialize args: {e}"),
+            })?;
+        let mut reg = ctx_animation.registry.borrow_mut();
+        super::set_fog_animation::dispatch(&mut reg, &[id], &parsed)
             .map_err(reaction_to_sequence_error)
     });
 }
@@ -219,6 +237,7 @@ mod tests {
         assert!(r.contains("setFogEdgeSoftness"));
         assert!(r.contains("setFogFalloff"));
         assert!(r.contains("setFogParams"));
+        assert!(r.contains("setFogAnimation"));
         // Defensive: we did not accidentally register a live-mutation
         // primitive surface for fog.
         assert!(!r.contains("setComponent"));
@@ -234,6 +253,7 @@ mod tests {
         assert!(r.contains("setFogEdgeSoftness"));
         assert!(r.contains("setFogFalloff"));
         assert!(r.contains("setFogParams"));
+        assert!(r.contains("setFogAnimation"));
     }
 
     #[test]
@@ -264,6 +284,7 @@ mod tests {
                     scatter: 0.6,
                     edge_softness: 0.25,
                     falloff: 2.0,
+                    animation: None,
                 },
             )
             .unwrap();
@@ -305,11 +326,12 @@ mod tests {
         let reaction_reg = ReactionPrimitiveRegistry::new();
         fire_named_event_with_sequences("levelLoad", &data, &seq_reg, &reaction_reg, &script_ctx);
 
-        let after = *script_ctx
+        let after = script_ctx
             .registry
             .borrow()
             .get_component::<FogVolumeComponent>(id)
-            .unwrap();
+            .unwrap()
+            .clone();
         assert_eq!(after.density, 0.9, "setFogDensity step applied");
         assert_eq!(after.scatter, 0.4, "setFogParams.scatter applied");
         assert_eq!(
@@ -333,6 +355,7 @@ mod tests {
                 scatter: 0.6,
                 edge_softness: 0.25,
                 falloff: 2.0,
+                animation: None,
             },
         )
         .unwrap();

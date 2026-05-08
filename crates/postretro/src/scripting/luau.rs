@@ -933,25 +933,32 @@ mod tests {
     }
 
     #[test]
-    fn fog_pulse_returns_16_step_sine_array() {
-        // fogPulse produces 16 steps of `{ id, primitive = "setFogDensity",
-        // args = { density } }`. Density at step i is
-        // `mid + amp * sin(2*pi*(i-1)/16)` (i=1 → theta=0).
+    fn fog_pulse_returns_single_step_set_fog_animation() {
+        // fogPulse produces a single-element step array of
+        // `{ id, primitive = "setFogAnimation", args = FogAnimation }` with a
+        // 16-sample sine `density` curve and `playCount = nil` (loop forever).
+        // The previous 16-step `setFogDensity` shape was wrong: the sequence
+        // dispatcher fires every step on the same frame, so the array
+        // collapsed to its last value. The animation channel evaluates
+        // per-frame on the bridge instead.
         let (subsys, _ctx) = setup();
         let densities: Vec<f64> = subsys
             .run_source(
                 Which::Definition,
                 r#"
-                local steps = fogPulse(7, 0.2, 1.0)
-                assert(#steps == 16, "expected 16 steps, got " .. tostring(#steps))
-                for i, s in ipairs(steps) do
-                    assert(s.id == 7, "expected id == 7 on step " .. tostring(i))
-                    assert(s.primitive == "setFogDensity",
-                        "expected primitive == setFogDensity on step " .. tostring(i))
-                end
+                local steps = fogPulse(7, 0.2, 1.0, 1500)
+                assert(#steps == 1, "expected 1 step, got " .. tostring(#steps))
+                local s = steps[1]
+                assert(s.id == 7, "expected id == 7")
+                assert(s.primitive == "setFogAnimation",
+                    "expected primitive == setFogAnimation, got " .. tostring(s.primitive))
+                assert(s.args ~= nil, "expected args ~= nil")
+                assert(s.args.periodMs == 1500, "expected periodMs == 1500")
+                assert(s.args.phase == nil, "expected phase == nil")
+                assert(s.args.playCount == nil, "expected playCount == nil (loop forever)")
                 local out = {}
-                for i, s in ipairs(steps) do
-                    out[i] = s.args.density
+                for i, d in ipairs(s.args.density) do
+                    out[i] = d
                 end
                 return out
                 "#,
@@ -968,31 +975,35 @@ mod tests {
             let expected = mid + amp * theta.sin();
             assert!(
                 (got - expected).abs() < 1e-5,
-                "step {i}: expected {expected}, got {got}"
+                "sample {i}: expected {expected}, got {got}"
             );
         }
     }
 
     #[test]
-    fn fog_fade_returns_16_step_linearly_interpolated_array() {
-        // fogFade evaluates sample `i` at `(i - 1) / (SAMPLES - 1)` of the
-        // way from `from` to `to`, so step 1 carries `from` and step 16
-        // carries `to` exactly.
+    fn fog_fade_returns_single_step_one_shot_set_fog_animation() {
+        // fogFade emits one `setFogAnimation` step whose `density` curve is a
+        // 16-sample linear ramp from `from` to `to`, with `playCount = 1`
+        // (one-shot). See the matching note on
+        // `fog_pulse_returns_single_step_set_fog_animation`.
         let (subsys, _ctx) = setup();
         let densities: Vec<f64> = subsys
             .run_source(
                 Which::Definition,
                 r#"
-                local steps = fogFade(11, 0.0, 4.0)
-                assert(#steps == 16, "expected 16 steps, got " .. tostring(#steps))
-                for i, s in ipairs(steps) do
-                    assert(s.id == 11, "expected id == 11 on step " .. tostring(i))
-                    assert(s.primitive == "setFogDensity",
-                        "expected primitive == setFogDensity on step " .. tostring(i))
-                end
+                local steps = fogFade(11, 0.0, 4.0, 750)
+                assert(#steps == 1, "expected 1 step, got " .. tostring(#steps))
+                local s = steps[1]
+                assert(s.id == 11, "expected id == 11")
+                assert(s.primitive == "setFogAnimation",
+                    "expected primitive == setFogAnimation, got " .. tostring(s.primitive))
+                assert(s.args ~= nil, "expected args ~= nil")
+                assert(s.args.periodMs == 750, "expected periodMs == 750")
+                assert(s.args.phase == nil, "expected phase == nil")
+                assert(s.args.playCount == 1, "expected playCount == 1 (one-shot)")
                 local out = {}
-                for i, s in ipairs(steps) do
-                    out[i] = s.args.density
+                for i, d in ipairs(s.args.density) do
+                    out[i] = d
                 end
                 return out
                 "#,
@@ -1007,7 +1018,7 @@ mod tests {
             let expected = from + (to - from) * t;
             assert!(
                 (got - expected).abs() < 1e-5,
-                "step {i}: expected {expected}, got {got}"
+                "sample {i}: expected {expected}, got {got}"
             );
         }
         assert!((densities[0] - from).abs() < 1e-6);

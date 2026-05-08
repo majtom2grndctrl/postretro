@@ -141,8 +141,8 @@ pub(crate) fn dispatch(
     }
 
     for &id in targets {
-        let current = match registry.get_component::<FogVolumeComponent>(id) {
-            Ok(c) => *c,
+        let mut next = match registry.get_component::<FogVolumeComponent>(id) {
+            Ok(c) => c.clone(),
             Err(_) => {
                 log::warn!(
                     "[Scripting] setFogParams: entity {id} has no FogVolumeComponent; skipping"
@@ -150,7 +150,6 @@ pub(crate) fn dispatch(
                 continue;
             }
         };
-        let mut next = current;
         fields.apply_to(&mut next);
         if let Err(e) = registry.set_component(id, next) {
             log::warn!("[Scripting] setFogParams: failed to write component on {id}: {e:?}");
@@ -171,6 +170,7 @@ mod tests {
             scatter: 0.6,
             edge_softness: 0.25,
             falloff: 2.0,
+            animation: None,
         }
     }
 
@@ -453,14 +453,20 @@ mod tests {
         prim_reg
             .dispatch("setFogParams", &mut reg_a, &[id_a], &from_quickjs)
             .unwrap();
-        let after_a = *reg_a.get_component::<FogVolumeComponent>(id_a).unwrap();
+        let after_a = reg_a
+            .get_component::<FogVolumeComponent>(id_a)
+            .unwrap()
+            .clone();
 
         let mut reg_b = EntityRegistry::new();
         let id_b = spawn_fog(&mut reg_b);
         prim_reg
             .dispatch("setFogParams", &mut reg_b, &[id_b], &from_luau)
             .unwrap();
-        let after_b = *reg_b.get_component::<FogVolumeComponent>(id_b).unwrap();
+        let after_b = reg_b
+            .get_component::<FogVolumeComponent>(id_b)
+            .unwrap()
+            .clone();
 
         assert_eq!(
             after_a, after_b,

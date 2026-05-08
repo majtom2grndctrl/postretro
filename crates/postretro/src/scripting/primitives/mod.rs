@@ -208,10 +208,18 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
             Err(_) => Value::Null,
         };
         let comp = {
-            let mut c = Map::with_capacity(4);
+            let mut c = Map::with_capacity(5);
             for (key, value) in f.camel_fields() {
                 c.insert(key.to_string(), Value::from(value as f64));
             }
+            // `animation` crosses through serde so its camelCase wire shape
+            // (periodMs, playCount) lands without manual mapping; absent
+            // becomes JSON `null` (script-side `null` / Luau `nil`).
+            let anim_json = match f.animation.as_ref() {
+                Some(anim) => serde_json::to_value(anim).expect("FogAnimation always serializes"),
+                None => Value::Null,
+            };
+            c.insert("animation".to_string(), anim_json);
             Value::Object(c)
         };
         let mut obj = Map::with_capacity(4);
@@ -354,12 +362,33 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("rate_curve", "Vec<f32>", "")
         .finish();
     registry
+        .register_type("FogAnimation")
+        .doc("Density-channel animation curve attached to a fog volume by the `setFogAnimation` reaction primitive. Single-channel: `density` is sampled uniformly across `periodMs`; `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back the final keyframe as static density on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.")
+        .field("periodMs", "f32", "Total period of the loop, in milliseconds.")
+        .field(
+            "phase",
+            "Option<f32>",
+            "Starting phase in [0.0, 1.0). Values outside this range are normalized via rem_euclid.",
+        )
+        .field(
+            "playCount",
+            "Option<u32>",
+            "Total full periods to play; null loops forever.",
+        )
+        .field(
+            "density",
+            "Option<Vec<f32>>",
+            "Per-sample density curve. null holds the static density.",
+        )
+        .finish();
+    registry
         .register_type("FogVolumeComponent")
         .doc("Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable.")
         .field("density", "f32", "Volumetric fog density inside the AABB.")
         .field("scatter", "f32", "Fraction of in-scattering toward the camera.")
         .field("edgeSoftness", "f32", "Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.")
         .field("falloff", "f32", "Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (`fog_ellipsoid`) shader paths; stored but ignored by the plane-sweep `fog_volume` path.")
+        .field("animation", "Option<FogAnimation>", "Density-channel animation curve. null holds the static density.")
         .finish();
     registry
         .register_type("FogVolumeEntity")

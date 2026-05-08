@@ -918,6 +918,14 @@ impl ApplicationHandler for App {
                     // `collect_all_as_map_lights` pairs each light with its
                     // brightness multiplier so the two cannot drift out of alignment
                     // when a `LightComponent` lookup fails.
+                    {
+                        // Evaluate fog density curves before `update_volumes`
+                        // packs the GPU buffer — `tick` writes the sampled
+                        // density into each `FogVolumeComponent` so the
+                        // existing pack path picks it up unchanged.
+                        let mut registry = self.script_ctx.registry.borrow_mut();
+                        self.fog_volume_bridge.tick(&mut registry, self.script_time);
+                    }
                     let all_lights = {
                         let registry = self.script_ctx.registry.borrow();
                         if let Some((bytes, planes, live_mask)) =

@@ -8,6 +8,7 @@ use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 use std::fmt;
 
+use super::components::fog_volume::FogAnimation;
 use super::components::light::{LightAnimation, LightComponent};
 use super::data_descriptors::{
     EntityTypeDescriptor, entity_descriptor_from_js, entity_descriptor_from_lua,
@@ -390,11 +391,28 @@ impl<'js> FromJs<'js> for ComponentValue {
                 let falloff: f32 = o.get("falloff").map_err(|e| {
                     rquickjs::Exception::throw_type(ctx, &format!("FogVolume.falloff: {e}"))
                 })?;
+                // Optional `animation`: defaults to `None` when the key is
+                // absent or null. Crosses via the same serde_json bridge as
+                // `LightAnimation` (Vec3-style permissive shapes don't apply
+                // here — fog animation is scalar density only).
+                let animation: Option<FogAnimation> = match o.get::<_, JsValue>("animation") {
+                    Ok(v) if !v.is_null() && !v.is_undefined() => {
+                        let json = js_to_json(ctx, v)?;
+                        Some(serde_json::from_value::<FogAnimation>(json).map_err(|e| {
+                            rquickjs::Exception::throw_type(
+                                ctx,
+                                &format!("FogVolume.animation: {e}"),
+                            )
+                        })?)
+                    }
+                    _ => None,
+                };
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
                     scatter,
                     edge_softness,
                     falloff,
+                    animation,
                 }))
             }
             other => Err(rquickjs::Exception::throw_type(
@@ -432,6 +450,21 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 for (key, value) in fog.camel_fields() {
                     o.set(key, value)?;
                 }
+                // `animation` crosses through serde_json so its camelCase wire
+                // shape (periodMs, playCount) lands without manual mapping.
+                let anim_js = match fog.animation {
+                    Some(anim) => {
+                        let json = serde_json::to_value(anim).map_err(|e| {
+                            rquickjs::Exception::throw_type(
+                                ctx,
+                                &format!("FogAnimation serialization failed: {e}"),
+                            )
+                        })?;
+                        json_to_js(ctx, &json)?
+                    }
+                    None => JsValue::new_null(ctx.clone()),
+                };
+                o.set("animation", anim_js)?;
                 Ok(o.into_value())
             }
             other @ (ComponentValue::BillboardEmitter(_)
@@ -500,11 +533,23 @@ impl FromLua for ComponentValue {
                 let falloff: f32 = t
                     .get("falloff")
                     .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.falloff: {e}")))?;
+                // Optional `animation`: absent or `nil` → `None`. Same
+                // lua_to_json + serde bridge as `LightAnimation`.
+                let animation: Option<FogAnimation> = match t.get::<LuaValue>("animation")? {
+                    LuaValue::Nil => None,
+                    other => {
+                        let json = lua_to_json(other)?;
+                        Some(serde_json::from_value::<FogAnimation>(json).map_err(|e| {
+                            mlua::Error::RuntimeError(format!("FogVolume.animation: {e}"))
+                        })?)
+                    }
+                };
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
                     scatter,
                     edge_softness,
                     falloff,
+                    animation,
                 }))
             }
             other => Err(mlua::Error::RuntimeError(format!(
@@ -539,6 +584,18 @@ impl IntoLua for ComponentValue {
                 for (key, value) in fog.camel_fields() {
                     tbl.set(key, value)?;
                 }
+                let anim_lua = match fog.animation {
+                    Some(anim) => {
+                        let json = serde_json::to_value(anim).map_err(|e| {
+                            mlua::Error::RuntimeError(format!(
+                                "FogAnimation serialization failed: {e}"
+                            ))
+                        })?;
+                        json_to_lua(lua, &json)?
+                    }
+                    None => LuaValue::Nil,
+                };
+                tbl.set("animation", anim_lua)?;
                 Ok(LuaValue::Table(tbl))
             }
             other @ (ComponentValue::BillboardEmitter(_)

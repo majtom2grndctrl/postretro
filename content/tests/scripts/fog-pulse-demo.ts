@@ -7,7 +7,7 @@
 //    matching fog volume and applies the change in one batch. Use this
 //    when every tagged volume should receive the same value at once
 //    (one-shot scene tweak, no per-step animation). Here, every
-//    `pulse-fog` volume's `scatter` is set to `0.4` on `levelLoad` in a
+//    `pulse_fog` volume's `scatter` is set to `0.4` on `levelLoad` in a
 //    single dispatch — no per-volume sequence, no per-volume reaction.
 //
 // 2. `Sequence` (per-id steps). The `fogPulse` SDK constructor emits a
@@ -32,24 +32,25 @@ import {
 export function registerLevelManifest(_ctx: unknown) {
   const reactions: NamedReactionDescriptor[] = [];
 
-  const fogs = world.query({ component: "fog_volume", tag: "pulse-fog" });
+  const fogs = world.query({ component: "fog_volume", tag: "pulse_fog" });
   if (fogs.length > 0) {
     // Tag-targeted Primitive: one descriptor, batch-applied to every
-    // `pulse-fog` volume. No SDK helper — `registerReaction` with the
+    // `pulse_fog` volume. No SDK helper — `registerReaction` with the
     // primitive shape is the API.
     reactions.push(
       registerReaction("levelLoad", {
         primitive: "setFogScatter",
-        tag: "pulse-fog",
+        tag: "pulse_fog",
         args: { scatter: 0.4 },
       }),
     );
 
-    // Per-id Sequence: one reaction per volume, each carrying a 16-step
-    // density curve built by `fogPulse`. The dispatcher walks the steps
-    // in order, applying each step's `args` to its `id`.
+    // Per-id Sequence: one reaction per volume, each carrying a single
+    // `setFogAnimation` step built by `fogPulse`. The bridge evaluates
+    // the density curve per-frame across `periodMs` (here 1500 ms),
+    // looping forever.
     for (const fog of fogs) {
-      const steps = fogPulse(fog.id, 0.2, 1.0);
+      const steps = fogPulse(fog.id, 0.2, 1.0, 500);
       reactions.push(registerReaction("levelLoad", { sequence: steps }));
     }
   }

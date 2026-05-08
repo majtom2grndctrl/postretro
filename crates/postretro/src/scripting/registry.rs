@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::components::billboard_emitter::BillboardEmitterComponent;
+use super::components::fog_volume::FogAnimation;
 use super::components::light::LightComponent;
 use super::components::particle::ParticleState;
 use super::components::sprite_visual::SpriteVisual;
@@ -130,6 +131,8 @@ impl Default for Transform {
 ///
 /// The `kind` discriminant matches [`ComponentKind`] one-to-one; downstream
 /// FFI plans serialize this directly to/from JS/Luau tables.
+// Not Copy: FogVolumeComponent carries a heap-backed Vec<f32> (density curve).
+// Do not add Copy here without first removing that field.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ComponentValue {
@@ -145,12 +148,18 @@ pub(crate) enum ComponentValue {
 /// parameters; the AABB lives in the `FogVolumeBridge` side-table (baked at
 /// level load) and is not exposed through `ComponentValue` because it is not
 /// runtime-settable.
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub(crate) struct FogVolumeComponent {
     pub(crate) density: f32,
     pub(crate) scatter: f32,
     pub(crate) edge_softness: f32,
     pub(crate) falloff: f32,
+    /// Optional density-channel animation curve. `None` holds the static
+    /// density. Installed by the `setFogAnimation` reaction primitive; the fog
+    /// bridge evaluates per frame and writes back static density once a finite
+    /// `play_count` completes.
+    #[serde(default)]
+    pub(crate) animation: Option<FogAnimation>,
 }
 
 impl FogVolumeComponent {

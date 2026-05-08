@@ -51,8 +51,8 @@ pub(crate) fn dispatch(
     };
 
     for &id in targets {
-        let current = match registry.get_component::<FogVolumeComponent>(id) {
-            Ok(c) => *c,
+        let mut next = match registry.get_component::<FogVolumeComponent>(id) {
+            Ok(c) => c.clone(),
             Err(_) => {
                 log::warn!(
                     "[Scripting] setFogScatter: entity {id} has no FogVolumeComponent; skipping"
@@ -60,7 +60,6 @@ pub(crate) fn dispatch(
                 continue;
             }
         };
-        let mut next = current;
         next.scatter = scatter;
         if let Err(e) = registry.set_component(id, next) {
             log::warn!("[Scripting] setFogScatter: failed to write component on {id}: {e:?}");
@@ -81,6 +80,7 @@ mod tests {
             scatter: 0.6,
             edge_softness: 0.25,
             falloff: 2.0,
+            animation: None,
         }
     }
 

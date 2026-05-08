@@ -121,24 +121,26 @@ export function registerLevelManifest(_ctx: unknown) {
     reactions.push(registerReaction("levelLoad", { sequence: steps }));
   }
 
-  // Fog demo: both fog entity types in the map carry the "pulse-fog" tag,
+  // Fog demo: both fog entity types in the map carry the "pulse_fog" tag,
   // so the tag-targeted scatter primitive and the per-id fogPulse sequence
   // both demonstrate cross-subtype dispatch (fog_volume + fog_lamp hit together).
-  const fogs = world.query({ component: "fog_volume", tag: "pulse-fog" });
+  const fogs = world.query({ component: "fog_volume", tag: "pulse_fog" });
   if (fogs.length > 0) {
     // Tag-targeted Primitive: one descriptor, batch-applied to every
-    // "pulse-fog" volume regardless of entity subtype.
+    // "pulse_fog" volume regardless of entity subtype.
     reactions.push(
       registerReaction("levelLoad", {
         primitive: "setFogScatter",
-        tag: "pulse-fog",
+        tag: "pulse_fog",
         args: { scatter: 0.4 },
       }),
     );
 
-    // Per-id Sequence: 16-step sine density curve on each matched volume.
+    // Per-id Sequence: a single `setFogAnimation` step carrying a sine
+    // density curve, evaluated per-frame across `periodMs` on each
+    // matched volume.
     for (const fog of fogs) {
-      const steps = fogPulse(fog.id, 0.2, 1.0);
+      const steps = fogPulse(fog.id, 0.2, 1.0, 1.5);
       reactions.push(registerReaction("levelLoad", { sequence: steps }));
     }
   }

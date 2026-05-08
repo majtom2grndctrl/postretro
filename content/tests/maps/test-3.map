@@ -4,6 +4,8 @@
 {
 "classname" "worldspawn"
 "wad" ""
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+"data_script" "../scripts/fog-pulse-demo.ts"
 // brush 0
 {
 ( -16 272 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
@@ -806,4 +808,18 @@
 "_cone2" "40"
 "angles" "-10 90 0"
 "style" "2"
+}
+// entity 12
+{
+"classname" "fog_volume"
+"_tags" "none"
+// brush 0
+{
+( 448 -576 112 ) ( 448 -832 112 ) ( 448 -832 0 ) concrete_pavement_036 0 0 0 0.88888884 7
+( 448 -832 112 ) ( 704 -832 112 ) ( 704 -832 0 ) concrete_pavement_036 0.9999962 0 0 0.88888896 7
+( 704 -832 0 ) ( 704 -576 0 ) ( 448 -576 0 ) concrete_pavement_036 0.9999962 0 0 0.88888896 0.88888884
+( 448 -576 112 ) ( 704 -576 112 ) ( 704 -832 112 ) concrete_pavement_036 0.9999962 0 0 0.88888896 0.88888884
+( 704 -576 0 ) ( 704 -576 112 ) ( 448 -576 112 ) concrete_pavement_036 0.9999962 0 0 0.88888896 7
+( 704 -832 112 ) ( 704 -576 112 ) ( 704 -576 0 ) concrete_pavement_036 0 0 0 0.88888884 7
+}
 }

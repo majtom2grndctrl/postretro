@@ -17,6 +17,10 @@ pollster.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 
+# Collision (parry3d trimesh + ray queries). nalgebra types are confined to
+# the `collision` module per the entity_model.md §7 invariant.
+parry3d = { workspace = true }
+
 # Audio
 kira.workspace = true
 
@@ -65,10 +69,8 @@ proptest = { workspace = true }
 # (see src/render/curve_eval_test.rs).
 splines = "4"
 
-# Adding any explicit `[[bin]]` entry disables Cargo's implicit detection of
-# `src/main.rs`, so the engine binary must also be declared explicitly — see
-# context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md
-# §Sub-plan 5 "Implementation note — Cargo auto-detection".
+# Any explicit `[[bin]]` entry disables Cargo's implicit `src/main.rs`
+# detection, so the engine binary must also be declared explicitly.
 [[bin]]
 name = "postretro"
 path = "src/main.rs"

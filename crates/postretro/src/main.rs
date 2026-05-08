@@ -2,6 +2,7 @@
 // See: context/lib/index.md (routes to rendering_pipeline.md, scripting.md, etc.)
 
 mod camera;
+mod collision;
 mod compute_cull;
 mod frame_timing;
 mod fx;
@@ -226,6 +227,7 @@ fn main() -> Result<()> {
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
         fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
         emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
+        collision_world: collision::CollisionWorld::new(),
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
         level_load_fired: false,
         builtin_handled: None,
@@ -357,6 +359,10 @@ struct App {
     /// particle sim. See: context/lib/scripting.md
     emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
 
+    /// World-space static-geometry collider built from PRL static geometry.
+    /// See: context/lib/entity_model.md §7
+    collision_world: collision::CollisionWorld,
+
     /// Packs `SpriteInstance` bytes per collection in the Render stage;
     /// never touches wgpu directly. See: context/lib/scripting.md
     particle_render: scripting_systems::particle_render::ParticleRenderCollector,
@@ -462,6 +468,11 @@ impl ApplicationHandler for App {
             renderer.set_fog_cell_masks(world.fog_cell_masks.clone());
         }
 
+        // Populate before the first game tick so movement collision is ready.
+        if let Some(world) = self.level.as_ref() {
+            self.collision_world.populate_from_level(world);
+        }
+
         // Sweep map entities through classname dispatch. The returned set of
         // handled classnames is stashed and consumed by the data-archetype sweep
         // on the first redraw, after the data script populates
@@ -540,7 +551,10 @@ impl ApplicationHandler for App {
         // Fog-volume entities live in the script registry; clearing the
         // bridge's id table here keeps it from referencing stale slots if a
         // future surface re-creation re-runs `populate_from_level`.
+        // collision_world is reset for the same reason — it must be in a
+        // clean placeholder state before populate_from_level runs on resume.
         self.fog_volume_bridge.clear();
+        self.collision_world.clear();
         log::info!("[Engine] Suspended");
     }
 

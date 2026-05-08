@@ -45,7 +45,7 @@ Capsule axis is world `+Y`. Endpoints sit at `origin ± halfHeight * Y`. Movemen
 
 ### 4. Unit test — CollisionWorld floor fixture
 
-- Add `crates/postretro/src/collision/tests.rs`. Fixture: two triangles spanning the XZ plane at y = 0, vertices at (-1, 0, -1), (1, 0, -1), (1, 0, 1), (-1, 0, 1). Ray: origin (0, 1, 0), direction (0, -1, 0). Assert time-of-impact = 1.0 and surface normal = (0, 1, 0), within 1e-5 epsilon.
+- Add an inline `#[cfg(test)] mod tests` block inside `collision/mod.rs`. Fixture: two triangles spanning the XZ plane at y = 0, vertices at (-1, 0, -1), (1, 0, -1), (1, 0, 1), (-1, 0, 1). Ray: origin (0, 1, 0), direction (0, -1, 0). Assert time-of-impact = 1.0 and surface normal = (0, 1, 0), within 1e-5 epsilon.
 
 ---
 
@@ -53,7 +53,7 @@ Capsule axis is world `+Y`. Endpoints sit at `origin ± halfHeight * Y`. Movemen
 
 - `parry3d` is a workspace dependency, used by `crates/postretro`.
 - `CollisionWorld` is populated from PRL static geometry at level load and cleared on teardown, following the `fog_volume_bridge` lifecycle pattern.
-- The unit test in `crates/postretro/src/collision/tests.rs` passes.
+- The unit test in the inline `#[cfg(test)] mod tests` block inside `collision/mod.rs` passes.
 - `context/lib/entity_model.md` §7 reflects the trimesh approach; the BSP brush hull claim is removed.
 
 ---

@@ -22,6 +22,10 @@ pollster = "0.4"
 # Math
 glam = { version = "0.32", features = ["serde"] }
 
+# Collision (world-space trimesh queries; nalgebra types stay inside the
+# `collision` module). See context/lib/entity_model.md §7.
+parry3d = "0.17"
+
 # GPU struct casting (#[repr(C)] → bytes, no `unsafe` at call sites)
 bytemuck = { version = "1", features = ["derive"] }
 

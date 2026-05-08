@@ -154,7 +154,7 @@ Leaf index updates each tick after position changes.
 
 ### World Collision
 
-Entities collide against BSP world geometry. The BSP tree and brush data baked into PRL provide convex brush hulls — the original brush geometry used by the mapper. Collision tests against these hulls support arbitrary bounding volume sizes.
+Entities collide against static world geometry. At level load, PRL static geometry is built into a `parry3d` trimesh held by `CollisionWorld`. Queries use `parry3d::query::*` free functions against this collider — no `QueryPipeline`.
 
 ### Entity-Entity Collision
 

@@ -1,8 +1,7 @@
 // Fog volume entity handle and pure animation constructors (fogPulse, fogFade).
 // Mirrors the LightEntity vocabulary in `./lights`, adapted to the
 // fog_volume ComponentValue surface.
-// See: context/lib/scripting.md §10 (external API shape)
-// and docs/scripting-reference.md (public API surface).
+// See: context/lib/scripting.md §9 (external API shape), §10.2 (fog reaction primitives).
 
 import type {
   EntityId,
@@ -36,15 +35,9 @@ export interface FogVolumeHandle {
   readonly position: Vec3;
   /** The entity's tags at query time. Empty array if untagged. */
   readonly tags: ReadonlyArray<string>;
-  /** Full fog-volume component snapshot at query time. */
   readonly component: FogVolumeComponent;
 }
 
-/**
- * Wrap a `FogVolumeEntity` snapshot returned by `worldQuery`. Used by
- * `world.ts` for `world.query({ component: "fog_volume" })`. Read-only —
- * no mutation methods. Authors register reactions to animate fog.
- */
 export function wrapFogVolumeEntity(
   snapshot: GeneratedFogVolumeEntity,
 ): FogVolumeHandle {

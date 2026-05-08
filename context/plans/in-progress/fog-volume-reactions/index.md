@@ -34,7 +34,7 @@ This is the companion to `fog-ellipsoid-entity`. That spec lands the new shape a
 - [ ] The primitive registry's "forbidden primitives" test (`scripting/primitives/mod.rs`) continues to assert `setComponent` is absent. No new dispatch arm is added that would re-introduce a live mutation path for fog.
 - [ ] SDK type generation (`cargo run -p postretro --bin gen-script-types`) emits typed argument shapes for the new primitives. The drift-detection test in `cargo test` passes after regeneration.
 - [ ] The fog volume bridge cache (`FogVolumeAabb`) carries no `Option<f32>` override fields and is not extended with per-component override slots — the bridge reads `FogVolumeComponent` directly the same way it does today, with `falloff` joining the existing `density`/`scatter`/`edge_softness` set.
-- [ ] `fogFade(from, to, durationMs)` constructor exists in both `fog_volumes.ts` and `fog_volumes.luau`, returns a step array with linearly-interpolated `setFogDensity` steps, and is exercised by a unit test.
+- [ ] `fogFade(id, from, to)` constructor exists in both `fog_volumes.ts` and `fog_volumes.luau`, returns a step array with linearly-interpolated `setFogDensity` steps, and is exercised by a unit test. (No timing parameter: the sequence dispatcher fires every step on the same frame; pacing is not a constructor input.)
 - [ ] An author-visible script using the new vocabulary (one fog-driven scene in `content/tests/scripts/`) demonstrates a `fogPulse` against a tag and runs cleanly in the QuickJS runtime. (No `.luau` mirror of the demo script is required — `content/tests/scripts/` has no `.luau` analogs to the `.ts` scripts; the prelude integration is verified by the Luau round-trip test in Task 4.)
 
 ## Tasks
@@ -80,8 +80,8 @@ Extend `sdk/lib/entities/fog_volumes.{ts,luau}` to mirror the `lights.{ts,luau}`
 
 - Replace the existing pass-through `FogVolumeHandle` type alias with a proper wrapper that exposes typed read access to the fog component fields. No mutation methods — authors build sequenced reactions via `registerReaction` and the fog primitives directly.
 - Pure animation constructors:
-  - `fogPulse(min, max, periodMs)` — returns a `{ id, primitive, args }` step array whose steps emit `setFogDensity` calls at density values sampled along a half-cosine between `min` and `max`. Step count and `id` values mirror the `pulse` constructor in `sdk/lib/entities/lights.ts`.
-  - `fogFade(from, to, durationMs)` — returns a `{ id, primitive, args }` step array that linearly interpolates `density` from `from` to `to` over `durationMs` in evenly-spaced steps.
+  - `fogPulse(id, min, max)` — returns a `{ id, primitive, args }` step array whose steps emit `setFogDensity` calls at density values sampled along a full sine cycle (`mid + amp * sin(2π·i/N)`) between `min` and `max`. Step count and `id` shape mirror the `pulse` constructor in `sdk/lib/entities/lights.ts`. No timing parameter — the sequence dispatcher fires every step on the same frame, so pacing is not a constructor input.
+  - `fogFade(id, from, to)` — returns a `{ id, primitive, args }` step array that linearly interpolates `density` from `from` to `to` across N evenly-spaced steps. No timing parameter, same reason as `fogPulse`.
 
 Both return `{ id, primitive, args }` step arrays matching the sequence step shape in `arena-lights.ts`. Authors wrap in `registerReaction`.
 

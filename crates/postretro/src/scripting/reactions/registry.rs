@@ -1,7 +1,5 @@
-// Named reaction-primitive lookup table. Mirrors `SequencedPrimitiveRegistry`
-// in shape, but each handler receives the tag-resolved target list rather
-// than a single entity id.
-// See: context/lib/scripting.md §4 (Primitive Registration)
+// Runtime dispatch table for tag-targeted reaction primitives.
+// See: context/lib/scripting.md §10 (Reaction Primitives)
 
 use std::collections::HashMap;
 
@@ -75,8 +73,6 @@ impl std::fmt::Debug for ReactionPrimitiveRegistry {
     }
 }
 
-/// Register the emitter-side reaction primitives (`setEmitterRate`,
-/// `setSpinRate`) into the supplied registry.
 pub(crate) fn register_emitter_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
     registry.register("setEmitterRate", |reg, targets, args| {
         let parsed: super::set_emitter_rate::SetEmitterRateArgs =
@@ -91,9 +87,6 @@ pub(crate) fn register_emitter_reaction_primitives(registry: &mut ReactionPrimit
     });
 }
 
-/// Register the fog-side reaction primitives (`setFogDensity`,
-/// `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`, `setFogParams`)
-/// into the supplied registry.
 pub(crate) fn register_fog_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
     registry.register("setFogDensity", |reg, targets, args| {
         let parsed: super::set_fog_density::SetFogDensityArgs =
@@ -132,11 +125,8 @@ pub(crate) fn register_fog_reaction_primitives(registry: &mut ReactionPrimitiveR
     });
 }
 
-/// Translate a `ReactionError` produced by a fog reaction-primitive dispatch
-/// fn into a `SequenceError` so the sequenced-dispatch path can surface it
-/// uniformly with other sequenced-primitive failures (e.g. `setLightAnimation`).
-/// `ReactionError` currently has only `InvalidArgument`; if more variants are
-/// added the catch-all `ExecutionFailed` arm here picks them up automatically.
+// Bridges the reaction error type into the sequenced-dispatch error surface
+// so fog failures are reported uniformly with other sequenced-primitive failures.
 fn reaction_to_sequence_error(err: ReactionError) -> SequenceError {
     let reason = match err {
         ReactionError::InvalidArgument { reason } => reason,
@@ -144,15 +134,9 @@ fn reaction_to_sequence_error(err: ReactionError) -> SequenceError {
     SequenceError::InvalidArgument { reason }
 }
 
-/// Register the fog reaction primitives as **sequenced** (per-step) primitives
-/// against `SequencedPrimitiveRegistry`. Mirrors `register_sequenced_light_primitives`:
-/// each handler receives a single `EntityId` (the step's target) plus the JSON
-/// args, deserializes the args into the primitive-specific struct, and calls
-/// the existing tag-targeted `dispatch` fn with a one-element target slice.
-///
-/// This enables `fogPulse` / `fogFade` and other sequence-based fog animations
-/// — those constructors emit step arrays whose `primitive` field names a fog
-/// primitive, and the sequence dispatcher looks them up here at run time.
+/// Register fog primitives as sequenced (per-step) handlers so `fogPulse` /
+/// `fogFade` step arrays can be dispatched through `SequencedPrimitiveRegistry`
+/// at run time.
 pub(crate) fn register_sequenced_fog_primitives(
     registry: &mut SequencedPrimitiveRegistry,
     ctx: ScriptCtx,

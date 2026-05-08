@@ -1,6 +1,5 @@
 // `setFogEdgeSoftness` reaction primitive: set the edge-softness value on
-// every fog volume matching the reaction's tag. Script-facing field name is
-// `edgeSoftness` (camelCase); the Rust-side struct uses `edge_softness`.
+// every fog volume matching the reaction's tag.
 // See: context/lib/scripting.md
 
 use serde::{Deserialize, Serialize};
@@ -37,7 +36,7 @@ pub(crate) fn dispatch(
         args.edge_softness
     } else {
         log::warn!(
-            "[Scripting] setFogEdgeSoftness: edgeSoftness {} is outside [0, +\u{221e}) and finite; clamping to 0.0",
+            "[Scripting] setFogEdgeSoftness: edgeSoftness {} is negative or non-finite; clamping to 0.0",
             args.edge_softness
         );
         0.0

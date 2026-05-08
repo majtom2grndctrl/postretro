@@ -376,6 +376,81 @@ mod tests {
     }
 
     #[test]
+    fn fog_pulse_returns_16_step_sine_array() {
+        // fogPulse must emit exactly 16 setFogDensity steps whose density
+        // values trace a full sine cycle — same contract as the Luau-side test,
+        // verified here against the JS implementation path.
+        let (subsys, _ctx) = setup();
+        subsys.definition_ctx().with(|ctx| {
+            let json: String = ctx
+                .eval(
+                    r#"
+                    const steps = fogPulse(7, 0.2, 1.0);
+                    if (steps.length !== 16) throw new Error("expected 16 steps, got " + steps.length);
+                    for (let i = 0; i < steps.length; i++) {
+                        if (steps[i].id !== 7) throw new Error("expected id == 7 on step " + i);
+                        if (steps[i].primitive !== "setFogDensity")
+                            throw new Error("expected primitive == setFogDensity on step " + i);
+                    }
+                    JSON.stringify(steps.map(s => s.args.density))
+                    "#,
+                )
+                .unwrap();
+            let densities: Vec<f64> = serde_json::from_str(&json).unwrap();
+            assert_eq!(densities.len(), 16);
+            let lo = 0.2_f64;
+            let hi = 1.0_f64;
+            let mid = (lo + hi) * 0.5;
+            let amp = (hi - lo) * 0.5;
+            for (i, &got) in densities.iter().enumerate() {
+                let theta = (i as f64 / 16.0) * std::f64::consts::PI * 2.0;
+                let expected = mid + amp * theta.sin();
+                assert!(
+                    (got - expected).abs() < 1e-5,
+                    "step {i}: expected {expected}, got {got}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn fog_fade_returns_16_step_linearly_interpolated_array() {
+        // fogFade must emit exactly 16 setFogDensity steps that linearly
+        // interpolate from `from` to `to`, with step 0 == from and step 15 == to.
+        let (subsys, _ctx) = setup();
+        subsys.definition_ctx().with(|ctx| {
+            let json: String = ctx
+                .eval(
+                    r#"
+                    const steps = fogFade(11, 0.0, 4.0);
+                    if (steps.length !== 16) throw new Error("expected 16 steps, got " + steps.length);
+                    for (let i = 0; i < steps.length; i++) {
+                        if (steps[i].id !== 11) throw new Error("expected id == 11 on step " + i);
+                        if (steps[i].primitive !== "setFogDensity")
+                            throw new Error("expected primitive == setFogDensity on step " + i);
+                    }
+                    JSON.stringify(steps.map(s => s.args.density))
+                    "#,
+                )
+                .unwrap();
+            let densities: Vec<f64> = serde_json::from_str(&json).unwrap();
+            assert_eq!(densities.len(), 16);
+            let from = 0.0_f64;
+            let to = 4.0_f64;
+            for (i, &got) in densities.iter().enumerate() {
+                let t = i as f64 / 15.0;
+                let expected = from + (to - from) * t;
+                assert!(
+                    (got - expected).abs() < 1e-5,
+                    "step {i}: expected {expected}, got {got}"
+                );
+            }
+            assert!((densities[0] - from).abs() < 1e-6);
+            assert!((densities[15] - to).abs() < 1e-6);
+        });
+    }
+
+    #[test]
     fn sdk_prelude_installs_globals() {
         // The prelude rewrites `export const world = ...` and friends as
         // `globalThis.x = ...` assignments. Verify each surfaces in the

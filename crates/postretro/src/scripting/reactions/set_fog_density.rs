@@ -36,7 +36,7 @@ pub(crate) fn dispatch(
         args.density
     } else {
         log::warn!(
-            "[Scripting] setFogDensity: density {} is outside [0, +\u{221e}) and finite; clamping to 0.0",
+            "[Scripting] setFogDensity: density {} is negative or non-finite; clamping to 0.0",
             args.density
         );
         0.0

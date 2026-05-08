@@ -91,12 +91,14 @@ Higher-level vocabulary (`world`, `flicker`, `pulse`, `timeline`, etc.) is provi
 - `sdk/lib/world.{ts,luau}` — thin generic query wrapper. Delegates to entity-type-specific handle wrappers when a `component:` filter is given.
 - `sdk/lib/entities/lights.{ts,luau}` — light vocabulary: the `LightEntityHandle` wrapper plus `flicker`, `pulse`, `colorShift`, `sweep` animation constructors.
 - `sdk/lib/entities/emitters.{ts,luau}` — emitter vocabulary: the `emitter()` component constructor plus `smokeEmitter`, `sparkEmitter`, `dustEmitter` presets.
+- `sdk/lib/entities/fog_volumes.{ts,luau}` — fog volume vocabulary: the `FogVolumeHandle` wrapper plus `fogPulse`, `fogFade` density-curve constructors.
+- `sdk/lib/entities/transforms.{ts,luau}` — transform-only handle type (`TransformHandle`). Type-only; no runtime globals promoted.
 - `sdk/lib/util/keyframes.{ts,luau}` — structurally generic keyframe utilities: the `Keyframe` type alias, `timeline`, and `sequence`. Not light-specific; usable for any keyframed animation.
 - `sdk/lib/data_script.{ts,luau}` — definition-context vocabulary.
 
 **TypeScript:** `sdk/lib/prelude.js` (committed, regenerated when any `sdk/lib/**/*.ts` changes) is embedded in the engine binary via `include_str!` and evaluated in every QuickJS context. Authors import SDK symbols as bare specifiers: `import { world, flicker, timeline } from "postretro"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
 
-**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Return values are destructured into bare globals — no import or require needed. Evaluation order matters: the only real ordering dependency is that `world.luau` needs `wrapLightEntity` from `entities/lights.luau`. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals. `entities/emitters.luau` is wired into the Luau prelude alongside `entities/lights.luau` (the emitter file existed prior to the lights restructure but was inadvertently absent from the prelude evaluation order; the lights restructure fixed this).
+**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Return values are destructured into bare globals — no import or require needed. Evaluation order matters: `world.luau` captures `wrapLightEntity` from `entities/lights.luau` and `wrapFogVolumeEntity` from `entities/fog_volumes.luau` as closure upvalues; both must evaluate before `world.luau`. Both bridges are nil'd out after `world.luau` evaluates so author scripts never see them as bare globals. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
 
 Both preludes are baked at compile time. SDK library changes require an engine restart.
 

@@ -40,8 +40,9 @@ const KEYFRAMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/util/keyframe
 const EMITTERS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/emitters.luau");
 
 /// SDK library prelude — `entities/fog_volumes.luau` returns a table whose
-/// `wrapFogVolumeEntity` field is installed as a temporary global for
-/// `world.luau` to capture, then nil'd out before the sandbox freezes.
+/// fields (`fogPulse`, `fogFade`, `wrapFogVolumeEntity`) are used during
+/// prelude evaluation. `wrapFogVolumeEntity` is installed as a temporary global
+/// for `world.luau` to capture, then nil'd out before the sandbox freezes.
 const FOG_VOLUMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/fog_volumes.luau");
 
 /// SDK library prelude — `data_script.luau` returns a table whose fields
@@ -861,9 +862,10 @@ mod tests {
 
     #[test]
     fn sdk_prelude_installs_globals() {
-        // `world.luau` returns the world table; `entities/lights.luau`,
-        // `util/keyframes.luau`, and `entities/emitters.luau` each return
-        // records whose fields we promote to globals.
+        // Verifies that each SDK prelude (`lights`, `fog_volumes`, `keyframes`,
+        // `emitters`) promotes its public fields to bare globals and that
+        // temporary bridges (`wrapLightEntity`, `wrapFogVolumeEntity`) are nil
+        // by the time author scripts run.
         let (subsys, _ctx) = setup();
         for which in [Which::Definition] {
             let (
@@ -931,11 +933,10 @@ mod tests {
     }
 
     #[test]
-    fn fog_pulse_returns_16_step_cosine_array() {
-        // fogPulse mirrors the 16-sample `pulse` constructor: each step is
-        // `{ id, primitive = "setFogDensity", args = { density } }`, and the
-        // density values are sampled from `mid + amp * sin(2*pi*(i-1)/16)`
-        // where `i` is the 1-indexed Luau loop counter (so `i=1` → theta=0).
+    fn fog_pulse_returns_16_step_sine_array() {
+        // fogPulse produces 16 steps of `{ id, primitive = "setFogDensity",
+        // args = { density } }`. Density at step i is
+        // `mid + amp * sin(2*pi*(i-1)/16)` (i=1 → theta=0).
         let (subsys, _ctx) = setup();
         let densities: Vec<f64> = subsys
             .run_source(

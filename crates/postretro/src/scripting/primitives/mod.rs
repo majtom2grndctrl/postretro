@@ -77,8 +77,7 @@ impl FromLua for WorldQueryFilterInput {
     }
 }
 
-/// Parsed and validated form of the filter passed to `worldQuery`. Extend
-/// with new variants as additional queryable component types are added.
+/// Parsed and validated form of the filter passed to `worldQuery`.
 enum QueryFilter {
     Light {
         tag: Option<String>,
@@ -97,9 +96,8 @@ enum QueryFilter {
     AlwaysEmpty,
 }
 
-/// Parse the filter object passed to `worldQuery`. Returns the component
-/// kind and the optional tag string. Unknown component names surface as
-/// `InvalidArgument`.
+/// Parse the filter object passed to `worldQuery`. Unknown component names
+/// surface as `InvalidArgument`.
 fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilter, ScriptError> {
     match component {
         "light" => Ok(QueryFilter::Light { tag }),
@@ -122,9 +120,8 @@ const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the fi
      Unknown component values raise InvalidArgument. \
      The `world.ts` vocabulary module wraps this as `world.query`.";
 
-/// Build the JSON shape `[{ id, position, tags }, ...]` for every entity that
-/// carries a `Transform` component (every live entity does), filtered by tag
-/// if `tag` is `Some`.
+/// Collect transform handles as JSON. Every live entity carries `Transform`,
+/// so this is effectively an entity query filtered only by tag.
 fn collect_transform_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
     use serde_json::{Map, Value};
     let reg = ctx.registry.borrow();
@@ -150,10 +147,9 @@ fn collect_transform_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_j
     Value::Array(arr)
 }
 
-/// Build the JSON shape `[{ id, position, tags, component: {...} }, ...]` for
-/// every entity carrying a `BillboardEmitterComponent`. `BillboardEmitterComponent`
-/// already has `#[serde(rename_all = "snake_case")]` so direct serialization
-/// gives the wire field names.
+/// Collect billboard-emitter handles as JSON. `BillboardEmitterComponent` has
+/// `#[serde(rename_all = "snake_case")]` so direct serialization gives the wire
+/// field names without a manual mapping.
 fn collect_emitter_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
     use serde_json::{Map, Value};
     let reg = ctx.registry.borrow();
@@ -189,12 +185,9 @@ fn collect_emitter_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_jso
     Value::Array(arr)
 }
 
-/// Build the JSON shape `[{ id, position, tags, component: { density,
-/// scatter, edgeSoftness, falloff } }, ...]` for every entity carrying a
-/// `FogVolumeComponent`. Position is read from the entity's `Transform`
-/// (volume center, baked at level load). The component object is hand-rolled
-/// rather than driven by serde so the script-facing camelCase boundary
-/// (`edgeSoftness`) does not require a wire-affecting `#[serde(rename)]`.
+/// Collect fog-volume handles as JSON. The component object is hand-rolled via
+/// `camel_fields()` rather than serde so the script-facing camelCase keys don't
+/// require a wire-affecting `#[serde(rename)]` on the struct.
 fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
     use serde_json::{Map, Value};
     let reg = ctx.registry.borrow();

@@ -127,6 +127,8 @@ impl FogVolumeBridge {
                 scatter: entry.scatter,
                 edge_softness: entry.edge_softness,
                 falloff: entry.radial_falloff,
+                tint: entry.tint,
+                saturation: entry.saturation,
                 animation: None,
             };
             // `set_component` only fails on stale id — the id was just returned.
@@ -201,18 +203,30 @@ impl FogVolumeBridge {
 
             if let Some(settled) = settle_play_count(animation, start_ms, now_ms) {
                 let mut next = component.clone();
-                next.density = settled;
+                if let Some(d) = settled.density {
+                    next.density = d;
+                }
+                if let Some(s) = settled.saturation {
+                    next.saturation = s;
+                }
                 next.animation = None;
                 updates.push((id, next));
                 clear_slots.push(id);
                 continue;
             }
 
-            let Some(sampled) = sample_animation(animation, start_ms, now_ms) else {
+            let sampled_density = sample_density_curve_at(animation, start_ms, now_ms);
+            let sampled_saturation = sample_saturation_curve_at(animation, start_ms, now_ms);
+            if sampled_density.is_none() && sampled_saturation.is_none() {
                 continue;
-            };
+            }
             let mut next = component.clone();
-            next.density = sampled;
+            if let Some(d) = sampled_density {
+                next.density = d;
+            }
+            if let Some(s) = sampled_saturation {
+                next.saturation = s;
+            }
             updates.push((id, next));
         }
 
@@ -289,6 +303,8 @@ impl FogVolumeBridge {
                     half_diag: aabb.half_diag,
                     inv_half_ext: aabb.inv_half_ext.to_array(),
                     shape_mode: aabb.shape_mode,
+                    tint: component.tint,
+                    saturation: component.saturation,
                     radial_falloff: component.falloff,
                     scatter: component.scatter,
                     plane_offset: 0,
@@ -303,6 +319,8 @@ impl FogVolumeBridge {
                     half_diag: 0.0,
                     inv_half_ext: [0.0; 3],
                     shape_mode: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    saturation: 1.0,
                     radial_falloff: 0.0,
                     scatter: 0.0,
                     plane_offset: 0,
@@ -425,11 +443,19 @@ fn sphere_intersects_any_aabb<'a>(
 /// Sample `animation.density` at the current wall-clock time. Returns `None`
 /// when the animation carries no density curve — the component's static
 /// density is left untouched in that case.
-///
-/// Phase math uses `rem_euclid(1.0)` rather than `fract()` so a negative
-/// `phase` (or one larger than 1.0) lands cleanly inside `[0.0, 1.0)`.
-fn sample_animation(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Option<f32> {
+fn sample_density_curve_at(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Option<f32> {
     let curve = animation.density.as_ref()?;
+    let phase_offset = animation.phase.unwrap_or(0.0);
+    let t = ((now_ms - start_ms) / animation.period_ms + phase_offset).rem_euclid(1.0);
+    Some(sample_density_curve(curve, t))
+}
+
+/// Sample `animation.saturation` at the current wall-clock time. Returns `None`
+/// when the animation carries no saturation curve — the component's static
+/// saturation is left untouched in that case. Shares the same phase math as
+/// the density channel so both channels move in lockstep on the same timeline.
+fn sample_saturation_curve_at(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Option<f32> {
+    let curve = animation.saturation.as_ref()?;
     let phase_offset = animation.phase.unwrap_or(0.0);
     let t = ((now_ms - start_ms) / animation.period_ms + phase_offset).rem_euclid(1.0);
     Some(sample_density_curve(curve, t))
@@ -459,13 +485,25 @@ fn sample_density_curve(curve: &[f32], t: f32) -> f32 {
     }
 }
 
-/// Returns `Some(final_density)` when `animation` is `play_count`-bounded and
-/// has elapsed past its end. The caller writes the value back as static
-/// density and clears `animation`. See also `light_bridge::check_play_count_completion`.
-/// Unlike the light bridge (which accommodates GPU evaluators by treating
-/// `play_count == 0` as "never completes"), `play_count == 0` is coerced to `1`
-/// at install time by `set_fog_animation::validate` — so it never reaches here.
-fn settle_play_count(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Option<f32> {
+/// Final values written back when a `play_count`-bounded animation settles.
+/// Fields are `None` when the animation has no curve for that channel —
+/// the component's static value is left untouched for that channel.
+struct SettledValues {
+    density: Option<f32>,
+    saturation: Option<f32>,
+}
+
+/// Returns `Some(SettledValues)` when `animation` is `play_count`-bounded and
+/// has elapsed past its end. The caller writes the settled values back as
+/// static scalars and clears `animation`. See also
+/// `light_bridge::check_play_count_completion`. Unlike the light bridge,
+/// `play_count == 0` is coerced to `1` at install time by
+/// `set_fog_animation::validate` and never reaches here.
+fn settle_play_count(
+    animation: &FogAnimation,
+    start_ms: f32,
+    now_ms: f32,
+) -> Option<SettledValues> {
     let play_count = animation.play_count?;
     debug_assert!(play_count > 0, "play_count coerced to >= 1 at install time");
     if animation.period_ms <= 0.0 {
@@ -475,10 +513,10 @@ fn settle_play_count(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Op
     if elapsed_periods < play_count as f32 {
         return None;
     }
-    // Defensive fallback: validation rejects `density: None` paired with a
-    // `play_count`, so this `?` should be unreachable in practice.
-    let curve = animation.density.as_ref()?;
-    curve.last().copied()
+    Some(SettledValues {
+        density: animation.density.as_ref().and_then(|c| c.last().copied()),
+        saturation: animation.saturation.as_ref().and_then(|c| c.last().copied()),
+    })
 }
 
 #[cfg(test)]
@@ -494,6 +532,8 @@ mod tests {
             edge_softness: 1.0,
             scatter: 0.4,
             radial_falloff: 2.0,
+            tint: [1.0, 1.0, 1.0],
+            saturation: 1.0,
             center: [0.0, 1.5, 0.0],
             inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
             half_diag: 2.5,
@@ -567,6 +607,8 @@ mod tests {
                     scatter: 0.9,
                     edge_softness: 0.5,
                     falloff: 3.5,
+                    tint: [1.0, 1.0, 1.0],
+                    saturation: 1.0,
                     animation: None,
                 },
             )
@@ -604,6 +646,8 @@ mod tests {
                     scatter: 0.0,
                     edge_softness: 0.0,
                     falloff: 1.0,
+                    tint: [1.0, 1.0, 1.0],
+                    saturation: 1.0,
                     animation: None,
                 },
             )
@@ -691,6 +735,8 @@ mod tests {
                     scatter: 0.0,
                     edge_softness: 0.0,
                     falloff: 1.0,
+                    tint: [1.0, 1.0, 1.0],
+                    saturation: 1.0,
                     animation: None,
                 },
             )
@@ -721,6 +767,8 @@ mod tests {
                     scatter: 0.0,
                     edge_softness: 0.0,
                     falloff: 1.0,
+                    tint: [1.0, 1.0, 1.0],
+                    saturation: 1.0,
                     animation: None,
                 },
             )
@@ -735,7 +783,7 @@ mod tests {
     #[test]
     fn update_volumes_propagates_plane_count_from_record() {
         // A `FogVolumeRecord` carrying non-empty planes must surface its plane
-        // count on the packed `FogVolume` (plane_count is at byte offset 76).
+        // count on the packed `FogVolume` (plane_count is at byte offset 92).
         // The renderer's dense repack patches plane_offset at upload time —
         // here we only assert plane_count, which the bridge writes directly.
         let mut record = sample_record();
@@ -755,8 +803,8 @@ mod tests {
 
         let (bytes, planes, _live_mask) = bridge.update_volumes(&registry).expect("one slot");
         assert_eq!(bytes.len(), std::mem::size_of::<FogVolume>());
-        // FogVolume.plane_count sits at byte offset 76 (see fx/fog_volume.rs).
-        let plane_count = u32::from_le_bytes(bytes[76..80].try_into().unwrap());
+        // FogVolume.plane_count sits at byte offset 92 (see fx/fog_volume.rs).
+        let plane_count = u32::from_le_bytes(bytes[92..96].try_into().unwrap());
         assert_eq!(plane_count, record.plane_count);
         // Side-table planes mirror the record exactly.
         assert_eq!(planes.len(), 1);
@@ -844,6 +892,7 @@ mod tests {
                 phase: None,
                 play_count: None,
                 density: Some(curve),
+                saturation: None,
             },
         );
 
@@ -888,6 +937,7 @@ mod tests {
                 phase: None,
                 play_count: Some(1),
                 density: Some(curve.clone()),
+                saturation: None,
             },
         );
 
@@ -951,6 +1001,7 @@ mod tests {
                 phase: None,
                 play_count: None,
                 density: Some(original_curve),
+                saturation: None,
             },
         );
 
@@ -966,6 +1017,7 @@ mod tests {
                 phase: None,
                 play_count: None,
                 density: Some(new_curve.clone()),
+                saturation: None,
             },
         );
         // Second tick at the same wall-clock as the install — the new
@@ -1006,6 +1058,7 @@ mod tests {
                 phase: None,
                 play_count: None,
                 density: Some(curve.clone()),
+                saturation: None,
             },
         );
 
@@ -1021,6 +1074,7 @@ mod tests {
                 phase: None,
                 play_count: None,
                 density: Some(curve.clone()),
+                saturation: None,
             },
         );
         bridge.tick(&mut registry, 0.4);

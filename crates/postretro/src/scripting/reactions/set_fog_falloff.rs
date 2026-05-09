@@ -78,6 +78,8 @@ mod tests {
             scatter: 0.6,
             edge_softness: 0.25,
             falloff: 2.0,
+            tint: [1.0, 1.0, 1.0],
+            saturation: 1.0,
             animation: None,
         }
     }

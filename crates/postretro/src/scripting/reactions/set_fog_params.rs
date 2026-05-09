@@ -1,8 +1,8 @@
 // `setFogParams` reaction primitive: combined partial-update path that
-// applies any subset of `{density, scatter, edgeSoftness, falloff}` to every
-// fog volume matching the reaction's tag. density/scatter/edgeSoftness clamp
-// on invalid input; falloff is dropped on invalid input (component preserved).
-// Valid fields are applied in a single write per target.
+// applies any subset of `{density, scatter, edgeSoftness, falloff, tint, saturation}`
+// to every fog volume matching the reaction's tag. density/scatter/edgeSoftness/
+// saturation clamp on invalid input; falloff is dropped on invalid input
+// (component preserved). Valid fields are applied in a single write per target.
 // See: context/lib/scripting.md
 
 use serde::{Deserialize, Serialize};
@@ -22,17 +22,27 @@ pub(crate) struct SetFogParamsArgs {
     pub(crate) edge_softness: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) falloff: Option<f32>,
+    /// Scatter tint multiplier as `[r, g, b]` in linear 0-1 range.
+    /// `[1, 1, 1]` = no tint. Each component clamped to `[0, +∞)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tint: Option<[f32; 3]>,
+    /// Scatter saturation. 0 = greyscale, 1 = natural, >1 = boosted.
+    /// Clamped to `[0, +∞)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) saturation: Option<f32>,
 }
 
 /// Validated subset of fields, distilled from `SetFogParamsArgs` by the
-/// dispatch entry point. Each `Option<f32>` here represents a field that
+/// dispatch entry point. Each `Option<_>` here represents a field that
 /// passed validation and should be merged onto every target.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct ValidatedFields {
     density: Option<f32>,
     scatter: Option<f32>,
     edge_softness: Option<f32>,
     falloff: Option<f32>,
+    tint: Option<[f32; 3]>,
+    saturation: Option<f32>,
 }
 
 impl ValidatedFields {
@@ -41,6 +51,8 @@ impl ValidatedFields {
             && self.scatter.is_none()
             && self.edge_softness.is_none()
             && self.falloff.is_none()
+            && self.tint.is_none()
+            && self.saturation.is_none()
     }
 
     fn apply_to(&self, comp: &mut FogVolumeComponent) {
@@ -55,6 +67,12 @@ impl ValidatedFields {
         }
         if let Some(f) = self.falloff {
             comp.falloff = f;
+        }
+        if let Some(t) = self.tint {
+            comp.tint = t;
+        }
+        if let Some(s) = self.saturation {
+            comp.saturation = s;
         }
     }
 }
@@ -114,6 +132,35 @@ fn validate(args: &SetFogParamsArgs) -> ValidatedFields {
         }
     }
 
+    if let Some(t) = args.tint {
+        let mut clamped = t;
+        let mut warned = false;
+        for (i, c) in clamped.iter_mut().enumerate() {
+            if !c.is_finite() || *c < 0.0 {
+                if !warned {
+                    log::warn!(
+                        "[Scripting] setFogParams: tint[{i}] {} is negative or non-finite; clamping to 0.0",
+                        *c
+                    );
+                    warned = true;
+                }
+                *c = 0.0;
+            }
+        }
+        out.tint = Some(clamped);
+    }
+
+    if let Some(s) = args.saturation {
+        if s.is_finite() && s >= 0.0 {
+            out.saturation = Some(s);
+        } else {
+            log::warn!(
+                "[Scripting] setFogParams: saturation {s} is negative or non-finite; clamping to 0.0"
+            );
+            out.saturation = Some(0.0);
+        }
+    }
+
     out
 }
 
@@ -170,6 +217,8 @@ mod tests {
             scatter: 0.6,
             edge_softness: 0.25,
             falloff: 2.0,
+            tint: [1.0, 1.0, 1.0],
+            saturation: 1.0,
             animation: None,
         }
     }
@@ -192,6 +241,8 @@ mod tests {
                 scatter: None,
                 edge_softness: Some(0.75),
                 falloff: None,
+                tint: None,
+                saturation: None,
             },
         )
         .unwrap();
@@ -214,6 +265,8 @@ mod tests {
                 scatter: Some(0.4),
                 edge_softness: Some(0.1),
                 falloff: Some(3.5),
+                tint: None,
+                saturation: None,
             },
         )
         .unwrap();
@@ -236,6 +289,8 @@ mod tests {
                 scatter: None,
                 edge_softness: None,
                 falloff: Some(-1.0),
+                tint: None,
+                saturation: None,
             },
         )
         .unwrap();
@@ -256,6 +311,8 @@ mod tests {
                 scatter: Some(2.0),
                 edge_softness: None,
                 falloff: None,
+                tint: None,
+                saturation: None,
             },
         )
         .unwrap();
@@ -315,11 +372,55 @@ mod tests {
                 scatter: None,
                 edge_softness: None,
                 falloff: Some(f32::NAN),
+                tint: None,
+                saturation: None,
             },
         )
         .unwrap();
         let after = reg.get_component::<FogVolumeComponent>(id).unwrap();
         assert_eq!(*after, sample_fog());
+    }
+
+    #[test]
+    fn negative_tint_channel_clamped_to_zero() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_fog(&mut reg);
+        dispatch(
+            &mut reg,
+            &[id],
+            &SetFogParamsArgs {
+                density: None,
+                scatter: None,
+                edge_softness: None,
+                falloff: None,
+                tint: Some([0.5, -0.25, f32::INFINITY]),
+                saturation: None,
+            },
+        )
+        .unwrap();
+        let after = reg.get_component::<FogVolumeComponent>(id).unwrap();
+        assert_eq!(after.tint, [0.5, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn nan_saturation_clamped_to_zero() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_fog(&mut reg);
+        dispatch(
+            &mut reg,
+            &[id],
+            &SetFogParamsArgs {
+                density: None,
+                scatter: None,
+                edge_softness: None,
+                falloff: None,
+                tint: None,
+                saturation: Some(f32::NAN),
+            },
+        )
+        .unwrap();
+        let after = reg.get_component::<FogVolumeComponent>(id).unwrap();
+        assert_eq!(after.saturation, 0.0);
     }
 
     #[test]

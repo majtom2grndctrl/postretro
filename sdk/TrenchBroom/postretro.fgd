@@ -114,38 +114,34 @@
     spin_rate(float) : "Spin rate (radians/sec)" : "0.0"
 ]
 
-// Primitive volumetric fog brush. The brush's world-space convex hull defines
-// the volume; faces are excluded from worldspawn geometry. Use this when you
-// need an arbitrary brush-shaped fog region. For common shapes (sphere, capsule)
-// prefer the semantic point entities below — they are easier to place and
-// carry tuned defaults.
-// Ambient fog color is derived from the scene's SH irradiance volume — there
-// is no per-entity color KVP.
+// Per-region volumetric fog brush.
+//
+// Geometry behaviour is auto-detected from the brush faces:
+//
+//  * Axis-aligned brush (every face normal is ±X, ±Y, or ±Z) — treated as an
+//    ellipsoid inscribed in the brush AABB. `falloff` controls the radial
+//    falloff exponent; `edge_softness` is ignored. Use this for large,
+//    axis-non-uniform radial fog (jumbotron glow, tall streetlight haze).
+//  * Non-axis-aligned brush (any face normal is off-cardinal) — treated as
+//    a plane-bounded convex volume from the brush's world-space hull.
+//    `edge_softness` controls a fade band along brush face normals;
+//    `falloff` is stored but not consulted by the plane-sweep shader path.
+//
+// For uniform-scale sphere or capsule sources, prefer the `fog_lamp` /
+// `fog_tube` point entities — they are easier to place and carry tuned
+// defaults.
+//
+// Ambient fog color is derived from the scene's SH irradiance volume; per-entity
+// scatter tint and saturation are also available via `fog_tint` / `fog_saturation`.
 // See context/lib/build_pipeline.md §Custom FGD.
 @SolidClass = fog_volume : "Per-region volumetric fog (brush)"
 [
     density(float) : "Fog density" : "0.5"
     scatter(float) : "Scatter fraction toward camera" : "0.6"
-    edge_softness(float) : "Edge softness in map units (0=hard cutoff at brush face, larger=wider fade inward)" : "1.0"
-    _tags(string) : "Space-delimited tags for script queries" : ""
-]
-
-// Ellipsoidal volumetric fog brush. The brush's world-space axis-aligned
-// bounding box defines an ellipsoid (radii = AABB half-extents) that is filled
-// with radially-falling-off fog. Use this for large, axis-non-uniform radial
-// fog where each axis needs its own radius — e.g. jumbotron glows or tall
-// streetlight haze that wants a stretched bulb shape. Prefer `fog_volume`
-// (plane-sweep) when you need an arbitrary convex brush hull with hard-edged
-// planes and explicit `edge_softness` control. Prefer `fog_lamp` / `fog_tube`
-// when a uniform-scale sphere or capsule source fits — they are easier to
-// place and carry tuned defaults.
-// Ambient fog color is derived from the scene's SH irradiance volume — there
-// is no per-entity color KVP.
-@SolidClass = fog_ellipsoid : "Ellipsoidal volumetric fog (brush)"
-[
-    density(float) : "Fog density at the ellipsoid center" : "0.5"
-    scatter(float) : "Scatter fraction toward camera" : "0.6"
-    falloff(float) : "Radial falloff exponent (higher = sharper edge)" : "2.0"
+    edge_softness(float) : "Edge softness in map units (plane-bounded brushes only; 0=hard cutoff at brush face, larger=wider fade inward)" : "1.0"
+    falloff(float) : "Radial falloff exponent (axis-aligned brushes only; higher = sharper edge)" : "2.0"
+    fog_tint(color255) : "Scatter tint color (white = no tint; multiplies the scattered SH/light color)" : "255 255 255"
+    fog_saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
@@ -165,8 +161,6 @@
 //
 // `fog_lamp` and `fog_tube` below are worked examples of this pattern.
 
-// Ambient fog color is derived from the scene's SH irradiance volume — there
-// is no per-entity color KVP.
 @PointClass
     color(255 220 150)
     size(-8 -8 -8, 8 8 8)
@@ -178,6 +172,8 @@
     density(float) : "Fog density" : "0.5"
     scatter(float) : "Scatter fraction toward camera" : "0.6"
     radial_falloff(float) : "Radial falloff exponent (0=uniform sphere, higher=more centre-concentrated)" : "2.0"
+    fog_tint(color255) : "Scatter tint color (white = no tint; multiplies the scattered SH/light color)" : "255 255 255"
+    fog_saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
@@ -185,8 +181,8 @@
 // then pitch around the resulting +X. `parse.rs::resolve_fog_tube` implements the
 // same convention to compute the runtime AABB — both must stay in sync so the
 // editor display model and the culling box rotate identically.
-// Ambient fog color is derived from the scene's SH irradiance volume — there
-// is no per-entity color KVP.
+// Ambient fog color is derived from the scene's SH irradiance volume; per-entity
+// scatter tint and saturation are also available via `fog_tint` / `fog_saturation`.
 @PointClass
     color(150 220 255)
     size(-8 -8 -8, 8 8 8)
@@ -201,6 +197,8 @@
     density(float) : "Fog density" : "0.3"
     scatter(float) : "Scatter fraction toward camera" : "0.6"
     radial_falloff(float) : "Radial falloff exponent — approximate capsule shaping (0=uniform)" : "1.5"
+    fog_tint(color255) : "Scatter tint color (white = no tint; multiplies the scattered SH/light color)" : "255 255 255"
+    fog_saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 

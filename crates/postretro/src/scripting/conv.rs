@@ -374,11 +374,11 @@ impl<'js> FromJs<'js> for ComponentValue {
                 ))
             }
             "fog_volume" => {
-                // The four runtime-tweakable fields. Any AABB fields
-                // (`min`, `max`) on the input are baked geometry and silently
-                // ignored. Script-facing key names are camelCase
-                // (`edgeSoftness`); wire/Rust-internal name stays
-                // `edge_softness`. Likewise, `falloff` ↔ `radial_falloff`.
+                // The runtime-tweakable fields. Any AABB fields (`min`, `max`)
+                // are baked geometry and silently ignored. Script-facing key
+                // names are camelCase (`edgeSoftness`); wire/Rust-internal name
+                // stays `edge_softness`. `tint` and `saturation` are optional
+                // with defaults `[1,1,1]` / `1.0`.
                 let density: f32 = o.get("density").map_err(|e| {
                     rquickjs::Exception::throw_type(ctx, &format!("FogVolume.density: {e}"))
                 })?;
@@ -391,10 +391,30 @@ impl<'js> FromJs<'js> for ComponentValue {
                 let falloff: f32 = o.get("falloff").map_err(|e| {
                     rquickjs::Exception::throw_type(ctx, &format!("FogVolume.falloff: {e}"))
                 })?;
-                // Optional `animation`: defaults to `None` when the key is
-                // absent or null. Crosses via the same serde_json bridge as
-                // `LightAnimation` (Vec3-style permissive shapes don't apply
-                // here — fog animation is scalar density only).
+                let tint: [f32; 3] = match o.get::<_, JsValue>("tint") {
+                    Ok(v) if !v.is_null() && !v.is_undefined() => {
+                        let json = js_to_json(ctx, v)?;
+                        serde_json::from_value(json).map_err(|e| {
+                            rquickjs::Exception::throw_type(
+                                ctx,
+                                &format!("FogVolume.tint: {e}"),
+                            )
+                        })?
+                    }
+                    _ => [1.0, 1.0, 1.0],
+                };
+                let saturation: f32 = match o.get::<_, JsValue>("saturation") {
+                    Ok(v) if !v.is_null() && !v.is_undefined() => {
+                        let json = js_to_json(ctx, v)?;
+                        serde_json::from_value(json).map_err(|e| {
+                            rquickjs::Exception::throw_type(
+                                ctx,
+                                &format!("FogVolume.saturation: {e}"),
+                            )
+                        })?
+                    }
+                    _ => 1.0,
+                };
                 let animation: Option<FogAnimation> = match o.get::<_, JsValue>("animation") {
                     Ok(v) if !v.is_null() && !v.is_undefined() => {
                         let json = js_to_json(ctx, v)?;
@@ -412,6 +432,8 @@ impl<'js> FromJs<'js> for ComponentValue {
                     scatter,
                     edge_softness,
                     falloff,
+                    tint,
+                    saturation,
                     animation,
                 }))
             }
@@ -450,6 +472,14 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 for (key, value) in fog.camel_fields() {
                     o.set(key, value)?;
                 }
+                // `tint` is a vec3 not in `camel_fields`; encode as [r,g,b].
+                let tint_json = serde_json::to_value(fog.tint).map_err(|e| {
+                    rquickjs::Exception::throw_type(
+                        ctx,
+                        &format!("FogVolume.tint serialization failed: {e}"),
+                    )
+                })?;
+                o.set("tint", json_to_js(ctx, &tint_json)?)?;
                 // `animation` crosses through serde_json so its camelCase wire
                 // shape (periodMs, playCount) lands without manual mapping.
                 let anim_js = match fog.animation {
@@ -516,11 +546,9 @@ impl FromLua for ComponentValue {
                 )))
             }
             "fog_volume" => {
-                // The four runtime-tweakable fields. Any AABB fields
-                // (`min`, `max`) on the input are baked geometry and silently
-                // ignored. Script-facing key names are camelCase
-                // (`edgeSoftness`); wire/Rust-internal name stays
-                // `edge_softness`. Likewise, `falloff` ↔ `radial_falloff`.
+                // The runtime-tweakable fields. Any AABB fields are baked
+                // geometry and silently ignored. `tint` and `saturation` are
+                // optional with defaults `[1,1,1]` / `1.0`.
                 let density: f32 = t
                     .get("density")
                     .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.density: {e}")))?;
@@ -533,8 +561,16 @@ impl FromLua for ComponentValue {
                 let falloff: f32 = t
                     .get("falloff")
                     .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.falloff: {e}")))?;
-                // Optional `animation`: absent or `nil` → `None`. Same
-                // lua_to_json + serde bridge as `LightAnimation`.
+                let tint: [f32; 3] = match t.get::<LuaValue>("tint")? {
+                    LuaValue::Nil => [1.0, 1.0, 1.0],
+                    other => {
+                        let json = lua_to_json(other)?;
+                        serde_json::from_value(json).map_err(|e| {
+                            mlua::Error::RuntimeError(format!("FogVolume.tint: {e}"))
+                        })?
+                    }
+                };
+                let saturation: f32 = t.get::<Option<f32>>("saturation")?.unwrap_or(1.0);
                 let animation: Option<FogAnimation> = match t.get::<LuaValue>("animation")? {
                     LuaValue::Nil => None,
                     other => {
@@ -549,6 +585,8 @@ impl FromLua for ComponentValue {
                     scatter,
                     edge_softness,
                     falloff,
+                    tint,
+                    saturation,
                     animation,
                 }))
             }
@@ -584,6 +622,13 @@ impl IntoLua for ComponentValue {
                 for (key, value) in fog.camel_fields() {
                     tbl.set(key, value)?;
                 }
+                // `tint` is a vec3 not in `camel_fields`; encode as {r,g,b}.
+                let tint_json = serde_json::to_value(fog.tint).map_err(|e| {
+                    mlua::Error::RuntimeError(format!(
+                        "FogVolume.tint serialization failed: {e}"
+                    ))
+                })?;
+                tbl.set("tint", json_to_lua(lua, &tint_json)?)?;
                 let anim_lua = match fog.animation {
                     Some(anim) => {
                         let json = serde_json::to_value(anim).map_err(|e| {

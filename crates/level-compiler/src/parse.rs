@@ -45,6 +45,24 @@ fn quake_to_engine(v: DVec3) -> DVec3 {
     DVec3::new(-v.y, v.z, -v.x)
 }
 
+/// Parse a `fog_tint` color255 string like "255 128 64" into a linear [0,1] float triple.
+/// Values outside 0-255 are rejected; missing or malformed values return `None`.
+fn parse_fog_tint(s: &str) -> Option<[f32; 3]> {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let mut out = [0.0f32; 3];
+    for (i, p) in parts.iter().enumerate() {
+        let v: i32 = p.parse().ok()?;
+        if !(0..=255).contains(&v) {
+            return None;
+        }
+        out[i] = v as f32 / 255.0;
+    }
+    Some(out)
+}
+
 /// Parse an origin string like "-192 25.6 167.736" into a DVec3.
 ///
 /// Parses directly to f64 — no precision cast from f32.
@@ -210,7 +228,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         if has_brushes {
-            if classname == "fog_volume" || classname == "fog_ellipsoid" {
+            if classname == "fog_volume" {
                 if fog_volumes.len() >= MAX_FOG_VOLUMES {
                     log::warn!(
                         "[Compiler] {classname} cap reached ({MAX_FOG_VOLUMES}); skipping additional volume"
@@ -223,7 +241,11 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                     .get(entity_id)
                     .cloned()
                     .unwrap_or_default();
-                if classname == "fog_volume" {
+                if is_axis_aligned_brush_set(&geo_map, &brush_ids) {
+                    let volume =
+                        resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, &classname)?;
+                    fog_volumes.push(volume);
+                } else {
                     if brush_ids.len() > 1 {
                         anyhow::bail!(
                             "fog_volume entity must own exactly one brush (got {}); \
@@ -238,10 +260,6 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                     if let Some(v) = volume {
                         fog_volumes.push(v);
                     }
-                } else {
-                    let volume =
-                        resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, &classname)?;
-                    fog_volumes.push(volume);
                 }
             }
             continue;
@@ -499,6 +517,52 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     })
 }
 
+/// True iff every face plane in `brush_ids` has a normal within `EPS` of a
+/// cardinal axis (±X, ±Y, ±Z) in Quake space — equivalent to engine space for
+/// this test, since the swizzle permutes and sign-flips axes but preserves
+/// the "axis-aligned" property. Empty brush sets return `false` so callers
+/// fall through to the plane-bounded path (which surfaces the empty-brush
+/// error from the resolver).
+fn is_axis_aligned_brush_set(
+    geo_map: &GeoMap,
+    brush_ids: &[shambler::brush::BrushId],
+) -> bool {
+    use shambler::face::face_planes;
+    if brush_ids.is_empty() {
+        return false;
+    }
+    // 1° of slop (cos ≈ 0.99985). Tighter than typical authoring drift; loose
+    // enough to forgive grid-snapped brushes whose plane math accumulated a
+    // sub-degree error in shambler's f32 path.
+    const EPS: f64 = 1.0e-3;
+    let geo_planes = face_planes(&geo_map.face_planes);
+    let mut saw_face = false;
+    for bid in brush_ids {
+        let face_ids = match geo_map.brush_faces.get(bid) {
+            Some(ids) => ids,
+            None => continue,
+        };
+        for fid in face_ids {
+            let plane = match geo_planes.get(fid) {
+                Some(p) => p,
+                None => continue,
+            };
+            saw_face = true;
+            let n = shambler_to_dvec3(plane.normal());
+            let ax = n.x.abs();
+            let ay = n.y.abs();
+            let az = n.z.abs();
+            let on_x = (ax - 1.0).abs() < EPS && ay < EPS && az < EPS;
+            let on_y = (ay - 1.0).abs() < EPS && ax < EPS && az < EPS;
+            let on_z = (az - 1.0).abs() < EPS && ax < EPS && ay < EPS;
+            if !(on_x || on_y || on_z) {
+                return false;
+            }
+        }
+    }
+    saw_face
+}
+
 /// Compute a fog_volume brush entity's world-space AABB and bounding planes from its brush faces and
 /// parse its KVP-authored parameters. Returns `None` when the brush set
 /// produces no usable vertices (degenerate authoring). Returns `Err` when the
@@ -583,6 +647,14 @@ fn resolve_fog_volume(
         .get("scatter")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
+    let tint = props
+        .get("fog_tint")
+        .and_then(|s| parse_fog_tint(s))
+        .unwrap_or([1.0, 1.0, 1.0]);
+    let saturation = props
+        .get("fog_saturation")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(1.0);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -606,6 +678,8 @@ fn resolve_fog_volume(
         edge_softness,
         scatter,
         radial_falloff: 0.0,
+        tint,
+        saturation,
         planes,
         tags,
         is_ellipsoid: false,
@@ -649,14 +723,14 @@ fn resolve_fog_ellipsoid(
     }
     if min.x == f64::INFINITY {
         anyhow::bail!(
-            "{classname}: brushes produced no usable vertices — fog_ellipsoid needs a non-degenerate brush"
+            "{classname}: brushes produced no usable vertices — axis-aligned fog_volume needs a non-degenerate brush"
         );
     }
 
     let extent = max - min;
     if extent.x <= 0.0 || extent.y <= 0.0 || extent.z <= 0.0 {
         anyhow::bail!(
-            "{classname}: brush AABB has zero extent on at least one axis ({:.6}, {:.6}, {:.6}) — fog_ellipsoid needs a non-degenerate volume on all three axes",
+            "{classname}: brush AABB has zero extent on at least one axis ({:.6}, {:.6}, {:.6}) — axis-aligned fog_volume needs a non-degenerate volume on all three axes",
             extent.x,
             extent.y,
             extent.z,
@@ -675,6 +749,14 @@ fn resolve_fog_ellipsoid(
         .get("falloff")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(2.0);
+    let tint = props
+        .get("fog_tint")
+        .and_then(|s| parse_fog_tint(s))
+        .unwrap_or([1.0, 1.0, 1.0]);
+    let saturation = props
+        .get("fog_saturation")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(1.0);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -697,6 +779,8 @@ fn resolve_fog_ellipsoid(
         edge_softness: 0.0,
         scatter,
         radial_falloff,
+        tint,
+        saturation,
         planes: Vec::new(),
         tags,
         is_ellipsoid: true,
@@ -736,6 +820,14 @@ fn resolve_fog_lamp(
         .get("radial_falloff")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(2.0);
+    let tint = props
+        .get("fog_tint")
+        .and_then(|s| parse_fog_tint(s))
+        .unwrap_or([1.0, 1.0, 1.0]);
+    let saturation = props
+        .get("fog_saturation")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(1.0);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -760,6 +852,8 @@ fn resolve_fog_lamp(
         edge_softness: 0.0,
         scatter,
         radial_falloff,
+        tint,
+        saturation,
         planes: Vec::new(),
         tags,
         is_ellipsoid: false,
@@ -840,6 +934,14 @@ fn resolve_fog_tube(
         .get("radial_falloff")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.5);
+    let tint = props
+        .get("fog_tint")
+        .and_then(|s| parse_fog_tint(s))
+        .unwrap_or([1.0, 1.0, 1.0]);
+    let saturation = props
+        .get("fog_saturation")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(1.0);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -872,6 +974,8 @@ fn resolve_fog_tube(
         edge_softness: 0.0,
         scatter,
         radial_falloff,
+        tint,
+        saturation,
         planes: Vec::new(),
         tags,
         is_ellipsoid: false,
@@ -1458,27 +1562,7 @@ mod tests {
     // testable helper.  Both are out of scope for the structurally-unreachable
     // case.
 
-    // -- fog_ellipsoid resolution --
-
-    fn fog_ellipsoid_geo_map_from_str(map_text: &str) -> (GeoMap, Vec<shambler::brush::BrushId>) {
-        let shalrath_map: shambler::shalrath::repr::Map = map_text
-            .trim()
-            .parse()
-            .expect("inline map text should parse");
-        let geo_map = GeoMap::new(shalrath_map);
-        let entity_id = geo_map
-            .entities
-            .iter()
-            .find(|id| get_property(&geo_map, id, "classname").as_deref() == Some("fog_ellipsoid"))
-            .copied()
-            .expect("test map must contain a fog_ellipsoid entity");
-        let brush_ids = geo_map
-            .entity_brushes
-            .get(&entity_id)
-            .cloned()
-            .unwrap_or_default();
-        (geo_map, brush_ids)
-    }
+    // -- fog_volume axis-aligned (ellipsoid) resolution --
 
     #[test]
     fn resolve_fog_ellipsoid_box_brush_emits_aabb_and_no_planes() {
@@ -1489,7 +1573,7 @@ mod tests {
 }
 // entity 1
 {
-"classname" "fog_ellipsoid"
+"classname" "fog_volume"
 "falloff" "3.0"
 "density" "0.25"
 "scatter" "0.7"
@@ -1503,22 +1587,22 @@ mod tests {
 }
 }
 "#;
-        let (geo_map, brush_ids) = fog_ellipsoid_geo_map_from_str(map_text);
+        let (geo_map, brush_ids) = fog_volume_geo_map_from_str(map_text);
         let mut props = HashMap::new();
         props.insert("falloff".to_string(), "3.0".to_string());
         props.insert("density".to_string(), "0.25".to_string());
         props.insert("scatter".to_string(), "0.7".to_string());
         let scale = MapFormat::IdTech2.units_to_meters();
-        let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_ellipsoid")
+        let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_volume")
             .expect("box brush must resolve");
 
         assert!(
             v.is_ellipsoid,
-            "fog_ellipsoid resolver must set is_ellipsoid"
+            "axis-aligned fog_volume resolver must set is_ellipsoid"
         );
         assert!(
             v.planes.is_empty(),
-            "fog_ellipsoid emits no planes; got {}",
+            "axis-aligned fog_volume emits no planes; got {}",
             v.planes.len()
         );
         assert_eq!(v.edge_softness, 0.0);
@@ -1551,7 +1635,7 @@ mod tests {
 }
 // entity 1
 {
-"classname" "fog_ellipsoid"
+"classname" "fog_volume"
 {
 ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) tex 0 0 0 1 1
 ( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) tex 0 0 0 1 1
@@ -1562,16 +1646,16 @@ mod tests {
 }
 }
 "#;
-        let (geo_map, brush_ids) = fog_ellipsoid_geo_map_from_str(map_text);
+        let (geo_map, brush_ids) = fog_volume_geo_map_from_str(map_text);
         let props = HashMap::new();
         let scale = MapFormat::IdTech2.units_to_meters();
-        let err = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_ellipsoid")
+        let err = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_volume")
             .expect_err("zero-thickness brush must be rejected");
         let msg = format!("{err}");
         assert!(
-            msg.contains("fog_ellipsoid")
+            msg.contains("fog_volume")
                 && (msg.contains("no usable vertices") || msg.contains("zero extent")),
-            "error message must name fog_ellipsoid and the degenerate condition; got: {msg}"
+            "error message must name fog_volume and the degenerate condition; got: {msg}"
         );
     }
 
@@ -1591,7 +1675,7 @@ mod tests {
 }
 // entity 1
 {
-"classname" "fog_ellipsoid"
+"classname" "fog_volume"
 {
 ( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
 ( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
@@ -1602,10 +1686,10 @@ mod tests {
 }
 }
 "#;
-        let (geo_map, brush_ids) = fog_ellipsoid_geo_map_from_str(map_text);
+        let (geo_map, brush_ids) = fog_volume_geo_map_from_str(map_text);
         let props = HashMap::new();
         let scale = MapFormat::IdTech2.units_to_meters();
-        let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_ellipsoid")
+        let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_volume")
             .expect("box brush must resolve");
 
         let s = scale as f32;
@@ -1653,7 +1737,7 @@ mod tests {
 }
 // entity 1
 {
-"classname" "fog_ellipsoid"
+"classname" "fog_volume"
 {
 ( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
 ( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
@@ -1664,15 +1748,89 @@ mod tests {
 }
 }
 "#;
-        let (geo_map, brush_ids) = fog_ellipsoid_geo_map_from_str(map_text);
+        let (geo_map, brush_ids) = fog_volume_geo_map_from_str(map_text);
         let props = HashMap::new();
         let scale = MapFormat::IdTech2.units_to_meters();
-        let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_ellipsoid")
+        let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_volume")
             .expect("box brush must resolve");
         assert!(
             (v.radial_falloff - 2.0).abs() < 1e-6,
             "default falloff should be 2.0, got {}",
             v.radial_falloff
         );
+    }
+
+    // -- fog_volume geometry detection (axis-aligned → ellipsoid path) --
+
+    #[test]
+    fn axis_aligned_box_brush_detected_as_axis_aligned() {
+        let map_text = r#"
+// entity 0
+{
+"classname" "worldspawn"
+}
+// entity 1
+{
+"classname" "fog_volume"
+{
+( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
+( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) tex 0 0 0 1 1
+(  64 0 0 ) (  64 0 1 ) (  64 1 0 ) tex 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) tex 0 0 0 1 1
+( 0  64 0 ) ( 1  64 0 ) ( 0  64 1 ) tex 0 0 0 1 1
+}
+}
+"#;
+        let (geo_map, brush_ids) = fog_volume_geo_map_from_str(map_text);
+        assert!(
+            is_axis_aligned_brush_set(&geo_map, &brush_ids),
+            "an axis-aligned 6-face box must be detected as axis-aligned"
+        );
+    }
+
+    #[test]
+    fn slanted_face_brush_not_detected_as_axis_aligned() {
+        // Cube with one face replaced by a 45° wedge plane (normal off-cardinal).
+        let map_text = r#"
+// entity 0
+{
+"classname" "worldspawn"
+}
+// entity 1
+{
+"classname" "fog_volume"
+{
+( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
+( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) tex 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) tex 0 0 0 1 1
+( 0  64 0 ) ( 1  64 0 ) ( 0  64 1 ) tex 0 0 0 1 1
+( 64 0 0 ) ( 0 64 0 ) ( 64 0 1 ) tex 0 0 0 1 1
+}
+}
+"#;
+        let (geo_map, brush_ids) = fog_volume_geo_map_from_str(map_text);
+        assert!(
+            !is_axis_aligned_brush_set(&geo_map, &brush_ids),
+            "a brush with a slanted face must not be detected as axis-aligned"
+        );
+    }
+
+    #[test]
+    fn empty_brush_set_not_detected_as_axis_aligned() {
+        // No brushes → fall through to the plane-bounded path so the resolver
+        // surfaces the empty-brush error instead of producing a silent ellipsoid.
+        let map_text = r#"
+{
+"classname" "worldspawn"
+}
+"#;
+        let shalrath_map: shambler::shalrath::repr::Map = map_text
+            .trim()
+            .parse()
+            .expect("inline map text should parse");
+        let geo_map = GeoMap::new(shalrath_map);
+        assert!(!is_axis_aligned_brush_set(&geo_map, &[]));
     }
 }

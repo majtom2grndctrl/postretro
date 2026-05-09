@@ -420,6 +420,10 @@ pub struct MapFogVolume {
     pub planes: Vec<[f32; 4]>,
     /// Author-supplied script tags (FGD `_tags`, pre-split on whitespace).
     pub tags: Vec<String>,
+    /// Scatter tint multiplier. `[1, 1, 1]` = no tint (default).
+    pub tint: [f32; 3],
+    /// Scatter saturation. 0 = greyscale, 1 = natural (default), >1 = boosted.
+    pub saturation: f32,
     /// When `true`, the level compiler bakes `shape_mode = 1.0` into the
     /// `FogVolumeRecord` so the raymarch shader fades against an ellipsoid
     /// derived from `inv_half_ext`. When `false` (default for every existing

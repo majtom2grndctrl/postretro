@@ -26,7 +26,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use thiserror::Error;
 
 pub const MAGIC: [u8; 4] = *b"PRL\0";
-pub const CURRENT_VERSION: u16 = 2;
+pub const CURRENT_VERSION: u16 = 3;
 
 const HEADER_SIZE: usize = 8;
 const SECTION_ENTRY_SIZE: usize = 22;

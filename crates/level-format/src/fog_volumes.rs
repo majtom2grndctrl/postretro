@@ -26,8 +26,10 @@ pub const MAX_PLANES_PER_VOLUME: usize = 16;
 /// flag (0.0 = legacy radial sphere/capsule fade against `half_diag`, 1.0 =
 /// ellipsoid using `inv_half_ext`).
 ///
-/// Fog color is not stored here — ambient scatter is derived at runtime from
-/// the SH irradiance volume sampled at each raymarch position (see `fog_volume.wgsl::sample_sh_fog`).
+/// `tint` multiplies the per-step scatter color after saturation is applied; `[1, 1, 1]` is a
+/// no-op. `saturation` controls color vividness via a luma-mix: 0 = greyscale, 1 = natural
+/// (no effect), >1 = boosted. Both default to their identity values so existing maps compiled
+/// before PRL v3 behave identically.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FogVolumeRecord {
     pub min: [f32; 3],
@@ -55,6 +57,10 @@ pub struct FogVolumeRecord {
     /// `half_diag`), `1.0` = ellipsoid (uses `inv_half_ext`). The shader
     /// compares with `> 0.5` to avoid float precision issues.
     pub shape_mode: f32,
+    /// Scatter tint multiplier. `[1, 1, 1]` = no tint (default). Applied after saturation.
+    pub tint: [f32; 3],
+    /// Scatter saturation. 0 = greyscale, 1 = natural (default), >1 = boosted.
+    pub saturation: f32,
     /// Number of bounding planes; mirrors `planes.len()` and is baked into the
     /// fixed payload so the wire format header is self-describing.
     pub plane_count: u32,
@@ -130,6 +136,10 @@ impl FogVolumesSection {
             }
             buf.extend_from_slice(&v.half_diag.to_le_bytes());
             buf.extend_from_slice(&v.shape_mode.to_le_bytes());
+            for c in v.tint {
+                buf.extend_from_slice(&c.to_le_bytes());
+            }
+            buf.extend_from_slice(&v.saturation.to_le_bytes());
             buf.extend_from_slice(&(v.planes.len() as u32).to_le_bytes());
             for plane in &v.planes {
                 for c in plane {
@@ -151,10 +161,10 @@ impl FogVolumesSection {
         let pixel_scale = read_u32(data, &mut o, "pixel_scale")?;
         let count = read_u32(data, &mut o, "volume count")? as usize;
 
-        // Sanity-check: each fixed payload is 18 × f32 + 2 × u32 = 80 bytes
+        // Sanity-check: each fixed payload is 22 × f32 + 2 × u32 = 96 bytes
         // (includes plane_count and tag_count headers; planes and tags are
         // variable-length and validated against remaining bytes below).
-        const MIN_RECORD_SIZE: usize = 80;
+        const MIN_RECORD_SIZE: usize = 96;
         let remaining = data.len().saturating_sub(o);
         if count > remaining / MIN_RECORD_SIZE {
             // FormatError has no Parse variant; Io is the closest proxy for
@@ -179,6 +189,8 @@ impl FogVolumesSection {
             let inv_half_ext = read_vec3(data, &mut o, &format!("volume {i} inv_half_ext"))?;
             let half_diag = read_f32(data, &mut o, &format!("volume {i} half_diag"))?;
             let shape_mode = read_f32(data, &mut o, &format!("volume {i} shape_mode"))?;
+            let tint = read_vec3(data, &mut o, &format!("volume {i} tint"))?;
+            let saturation = read_f32(data, &mut o, &format!("volume {i} saturation"))?;
 
             let plane_count = read_u32(data, &mut o, &format!("volume {i} plane count"))? as usize;
             const PLANE_SIZE: usize = 16;
@@ -227,6 +239,8 @@ impl FogVolumesSection {
                 inv_half_ext,
                 half_diag,
                 shape_mode,
+                tint,
+                saturation,
                 plane_count: plane_count as u32,
                 planes,
                 tags,
@@ -330,6 +344,8 @@ mod tests {
                     inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
                     half_diag: 2.5,
                     shape_mode: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    saturation: 1.0,
                     plane_count: 0,
                     planes: vec![],
                     tags: vec!["smoke".to_string(), "ambient".to_string()],
@@ -345,6 +361,8 @@ mod tests {
                     inv_half_ext: [1.0, 0.5, 0.5],
                     half_diag: 3.0,
                     shape_mode: 0.0,
+                    tint: [1.0, 0.5, 0.2],
+                    saturation: 1.5,
                     plane_count: 0,
                     planes: vec![],
                     tags: vec![],
@@ -394,6 +412,8 @@ mod tests {
             inv_half_ext: [1.0, 1.0, 1.0],
             half_diag: 1.732_050_8,
             shape_mode: 0.0,
+            tint: [1.0, 1.0, 1.0],
+            saturation: 1.0,
             plane_count,
             planes,
             tags,
@@ -499,6 +519,8 @@ mod tests {
                 inv_half_ext: [2.0, 2.0, 2.0],
                 half_diag: 0.866_025_4,
                 shape_mode: 0.0,
+                tint: [1.0, 1.0, 1.0],
+                saturation: 1.0,
                 plane_count: 0,
                 planes: vec![],
                 tags: vec![],

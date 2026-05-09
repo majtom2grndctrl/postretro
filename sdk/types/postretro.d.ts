@@ -53,7 +53,7 @@ declare module "postretro" {
   /** Spin tween shape consumed by `setSpinRate`. */
   export type SpinAnimation = { duration: number; rate_curve: ReadonlyArray<number> };
 
-  /** Density-channel animation curve attached to a fog volume by the `setFogAnimation` reaction primitive. Single-channel: `density` is sampled uniformly across `periodMs`; `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back the final keyframe as static density on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state. */
+  /** Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Two independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density and `saturation` modulates SH-irradiance saturation. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state. */
   export type FogAnimation = {
     /** Total period of the loop, in milliseconds. */
     periodMs: number;
@@ -61,8 +61,10 @@ declare module "postretro" {
     phase: number | null;
     /** Total full periods to play; null loops forever. */
     playCount: number | null;
-    /** Per-sample density curve. null holds the static density. */
+    /** Per-sample density curve. null leaves the static density unchanged. */
     density: ReadonlyArray<number> | null;
+    /** Per-sample saturation curve. null leaves the static saturation unchanged. */
+    saturation: ReadonlyArray<number> | null;
   };
 
   /** Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable. */
@@ -73,9 +75,13 @@ declare module "postretro" {
     scatter: number;
     /** Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face. */
     edgeSoftness: number;
-    /** Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (`fog_ellipsoid`) shader paths; stored but ignored by the plane-sweep `fog_volume` path. */
+    /** Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (axis-aligned `fog_volume`) shader paths; stored but ignored by the plane-sweep (non-axis-aligned `fog_volume`) path. */
     falloff: number;
-    /** Density-channel animation curve. null holds the static density. */
+    /** Per-volume RGB scatter multiplier. Default `[1.0, 1.0, 1.0]`. */
+    tint: readonly [number, number, number];
+    /** Saturation of transmitted SH irradiance: 0 = greyscale, 1 = natural, >1 = boosted. Default 1.0. */
+    saturation: number;
+    /** Density and/or saturation animation curves. null holds the static state. */
     animation: FogAnimation | null;
   };
 
@@ -316,7 +322,7 @@ declare module "postretro" {
     args: { falloff: number };
   };
 
-  /** Sequence step that updates any subset of `{density, scatter, edgeSoftness, falloff}` on a single fog volume in one component write. */
+  /** Sequence step that updates any subset of `{density, scatter, edgeSoftness, falloff, tint, saturation}` on a single fog volume in one component write. */
   export type SetFogParamsStep = {
     id: EntityId;
     primitive: "setFogParams";
@@ -328,7 +334,7 @@ declare module "postretro" {
     };
   };
 
-  /** Sequence step that installs (or clears, when `args` is `null`) a density-channel animation on a single fog volume. Emitted by the SDK `fogPulse` / `fogFade` constructors. */
+  /** Sequence step that installs (or clears, when `args` is `null`) a dual-channel animation (density and/or saturation) on a single fog volume. Emitted by the SDK `fogPulse` / `fogFade` constructors. */
   export type SetFogAnimationStep = {
     id: EntityId;
     primitive: "setFogAnimation";

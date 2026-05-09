@@ -139,6 +139,8 @@ mod tests {
             radial_falloff: 0.0,
             planes: Vec::new(),
             tags: Vec::new(),
+            tint: [1.0, 1.0, 1.0],
+            saturation: 1.0,
             is_ellipsoid: false,
         }
     }

@@ -144,7 +144,14 @@ pub(crate) enum ComponentValue {
     FogVolume(FogVolumeComponent),
 }
 
-/// Script-facing fog volume component. Carries the four runtime-tweakable fog
+fn default_fog_tint() -> [f32; 3] {
+    [1.0, 1.0, 1.0]
+}
+fn default_fog_saturation() -> f32 {
+    1.0
+}
+
+/// Script-facing fog volume component. Carries the runtime-tweakable fog
 /// parameters; the AABB lives in the `FogVolumeBridge` side-table (baked at
 /// level load) and is not exposed through `ComponentValue` because it is not
 /// runtime-settable.
@@ -154,10 +161,16 @@ pub(crate) struct FogVolumeComponent {
     pub(crate) scatter: f32,
     pub(crate) edge_softness: f32,
     pub(crate) falloff: f32,
-    /// Optional density-channel animation curve. `None` holds the static
-    /// density. Installed by the `setFogAnimation` reaction primitive; the fog
-    /// bridge evaluates per frame and writes back static density once a finite
-    /// `play_count` completes.
+    /// Scatter tint multiplier. `[1, 1, 1]` = no tint. Applied after saturation.
+    #[serde(default = "default_fog_tint")]
+    pub(crate) tint: [f32; 3],
+    /// Scatter saturation: 0 = greyscale, 1 = natural, >1 = boosted.
+    #[serde(default = "default_fog_saturation")]
+    pub(crate) saturation: f32,
+    /// Optional animation carrying density and/or saturation curves. `None`
+    /// holds static values. Installed by the `setFogAnimation` reaction
+    /// primitive; the fog bridge evaluates per frame and writes back static
+    /// values once a finite `play_count` completes.
     #[serde(default)]
     pub(crate) animation: Option<FogAnimation>,
 }
@@ -168,12 +181,13 @@ impl FogVolumeComponent {
     /// every read/write site (`into_js`, `into_lua`, `world.query` JSON shape)
     /// in one place. The wire-shared struct keeps snake_case Rust idents; the
     /// camelCase mapping lives only here.
-    pub(crate) fn camel_fields(&self) -> [(&'static str, f32); 4] {
+    pub(crate) fn camel_fields(&self) -> [(&'static str, f32); 5] {
         [
             ("density", self.density),
             ("scatter", self.scatter),
             ("edgeSoftness", self.edge_softness),
             ("falloff", self.falloff),
+            ("saturation", self.saturation),
         ]
     }
 }

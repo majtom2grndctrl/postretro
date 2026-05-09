@@ -1,8 +1,8 @@
-// Script-facing fog-volume animation curve. Mirrors `LightAnimation` for the
-// density channel: a single-channel uniform sample over `period_ms`, optionally
-// finite-count, with a starting phase. Installed onto `FogVolumeComponent` via
-// the `setFogAnimation` reaction primitive; per-frame evaluation and play-count
-// completion live in the fog bridge.
+// Script-facing fog-volume animation curve. `period_ms`, `phase`, and
+// `play_count` are shared across both the `density` and `saturation` channels —
+// both channels are sampled on the same timeline. Installed onto
+// `FogVolumeComponent` via the `setFogAnimation` reaction primitive; per-frame
+// evaluation and play-count completion live in the fog bridge.
 //
 // Unlike `LightAnimation`, there is no `start_active` field — fog has no GPU
 // descriptor for the curve and no activation event in the surface
@@ -22,13 +22,18 @@ pub(crate) struct FogAnimation {
     #[serde(default)]
     pub(crate) phase: Option<f32>,
     /// `None` = loop forever. `Some(n)` plays `n` full periods, after which the
-    /// fog bridge writes the final keyframe back as static `density` and clears
-    /// `animation`.
+    /// fog bridge writes the final keyframe(s) back as static values and clears
+    /// `animation`. Requires at least one curve (`density` or `saturation`).
     #[serde(default)]
     pub(crate) play_count: Option<u32>,
     /// `None` = "no animation on this channel; hold the static density".
     #[serde(default)]
     pub(crate) density: Option<Vec<f32>>,
+    /// `None` = "no animation on this channel; hold the static saturation".
+    /// Values may exceed 1.0 (boosted saturation); negative values are clamped
+    /// to 0.0 with a warning.
+    #[serde(default)]
+    pub(crate) saturation: Option<Vec<f32>>,
 }
 
 #[cfg(test)]
@@ -36,12 +41,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fog_animation_serde_round_trips_with_density_curve() {
+    fn fog_animation_serde_round_trips() {
         let value = FogAnimation {
             period_ms: 1200.0,
             phase: Some(0.25),
             play_count: Some(2),
             density: Some(vec![0.1, 1.0, 0.1]),
+            saturation: None,
         };
         let json = serde_json::to_string(&value).unwrap();
         let back: FogAnimation = serde_json::from_str(&json).unwrap();

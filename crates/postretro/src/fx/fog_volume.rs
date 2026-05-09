@@ -22,7 +22,7 @@ pub const MAX_FOG_POINT_LIGHTS: usize = 32;
 /// and GPU cost; larger values are faster but produce visible banding.
 pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 
-/// Packed AABB + scattering parameters for a single fog volume. 80 bytes,
+/// Packed AABB + scattering parameters for a single fog volume. 96 bytes,
 /// matches the `FogVolume` struct in fog_volume.wgsl.
 ///
 /// `max_v` (rather than `max`) avoids the WGSL `max` builtin shadowing a
@@ -39,11 +39,10 @@ pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 ///
 /// Field order pairs each `vec3<f32>` with a trailing scalar so WGSL's 16-byte
 /// vec3 alignment slots fill naturally without internal padding holes. The
-/// final 16-byte block packs four scalars (`radial_falloff`, `scatter`,
-/// `plane_offset`, `plane_count`) so the struct lands on an exact 16-byte
-/// multiple without trailing padding.
+/// `tint` + `saturation` pair is the fifth 16-byte block; the final block packs
+/// `radial_falloff`, `scatter`, `plane_offset`, `plane_count`.
 ///
-/// `color` was removed in PRL v2; old PRL files must be recompiled.
+/// PRL v3 addition: `tint` and `saturation`. Old PRL files (v2) must be recompiled.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FogVolume {
@@ -65,6 +64,11 @@ pub struct FogVolume {
     /// `half_diag`), `1.0` = ellipsoid (uses `inv_half_ext`). The shader
     /// compares with `> 0.5` to avoid float precision issues.
     pub shape_mode: f32,
+    /// Scatter tint multiplier. `[1, 1, 1]` = no tint (default). Applied to
+    /// the scatter result after saturation.
+    pub tint: [f32; 3],
+    /// Scatter saturation: 0 = greyscale, 1 = natural (default), >1 = boosted.
+    pub saturation: f32,
     pub radial_falloff: f32,
     pub scatter: f32,
     /// Index of this volume's first plane in the global `fog_planes` storage
@@ -143,7 +147,7 @@ pub const FOG_POINT_LIGHT_SIZE: usize = std::mem::size_of::<FogPointLight>();
 pub const FOG_PARAMS_SIZE: usize = std::mem::size_of::<FogParams>();
 
 // Compile-time guards against accidental layout drift.
-const _: () = assert!(FOG_VOLUME_SIZE == 80);
+const _: () = assert!(FOG_VOLUME_SIZE == 96);
 const _: () = assert!(FOG_SPOT_LIGHT_SIZE == 48);
 const _: () = assert!(FOG_POINT_LIGHT_SIZE == 32);
 const _: () = assert!(FOG_PARAMS_SIZE == 112);
@@ -230,11 +234,11 @@ mod tests {
 
     #[test]
     fn pack_fog_volumes_round_trips_all_baked_fields() {
-        // Byte offsets follow the field order: min(0) density(12) max_v(16)
-        // edge_softness(28) center(32) half_diag(44) inv_half_ext(48)
-        // shape_mode(60) radial_falloff(64) scatter(68)
-        // plane_offset(72) plane_count(76). Spot-checking key baked fields
-        // catches silent layout drift between Rust and WGSL.
+        // Byte offsets: min(0) density(12) max_v(16) edge_softness(28)
+        // center(32) half_diag(44) inv_half_ext(48) shape_mode(60)
+        // tint(64) saturation(76) radial_falloff(80) scatter(84)
+        // plane_offset(88) plane_count(92). Total: 96 bytes.
+        // Spot-checking key baked fields catches silent layout drift between Rust and WGSL.
         let v = FogVolume {
             min: [1.0, 2.0, 3.0],
             density: 0.75,
@@ -244,6 +248,8 @@ mod tests {
             half_diag: 2.598_076,
             inv_half_ext: [0.666_666_7, 0.666_666_7, 0.666_666_7],
             shape_mode: 0.0,
+            tint: [1.0, 0.5, 0.25],
+            saturation: 1.5,
             radial_falloff: 0.0,
             scatter: 0.5,
             plane_offset: 0,
@@ -252,7 +258,7 @@ mod tests {
         let volumes = [v];
         let bytes = pack_fog_volumes(&volumes);
         assert_eq!(bytes.len(), FOG_VOLUME_SIZE);
-        assert_eq!(FOG_VOLUME_SIZE, 80);
+        assert_eq!(FOG_VOLUME_SIZE, 96);
 
         let density = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
         let edge_softness = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
@@ -260,16 +266,24 @@ mod tests {
         let half_diag = f32::from_le_bytes(bytes[44..48].try_into().unwrap());
         let inv_hx = f32::from_le_bytes(bytes[48..52].try_into().unwrap());
         let shape_mode = f32::from_le_bytes(bytes[60..64].try_into().unwrap());
-        let radial_falloff = f32::from_le_bytes(bytes[64..68].try_into().unwrap());
-        let scatter = f32::from_le_bytes(bytes[68..72].try_into().unwrap());
-        let plane_offset = u32::from_le_bytes(bytes[72..76].try_into().unwrap());
-        let plane_count = u32::from_le_bytes(bytes[76..80].try_into().unwrap());
+        let tint_r = f32::from_le_bytes(bytes[64..68].try_into().unwrap());
+        let tint_g = f32::from_le_bytes(bytes[68..72].try_into().unwrap());
+        let tint_b = f32::from_le_bytes(bytes[72..76].try_into().unwrap());
+        let saturation = f32::from_le_bytes(bytes[76..80].try_into().unwrap());
+        let radial_falloff = f32::from_le_bytes(bytes[80..84].try_into().unwrap());
+        let scatter = f32::from_le_bytes(bytes[84..88].try_into().unwrap());
+        let plane_offset = u32::from_le_bytes(bytes[88..92].try_into().unwrap());
+        let plane_count = u32::from_le_bytes(bytes[92..96].try_into().unwrap());
         assert_eq!(density, 0.75);
         assert_eq!(edge_softness, 0.25);
         assert_eq!(center_x, 2.5);
         assert!((half_diag - 2.598_076).abs() < 1e-5);
         assert!((inv_hx - 0.666_666_7).abs() < 1e-5);
         assert_eq!(shape_mode, 0.0);
+        assert_eq!(tint_r, 1.0);
+        assert_eq!(tint_g, 0.5);
+        assert_eq!(tint_b, 0.25);
+        assert_eq!(saturation, 1.5);
         assert_eq!(radial_falloff, 0.0);
         assert_eq!(scatter, 0.5);
         assert_eq!(plane_offset, 0);

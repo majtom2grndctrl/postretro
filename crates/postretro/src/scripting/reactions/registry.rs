@@ -284,6 +284,8 @@ mod tests {
                     scatter: 0.6,
                     edge_softness: 0.25,
                     falloff: 2.0,
+                    tint: [1.0, 1.0, 1.0],
+                    saturation: 1.0,
                     animation: None,
                 },
             )
@@ -314,7 +316,7 @@ mod tests {
             ]),
         }];
 
-        // Validation must accept all five fog primitive names; nothing dropped.
+        // Validation must accept all six fog primitive names; nothing dropped.
         let validated = validate_sequence_primitives(raw_reactions, &seq_reg);
         assert_eq!(validated.len(), 1, "fog steps survived validation");
 
@@ -355,6 +357,8 @@ mod tests {
                 scatter: 0.6,
                 edge_softness: 0.25,
                 falloff: 2.0,
+                tint: [1.0, 1.0, 1.0],
+                saturation: 1.0,
                 animation: None,
             },
         )

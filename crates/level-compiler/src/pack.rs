@@ -230,8 +230,8 @@ pub fn encode_fog_volumes(
                 half_ext.length()
             };
             // Typed bool in IR → float discriminant at write time: radial-fade
-            // producers (`fog_volume`, `fog_lamp`, `fog_tube`) → 0.0; ellipsoid
-            // producer (`fog_ellipsoid`) → 1.0.
+            // producers (plane-bounded `fog_volume`, `fog_lamp`, `fog_tube`) → 0.0;
+            // axis-aligned `fog_volume` (ellipsoid path) → 1.0.
             let shape_mode = if v.is_ellipsoid { 1.0 } else { 0.0 };
 
             FogVolumeRecord {
@@ -245,6 +245,8 @@ pub fn encode_fog_volumes(
                 inv_half_ext: inv_half_ext.to_array(),
                 half_diag,
                 shape_mode,
+                tint: v.tint,
+                saturation: v.saturation,
                 plane_count: v.planes.len() as u32,
                 planes: v.planes.clone(),
                 tags: v.tags.clone(),

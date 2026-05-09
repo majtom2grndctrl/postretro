@@ -208,10 +208,19 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
             Err(_) => Value::Null,
         };
         let comp = {
-            let mut c = Map::with_capacity(5);
+            let mut c = Map::with_capacity(7);
             for (key, value) in f.camel_fields() {
                 c.insert(key.to_string(), Value::from(value as f64));
             }
+            c.insert(
+                "tint".to_string(),
+                Value::Array(
+                    f.tint
+                        .iter()
+                        .map(|x| Value::from(*x as f64))
+                        .collect::<Vec<_>>(),
+                ),
+            );
             // `animation` crosses through serde so its camelCase wire shape
             // (periodMs, playCount) lands without manual mapping; absent
             // becomes JSON `null` (script-side `null` / Luau `nil`).
@@ -363,7 +372,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("FogAnimation")
-        .doc("Density-channel animation curve attached to a fog volume by the `setFogAnimation` reaction primitive. Single-channel: `density` is sampled uniformly across `periodMs`; `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back the final keyframe as static density on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.")
+        .doc("Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Two independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density and `saturation` modulates SH-irradiance saturation. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.")
         .field("periodMs", "f32", "Total period of the loop, in milliseconds.")
         .field(
             "phase",
@@ -378,7 +387,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "density",
             "Option<Vec<f32>>",
-            "Per-sample density curve. null holds the static density.",
+            "Per-sample density curve. null leaves the static density unchanged.",
+        )
+        .field(
+            "saturation",
+            "Option<Vec<f32>>",
+            "Per-sample saturation curve. null leaves the static saturation unchanged.",
         )
         .finish();
     registry
@@ -387,8 +401,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("density", "f32", "Volumetric fog density inside the AABB.")
         .field("scatter", "f32", "Fraction of in-scattering toward the camera.")
         .field("edgeSoftness", "f32", "Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.")
-        .field("falloff", "f32", "Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (`fog_ellipsoid`) shader paths; stored but ignored by the plane-sweep `fog_volume` path.")
-        .field("animation", "Option<FogAnimation>", "Density-channel animation curve. null holds the static density.")
+        .field("falloff", "f32", "Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (axis-aligned `fog_volume`) shader paths; stored but ignored by the plane-sweep (non-axis-aligned `fog_volume`) path.")
+        .field("tint", "[f32; 3]", "Per-volume RGB scatter multiplier. Default `[1.0, 1.0, 1.0]`.")
+        .field("saturation", "f32", "Saturation of transmitted SH irradiance: 0 = greyscale, 1 = natural, >1 = boosted. Default 1.0.")
+        .field("animation", "Option<FogAnimation>", "Density and/or saturation animation curves. null holds the static state.")
         .finish();
     registry
         .register_type("FogVolumeEntity")

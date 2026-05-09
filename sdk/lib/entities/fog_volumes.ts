@@ -19,8 +19,8 @@ import type {
  * the Live VM tick API has been removed. Authors animate fog by
  * registering sequenced reactions via
  * `registerReaction("levelLoad", { sequence: [...] })`. The
- * density-channel animation channel is `setFogAnimation`, which installs
- * a `FogAnimation` curve onto the fog volume; the `fogPulse` / `fogFade`
+ * dual-channel animation (density and/or saturation) is installed via
+ * `setFogAnimation`; the `fogPulse` / `fogFade`
  * constructors below build single-step `setFogAnimation` reactions for
  * the common cases. Static one-shot tweaks still go through the
  * `setFogDensity` / `setFogScatter` / `setFogEdgeSoftness` /
@@ -113,10 +113,10 @@ export function fogPulse(
  * `from + (to - from) * (i / 15)`, so the first sample carries `from`
  * exactly and the last carries `to` exactly.
  *
- * Note: fog density curves are sampled with linear interpolation on
- * CPU each frame. Light curves use Catmull-Rom on GPU, so a fog fade
- * and a light fade with the same shape are visually similar but not
- * mathematically identical at keyframe boundaries.
+ * Note: fog animation curves (density and saturation) are sampled with
+ * linear interpolation on CPU each frame. Light curves use Catmull-Rom
+ * on GPU, so a fog fade and a light fade with the same shape are visually
+ * similar but not mathematically identical at keyframe boundaries.
  */
 export function fogFade(
   id: EntityId,

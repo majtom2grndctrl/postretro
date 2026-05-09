@@ -160,9 +160,9 @@ Each live particle is a full ECS entity carrying `Transform`, `ParticleState`, a
 
 ### 10.2 Fog Reaction Primitives
 
-Five tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDensity`, `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`, and `setFogParams`. Each resolves the reaction tag to a set of entities and applies the change to every matching fog volume.
+Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDensity`, `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`, `setFogParams`, and `setFogAnimation`. Each resolves the reaction tag to a set of entities and applies the change to every matching fog volume.
 
-`setFogParams` is the partial-update path: any subset of `{density, scatter, edgeSoftness, falloff}` may be supplied; absent fields are left unchanged. Valid fields are merged in a single component write per target.
+`setFogParams` is the partial-update path: any subset of `{density, scatter, edgeSoftness, falloff, tint, saturation}` may be supplied; absent fields are left unchanged. Valid fields are merged in a single component write per target.
 
 **Script-facing keys and naming asymmetries.** The wire/serde layer uses `#[serde(rename_all = "camelCase")]` — script authors use camelCase keys throughout. Two fields have deliberate naming asymmetries between the script surface and the underlying representation:
 
@@ -177,8 +177,12 @@ Five tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDe
 | `scatter` | `[0, 1]`, NaN treated as `0.0` | Clamp to range |
 | `edgeSoftness` | `[0, +∞)`, finite | Clamp to `0.0` |
 | `falloff` | `(0, +∞)`, finite | Drop field (component value preserved) |
+| `tint` | each channel `[0, +∞)`, finite | Clamp to `0.0` |
+| `saturation` | `[0, +∞)`, finite | Clamp to `0.0` |
 
 `falloff` is the only field that drops on invalid input rather than clamping — clamping to zero or a small epsilon would silently change shader output in ways that are harder to diagnose than an explicit drop.
+
+**`setFogAnimation`** installs (or, when args is `null`, clears) a `FogAnimation` curve on every target. `FogAnimation` carries two independent channels — `density` and `saturation` — that share `periodMs`, `phase`, and `playCount`. Either channel may be `null`; at install time the validator rejects an animation that has neither curve when `playCount` is finite, since it would have nothing to settle to. `phase` is normalized into `[0, 1)` via `rem_euclid`; non-finite phase coerces to `null`. `playCount = 0` coerces to `1` (one-shot). On completion of a finite-count animation the bridge writes back each channel's final keyframe as static `density`/`saturation` on the component; channels with `null` curves leave the corresponding component field unchanged.
 
 ---
 

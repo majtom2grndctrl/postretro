@@ -4,9 +4,9 @@
 -- constructors (`fogPulse`, `fogFade`) that produce sequence-step
 -- arrays for `registerReaction("levelLoad", { sequence = ... })`.
 --
--- The handle is read-only — fog volumes carry their density-channel
--- animation through the `setFogAnimation` reaction primitive (which
--- installs a `FogAnimation` curve), and the Live VM script tick API
+-- The handle is read-only — fog volumes carry dual-channel animation
+-- (density and/or saturation) through the `setFogAnimation` reaction
+-- primitive, and the Live VM script tick API
 -- has been removed. Static one-shot tweaks still go through
 -- `setFogDensity`, `setFogScatter`, `setFogEdgeSoftness`,
 -- `setFogFalloff`, or `setFogParams`. `fogPulse` and `fogFade` are pure
@@ -122,10 +122,10 @@ end
 --- `from + (to - from) * ((i - 1) / 15)`, so the first sample carries
 --- `from` exactly and the last carries `to` exactly.
 ---
---- Note: fog density curves are sampled with linear interpolation on
---- CPU each frame. Light curves use Catmull-Rom on GPU, so a fog fade
---- and a light fade with the same shape are visually similar but not
---- mathematically identical at keyframe boundaries.
+--- Note: fog animation curves (density and saturation) are sampled with
+--- linear interpolation on CPU each frame. Light curves use Catmull-Rom
+--- on GPU, so a fog fade and a light fade with the same shape are visually
+--- similar but not mathematically identical at keyframe boundaries.
 function FogVolumesSdk.fogFade(
   id: EntityId,
   from: number,

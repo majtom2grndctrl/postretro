@@ -1,0 +1,25 @@
+# Normalize line endings to LF on commit, check out as-is on all platforms
+* text=auto eol=lf
+
+# Explicitly binary — never touch line endings
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.bmp binary
+*.tga binary
+*.dds binary
+*.ktx binary
+*.hdr binary
+*.exr binary
+*.ico binary
+*.wasm binary
+*.prl binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.mp3 binary
+*.ogg binary
+*.wav binary
+*.flac binary

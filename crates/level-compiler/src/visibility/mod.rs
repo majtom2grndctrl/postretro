@@ -256,6 +256,7 @@ mod tests {
                     max: DVec3::splat(64.0),
                 },
                 is_solid,
+                defining_planes: Vec::new(),
             })
             .collect();
 
@@ -343,6 +344,7 @@ mod tests {
                 max: DVec3::new(0.0, 10.0, 10.0),
             },
             is_solid: interior_solid,
+            defining_planes: Vec::new(),
         };
         let exterior = BspLeaf {
             face_indices: vec![],
@@ -351,6 +353,7 @@ mod tests {
                 max: DVec3::new(10.0, 10.0, 10.0),
             },
             is_solid: exterior_solid,
+            defining_planes: Vec::new(),
         };
 
         let root = BspNode {
@@ -652,6 +655,7 @@ mod tests {
                         max: DVec3::splat(10.0),
                     },
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
                 BspLeaf {
                     face_indices: vec![2, 3],
@@ -660,6 +664,7 @@ mod tests {
                         max: DVec3::splat(10.0),
                     },
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
                 BspLeaf {
                     face_indices: vec![4, 5],
@@ -668,6 +673,7 @@ mod tests {
                         max: DVec3::splat(10.0),
                     },
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
             ],
         };

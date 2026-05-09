@@ -67,11 +67,13 @@ mod tests {
                     face_indices: vec![],
                     bounds: Aabb::empty(),
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
                 BspLeaf {
                     face_indices: vec![],
                     bounds: Aabb::empty(),
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
             ],
         };

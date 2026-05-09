@@ -856,11 +856,13 @@ mod tests {
                     face_indices: Vec::new(),
                     bounds: Aabb::empty(),
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
                 BspLeaf {
                     face_indices: Vec::new(),
                     bounds: Aabb::empty(),
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
             ],
         }
@@ -920,11 +922,13 @@ mod tests {
                     face_indices: Vec::new(),
                     bounds: Aabb::empty(),
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
                 BspLeaf {
                     face_indices: Vec::new(),
                     bounds: Aabb::empty(),
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
             ],
         };
@@ -958,11 +962,13 @@ mod tests {
                     face_indices: Vec::new(),
                     bounds: Aabb::empty(),
                     is_solid: true,
+                    defining_planes: Vec::new(),
                 },
                 BspLeaf {
                     face_indices: Vec::new(),
                     bounds: Aabb::empty(),
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
             ],
         }

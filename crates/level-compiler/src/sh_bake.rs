@@ -845,6 +845,7 @@ mod tests {
                     max: DVec3::splat(1000.0),
                 },
                 is_solid: false,
+                defining_planes: Vec::new(),
             }],
         }
     }
@@ -1151,6 +1152,7 @@ mod tests {
                     max: DVec3::splat(1000.0),
                 },
                 is_solid: true,
+                defining_planes: Vec::new(),
             }],
         };
         let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
@@ -1185,6 +1187,7 @@ mod tests {
                 max: DVec3::splat(1.0),
             },
             is_solid: true,
+            defining_planes: Vec::new(),
         };
         let interior_leaf = BspLeaf {
             face_indices: Vec::new(),
@@ -1193,6 +1196,7 @@ mod tests {
                 max: DVec3::splat(1.0),
             },
             is_solid: false,
+            defining_planes: Vec::new(),
         };
         let exterior_leaf = BspLeaf {
             face_indices: Vec::new(),
@@ -1201,6 +1205,7 @@ mod tests {
                 max: DVec3::splat(1.0),
             },
             is_solid: false,
+            defining_planes: Vec::new(),
         };
 
         let tree_interior = BspTree {

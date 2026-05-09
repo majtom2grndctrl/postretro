@@ -274,6 +274,7 @@ mod tests {
                     max: DVec3::splat(1000.0),
                 },
                 is_solid: false,
+                defining_planes: Vec::new(),
             }],
         }
     }
@@ -288,6 +289,7 @@ mod tests {
                     max: DVec3::splat(1000.0),
                 },
                 is_solid: true,
+                defining_planes: Vec::new(),
             }],
         }
     }

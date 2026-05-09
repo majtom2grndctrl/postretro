@@ -516,6 +516,7 @@ mod tests {
                     max: DVec3::ONE,
                 },
                 is_solid,
+                defining_planes: Vec::new(),
             })
             .collect();
 

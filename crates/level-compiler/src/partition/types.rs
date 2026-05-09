@@ -51,6 +51,26 @@ impl Aabb {
             && self.max.z >= other.min.z
     }
 
+    /// True when this AABB lies entirely on the back side of the given plane —
+    /// i.e., every point in the box satisfies `dot(p, normal) < distance`.
+    ///
+    /// Uses a support-point test: the corner farthest in the `+normal` direction
+    /// is the box's maximum projection onto the plane normal. If even that corner
+    /// is strictly below `distance`, the whole box is behind the plane.
+    ///
+    /// Strict less-than (`<`) is intentional: a box whose farthest corner exactly
+    /// touches the plane is NOT considered entirely behind it. This preserves the
+    /// inclusive-boundary behavior of `intersects` at portal edges.
+    pub fn is_entirely_behind_plane(&self, normal: DVec3, distance: f64) -> bool {
+        // max_support: corner farthest in +normal direction.
+        let max_support = DVec3::new(
+            if normal.x >= 0.0 { self.max.x } else { self.min.x },
+            if normal.y >= 0.0 { self.max.y } else { self.min.y },
+            if normal.z >= 0.0 { self.max.z } else { self.min.z },
+        );
+        max_support.dot(normal) < distance
+    }
+
     /// Build an AABB from a set of points.
     pub fn from_points(points: &[DVec3]) -> Self {
         let mut aabb = Self::empty();
@@ -87,6 +107,14 @@ pub struct BspLeaf {
     /// True if this leaf represents solid space (inside a brush volume).
     /// Solid leaves block portal generation and are excluded from PVS.
     pub is_solid: bool,
+    /// The BSP splitting planes that bound this leaf's convex region.
+    /// Each entry is `(normal, distance)` with the normal pointing *inward*
+    /// (toward the interior of the leaf's convex region).
+    ///
+    /// Used for exact fog-volume intersection: a fog AABB entirely behind any
+    /// one of these planes lies outside the leaf's convex region and should not
+    /// set a fog bit for this leaf, even if the AABB-vs-AABB coarse test passes.
+    pub defining_planes: Vec<(DVec3, f64)>,
 }
 
 /// Arena-based BSP tree.

@@ -41,6 +41,7 @@ pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
     let candidates: Vec<usize> = (0..brushes.len()).collect();
     let inside = compute_inside_set(brushes, &candidates, &world_bounds);
     let ancestor_planes: Vec<(DVec3, f64)> = Vec::new();
+    let leaf_planes: Vec<(DVec3, f64)> = Vec::new();
 
     build_recursive(
         &mut tree,
@@ -49,6 +50,7 @@ pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
         &candidates,
         &inside,
         &ancestor_planes,
+        &leaf_planes,
         None,
         0,
     )?;
@@ -319,6 +321,7 @@ fn build_recursive(
     candidates: &[usize],
     inside: &[usize],
     ancestor_planes: &[(DVec3, f64)],
+    leaf_planes: &[(DVec3, f64)],
     parent: Option<usize>,
     depth: usize,
 ) -> Result<BspChild> {
@@ -331,19 +334,19 @@ fn build_recursive(
 
     // No candidates: region is outside all brushes — empty.
     if candidates.is_empty() {
-        return Ok(make_leaf(tree, region, false));
+        return Ok(make_leaf(tree, region, false, leaf_planes));
     }
 
     // All candidates contain the region: fully solid.
     if candidates.len() == inside.len() {
-        return Ok(make_leaf(tree, region, true));
+        return Ok(make_leaf(tree, region, true, leaf_planes));
     }
 
     // Mixed candidates, no qualifying splitter: cannot separate solid from air.
     // Treat as empty (structural air gap, not an error).
     let Some((normal, distance)) = select_splitter(brushes, candidates, region, ancestor_planes)
     else {
-        return Ok(make_leaf(tree, region, false));
+        return Ok(make_leaf(tree, region, false, leaf_planes));
     };
 
     let (front_candidates, back_candidates) =
@@ -357,6 +360,14 @@ fn build_recursive(
 
     let mut child_ancestors = ancestor_planes.to_vec();
     child_ancestors.push((normal, distance));
+
+    // Front child: satisfies dot(p, normal) >= distance, so inward normal is (normal, distance).
+    // Back child: satisfies dot(p, normal) <= distance, so inward normal is (-normal, -distance).
+    let mut front_leaf_planes = leaf_planes.to_vec();
+    front_leaf_planes.push((normal, distance));
+
+    let mut back_leaf_planes = leaf_planes.to_vec();
+    back_leaf_planes.push((-normal, -distance));
 
     // Reserve a node slot so children can record us as their parent.
     let node_idx = tree.nodes.len();
@@ -375,6 +386,7 @@ fn build_recursive(
         &front_candidates,
         &front_inside,
         &child_ancestors,
+        &front_leaf_planes,
         Some(node_idx),
         depth + 1,
     )?;
@@ -385,6 +397,7 @@ fn build_recursive(
         &back_candidates,
         &back_inside,
         &child_ancestors,
+        &back_leaf_planes,
         Some(node_idx),
         depth + 1,
     )?;
@@ -395,12 +408,18 @@ fn build_recursive(
     Ok(BspChild::Node(node_idx))
 }
 
-fn make_leaf(tree: &mut BspTree, region: &Aabb, is_solid: bool) -> BspChild {
+fn make_leaf(
+    tree: &mut BspTree,
+    region: &Aabb,
+    is_solid: bool,
+    leaf_planes: &[(DVec3, f64)],
+) -> BspChild {
     let leaf_idx = tree.leaves.len();
     tree.leaves.push(BspLeaf {
         face_indices: Vec::new(),
         bounds: region.clone(),
         is_solid,
+        defining_planes: leaf_planes.to_vec(),
     });
     BspChild::Leaf(leaf_idx)
 }

@@ -560,6 +560,7 @@ mod tests {
                         max: DVec3::new(64.0, 64.0, 64.0),
                     },
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
                 BspLeaf {
                     face_indices: vec![1],
@@ -568,6 +569,7 @@ mod tests {
                         max: DVec3::new(32.0, 64.0, 64.0),
                     },
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
             ],
         };
@@ -605,6 +607,7 @@ mod tests {
                         max: DVec3::new(64.0, 64.0, 64.0),
                     },
                     is_solid: true,
+                    defining_planes: Vec::new(),
                 },
                 BspLeaf {
                     face_indices: vec![1],
@@ -613,6 +616,7 @@ mod tests {
                         max: DVec3::new(32.0, 64.0, 64.0),
                     },
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
             ],
         };
@@ -656,6 +660,7 @@ mod tests {
                         max: DVec3::new(32.0, 64.0, 64.0),
                     },
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
                 BspLeaf {
                     face_indices: vec![],
@@ -664,6 +669,7 @@ mod tests {
                         max: DVec3::new(64.0, 64.0, 64.0),
                     },
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
                 BspLeaf {
                     face_indices: vec![],
@@ -672,6 +678,7 @@ mod tests {
                         max: DVec3::new(96.0, 64.0, 64.0),
                     },
                     is_solid: false,
+                    defining_planes: Vec::new(),
                 },
             ],
         };

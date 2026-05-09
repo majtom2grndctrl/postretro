@@ -1,9 +1,21 @@
 // Fog cell masks bake: produces the FogCellMasks PRL section (ID 31).
 //
-// For each BSP leaf, sets bit `i` of its mask when fog volume `i`'s
-// world-space AABB overlaps the leaf's bounds. Solid leaves are written as
-// `0`. The runtime unions visible-cell masks each frame to derive the active
-// fog-volume set.
+// For each BSP leaf, sets bit `i` of its mask when fog volume `i` intersects
+// the leaf's exact BSP convex region. Solid leaves are written as `0`. The
+// runtime unions visible-cell masks each frame to derive the active fog-volume
+// set.
+//
+// Intersection uses a two-stage test:
+//   1. AABB fast-reject: if the fog's AABB does not overlap the leaf's bounds
+//      AABB, the leaf is skipped. This is conservative (AABB ⊇ exact region),
+//      so no false negatives.
+//   2. BSP-plane exact test: iterate the leaf's defining_planes. If the fog
+//      AABB is entirely behind any single inward-facing plane, the fog lies
+//      outside the leaf's convex region. Skip setting the bit.
+//
+// Stage 1 eliminates most candidates cheaply; stage 2 catches false positives
+// from wide BSP-region bounds near map boundaries that overlap fog brushes
+// extending past visible geometry.
 //
 // See: context/lib/build_pipeline.md §PRL section IDs
 
@@ -46,11 +58,26 @@ pub fn bake_fog_cell_masks(
         for (i, fog) in fog_aabbs.iter().enumerate() {
             // `MAX_FOG_VOLUMES` (16) keeps us inside u32 bit range; bits
             // 16..=31 are reserved/zero by construction.
-            // `intersects` is inclusive on shared boundaries — conservative
-            // overlap prevents pop artifacts at leaf boundary edges.
-            if leaf.bounds.intersects(fog) {
-                mask |= 1u32 << i;
+
+            // Stage 1: AABB fast-reject. `intersects` is inclusive on shared
+            // boundaries — conservative overlap prevents pop artifacts at leaf
+            // boundary edges.
+            if !leaf.bounds.intersects(fog) {
+                continue;
             }
+
+            // Stage 2: exact BSP-plane test. If the fog AABB is entirely
+            // behind any inward-facing defining plane, it lies outside the
+            // leaf's convex region and should not activate this fog volume.
+            let outside = leaf
+                .defining_planes
+                .iter()
+                .any(|&(normal, distance)| fog.is_entirely_behind_plane(normal, distance));
+            if outside {
+                continue;
+            }
+
+            mask |= 1u32 << i;
         }
         masks.push(mask);
     }
@@ -82,6 +109,7 @@ mod tests {
             face_indices: Vec::new(),
             bounds,
             is_solid: false,
+            defining_planes: Vec::new(),
         }
     }
 
@@ -90,6 +118,7 @@ mod tests {
             face_indices: Vec::new(),
             bounds,
             is_solid: true,
+            defining_planes: Vec::new(),
         }
     }
 
@@ -160,6 +189,34 @@ mod tests {
         ];
         let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
         assert_eq!(section.masks, vec![0b101, 0b010, 0]);
+    }
+
+    #[test]
+    fn fog_outside_bsp_region_but_within_aabb_clears_bit() {
+        // Regression: a leaf whose AABB is wider than its actual convex region
+        // (common near map boundaries) should NOT set a fog bit when the fog
+        // volume lies outside the convex region even though it overlaps the AABB.
+        //
+        // Setup: leaf AABB covers x∈[0,100], but a defining plane at x=10
+        // (inward normal = +X, distance = 10) says the leaf's convex region is
+        // x≥10. A fog AABB at x∈[5,9] overlaps the leaf AABB but lies entirely
+        // below the defining plane — max_support.x (= 9) < 10 → bit must be 0.
+        let leaf = BspLeaf {
+            face_indices: Vec::new(),
+            bounds: aabb([0.0, 0.0, 0.0], [100.0, 100.0, 100.0]),
+            is_solid: false,
+            // Inward plane: dot(p, X) >= 10, i.e. normal=X, distance=10.
+            defining_planes: vec![(DVec3::X, 10.0)],
+        };
+        let tree = make_tree(vec![leaf]);
+        // Fog sits at x∈[5,9], fully below the x=10 boundary.
+        let volumes = vec![fog([5.0, 10.0, 10.0], [9.0, 90.0, 90.0])];
+        let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
+        assert_eq!(
+            section.masks,
+            vec![0],
+            "fog outside BSP convex region must not set bit even when AABB overlaps"
+        );
     }
 
     #[test]

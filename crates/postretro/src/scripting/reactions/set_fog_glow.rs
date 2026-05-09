@@ -1,4 +1,4 @@
-// `setFogScatter` reaction primitive: set the scatter value on every fog
+// `setFogGlow` reaction primitive: set the glow value on every fog
 // volume matching the reaction's tag.
 // See: context/lib/scripting.md
 
@@ -10,40 +10,40 @@ use super::ReactionError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SetFogScatterArgs {
-    pub(crate) scatter: f32,
+pub(crate) struct SetFogGlowArgs {
+    pub(crate) glow: f32,
 }
 
-/// Apply `args.scatter` to every target's `FogVolumeComponent.scatter`.
+/// Apply `args.glow` to every target's `FogVolumeComponent.glow`.
 ///
 /// Per-target behavior:
 /// - Missing component → `log::warn!`, skip.
-/// - NaN scatter → `log::warn!` once and use 0.0 (NaN does not clamp
+/// - NaN glow → `log::warn!` once and use 0.0 (NaN does not clamp
 ///   predictably).
-/// - Out-of-range / infinite scatter → `log::warn!` once and clamp into
+/// - Out-of-range / infinite glow → `log::warn!` once and clamp into
 ///   `[0.0, 1.0]` (so `+inf → 1.0`, `-inf → 0.0`).
 /// - Empty target set → no-op, debug log.
 pub(crate) fn dispatch(
     registry: &mut EntityRegistry,
     targets: &[EntityId],
-    args: &SetFogScatterArgs,
+    args: &SetFogGlowArgs,
 ) -> Result<(), ReactionError> {
     if targets.is_empty() {
-        log::debug!("[Scripting] setFogScatter: empty target set, no-op");
+        log::debug!("[Scripting] setFogGlow: empty target set, no-op");
         return Ok(());
     }
 
     // NaN cannot be clamped to a meaningful value; treat it as 0.0. Infinities
     // are handled naturally by clamp below.
-    let scatter = if args.scatter.is_nan() {
-        log::warn!("[Scripting] setFogScatter: scatter is NaN; clamping to 0.0");
+    let glow = if args.glow.is_nan() {
+        log::warn!("[Scripting] setFogGlow: glow is NaN; clamping to 0.0");
         0.0
     } else {
-        let clamped = args.scatter.clamp(0.0, 1.0);
-        if !(0.0..=1.0).contains(&args.scatter) {
+        let clamped = args.glow.clamp(0.0, 1.0);
+        if !(0.0..=1.0).contains(&args.glow) {
             log::warn!(
-                "[Scripting] setFogScatter: scatter {} is outside [0.0, 1.0]; clamping to {}",
-                args.scatter,
+                "[Scripting] setFogGlow: glow {} is outside [0.0, 1.0]; clamping to {}",
+                args.glow,
                 clamped
             );
         }
@@ -55,14 +55,14 @@ pub(crate) fn dispatch(
             Ok(c) => c.clone(),
             Err(_) => {
                 log::warn!(
-                    "[Scripting] setFogScatter: entity {id} has no FogVolumeComponent; skipping"
+                    "[Scripting] setFogGlow: entity {id} has no FogVolumeComponent; skipping"
                 );
                 continue;
             }
         };
-        next.scatter = scatter;
+        next.glow = glow;
         if let Err(e) = registry.set_component(id, next) {
-            log::warn!("[Scripting] setFogScatter: failed to write component on {id}: {e:?}");
+            log::warn!("[Scripting] setFogGlow: failed to write component on {id}: {e:?}");
         }
     }
 
@@ -77,11 +77,13 @@ mod tests {
     fn sample_fog() -> FogVolumeComponent {
         FogVolumeComponent {
             density: 0.5,
-            scatter: 0.6,
+            glow: 0.6,
             edge_softness: 0.25,
             falloff: 2.0,
             tint: [1.0, 1.0, 1.0],
             saturation: 1.0,
+            min_brightness: 0.0,
+            light_range: 1.0,
             animation: None,
         }
     }
@@ -93,86 +95,86 @@ mod tests {
     }
 
     #[test]
-    fn writes_scatter_on_each_target() {
+    fn writes_glow_on_each_target() {
         let mut reg = EntityRegistry::new();
         let a = spawn_fog(&mut reg);
         let b = spawn_fog(&mut reg);
-        dispatch(&mut reg, &[a, b], &SetFogScatterArgs { scatter: 0.25 }).unwrap();
+        dispatch(&mut reg, &[a, b], &SetFogGlowArgs { glow: 0.25 }).unwrap();
         assert_eq!(
-            reg.get_component::<FogVolumeComponent>(a).unwrap().scatter,
+            reg.get_component::<FogVolumeComponent>(a).unwrap().glow,
             0.25
         );
         assert_eq!(
-            reg.get_component::<FogVolumeComponent>(b).unwrap().scatter,
+            reg.get_component::<FogVolumeComponent>(b).unwrap().glow,
             0.25
         );
     }
 
     #[test]
-    fn negative_scatter_clamps_to_zero() {
+    fn negative_glow_clamps_to_zero() {
         let mut reg = EntityRegistry::new();
         let id = spawn_fog(&mut reg);
-        dispatch(&mut reg, &[id], &SetFogScatterArgs { scatter: -0.4 }).unwrap();
+        dispatch(&mut reg, &[id], &SetFogGlowArgs { glow: -0.4 }).unwrap();
         assert_eq!(
-            reg.get_component::<FogVolumeComponent>(id).unwrap().scatter,
+            reg.get_component::<FogVolumeComponent>(id).unwrap().glow,
             0.0
         );
     }
 
     #[test]
-    fn over_one_scatter_clamps_to_one() {
+    fn over_one_glow_clamps_to_one() {
         let mut reg = EntityRegistry::new();
         let id = spawn_fog(&mut reg);
-        dispatch(&mut reg, &[id], &SetFogScatterArgs { scatter: 3.0 }).unwrap();
+        dispatch(&mut reg, &[id], &SetFogGlowArgs { glow: 3.0 }).unwrap();
         assert_eq!(
-            reg.get_component::<FogVolumeComponent>(id).unwrap().scatter,
+            reg.get_component::<FogVolumeComponent>(id).unwrap().glow,
             1.0
         );
     }
 
     #[test]
-    fn pos_infinity_scatter_clamps_to_one() {
+    fn pos_infinity_glow_clamps_to_one() {
         let mut reg = EntityRegistry::new();
         let id = spawn_fog(&mut reg);
         dispatch(
             &mut reg,
             &[id],
-            &SetFogScatterArgs {
-                scatter: f32::INFINITY,
+            &SetFogGlowArgs {
+                glow: f32::INFINITY,
             },
         )
         .unwrap();
         assert_eq!(
-            reg.get_component::<FogVolumeComponent>(id).unwrap().scatter,
+            reg.get_component::<FogVolumeComponent>(id).unwrap().glow,
             1.0
         );
     }
 
     #[test]
-    fn nan_scatter_clamps_to_zero() {
+    fn nan_glow_clamps_to_zero() {
         let mut reg = EntityRegistry::new();
         let id = spawn_fog(&mut reg);
-        dispatch(&mut reg, &[id], &SetFogScatterArgs { scatter: f32::NAN }).unwrap();
+        dispatch(&mut reg, &[id], &SetFogGlowArgs { glow: f32::NAN }).unwrap();
         assert_eq!(
-            reg.get_component::<FogVolumeComponent>(id).unwrap().scatter,
+            reg.get_component::<FogVolumeComponent>(id).unwrap().glow,
             0.0
         );
     }
 
     #[test]
-    fn neg_infinity_scatter_clamps_to_zero() {
+    fn neg_infinity_glow_clamps_to_zero() {
         let mut reg = EntityRegistry::new();
         let id = spawn_fog(&mut reg);
         dispatch(
             &mut reg,
             &[id],
-            &SetFogScatterArgs {
-                scatter: f32::NEG_INFINITY,
+            &SetFogGlowArgs {
+                glow: f32::NEG_INFINITY,
             },
         )
         .unwrap();
         assert_eq!(
-            reg.get_component::<FogVolumeComponent>(id).unwrap().scatter,
+            reg.get_component::<FogVolumeComponent>(id).unwrap().glow,
             0.0
         );
     }
@@ -181,9 +183,9 @@ mod tests {
     fn empty_target_set_is_a_noop() {
         let mut reg = EntityRegistry::new();
         let id = spawn_fog(&mut reg);
-        dispatch(&mut reg, &[], &SetFogScatterArgs { scatter: 0.1 }).unwrap();
+        dispatch(&mut reg, &[], &SetFogGlowArgs { glow: 0.1 }).unwrap();
         assert_eq!(
-            reg.get_component::<FogVolumeComponent>(id).unwrap().scatter,
+            reg.get_component::<FogVolumeComponent>(id).unwrap().glow,
             0.6
         );
     }
@@ -195,13 +197,13 @@ mod tests {
         let fog = spawn_fog(&mut reg);
 
         let captured = crate::scripting::reactions::log_capture::capture(|| {
-            dispatch(&mut reg, &[bare, fog], &SetFogScatterArgs { scatter: 0.5 }).unwrap();
+            dispatch(&mut reg, &[bare, fog], &SetFogGlowArgs { glow: 0.5 }).unwrap();
         });
 
         assert_eq!(
             reg.get_component::<FogVolumeComponent>(fog)
                 .unwrap()
-                .scatter,
+                .glow,
             0.5
         );
         assert!(
@@ -212,11 +214,11 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_scatter_emits_warn() {
+    fn out_of_range_glow_emits_warn() {
         let mut reg = EntityRegistry::new();
         let id = spawn_fog(&mut reg);
         let captured = crate::scripting::reactions::log_capture::capture(|| {
-            dispatch(&mut reg, &[id], &SetFogScatterArgs { scatter: 2.5 }).unwrap();
+            dispatch(&mut reg, &[id], &SetFogGlowArgs { glow: 2.5 }).unwrap();
         });
         assert!(
             captured

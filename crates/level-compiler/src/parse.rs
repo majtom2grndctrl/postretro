@@ -45,7 +45,7 @@ fn quake_to_engine(v: DVec3) -> DVec3 {
     DVec3::new(-v.y, v.z, -v.x)
 }
 
-/// Parse a `fog_tint` color255 string like "255 128 64" into a linear [0,1] float triple.
+/// Parse a `tint` color255 string like "255 128 64" into a linear [0,1] float triple.
 /// Values outside 0-255 are rejected; missing or malformed values return `None`.
 fn parse_fog_tint(s: &str) -> Option<[f32; 3]> {
     let parts: Vec<&str> = s.split_whitespace().collect();
@@ -560,6 +560,23 @@ fn is_axis_aligned_brush_set(geo_map: &GeoMap, brush_ids: &[shambler::brush::Bru
     saw_face
 }
 
+/// Clamp `light_range` to a strictly-positive minimum.
+///
+/// `light_range = 0` is degenerate: the fog shader's
+/// `clamp(1.0 - dist / (range * vs_light_range), 0.0, 1.0)` would divide by
+/// zero when the range is 0. Authors almost certainly don't intend this.
+/// Negative and non-finite values are equally nonsensical here.
+fn clamp_light_range(value: f32, classname: &str) -> f32 {
+    const MIN: f32 = 0.001;
+    if !value.is_finite() || value <= 0.0 {
+        log::warn!(
+            "[Compiler] {classname}: light_range {value} is non-positive or non-finite; clamping to {MIN}"
+        );
+        return MIN;
+    }
+    MIN.max(value)
+}
+
 /// Compute a fog_volume brush entity's world-space AABB and bounding planes from its brush faces and
 /// parse its KVP-authored parameters. Returns `None` when the brush set
 /// produces no usable vertices (degenerate authoring). Returns `Err` when the
@@ -640,18 +657,27 @@ fn resolve_fog_volume(
         .get("edge_softness")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
-    let scatter = props
-        .get("scatter")
+    let glow = props
+        .get("glow")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
     let tint = props
-        .get("fog_tint")
+        .get("tint")
         .and_then(|s| parse_fog_tint(s))
         .unwrap_or([1.0, 1.0, 1.0]);
     let saturation = props
-        .get("fog_saturation")
+        .get("saturation")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
+    let min_brightness = props
+        .get("min_brightness")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0_f32);
+    let light_range = props
+        .get("light_range")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_light_range(v, classname))
+        .unwrap_or(1.0_f32);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -673,10 +699,12 @@ fn resolve_fog_volume(
         max: [max.x as f32, max.y as f32, max.z as f32],
         density,
         edge_softness,
-        scatter,
+        glow,
         radial_falloff: 0.0,
         tint,
         saturation,
+        min_brightness,
+        light_range,
         planes,
         tags,
         is_ellipsoid: false,
@@ -738,8 +766,8 @@ fn resolve_fog_ellipsoid(
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.5);
-    let scatter = props
-        .get("scatter")
+    let glow = props
+        .get("glow")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
     let radial_falloff = props
@@ -747,13 +775,22 @@ fn resolve_fog_ellipsoid(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(2.0);
     let tint = props
-        .get("fog_tint")
+        .get("tint")
         .and_then(|s| parse_fog_tint(s))
         .unwrap_or([1.0, 1.0, 1.0]);
     let saturation = props
-        .get("fog_saturation")
+        .get("saturation")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
+    let min_brightness = props
+        .get("min_brightness")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0_f32);
+    let light_range = props
+        .get("light_range")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_light_range(v, classname))
+        .unwrap_or(1.0_f32);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -774,10 +811,12 @@ fn resolve_fog_ellipsoid(
         max: [max.x as f32, max.y as f32, max.z as f32],
         density,
         edge_softness: 0.0,
-        scatter,
+        glow,
         radial_falloff,
         tint,
         saturation,
+        min_brightness,
+        light_range,
         planes: Vec::new(),
         tags,
         is_ellipsoid: true,
@@ -809,8 +848,8 @@ fn resolve_fog_lamp(
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.5);
-    let scatter = props
-        .get("scatter")
+    let glow = props
+        .get("glow")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
     let radial_falloff = props
@@ -818,13 +857,22 @@ fn resolve_fog_lamp(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(2.0);
     let tint = props
-        .get("fog_tint")
+        .get("tint")
         .and_then(|s| parse_fog_tint(s))
         .unwrap_or([1.0, 1.0, 1.0]);
     let saturation = props
-        .get("fog_saturation")
+        .get("saturation")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
+    let min_brightness = props
+        .get("min_brightness")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0_f32);
+    let light_range = props
+        .get("light_range")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_light_range(v, classname))
+        .unwrap_or(1.0_f32);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -847,10 +895,12 @@ fn resolve_fog_lamp(
         // Semantic point entities use `radial_falloff`; the primitive-only
         // edge softness slot is unused.
         edge_softness: 0.0,
-        scatter,
+        glow,
         radial_falloff,
         tint,
         saturation,
+        min_brightness,
+        light_range,
         planes: Vec::new(),
         tags,
         is_ellipsoid: false,
@@ -923,8 +973,8 @@ fn resolve_fog_tube(
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.3);
-    let scatter = props
-        .get("scatter")
+    let glow = props
+        .get("glow")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
     let radial_falloff = props
@@ -932,13 +982,22 @@ fn resolve_fog_tube(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.5);
     let tint = props
-        .get("fog_tint")
+        .get("tint")
         .and_then(|s| parse_fog_tint(s))
         .unwrap_or([1.0, 1.0, 1.0]);
     let saturation = props
-        .get("fog_saturation")
+        .get("saturation")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
+    let min_brightness = props
+        .get("min_brightness")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0_f32);
+    let light_range = props
+        .get("light_range")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_light_range(v, classname))
+        .unwrap_or(1.0_f32);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -969,10 +1028,12 @@ fn resolve_fog_tube(
         // Semantic point entities use `radial_falloff`; the primitive-only
         // edge softness slot is unused.
         edge_softness: 0.0,
-        scatter,
+        glow,
         radial_falloff,
         tint,
         saturation,
+        min_brightness,
+        light_range,
         planes: Vec::new(),
         tags,
         is_ellipsoid: false,
@@ -1573,7 +1634,7 @@ mod tests {
 "classname" "fog_volume"
 "falloff" "3.0"
 "density" "0.25"
-"scatter" "0.7"
+"glow" "0.7"
 {
 ( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
 ( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
@@ -1588,7 +1649,7 @@ mod tests {
         let mut props = HashMap::new();
         props.insert("falloff".to_string(), "3.0".to_string());
         props.insert("density".to_string(), "0.25".to_string());
-        props.insert("scatter".to_string(), "0.7".to_string());
+        props.insert("glow".to_string(), "0.7".to_string());
         let scale = MapFormat::IdTech2.units_to_meters();
         let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_volume")
             .expect("box brush must resolve");
@@ -1605,7 +1666,7 @@ mod tests {
         assert_eq!(v.edge_softness, 0.0);
         assert!((v.radial_falloff - 3.0).abs() < 1e-6);
         assert!((v.density - 0.25).abs() < 1e-6);
-        assert!((v.scatter - 0.7).abs() < 1e-6);
+        assert!((v.glow - 0.7).abs() < 1e-6);
         for i in 0..3 {
             assert!(
                 v.max[i] > v.min[i],

@@ -1,6 +1,7 @@
 // Script-facing fog-volume animation curve. `period_ms`, `phase`, and
-// `play_count` are shared across both the `density` and `saturation` channels —
-// both channels are sampled on the same timeline. Installed onto
+// `play_count` are shared across all four channels — `density`, `saturation`,
+// `min_brightness`, and `light_range` — all sampled on the same
+// timeline. Installed onto
 // `FogVolumeComponent` via the `setFogAnimation` reaction primitive; per-frame
 // evaluation and play-count completion live in the fog bridge.
 //
@@ -23,7 +24,8 @@ pub(crate) struct FogAnimation {
     pub(crate) phase: Option<f32>,
     /// `None` = loop forever. `Some(n)` plays `n` full periods, after which the
     /// fog bridge writes the final keyframe(s) back as static values and clears
-    /// `animation`. Requires at least one curve (`density` or `saturation`).
+    /// `animation`. Requires at least one curve (`density`, `saturation`,
+    /// `min_brightness`, or `light_range`).
     #[serde(default)]
     pub(crate) play_count: Option<u32>,
     /// `None` = "no animation on this channel; hold the static density".
@@ -34,6 +36,10 @@ pub(crate) struct FogAnimation {
     /// to 0.0 with a warning.
     #[serde(default)]
     pub(crate) saturation: Option<Vec<f32>>,
+    #[serde(default)]
+    pub(crate) min_brightness: Option<Vec<f32>>,
+    #[serde(default)]
+    pub(crate) light_range: Option<Vec<f32>>,
 }
 
 #[cfg(test)]
@@ -48,6 +54,8 @@ mod tests {
             play_count: Some(2),
             density: Some(vec![0.1, 1.0, 0.1]),
             saturation: None,
+            min_brightness: Some(vec![0.05, 0.2, 0.05]),
+            light_range: Some(vec![1.0, 2.0, 1.0]),
         };
         let json = serde_json::to_string(&value).unwrap();
         let back: FogAnimation = serde_json::from_str(&json).unwrap();

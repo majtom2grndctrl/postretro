@@ -94,10 +94,11 @@ const SH_COVERAGE_CELLS: f32 = 4.0;
 
 // --- Group 6: Fog resources ---
 
-// 96 bytes; layout must match `FogVolume` in fx/fog_volume.rs. Each `vec3<f32>`
+// 112 bytes; layout must match `FogVolume` in fx/fog_volume.rs. Each `vec3<f32>`
 // is paired with a trailing scalar so WGSL's 16-byte vec3 alignment slots fill
-// without internal padding holes. The trailing `plane_offset / plane_count`
-// pair indexes into the `fog_planes` storage buffer (group 6 binding 6).
+// without internal padding holes. `plane_offset / plane_count` indexes into
+// the `fog_planes` storage buffer (group 6 binding 6); `min_brightness`,
+// `light_range`, and two pad floats follow as the final 16-byte block.
 //
 // `center` and `half_diag` are shader-active precomputed fields. `inv_half_ext`
 // stores the reciprocal per-axis half-extent and is live on the ellipsoid path
@@ -109,6 +110,8 @@ const SH_COVERAGE_CELLS: f32 = 4.0;
 // `tint` multiplies the per-step scatter color after saturation. Default [1,1,1].
 // `saturation` controls color vividness via luma-mix: 0=greyscale, 1=natural,
 // >1=boosted. Default 1.0.
+// `min_brightness` sets a scatter floor applied *before* tint, so the glow
+// takes on the fog's color. Default 0.0.
 struct FogVolume {
     min: vec3<f32>,
     density: f32,
@@ -124,9 +127,17 @@ struct FogVolume {
     tint: vec3<f32>,              // scatter color multiplier; [1,1,1] = no effect
     saturation: f32,              // luma-mix weight; 1.0 = natural; >1 = boosted
     radial_falloff: f32,
-    scatter: f32,
+    glow: f32,
     plane_offset: u32,
     plane_count: u32,
+    // pre-tint scatter floor; `max(step_scatter, min_brightness)` applied before saturation
+    // and tint. Default 0.0 (no floor).
+    min_brightness: f32,
+    // per-volume light range multiplier; higher = lights reach farther inside fog.
+    // Default 1.0 (same reach as open air).
+    light_range: f32,
+    _pad6_a: f32,
+    _pad6_b: f32,
 }
 
 struct FogPointLight {
@@ -509,11 +520,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // `fog.active_count`), reading each volume from the storage buffer
             // with the same coalesced loads as before — just fewer of them per step.
             var vs_density: f32 = 0.0;
-            var vs_scatter: f32 = 0.0;
+            var vs_glow: f32 = 0.0;
             // Density-weighted tint and saturation accumulated over overlapping volumes.
             // Divided by vs_density after the loop to get the blended value.
             var vs_tint_accum: vec3<f32> = vec3<f32>(0.0);
             var vs_sat_accum: f32 = 0.0;
+            // min_brightness and light_range use the same density-weighted blend
+            // as tint/saturation: accumulated proportionally to each volume's density
+            // contribution, then divided by total density after the loop.
+            var vs_min_brightness_accum: f32 = 0.0;
+            var vs_light_range_accum: f32 = 0.0;
             for (var rk: u32 = 0u; rk < raw_count; rk = rk + 1u) {
                 let v = fog_volumes[raw_idx[rk]];
                 // AABB still gates entry — the slab-clip prologue narrowed the
@@ -580,9 +596,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
                 let contrib = v.density * fade;
                 vs_density = vs_density + contrib;
-                vs_scatter = max(vs_scatter, v.scatter);
+                vs_glow = max(vs_glow, v.glow);
                 vs_tint_accum = vs_tint_accum + contrib * v.tint;
                 vs_sat_accum = vs_sat_accum + contrib * v.saturation;
+                vs_min_brightness_accum = vs_min_brightness_accum + contrib * v.min_brightness;
+                vs_light_range_accum = vs_light_range_accum + contrib * v.light_range;
             }
 
             if vs_density > 0.0 {
@@ -590,9 +608,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let inv_density = 1.0 / vs_density;
                 let vs_tint = vs_tint_accum * inv_density;
                 let vs_saturation = vs_sat_accum * inv_density;
+                let vs_min_brightness = vs_min_brightness_accum * inv_density;
+                let vs_light_range = vs_light_range_accum * inv_density;
 
-                // Scatter weight for this step.
-                let weight = vs_density * vs_scatter * step;
+                // Glow weight for this step.
+                let weight = vs_density * vs_glow * step;
 
                 // Accumulate all light contributions for this step into a local
                 // color, then apply saturation and tint before folding into accum.
@@ -623,7 +643,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     // Distance falloff (linear — matches FalloffModel::Linear baseline;
                     // beams are aesthetic, subtle differences between falloff models
                     // aren't worth an extra branch here).
-                    let atten = clamp(1.0 - dist / spot.range, 0.0, 1.0);
+                    let atten = clamp(1.0 - dist / (spot.range * vs_light_range), 0.0, 1.0);
 
                     // Shadow map occlusion.
                     let lit = sample_spot_shadow_pt(
@@ -645,9 +665,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     let to_light = pt.position - pos;
                     let dist = length(to_light);
                     if dist > pt.range || dist < 1.0e-4 { continue; }
-                    let atten = clamp(1.0 - dist / pt.range, 0.0, 1.0);
+                    let atten = clamp(1.0 - dist / (pt.range * vs_light_range), 0.0, 1.0);
                     step_scatter = step_scatter + pt.color * atten;
                 }
+
+                step_scatter = max(step_scatter, vec3<f32>(vs_min_brightness));
 
                 // Apply saturation: mix luma toward full color.
                 // vs_saturation > 1 extrapolates beyond natural color (boosted saturation).

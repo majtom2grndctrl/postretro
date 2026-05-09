@@ -150,6 +150,12 @@ fn default_fog_tint() -> [f32; 3] {
 fn default_fog_saturation() -> f32 {
     1.0
 }
+fn default_fog_min_brightness() -> f32 {
+    0.0
+}
+fn default_fog_light_range() -> f32 {
+    1.0
+}
 
 /// Script-facing fog volume component. Carries the runtime-tweakable fog
 /// parameters; the AABB lives in the `FogVolumeBridge` side-table (baked at
@@ -158,7 +164,7 @@ fn default_fog_saturation() -> f32 {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub(crate) struct FogVolumeComponent {
     pub(crate) density: f32,
-    pub(crate) scatter: f32,
+    pub(crate) glow: f32,
     pub(crate) edge_softness: f32,
     pub(crate) falloff: f32,
     /// Scatter tint multiplier. `[1, 1, 1]` = no tint. Applied after saturation.
@@ -167,7 +173,12 @@ pub(crate) struct FogVolumeComponent {
     /// Scatter saturation: 0 = greyscale, 1 = natural, >1 = boosted.
     #[serde(default = "default_fog_saturation")]
     pub(crate) saturation: f32,
-    /// Optional animation carrying density and/or saturation curves. `None`
+    #[serde(default = "default_fog_min_brightness")]
+    pub(crate) min_brightness: f32,
+    #[serde(default = "default_fog_light_range")]
+    pub(crate) light_range: f32,
+    /// Optional animation carrying any combination of density, saturation,
+    /// min_brightness, and light_range curves. `None`
     /// holds static values. Installed by the `setFogAnimation` reaction
     /// primitive; the fog bridge evaluates per frame and writes back static
     /// values once a finite `play_count` completes.
@@ -181,13 +192,15 @@ impl FogVolumeComponent {
     /// every read/write site (`into_js`, `into_lua`, `world.query` JSON shape)
     /// in one place. The wire-shared struct keeps snake_case Rust idents; the
     /// camelCase mapping lives only here.
-    pub(crate) fn camel_fields(&self) -> [(&'static str, f32); 5] {
+    pub(crate) fn camel_fields(&self) -> [(&'static str, f32); 7] {
         [
             ("density", self.density),
-            ("scatter", self.scatter),
+            ("glow", self.glow),
             ("edgeSoftness", self.edge_softness),
             ("falloff", self.falloff),
             ("saturation", self.saturation),
+            ("minBrightness", self.min_brightness),
+            ("lightRange", self.light_range),
         ]
     }
 }

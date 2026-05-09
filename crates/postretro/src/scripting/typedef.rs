@@ -519,11 +519,11 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     args: { density: number };
   };
 
-  /** Sequence step targeting a single fog volume's `scatter`. */
-  export type SetFogScatterStep = {
+  /** Sequence step targeting a single fog volume's `glow`. */
+  export type SetFogGlowStep = {
     id: EntityId;
-    primitive: "setFogScatter";
-    args: { scatter: number };
+    primitive: "setFogGlow";
+    args: { glow: number };
   };
 
   /** Sequence step targeting a single fog volume's `edgeSoftness`. */
@@ -540,15 +540,19 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     args: { falloff: number };
   };
 
-  /** Sequence step that updates any subset of `{density, scatter, edgeSoftness, falloff, tint, saturation}` on a single fog volume in one component write. */
+  /** Sequence step that updates any subset of `{density, glow, edgeSoftness, falloff, tint, saturation, minBrightness, lightRange}` on a single fog volume in one component write. */
   export type SetFogParamsStep = {
     id: EntityId;
     primitive: "setFogParams";
     args: {
       density?: number;
-      scatter?: number;
+      glow?: number;
       edgeSoftness?: number;
       falloff?: number;
+      tint?: readonly [number, number, number];
+      saturation?: number;
+      minBrightness?: number;
+      lightRange?: number;
     };
   };
 
@@ -563,7 +567,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export type SequenceStep =
     | SetLightAnimationStep
     | SetFogDensityStep
-    | SetFogScatterStep
+    | SetFogGlowStep
     | SetFogEdgeSoftnessStep
     | SetFogFalloffStep
     | SetFogParamsStep
@@ -892,11 +896,11 @@ export type SetFogDensityStep = {
   args: { density: number },
 }
 
---- Sequence step targeting a single fog volume's `scatter`.
-export type SetFogScatterStep = {
+--- Sequence step targeting a single fog volume's `glow`.
+export type SetFogGlowStep = {
   id: EntityId,
-  primitive: "setFogScatter",
-  args: { scatter: number },
+  primitive: "setFogGlow",
+  args: { glow: number },
 }
 
 --- Sequence step targeting a single fog volume's `edgeSoftness`.
@@ -914,12 +918,12 @@ export type SetFogFalloffStep = {
 }
 
 --- Sequence step that updates any subset of
---- `{density, scatter, edgeSoftness, falloff, tint, saturation}` on a single
+--- `{density, glow, edgeSoftness, falloff, tint, saturation, minBrightness, lightRange}` on a single
 --- fog volume in one component write.
 export type SetFogParamsStep = {
   id: EntityId,
   primitive: "setFogParams",
-  args: { density: number?, scatter: number?, edgeSoftness: number?, falloff: number? },
+  args: { density: number?, glow: number?, edgeSoftness: number?, falloff: number?, tint: {number}?, saturation: number?, minBrightness: number?, lightRange: number? },
 }
 
 --- Sequence step that installs (or clears, when `args` is `nil`) a
@@ -933,7 +937,7 @@ export type SetFogAnimationStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.
@@ -1090,7 +1094,7 @@ declare module \"postretro\" {
   /** Spin tween shape consumed by `setSpinRate`. */
   export type SpinAnimation = { duration: number; rate_curve: ReadonlyArray<number> };
 
-  /** Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Two independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density and `saturation` modulates SH-irradiance saturation. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state. */
+  /** Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Four independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density, `saturation` modulates SH-irradiance saturation, `minBrightness` modulates the scatter brightness floor, and `lightRange` scales how far lights reach inside the fog. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state. */
   export type FogAnimation = {
     /** Total period of the loop, in milliseconds. */
     periodMs: number;
@@ -1102,14 +1106,18 @@ declare module \"postretro\" {
     density: ReadonlyArray<number> | null;
     /** Per-sample saturation curve. null leaves the static saturation unchanged. */
     saturation: ReadonlyArray<number> | null;
+    /** Per-sample animation curve for the `min_brightness` channel (scatter brightness floor). null leaves the static min_brightness unchanged. Each sample clamped to `[0, +∞)`; empty curve is rejected. */
+    minBrightness: ReadonlyArray<number> | null;
+    /** Per-sample animation curve for the `light_range` channel (scales how far lights reach inside this fog). null leaves the static light_range unchanged. Each sample must be strictly positive and finite; non-positive or non-finite samples clamp to `0.001`; empty curve is rejected. */
+    lightRange: ReadonlyArray<number> | null;
   };
 
   /** Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable. */
   export type FogVolumeComponent = {
     /** Volumetric fog density inside the AABB. */
     density: number;
-    /** Fraction of in-scattering toward the camera. */
-    scatter: number;
+    /** How much the fog lights up near light sources. 0 = stays dark even under bright lights, 1 = picks up full light color. Raise for misty glow, lower for thick opaque smoke. */
+    glow: number;
     /** Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face. */
     edgeSoftness: number;
     /** Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (axis-aligned `fog_volume`) shader paths; stored but ignored by the plane-sweep (non-axis-aligned `fog_volume`) path. */
@@ -1118,7 +1126,11 @@ declare module \"postretro\" {
     tint: readonly [number, number, number];
     /** Saturation of transmitted SH irradiance: 0 = greyscale, 1 = natural, >1 = boosted. Default 1.0. */
     saturation: number;
-    /** Density and/or saturation animation curves. null holds the static state. */
+    /** Floor on per-volume scatter brightness. Clamped to `[0, +∞)`. Default 0.0. */
+    minBrightness: number;
+    /** Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range. Strictly positive; clamps to 0.001. Default 1.0. */
+    lightRange: number;
+    /** Optional animation carrying any combination of density, saturation, minBrightness, and lightRange curves. null holds the static state. */
     animation: FogAnimation | null;
   };
 
@@ -1202,7 +1214,7 @@ export type BillboardEmitterComponent = {
 --- Spin tween shape consumed by `setSpinRate`.
 export type SpinAnimation = { duration: number, rate_curve: {number} }
 
---- Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Two independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density and `saturation` modulates SH-irradiance saturation. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.
+--- Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Four independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density, `saturation` modulates SH-irradiance saturation, `minBrightness` modulates the scatter brightness floor, and `lightRange` scales how far lights reach inside the fog. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.
 export type FogAnimation = {
   --- Total period of the loop, in milliseconds.
   periodMs: number,
@@ -1214,14 +1226,18 @@ export type FogAnimation = {
   density: {number}?,
   --- Per-sample saturation curve. null leaves the static saturation unchanged.
   saturation: {number}?,
+  --- Per-sample animation curve for the `min_brightness` channel (scatter brightness floor). null leaves the static min_brightness unchanged. Each sample clamped to `[0, +∞)`; empty curve is rejected.
+  minBrightness: {number}?,
+  --- Per-sample animation curve for the `light_range` channel (scales how far lights reach inside this fog). null leaves the static light_range unchanged. Each sample must be strictly positive and finite; non-positive or non-finite samples clamp to `0.001`; empty curve is rejected.
+  lightRange: {number}?,
 }
 
 --- Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable.
 export type FogVolumeComponent = {
   --- Volumetric fog density inside the AABB.
   density: number,
-  --- Fraction of in-scattering toward the camera.
-  scatter: number,
+  --- How much the fog lights up near light sources. 0 = stays dark even under bright lights, 1 = picks up full light color. Raise for misty glow, lower for thick opaque smoke.
+  glow: number,
   --- Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.
   edgeSoftness: number,
   --- Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (axis-aligned `fog_volume`) shader paths; stored but ignored by the plane-sweep (non-axis-aligned `fog_volume`) path.
@@ -1230,7 +1246,11 @@ export type FogVolumeComponent = {
   tint: {number},
   --- Saturation of transmitted SH irradiance: 0 = greyscale, 1 = natural, >1 = boosted. Default 1.0.
   saturation: number,
-  --- Density and/or saturation animation curves. null holds the static state.
+  --- Floor on per-volume scatter brightness. Clamped to `[0, +∞)`. Default 0.0.
+  minBrightness: number,
+  --- Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range. Strictly positive; clamps to 0.001. Default 1.0.
+  lightRange: number,
+  --- Optional animation carrying any combination of density, saturation, minBrightness, and lightRange curves. null holds the static state.
   animation: FogAnimation?,
 }
 

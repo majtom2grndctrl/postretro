@@ -56,6 +56,9 @@ env_logger.workspace = true
 # Workspace members
 postretro-level-format.workspace = true
 
+[build-dependencies]
+postretro-script-compiler = { path = "../script-compiler" }
+
 [dev-dependencies]
 # Pinned to the same version wgpu 29 re-exports transitively so the WGSL
 # struct-stride regression test parses against the exact WGSL dialect the

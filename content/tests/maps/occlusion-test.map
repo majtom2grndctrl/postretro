@@ -1179,7 +1179,7 @@
 "origin" "180 229 60"
 "light" "400"
 "_color" "255 170 40"
-"_fade" "1024"
+"_fade" "650"
 "delay" "0"
 "_bake_only" "1"
 }
@@ -1279,6 +1279,7 @@
 {
 "classname" "fog_volume"
 "density" "0.8"
+"fog_saturation" "1.5"
 // brush 0
 {
 ( 0 256 112 ) ( 0 0 112 ) ( 0 0 0 ) debug_ceiling_grey 0 -0.9999988 0 0.88888884 7

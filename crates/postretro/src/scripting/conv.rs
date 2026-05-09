@@ -395,10 +395,7 @@ impl<'js> FromJs<'js> for ComponentValue {
                     Ok(v) if !v.is_null() && !v.is_undefined() => {
                         let json = js_to_json(ctx, v)?;
                         serde_json::from_value(json).map_err(|e| {
-                            rquickjs::Exception::throw_type(
-                                ctx,
-                                &format!("FogVolume.tint: {e}"),
-                            )
+                            rquickjs::Exception::throw_type(ctx, &format!("FogVolume.tint: {e}"))
                         })?
                     }
                     _ => [1.0, 1.0, 1.0],
@@ -624,9 +621,7 @@ impl IntoLua for ComponentValue {
                 }
                 // `tint` is a vec3 not in `camel_fields`; encode as {r,g,b}.
                 let tint_json = serde_json::to_value(fog.tint).map_err(|e| {
-                    mlua::Error::RuntimeError(format!(
-                        "FogVolume.tint serialization failed: {e}"
-                    ))
+                    mlua::Error::RuntimeError(format!("FogVolume.tint serialization failed: {e}"))
                 })?;
                 tbl.set("tint", json_to_lua(lua, &tint_json)?)?;
                 let anim_lua = match fog.animation {

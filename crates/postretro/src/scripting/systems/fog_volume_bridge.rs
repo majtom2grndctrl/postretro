@@ -515,7 +515,10 @@ fn settle_play_count(
     }
     Some(SettledValues {
         density: animation.density.as_ref().and_then(|c| c.last().copied()),
-        saturation: animation.saturation.as_ref().and_then(|c| c.last().copied()),
+        saturation: animation
+            .saturation
+            .as_ref()
+            .and_then(|c| c.last().copied()),
     })
 }
 

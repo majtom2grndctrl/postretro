@@ -2864,6 +2864,7 @@ dependencies = [
  "parry3d",
  "pollster",
  "postretro-level-format",
+ "postretro-script-compiler",
  "proptest",
  "rquickjs",
  "serde",

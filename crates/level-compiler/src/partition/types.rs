@@ -64,9 +64,21 @@ impl Aabb {
     pub fn is_entirely_behind_plane(&self, normal: DVec3, distance: f64) -> bool {
         // max_support: corner farthest in +normal direction.
         let max_support = DVec3::new(
-            if normal.x >= 0.0 { self.max.x } else { self.min.x },
-            if normal.y >= 0.0 { self.max.y } else { self.min.y },
-            if normal.z >= 0.0 { self.max.z } else { self.min.z },
+            if normal.x >= 0.0 {
+                self.max.x
+            } else {
+                self.min.x
+            },
+            if normal.y >= 0.0 {
+                self.max.y
+            } else {
+                self.min.y
+            },
+            if normal.z >= 0.0 {
+                self.max.z
+            } else {
+                self.min.z
+            },
         );
         max_support.dot(normal) < distance
     }

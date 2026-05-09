@@ -449,7 +449,10 @@ mod tests {
             .clone()
             .expect("animation must be installed");
         assert_eq!(stored.density, None);
-        assert_eq!(stored.saturation.as_deref(), Some([0.5_f32, 1.0, 1.5].as_ref()));
+        assert_eq!(
+            stored.saturation.as_deref(),
+            Some([0.5_f32, 1.0, 1.5].as_ref())
+        );
         assert_eq!(stored.play_count, Some(2));
     }
 

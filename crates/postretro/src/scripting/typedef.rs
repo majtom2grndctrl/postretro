@@ -69,7 +69,9 @@ fn rust_to_ts(ty_name: &str) -> String {
     }
     if let Some((elem, n)) = strip_fixed_array(&short) {
         let elem_ts = rust_to_ts(elem.trim());
-        let parts = std::iter::repeat(elem_ts).take(n).collect::<Vec<_>>().join(", ");
+        let parts = std::iter::repeat_n(elem_ts, n)
+            .collect::<Vec<_>>()
+            .join(", ");
         return format!("readonly [{parts}]");
     }
 

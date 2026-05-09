@@ -523,10 +523,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
 /// the "axis-aligned" property. Empty brush sets return `false` so callers
 /// fall through to the plane-bounded path (which surfaces the empty-brush
 /// error from the resolver).
-fn is_axis_aligned_brush_set(
-    geo_map: &GeoMap,
-    brush_ids: &[shambler::brush::BrushId],
-) -> bool {
+fn is_axis_aligned_brush_set(geo_map: &GeoMap, brush_ids: &[shambler::brush::BrushId]) -> bool {
     use shambler::face::face_planes;
     if brush_ids.is_empty() {
         return false;

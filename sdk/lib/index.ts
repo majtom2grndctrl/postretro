@@ -1,8 +1,10 @@
 // SDK library entry — re-exports every public symbol the prelude installs as
-// a global. The `--prelude` mode of `scripts-build` consumes this file.
+// a global. Consumed at build time by `crates/postretro/build.rs` (via
+// `postretro-script-compiler`); also callable via `scripts-build --prelude`.
 // See: context/lib/scripting.md §7
 //
-// When adding exports here, also update TS_SDK_LIB_BLOCK and LUAU_SDK_LIB_BLOCK in crates/postretro/src/scripting/typedef.rs and regenerate sdk/lib/prelude.js.
+// When adding exports here, also update TS_SDK_LIB_BLOCK and LUAU_SDK_LIB_BLOCK
+// in crates/postretro/src/scripting/typedef.rs.
 
 export type { EntityForComponent, World } from "./world";
 export { world } from "./world";

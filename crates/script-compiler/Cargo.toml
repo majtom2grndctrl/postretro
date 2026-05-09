@@ -11,6 +11,10 @@ license.workspace = true
 # documented in
 # context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md
 # §Sub-plan 7.
+[lib]
+name = "postretro_script_compiler"
+path = "src/lib.rs"
+
 [[bin]]
 name = "scripts-build"
 path = "src/main.rs"

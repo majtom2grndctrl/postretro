@@ -412,7 +412,7 @@ pub struct MapFogVolume {
     /// then to the GPU `FogVolume.edge_softness` slot. Semantic / zero-plane
     /// volumes (`fog_lamp`, `fog_tube`) ignore this and use `radial_falloff`.
     pub edge_softness: f32,
-    pub scatter: f32,
+    pub glow: f32,
     pub radial_falloff: f32,
     /// Convex bounding planes (engine space). A point `p` is inside the volume
     /// iff `dot(p, n) <= d` for every `(nx, ny, nz, d)` plane. Empty means the
@@ -424,6 +424,10 @@ pub struct MapFogVolume {
     pub tint: [f32; 3],
     /// Scatter saturation. 0 = greyscale, 1 = natural (default), >1 = boosted.
     pub saturation: f32,
+    /// Minimum scatter brightness floor. `0.0` = no floor (default).
+    pub min_brightness: f32,
+    /// Per-volume light range multiplier. `1.0` = same reach as open air (default).
+    pub light_range: f32,
     /// When `true`, the level compiler bakes `shape_mode = 1.0` into the
     /// `FogVolumeRecord` so the raymarch shader fades against an ellipsoid
     /// derived from `inv_half_ext`. When `false` (default for every existing

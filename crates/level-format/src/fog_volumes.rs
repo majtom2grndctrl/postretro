@@ -28,8 +28,9 @@ pub const MAX_PLANES_PER_VOLUME: usize = 16;
 ///
 /// `tint` multiplies the per-step scatter color after saturation is applied; `[1, 1, 1]` is a
 /// no-op. `saturation` controls color vividness via a luma-mix: 0 = greyscale, 1 = natural
-/// (no effect), >1 = boosted. Both default to their identity values so existing maps compiled
-/// before PRL v3 behave identically.
+/// (no effect), >1 = boosted. `min_brightness` sets a scatter floor (0.0 = none); `light_range`
+/// scales how far lights reach inside the volume (1.0 = same reach as open air). All four default
+/// to their identity values so existing maps compiled before these fields were added behave identically.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FogVolumeRecord {
     pub min: [f32; 3],
@@ -41,7 +42,7 @@ pub struct FogVolumeRecord {
     /// so both sides of the layer boundary use one term. Semantic / zero-plane
     /// volumes (`fog_lamp`, `fog_tube`) ignore this and use `radial_falloff`.
     pub edge_softness: f32,
-    pub scatter: f32,
+    pub glow: f32,
     pub radial_falloff: f32,
     /// AABB center: `(min + max) * 0.5`.
     pub center: [f32; 3],
@@ -61,6 +62,12 @@ pub struct FogVolumeRecord {
     pub tint: [f32; 3],
     /// Scatter saturation. 0 = greyscale, 1 = natural (default), >1 = boosted.
     pub saturation: f32,
+    /// Minimum scatter brightness floor. `0.0` = no floor (default).
+    pub min_brightness: f32,
+    /// Per-volume light range multiplier. `1.0` = same reach as open air (default). Higher values
+    /// increase how far lights reach inside the volume; values below 1.0 reduce it. Clamped
+    /// to a small positive minimum at load time.
+    pub light_range: f32,
     /// Number of bounding planes; mirrors `planes.len()` and is baked into the
     /// fixed payload so the wire format header is self-describing.
     pub plane_count: u32,
@@ -82,12 +89,16 @@ pub struct FogVolumeRecord {
 ///     f32  density
 ///     f32  max_x, max_y, max_z
 ///     f32  edge_softness
-///     f32  scatter
+///     f32  glow
 ///     f32  radial_falloff
 ///     f32  center_x, center_y, center_z
 ///     f32  inv_half_ext_x, inv_half_ext_y, inv_half_ext_z
 ///     f32  half_diag
 ///     f32  shape_mode
+///     f32  tint_r, tint_g, tint_b
+///     f32  saturation
+///     f32  min_brightness
+///     f32  light_range
 ///     u32  plane_count
 ///     repeat plane_count:
 ///       f32  nx, ny, nz, d
@@ -126,7 +137,7 @@ impl FogVolumesSection {
                 buf.extend_from_slice(&c.to_le_bytes());
             }
             buf.extend_from_slice(&v.edge_softness.to_le_bytes());
-            buf.extend_from_slice(&v.scatter.to_le_bytes());
+            buf.extend_from_slice(&v.glow.to_le_bytes());
             buf.extend_from_slice(&v.radial_falloff.to_le_bytes());
             for c in v.center {
                 buf.extend_from_slice(&c.to_le_bytes());
@@ -140,6 +151,8 @@ impl FogVolumesSection {
                 buf.extend_from_slice(&c.to_le_bytes());
             }
             buf.extend_from_slice(&v.saturation.to_le_bytes());
+            buf.extend_from_slice(&v.min_brightness.to_le_bytes());
+            buf.extend_from_slice(&v.light_range.to_le_bytes());
             buf.extend_from_slice(&(v.planes.len() as u32).to_le_bytes());
             for plane in &v.planes {
                 for c in plane {
@@ -161,10 +174,10 @@ impl FogVolumesSection {
         let pixel_scale = read_u32(data, &mut o, "pixel_scale")?;
         let count = read_u32(data, &mut o, "volume count")? as usize;
 
-        // Sanity-check: each fixed payload is 22 × f32 + 2 × u32 = 96 bytes
+        // Sanity-check: each fixed payload is 24 × f32 + 2 × u32 = 104 bytes
         // (includes plane_count and tag_count headers; planes and tags are
         // variable-length and validated against remaining bytes below).
-        const MIN_RECORD_SIZE: usize = 96;
+        const MIN_RECORD_SIZE: usize = 104;
         let remaining = data.len().saturating_sub(o);
         if count > remaining / MIN_RECORD_SIZE {
             // FormatError has no Parse variant; Io is the closest proxy for
@@ -183,7 +196,7 @@ impl FogVolumesSection {
             let density = read_f32(data, &mut o, &format!("volume {i} density"))?;
             let max = read_vec3(data, &mut o, &format!("volume {i} max"))?;
             let edge_softness = read_f32(data, &mut o, &format!("volume {i} edge_softness"))?;
-            let scatter = read_f32(data, &mut o, &format!("volume {i} scatter"))?;
+            let glow = read_f32(data, &mut o, &format!("volume {i} glow"))?;
             let radial_falloff = read_f32(data, &mut o, &format!("volume {i} radial_falloff"))?;
             let center = read_vec3(data, &mut o, &format!("volume {i} center"))?;
             let inv_half_ext = read_vec3(data, &mut o, &format!("volume {i} inv_half_ext"))?;
@@ -191,6 +204,9 @@ impl FogVolumesSection {
             let shape_mode = read_f32(data, &mut o, &format!("volume {i} shape_mode"))?;
             let tint = read_vec3(data, &mut o, &format!("volume {i} tint"))?;
             let saturation = read_f32(data, &mut o, &format!("volume {i} saturation"))?;
+            let min_brightness = read_f32(data, &mut o, &format!("volume {i} min_brightness"))?;
+            let light_range =
+                read_f32(data, &mut o, &format!("volume {i} light_range"))?;
 
             let plane_count = read_u32(data, &mut o, &format!("volume {i} plane count"))? as usize;
             const PLANE_SIZE: usize = 16;
@@ -233,7 +249,7 @@ impl FogVolumesSection {
                 density,
                 max,
                 edge_softness,
-                scatter,
+                glow,
                 radial_falloff,
                 center,
                 inv_half_ext,
@@ -241,6 +257,8 @@ impl FogVolumesSection {
                 shape_mode,
                 tint,
                 saturation,
+                min_brightness,
+                light_range,
                 plane_count: plane_count as u32,
                 planes,
                 tags,
@@ -338,7 +356,7 @@ mod tests {
                     density: 0.5,
                     max: [2.0, 3.0, 2.0],
                     edge_softness: 1.0,
-                    scatter: 0.4,
+                    glow: 0.4,
                     radial_falloff: 0.0,
                     center: [0.0, 1.5, 0.0],
                     inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
@@ -346,6 +364,8 @@ mod tests {
                     shape_mode: 0.0,
                     tint: [1.0, 1.0, 1.0],
                     saturation: 1.0,
+                    min_brightness: 0.0,
+                    light_range: 1.0,
                     plane_count: 0,
                     planes: vec![],
                     tags: vec!["smoke".to_string(), "ambient".to_string()],
@@ -355,7 +375,7 @@ mod tests {
                     density: 1.5,
                     max: [12.0, 4.0, -1.0],
                     edge_softness: 0.5,
-                    scatter: 0.9,
+                    glow: 0.9,
                     radial_falloff: 1.0,
                     center: [11.0, 2.0, -3.0],
                     inv_half_ext: [1.0, 0.5, 0.5],
@@ -363,6 +383,8 @@ mod tests {
                     shape_mode: 0.0,
                     tint: [1.0, 0.5, 0.2],
                     saturation: 1.5,
+                    min_brightness: 0.0,
+                    light_range: 1.0,
                     plane_count: 0,
                     planes: vec![],
                     tags: vec![],
@@ -406,7 +428,7 @@ mod tests {
             density: 0.5,
             max: [1.0, 1.0, 1.0],
             edge_softness: 0.5,
-            scatter: 0.5,
+            glow: 0.5,
             radial_falloff: 0.0,
             center: [0.0, 0.0, 0.0],
             inv_half_ext: [1.0, 1.0, 1.0],
@@ -414,6 +436,8 @@ mod tests {
             shape_mode: 0.0,
             tint: [1.0, 1.0, 1.0],
             saturation: 1.0,
+            min_brightness: 0.0,
+            light_range: 1.0,
             plane_count,
             planes,
             tags,
@@ -513,7 +537,7 @@ mod tests {
                 density: 0.5,
                 max: [1.0, 1.0, 1.0],
                 edge_softness: 0.5,
-                scatter: 0.5,
+                glow: 0.5,
                 radial_falloff: 0.0,
                 center: [0.5, 0.5, 0.5],
                 inv_half_ext: [2.0, 2.0, 2.0],
@@ -521,6 +545,8 @@ mod tests {
                 shape_mode: 0.0,
                 tint: [1.0, 1.0, 1.0],
                 saturation: 1.0,
+                min_brightness: 0.0,
+                light_range: 1.0,
                 plane_count: 0,
                 planes: vec![],
                 tags: vec![],

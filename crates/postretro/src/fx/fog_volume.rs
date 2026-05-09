@@ -22,7 +22,7 @@ pub const MAX_FOG_POINT_LIGHTS: usize = 32;
 /// and GPU cost; larger values are faster but produce visible banding.
 pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 
-/// Packed AABB + scattering parameters for a single fog volume. 96 bytes,
+/// Packed AABB + scattering parameters for a single fog volume. 112 bytes,
 /// matches the `FogVolume` struct in fog_volume.wgsl.
 ///
 /// `max_v` (rather than `max`) avoids the WGSL `max` builtin shadowing a
@@ -38,11 +38,13 @@ pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 /// ellipsoid using `inv_half_ext`).
 ///
 /// Field order pairs each `vec3<f32>` with a trailing scalar so WGSL's 16-byte
-/// vec3 alignment slots fill naturally without internal padding holes. The
-/// `tint` + `saturation` pair is the fifth 16-byte block; the final block packs
-/// `radial_falloff`, `scatter`, `plane_offset`, `plane_count`.
+/// vec3 alignment slots fill naturally without internal padding holes. Seven
+/// 16-byte blocks: (1) `min`, `density`; (2) `max_v`, `edge_softness`;
+/// (3) `center`, `half_diag`; (4) `inv_half_ext`, `shape_mode`;
+/// (5) `tint`, `saturation`; (6) `radial_falloff`, `glow`, `plane_offset`,
+/// `plane_count`; (7) `min_brightness`, `light_range`, `_pad6[2]`.
 ///
-/// PRL v3 addition: `tint` and `saturation`. Old PRL files (v2) must be recompiled.
+/// Any PRL file compiled before all fields were present must be recompiled.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FogVolume {
@@ -70,7 +72,7 @@ pub struct FogVolume {
     /// Scatter saturation: 0 = greyscale, 1 = natural (default), >1 = boosted.
     pub saturation: f32,
     pub radial_falloff: f32,
-    pub scatter: f32,
+    pub glow: f32,
     /// Index of this volume's first plane in the global `fog_planes` storage
     /// buffer. Cursor rebuilt each frame as the active set is packed; source
     /// PRL index is irrelevant.
@@ -78,6 +80,9 @@ pub struct FogVolume {
     /// Number of planes that bound this volume. Zero means the volume is a
     /// semantic entity (AABB-only membership + radial fade).
     pub plane_count: u32,
+    pub min_brightness: f32,
+    pub light_range: f32,
+    pub _pad6: [f32; 2],
 }
 
 /// Per-frame spot-light record consumed by the fog raymarch. 48 bytes;
@@ -147,7 +152,7 @@ pub const FOG_POINT_LIGHT_SIZE: usize = std::mem::size_of::<FogPointLight>();
 pub const FOG_PARAMS_SIZE: usize = std::mem::size_of::<FogParams>();
 
 // Compile-time guards against accidental layout drift.
-const _: () = assert!(FOG_VOLUME_SIZE == 96);
+const _: () = assert!(FOG_VOLUME_SIZE == 112);
 const _: () = assert!(FOG_SPOT_LIGHT_SIZE == 48);
 const _: () = assert!(FOG_POINT_LIGHT_SIZE == 32);
 const _: () = assert!(FOG_PARAMS_SIZE == 112);
@@ -236,8 +241,9 @@ mod tests {
     fn pack_fog_volumes_round_trips_all_baked_fields() {
         // Byte offsets: min(0) density(12) max_v(16) edge_softness(28)
         // center(32) half_diag(44) inv_half_ext(48) shape_mode(60)
-        // tint(64) saturation(76) radial_falloff(80) scatter(84)
-        // plane_offset(88) plane_count(92). Total: 96 bytes.
+        // tint(64) saturation(76) radial_falloff(80) glow(84)
+        // plane_offset(88) plane_count(92) min_brightness(96)
+        // light_range(100) _pad6(104..112). Total: 112 bytes.
         // Spot-checking key baked fields catches silent layout drift between Rust and WGSL.
         let v = FogVolume {
             min: [1.0, 2.0, 3.0],
@@ -251,14 +257,17 @@ mod tests {
             tint: [1.0, 0.5, 0.25],
             saturation: 1.5,
             radial_falloff: 0.0,
-            scatter: 0.5,
+            glow: 0.5,
             plane_offset: 0,
             plane_count: 0,
+            min_brightness: 0.125,
+            light_range: 2.0,
+            _pad6: [0.0; 2],
         };
         let volumes = [v];
         let bytes = pack_fog_volumes(&volumes);
         assert_eq!(bytes.len(), FOG_VOLUME_SIZE);
-        assert_eq!(FOG_VOLUME_SIZE, 96);
+        assert_eq!(FOG_VOLUME_SIZE, 112);
 
         let density = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
         let edge_softness = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
@@ -271,9 +280,11 @@ mod tests {
         let tint_b = f32::from_le_bytes(bytes[72..76].try_into().unwrap());
         let saturation = f32::from_le_bytes(bytes[76..80].try_into().unwrap());
         let radial_falloff = f32::from_le_bytes(bytes[80..84].try_into().unwrap());
-        let scatter = f32::from_le_bytes(bytes[84..88].try_into().unwrap());
+        let glow = f32::from_le_bytes(bytes[84..88].try_into().unwrap());
         let plane_offset = u32::from_le_bytes(bytes[88..92].try_into().unwrap());
         let plane_count = u32::from_le_bytes(bytes[92..96].try_into().unwrap());
+        let min_brightness = f32::from_le_bytes(bytes[96..100].try_into().unwrap());
+        let light_range = f32::from_le_bytes(bytes[100..104].try_into().unwrap());
         assert_eq!(density, 0.75);
         assert_eq!(edge_softness, 0.25);
         assert_eq!(center_x, 2.5);
@@ -285,8 +296,10 @@ mod tests {
         assert_eq!(tint_b, 0.25);
         assert_eq!(saturation, 1.5);
         assert_eq!(radial_falloff, 0.0);
-        assert_eq!(scatter, 0.5);
+        assert_eq!(glow, 0.5);
         assert_eq!(plane_offset, 0);
         assert_eq!(plane_count, 0);
+        assert_eq!(min_brightness, 0.125);
+        assert_eq!(light_range, 2.0);
     }
 }

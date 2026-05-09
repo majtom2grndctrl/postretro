@@ -96,9 +96,9 @@ Per billboard vertex (hoisted to the vertex shader where possible, refined in fr
 
 ### Fog data
 
-1. **`fog_volume` AABB buffer.** At level load, resolve each `fog_volume` brush to its world-space axis-aligned bounding box and fog parameters. Upload as a compact storage buffer of up to 16 fog volume entries (retro-scale maps rarely need more): `{ min: vec3<f32>, density: f32, max: vec3<f32>, edge_softness: f32, scatter: f32 }`. Per-sample membership test in the fog shader is a simple point-in-AABB check — no BSP traversal at runtime. If a sample falls inside multiple overlapping volumes, accumulate their contributions. The existing `fog_volume` BSP-leaf association from `build_pipeline.md` §Custom FGD drives the AABB extraction at load time; the runtime does not walk BSP nodes.
+1. **`fog_volume` AABB buffer.** At level load, resolve each `fog_volume` brush to its world-space axis-aligned bounding box and fog parameters. Upload as a compact storage buffer of up to 16 fog volume entries (retro-scale maps rarely need more): `{ min: vec3<f32>, density: f32, max: vec3<f32>, edge_softness: f32, glow: f32 }`. Per-sample membership test in the fog shader is a simple point-in-AABB check — no BSP traversal at runtime. If a sample falls inside multiple overlapping volumes, accumulate their contributions. The existing `fog_volume` BSP-leaf association from `build_pipeline.md` §Custom FGD drives the AABB extraction at load time; the runtime does not walk BSP nodes.
 
-2. **FGD additions.** Extend `fog_volume` with one new optional property: `scatter: f32` (fraction of light that scatters toward the camera vs. is absorbed; default 0.6). Add `fog_pixel_scale: u32` to `worldspawn` (resolution divisor for the volumetric pass; default 4, valid range 1–8; higher = coarser, more retro-looking blocks). `fog_pixel_scale` is a global render-target property — it governs the single low-res allocation for the entire fog pass and cannot sensibly vary per-volume. Placing it on `worldspawn` follows the same convention as `ambient_color` and other scene-wide render parameters.
+2. **FGD additions.** Extend `fog_volume` with one new optional property: `glow: f32` (how much the fog lights up near light sources; default 0.6). Add `fog_pixel_scale: u32` to `worldspawn` (resolution divisor for the volumetric pass; default 4, valid range 1–8; higher = coarser, more retro-looking blocks). `fog_pixel_scale` is a global render-target property — it governs the single low-res allocation for the entire fog pass and cannot sensibly vary per-volume. Placing it on `worldspawn` follows the same convention as `ambient_color` and other scene-wide render parameters.
 
 ### Volumetric pass
 
@@ -107,11 +107,11 @@ Per billboard vertex (hoisted to the vertex shader where possible, refined in fr
 4. **Ray march.** Fullscreen pass at the low-resolution target. Per fragment:
    - Reconstruct world-space ray from camera position and fragment UV + depth buffer sample (depth buffer bound as a read-only texture — full-resolution, sampled at nearest texel).
    - March the ray from the near plane to the first opaque surface (depth). Step size: `fog_step_size` world units (default 0.5 m, retunable).
-   - At each step, test the sample world position against the fog AABB buffer (step 1). For each volume whose AABB contains the sample, accumulate scatter weighted by that volume's `density` and `scatter` parameters.
+   - At each step, test the sample world position against the fog AABB buffer (step 1). For each volume whose AABB contains the sample, accumulate scatter weighted by that volume's `density` and `glow` parameters.
 
 5. **Scatter accumulation per sample.** At each fog sample:
-   - **SH ambient scatter.** Sample SH volume at sample position → ambient fog color contribution. Weighted by `density × scatter`.
-   - **Dynamic spot beam.** For each allocated dynamic spot shadow map slot (from `lighting-spot-shadows/`): check if sample is inside the spot's cone (dot product against direction, compare against `cone_half_angle`). If inside, sample the shadow map — occluded samples contribute no beam scatter. Unoccluded samples add `light.color × intensity × density × scatter` along the ray. This produces visible pixelated light shafts and shadow wedges.
+   - **SH ambient scatter.** Sample SH volume at sample position → ambient fog color contribution. Weighted by `density × glow`.
+   - **Dynamic spot beam.** For each allocated dynamic spot shadow map slot (from `lighting-spot-shadows/`): check if sample is inside the spot's cone (dot product against direction, compare against `cone_half_angle`). If inside, sample the shadow map — occluded samples contribute no beam scatter. Unoccluded samples add `light.color × intensity × density × glow` along the ray. This produces visible pixelated light shafts and shadow wedges.
    - **Static light scatter.** Out of scope for this plan — see the Out of scope section. SH ambient provides the static ambient base; dynamic spot beams carry the primary visual interest. Static per-chunk scatter is deferred until profiling shows the beam-only result is insufficient.
 
 6. **Transmittance.** Track ray transmittance: `T *= exp(-density × step_size)`. Early-exit when T < 0.01 — fully opaque fog, no need to march further.

@@ -11,7 +11,7 @@ pub(crate) mod set_fog_density;
 pub(crate) mod set_fog_edge_softness;
 pub(crate) mod set_fog_falloff;
 pub(crate) mod set_fog_params;
-pub(crate) mod set_fog_scatter;
+pub(crate) mod set_fog_glow;
 pub(crate) mod set_spin_rate;
 
 #[cfg(test)]

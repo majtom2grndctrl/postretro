@@ -2,29 +2,29 @@
 
 ## Goal
 
-Expose runtime control of fog volume parameters (`density`, `scatter`, `edge_softness`, `falloff`) for all fog entity types (`fog_volume`, `fog_lamp`, `fog_tube`, `fog_ellipsoid`) via named reaction primitives and the reactions API. Replace the existing `setComponent`-based fog mutation path so the scripting VM is not live at runtime. All behavior executes in Rust; scripts declare intent at load time.
+Expose runtime control of fog volume parameters (`density`, `scatter`, `edge_softness`, `falloff`) for all fog entity types (`fog_volume` — plane-bounded and axis-aligned ellipsoid forms, `fog_lamp`, `fog_tube`) via named reaction primitives and the reactions API. Replace the existing `setComponent`-based fog mutation path so the scripting VM is not live at runtime. All behavior executes in Rust; scripts declare intent at load time.
 
 This is the companion to `fog-ellipsoid-entity`. That spec lands the new shape and gets fog ellipsoids compiling and rendering at level load. This spec lands the runtime-control surface that was originally the dropped Task 5 of that spec, redesigned around the same reactions pattern that drives light animations and emitter rate/spin (`setLightAnimation`, `setEmitterRate`, `setSpinRate`).
 
-The surface has two parts: (1) tag-targeted scalar reactions (`setFogDensity`, `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`, `setFogParams`) for one-shot story-event changes; (2) a `FogAnimation` channel on `FogVolumeComponent` plus a `setFogAnimation` primitive for time-varying density curves, sampled by a Rust-side per-frame evaluator (analogous to `LightAnimation` / `setLightAnimation`, but evaluated on CPU and written back to the component's `density` field rather than on GPU). Density is the only animated parameter — scatter, edge_softness, and falloff stay set-once via their respective scalar primitives.
+The surface has two parts: (1) tag-targeted scalar reactions (`setFogDensity`, `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`, `setFogParams`) for one-shot story-event changes; (2) a `FogAnimation` channel on `FogVolumeComponent` plus a `setFogAnimation` primitive for time-varying density and/or saturation curves, sampled by a Rust-side per-frame evaluator (analogous to `LightAnimation` / `setLightAnimation`, but evaluated on CPU and written back to the component fields rather than on GPU). Scatter, edge_softness, and falloff stay set-once via their respective scalar primitives.
 
 ## Scope
 
 ### In scope
 
-- New named reaction primitives `setFogDensity`, `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`. Each is tag-targeted and applies to every fog entity matching the reaction's tag, regardless of subtype (`fog_volume`, `fog_lamp`, `fog_tube`, `fog_ellipsoid`).
+- New named reaction primitives `setFogDensity`, `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`. Each is tag-targeted and applies to every fog entity matching the reaction's tag, regardless of subtype (`fog_volume` plane-bounded or axis-aligned, `fog_lamp`, `fog_tube`).
 - A combined `setFogParams` primitive accepting any subset of the four fields in one args object. Mirrors the partial-update ergonomic that the dropped `setComponent` plan offered, expressed as a single reaction call instead of a live mutation.
 - A new `falloff` field on `FogVolumeComponent` (the only mutable field added by this spec), surfaced through wire load and the reaction primitives.
 - Removal of `FogVolumeComponent` from any future `setComponent` dispatch surface — there is no live-VM path for fog mutation. The `scripting/primitives/mod.rs` "forbidden primitives" test already guards against `setComponent` regressing into the registry; this spec's contribution is to ensure the reaction-primitive path is the only documented mutation surface for fog.
 - SDK fog vocabulary file additions: extend `sdk/lib/entities/fog_volumes.{ts,luau}` with a read-only `FogVolumeHandle` wrapper and pure animation constructors (`fogPulse`, `fogFade`) that build step-list descriptors for `registerReaction` — matching the sequence step shape from `arena-lights.ts`. The constructors return `SetFogAnimationStep[]` (one step carrying a curve), not per-step density values: the sequence dispatcher fires every step on the same frame, so a 16-step `setFogDensity` array collapses to the last value with no time-varying playback. `fogPulse` / `fogFade` are curve-definition helpers for `setFogAnimation`.
-- A new optional `animation: FogAnimation` field on `FogVolumeComponent`, analogous to `LightComponent.animation`. Carries a per-frame density curve sampled by a Rust-side evaluator. Density is the only animated parameter — `scatter`, `edge_softness`, and `falloff` remain set-once via the existing primitives (and the irradiance volume governs color). The evaluator writes the sampled value into `FogVolumeComponent.density` each frame before the fog bridge's `update_volumes` runs, so the existing GPU path is unchanged.
+- A new optional `animation: FogAnimation` field on `FogVolumeComponent`, analogous to `LightComponent.animation`. Carries per-frame density and/or saturation curves sampled by a Rust-side evaluator. Either channel may be `None`; both being `None` with a finite `play_count` is rejected. `scatter`, `edge_softness`, and `falloff` remain set-once via the existing primitives. The evaluator writes sampled values into `FogVolumeComponent` each frame before the fog bridge's `update_volumes` runs, so the existing GPU path is unchanged.
 - New `setFogAnimation` reaction primitive — tag-targeted, same dispatch semantics as the four scalar fog primitives. Args shape mirrors `FogAnimation`. Registers (or clears, when `null`) a `FogAnimation` on every matching `FogVolumeComponent`. The named-event use case (one-shot density change at a story beat) stays on `setFogDensity` / `setFogParams`; `setFogAnimation` is the time-varying channel.
 
 ### Out of scope
 
 - Changing the fog volume's geometry (AABB, planes, half-extent) at runtime. Only the four scalar parameters are mutable.
-- Animated `scatter`, `edge_softness`, or `falloff`. The new `FogAnimation` channel only drives `density`; the other three fields stay set-once via their respective reaction primitives. (Scatter is the closest candidate for animation but isn't compelling on its own — fog "breathing" reads through density. Revisit if a scene demands it.)
-- GPU-side phase evaluation for `FogAnimation`. Lights walk their curve in WGSL because the GPU evaluator was already on the critical path; fog's curve is sampled on the CPU each frame inside the bridge, before `update_volumes` packs the GPU buffer. Per-frame evaluator cost is one curve sample per fog volume per frame — negligible at expected volume counts (well under 100). If a future scene drives fog volumes into the thousands, revisit; the design intentionally avoids inventing a fog-specific GPU evaluator until that need exists.
+- Animated `scatter`, `edge_softness`, or `falloff`. The `FogAnimation` channel drives `density` and `saturation`; the other three fields stay set-once via their respective reaction primitives.
+- GPU-side phase evaluation for `FogAnimation`. Lights walk their curve in WGSL because the GPU evaluator was already on the critical path; fog curves are sampled on the CPU each frame inside the bridge, before `update_volumes` packs the GPU buffer. Per-frame evaluator cost is one sample per channel per fog volume per frame — negligible at expected volume counts (well under 100). If a future scene drives fog volumes into the thousands, revisit; the design intentionally avoids inventing a fog-specific GPU evaluator until that need exists.
 - Per-classname enforcement at the script boundary. `falloff` is accepted on every fog entity; the shader path it reaches depends on the volume type. Documented; no error.
 - Per-entity fog color (settled elsewhere: ambient comes from the SH irradiance volume).
 - Anything in `fog-ellipsoid-entity` (FGD, compiler resolver, shader branch, `shape_mode` discriminant). Those land independently.
@@ -34,7 +34,7 @@ The surface has two parts: (1) tag-targeted scalar reactions (`setFogDensity`, `
 - [ ] A data script can register a sequenced reaction that calls `setFogDensity` against a tag and the visible fog density on every tagged fog entity changes on the frame the reaction fires, with no scripting VM running on the tick path.
 - [ ] The same script pattern works for `setFogScatter`, `setFogEdgeSoftness`, `setFogFalloff`, and `setFogParams` (partial object).
 - [ ] `setFogParams` accepts any subset of `{density, scatter, edgeSoftness, falloff}`. Absent fields leave the corresponding component value at its prior value (wire-loaded at level start; the most recent reaction-applied value thereafter). Negative or non-finite numeric inputs are handled per the per-field rules in the validation table; `log::warn!` records each violation. For `setFogParams`: each field is validated independently; invalid fields are skipped, valid fields applied, component written once per target.
-- [ ] `setFogFalloff` is accepted on every fog entity type. For `fog_volume` (plane-sweep) it updates the stored value but is not consulted by the shader. For `fog_lamp` and `fog_tube` it changes the radial exponent. For `fog_ellipsoid` it drives the ellipsoid path. No error is raised on any subtype.
+- [ ] `setFogFalloff` is accepted on every fog entity type. For plane-bounded `fog_volume` (plane-sweep) it updates the stored value but is not consulted by the shader. For `fog_lamp` and `fog_tube` it changes the radial exponent. For axis-aligned `fog_volume` it drives the ellipsoid path. No error is raised on any subtype.
 - [ ] Tag-targeting matches `setEmitterRate`'s semantics: the reaction's `tag` filter resolves to a target list at dispatch time; entities lacking a `FogVolumeComponent` are skipped with `log::warn!` (typo guard); empty target sets are a debug-log no-op. Exception: `setFogFalloff` early-returns after a single invalid-arg warn when `falloff` is non-positive or non-finite, so missing-component (typo) warns only fire when the falloff value itself is valid. One invalid-arg warn is enough signal in that case.
 - [ ] The primitive registry's "forbidden primitives" test (`scripting/primitives/mod.rs`) continues to assert `setComponent` is absent. No new dispatch arm is added that would re-introduce a live mutation path for fog.
 - [ ] SDK type generation (`cargo run -p postretro --bin gen-script-types`) emits typed argument shapes for the new primitives. The drift-detection test in `cargo test` passes after regeneration.
@@ -50,7 +50,7 @@ The surface has two parts: (1) tag-targeted scalar reactions (`setFogDensity`, `
 
 This task lands the data shape the evaluator and the new primitive both depend on. It is a prerequisite for Task 2 (the new `setFogAnimation` primitive) and Task 5 (the per-frame evaluator).
 
-- New module `crates/postretro/src/scripting/components/fog_volume.rs` (or extend the existing fog component module if one exists alongside `components/light.rs`). Define `FogAnimation` mirroring `LightAnimation`'s shape, but with `density: Option<Vec<f32>>` as the only animated channel:
+- New module `crates/postretro/src/scripting/components/fog_volume.rs` (or extend the existing fog component module if one exists alongside `components/light.rs`). Define `FogAnimation` mirroring `LightAnimation`'s shape, with dual animated channels (`density` and `saturation`):
 
   ```
   #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,11 +58,13 @@ This task lands the data shape the evaluator and the new primitive both depend o
   pub(crate) struct FogAnimation {
       pub(crate) period_ms: f32,
       #[serde(default)]
-      pub(crate) phase: Option<f32>,        // None == 0.0, rem_euclid'd into [0, 1)
+      pub(crate) phase: Option<f32>,            // None == 0.0, rem_euclid'd into [0, 1)
       #[serde(default)]
-      pub(crate) play_count: Option<u32>,   // None == loop forever
+      pub(crate) play_count: Option<u32>,       // None == loop forever
       #[serde(default)]
-      pub(crate) density: Option<Vec<f32>>, // None == hold static density
+      pub(crate) density: Option<Vec<f32>>,     // None == hold static density
+      #[serde(default)]
+      pub(crate) saturation: Option<Vec<f32>>,  // None == hold static saturation
   }
   ```
 

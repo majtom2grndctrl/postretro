@@ -467,6 +467,7 @@ mod tests {
             classname: "grunt".to_string(),
             light: None,
             emitter: None,
+            movement: None,
         });
 
         let resolved = resolve_entity_type("grunt", &data);
@@ -476,6 +477,7 @@ mod tests {
                 classname: "grunt".to_string(),
                 light: None,
                 emitter: None,
+                movement: None,
             })
         );
     }

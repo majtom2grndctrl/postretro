@@ -106,14 +106,57 @@ impl LightDescriptor {
 }
 
 /// Author-side description of an entity type registered via `registerEntity`.
-/// `classname` is required; optional `light` / `emitter` carry per-entity-type
-/// component presets. The level-load spawn path materializes these into a
-/// fresh ECS entity per matching map placement.
+/// `classname` is required; optional `light` / `emitter` / `movement` carry
+/// per-entity-type component presets. The level-load spawn path materializes
+/// these into a fresh ECS entity per matching map placement.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EntityTypeDescriptor {
     pub(crate) classname: String,
     pub(crate) light: Option<LightDescriptor>,
     pub(crate) emitter: Option<BillboardEmitterComponent>,
+    pub(crate) movement: Option<PlayerMovementDescriptor>,
+}
+
+/// Authored player-movement component preset. All fields are required when
+/// `movement` is present; the data-archetype spawn path materializes the
+/// runtime movement component from this. `ground.max_slope` is in degrees on
+/// the wire and converted to a cosine at materialization (not here).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PlayerMovementDescriptor {
+    pub(crate) capsule: CapsuleParams,
+    pub(crate) ground: GroundParams,
+    pub(crate) air: AirParams,
+    pub(crate) fall: FallParams,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CapsuleParams {
+    pub(crate) radius: f32,
+    pub(crate) half_height: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GroundParams {
+    pub(crate) speed: f32,
+    pub(crate) accel: f32,
+    pub(crate) jump_velocity: f32,
+    pub(crate) step_height: f32,
+    pub(crate) max_slope: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AirParams {
+    pub(crate) forward_steer: f32,
+    pub(crate) accel: f32,
+    pub(crate) max_control_speed: f32,
+    pub(crate) bunny_hop: bool,
+    pub(crate) jumps: u32,
+    pub(crate) jump_ceiling: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FallParams {
+    pub(crate) terminal_velocity: f32,
 }
 
 /// The full bundle returned by a level's `registerLevelManifest(ctx)` export.
@@ -395,6 +438,7 @@ pub(crate) fn entity_descriptor_from_js<'js>(
 
     let mut light = None;
     let mut emitter = None;
+    let mut movement = None;
 
     if obj.contains_key("components").map_err(js_err)? {
         let components_val: JsValue = obj.get("components").map_err(js_err)?;
@@ -403,6 +447,16 @@ pub(crate) fn entity_descriptor_from_js<'js>(
                 Object::from_value(components_val).map_err(|_| DescriptorError::InvalidShape {
                     reason: "`components` must be an object".to_string(),
                 })?;
+            if components_obj.contains_key("movement").map_err(js_err)? {
+                let raw: JsValue = components_obj.get("movement").map_err(js_err)?;
+                if !raw.is_null() && !raw.is_undefined() {
+                    let m_obj =
+                        Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                            reason: "`components.movement` must be an object".to_string(),
+                        })?;
+                    movement = Some(movement_descriptor_from_js(&m_obj)?);
+                }
+            }
             if components_obj.contains_key("light").map_err(js_err)? {
                 let raw: JsValue = components_obj.get("light").map_err(js_err)?;
                 if !raw.is_null() && !raw.is_undefined() {
@@ -441,7 +495,165 @@ pub(crate) fn entity_descriptor_from_js<'js>(
         classname,
         light,
         emitter,
+        movement,
     })
+}
+
+fn movement_descriptor_from_js<'js>(
+    obj: &Object<'js>,
+) -> Result<PlayerMovementDescriptor, DescriptorError> {
+    let capsule_obj: Object = get_required_object_js(obj, "capsule")?;
+    let capsule = CapsuleParams {
+        radius: validate_positive_finite(
+            get_required_f32_js(&capsule_obj, "radius")?,
+            "movement.capsule.radius",
+        )?,
+        half_height: validate_positive_finite(
+            get_required_f32_js(&capsule_obj, "halfHeight")?,
+            "movement.capsule.halfHeight",
+        )?,
+    };
+
+    let ground_obj: Object = get_required_object_js(obj, "ground")?;
+    let ground = GroundParams {
+        speed: validate_non_negative_finite(
+            get_required_f32_js(&ground_obj, "speed")?,
+            "movement.ground.speed",
+        )?,
+        accel: validate_non_negative_finite(
+            get_required_f32_js(&ground_obj, "accel")?,
+            "movement.ground.accel",
+        )?,
+        jump_velocity: validate_non_negative_finite(
+            get_required_f32_js(&ground_obj, "jumpVelocity")?,
+            "movement.ground.jumpVelocity",
+        )?,
+        step_height: validate_non_negative_finite(
+            get_required_f32_js(&ground_obj, "stepHeight")?,
+            "movement.ground.stepHeight",
+        )?,
+        max_slope: validate_in_range_finite(
+            get_required_f32_js(&ground_obj, "maxSlope")?,
+            0.0,
+            90.0,
+            "movement.ground.maxSlope",
+        )?,
+    };
+
+    let air_obj: Object = get_required_object_js(obj, "air")?;
+    let jumps_value = get_required_f32_js(&air_obj, "jumps")?;
+    if !jumps_value.is_finite() || jumps_value < 0.0 || jumps_value.fract() != 0.0 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`movement.air.jumps` must be a non-negative integer, got {jumps_value}"
+            ),
+        });
+    }
+    let jumps = jumps_value as u32;
+    let jump_ceiling_present = air_obj.contains_key("jumpCeiling").map_err(js_err)?;
+    if jumps > 0 && !jump_ceiling_present {
+        return Err(DescriptorError::MissingField {
+            field: "jumpCeiling",
+        });
+    }
+    let air = AirParams {
+        forward_steer: validate_in_range_finite(
+            get_required_f32_js(&air_obj, "forwardSteer")?,
+            0.0,
+            1.0,
+            "movement.air.forwardSteer",
+        )?,
+        accel: validate_non_negative_finite(
+            get_required_f32_js(&air_obj, "accel")?,
+            "movement.air.accel",
+        )?,
+        max_control_speed: validate_non_negative_finite(
+            get_required_f32_js(&air_obj, "maxControlSpeed")?,
+            "movement.air.maxControlSpeed",
+        )?,
+        bunny_hop: get_required_bool_js(&air_obj, "bunnyHop")?,
+        jumps,
+        jump_ceiling: get_required_f32_js(&air_obj, "jumpCeiling")?,
+    };
+
+    let fall_obj: Object = get_required_object_js(obj, "fall")?;
+    let fall = FallParams {
+        terminal_velocity: validate_positive_finite(
+            get_required_f32_js(&fall_obj, "terminalVelocity")?,
+            "movement.fall.terminalVelocity",
+        )?,
+    };
+
+    Ok(PlayerMovementDescriptor {
+        capsule,
+        ground,
+        air,
+        fall,
+    })
+}
+
+fn get_required_object_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Object<'js>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Err(DescriptorError::MissingField { field });
+    }
+    Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("'{field}' must be an object"),
+    })
+}
+
+fn get_required_bool_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<bool, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Err(DescriptorError::MissingField { field });
+    }
+    raw.as_bool().ok_or_else(|| DescriptorError::InvalidShape {
+        reason: format!("'{field}' must be a boolean"),
+    })
+}
+
+fn validate_positive_finite(value: f32, field: &str) -> Result<f32, DescriptorError> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a finite value > 0.0, got {value}"),
+        });
+    }
+    Ok(value)
+}
+
+fn validate_non_negative_finite(value: f32, field: &str) -> Result<f32, DescriptorError> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a finite value >= 0.0, got {value}"),
+        });
+    }
+    Ok(value)
+}
+
+fn validate_in_range_finite(
+    value: f32,
+    min: f32,
+    max: f32,
+    field: &str,
+) -> Result<f32, DescriptorError> {
+    if !value.is_finite() || value < min || value > max {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a finite value in [{min}, {max}], got {value}"),
+        });
+    }
+    Ok(value)
 }
 
 fn get_required_string_js<'js>(
@@ -666,6 +878,7 @@ pub(crate) fn entity_descriptor_from_lua(
 
     let mut light = None;
     let mut emitter = None;
+    let mut movement = None;
 
     if table.contains_key("components").map_err(lua_err)? {
         let raw: LuaValue = table.get("components").map_err(lua_err)?;
@@ -678,6 +891,23 @@ pub(crate) fn entity_descriptor_from_lua(
                     });
                 }
             };
+            if components_table.contains_key("movement").map_err(lua_err)? {
+                let raw: LuaValue = components_table.get("movement").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    let m_table = match raw {
+                        LuaValue::Table(t) => t,
+                        other => {
+                            return Err(DescriptorError::InvalidShape {
+                                reason: format!(
+                                    "`components.movement` must be a table, got {}",
+                                    other.type_name()
+                                ),
+                            });
+                        }
+                    };
+                    movement = Some(movement_descriptor_from_lua(&m_table)?);
+                }
+            }
             if components_table.contains_key("light").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("light").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
@@ -716,7 +946,121 @@ pub(crate) fn entity_descriptor_from_lua(
         classname,
         light,
         emitter,
+        movement,
     })
+}
+
+fn movement_descriptor_from_lua(
+    table: &Table,
+) -> Result<PlayerMovementDescriptor, DescriptorError> {
+    let capsule_table = get_required_table_lua(table, "capsule")?;
+    let capsule = CapsuleParams {
+        radius: validate_positive_finite(
+            get_required_f32_lua(&capsule_table, "radius")?,
+            "movement.capsule.radius",
+        )?,
+        half_height: validate_positive_finite(
+            get_required_f32_lua(&capsule_table, "halfHeight")?,
+            "movement.capsule.halfHeight",
+        )?,
+    };
+
+    let ground_table = get_required_table_lua(table, "ground")?;
+    let ground = GroundParams {
+        speed: validate_non_negative_finite(
+            get_required_f32_lua(&ground_table, "speed")?,
+            "movement.ground.speed",
+        )?,
+        accel: validate_non_negative_finite(
+            get_required_f32_lua(&ground_table, "accel")?,
+            "movement.ground.accel",
+        )?,
+        jump_velocity: validate_non_negative_finite(
+            get_required_f32_lua(&ground_table, "jumpVelocity")?,
+            "movement.ground.jumpVelocity",
+        )?,
+        step_height: validate_non_negative_finite(
+            get_required_f32_lua(&ground_table, "stepHeight")?,
+            "movement.ground.stepHeight",
+        )?,
+        max_slope: validate_in_range_finite(
+            get_required_f32_lua(&ground_table, "maxSlope")?,
+            0.0,
+            90.0,
+            "movement.ground.maxSlope",
+        )?,
+    };
+
+    let air_table = get_required_table_lua(table, "air")?;
+    let jumps = get_required_u32_lua(&air_table, "jumps")?;
+    let jump_ceiling_present = air_table.contains_key("jumpCeiling").map_err(lua_err)?;
+    if jumps > 0 && !jump_ceiling_present {
+        return Err(DescriptorError::MissingField {
+            field: "jumpCeiling",
+        });
+    }
+    let air = AirParams {
+        forward_steer: validate_in_range_finite(
+            get_required_f32_lua(&air_table, "forwardSteer")?,
+            0.0,
+            1.0,
+            "movement.air.forwardSteer",
+        )?,
+        accel: validate_non_negative_finite(
+            get_required_f32_lua(&air_table, "accel")?,
+            "movement.air.accel",
+        )?,
+        max_control_speed: validate_non_negative_finite(
+            get_required_f32_lua(&air_table, "maxControlSpeed")?,
+            "movement.air.maxControlSpeed",
+        )?,
+        bunny_hop: get_required_bool_lua(&air_table, "bunnyHop")?,
+        jumps,
+        jump_ceiling: get_required_f32_lua(&air_table, "jumpCeiling")?,
+    };
+
+    let fall_table = get_required_table_lua(table, "fall")?;
+    let fall = FallParams {
+        terminal_velocity: validate_positive_finite(
+            get_required_f32_lua(&fall_table, "terminalVelocity")?,
+            "movement.fall.terminalVelocity",
+        )?,
+    };
+
+    Ok(PlayerMovementDescriptor {
+        capsule,
+        ground,
+        air,
+        fall,
+    })
+}
+
+fn get_required_table_lua(table: &Table, field: &'static str) -> Result<Table, DescriptorError> {
+    if !table.contains_key(field).map_err(lua_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Err(DescriptorError::MissingField { field }),
+        LuaValue::Table(t) => Ok(t),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("'{field}' must be a table, got {}", other.type_name()),
+        }),
+    }
+}
+
+fn get_required_bool_lua(table: &Table, field: &'static str) -> Result<bool, DescriptorError> {
+    if !table.contains_key(field).map_err(lua_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Err(DescriptorError::MissingField { field }),
+        LuaValue::Boolean(b) => Ok(b),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("'{field}' must be a boolean, got {}", other.type_name()),
+        }),
+    }
 }
 
 fn get_required_string_lua(table: &Table, field: &'static str) -> Result<String, DescriptorError> {
@@ -1177,5 +1521,201 @@ mod tests {
         assert_eq!(d.classname, "campfire");
         let l = d.light.expect("light present");
         assert_eq!(l.intensity, 4.0);
+    }
+
+    // --- PlayerMovementDescriptor parsing ----------------------------------
+
+    const JS_PLAYER_MOVEMENT: &str = r#"({
+        classname: "player",
+        components: {
+            movement: {
+                capsule: { radius: 0.4, halfHeight: 0.8 },
+                ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                fall: { terminalVelocity: 40.0 }
+            }
+        }
+    })"#;
+
+    #[test]
+    fn js_movement_descriptor_full_shape_parses() {
+        let d = eval_js(JS_PLAYER_MOVEMENT, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap()
+        });
+        let m = d.movement.expect("movement present");
+        assert_eq!(m.capsule.radius, 0.4);
+        assert_eq!(m.capsule.half_height, 0.8);
+        assert_eq!(m.ground.speed, 7.0);
+        assert_eq!(m.ground.max_slope, 45.0);
+        assert_eq!(m.air.forward_steer, 0.0);
+        assert!(!m.air.bunny_hop);
+        assert_eq!(m.air.jumps, 0);
+        assert_eq!(m.fall.terminal_velocity, 40.0);
+    }
+
+    #[test]
+    fn js_movement_missing_air_field_reports_missing_field() {
+        // `bunnyHop` removed from `air`.
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert_eq!(err, DescriptorError::MissingField { field: "bunnyHop" });
+    }
+
+    #[test]
+    fn js_movement_jumps_positive_without_ceiling_errors() {
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 2 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert_eq!(
+            err,
+            DescriptorError::MissingField {
+                field: "jumpCeiling",
+            }
+        );
+    }
+
+    #[test]
+    fn js_movement_capsule_radius_zero_is_rejected() {
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.0, halfHeight: 0.8 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_max_slope_out_of_range_is_rejected() {
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 95.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_forward_steer_out_of_range_is_rejected() {
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 1.5, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_terminal_velocity_zero_is_rejected() {
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 0.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_descriptor_full_shape_parses() {
+        let src = r#"return {
+            classname = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8 },
+                    ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        let m = d.movement.expect("movement present");
+        assert_eq!(m.ground.jump_velocity, 5.5);
+        assert_eq!(m.air.jumps, 0);
+        assert_eq!(m.fall.terminal_velocity, 40.0);
+    }
+
+    #[test]
+    fn lua_movement_jumps_positive_without_ceiling_errors() {
+        let src = r#"return {
+            classname = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8 },
+                    ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 2 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert_eq!(
+            err,
+            DescriptorError::MissingField {
+                field: "jumpCeiling",
+            }
+        );
+    }
+
+    #[test]
+    fn lua_movement_missing_capsule_block_reports_missing_field() {
+        let src = r#"return {
+            classname = "player",
+            components = {
+                movement = {
+                    ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert_eq!(err, DescriptorError::MissingField { field: "capsule" });
     }
 }

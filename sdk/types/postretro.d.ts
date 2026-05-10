@@ -105,7 +105,63 @@ declare module "postretro" {
   };
 
   /** Optional bag of component presets carried by `EntityTypeDescriptor.components`. */
-  export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null };
+  export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null; movement?: PlayerMovementDescriptor | null };
+
+  /** Authored player-movement component preset. All four sub-objects are required when `movement` is present; the data-archetype spawn path materializes the runtime movement component from this. */
+  export type PlayerMovementDescriptor = {
+    /** Collision capsule shape. */
+    capsule: CapsuleParams;
+    /** On-ground locomotion parameters. */
+    ground: GroundParams;
+    /** Mid-air control parameters. */
+    air: AirParams;
+    /** Falling parameters. */
+    fall: FallParams;
+  };
+
+  /** Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`. */
+  export type CapsuleParams = {
+    /** Capsule radius in world units. Must be > 0. */
+    radius: number;
+    /** Cylinder half-height in world units. Must be > 0. */
+    halfHeight: number;
+  };
+
+  /** On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization. */
+  export type GroundParams = {
+    /** Target ground speed in world units/sec. */
+    speed: number;
+    /** Ground acceleration in world units/sec². */
+    accel: number;
+    /** Vertical launch velocity applied on jump. */
+    jumpVelocity: number;
+    /** Maximum step-up height in world units. */
+    stepHeight: number;
+    /** Maximum walkable slope in degrees; must lie in [0, 90]. */
+    maxSlope: number;
+  };
+
+  /** Mid-air control parameters. `forwardSteer` blends forward steering authority between 0 (pure strafe-only Quake air control) and 1 (full forward authority). `jumpCeiling` is required when `jumps > 0`. */
+  export type AirParams = {
+    /** Forward steering authority in [0, 1]. */
+    forwardSteer: number;
+    /** Air acceleration in world units/sec². */
+    accel: number;
+    /** Speed cap that air-accel can push toward. */
+    maxControlSpeed: number;
+    /** Permit chained jumps on landing without releasing the jump input. */
+    bunnyHop: boolean;
+    /** Additional jumps allowed in air after the initial ground jump. 0 disables air jumps. */
+    jumps: number;
+    /** Maximum upward velocity an air jump can reach; required when `jumps > 0`. */
+    jumpCeiling: number;
+  };
+
+  /** Falling parameters. */
+  export type FallParams = {
+    /** Terminal downward fall speed in world units/sec. Must be > 0. */
+    terminalVelocity: number;
+  };
 
   /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */
   export type ModManifest = {

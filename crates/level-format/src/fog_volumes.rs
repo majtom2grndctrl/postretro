@@ -428,7 +428,11 @@ mod tests {
             volumes: vec![],
         };
         let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
-        assert!((restored.initial_gravity - 12.5).abs() < 1e-6, "initial_gravity round-trip: got {}", restored.initial_gravity);
+        assert!(
+            (restored.initial_gravity - 12.5).abs() < 1e-6,
+            "initial_gravity round-trip: got {}",
+            restored.initial_gravity
+        );
     }
 
     #[test]

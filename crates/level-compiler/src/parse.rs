@@ -1163,7 +1163,13 @@ mod tests {
         assert!(classnames.contains(&"info_player_start"));
 
         // Point entities must have 0 brushes.
-        for point_classname in &["info_player_start", "player", "light", "light_spot", "fog_lamp"] {
+        for point_classname in &[
+            "info_player_start",
+            "player",
+            "light",
+            "light_spot",
+            "fog_lamp",
+        ] {
             let brush_count = map_data
                 .entity_brushes
                 .iter()
@@ -1223,7 +1229,10 @@ mod tests {
             "light classname leaked into map_entities"
         );
         assert!(
-            map_data.map_entities.iter().all(|e| e.classname != "worldspawn"),
+            map_data
+                .map_entities
+                .iter()
+                .all(|e| e.classname != "worldspawn"),
             "worldspawn must not appear in map_entities",
         );
     }
@@ -1943,8 +1952,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
-        let tmp =
-            std::env::temp_dir().join(format!("postretro_initial_gravity_{unique}.map"));
+        let tmp = std::env::temp_dir().join(format!("postretro_initial_gravity_{unique}.map"));
         std::fs::write(&tmp, map_text).unwrap();
         let map_data = parse_map_file(&tmp, MapFormat::IdTech2)
             .expect("inline gravity fixture should parse without error");

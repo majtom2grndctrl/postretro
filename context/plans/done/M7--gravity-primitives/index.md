@@ -22,8 +22,8 @@ Expose world gravity to scripts via `world.getGravity()` and `world.setGravity()
 - Add `initialGravity` to the `worldspawn` entity definition in `sdk/TrenchBroom/postretro.fgd`. Type: `float`, units: m/s², sign convention: negative-down (`-9.81` = standard gravity). No default value. Description: starting gravity; negative = downward, positive = upward; may be changed at runtime via `world.setGravity()`.
 - In `prl-build` (`postretro-level-compiler`): read `initialGravity` from worldspawn KVPs. Error and halt at compile time if absent. Emit the value as a new `f32` field on the existing worldspawn/header PRL section (following the same pattern as `fog_pixel_scale`).
 - In the engine (`prl::load_prl`): read `initial_gravity: f32` from the PRL field; store it on `LevelWorld`.
-- On `App`: add `current_gravity: f32`. Initialize from `level.initial_gravity` before any script context runs at level load. Reset on each subsequent level load.
-- Add a `gravity: Rc<Cell<f32>>` field to `ScriptCtx` (following the documented "extend by adding one field per subsystem" pattern). Wire it to the same `Cell` that `App::current_gravity` writes through, so primitives can read and write it without borrowing `App`.
+- Add a `gravity: Rc<Cell<f32>>` field to `ScriptCtx` (following the documented "extend by adding one field per subsystem" pattern). `ScriptCtx` is the sole owner; `App` reads and writes through `self.script_ctx.gravity` directly. Seeded from `level.initial_gravity` in the `!level_load_fired` cold-path branch before any script runs; that branch is the single seed site and is reused on future level reload.
+- `ScriptCtx::new` initializes gravity to `f32::NAN` so any code path that bypasses `prl::load_prl` surfaces immediately in `particle_sim::tick`. The `worldSetGravity` primitive rejects non-finite writes, so scripts cannot reintroduce the sentinel.
 
 ### 2. Gravity primitives
 

@@ -223,7 +223,11 @@ pub(crate) fn tick(
             Some(h) => {
                 let toi = h.time_of_impact.max(0.0);
                 current_pos += dir * toi;
-                let consumed = if speed > 0.0 { toi / speed } else { remaining_dt };
+                let consumed = if speed > 0.0 {
+                    toi / speed
+                } else {
+                    remaining_dt
+                };
                 remaining_dt = (remaining_dt - consumed).max(0.0);
 
                 let normal = Vec3::new(h.normal2.x, h.normal2.y, h.normal2.z);
@@ -478,7 +482,10 @@ mod tests {
                 let (next, ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
                 pos = next;
                 assert!(ev.jumped, "grounded + jump_pressed should emit jumped");
-                assert!(!comp.is_grounded, "should be airborne immediately after jump");
+                assert!(
+                    !comp.is_grounded,
+                    "should be airborne immediately after jump"
+                );
                 assert!(
                     comp.velocity.y > 0.0,
                     "vertical velocity should be positive after jump, got {}",
@@ -531,7 +538,8 @@ mod tests {
             pos.y
         );
         assert!(
-            pos.y >= ledge_y - settle_tol && pos.y <= ledge_y + desc.ground.step_height + settle_tol,
+            pos.y >= ledge_y - settle_tol
+                && pos.y <= ledge_y + desc.ground.step_height + settle_tol,
             "player y on ledge should be near ledge_y={}, got y={}",
             ledge_y,
             pos.y
@@ -572,7 +580,8 @@ mod tests {
         );
         // Y still rests near the ledge surface (allowing for the step-up jitter).
         assert!(
-            pos.y >= ledge_y - settle_tol && pos.y <= ledge_y + desc.ground.step_height + settle_tol,
+            pos.y >= ledge_y - settle_tol
+                && pos.y <= ledge_y + desc.ground.step_height + settle_tol,
             "wall-pinned player y should be near ledge ({}), got y={}",
             ledge_y,
             pos.y

@@ -629,17 +629,11 @@ impl ApplicationHandler for App {
                     // lands with a later milestone. Events fire after the
                     // entity update so reaction targets see the post-tick state.
                     let jump_pressed = snapshot.button(Action::Jump).is_active();
-                    let movement_events = self.run_movement_tick(
-                        forward_axis,
-                        right_axis,
-                        jump_pressed,
-                        tick_dt,
-                    );
+                    let movement_events =
+                        self.run_movement_tick(forward_axis, right_axis, jump_pressed, tick_dt);
                     for event_name in &movement_events {
-                        let _ = fire_named_event(
-                            event_name,
-                            &self.script_ctx.data_registry.borrow(),
-                        );
+                        let _ =
+                            fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                     }
 
                     self.frame_timing

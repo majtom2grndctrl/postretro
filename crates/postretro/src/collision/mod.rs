@@ -128,9 +128,17 @@ pub(crate) fn cast_capsule(
         stop_at_penetration: true,
         ..Default::default()
     };
-    cast_shapes(&pos1, &dir, capsule, &world.isometry, &vel2, &world.mesh, options)
-        .ok()
-        .flatten()
+    cast_shapes(
+        &pos1,
+        &dir,
+        capsule,
+        &world.isometry,
+        &vel2,
+        &world.mesh,
+        options,
+    )
+    .ok()
+    .flatten()
 }
 
 #[cfg(test)]

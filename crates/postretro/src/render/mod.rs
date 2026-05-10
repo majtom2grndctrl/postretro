@@ -1608,20 +1608,20 @@ impl Renderer {
                 0u32,
             )
         };
-        self.vertex_buffer =
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("World Vertex Buffer"),
-                    contents: &vertex_data,
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-        self.index_buffer =
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("World Index Buffer"),
-                    contents: &index_data,
-                    usage: wgpu::BufferUsages::INDEX,
-                });
+        self.vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("World Vertex Buffer"),
+                contents: &vertex_data,
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        self.index_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("World Index Buffer"),
+                contents: &index_data,
+                usage: wgpu::BufferUsages::INDEX,
+            });
         self.index_count = index_count;
 
         // --- Wireframe index buffer ---
@@ -1651,13 +1651,13 @@ impl Renderer {
         } else {
             vec![0u8; GPU_LIGHT_SIZE]
         };
-        let lights_buffer =
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Direct Lights Storage Buffer"),
-                    contents: &lights_data,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                });
+        let lights_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Direct Lights Storage Buffer"),
+                contents: &lights_data,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
         self.lights_buffer = lights_buffer;
         self.level_lights = level_lights;
 
@@ -1666,13 +1666,13 @@ impl Renderer {
         } else {
             vec![0u8; 16]
         };
-        let influence_buffer =
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Light Influence Storage Buffer"),
-                    contents: &influence_data,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                });
+        let influence_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Light Influence Storage Buffer"),
+                contents: &influence_data,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
 
         let spec_lights_data = {
             let packed = pack_spec_lights(geometry.lights);
@@ -1716,37 +1716,36 @@ impl Renderer {
                     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 });
 
-        self.lighting_bind_group =
-            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Lighting Bind Group"),
-                layout: &self.lighting_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.lights_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: influence_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: spec_lights_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: chunk_grid_info_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: chunk_grid_offsets_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: chunk_grid_indices_buffer.as_entire_binding(),
-                    },
-                ],
-            });
+        self.lighting_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Lighting Bind Group"),
+            layout: &self.lighting_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.lights_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: influence_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: spec_lights_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: chunk_grid_info_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: chunk_grid_offsets_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: chunk_grid_indices_buffer.as_entire_binding(),
+                },
+            ],
+        });
 
         // --- SH volume, sh_compose, lightmap, animated lightmap ---
         self.sh_volume_resources = ShVolumeResources::new(
@@ -1839,10 +1838,7 @@ impl Renderer {
             );
             let diffuse_view = diffuse_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-            let spec_view = match specular_set
-                .get(idx)
-                .and_then(|o| o.as_ref())
-            {
+            let spec_view = match specular_set.get(idx).and_then(|o| o.as_ref()) {
                 Some(spec_loaded) => {
                     let r_only = extract_r_channel(&spec_loaded.data);
                     let tex = upload_texture_data(
@@ -1881,13 +1877,13 @@ impl Renderer {
                 .copied()
                 .unwrap_or(crate::material::Material::Default);
             let uniform_bytes = build_material_uniform(material.shininess());
-            let uniform_buf =
-                self.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some(&format!("Material Uniform {idx}")),
-                        contents: &uniform_bytes,
-                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    });
+            let uniform_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("Material Uniform {idx}")),
+                    contents: &uniform_bytes,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
 
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(&format!("Material Bind Group {idx}")),
@@ -1932,13 +1928,13 @@ impl Renderer {
             let diffuse_view = diffuse_tex.create_view(&wgpu::TextureViewDescriptor::default());
             let uniform_bytes =
                 build_material_uniform(crate::material::Material::Default.shininess());
-            let uniform_buf =
-                self.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Material Uniform Placeholder"),
-                        contents: &uniform_bytes,
-                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    });
+            let uniform_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Material Uniform Placeholder"),
+                    contents: &uniform_bytes,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Placeholder Material Bind Group"),
                 layout: &self.texture_bind_group_layout,
@@ -1969,10 +1965,7 @@ impl Renderer {
         }
 
         self.gpu_textures = gpu_textures;
-        log::info!(
-            "[Renderer] Textures installed: {}",
-            self.gpu_textures.len(),
-        );
+        log::info!("[Renderer] Textures installed: {}", self.gpu_textures.len(),);
     }
 
     /// May be called more than once (mod-override swap in splash frame 1).
@@ -2011,11 +2004,11 @@ impl Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder =
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Splash Frame Encoder"),
-                });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Splash Frame Encoder"),
+            });
 
         self.splash_pipeline.encode(&mut encoder, &view);
 

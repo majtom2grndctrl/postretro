@@ -132,7 +132,7 @@ Game logic owns entities exclusively. No other subsystem creates, modifies, or d
 | Subsystem | Interaction with entities |
 |-----------|--------------------------|
 | **Game logic** | Owns, creates, updates, destroys |
-| **Renderer** | Borrows position, orientation, and visual data (sprite index, animation frame) read-only for drawing |
+| **Renderer** | Borrows position, orientation, and visual data (sprite index, animation frame, or 3D model handle) read-only for drawing |
 | **Audio** | Consumes game events (sound triggers) emitted during update; reads entity positions for spatial audio |
 | **Input** | No direct interaction with entities; input state flows through game logic |
 

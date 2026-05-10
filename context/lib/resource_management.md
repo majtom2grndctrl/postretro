@@ -170,7 +170,7 @@ Reflective surfaces (wet floors, chrome, glass) sample from the nearest `env_cub
 
 ## 6. Billboard Sprites
 
-Camera-facing textured quads used for characters, pickups, projectiles, and decorative elements.
+Camera-facing textured quads used for pickups, projectiles, and decorative elements. Characters (enemies, player, NPCs) may use either billboard sprites or 3D models.
 
 ### 6.1 Asset Format
 

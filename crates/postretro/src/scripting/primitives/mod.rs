@@ -213,7 +213,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("FallParams")
         .doc("Falling parameters.")
-        .field("terminalVelocity", "f32", "Terminal downward fall speed in world units/sec. Must be > 0.")
+        .field(
+            "terminalVelocity",
+            "f32",
+            "Terminal downward fall speed in world units/sec. Must be > 0.",
+        )
         .finish();
     registry
         .register_type("ModManifest")

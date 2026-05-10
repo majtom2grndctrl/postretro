@@ -2,7 +2,19 @@
 
 ## Goal
 
-Get a window on screen as soon as wgpu is initialized, displaying a baked PNG of the README ASCII-art splash. Move PRL parsing, texture decode, mod init, and level install off the pre-event-loop critical path so the user sees the engine respond immediately. Instrument every startup stage with `Instant`-based timers so future perf work has data instead of guesses.
+Get a window on screen as soon as wgpu is initialized, displaying a baked PNG of the README ASCII-art splash. Move PRL parsing, texture decode, mod init, and level install off the pre-event-loop critical path so the user sees the engine respond immediately. Instrument every startup stage with `Instant`-based timers so future perf work has data instead of guesses. Codify a sync/async model for the boot sequence so future phases (mod scan, mod browser, level reload) follow one template instead of diverging.
+
+## Boot-phase concurrency model
+
+Pinned here for this plan; promoted to `context/lib/boot_sequence.md` when the plan moves to `ready/`.
+
+- **Main thread owns** the winit event loop, wgpu (device, queue, all GPU work), audio mixer ownership, and all script-VM execution. `ScriptRuntime` and `Renderer` are not `Send`; this is enforced by the types, not by convention.
+- **Worker threads own** file I/O, parsing, and decoding. Outputs must be plain `Send` data — no engine handles, no GPU resources. Today: PRL parse, PNG decode. Future: audio decode, mod-manifest scan.
+- **Handoff** is `mpsc` channels carrying POD. One worker per kicked-off task; no thread pool until measurement demands one.
+- **Phases are sequential at the architecture level; intra-phase work is parallel.** The engine does not advance from phase N to phase N+1 until phase N's worker outputs are consumed and any main-thread follow-up (GPU upload, script run, registry populate) has completed. This is what keeps the boot sequence linear and reasonable while still letting individual phases parallelize internally.
+- **No async runtime.** `std::thread` + `mpsc`. Revisit only if a future phase produces evidence the model is insufficient.
+
+This plan is the first application of the model. The level-load phase parses on a worker, uploads on the main thread, and runs scripts on the main thread — and the phase boundary is the splash → first level frame transition.
 
 ## Scope
 
@@ -56,9 +68,9 @@ Stages to record, in order:
 
 ### Task 2: Splash asset capture
 
-Capture the README ASCII art as a PNG. Use the existing TrenchBroom collection layout under `content/base/textures/<collection>/<name>.png` so the existing `texture::load_textures` machinery can read it without a new path convention. Specific path and capture tool decided at task time (see open questions).
+Capture the README ASCII art as a PNG screenshot. Commit at `content/base/textures/splash/postretro.png`. RGBA8, solid background, no transparency. Resolution chosen so nearest-neighbor sampling at 1280×720 stays crisp — 1920×1080 is fine. One-time asset commit, no code dependency.
 
-The image is a single PNG, RGBA8, with a solid background color (no transparency expected). Resolution chosen so nearest-neighbor sampling at 1280×720 looks crisp — recommend 1920×1080 or thereabouts. One-time asset commit, no code dependency.
+The splash is loaded by a one-shot helper distinct from `texture::load_textures` — it does not participate in the BSP texture-name resolver. The helper lives next to the splash render pass.
 
 ### Task 3: Splash render pass
 
@@ -70,11 +82,11 @@ The splash uses an aspect-correct UV mapping — UVs computed in the vertex shad
 
 ### Task 4: Worker thread for asset load
 
-Replace the synchronous `load_level` / `texture::load_textures` / `normalize_prl_uvs` calls in `main()` with a worker spawn. The worker takes the resolved map path and content root, performs all three steps with timing, and sends a `LoadOutcome` over an `mpsc::Sender`. `LoadOutcome` carries the `Option<LevelWorld>`, `Option<TextureSet>`, and `StartupTimings` from the worker.
+Replace the synchronous `load_level` / `texture::load_textures` / `normalize_prl_uvs` calls in `main()` with a worker spawn. The worker takes the resolved map path and content root, performs all three steps with timing, and sends a `LoadOutcome` over an `mpsc::Sender`. `LoadOutcome` carries the `Option<LevelWorld>`, `Option<TextureSet>`, and `StartupTimings` from the worker — all `Send` POD per the concurrency model.
 
-The `Receiver` lives on `App`. On every redraw, before any per-frame work, `try_recv` is checked once. On receipt, transition the boot state to `LevelInstalling` and run the install steps inline that frame.
+The `Receiver` lives on `App`. On every redraw, before any per-frame work, `try_recv` is checked once. On receipt, transition the boot state to `Installing` and run the install steps inline that frame.
 
-The worker is `std::thread::spawn` — no rayon, no tokio. Its `JoinHandle` is owned by `App` so a clean shutdown can drop it (detached) when the window closes during load.
+The worker is `std::thread::spawn` — no rayon, no tokio. Its `JoinHandle` is owned by `App` and detached on window-close-during-load: PRL parse and PNG decode are bounded CPU work, and the worker's send into a dropped receiver returns an error which the worker ignores. Phase cancellation as a general capability is not part of this plan.
 
 ### Task 5: Boot state machine and install path
 
@@ -116,16 +128,13 @@ Single-line format, stage name and duration in milliseconds, comma-separated. Fo
 - New module `crates/postretro/src/startup.rs` holds `StartupTimings` and `BootState`. Owned by `App`.
 - New module `crates/postretro/src/render/splash.rs` holds the splash pipeline (vertex shader emits fullscreen triangle, fragment shader samples a single texture). The pipeline is created during `Renderer::new` regardless of whether a splash texture is bound — cost is one pipeline object, negligible.
 - Splash texture upload reuses the existing `LoadedTexture` shape and the existing texture-creation helper inside the renderer (sampler config differs from world textures: nearest-neighbor, clamp-to-edge).
-- Worker channel: `std::sync::mpsc::channel::<LoadOutcome>()`. `App` polls the receiver at the top of each `RedrawRequested`. Worker thread does not need to be `Send`-restricted since `LevelWorld`, `TextureSet`, and `StartupTimings` are all plain data.
-- Splash PNG path: candidate `content/base/textures/_splash/postretro.png`. Loaded by a one-shot helper in the worker (so PNG decode happens off-main-thread alongside level textures), or eagerly on the main thread before the worker is dispatched if we want the splash visible the instant `resumed()` returns. Decision deferred to Task 3 — recommend eager on main thread, since one PNG decode is cheap (~ms) and removes a dependency between worker output and splash visibility.
+- Splash PNG path: `content/base/textures/splash/postretro.png`. Decoded eagerly on the main thread before the worker is dispatched — splash is part of Phase 0 (engine init), which is main-thread by the concurrency model, and one PNG decode (~ms) is negligible. Removes any phase-internal dependency between worker output and splash visibility.
+- Worker channel: `std::sync::mpsc::channel::<LoadOutcome>()`. `App` polls the receiver at the top of each `RedrawRequested`.
 - Stage timer log target: `[Startup]` prefix, info level. One line per phase.
 
-The existing `Renderer::new` already accepts `Option<&LevelGeometry>` and `Option<&TextureSet>` (see `crates/postretro/src/render/mod.rs:478`), so calling it with `(None, None)` is already supported — no constructor split required. The install-time level data path goes through new methods (`install_level_geometry`, `install_textures`) that perform the GPU uploads currently inlined in `Renderer::new`. Extracting those uploads into named methods is the largest contained change in the renderer.
+Existing `Renderer::new` accepts `Option<&LevelGeometry>` and `Option<&TextureSet>` (see `crates/postretro/src/render/mod.rs:478`), but the `Some` branches inline the GPU uploads. The concurrency model — worker parses, main thread uploads — requires those uploads to be addressable as a separate step. Split them out into `Renderer::install_level_geometry` and `Renderer::install_textures`, called from the `Installing → Running` transition in `App`. `Renderer::new` is then called with `(None, None)` from `resumed()` and never with `Some` payloads.
 
 ## Open questions
 
-- **Splash capture method.** Options: terminal screenshot of `cat README.md` in a chosen monospace font; `silicon` CLI from the README markdown; hand-render via an HTML-to-image pipeline. Recommend `silicon` for reproducibility — but a hand-screenshot is acceptable if `silicon` setup is friction. Decide before Task 2.
-- **Splash file path and collection name.** `content/base/textures/_splash/postretro.png` mirrors the planned `boot_sequence.md` §1 layout, but the splash is not a level texture. Acceptable to add a sibling `content/base/splash/` directory with its own loader. Recommend the latter — keeps the splash decoupled from the texture-collection name-resolver.
-- **Eager vs. worker-thread splash decode.** Eager (main thread, before event-loop) means splash is on screen one frame after `resumed()`. Worker-thread means splash decode parallelizes with PRL parse but the splash appears one or two frames later. Recommend eager — one PNG decode is negligible and the user-perceived latency is what matters.
-- **Renderer install methods vs constructor.** Extracting the geometry/texture uploads from `Renderer::new` is mechanical but spans a few hundred lines. Confirm the spec's preference: keep `Renderer::new` taking `Option`s and call it twice (no), or split out `install_level` (yes). Recommend split.
-- **Worker thread on close-mid-load.** Detached vs joined. Detached is simpler; joined waits up to ~PRL-parse time on exit. Recommend detached.
+- **Promoting the concurrency model to `context/lib/boot_sequence.md`.** The five-bullet model is durable. Move it at promotion-time, not now, per the documented draft → ready lifecycle. Flag for the reviewer to confirm.
+- **Phase cancellation as a future capability.** Detached worker on close-mid-load is fine for PRL parse + PNG decode. Mid-mod-swap or mid-level-reload cancellation will need a real story — out of scope here, but the model should not preclude it. Worth a sentence in `boot_sequence.md` at promotion.

@@ -42,7 +42,7 @@ pub enum TranslateError {
     },
 
     #[error(
-        "light_spot has 'target' set but named-entity targeting is not supported until Milestone 6; use 'angles' for spotlight direction"
+        "light_spot has 'target' set but named-entity targeting is not yet implemented; use 'angles' for spotlight direction"
     )]
     TargetNotSupported,
 

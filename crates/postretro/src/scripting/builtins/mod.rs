@@ -14,6 +14,8 @@ pub(crate) mod data_archetype;
 // re-export, so the warning fires there only.
 #[allow(unused_imports)]
 pub(crate) use data_archetype::apply_data_archetype_dispatch;
+#[allow(unused_imports)]
+pub(crate) use data_archetype::{PLAYER_START_CLASSNAME, spawn_from_player_starts};
 
 // Re-export so call sites that say `super::MapEntity` (handlers, tests) keep
 // working unchanged. The struct itself lives in `scripting::map_entity`.

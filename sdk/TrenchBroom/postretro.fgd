@@ -86,7 +86,7 @@
     _cone(integer) : "Inner Cone Angle (degrees)" : 30
     _cone2(integer) : "Outer Cone Angle (degrees)" : 45
     angles(angles) : "Direction (pitch yaw roll, degrees)" : "0 0 0"
-    // target entity direction is deferred to Milestone 6 (requires entity system)
+    // Named-entity target direction is not yet implemented; use 'angles' for spotlight direction.
 ]
 
 @PointClass base(Light)
@@ -117,6 +117,18 @@
     color_g(float) : "Tint G (linear, 0-1)" : "1.0"
     color_b(float) : "Tint B (linear, 0-1)" : "1.0"
     spin_rate(float) : "Spin rate (radians/sec)" : "0.0"
+]
+
+// Player spawn point. At level load the engine spawns one entity per
+// `info_player_start` placement, using `entity_class` to pick the registered
+// classname (defaults to `"player"`).
+@PointClass
+    color(0 220 0)
+    size(-16 -16 -24, 16 16 32)
+    = info_player_start : "Player Spawn Point"
+[
+    angles(angles) : "Facing (pitch yaw roll, degrees)" : "0 0 0"
+    entity_class(string) : "Registered classname to spawn" : "player"
 ]
 
 // Per-region volumetric fog brush.

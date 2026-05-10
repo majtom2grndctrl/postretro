@@ -41,8 +41,9 @@ use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, DiagnosticAction};
 use crate::render::Renderer;
 use crate::scripting::builtins::{
-    ClassnameDispatch, apply_classname_dispatch, apply_data_archetype_dispatch,
-    register_builtins as register_builtin_classnames,
+    ClassnameDispatch, PLAYER_START_CLASSNAME, apply_classname_dispatch,
+    apply_data_archetype_dispatch, register_builtins as register_builtin_classnames,
+    spawn_from_player_starts,
 };
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::light::register_sequenced_light_primitives;
@@ -231,6 +232,8 @@ fn main() -> Result<()> {
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
         level_load_fired: false,
         builtin_handled: None,
+        pending_spawn_points: None,
+        pending_map_entities: None,
         script_time: 0.0,
     };
 
@@ -376,6 +379,21 @@ struct App {
     /// level load and after the sweep consumes it.
     builtin_handled: Option<std::collections::HashSet<String>>,
 
+    /// `info_player_start` placements partitioned out of `world.map_entities`
+    /// in `resumed()`, awaiting the data-archetype sweep on the first redraw
+    /// frame. The dispatch sweeps must not see these (they are routed by
+    /// `entity_class`, not by their own `classname`); the second sweep
+    /// consumes them via `spawn_from_player_starts`. `None` before level load
+    /// and after the sweep consumes them.
+    pending_spawn_points: Option<Vec<crate::scripting::map_entity::MapEntity>>,
+
+    /// Non-player-start map entities partitioned out of `world.map_entities`
+    /// in `resumed()`, awaiting the data-archetype sweep on the first redraw
+    /// frame. Avoids re-cloning and re-filtering `world.map_entities` in the
+    /// `level_load_fired` block. `None` before level load and after the sweep
+    /// consumes them.
+    pending_map_entities: Option<Vec<crate::scripting::map_entity::MapEntity>>,
+
     /// Seconds since level load, not wall clock. Resets to zero on level
     /// unload. Maintained for any future engine consumers that need a
     /// level-relative monotonic clock.
@@ -486,8 +504,16 @@ impl ApplicationHandler for App {
             // Adapt the wire records to the scripting-tree representation at
             // the dispatch boundary. The loader does not depend on scripting
             // types; conversion happens here.
-            let map_entities: Vec<crate::scripting::map_entity::MapEntity> =
+            let all_entities: Vec<crate::scripting::map_entity::MapEntity> =
                 world.map_entities.iter().cloned().map(Into::into).collect();
+            // Partition `info_player_start` out of the dispatch input — those
+            // placements are routed by `entity_class`, not by their own
+            // classname, and are processed after `registerEntity` has populated
+            // `data_registry.entities` (see the `level_load_fired` block).
+            let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
+                .into_iter()
+                .partition(|e| e.classname == PLAYER_START_CLASSNAME);
+            self.pending_spawn_points = Some(spawn_points);
             // Returns classnames claimed by built-in handlers regardless of
             // spawn success; passed to the data-archetype sweep to prevent
             // double-handling even when a built-in handler fails to materialize.
@@ -501,6 +527,7 @@ impl ApplicationHandler for App {
                 );
             }
             self.builtin_handled = Some(handled);
+            self.pending_map_entities = Some(map_entities);
         }
 
         // Register sprite collections for every distinct `sprite` name in the
@@ -530,9 +557,8 @@ impl ApplicationHandler for App {
                             height: 1,
                         }]
                     });
-                // The pass needs a representative `lifetime` for animation-frame
-                // stride; `spec_intensity = 0.3` matches the legacy default.
-                // Per-emitter binding is future work.
+                // `spec_intensity` is per-collection; 0.3 is a placeholder until
+                // per-emitter binding is supported.
                 renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
                 self.particle_render.register_sprite(&collection);
             }
@@ -663,8 +689,9 @@ impl ApplicationHandler for App {
                     // the freshly-loaded value rather than carry-over state
                     // from a prior level.
                     //
-                    // Ready for the future level-reload path — `level_load_fired` and `self.level`
-                    // must be reset together to trigger this gravity re-seed.
+                    // Gravity must be seeded before the data script runs so reactions see the
+                    // freshly-loaded value. A future level-reload path must reset `level_load_fired`
+                    // and `self.level` together, or this block is skipped and carry-over gravity persists.
                     if let Some(world) = &self.level {
                         self.script_ctx.gravity.set(world.initial_gravity);
                     }
@@ -685,8 +712,8 @@ impl ApplicationHandler for App {
                                 .data_registry
                                 .borrow_mut()
                                 .populate_from_manifest(manifest);
-                            // Independent of the behavior HandlerTable — a
-                            // hot-reload leaves these subscriptions intact.
+                            // `progress_tracker` subscriptions are separate from the reaction registry —
+                            // hot-reload rebuilds reactions but leaves kill-count subscriptions intact.
                             self.progress_tracker.initialize(
                                 &self.script_ctx.data_registry.borrow(),
                                 &self.script_ctx.registry.borrow(),
@@ -699,15 +726,11 @@ impl ApplicationHandler for App {
                     // matching map placement that the built-in dispatch did
                     // not already handle.
                     // See: context/lib/scripting.md §2 · context/lib/build_pipeline.md §Built-in Classname Routing
-                    if let Some(world) = self.level.as_ref() {
+                    if self.level.is_some() {
                         let handled = self.builtin_handled.take().unwrap_or_default();
                         let descriptors = self.script_ctx.data_registry.borrow().entities.clone();
                         let mut registry = self.script_ctx.registry.borrow_mut();
-                        // Adapt wire records to the scripting representation
-                        // at the dispatch boundary (same pattern as the
-                        // built-in sweep above).
-                        let map_entities: Vec<crate::scripting::map_entity::MapEntity> =
-                            world.map_entities.iter().cloned().map(Into::into).collect();
+                        let map_entities = self.pending_map_entities.take().unwrap_or_default();
                         let descriptor_handled = apply_data_archetype_dispatch(
                             &map_entities,
                             &descriptors,
@@ -718,6 +741,25 @@ impl ApplicationHandler for App {
                             log::info!(
                                 "[Loader] dispatched {} map entities through descriptor archetypes",
                                 descriptor_handled.len(),
+                            );
+                        }
+
+                        // Spawn one entity per `info_player_start` placement,
+                        // routing each through its `entity_class` (default
+                        // `"player"`). Runs after the data-archetype sweep so
+                        // any registered descriptor — including a stub
+                        // `"player"` — is available.
+                        if let Some(spawn_points) = self.pending_spawn_points.take() {
+                            if !spawn_points.is_empty() {
+                                spawn_from_player_starts(
+                                    &spawn_points,
+                                    &descriptors,
+                                    &mut registry,
+                                );
+                            }
+                        } else {
+                            log::info!(
+                                "[Loader] no info_player_start in map; skipping player spawn"
                             );
                         }
 

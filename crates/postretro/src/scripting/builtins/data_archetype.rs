@@ -4,6 +4,7 @@
 // presets attached.
 //
 // See: context/lib/build_pipeline.md §Built-in Classname Routing
+//      context/lib/scripting.md §2 (data context lifecycle)
 //
 // The built-in classname-dispatch sweep runs first; this pass receives the
 // set of classnames that were already handled and skips them. A classname
@@ -18,7 +19,7 @@ use super::MapEntity;
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
 use crate::scripting::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
-use crate::scripting::registry::{EntityRegistry, Transform};
+use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 
 /// Apply the `initial_<field>` KVP override convention to the descriptor's
 /// component presets. Each scalar field (`f32`, `u32`) parses via `FromStr`;
@@ -141,6 +142,55 @@ fn find_descriptor<'a>(
     descriptors.iter().find(|d| d.classname == classname)
 }
 
+/// Attach emitter and light components from a descriptor to an already-spawned
+/// entity. KVP overrides are applied before attachment. The light is always
+/// forced dynamic regardless of the descriptor's `is_dynamic` field, with a
+/// `warn!` if the descriptor had it set to `false`.
+fn attach_descriptor_components(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    descriptor: &EntityTypeDescriptor,
+    entity: &MapEntity,
+) {
+    if let Some(emitter) = descriptor.emitter.clone() {
+        let mut component = emitter;
+        apply_emitter_kvp_overrides(&mut component, entity);
+        // `set_component` only fails on a stale id — the id was just returned.
+        let _ = registry.set_component(id, component);
+    }
+
+    if let Some(light_desc) = descriptor.light.clone() {
+        let mut light_desc = light_desc;
+        apply_light_kvp_overrides(&mut light_desc, entity);
+
+        if !light_desc.is_dynamic {
+            log::warn!(
+                "[Loader] {origin}: descriptor-spawned light `{cls}` was authored \
+                 `is_dynamic = false`; forcing dynamic (baked indirect not supported \
+                 for descriptor-spawned lights)",
+                origin = entity.diagnostic_origin(),
+                cls = entity.classname,
+            );
+        }
+
+        let component = LightComponent {
+            origin: [entity.origin.x, entity.origin.y, entity.origin.z],
+            light_type: LightKind::Point,
+            intensity: light_desc.intensity,
+            color: light_desc.color,
+            falloff_model: FalloffKind::InverseSquared,
+            falloff_range: light_desc.range,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            cast_shadows: false,
+            is_dynamic: true,
+            animation: None,
+        };
+        let _ = registry.set_component(id, component);
+    }
+}
+
 /// Spawn descriptor-driven entities for every `MapEntity` whose classname
 /// matches a registered descriptor AND was not already handled by the
 /// built-in dispatch.
@@ -203,43 +253,7 @@ pub(crate) fn apply_data_archetype_dispatch(
             continue;
         };
 
-        if let Some(emitter) = descriptor.emitter.clone() {
-            let mut component = emitter;
-            apply_emitter_kvp_overrides(&mut component, entity);
-            // `set_component` only fails on a stale id — the id was just returned.
-            let _ = registry.set_component(id, component);
-        }
-
-        if let Some(light_desc) = descriptor.light.clone() {
-            let mut light_desc = light_desc;
-            apply_light_kvp_overrides(&mut light_desc, entity);
-
-            if !light_desc.is_dynamic {
-                log::warn!(
-                    "[Loader] {origin}: descriptor-spawned light `{cls}` was authored \
-                     `is_dynamic = false`; forcing dynamic (baked indirect not supported \
-                     for descriptor-spawned lights)",
-                    origin = entity.diagnostic_origin(),
-                    cls = entity.classname,
-                );
-            }
-
-            let component = LightComponent {
-                origin: [entity.origin.x, entity.origin.y, entity.origin.z], // matches entity transform origin
-                light_type: LightKind::Point,
-                intensity: light_desc.intensity,
-                color: light_desc.color,
-                falloff_model: FalloffKind::InverseSquared,
-                falloff_range: light_desc.range,
-                cone_angle_inner: None,
-                cone_angle_outer: None,
-                cone_direction: None,
-                cast_shadows: false,
-                is_dynamic: true,
-                animation: None,
-            };
-            let _ = registry.set_component(id, component);
-        }
+        attach_descriptor_components(registry, id, descriptor, entity);
 
         // Mirror the per-placement KVP bag so `getEntityProperty` works
         // uniformly across spawn paths. Always write — even an empty bag —
@@ -251,6 +265,74 @@ pub(crate) fn apply_data_archetype_dispatch(
     }
 
     handled
+}
+
+/// Classname for the FGD `info_player_start` point entity. Spawn points are
+/// extracted from `world.map_entities` before the built-in / data-archetype
+/// dispatch sweeps and processed by [`spawn_from_player_starts`].
+pub(crate) const PLAYER_START_CLASSNAME: &str = "info_player_start";
+
+/// Spawn one entity per `info_player_start` placement, using each placement's
+/// `entity_class` KVP (default `"player"`) to look up an
+/// [`EntityTypeDescriptor`]. Component attachment mirrors
+/// [`apply_data_archetype_dispatch`] — emitter, light (forced dynamic) — and
+/// the per-placement KVP bag is forwarded with `entity_class` stripped so it
+/// is not confused with an `initial_*`-style override. Tags from the
+/// `info_player_start` placement are passed directly to `try_spawn`.
+pub(crate) fn spawn_from_player_starts(
+    spawn_points: &[MapEntity],
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+) {
+    let mut spawned = 0usize;
+
+    for entity in spawn_points {
+        let entity_class = entity
+            .key_values
+            .get("entity_class")
+            .map(String::as_str)
+            .unwrap_or("player");
+
+        let Some(descriptor) = find_descriptor(descriptors, entity_class) else {
+            log::warn!(
+                "[Loader] {origin}: entity_class `{entity_class}` not registered; skipping spawn point",
+                origin = entity.diagnostic_origin(),
+            );
+            continue;
+        };
+
+        let transform = Transform {
+            position: entity.origin,
+            rotation: entity.rotation_quat(),
+            scale: Vec3::ONE,
+        };
+
+        let Some(id) = registry.try_spawn(transform, &entity.tags) else {
+            log::warn!(
+                "[Loader] {origin}: entity registry exhausted; dropping player spawn `{entity_class}`",
+                origin = entity.diagnostic_origin(),
+            );
+            continue;
+        };
+
+        attach_descriptor_components(registry, id, descriptor, entity);
+
+        // Forward the per-placement KVP bag (sans `entity_class`, which is a
+        // routing hint, not a runtime property) so `getEntityProperty` works
+        // uniformly for player-start-spawned entities.
+        let mut kvps = entity.key_values.clone();
+        kvps.remove("entity_class");
+        let _ = registry.set_map_kvps(id, kvps);
+
+        spawned += 1;
+    }
+
+    if !spawn_points.is_empty() {
+        log::info!(
+            "[Loader] spawned {spawned} player(s) from {total} info_player_start entries",
+            total = spawn_points.len(),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -741,5 +823,205 @@ mod tests {
         let handled =
             apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
         assert_eq!(handled.len(), 0);
+    }
+
+    // --- spawn_from_player_starts -------------------------------------------
+
+    /// A descriptor with no components — sufficient as a stub `"player"` entry
+    /// for spawn-point tests that only care about transform / tags / KVPs.
+    fn stub_descriptor(classname: &str) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            classname: classname.to_string(),
+            light: None,
+            emitter: None,
+        }
+    }
+
+    fn spawn_point(kvps: &[(&str, &str)]) -> MapEntity {
+        placement(PLAYER_START_CLASSNAME, kvps)
+    }
+
+    fn spawn_point_at(origin: Vec3, angles: Vec3, kvps: &[(&str, &str)]) -> MapEntity {
+        let mut e = spawn_point(kvps);
+        e.origin = origin;
+        e.angles = angles;
+        e
+    }
+
+    fn live_count(reg: &EntityRegistry) -> usize {
+        reg.iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
+            .count()
+    }
+
+    #[test]
+    fn single_spawn_point_spawns_one_entity_at_position_and_facing() {
+        use crate::scripting::conv::EulerDegrees;
+
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![stub_descriptor("player")];
+        let origin = Vec3::new(4.0, 5.0, 6.0);
+        // pitch=10°, yaw=-30°, roll=0° — exercises two axes without hitting
+        // 90° boundaries where YXZ vs other orderings collapse.
+        let pitch_deg: f32 = 10.0;
+        let yaw_deg: f32 = -30.0;
+        let roll_deg: f32 = 0.0;
+        let angles = Vec3::new(
+            pitch_deg.to_radians(),
+            yaw_deg.to_radians(),
+            roll_deg.to_radians(),
+        );
+        let points = vec![spawn_point_at(origin, angles, &[])];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        assert_eq!(live_count(&reg), 1);
+        let (id, _) = reg
+            .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
+            .next()
+            .unwrap();
+        let t = reg.get_component::<Transform>(id).unwrap();
+        assert_eq!(t.position, origin);
+        // Assert rotation against a known degree input via EulerDegrees::to_quat,
+        // not against rotation_quat() itself (which would be a tautology).
+        let expected = EulerDegrees {
+            pitch: pitch_deg,
+            yaw: yaw_deg,
+            roll: roll_deg,
+        }
+        .to_quat();
+        let eps = 1e-5;
+        assert!(
+            (t.rotation.x - expected.x).abs() < eps
+                && (t.rotation.y - expected.y).abs() < eps
+                && (t.rotation.z - expected.z).abs() < eps
+                && (t.rotation.w - expected.w).abs() < eps,
+            "rotation mismatch: got {:?}, expected {:?}",
+            t.rotation,
+            expected,
+        );
+    }
+
+    #[test]
+    fn multiple_spawn_points_spawn_one_entity_each() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![stub_descriptor("player")];
+        let points = vec![spawn_point(&[]), spawn_point(&[]), spawn_point(&[])];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        assert_eq!(live_count(&reg), 3);
+    }
+
+    #[test]
+    fn entity_class_defaults_to_player_when_kvp_absent() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![stub_descriptor("player")];
+        let points = vec![spawn_point(&[])];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        assert_eq!(live_count(&reg), 1);
+    }
+
+    #[test]
+    fn entity_class_kvp_routes_to_named_descriptor() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![stub_descriptor("player"), stub_descriptor("spectator")];
+        let points = vec![
+            spawn_point(&[("entity_class", "player")]),
+            spawn_point(&[("entity_class", "spectator")]),
+        ];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        // Both spawn — exactly one per spawn point regardless of routing.
+        assert_eq!(live_count(&reg), 2);
+    }
+
+    #[test]
+    fn unknown_entity_class_is_skipped() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![stub_descriptor("player")];
+        let points = vec![
+            spawn_point(&[("entity_class", "ghost")]),
+            spawn_point(&[]), // defaults to "player" — should still spawn
+        ];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        assert_eq!(
+            live_count(&reg),
+            1,
+            "only the spawn point with a registered entity_class should land",
+        );
+    }
+
+    #[test]
+    fn empty_spawn_points_list_is_a_noop() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![stub_descriptor("player")];
+        spawn_from_player_starts(&[], &descriptors, &mut reg);
+        assert_eq!(live_count(&reg), 0);
+    }
+
+    #[test]
+    fn tags_are_forwarded_to_spawned_entity() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![stub_descriptor("player")];
+        let mut sp = spawn_point(&[]);
+        sp.tags = vec!["co-op".to_string(), "team-red".to_string()];
+        let points = vec![sp];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        let (id, _) = reg
+            .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
+            .next()
+            .unwrap();
+        let tags = reg.get_tags(id).unwrap();
+        assert_eq!(tags, &["co-op".to_string(), "team-red".to_string()]);
+    }
+
+    #[test]
+    fn custom_kvps_are_forwarded_with_entity_class_stripped() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![stub_descriptor("player")];
+        let points = vec![spawn_point(&[
+            ("entity_class", "player"),
+            ("loadout", "shotgun"),
+        ])];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        let (id, _) = reg
+            .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
+            .next()
+            .unwrap();
+        // Custom KVP available via the same bag data-archetype-spawned entities use.
+        assert_eq!(
+            reg.get_map_kvp(id, "loadout").unwrap().as_deref(),
+            Some("shotgun"),
+        );
+        // `entity_class` is a routing hint, not a runtime property — stripped.
+        assert_eq!(reg.get_map_kvp(id, "entity_class").unwrap(), None);
+    }
+
+    #[test]
+    fn descriptor_components_attach_to_player_start_spawn() {
+        // A `"player"` archetype carrying a light descriptor should produce a
+        // light-bearing entity at the spawn point.
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![light_descriptor("player", true)];
+        let points = vec![spawn_point_at(Vec3::new(7.0, 0.0, 0.0), Vec3::ZERO, &[])];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        let (id, _) = reg
+            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .next()
+            .expect("descriptor light should attach to spawn-point entity");
+        let light = reg.get_component::<LightComponent>(id).unwrap();
+        assert!(light.is_dynamic);
+        assert_eq!(light.origin, [7.0, 0.0, 0.0]);
     }
 }

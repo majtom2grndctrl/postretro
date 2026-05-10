@@ -175,6 +175,45 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Optional bag of component presets carried by `EntityTypeDescriptor.components`.")
         .field("light?", "Option<LightDescriptor>", "")
         .field("emitter?", "Option<BillboardEmitterComponent>", "")
+        .field("movement?", "Option<PlayerMovementDescriptor>", "")
+        .finish();
+    registry
+        .register_type("PlayerMovementDescriptor")
+        .doc("Authored player-movement component preset. All four sub-objects are required when `movement` is present; the data-archetype spawn path materializes the runtime movement component from this.")
+        .field("capsule", "CapsuleParams", "Collision capsule shape.")
+        .field("ground", "GroundParams", "On-ground locomotion parameters.")
+        .field("air", "AirParams", "Mid-air control parameters.")
+        .field("fall", "FallParams", "Falling parameters.")
+        .finish();
+    registry
+        .register_type("CapsuleParams")
+        .doc("Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`.")
+        .field("radius", "f32", "Capsule radius in world units. Must be > 0.")
+        .field("halfHeight", "f32", "Cylinder half-height in world units. Must be > 0.")
+        .finish();
+    registry
+        .register_type("GroundParams")
+        .doc("On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization.")
+        .field("speed", "f32", "Target ground speed in world units/sec.")
+        .field("accel", "f32", "Ground acceleration in world units/sec².")
+        .field("jumpVelocity", "f32", "Vertical launch velocity applied on jump.")
+        .field("stepHeight", "f32", "Maximum step-up height in world units.")
+        .field("maxSlope", "f32", "Maximum walkable slope in degrees; must lie in [0, 90].")
+        .finish();
+    registry
+        .register_type("AirParams")
+        .doc("Mid-air control parameters. `forwardSteer` blends forward steering authority between 0 (pure strafe-only Quake air control) and 1 (full forward authority). `jumpCeiling` is required when `jumps > 0`.")
+        .field("forwardSteer", "f32", "Forward steering authority in [0, 1].")
+        .field("accel", "f32", "Air acceleration in world units/sec².")
+        .field("maxControlSpeed", "f32", "Speed cap that air-accel can push toward.")
+        .field("bunnyHop", "bool", "Permit chained jumps on landing without releasing the jump input.")
+        .field("jumps", "u32", "Additional jumps allowed in air after the initial ground jump. 0 disables air jumps.")
+        .field("jumpCeiling", "f32", "Maximum upward velocity an air jump can reach; required when `jumps > 0`.")
+        .finish();
+    registry
+        .register_type("FallParams")
+        .doc("Falling parameters.")
+        .field("terminalVelocity", "f32", "Terminal downward fall speed in world units/sec. Must be > 0.")
         .finish();
     registry
         .register_type("ModManifest")

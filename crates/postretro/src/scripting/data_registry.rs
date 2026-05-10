@@ -106,6 +106,7 @@ mod tests {
             classname: "grunt".to_string(),
             light: None,
             emitter: None,
+            movement: None,
         }
     }
 

@@ -364,6 +364,7 @@ mod tests {
                 is_dynamic,
             }),
             emitter: None,
+            movement: None,
         }
     }
 
@@ -605,6 +606,7 @@ mod tests {
                 spin_rate: 0.0,
                 spin_animation: None,
             }),
+            movement: None,
         }];
         let placements = vec![placement(
             "campfire",
@@ -643,6 +645,7 @@ mod tests {
                 spin_rate: 0.0,
                 spin_animation: None,
             }),
+            movement: None,
         }];
         let placements = vec![placement("campfire", &[("velocity", "9.0 9.0 9.0")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -678,6 +681,7 @@ mod tests {
                 spin_rate: 0.0,
                 spin_animation: None,
             }),
+            movement: None,
         }];
         let placements = vec![placement("campfire", &[("initial_rate", "20.5")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -710,6 +714,7 @@ mod tests {
                 spin_rate: 0.0,
                 spin_animation: None,
             }),
+            movement: None,
         }];
         let placements = vec![placement("burstfire", &[("initial_burst", "24")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -744,6 +749,7 @@ mod tests {
                 spin_rate: 0.0,
                 spin_animation: None,
             }),
+            movement: None,
         }];
         let placements = vec![placement(
             "smolder",
@@ -787,6 +793,7 @@ mod tests {
                 is_dynamic: true,
             }),
             emitter: None,
+            movement: None,
         }];
 
         let placements = vec![placement("billboard_emitter", &[])];
@@ -834,6 +841,7 @@ mod tests {
             classname: classname.to_string(),
             light: None,
             emitter: None,
+            movement: None,
         }
     }
 

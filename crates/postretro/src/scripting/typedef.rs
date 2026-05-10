@@ -444,6 +444,10 @@ const TS_SDK_LIB_BLOCK: &str = r#"
       component: T;
       tag?: string | null;
     }): EntityForComponent<T>[];
+    /** Current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or `setGravity` call. */
+    getGravity(): number;
+    /** Set world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored with a warning logged. Effect is immediate and persists until the next level load or another `setGravity` call. */
+    setGravity(value: number): void;
   }
 
   /** `world` vocabulary global. Wraps `worldQuery` with a typed handle. */
@@ -832,6 +836,15 @@ export type World = {
        & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
        & ((self: World, filter: { component: "fog_volume", tag: string? }) -> {FogVolumeHandle})
        & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
+  --- Current world gravity in m/s² (negative = downward; positive = upward).
+  --- Seeded from the worldspawn `initialGravity` KVP at level load and
+  --- persists until the next level load or `setGravity` call.
+  getGravity: (self: World) -> number,
+  --- Set world gravity in m/s² (negative = downward; positive = upward).
+  --- NaN and non-finite values are silently ignored with a warning logged.
+  --- Effect is immediate and persists until the next level load or another
+  --- `setGravity` call.
+  setGravity: (self: World, value: number) -> (),
 }
 
 --- Per-channel keyframe accepted by `timeline` / `sequence`.

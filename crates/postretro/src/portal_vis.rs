@@ -802,6 +802,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         }
     }
@@ -890,6 +891,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         };
 
@@ -977,6 +979,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         };
 
@@ -1305,6 +1308,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         };
 
@@ -1717,6 +1721,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         };
 
@@ -1893,6 +1898,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         };
 
@@ -2000,6 +2006,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         };
 
@@ -2138,6 +2145,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         };
 

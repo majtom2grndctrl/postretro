@@ -43,6 +43,10 @@ pub enum PrlLoadError {
         "PRL file has no BVH section — pre-BVH maps are not supported; recompile with `prl-build`"
     )]
     NoBvh,
+    #[error(
+        "PRL file is missing the worldspawn `initialGravity` value (carried in the FogVolumes section, required since M7); recompile with `prl-build`"
+    )]
+    NoWorldspawnGravity,
 }
 
 /// Per-face draw metadata. Face → index-range mapping now lives on BVH
@@ -235,6 +239,11 @@ pub struct LevelWorld {
     /// pass (1=full-res, 8=coarsest). Defaults to 4 when the section is
     /// absent.
     pub fog_pixel_scale: u32,
+    /// Worldspawn `initialGravity` (m/s², negative = downward). The engine
+    /// seeds `App::current_gravity` from this on every level load so the
+    /// scripting `world.getGravity()` primitive sees the authored value
+    /// before any user code runs.
+    pub initial_gravity: f32,
     /// Per-BSP-leaf bitmask of overlapping fog volumes loaded from the
     /// FogCellMasks section (ID 31). `masks[L]` has bit `i` set when fog
     /// volume `i` overlaps leaf `L`. The runtime ORs together masks for
@@ -777,23 +786,28 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => Vec::new(),
         };
 
-    // FogVolumes section (ID 30, optional). Always emitted by current
-    // `prl-build` runs so the worldspawn `fog_pixel_scale` is honoured even
-    // when no `fog_volume` brushes are present. Maps compiled before this
-    // section was introduced fall back to `pixel_scale = 4` and an empty
-    // volume list.
-    let (fog_volumes, fog_pixel_scale): (Vec<FogVolumeRecord>, u32) =
+    // FogVolumes section (ID 30). Required because it carries the worldspawn
+    // `initial_gravity` value alongside `pixel_scale` and the per-region fog
+    // volumes. `prl-build` always emits the section; absence indicates a
+    // pre-gravity legacy PRL and is rejected so the engine never silently
+    // falls back to a hardcoded gravity default.
+    let (fog_volumes, fog_pixel_scale, initial_gravity): (Vec<FogVolumeRecord>, u32, f32) =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogVolumes as u32)? {
             Some(data) => {
                 let section = FogVolumesSection::from_bytes(&data)?;
                 log::info!(
-                    "[PRL] FogVolumes: {} volumes, pixel_scale={}",
+                    "[PRL] FogVolumes: {} volumes, pixel_scale={}, initial_gravity={}",
                     section.volumes.len(),
                     section.pixel_scale,
+                    section.initial_gravity,
                 );
-                (section.volumes, section.pixel_scale)
+                (
+                    section.volumes,
+                    section.pixel_scale,
+                    section.initial_gravity,
+                )
             }
-            None => (Vec::new(), 4),
+            None => return Err(PrlLoadError::NoWorldspawnGravity),
         };
 
     // FogCellMasks section (ID 31, optional). Per-BSP-leaf bitmask of which
@@ -956,6 +970,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         map_entities,
         fog_volumes,
         fog_pixel_scale,
+        initial_gravity,
         fog_cell_masks,
     })
 }
@@ -1050,6 +1065,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         }
     }
@@ -1104,6 +1120,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
@@ -1151,6 +1168,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         };
 
@@ -1187,6 +1205,7 @@ mod tests {
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
+            initial_gravity: -9.81,
             fog_cell_masks: None,
         };
 
@@ -1299,6 +1318,16 @@ mod tests {
         tmp
     }
 
+    /// Default FogVolumes section blob — required by `load_prl` for the
+    /// worldspawn `initial_gravity` value. Empty volume list, default scalars.
+    fn default_fog_volumes_blob() -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::FogVolumes as u32,
+            version: 1,
+            data: FogVolumesSection::default().to_bytes(),
+        }
+    }
+
     #[test]
     fn load_prl_round_trip_with_bsp_sections() {
         let geom = sample_geometry();
@@ -1353,6 +1382,7 @@ mod tests {
                 version: 1,
                 data: leaves.to_bytes(),
             },
+            default_fog_volumes_blob(),
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_bvh_round_trip.prl");
@@ -1475,6 +1505,7 @@ mod tests {
                 version: 1,
                 data: alpha_lights.to_bytes(),
             },
+            default_fog_volumes_blob(),
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_alpha_lights.prl");
@@ -1527,6 +1558,7 @@ mod tests {
                 version: 1,
                 data: alpha_lights.to_bytes(),
             },
+            default_fog_volumes_blob(),
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_no_light_influence.prl");
@@ -1632,6 +1664,7 @@ mod tests {
                 version: 1,
                 data: me.to_bytes(),
             },
+            default_fog_volumes_blob(),
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_map_entity.prl");
@@ -1674,6 +1707,7 @@ mod tests {
                 version: 1,
                 data: bvh.to_bytes(),
             },
+            default_fog_volumes_blob(),
         ];
         let tmp = write_prl_fixture(sections, "postretro_test_no_map_entity.prl");
         let world = load_prl(tmp.to_str().unwrap()).expect("should load");
@@ -1697,6 +1731,7 @@ mod tests {
                 version: 1,
                 data: bvh.to_bytes(),
             },
+            default_fog_volumes_blob(),
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_no_alpha_lights.prl");
@@ -1732,6 +1767,7 @@ mod tests {
                 version: 1,
                 data: masks.to_bytes(),
             },
+            default_fog_volumes_blob(),
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_fog_cell_masks.prl");
@@ -1761,6 +1797,7 @@ mod tests {
                 version: 1,
                 data: bvh.to_bytes(),
             },
+            default_fog_volumes_blob(),
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_no_fog_cell_masks.prl");

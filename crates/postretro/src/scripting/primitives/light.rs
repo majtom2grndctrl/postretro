@@ -397,7 +397,7 @@ mod tests {
     fn registry_for(ctx: ScriptCtx) -> PrimitiveRegistry {
         let mut r = PrimitiveRegistry::new();
         register_light_entity_primitives(&mut r, ctx.clone());
-        crate::scripting::primitives::register_world_query(&mut r, ctx);
+        crate::scripting::primitives::world::register_world_primitives(&mut r, ctx);
         r
     }
 

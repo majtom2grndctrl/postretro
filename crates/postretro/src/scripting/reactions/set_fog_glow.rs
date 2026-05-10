@@ -201,9 +201,7 @@ mod tests {
         });
 
         assert_eq!(
-            reg.get_component::<FogVolumeComponent>(fog)
-                .unwrap()
-                .glow,
+            reg.get_component::<FogVolumeComponent>(fog).unwrap().glow,
             0.5
         );
         assert!(

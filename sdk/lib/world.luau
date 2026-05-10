@@ -32,6 +32,11 @@ export type EntityHandle = {
 --- always return `{}` (engine-managed). Unknown strings error at runtime.
 export type World = {
   query: (self: World, filter: WorldQueryFilter) -> {EntityHandle},
+  --- Current world gravity in m/s² (negative = downward; positive = upward).
+  --- Seeded from worldspawn `initialGravity` at level load.
+  getGravity: (self: World) -> number,
+  --- Set world gravity in m/s². Non-finite values are silently ignored.
+  setGravity: (self: World, value: number) -> (),
 }
 
 -- ---------------------------------------------------------------------
@@ -78,6 +83,12 @@ local world: World = {
       out[i] = handle
     end
     return out :: any
+  end,
+  getGravity = function(_self: World): number
+    return worldGetGravity()
+  end,
+  setGravity = function(_self: World, value: number): ()
+    worldSetGravity(value)
   end,
 }
 

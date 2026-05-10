@@ -1,7 +1,7 @@
 // World-query vocabulary: typed wrapper around `worldQuery`. Light handle
 // construction delegates to `./entities/lights`.
 
-import { worldQuery } from "postretro";
+import { worldQuery, worldGetGravity, worldSetGravity } from "postretro";
 import type {
   EmitterEntity,
   Entity,
@@ -43,6 +43,21 @@ export interface World {
   query<T extends string>(
     filter: { component: T; tag?: string | null },
   ): EntityForComponent<T>[];
+
+  /**
+   * Current world gravity in m/s². Negative = downward (Earth = -9.81),
+   * positive = upward. Seeded from the worldspawn `initialGravity` KVP at
+   * level load and persists until the next level load or `setGravity` call.
+   */
+  getGravity(): number;
+
+  /**
+   * Set the world gravity in m/s². Negative = downward, positive = upward.
+   * NaN and non-finite values are silently ignored (a warning is logged).
+   * Effect is immediate and persists until the next level load or another
+   * `setGravity` call.
+   */
+  setGravity(value: number): void;
 }
 
 export const world: World = {
@@ -82,5 +97,11 @@ export const world: World = {
       return projected;
     });
     return entities as EntityForComponent<T>[];
+  },
+  getGravity(): number {
+    return worldGetGravity();
+  },
+  setGravity(value: number): void {
+    worldSetGravity(value);
   },
 };

@@ -65,10 +65,7 @@ pub(crate) fn dispatch(
 /// - `Some` and non-empty → clamp any negative or non-finite samples to `0.0`,
 ///   logging a one-time warning, `Ok(())`
 /// - `Some` and empty → log a warning, `Err(ReactionError::InvalidArgument)`
-fn validate_nonneg_curve(
-    curve: &mut Option<Vec<f32>>,
-    channel: &str,
-) -> Result<(), ReactionError> {
+fn validate_nonneg_curve(curve: &mut Option<Vec<f32>>, channel: &str) -> Result<(), ReactionError> {
     let Some(samples) = curve.as_mut() else {
         return Ok(());
     };
@@ -602,8 +599,10 @@ mod tests {
             Some(prior)
         );
         assert!(
-            captured.iter().any(|(lvl, msg)| *lvl == log::Level::Warn
-                && msg.contains("light_range curve is empty")),
+            captured
+                .iter()
+                .any(|(lvl, msg)| *lvl == log::Level::Warn
+                    && msg.contains("light_range curve is empty")),
             "expected a warn-level log about empty light_range curve, got: {captured:?}"
         );
     }

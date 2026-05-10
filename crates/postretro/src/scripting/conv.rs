@@ -595,8 +595,7 @@ impl FromLua for ComponentValue {
                 };
                 let saturation: f32 = t.get::<Option<f32>>("saturation")?.unwrap_or(1.0);
                 let min_brightness: f32 = t.get::<Option<f32>>("minBrightness")?.unwrap_or(0.0);
-                let light_range: f32 =
-                    t.get::<Option<f32>>("lightRange")?.unwrap_or(1.0);
+                let light_range: f32 = t.get::<Option<f32>>("lightRange")?.unwrap_or(1.0);
                 let animation: Option<FogAnimation> = match t.get::<LuaValue>("animation")? {
                     LuaValue::Nil => None,
                     other => {

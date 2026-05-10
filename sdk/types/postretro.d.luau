@@ -198,8 +198,14 @@ declare function registerEntity(descriptor: EntityTypeDescriptor): ()
 --- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Definition context.
 declare function setLightAnimation(id: EntityId, animation: LightAnimation | null): ()
 
+--- Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`.
+declare function worldGetGravity(): number
+
 --- Return an array of entity handles matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`.
 declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEntity}) & ((filter: { component: "emitter", tag: string? }) -> {EmitterEntity}) & ((filter: { component: "fog_volume", tag: string? }) -> {FogVolumeEntity}) & ((filter: WorldQueryFilter) -> {Entity})
+
+--- Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.setGravity`.
+declare function worldSetGravity(value: number): ()
 
 -- ---------------------------------------------------------------------------
 -- SDK library — embedded into every Luau context via `include_str!` and
@@ -249,6 +255,15 @@ export type World = {
        & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
        & ((self: World, filter: { component: "fog_volume", tag: string? }) -> {FogVolumeHandle})
        & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
+  --- Current world gravity in m/s² (negative = downward; positive = upward).
+  --- Seeded from the worldspawn `initialGravity` KVP at level load and
+  --- persists until the next level load or `setGravity` call.
+  getGravity: (self: World) -> number,
+  --- Set world gravity in m/s² (negative = downward; positive = upward).
+  --- NaN and non-finite values are silently ignored with a warning logged.
+  --- Effect is immediate and persists until the next level load or another
+  --- `setGravity` call.
+  setGravity: (self: World, value: number) -> (),
 }
 
 --- Per-channel keyframe accepted by `timeline` / `sequence`.

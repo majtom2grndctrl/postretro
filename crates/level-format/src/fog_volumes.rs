@@ -1,5 +1,6 @@
-// FogVolumes PRL section (ID 30): per-region volumetric fog parameters and
-// the worldspawn `fog_pixel_scale` downscale factor.
+// FogVolumes PRL section (ID 30): per-region volumetric fog parameters,
+// the worldspawn `fog_pixel_scale` downscale factor, and the worldspawn
+// `initial_gravity` scalar (m/s², negative = downward).
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use crate::FormatError;
@@ -83,6 +84,7 @@ pub struct FogVolumeRecord {
 ///
 /// On-disk layout (little-endian):
 ///   u32  pixel_scale
+///   f32  initial_gravity
 ///   u32  volume_count
 ///   repeat volume_count:
 ///     f32  min_x, min_y, min_z
@@ -106,11 +108,17 @@ pub struct FogVolumeRecord {
 ///     repeat tag_count:
 ///       u32  tag_byte_len; u8[] tag_utf8
 ///
-/// Always emitted so the worldspawn `fog_pixel_scale` is honoured even when no
-/// `fog_volume` brushes are present (8-byte overhead for the empty case).
+/// Always emitted so the worldspawn `fog_pixel_scale` and `initial_gravity`
+/// are honoured even when no `fog_volume` brushes are present (12-byte
+/// overhead for the empty case).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FogVolumesSection {
     pub pixel_scale: u32,
+    /// Worldspawn `initialGravity` (m/s²). Negative = downward (Earth = -9.81),
+    /// positive = upward. Authored by mappers as a required worldspawn KVP and
+    /// validated by `prl-build`; the engine consumes it as the starting value
+    /// for the runtime gravity register.
+    pub initial_gravity: f32,
     pub volumes: Vec<FogVolumeRecord>,
 }
 
@@ -118,6 +126,7 @@ impl Default for FogVolumesSection {
     fn default() -> Self {
         Self {
             pixel_scale: 4,
+            initial_gravity: -9.81,
             volumes: Vec::new(),
         }
     }
@@ -127,6 +136,7 @@ impl FogVolumesSection {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&self.pixel_scale.to_le_bytes());
+        buf.extend_from_slice(&self.initial_gravity.to_le_bytes());
         buf.extend_from_slice(&(self.volumes.len() as u32).to_le_bytes());
         for v in &self.volumes {
             for c in v.min {
@@ -172,6 +182,7 @@ impl FogVolumesSection {
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         let mut o = 0usize;
         let pixel_scale = read_u32(data, &mut o, "pixel_scale")?;
+        let initial_gravity = read_f32(data, &mut o, "initial_gravity")?;
         let count = read_u32(data, &mut o, "volume count")? as usize;
 
         // Sanity-check: each fixed payload is 24 × f32 + 2 × u32 = 104 bytes
@@ -205,8 +216,7 @@ impl FogVolumesSection {
             let tint = read_vec3(data, &mut o, &format!("volume {i} tint"))?;
             let saturation = read_f32(data, &mut o, &format!("volume {i} saturation"))?;
             let min_brightness = read_f32(data, &mut o, &format!("volume {i} min_brightness"))?;
-            let light_range =
-                read_f32(data, &mut o, &format!("volume {i} light_range"))?;
+            let light_range = read_f32(data, &mut o, &format!("volume {i} light_range"))?;
 
             let plane_count = read_u32(data, &mut o, &format!("volume {i} plane count"))? as usize;
             const PLANE_SIZE: usize = 16;
@@ -267,6 +277,7 @@ impl FogVolumesSection {
 
         Ok(Self {
             pixel_scale,
+            initial_gravity,
             volumes,
         })
     }
@@ -337,11 +348,12 @@ mod tests {
     fn round_trip_empty() {
         let section = FogVolumesSection {
             pixel_scale: 4,
+            initial_gravity: -9.81,
             volumes: vec![],
         };
         let bytes = section.to_bytes();
-        // 4 (pixel_scale) + 4 (volume_count) = 8 bytes overhead.
-        assert_eq!(bytes.len(), 8);
+        // 4 (pixel_scale) + 4 (initial_gravity) + 4 (volume_count) = 12 bytes overhead.
+        assert_eq!(bytes.len(), 12);
         let restored = FogVolumesSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }
@@ -350,6 +362,7 @@ mod tests {
     fn round_trip_two_volumes_one_with_tags_one_without() {
         let section = FogVolumesSection {
             pixel_scale: 8,
+            initial_gravity: -9.81,
             volumes: vec![
                 FogVolumeRecord {
                     min: [-2.0, 0.0, -2.0],
@@ -400,10 +413,22 @@ mod tests {
     fn pixel_scale_round_trips_independently() {
         let section = FogVolumesSection {
             pixel_scale: 1,
+            initial_gravity: -9.81,
             volumes: vec![],
         };
         let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(restored.pixel_scale, 1);
+    }
+
+    #[test]
+    fn initial_gravity_round_trips_independently() {
+        let section = FogVolumesSection {
+            pixel_scale: 4,
+            initial_gravity: 12.5,
+            volumes: vec![],
+        };
+        let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
+        assert!((restored.initial_gravity - 12.5).abs() < 1e-6, "initial_gravity round-trip: got {}", restored.initial_gravity);
     }
 
     #[test]
@@ -416,6 +441,7 @@ mod tests {
     fn rejects_implausible_volume_count() {
         let mut buf = Vec::new();
         buf.extend_from_slice(&4u32.to_le_bytes()); // pixel_scale
+        buf.extend_from_slice(&(-9.81f32).to_le_bytes()); // initial_gravity
         buf.extend_from_slice(&u32::MAX.to_le_bytes()); // count = u32::MAX
         let err = FogVolumesSection::from_bytes(&buf).unwrap_err();
         assert!(err.to_string().contains("exceeds"));
@@ -456,6 +482,7 @@ mod tests {
         ];
         let section = FogVolumesSection {
             pixel_scale: 4,
+            initial_gravity: -9.81,
             volumes: vec![make_volume(planes.clone(), vec![])],
         };
         let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
@@ -482,6 +509,7 @@ mod tests {
         ];
         let section = FogVolumesSection {
             pixel_scale: 4,
+            initial_gravity: -9.81,
             volumes: vec![make_volume(planes.clone(), vec![])],
         };
         let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
@@ -500,6 +528,7 @@ mod tests {
     fn round_trip_zero_plane_volume_round_trips() {
         let section = FogVolumesSection {
             pixel_scale: 4,
+            initial_gravity: -9.81,
             volumes: vec![make_volume(vec![], vec![])],
         };
         let bytes = section.to_bytes();
@@ -519,6 +548,7 @@ mod tests {
         let tags = vec!["smoke".to_string(), "indoor".to_string()];
         let section = FogVolumesSection {
             pixel_scale: 4,
+            initial_gravity: -9.81,
             volumes: vec![make_volume(planes.clone(), tags.clone())],
         };
         let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
@@ -532,6 +562,7 @@ mod tests {
         // Build a section with one volume whose density field is NaN.
         let valid = FogVolumesSection {
             pixel_scale: 4,
+            initial_gravity: -9.81,
             volumes: vec![FogVolumeRecord {
                 min: [0.0, 0.0, 0.0],
                 density: 0.5,
@@ -553,15 +584,15 @@ mod tests {
             }],
         };
         let mut bytes = valid.to_bytes();
-        // density is at offset: 4 (pixel_scale) + 4 (count) + 12 (min xyz) = 20
+        // density is at offset: 4 (pixel_scale) + 4 (initial_gravity) + 4 (count) + 12 (min xyz) = 24
         let nan_bytes = f32::NAN.to_le_bytes();
-        bytes[20..24].copy_from_slice(&nan_bytes);
+        bytes[24..28].copy_from_slice(&nan_bytes);
         let err = FogVolumesSection::from_bytes(&bytes).unwrap_err();
         assert!(err.to_string().contains("non-finite"));
 
         // Also test infinity.
         let inf_bytes = f32::INFINITY.to_le_bytes();
-        bytes[20..24].copy_from_slice(&inf_bytes);
+        bytes[24..28].copy_from_slice(&inf_bytes);
         let err = FogVolumesSection::from_bytes(&bytes).unwrap_err();
         assert!(err.to_string().contains("non-finite"));
     }

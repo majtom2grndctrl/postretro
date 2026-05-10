@@ -151,8 +151,9 @@ pub enum SectionId {
     MapEntity = 29,
 
     /// Per-region volumetric fog volumes (AABB + density/scatter
-    /// parameters) plus the worldspawn `fog_pixel_scale` downscale factor.
-    /// Always emitted by `prl-build` so the worldspawn pixel-scale is honoured
+    /// parameters) plus the worldspawn `fog_pixel_scale` downscale factor and
+    /// the worldspawn `initial_gravity` scalar (m/s²).
+    /// Always emitted by `prl-build` so worldspawn-scoped data is honoured
     /// even when no `fog_volume` brushes are present.
     /// See `fog_volumes::FogVolumesSection`.
     FogVolumes = 30,

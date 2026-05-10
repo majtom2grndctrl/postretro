@@ -96,8 +96,8 @@ pub(crate) fn register_fog_reaction_primitives(registry: &mut ReactionPrimitiveR
         super::set_fog_density::dispatch(reg, targets, &parsed)
     });
     registry.register("setFogGlow", |reg, targets, args| {
-        let parsed: super::set_fog_glow::SetFogGlowArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+        let parsed: super::set_fog_glow::SetFogGlowArgs = serde_json::from_value(args.clone())
+            .map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("setFogGlow: failed to deserialize args: {e}"),
             })?;
         super::set_fog_glow::dispatch(reg, targets, &parsed)
@@ -161,13 +161,12 @@ pub(crate) fn register_sequenced_fog_primitives(
 
     let ctx_glow = ctx.clone();
     registry.register("setFogGlow", move |id, args| {
-        let parsed: super::set_fog_glow::SetFogGlowArgs =
-            serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
+        let parsed: super::set_fog_glow::SetFogGlowArgs = serde_json::from_value(args.clone())
+            .map_err(|e| SequenceError::InvalidArgument {
                 reason: format!("setFogGlow: failed to deserialize args: {e}"),
             })?;
         let mut reg = ctx_glow.registry.borrow_mut();
-        super::set_fog_glow::dispatch(&mut reg, &[id], &parsed)
-            .map_err(reaction_to_sequence_error)
+        super::set_fog_glow::dispatch(&mut reg, &[id], &parsed).map_err(reaction_to_sequence_error)
     });
 
     let ctx_edge = ctx.clone();

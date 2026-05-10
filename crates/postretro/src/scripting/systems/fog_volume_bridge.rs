@@ -227,8 +227,7 @@ impl FogVolumeBridge {
             let sampled_saturation = sample_saturation_curve_at(animation, start_ms, now_ms);
             let sampled_min_brightness =
                 sample_min_brightness_curve_at(animation, start_ms, now_ms);
-            let sampled_light_range =
-                sample_light_range_curve_at(animation, start_ms, now_ms);
+            let sampled_light_range = sample_light_range_curve_at(animation, start_ms, now_ms);
             if sampled_density.is_none()
                 && sampled_saturation.is_none()
                 && sampled_min_brightness.is_none()
@@ -567,7 +566,10 @@ fn settle_play_count(
     }
     Some(SettledValues {
         density: animation.density.as_ref().and_then(|c| c.last().copied()),
-        saturation: animation.saturation.as_ref().and_then(|c| c.last().copied()),
+        saturation: animation
+            .saturation
+            .as_ref()
+            .and_then(|c| c.last().copied()),
         min_brightness: animation
             .min_brightness
             .as_ref()

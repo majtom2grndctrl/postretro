@@ -15,6 +15,11 @@
     // target; 8 = coarsest. Coarser is faster but blockier near edges.
     // See context/lib/build_pipeline.md for full semantics.
     fog_pixel_scale(integer) : "Fog low-resolution downscale factor (1=full-res, 8=coarsest)" : 4
+    // Starting gravity in m/s². Negative = downward (Earth = -9.81), positive
+    // = upward acceleration. Required: prl-build halts when this KVP is
+    // absent so authors face an explicit choice. May be changed at runtime
+    // via world.setGravity().
+    initialGravity(float) : "REQUIRED. Starting gravity (m/s²); negative = downward, positive = upward (−9.81 = Earth). May be changed at runtime via world.setGravity()."
 ]
 
 @BaseClass = Light

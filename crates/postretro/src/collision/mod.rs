@@ -19,8 +19,9 @@
 //!
 //! See: `context/lib/entity_model.md` §7.
 
-use parry3d::math::{Isometry, Point};
-use parry3d::shape::TriMesh;
+use parry3d::math::{Isometry, Point, Vector};
+use parry3d::query::{ShapeCastHit, ShapeCastOptions, cast_shapes};
+use parry3d::shape::{Capsule, TriMesh};
 
 use crate::prl::LevelWorld;
 
@@ -102,6 +103,34 @@ impl Default for CollisionWorld {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Sweep a capsule through the world trimesh along `dir` up to `max_toi`
+/// distance. The capsule's isometry sits at `pos` with identity rotation —
+/// the capsule's `+Y` axis maps directly to world `+Y`, matching the
+/// player-capsule convention documented at the top of this module.
+///
+/// Returns `None` when no impact occurs within `max_toi` or the dispatcher
+/// reports the pair as unsupported (treated as "no hit" for the movement
+/// caller's purposes — a hard error would be louder than warranted given the
+/// inputs are fixed at the call sites).
+pub(crate) fn cast_capsule(
+    world: &CollisionWorld,
+    pos: Point<f32>,
+    capsule: &Capsule,
+    dir: Vector<f32>,
+    max_toi: f32,
+) -> Option<ShapeCastHit> {
+    let pos1 = Isometry::translation(pos.x, pos.y, pos.z);
+    let vel2 = Vector::zeros();
+    let options = ShapeCastOptions {
+        max_time_of_impact: max_toi,
+        stop_at_penetration: true,
+        ..Default::default()
+    };
+    cast_shapes(&pos1, &dir, capsule, &world.isometry, &vel2, &world.mesh, options)
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]

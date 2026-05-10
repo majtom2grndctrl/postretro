@@ -18,6 +18,7 @@ use glam::Vec3;
 use super::MapEntity;
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
+use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
 use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 
@@ -187,6 +188,11 @@ fn attach_descriptor_components(
             is_dynamic: true,
             animation: None,
         };
+        let _ = registry.set_component(id, component);
+    }
+
+    if let Some(movement_desc) = descriptor.movement.as_ref() {
+        let component = PlayerMovementComponent::from_descriptor(movement_desc);
         let _ = registry.set_component(id, component);
     }
 }

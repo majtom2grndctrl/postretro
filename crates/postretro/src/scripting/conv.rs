@@ -288,6 +288,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::ParticleState => "particle_state",
         ComponentKind::SpriteVisual => "sprite_visual",
         ComponentKind::FogVolume => "fog_volume",
+        ComponentKind::PlayerMovement => "player_movement",
     }
 }
 
@@ -531,6 +532,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 })?;
                 json_to_js(ctx, &json)
             }
+            ComponentValue::PlayerMovement(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "PlayerMovement component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -676,6 +681,9 @@ impl IntoLua for ComponentValue {
                 })?;
                 json_to_lua(lua, &json)
             }
+            ComponentValue::PlayerMovement(_) => Err(mlua::Error::RuntimeError(
+                "PlayerMovement component is engine-managed and not exposed to scripts".to_string(),
+            )),
         }
     }
 }

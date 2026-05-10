@@ -10,6 +10,7 @@ mod geometry;
 mod input;
 mod lighting;
 mod material;
+mod movement;
 
 mod portal_vis;
 mod prl;
@@ -53,7 +54,8 @@ use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
 use crate::scripting::reaction_dispatch::{
-    ProgressTracker, fire_named_event_with_sequences, validate_sequence_primitives,
+    ProgressTracker, fire_named_event, fire_named_event_with_sequences,
+    validate_sequence_primitives,
 };
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
@@ -620,6 +622,25 @@ impl ApplicationHandler for App {
                     }
 
                     self.camera.position += move_dir * speed * tick_dt;
+
+                    // Order 1 player update: drive the movement system for any
+                    // entity that carries a `PlayerMovementComponent`. The
+                    // fly-cam above stays in place — the camera-vs-pawn split
+                    // lands with a later milestone. Events fire after the
+                    // entity update so reaction targets see the post-tick state.
+                    let jump_pressed = snapshot.button(Action::Jump).is_active();
+                    let movement_events = self.run_movement_tick(
+                        forward_axis,
+                        right_axis,
+                        jump_pressed,
+                        tick_dt,
+                    );
+                    for event_name in &movement_events {
+                        let _ = fire_named_event(
+                            event_name,
+                            &self.script_ctx.data_registry.borrow(),
+                        );
+                    }
 
                     self.frame_timing
                         .push_state(InterpolableState::new(self.camera.position));
@@ -1372,6 +1393,77 @@ impl App {
         );
         self.level_timings.record("level_load_event");
         self.script_time = 0.0;
+    }
+
+    /// Drive `movement::tick` for every entity carrying a
+    /// `PlayerMovementComponent`. Returns the list of event names to fire
+    /// (already de-duplicated by event kind: at most one `landed` and one
+    /// `jumped` per entity per tick — but multiple entities each contribute).
+    /// The caller fires them through `fire_named_event` so reactions see the
+    /// post-tick world state.
+    fn run_movement_tick(
+        &mut self,
+        forward_axis: f32,
+        right_axis: f32,
+        jump_pressed: bool,
+        tick_dt: f32,
+    ) -> Vec<String> {
+        use crate::movement::{MovementInput, tick as movement_tick};
+        use crate::scripting::components::player_movement::PlayerMovementComponent;
+        use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, Transform};
+
+        let mut events_out = Vec::new();
+        let mut snapshots: Vec<(EntityId, PlayerMovementComponent, Vec3)> = Vec::new();
+        {
+            let registry = self.script_ctx.registry.borrow();
+            for (id, value) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
+                let ComponentValue::PlayerMovement(component) = value else {
+                    continue;
+                };
+                let position = match registry.get_component::<Transform>(id) {
+                    Ok(t) => t.position,
+                    Err(_) => continue,
+                };
+                snapshots.push((id, component.clone(), position));
+            }
+        }
+
+        if snapshots.is_empty() {
+            return events_out;
+        }
+
+        let gravity = self.script_ctx.gravity.get();
+        let input = MovementInput {
+            wish_dir: glam::Vec2::new(right_axis, forward_axis),
+            jump_pressed,
+            facing_yaw: self.camera.yaw,
+        };
+
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        for (id, mut component, position) in snapshots {
+            let (new_pos, events) = movement_tick(
+                &mut component,
+                &input,
+                &self.collision_world,
+                gravity,
+                tick_dt,
+                position,
+            );
+            if let Ok(transform) = registry.get_component::<Transform>(id) {
+                let mut t = *transform;
+                t.position = new_pos;
+                let _ = registry.set_component(id, t);
+            }
+            let _ = registry.set_component(id, component);
+            if events.landed {
+                events_out.push("landed".to_string());
+            }
+            if events.jumped {
+                events_out.push("jumped".to_string());
+            }
+        }
+
+        events_out
     }
 
     fn handle_diagnostic_action(&mut self, action: DiagnosticAction) {

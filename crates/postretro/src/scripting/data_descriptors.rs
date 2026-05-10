@@ -121,7 +121,7 @@ pub(crate) struct EntityTypeDescriptor {
 /// `movement` is present; the data-archetype spawn path materializes the
 /// runtime movement component from this. `ground.max_slope` is in degrees on
 /// the wire and converted to a cosine at materialization (not here).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PlayerMovementDescriptor {
     pub(crate) capsule: CapsuleParams,
     pub(crate) ground: GroundParams,
@@ -129,13 +129,13 @@ pub(crate) struct PlayerMovementDescriptor {
     pub(crate) fall: FallParams,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct CapsuleParams {
     pub(crate) radius: f32,
     pub(crate) half_height: f32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GroundParams {
     pub(crate) speed: f32,
     pub(crate) accel: f32,
@@ -144,7 +144,7 @@ pub(crate) struct GroundParams {
     pub(crate) max_slope: f32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AirParams {
     pub(crate) forward_steer: f32,
     pub(crate) accel: f32,
@@ -154,7 +154,7 @@ pub(crate) struct AirParams {
     pub(crate) jump_ceiling: f32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct FallParams {
     pub(crate) terminal_velocity: f32,
 }

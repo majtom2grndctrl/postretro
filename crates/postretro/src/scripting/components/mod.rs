@@ -8,4 +8,5 @@ pub(crate) mod billboard_emitter;
 pub(crate) mod fog_volume;
 pub(crate) mod light;
 pub(crate) mod particle;
+pub(crate) mod player_movement;
 pub(crate) mod sprite_visual;

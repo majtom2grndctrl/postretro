@@ -168,6 +168,25 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         .map(|v| v.clamp(0, 8) as u32)
         .unwrap_or(0);
 
+    // Worldspawn `initialGravity` (m/s², negative = downward). Required —
+    // absence halts compilation so authors face an explicit choice rather
+    // than inheriting an undocumented engine default.
+    let initial_gravity: f32 = {
+        let raw = get_property(&geo_map, &worldspawn_id, "initialGravity").ok_or_else(|| {
+            anyhow::anyhow!(
+                "worldspawn missing required `initialGravity` KVP — author a value (m/s², \
+                 negative = downward; standard Earth gravity is -9.81)"
+            )
+        })?;
+        let parsed: f32 = raw.trim().parse().map_err(|e| {
+            anyhow::anyhow!("worldspawn `initialGravity` value `{raw}` is not a valid float: {e}")
+        })?;
+        if !parsed.is_finite() {
+            anyhow::bail!("worldspawn `initialGravity` value `{raw}` is not a finite number");
+        }
+        parsed
+    };
+
     for entity_id in geo_map.entities.iter() {
         let classname =
             get_property(&geo_map, entity_id, "classname").unwrap_or_else(|| "unknown".to_string());
@@ -514,6 +533,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         map_entities,
         fog_volumes,
         fog_pixel_scale,
+        initial_gravity,
     })
 }
 
@@ -1113,13 +1133,13 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root")
-            .join("content/tests/maps/test.map")
+            .join("content/dev/maps/campaign-test.map")
     }
 
     #[test]
     fn parses_test_map() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         assert!(
             !map_data.brush_volumes.is_empty(),
@@ -1132,15 +1152,8 @@ mod tests {
     #[test]
     fn classifies_brushes_correctly() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
-        // info_player_start has 0 brushes
-        assert!(
-            map_data.entity_brushes.iter().all(|(_, count)| *count == 0),
-            "info_player_start should have 0 brushes"
-        );
-
-        // Should have worldspawn + info_player_start
         let classnames: Vec<&str> = map_data
             .entities
             .iter()
@@ -1148,28 +1161,50 @@ mod tests {
             .collect();
         assert!(classnames.contains(&"worldspawn"));
         assert!(classnames.contains(&"info_player_start"));
+
+        // Point entities must have 0 brushes.
+        for point_classname in &["info_player_start", "player", "light", "light_spot", "fog_lamp"] {
+            let brush_count = map_data
+                .entity_brushes
+                .iter()
+                .find(|(cls, _)| cls == point_classname)
+                .map(|(_, count)| *count)
+                .unwrap_or(0);
+            assert_eq!(
+                brush_count, 0,
+                "{point_classname} is a point entity and should have 0 brushes"
+            );
+        }
+
+        // Brush entities must have > 0 brushes.
+        let fog_volume_brush_count = map_data
+            .entity_brushes
+            .iter()
+            .find(|(cls, _)| cls == "fog_volume")
+            .map(|(_, count)| *count)
+            .unwrap_or(0);
+        assert!(
+            fog_volume_brush_count > 0,
+            "fog_volume is a brush entity and should have > 0 brushes"
+        );
     }
 
     #[test]
     fn map_entities_collected_strip_reserved_keys_and_lights() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
-        // info_player_start is the only non-light, non-worldspawn point entity
-        // in test.map.
-        assert_eq!(
-            map_data.map_entities.len(),
-            1,
-            "expected exactly one collected map entity, got {:?}",
-            map_data
-                .map_entities
-                .iter()
-                .map(|e| e.classname.as_str())
-                .collect::<Vec<_>>()
+        assert!(
+            !map_data.map_entities.is_empty(),
+            "should have at least one collected map entity"
         );
 
-        let me = &map_data.map_entities[0];
-        assert_eq!(me.classname, "info_player_start");
+        // info_player_start must be present; check its reserved keys are stripped.
+        let me = map_data
+            .map_entities
+            .iter()
+            .find(|e| e.classname == "info_player_start")
+            .expect("info_player_start should be in map_entities");
         // Reserved keys (`classname`, `origin`, `angle`/`angles`/`mangle`,
         // `_tags`) must not appear in the residual KVP bag.
         for (k, _) in &me.key_values {
@@ -1187,12 +1222,16 @@ mod tests {
                 .all(|e| !crate::format::quake_map::is_light_classname(&e.classname)),
             "light classname leaked into map_entities"
         );
+        assert!(
+            map_data.map_entities.iter().all(|e| e.classname != "worldspawn"),
+            "worldspawn must not appear in map_entities",
+        );
     }
 
     #[test]
     fn brush_sides_have_valid_vertices() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         for (bi, brush) in map_data.brush_volumes.iter().enumerate() {
             for (si, side) in brush.sides.iter().enumerate() {
@@ -1208,7 +1247,7 @@ mod tests {
     #[test]
     fn brush_sides_have_unit_normals() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         for (bi, brush) in map_data.brush_volumes.iter().enumerate() {
             for (si, side) in brush.sides.iter().enumerate() {
@@ -1224,7 +1263,7 @@ mod tests {
     #[test]
     fn extracts_player_start_origin() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         let player_start = map_data
             .entities
@@ -1258,7 +1297,7 @@ mod tests {
     #[test]
     fn brush_side_winding_aligns_with_side_normal() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         let mut checked = 0usize;
         for (bi, brush) in map_data.brush_volumes.iter().enumerate() {
@@ -1292,11 +1331,11 @@ mod tests {
     #[test]
     fn every_brush_volume_has_brush_sides() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         assert!(
             !map_data.brush_volumes.is_empty(),
-            "test.map should produce brush volumes"
+            "campaign-test.map should produce brush volumes"
         );
 
         for (i, brush) in map_data.brush_volumes.iter().enumerate() {
@@ -1496,6 +1535,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1549,6 +1589,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1628,6 +1669,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1690,6 +1732,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1730,6 +1773,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1772,7 +1816,7 @@ mod tests {
         // Compose with pack.rs to confirm `inv_half_ext` lands at
         // `1 / ((max - min) * 0.5)`. This locks the end-to-end contract that
         // the ellipsoid shader path depends on.
-        let section = crate::pack::encode_fog_volumes(std::slice::from_ref(&v), 1);
+        let section = crate::pack::encode_fog_volumes(std::slice::from_ref(&v), 1, -9.81);
         assert_eq!(section.volumes.len(), 1);
         let rec = &section.volumes[0];
         for i in 0..3 {
@@ -1792,6 +1836,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1826,6 +1871,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1854,6 +1900,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1876,12 +1923,82 @@ mod tests {
     }
 
     #[test]
+    fn parse_map_file_reads_initial_gravity_from_worldspawn() {
+        let map_text = "\
+// entity 0
+{
+\"classname\" \"worldspawn\"
+\"initialGravity\" \"-15.0\"
+{
+( -16 -16 -16 ) ( -16 -16 16 ) ( -16 16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( -16 16 -16 ) ( 16 -16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( 16 -16 -16 ) ( -16 -16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 -16 16 ) ( 16 16 -16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 16 -16 ) ( -16 16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( -16 16 16 ) ( 16 -16 16 ) tex 0 0 0 1 1
+}
+}
+";
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let tmp =
+            std::env::temp_dir().join(format!("postretro_initial_gravity_{unique}.map"));
+        std::fs::write(&tmp, map_text).unwrap();
+        let map_data = parse_map_file(&tmp, MapFormat::IdTech2)
+            .expect("inline gravity fixture should parse without error");
+        let _ = std::fs::remove_file(&tmp);
+        assert!(
+            (map_data.initial_gravity - -15.0).abs() < 1e-5,
+            "expected -15.0, got {}",
+            map_data.initial_gravity,
+        );
+    }
+
+    #[test]
+    fn parse_map_file_rejects_missing_initial_gravity() {
+        // Write a minimal .map file whose worldspawn omits `initialGravity` and
+        // confirm the parser surfaces a hard error referencing the key. Uses a
+        // single-brush worldspawn so brush extraction does not bail first.
+        let map_text = "\
+// entity 0
+{
+\"classname\" \"worldspawn\"
+{
+( -16 -16 -16 ) ( -16 -16 16 ) ( -16 16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( -16 16 -16 ) ( 16 -16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( 16 -16 -16 ) ( -16 -16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 -16 16 ) ( 16 16 -16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 16 -16 ) ( -16 16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( -16 16 16 ) ( 16 -16 16 ) tex 0 0 0 1 1
+}
+}
+";
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let tmp =
+            std::env::temp_dir().join(format!("postretro_missing_initial_gravity_{unique}.map"));
+        std::fs::write(&tmp, map_text).unwrap();
+        let err = parse_map_file(&tmp, MapFormat::IdTech2).unwrap_err();
+        let _ = std::fs::remove_file(&tmp);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("initialGravity"),
+            "error should reference `initialGravity`, got: {msg}",
+        );
+    }
+
+    #[test]
     fn empty_brush_set_not_detected_as_axis_aligned() {
         // No brushes → fall through to the plane-bounded path so the resolver
         // surfaces the empty-brush error instead of producing a silent ellipsoid.
         let map_text = r#"
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 "#;
         let shalrath_map: shambler::shalrath::repr::Map = map_text

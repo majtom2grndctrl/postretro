@@ -114,7 +114,7 @@ Establish the entity model and scripting layer together. Scripting and entities 
 - [x] **Entity API bindings** — spawn / query / move / destroy; event subscribe/emit. All bindings use IDs/handles rather than Rust references; no lifetimes in the surface.
 - [x] **Map entity parsing** — `.map` entity lump → typed entities at compile time, classname-keyed. Entities spawn from map data at level load.
 - [x] **Hot reload** — file watcher monitors script directory; changed scripts reload on next frame drain. Debug builds only.
-- [x] **Reference behaviors (script)** — `RotatorDriver` and `DamageSource` written as scripts. See `content/tests/scripts/`.
+- [x] **Reference behaviors (script)** — `RotatorDriver` and `DamageSource` written as scripts. See `content/dev/scripts/`.
 - [x] **Modder-facing API reference** — covers all bound APIs. See `docs/scripting-reference.md`.
 
 **Testable outcome:** spawn a scripted entity from a `.map` file; confirm it ticks and emits events at the fixed tick rate. Hot-reload the script during gameplay. The `DamageSource` debug entity is available for future destruction testing. ✓

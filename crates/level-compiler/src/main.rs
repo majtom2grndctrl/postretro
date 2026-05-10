@@ -311,8 +311,11 @@ fn main() -> anyhow::Result<()> {
     let light_influence_section = pack::encode_light_influence(&alpha_lights_ns);
     let light_tags_section = pack::encode_light_tags(&alpha_lights_ns);
     let map_entities_section = pack::encode_map_entities(&map_data.map_entities);
-    let fog_volumes_section =
-        pack::encode_fog_volumes(&map_data.fog_volumes, map_data.fog_pixel_scale);
+    let fog_volumes_section = pack::encode_fog_volumes(
+        &map_data.fog_volumes,
+        map_data.fog_pixel_scale,
+        map_data.initial_gravity,
+    );
     let fog_cell_masks_section =
         fog_cell_masks::bake_fog_cell_masks(&result.tree, &map_data.fog_volumes);
 

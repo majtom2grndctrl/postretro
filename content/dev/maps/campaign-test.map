@@ -3,9 +3,10 @@
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 "wad" ""
 "data_script" "../scripts/arena-lights.ts"
-"_tb_mod" "tests;base"
+"_tb_mod" "dev;base"
 "_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
 // brush 0
 {

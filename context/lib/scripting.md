@@ -55,7 +55,7 @@ Once registered, the runtime installs each primitive into every context it creat
 
 **Naming convention:** Primitive names are camelCase, matching the idiom of the target languages (TypeScript, JavaScript, Luau). Wire format field names match the script-facing API; internal Rust representation may differ. Named entity instance constants in user scripts follow the same camelCase rule (`const exhaustPort = defineEntity({...})`, `const campfire = defineEntity({...})`). PascalCase is reserved for types and interfaces only.
 
-Entry points: `postretro/src/scripting/primitives/` (day-one primitive set — `mod.rs` owns shared types and cross-domain wiring; `entity.rs` owns entity-domain primitives; `light.rs` owns light-domain primitives); `postretro/src/scripting/primitives_registry.rs` (builder and registry).
+Entry points: `postretro/src/scripting/primitives/` (day-one primitive set — `mod.rs` owns shared types and the `register_all` entry point; `entity.rs` owns entity-domain primitives; `light.rs` owns light-domain primitives; `world.rs` owns world-domain primitives (`worldQuery`, `worldGetGravity`, `worldSetGravity`)); `postretro/src/scripting/primitives_registry.rs` (builder and registry).
 
 ---
 
@@ -158,7 +158,7 @@ Each live particle is a full ECS entity carrying `Transform`, `ParticleState`, a
 
 **Reaction primitives:** `setEmitterRate` sets the continuous spawn rate (`rate = 0` is the inactive state — there is no separate `setEmitterActive`). `setSpinRate` sets the per-emitter rotation rate, with an optional `SpinAnimation` tween. Both are tag-targeted named reaction primitives in the Rust reaction registry.
 
-**Buoyancy sign convention:** `-1` = normal gravity (falls). `0` = floats. `> 0` = rises. `< -1` = falls faster than gravity. Formula: `vertical_accel = WORLD_GRAVITY * -buoyancy` with `WORLD_GRAVITY = -9.81`.
+**Buoyancy sign convention:** `-1` = normal gravity (falls). `0` = floats. `> 0` = rises. `< -1` = falls faster than gravity. Formula: `vertical_accel = gravity * -buoyancy` where `gravity` is the current world gravity (m/s², seeded from worldspawn `initialGravity` and mutable at runtime via `world.setGravity()`).
 
 ### 10.2 Fog Reaction Primitives
 

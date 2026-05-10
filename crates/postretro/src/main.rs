@@ -60,7 +60,7 @@ use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::texture::TextureSet;
 use crate::visibility::{VisibilityPath, VisibilityStats, VisibleCells};
 
-const DEFAULT_MAP_PATH: &str = "content/tests/maps/test-3.prl";
+const DEFAULT_MAP_PATH: &str = "content/dev/maps/campaign-test.prl";
 
 fn resolve_map_path(args: &[String]) -> String {
     args.iter()
@@ -657,6 +657,18 @@ impl ApplicationHandler for App {
                 // world is already populated (load_level ran before the event loop).
                 // See: context/lib/scripting.md
                 if !self.level_load_fired {
+                    // Reset world gravity to the new level's authored value
+                    // before the data script runs, so any `world.getGravity()`
+                    // call inside `setupLevel` / `levelLoad` reactions sees
+                    // the freshly-loaded value rather than carry-over state
+                    // from a prior level.
+                    //
+                    // Ready for the future level-reload path — `level_load_fired` and `self.level`
+                    // must be reset together to trigger this gravity re-seed.
+                    if let Some(world) = &self.level {
+                        self.script_ctx.gravity.set(world.initial_gravity);
+                    }
+
                     // Data script runs once at level open. Errors surface as an
                     // empty manifest so the level still loads.
                     // See: context/lib/scripting.md §2
@@ -886,7 +898,11 @@ impl ApplicationHandler for App {
                     // Pure Rust; scripts never observe individual particles.
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
-                        scripting_systems::particle_sim::tick(&mut registry, frame_dt);
+                        scripting_systems::particle_sim::tick(
+                            &mut registry,
+                            frame_dt,
+                            self.script_ctx.gravity.get(),
+                        );
                     }
 
                     // Light bridge — between Game Logic and Render. Uploads
@@ -1218,8 +1234,8 @@ mod tests {
     #[test]
     fn content_root_from_map_returns_grandparent_for_standard_path() {
         assert_eq!(
-            content_root_from_map("content/tests/maps/test-3.prl"),
-            PathBuf::from("content/tests"),
+            content_root_from_map("content/dev/maps/campaign-test.prl"),
+            PathBuf::from("content/dev"),
         );
     }
 

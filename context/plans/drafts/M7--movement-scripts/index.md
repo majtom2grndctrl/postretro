@@ -16,7 +16,7 @@ Player movement is a built-in Rust system. A declaration script registers the `"
 
 ### 1. Entity declaration
 
-`content/tests/scripts/player.ts` (or `.luau`). One `registerEntity` call for the `"player"` classname with these required fields:
+`content/dev/scripts/player.ts` (or `.luau`). One `registerEntity` call for the `"player"` classname with these required fields:
 
 | Field | Type | Description |
 |-------|------|-------------|

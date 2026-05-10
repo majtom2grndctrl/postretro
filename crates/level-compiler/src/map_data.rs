@@ -394,6 +394,10 @@ pub struct MapData {
     /// Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest); clamped to 1..=8.
     /// Default 4 when the worldspawn entity does not author the key.
     pub fog_pixel_scale: u32,
+    /// Worldspawn `initialGravity` (m/s², negative = downward). Required KVP
+    /// — `parse_map_file` errors when absent so authors face an explicit
+    /// choice rather than inheriting an undocumented engine default.
+    pub initial_gravity: f32,
 }
 
 /// One fog volume entity, resolved to an AABB (and optionally a convex plane

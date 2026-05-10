@@ -191,13 +191,14 @@ pub fn encode_map_entities(
     Some(MapEntitySection { entries })
 }
 
-/// Encode the resolved fog volume entities and the worldspawn
-/// `fog_pixel_scale` into a `FogVolumesSection`. Always produces a section so
-/// the worldspawn pixel-scale is always honoured at runtime, even when the map
-/// carries no fog brushes (8-byte overhead for that case).
+/// Encode the resolved fog volume entities and the worldspawn-scoped scalars
+/// (`fog_pixel_scale` and `initial_gravity`) into a `FogVolumesSection`.
+/// Always produces a section so the worldspawn data is honoured at runtime,
+/// even when the map carries no fog brushes.
 pub fn encode_fog_volumes(
     fog_volumes: &[crate::map_data::MapFogVolume],
     fog_pixel_scale: u32,
+    initial_gravity: f32,
 ) -> FogVolumesSection {
     let volumes = fog_volumes
         .iter()
@@ -257,6 +258,7 @@ pub fn encode_fog_volumes(
         .collect();
     FogVolumesSection {
         pixel_scale: fog_pixel_scale,
+        initial_gravity,
         volumes,
     }
 }
@@ -869,11 +871,11 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root")
-            .join("content/tests/maps/test.map");
+            .join("content/dev/maps/campaign-test.map");
 
         let map_data =
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
-                .expect("test.map should parse");
+                .expect("campaign-test.map should parse");
         let result =
             crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
 
@@ -957,7 +959,7 @@ mod tests {
         let _ = std::fs::remove_file(&output);
     }
 
-    /// Every test map in `content/tests/maps/` must compile end-to-end and emit an
+    /// Every test map in `content/dev/maps/` must compile end-to-end and emit an
     /// SH volume section. The bake uses a coarse spacing (4 m) to keep test
     /// time bounded — the probe count is a design parameter, not what this
     /// test is exercising.
@@ -967,7 +969,7 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root")
-            .join("content/tests/maps");
+            .join("content/dev/maps");
 
         let mut map_count = 0;
         for entry in std::fs::read_dir(&maps_dir).expect("maps dir should exist") {

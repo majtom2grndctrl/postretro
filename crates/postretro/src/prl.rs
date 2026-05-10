@@ -1,4 +1,5 @@
-// PRL level loading: read .prl files, produce BSP tree + BVH runtime data.
+// PRL level loading: reads .prl files, populates LevelWorld (BSP, BVH, lights,
+// portals, fog volumes, scripted entities, and worldspawn metadata).
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use std::collections::HashSet;

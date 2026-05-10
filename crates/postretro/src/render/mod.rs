@@ -7,6 +7,7 @@ pub mod frame_timing;
 pub mod sh_compose;
 pub mod sh_volume;
 pub mod smoke;
+pub mod splash;
 
 #[cfg(test)]
 mod curve_eval_test;
@@ -29,6 +30,7 @@ use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots_into};
 use crate::material::Material;
 use crate::prl::MapLight;
+use crate::render::splash::SplashPipeline;
 use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
@@ -377,6 +379,26 @@ pub struct Renderer {
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
 
+    /// Retained so `install_textures` can create material bind groups after init.
+    texture_bind_group_layout: wgpu::BindGroupLayout,
+    /// Retained so `install_level_geometry` can rebuild the lighting bind group.
+    lighting_bind_group_layout: wgpu::BindGroupLayout,
+    /// Shared linear+repeat sampler for diffuse + normal textures.
+    base_sampler: wgpu::Sampler,
+    /// 1×1 black placeholder view for textures missing a specular sibling.
+    black_specular_view: wgpu::TextureView,
+    /// 1×1 flat-normal placeholder view for textures missing a normal-map sibling.
+    neutral_normal_view: wgpu::TextureView,
+    /// `has_multi_draw_indirect` flag cached for `install_level_geometry`.
+    has_multi_draw_indirect: bool,
+    /// Per-texture material properties derived from texture names. Set by
+    /// `install_level_geometry`; consumed by `install_textures` to populate
+    /// per-material shininess uniforms.
+    stored_texture_materials: Vec<Material>,
+    /// Retained so `install_level_geometry` can pass it to `ShComposeResources`
+    /// and `AnimatedLightmapResources` without recreating the layout inline.
+    uniform_bind_group_layout: wgpu::BindGroupLayout,
+
     /// Always bound; maps with zero lights get a 1-element dummy buffer —
     /// wgpu rejects zero-sized storage buffer bindings.
     lighting_bind_group: wgpu::BindGroup,
@@ -452,6 +474,11 @@ pub struct Renderer {
     /// Idle (no draw) on maps with no registered collections. See §7.4.
     smoke_pass: SmokePass,
 
+    /// Fullscreen splash render pass. Pipeline created at `Renderer::new`;
+    /// bind group bound by `install_splash_from_loaded` and cleared by
+    /// `clear_splash`. Encodes a black clear when no splash is bound.
+    splash_pipeline: SplashPipeline,
+
     /// Volumetric fog raymarch + composite. Active only when the level has
     /// at least one fog volume uploaded; otherwise the dispatch + composite
     /// are skipped (see `FogPass::active`).
@@ -475,12 +502,14 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// `geometry` is `None` when no map is loaded (renders clear color only).
-    pub fn new(
-        window: &Arc<Window>,
-        geometry: Option<&LevelGeometry>,
-        texture_set: Option<&TextureSet>,
-    ) -> Result<Self> {
+    /// Create the renderer for the given window. Geometry and textures are
+    /// installed later via `install_level_geometry` / `install_textures` once
+    /// the level-load worker delivers its payload.
+    pub fn new(window: &Arc<Window>) -> Result<Self> {
+        // No geometry yet — use dummy buffers until `install_level_geometry`
+        // replaces them.
+        let geometry: Option<&LevelGeometry> = None;
+        let texture_set: Option<&TextureSet> = None;
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -1515,6 +1544,11 @@ impl Renderer {
             &sh_volume_resources.bind_group_layout,
         );
 
+        // Splash pipeline — created unconditionally; the bind group is `None`
+        // until `install_splash_from_loaded` is called.
+        // See: context/lib/boot_sequence.md §8 · crates/postretro/src/render/splash.rs
+        let splash_pipeline = SplashPipeline::new(&device, surface_format);
+
         // Volumetric fog pass. Pixel scale is the worldspawn default until the
         // app pushes a per-level value via `set_fog_pixel_scale`.
         let mut fog = FogPass::new(
@@ -1598,9 +1632,18 @@ impl Renderer {
             debug_prev_visible: ("init", usize::MAX),
             app_start: Instant::now(),
             smoke_pass,
+            splash_pipeline,
             fog,
             fog_cell_masks: None,
             active_fog_aabbs: Vec::new(),
+            texture_bind_group_layout,
+            lighting_bind_group_layout,
+            base_sampler,
+            black_specular_view,
+            neutral_normal_view,
+            has_multi_draw_indirect,
+            stored_texture_materials: Vec::new(),
+            uniform_bind_group_layout,
         })
     }
 
@@ -1621,6 +1664,461 @@ impl Renderer {
             spec_intensity,
             lifetime,
         );
+    }
+
+    /// Upload level geometry to the GPU. Replaces dummy vertex/index buffers
+    /// created at init time with real geometry, rebuilds the lighting bind
+    /// group, SH volume, lightmap, and BVH-backed compute cull pipeline.
+    ///
+    /// Called from the boot state machine after the level-load worker delivers
+    /// its payload. See: context/lib/boot_sequence.md §8
+    pub fn install_level_geometry(&mut self, geometry: &LevelGeometry<'_>) {
+        let has_geometry = !geometry.vertices.is_empty() && !geometry.indices.is_empty();
+
+        // --- Vertex / index buffers ---
+        let (vertex_data, index_data, index_count) = if has_geometry {
+            let count = geometry.indices.len() as u32;
+            (
+                cast_world_vertices_to_bytes(geometry.vertices),
+                bytemuck_cast_slice_u32(geometry.indices),
+                count,
+            )
+        } else {
+            (
+                vec![0u8; crate::geometry::WorldVertex::STRIDE],
+                vec![0u8; 4],
+                0u32,
+            )
+        };
+        self.vertex_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("World Vertex Buffer"),
+                    contents: &vertex_data,
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+        self.index_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("World Index Buffer"),
+                    contents: &index_data,
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+        self.index_count = index_count;
+
+        // --- Wireframe index buffer ---
+        let (wireframe_index_data, wireframe_index_count) = if has_geometry {
+            let line_indices = build_line_indices_from_triangles(geometry.indices);
+            let count = line_indices.len() as u32;
+            (bytemuck_cast_slice_u32(&line_indices), count)
+        } else {
+            (vec![0u8; 4], 0u32)
+        };
+        self.wireframe_index_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Wireframe Line Index Buffer"),
+                    contents: &wireframe_index_data,
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+        self.wireframe_index_count = wireframe_index_count;
+
+        // --- Lights + lighting bind group ---
+        let (level_lights, dynamic_influences) =
+            filter_dynamic_lights(geometry.lights, geometry.light_influences);
+        self.light_count = level_lights.len() as u32;
+
+        let lights_data = if !level_lights.is_empty() {
+            pack_lights(&level_lights)
+        } else {
+            vec![0u8; GPU_LIGHT_SIZE]
+        };
+        let lights_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Direct Lights Storage Buffer"),
+                    contents: &lights_data,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                });
+        self.lights_buffer = lights_buffer;
+        self.level_lights = level_lights;
+
+        let influence_data = if !dynamic_influences.is_empty() {
+            influence::pack_influence(&dynamic_influences)
+        } else {
+            vec![0u8; 16]
+        };
+        let influence_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Light Influence Storage Buffer"),
+                    contents: &influence_data,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                });
+
+        let spec_lights_data = {
+            let packed = pack_spec_lights(geometry.lights);
+            if packed.is_empty() {
+                vec![0u8; SPEC_LIGHT_SIZE]
+            } else {
+                packed
+            }
+        };
+        let spec_lights_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Spec-Only Lights Storage Buffer"),
+                    contents: &spec_lights_data,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                });
+
+        let chunk_grid = match geometry.chunk_light_list {
+            Some(sec) => ChunkGrid::from_section(sec),
+            None => ChunkGrid::fallback(),
+        };
+        let chunk_grid_info_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Chunk Grid Info Uniform"),
+                    contents: &chunk_grid.grid_info,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+        let chunk_grid_offsets_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Chunk Grid Offset Table"),
+                    contents: &chunk_grid.offset_table,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                });
+        let chunk_grid_indices_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Chunk Grid Index List"),
+                    contents: &chunk_grid.index_list,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                });
+
+        self.lighting_bind_group =
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Lighting Bind Group"),
+                layout: &self.lighting_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.lights_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: influence_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: spec_lights_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: chunk_grid_info_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: chunk_grid_offsets_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: chunk_grid_indices_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+
+        // --- SH volume, sh_compose, lightmap, animated lightmap ---
+        self.sh_volume_resources = ShVolumeResources::new(
+            &self.device,
+            &self.queue,
+            geometry.sh_volume,
+            self.level_lights.len(),
+        );
+        self.sh_compose = ShComposeResources::new(
+            &self.device,
+            &self.sh_volume_resources,
+            geometry.sh_volume,
+            geometry.delta_sh_volumes,
+            &self.uniform_bind_group_layout,
+        );
+
+        let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(&self.device);
+        let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
+        let bvh_leaves: Vec<crate::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
+
+        let animated_lightmap_result = animated_lightmap::AnimatedLightmapResources::new(
+            &self.device,
+            geometry.animated_light_weight_maps,
+            geometry.animated_light_chunks,
+            &bvh_leaves,
+            &self.sh_volume_resources.animation,
+            &self.uniform_bind_group_layout,
+            animated_lm_debug,
+        );
+        match animated_lightmap_result {
+            Ok(al) => {
+                self.lightmap_resources = LightmapResources::new(
+                    &self.device,
+                    &self.queue,
+                    geometry.lightmap,
+                    &lightmap_bgl,
+                    &al.forward_view,
+                );
+                self.animated_lightmap = al;
+            }
+            Err(msg) => {
+                log::error!(
+                    "[Renderer] animated lightmap install failed: {msg} — level may render without lightmap"
+                );
+            }
+        }
+
+        // --- BVH + compute cull ---
+        self.bvh_leaves = bvh_leaves;
+        self.compute_cull = if !self.bvh_leaves.is_empty() {
+            Some(ComputeCullPipeline::new(
+                &self.device,
+                geometry.bvh,
+                self.has_multi_draw_indirect,
+            ))
+        } else {
+            None
+        };
+
+        self.has_geometry = has_geometry;
+        self.last_lights_upload.clear();
+        self.lights_pack_scratch.clear();
+        self.light_effective_brightness.clear();
+        self.stored_texture_materials = geometry.texture_materials.to_vec();
+
+        if has_geometry {
+            log::info!(
+                "[Renderer] Geometry installed: {} indices, bvh_leaves={}",
+                self.index_count,
+                self.bvh_leaves.len(),
+            );
+        }
+    }
+
+    /// Upload textures to the GPU. Rebuilds all material bind groups.
+    ///
+    /// Called from the boot state machine after `install_level_geometry`.
+    /// See: context/lib/boot_sequence.md §8
+    pub fn install_textures(&mut self, texture_set: &TextureSet) {
+        let mut gpu_textures: Vec<GpuTexture> = Vec::new();
+        let specular_set = texture_set.specular.as_slice();
+        let normal_set = texture_set.normal.as_slice();
+
+        for (idx, loaded) in texture_set.textures.iter().enumerate() {
+            let diffuse_tex = upload_texture_data(
+                &self.device,
+                &self.queue,
+                loaded.width,
+                loaded.height,
+                &loaded.data,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                &format!("Texture {idx} Diffuse"),
+            );
+            let diffuse_view = diffuse_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let spec_view = match specular_set
+                .get(idx)
+                .and_then(|o| o.as_ref())
+            {
+                Some(spec_loaded) => {
+                    let r_only = extract_r_channel(&spec_loaded.data);
+                    let tex = upload_texture_data(
+                        &self.device,
+                        &self.queue,
+                        spec_loaded.width,
+                        spec_loaded.height,
+                        &r_only,
+                        wgpu::TextureFormat::R8Unorm,
+                        &format!("Texture {idx} Specular"),
+                    );
+                    tex.create_view(&wgpu::TextureViewDescriptor::default())
+                }
+                None => self.black_specular_view.clone(),
+            };
+
+            let normal_view = match normal_set.get(idx).and_then(|o| o.as_ref()) {
+                Some(normal_loaded) => {
+                    let tex = upload_texture_data(
+                        &self.device,
+                        &self.queue,
+                        normal_loaded.width,
+                        normal_loaded.height,
+                        &normal_loaded.data,
+                        wgpu::TextureFormat::Rgba8Unorm,
+                        &format!("Texture {idx} Normal"),
+                    );
+                    tex.create_view(&wgpu::TextureViewDescriptor::default())
+                }
+                None => self.neutral_normal_view.clone(),
+            };
+
+            let material = self
+                .stored_texture_materials
+                .get(idx)
+                .copied()
+                .unwrap_or(crate::material::Material::Default);
+            let uniform_bytes = build_material_uniform(material.shininess());
+            let uniform_buf =
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("Material Uniform {idx}")),
+                        contents: &uniform_bytes,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    });
+
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(&format!("Material Bind Group {idx}")),
+                layout: &self.texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&diffuse_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.base_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&spec_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: uniform_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&normal_view),
+                    },
+                ],
+            });
+            gpu_textures.push(GpuTexture { bind_group });
+        }
+
+        if gpu_textures.is_empty() {
+            let placeholder = crate::texture::generate_placeholder();
+            let diffuse_tex = upload_texture_data(
+                &self.device,
+                &self.queue,
+                placeholder.width,
+                placeholder.height,
+                &placeholder.data,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                "Placeholder Texture Diffuse",
+            );
+            let diffuse_view = diffuse_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let uniform_bytes =
+                build_material_uniform(crate::material::Material::Default.shininess());
+            let uniform_buf =
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Material Uniform Placeholder"),
+                        contents: &uniform_bytes,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    });
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Placeholder Material Bind Group"),
+                layout: &self.texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&diffuse_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.base_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&self.black_specular_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: uniform_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&self.neutral_normal_view),
+                    },
+                ],
+            });
+            gpu_textures.push(GpuTexture { bind_group });
+        }
+
+        self.gpu_textures = gpu_textures;
+        log::info!(
+            "[Renderer] Textures installed: {}",
+            self.gpu_textures.len(),
+        );
+    }
+
+    /// Decode a `LoadedTexture` into a GPU splash texture, bind it to the
+    /// splash pipeline, and write the UBO. Returns the texture dimensions
+    /// `[width, height]` for the caller's log line.
+    ///
+    /// May be called more than once (mod-override swap in splash frame 1).
+    pub fn install_splash_from_loaded(&mut self, loaded: &LoadedTexture) -> [u32; 2] {
+        let (texture, dims) = splash::upload_splash_texture(&self.device, &self.queue, loaded);
+        let screen_size = [self.surface_config.width, self.surface_config.height];
+        self.splash_pipeline
+            .install(&self.device, &self.queue, &texture, dims, screen_size);
+        dims
+    }
+
+    /// Encode and submit a splash-phase frame — clears to black and draws the
+    /// fullscreen splash triangle if a texture is bound. Returns `Err` on
+    /// swapchain failure; the caller exits the event loop on error.
+    pub fn render_splash_frame(&mut self) -> Result<()> {
+        let output = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(tex) => tex,
+            wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                tex
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.surface.configure(&self.device, &self.surface_config);
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                anyhow::bail!("surface lost during splash");
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                anyhow::bail!("surface validation error during splash");
+            }
+        };
+
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Splash Frame Encoder"),
+                });
+
+        self.splash_pipeline.encode(&mut encoder, &view);
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+        Ok(())
+    }
+
+    /// Release the splash bind group. The splash pipeline still exists; a
+    /// subsequent `install_splash_from_loaded` can re-bind.
+    pub fn clear_splash(&mut self) {
+        self.splash_pipeline.clear();
     }
 
     pub fn toggle_wireframe(&mut self) -> bool {
@@ -1671,6 +2169,10 @@ impl Renderer {
         self.depth_view = depth_view;
         self.fog
             .resize(&self.device, width, height, &self.depth_view);
+        if self.splash_pipeline.has_splash() {
+            self.splash_pipeline
+                .update_screen_size(&self.queue, [width, height]);
+        }
         self.is_surface_configured = true;
     }
 
@@ -2581,6 +3083,30 @@ fn filter_dynamic_lights(
             (l.clone(), inf)
         })
         .unzip()
+}
+
+/// Convert a loaded `LevelWorld` and its derived materials into a
+/// `LevelGeometry` suitable for `Renderer::install_level_geometry`.
+/// Called on the main thread between worker delivery and GPU upload.
+/// See: context/lib/boot_sequence.md §8
+pub fn level_world_to_geometry<'a>(
+    world: &'a crate::prl::LevelWorld,
+    texture_materials: &'a [Material],
+) -> LevelGeometry<'a> {
+    LevelGeometry {
+        vertices: &world.vertices,
+        indices: &world.indices,
+        bvh: &world.bvh,
+        lights: &world.lights,
+        light_influences: &world.light_influences,
+        sh_volume: world.sh_volume.as_ref(),
+        lightmap: world.lightmap.as_ref(),
+        chunk_light_list: world.chunk_light_list.as_ref(),
+        animated_light_chunks: world.animated_light_chunks.as_ref(),
+        animated_light_weight_maps: world.animated_light_weight_maps.as_ref(),
+        delta_sh_volumes: world.delta_sh_volumes.as_ref(),
+        texture_materials,
+    }
 }
 
 #[cfg(test)]

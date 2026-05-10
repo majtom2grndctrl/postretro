@@ -1,5 +1,5 @@
-// Postretro engine entry point and level-load orchestration.
-// See: context/lib/index.md (routes to rendering_pipeline.md, scripting.md, etc.)
+// Postretro engine entry point, boot state machine, and level-load orchestration.
+// See: context/lib/boot_sequence.md §8 · context/lib/index.md
 
 mod camera;
 mod collision;
@@ -15,6 +15,7 @@ mod portal_vis;
 mod prl;
 mod render;
 mod scripting;
+mod startup;
 mod texture;
 mod visibility;
 
@@ -26,6 +27,8 @@ mod scripting_systems;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -58,6 +61,7 @@ use crate::scripting::reactions::registry::{
 };
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
+use crate::startup::{BootState, LoadOutcome, SplashSource, StartupTimings, spawn_level_worker};
 use crate::texture::TextureSet;
 use crate::visibility::{VisibilityPath, VisibilityStats, VisibleCells};
 
@@ -83,73 +87,26 @@ fn content_root_from_map(map_path: &str) -> PathBuf {
         .to_path_buf()
 }
 
-fn load_level(path: &str) -> Result<Option<prl::LevelWorld>> {
-    let ext = Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    match ext.as_str() {
-        "prl" => match prl::load_prl(path) {
-            Ok(world) => {
-                log::info!("[Engine] PRL loaded successfully from {path}");
-                Ok(Some(world))
-            }
-            Err(prl::PrlLoadError::FileNotFound(p)) => {
-                log::warn!("[Engine] PRL file not found: {p} — starting without map");
-                Ok(None)
-            }
-            Err(err) => anyhow::bail!("failed to load PRL: {err}"),
-        },
-        _ => {
-            log::error!(
-                "[Engine] Unknown file extension '.{ext}' for {path} — only .prl is supported"
-            );
-            Ok(None)
-        }
-    }
-}
-
 fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
+
+    // Timing starts at process entry so the first stage captures the
+    // args_parsed → wgpu_init gap. See `StartupTimings` doc comment for
+    // the per-line stage layout.
+    let mut boot_timings = StartupTimings::new();
 
     let args: Vec<String> = std::env::args().collect();
 
     let map_path = resolve_map_path(&args);
     let content_root = content_root_from_map(&map_path);
     log::info!("[Engine] Content root: {}", content_root.display());
-    let mut level = load_level(&map_path)?;
+    boot_timings.record("args_parsed");
 
-    let texture_set = match &level {
-        Some(world) if !world.texture_names.is_empty() => {
-            let texture_root = content_root.join("textures");
-            log::info!(
-                "[Engine] Loading PRL textures from {}",
-                texture_root.display()
-            );
-            let texture_names: Vec<Option<String>> = world
-                .texture_names
-                .iter()
-                .map(|n| Some(n.clone()))
-                .collect();
-            Some(texture::load_textures(&texture_names, &texture_root))
-        }
-        _ => None,
-    };
-
-    // Normalize PRL UVs after texture dimensions are known.
-    if let (Some(world), Some(tex_set)) = (&mut level, &texture_set) {
-        normalize_prl_uvs(world, tex_set);
-    }
-
-    let initial_camera_pos = match &level {
-        Some(world) => world.spawn_position(),
-        None => Vec3::new(0.0, 200.0, 500.0),
-    };
-
-    let event_loop = EventLoop::new().context("failed to create event loop")?;
+    // Camera starts at a placeholder; `install_level_payload` repositions it
+    // to the first `info_player_start` or the level geometry center
+    // (`spawn_position()`) when no player start exists.
+    let initial_camera_pos = Vec3::new(0.0, 200.0, 500.0);
 
     let initial_state = InterpolableState::new(initial_camera_pos);
 
@@ -158,12 +115,16 @@ fn main() -> Result<()> {
     let script_ctx = ScriptCtx::new();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
-    let mut script_runtime = ScriptRuntime::new(
+    let script_runtime = ScriptRuntime::new(
         &script_registry,
         &ScriptRuntimeConfig::default(),
         &script_ctx,
     )
     .context("failed to construct script runtime")?;
+    boot_timings.record("script_runtime_ctor");
+
+    let event_loop = EventLoop::new().context("failed to create event loop")?;
+    boot_timings.record("event_loop_created");
 
     // Rust-only handlers on the sequence-dispatch path — distinct from the
     // script-facing primitive registry (these never run inside QuickJS/Luau).
@@ -182,31 +143,18 @@ fn main() -> Result<()> {
     let mut classname_dispatch = ClassnameDispatch::new();
     register_builtin_classnames(&mut classname_dispatch);
 
-    // Mod-init: run start-script before any level loads. Entity types
-    // registered here populate the engine-global registry so the first
-    // level's spawn sweep sees them. See: context/lib/scripting.md §2,
-    // context/lib/boot_sequence.md §4.
-    if let Err(err) = script_runtime.run_mod_init(&content_root) {
-        log::error!("[Engine] Mod init failed: {err}");
-        anyhow::bail!("mod init failed: {err}");
-    }
-
-    // Failure to start the watcher is logged and swallowed — a missing or
-    // unwatchable scripts directory must not prevent engine startup.
-    let scripts_root = content_root.join("scripts");
-    if let Err(err) = script_runtime.start_watcher(&scripts_root, &content_root) {
-        log::warn!(
-            "[Scripting] failed to start hot-reload watcher on `{}` / `{}`: {err}",
-            scripts_root.display(),
-            content_root.display(),
-        );
-    }
+    // Mod init, hot-reload watcher start, and the level-load worker spawn
+    // are all deferred to the splash frame loop so the first splash frame
+    // paints before any of those run — the user sees pixels before any
+    // mod-supplied work executes.
+    // See: context/lib/boot_sequence.md §8
 
     let mut app = App {
         renderer: None,
         window_state: None,
-        level,
-        texture_set,
+        level: None,
+        texture_set: None,
+        map_path,
         content_root,
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
@@ -230,11 +178,19 @@ fn main() -> Result<()> {
         emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
         collision_world: collision::CollisionWorld::new(),
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
-        level_load_fired: false,
         builtin_handled: None,
         pending_spawn_points: None,
         pending_map_entities: None,
         script_time: 0.0,
+        boot_state: BootState::Booting,
+        splash_frame: 0,
+        pending_level_log: false,
+        pending_splash_override: None,
+        boot_timings,
+        mod_timings: StartupTimings::new(),
+        level_timings: StartupTimings::new(),
+        level_rx: None,
+        level_worker: None,
     };
 
     event_loop
@@ -242,39 +198,6 @@ fn main() -> Result<()> {
         .context("event loop terminated with error")?;
 
     app.exit_result
-}
-
-fn normalize_prl_uvs(world: &mut prl::LevelWorld, texture_set: &TextureSet) {
-    let mut normalized = vec![false; world.vertices.len()];
-
-    for leaf in &world.bvh.leaves {
-        let tex_idx = leaf.material_bucket_id as usize;
-        let (w, h) = match texture_set.textures.get(tex_idx) {
-            Some(tex) => (tex.width, tex.height),
-            None => continue,
-        };
-        if w == 0 || h == 0 {
-            continue;
-        }
-
-        let start = leaf.index_offset as usize;
-        let count = leaf.index_count as usize;
-        for i in start..start + count {
-            if let Some(&idx) = world.indices.get(i) {
-                let vi = idx as usize;
-                // The compiler emits a fresh vertex copy per face, so sharing
-                // across leaves is not expected — this guard is defensive
-                // against future vertex deduplication.
-                if vi < normalized.len() && !normalized[vi] {
-                    if let Some(vert) = world.vertices.get_mut(vi) {
-                        vert.base_uv[0] /= w as f32;
-                        vert.base_uv[1] /= h as f32;
-                        normalized[vi] = true;
-                    }
-                }
-            }
-        }
-    }
 }
 
 fn window_attributes() -> WindowAttributes {
@@ -290,6 +213,10 @@ struct App {
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
     texture_set: Option<TextureSet>,
+
+    /// Map path resolved from CLI args. Handed to the level-load worker
+    /// when it is spawned during the second splash frame.
+    map_path: String,
 
     /// Derived from the map path at startup. `textures/` and `scripts/`
     /// sibling directories are resolved relative to this root.
@@ -370,34 +297,75 @@ struct App {
     /// never touches wgpu directly. See: context/lib/scripting.md
     particle_render: scripting_systems::particle_render::ParticleRenderCollector,
 
-    /// Gates first-frame work: ensures `levelLoad` fires before the first render.
-    level_load_fired: bool,
+    /// Boot state machine: drives the splash → first-level-frame transition.
+    /// Subsumes the previous `level_load_fired` one-shot flag.
+    boot_state: BootState,
 
-    /// Classnames the built-in dispatch handled at level open. Captured in
-    /// `resumed()` and consumed by the data-archetype sweep during the
-    /// `!level_load_fired` cold path on the first redraw frame. `None` before
-    /// level load and after the sweep consumes it.
+    /// Counts splash frames since `resumed()`. The state machine uses this to
+    /// schedule the deferred `mod_init` (frame 1) and the worker spawn
+    /// (frame 1, after `mod_init`); frame 2 onward polls the worker channel.
+    splash_frame: u32,
+
+    /// Set when `Splash → Running` transitions; consumed at the bottom of the
+    /// first `Running` frame after `render_frame_indirect` returns. Ensures
+    /// log line C ends with `first_level_frame` covering the cost of the
+    /// frame the user actually sees.
+    pending_level_log: bool,
+
+    /// Set during `mod_init` if a mod registers a `SplashSource` override.
+    /// The consume path in `run_splash_frame` frame 1 is wired; today the field
+    /// stays `None` because no mod system yet calls the setter.
+    /// See: context/lib/boot_sequence.md §8.
+    #[allow(dead_code)]
+    pending_splash_override: Option<SplashSource>,
+
+    /// Classnames the built-in dispatch handled at level open. Captured during
+    /// install and consumed by the data-archetype sweep on the same frame.
+    /// `None` before level load and after the sweep consumes it.
     builtin_handled: Option<std::collections::HashSet<String>>,
 
     /// `info_player_start` placements partitioned out of `world.map_entities`
-    /// in `resumed()`, awaiting the data-archetype sweep on the first redraw
-    /// frame. The dispatch sweeps must not see these (they are routed by
+    /// during install, awaiting the data-archetype sweep on the same frame.
+    /// The dispatch sweeps must not see these (they are routed by
     /// `entity_class`, not by their own `classname`); the second sweep
     /// consumes them via `spawn_from_player_starts`. `None` before level load
     /// and after the sweep consumes them.
     pending_spawn_points: Option<Vec<crate::scripting::map_entity::MapEntity>>,
 
     /// Non-player-start map entities partitioned out of `world.map_entities`
-    /// in `resumed()`, awaiting the data-archetype sweep on the first redraw
-    /// frame. Avoids re-cloning and re-filtering `world.map_entities` in the
-    /// `level_load_fired` block. `None` before level load and after the sweep
-    /// consumes them.
+    /// during install, awaiting the data-archetype sweep on the same frame.
+    /// `None` before level load and after the sweep consumes them.
     pending_map_entities: Option<Vec<crate::scripting::map_entity::MapEntity>>,
 
     /// Seconds since level load, not wall clock. Resets to zero on level
     /// unload. Maintained for any future engine consumers that need a
     /// level-relative monotonic clock.
     script_time: f32,
+
+    /// Per-stage durations for log line A — engine boot
+    /// (args_parsed, script_runtime_ctor, event_loop_created, window_created,
+    /// wgpu_init, first_black_frame, splash_decoded, splash_uploaded,
+    /// first_splash_frame).
+    boot_timings: StartupTimings,
+
+    /// Per-stage durations for log line B — mod init (mod_init,
+    /// mod_splash_swap [conditional]).
+    mod_timings: StartupTimings,
+
+    /// Per-stage durations for log line C — level load. Worker-thread stages
+    /// are merged in between `worker_dispatch` and `worker_delivered`; see
+    /// `StartupTimings` doc comment.
+    level_timings: StartupTimings,
+
+    /// Receives the worker's `LoadOutcome`. `None` until the second splash
+    /// frame spawns the worker; consumed via `try_recv` each frame in
+    /// `Splash`.
+    level_rx: Option<mpsc::Receiver<LoadOutcome>>,
+
+    /// Owned so the thread is detached (not joined) when App drops.
+    /// Detached on shutdown — drop discards the JoinHandle without joining;
+    /// the OS thread reaps when its work returns.
+    level_worker: Option<JoinHandle<()>>,
 }
 
 struct WindowState {
@@ -408,6 +376,14 @@ struct WindowState {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // On desktop, winit fires resumed() exactly once at startup
+        // (Booting → Splash). Guard against the Suspended → Resumed path that
+        // some platforms issue during normal operation — re-entering from
+        // Running would corrupt the boot state by resetting `splash_frame`,
+        // re-installing the splash, and stalling with `level_rx = None`.
+        if self.boot_state != BootState::Booting {
+            return;
+        }
         let window = match event_loop.create_window(window_attributes()) {
             Ok(w) => Arc::new(w),
             Err(err) => {
@@ -416,157 +392,38 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        self.boot_timings.record("window_created");
 
-        // Derive material properties from texture names once so the renderer
-        // can populate per-material uniforms (shininess) without re-parsing.
-        let texture_materials: Vec<crate::material::Material> = self
-            .level
-            .as_ref()
-            .map(|world| {
-                let mut warned = std::collections::HashSet::new();
-                world
-                    .texture_names
-                    .iter()
-                    .map(|n| crate::material::derive_material(n, &mut warned))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let renderer = match Renderer::new(&window) {
+            Ok(r) => r,
+            Err(err) => {
+                self.exit_result = Err(err);
+                event_loop.exit();
+                return;
+            }
+        };
+        self.boot_timings.record("wgpu_init");
 
-        let geometry = self.level.as_ref().map(|world| render::LevelGeometry {
-            vertices: &world.vertices,
-            indices: &world.indices,
-            bvh: &world.bvh,
-            lights: &world.lights,
-            light_influences: &world.light_influences,
-            sh_volume: world.sh_volume.as_ref(),
-            lightmap: world.lightmap.as_ref(),
-            chunk_light_list: world.chunk_light_list.as_ref(),
-            animated_light_chunks: world.animated_light_chunks.as_ref(),
-            animated_light_weight_maps: world.animated_light_weight_maps.as_ref(),
-            delta_sh_volumes: world.delta_sh_volumes.as_ref(),
-            texture_materials: &texture_materials,
-        });
-
-        let mut renderer =
-            match Renderer::new(&window, geometry.as_ref(), self.texture_set.as_ref()) {
-                Ok(r) => r,
-                Err(err) => {
-                    self.exit_result = Err(err);
-                    event_loop.exit();
-                    return;
-                }
-            };
+        // Splash decode + upload is deferred to the first Splash frame's
+        // post-paint window so the OS window opens as a black screen as
+        // fast as possible. See `run_splash_frame` and
+        // `context/lib/boot_sequence.md` §8.
 
         let size = window.inner_size();
         self.camera.update_aspect(size.width, size.height);
 
         input::cursor::capture_cursor(&window);
 
-        // One `LightComponent` entity per map-authored light; stable `EntityId`s
-        // the bridge's dirty tracker keys off for the level's lifetime.
-        {
-            let level_lights = renderer.level_lights().to_vec();
-            let fgd_sample_float_count = (renderer.scripted_sample_byte_offset() / 4) as u32;
-            let mut registry = self.script_ctx.registry.borrow_mut();
-            self.light_bridge.populate_from_level(
-                &level_lights,
-                &mut registry,
-                fgd_sample_float_count,
-            );
-        }
-
-        // Fog volumes — one entity per record + a renderer-side pixel-scale
-        // push. Done after light bridge populate so the registry's first fog
-        // entity-id always lands after the light entities.
-        if let Some(world) = self.level.as_ref() {
-            let mut registry = self.script_ctx.registry.borrow_mut();
-            self.fog_volume_bridge
-                .populate_from_level(&mut registry, &world.fog_volumes);
-            renderer.set_fog_pixel_scale(world.fog_pixel_scale);
-            renderer.set_fog_cell_masks(world.fog_cell_masks.clone());
-        }
-
-        // Populate before the first game tick so movement collision is ready.
-        if let Some(world) = self.level.as_ref() {
-            self.collision_world.populate_from_level(world);
-        }
-
-        // Sweep map entities through classname dispatch. The returned set of
-        // handled classnames is stashed and consumed by the data-archetype sweep
-        // on the first redraw, after the data script populates
-        // `data_registry.entities` via `registerEntity`.
-        //
-        // No re-entry guard is needed here: this engine targets desktop only,
-        // and winit fires `resumed()` exactly once on desktop platforms (it is
-        // only called multiple times on Android/iOS during surface re-creation).
-        if let Some(world) = self.level.as_ref() {
-            let mut registry = self.script_ctx.registry.borrow_mut();
-            // Adapt the wire records to the scripting-tree representation at
-            // the dispatch boundary. The loader does not depend on scripting
-            // types; conversion happens here.
-            let all_entities: Vec<crate::scripting::map_entity::MapEntity> =
-                world.map_entities.iter().cloned().map(Into::into).collect();
-            // Partition `info_player_start` out of the dispatch input — those
-            // placements are routed by `entity_class`, not by their own
-            // classname, and are processed after `registerEntity` has populated
-            // `data_registry.entities` (see the `level_load_fired` block).
-            let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
-                .into_iter()
-                .partition(|e| e.classname == PLAYER_START_CLASSNAME);
-            self.pending_spawn_points = Some(spawn_points);
-            // Returns classnames claimed by built-in handlers regardless of
-            // spawn success; passed to the data-archetype sweep to prevent
-            // double-handling even when a built-in handler fails to materialize.
-            let handled =
-                apply_classname_dispatch(&map_entities, &self.classname_dispatch, &mut registry);
-            if !map_entities.is_empty() {
-                log::info!(
-                    "[Loader] dispatched {total} map entities; {built_in} classname(s) handled by built-in handlers",
-                    built_in = handled.len(),
-                    total = map_entities.len(),
-                );
-            }
-            self.builtin_handled = Some(handled);
-            self.pending_map_entities = Some(map_entities);
-        }
-
-        // Register sprite collections for every distinct `sprite` name in the
-        // registry. Covers both map-spawned and future script-spawned emitters.
-        // Missing frames register a 1×1 white fallback so the pipeline stays wired.
-        let texture_root = self.content_root.join("textures");
-        {
-            use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
-            use crate::scripting::registry::{ComponentKind, ComponentValue};
-            let registry = self.script_ctx.registry.borrow();
-            let mut registered: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            for (_id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
-                let ComponentValue::BillboardEmitter(c) = value else {
-                    continue;
-                };
-                let _: &BillboardEmitterComponent = c; // type pin
-                let collection = c.sprite.clone();
-                if collection.is_empty() || !registered.insert(collection.clone()) {
-                    continue;
-                }
-                let frames = fx::smoke::load_collection_frames(&texture_root, &collection)
-                    .unwrap_or_else(|| {
-                        vec![fx::smoke::SpriteFrame {
-                            data: vec![255, 255, 255, 255],
-                            width: 1,
-                            height: 1,
-                        }]
-                    });
-                // `spec_intensity` is per-collection; 0.3 is a placeholder until
-                // per-emitter binding is supported.
-                renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
-                self.particle_render.register_sprite(&collection);
-            }
-        }
-
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
         self.frame_timing.last_frame = Instant::now();
+        self.boot_state = BootState::Splash;
+
+        // Drive the redraw loop so `RedrawRequested` fires the first splash
+        // frame and the boot state machine can advance.
+        if let Some(ws) = self.window_state.as_ref() {
+            ws.window.request_redraw();
+        }
 
         log::info!("[Engine] Window ready");
     }
@@ -581,6 +438,18 @@ impl ApplicationHandler for App {
         // clean placeholder state before populate_from_level runs on resume.
         self.fog_volume_bridge.clear();
         self.collision_world.clear();
+        // Drop any in-flight level-load worker handoff. On resume the splash
+        // state machine starts over from frame 0 and will spawn a fresh
+        // worker; holding a stale receiver/handle would either block install
+        // forever or deliver into the wrong boot phase.
+        self.level_rx = None;
+        self.level_worker = None;
+        // Reset the boot state so `resumed()` re-runs window + renderer
+        // creation. Without this, the `Booting` guard in `resumed()` would
+        // no-op and the engine would stay permanently renderer-less.
+        self.boot_state = BootState::Booting;
+        self.splash_frame = 0;
+        self.pending_level_log = false;
         log::info!("[Engine] Suspended");
     }
 
@@ -672,6 +541,9 @@ impl ApplicationHandler for App {
                             if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
                                 log::error!("[Scripting] mod-init re-run failed: {err}",);
                             }
+                            // `pending_splash_override` is intentionally not checked here:
+                            // we are in `Running` state, the splash phase is over, and
+                            // registering an override has no effect by design.
                         }
                     }
                     Err(err) => {
@@ -679,148 +551,28 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Fire `levelLoad` once, before the first frame renders. The
-                // world is already populated (load_level ran before the event loop).
-                // See: context/lib/scripting.md
-                if !self.level_load_fired {
-                    // Reset world gravity to the new level's authored value
-                    // before the data script runs, so any `world.getGravity()`
-                    // call inside `setupLevel` / `levelLoad` reactions sees
-                    // the freshly-loaded value rather than carry-over state
-                    // from a prior level.
-                    //
-                    // Gravity must be seeded before the data script runs so reactions see the
-                    // freshly-loaded value. A future level-reload path must reset `level_load_fired`
-                    // and `self.level` together, or this block is skipped and carry-over gravity persists.
-                    if let Some(world) = &self.level {
-                        self.script_ctx.gravity.set(world.initial_gravity);
+                // Boot state machine: while in `Splash`, paint the splash and
+                // drive mod-init / worker-spawn / worker-poll. Once the worker
+                // delivers, install the level and fall through to the normal
+                // frame loop. See: context/lib/boot_sequence.md §8 and
+                // `run_splash_frame` for the frame-by-frame schedule.
+                match self.boot_state {
+                    BootState::Booting => {
+                        // A `RedrawRequested` queued before `resumed()` (or
+                        // after `suspended()` resets boot_state back to
+                        // `Booting`) can legally arrive here. Drop it
+                        // silently — `resumed()` will rebuild and request a
+                        // fresh redraw.
+                        return;
                     }
-
-                    // Data script runs once at level open. Errors surface as an
-                    // empty manifest so the level still loads.
-                    // See: context/lib/scripting.md §2
-                    if let Some(world) = &self.level {
-                        if let Some(data_script) = &world.data_script {
-                            let mut manifest = self
-                                .script_runtime
-                                .run_data_script(data_script, &self.content_root);
-                            manifest.reactions = validate_sequence_primitives(
-                                manifest.reactions,
-                                &self.sequence_registry,
-                            );
-                            self.script_ctx
-                                .data_registry
-                                .borrow_mut()
-                                .populate_from_manifest(manifest);
-                            // `progress_tracker` subscriptions are separate from the reaction registry —
-                            // hot-reload rebuilds reactions but leaves kill-count subscriptions intact.
-                            self.progress_tracker.initialize(
-                                &self.script_ctx.data_registry.borrow(),
-                                &self.script_ctx.registry.borrow(),
-                            );
+                    BootState::Splash => {
+                        if !self.run_splash_frame(event_loop) {
+                            return;
                         }
                     }
-
-                    // Data-archetype sweep: now that `registerEntity` has
-                    // populated `data_registry.entities`, materialize every
-                    // matching map placement that the built-in dispatch did
-                    // not already handle.
-                    // See: context/lib/scripting.md §2 · context/lib/build_pipeline.md §Built-in Classname Routing
-                    if self.level.is_some() {
-                        let handled = self.builtin_handled.take().unwrap_or_default();
-                        let descriptors = self.script_ctx.data_registry.borrow().entities.clone();
-                        let mut registry = self.script_ctx.registry.borrow_mut();
-                        let map_entities = self.pending_map_entities.take().unwrap_or_default();
-                        let descriptor_handled = apply_data_archetype_dispatch(
-                            &map_entities,
-                            &descriptors,
-                            &handled,
-                            &mut registry,
-                        );
-                        if !descriptor_handled.is_empty() {
-                            log::info!(
-                                "[Loader] dispatched {} map entities through descriptor archetypes",
-                                descriptor_handled.len(),
-                            );
-                        }
-
-                        // Spawn one entity per `info_player_start` placement,
-                        // routing each through its `entity_class` (default
-                        // `"player"`). Runs after the data-archetype sweep so
-                        // any registered descriptor — including a stub
-                        // `"player"` — is available.
-                        if let Some(spawn_points) = self.pending_spawn_points.take() {
-                            if !spawn_points.is_empty() {
-                                spawn_from_player_starts(
-                                    &spawn_points,
-                                    &descriptors,
-                                    &mut registry,
-                                );
-                            }
-                        } else {
-                            log::info!(
-                                "[Loader] no info_player_start in map; skipping player spawn"
-                            );
-                        }
-
-                        // Pick up any descriptor-spawned `LightComponent`s so
-                        // they participate in the per-frame light bridge pack.
-                        // `populate_from_level` ran in `resumed()` against the
-                        // FGD-sourced `MapLight` list; descriptor-spawn happens
-                        // here, after that, so the bridge needs a second pass
-                        // to enroll the new dynamic lights.
-                        self.light_bridge.absorb_dynamic_lights(&registry);
+                    BootState::Running => {
+                        // Steady state — fall through to the normal frame loop.
                     }
-
-                    // Descriptor-spawned emitters may carry sprite collections
-                    // not seen during the resumed()-time sweep. Re-register
-                    // any new collections so the renderer pass has them ready
-                    // before the first frame draws.
-                    if let Some(renderer) = self.renderer.as_mut() {
-                        use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
-                        use crate::scripting::registry::{ComponentKind, ComponentValue};
-                        let texture_root = self.content_root.join("textures");
-                        let registry = self.script_ctx.registry.borrow();
-                        let mut seen: std::collections::HashSet<String> =
-                            std::collections::HashSet::new();
-                        for (_id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter)
-                        {
-                            let ComponentValue::BillboardEmitter(c) = value else {
-                                continue;
-                            };
-                            let _: &BillboardEmitterComponent = c;
-                            let collection = c.sprite.clone();
-                            if collection.is_empty() || !seen.insert(collection.clone()) {
-                                continue;
-                            }
-                            let frames =
-                                fx::smoke::load_collection_frames(&texture_root, &collection)
-                                    .unwrap_or_else(|| {
-                                        vec![fx::smoke::SpriteFrame {
-                                            data: vec![255, 255, 255, 255],
-                                            width: 1,
-                                            height: 1,
-                                        }]
-                                    });
-                            renderer.register_smoke_collection(
-                                &collection,
-                                &frames,
-                                0.3,
-                                c.lifetime,
-                            );
-                            self.particle_render.register_sprite(&collection);
-                        }
-                    }
-
-                    fire_named_event_with_sequences(
-                        "levelLoad",
-                        &self.script_ctx.data_registry.borrow(),
-                        &self.sequence_registry,
-                        &self.reaction_registry,
-                        &self.script_ctx,
-                    );
-                    self.level_load_fired = true;
-                    self.script_time = 0.0;
                 }
 
                 if let Some(gp) = &mut self.gamepad_system {
@@ -1019,6 +771,13 @@ impl ApplicationHandler for App {
                         ) {
                             self.exit_result = Err(err);
                             event_loop.exit();
+                        } else if self.pending_level_log {
+                            // First level frame just submitted — close out
+                            // log line C with the present-cost of the frame
+                            // the user is about to see.
+                            self.level_timings.record("first_level_frame");
+                            log::info!("{}", self.level_timings.summary());
+                            self.pending_level_log = false;
                         }
                     }
                 }
@@ -1120,6 +879,491 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// Drive one Splash-state frame. Returns `true` if the level payload was
+    /// installed this frame (caller falls through to render the first level
+    /// frame). Returns `false` if only the splash was painted and the redraw
+    /// should otherwise short-circuit.
+    ///
+    /// Frame schedule:
+    /// - frame 0: paint a black frame (no splash bound). After present:
+    ///   record `first_black_frame`; decode the base PNG synchronously;
+    ///   upload + bind it; record `splash_decoded` / `splash_uploaded`.
+    ///   (Source is always `Base` until the mod system ships.)
+    /// - frame 1: paint splash (now visible). After paint: record
+    ///   `first_splash_frame`; emit log line A; run `mod_init`; optionally
+    ///   swap splash on override; emit log line B; spawn level worker.
+    /// - frame ≥ 2: poll the worker channel. On `Ok(level=Some)`, install
+    ///   and transition to `Running`; otherwise paint splash and stay.
+    fn run_splash_frame(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        match self.splash_frame {
+            0 => {
+                // First Splash frame: paint a black screen. The splash
+                // texture is not yet decoded; the splash pass clears to
+                // black and draws nothing.
+                self.paint_splash(event_loop);
+                self.boot_timings.record("first_black_frame");
+
+                // Now that the OS window is showing a black frame, decode
+                // and upload the splash synchronously. PNG decode is
+                // bounded CPU work (~ms); doing it here keeps the boot
+                // path single-threaded and ordering causal.
+                //
+                // Source is always `Base` today; no resolution step exists.
+                // Once the mod system ships, override paths will be
+                // discovered before this point and set here.
+                let source = SplashSource::Base;
+                match render::splash::load_splash(&source) {
+                    Ok(loaded) => {
+                        self.boot_timings.record("splash_decoded");
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            let dims = renderer.install_splash_from_loaded(&loaded);
+                            log::info!("[Engine] Splash loaded: {}×{}", dims[0], dims[1]);
+                        }
+                        self.boot_timings.record("splash_uploaded");
+                    }
+                    Err(err) => {
+                        // Missing base splash is a packaging bug; record
+                        // both stages so log line A always lists the same
+                        // set of stage names regardless of success/failure.
+                        // Subsequent splash frames stay black.
+                        self.boot_timings.record("splash_decoded");
+                        self.boot_timings.record("splash_uploaded");
+                        log::warn!("[Engine] failed to decode base splash: {err:#}");
+                    }
+                }
+
+                self.splash_frame += 1;
+                self.request_redraw();
+                false
+            }
+            1 => {
+                // Second Splash frame: paint the splash so the user sees
+                // it before mod scripts touch the engine.
+                self.paint_splash(event_loop);
+                self.boot_timings.record("first_splash_frame");
+                log::info!("{}", self.boot_timings.summary());
+
+                // Reset so the cursor starts at the top of this frame, not at
+                // App construction time.
+                self.mod_timings = StartupTimings::new();
+
+                // Mod init runs before the worker spawns so any splash
+                // override registered during init can land before the level
+                // load begins.
+                if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
+                    log::error!("[Scripting] mod_init failed: {err}");
+                }
+                // Hot-reload watcher (debug-only); release builds no-op.
+                let script_root = self.content_root.join("scripts");
+                if let Err(err) = self
+                    .script_runtime
+                    .start_watcher(&script_root, &self.content_root)
+                {
+                    log::error!("[Scripting] start_watcher failed: {err}");
+                }
+                self.mod_timings.record("mod_init");
+
+                // Mod-side override wiring lands with the mod system; today
+                // `pending_splash_override` is always `None`. The branch is
+                // here so the flow is complete the moment the hook arrives.
+                if let Some(source) = self.pending_splash_override.take() {
+                    match render::splash::load_splash(&source) {
+                        Ok(loaded) => {
+                            if let Some(renderer) = self.renderer.as_mut() {
+                                let dims = renderer.install_splash_from_loaded(&loaded);
+                                log::info!("[Engine] Mod splash loaded: {}×{}", dims[0], dims[1]);
+                            }
+                            self.mod_timings.record("mod_splash_swap");
+                        }
+                        Err(err) => {
+                            log::error!("[Engine] mod splash override failed: {err:#}");
+                        }
+                    }
+                }
+
+                log::info!("{}", self.mod_timings.summary());
+
+                // Spawn the level worker. PRL parse + texture decode + UV
+                // normalize run off the main thread so the splash keeps
+                // painting through the wait. Reset the cursor here so the
+                // first stage absorbs only worker-spawn overhead, not the
+                // full App construction-to-now gap.
+                self.level_timings = StartupTimings::new();
+                let (tx, rx) = mpsc::channel();
+                let map_path = PathBuf::from(&self.map_path);
+                let handle = spawn_level_worker(map_path, self.content_root.clone(), tx);
+                self.level_rx = Some(rx);
+                self.level_worker = Some(handle);
+                // Recorded after the spawn call so the delta covers channel
+                // creation and thread spawn overhead — recording before the
+                // spawn would clock a sub-microsecond no-op.
+                self.level_timings.record("worker_dispatch");
+
+                self.splash_frame += 1;
+                self.request_redraw();
+                false
+            }
+            _ => {
+                // Poll the worker channel non-blockingly.
+                use std::sync::mpsc::TryRecvError;
+                let outcome = match self.level_rx.as_ref() {
+                    Some(rx) => match rx.try_recv() {
+                        Ok(payload) => Some(payload),
+                        Err(TryRecvError::Empty) => None,
+                        Err(TryRecvError::Disconnected) => {
+                            log::error!("[Loader] worker channel disconnected before delivery");
+                            // Worker panicked — clear both handles so the
+                            // engine doesn't loop forever in Splash.
+                            // Mirror the Err(e) branch below.
+                            self.level_rx = None;
+                            self.level_worker = None;
+                            None
+                        }
+                    },
+                    None => None,
+                };
+
+                match outcome {
+                    Some(Ok(payload)) => {
+                        self.level_timings.record("worker_delivered");
+                        // Splice worker-thread entries between dispatch and
+                        // delivered so the summary reads chronologically.
+                        let delivered_idx = self.level_timings.entries.len() - 1;
+                        let mut worker_entries = payload.timings;
+                        // Insert at `delivered_idx + i` rather than appending; each prior
+                        // insert shifts the delivered sentinel forward by one, so incrementing
+                        // the offset keeps chronological order.
+                        for (i, entry) in worker_entries.drain(..).enumerate() {
+                            self.level_timings.entries.insert(delivered_idx + i, entry);
+                        }
+                        // Drop the receiver/handle now — the worker is done.
+                        self.level_rx = None;
+                        self.level_worker = None;
+
+                        match (payload.level, payload.textures) {
+                            (Some(world), Some(textures)) => {
+                                self.install_level_payload(world, textures);
+                                if let Some(renderer) = self.renderer.as_mut() {
+                                    renderer.clear_splash();
+                                }
+                                self.boot_state = BootState::Running;
+                                // Defer log line C until after the first level
+                                // frame's render returns, so `first_level_frame`
+                                // captures GPU work the user actually sees.
+                                self.pending_level_log = true;
+                                // Fall through — the caller paints the first
+                                // real level frame this redraw.
+                                true
+                            }
+                            (None, _) | (_, None) => {
+                                log::warn!(
+                                    "[Loader] worker delivered no level payload — staying in splash",
+                                );
+                                self.paint_splash(event_loop);
+                                self.request_redraw();
+                                false
+                            }
+                        }
+                    }
+                    Some(Err(err)) => {
+                        log::error!("[Loader] worker failed: {err:#} — staying in splash");
+                        self.level_rx = None;
+                        self.level_worker = None;
+                        self.paint_splash(event_loop);
+                        self.request_redraw();
+                        false
+                    }
+                    None => {
+                        // Still loading; keep painting the splash.
+                        self.paint_splash(event_loop);
+                        self.request_redraw();
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    /// Paint a single splash-phase frame. Runs only the splash render pass:
+    /// clears to black and, if a splash texture is bound, draws the
+    /// fullscreen triangle. Used both for the first black frame (no splash
+    /// bound) and subsequent splash-visible frames.
+    fn paint_splash(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            if !renderer.is_ready() {
+                return;
+            }
+            if let Err(err) = renderer.render_splash_frame() {
+                self.exit_result = Err(err);
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn request_redraw(&self) {
+        if let Some(ws) = self.window_state.as_ref() {
+            ws.window.request_redraw();
+        }
+    }
+
+    /// Install a delivered level payload on the main thread: GPU geometry +
+    /// texture upload, bridge / fog / collision populate, classname dispatch,
+    /// data script, archetype sweep, and `levelLoad` fire. Each stage is
+    /// recorded into `self.level_timings` for log line C.
+    ///
+    /// Called from the `Splash` state machine on worker delivery; assumes
+    /// `self.renderer` is `Some` and the world + textures are populated.
+    fn install_level_payload(&mut self, world: prl::LevelWorld, textures: TextureSet) {
+        // Stash the world/textures so downstream code paths that already read
+        // from `self.level` / `self.texture_set` keep working unchanged.
+        self.level = Some(world);
+        self.texture_set = Some(textures);
+
+        // Reset world gravity to the freshly-loaded level's authored value
+        // before the data script runs, so any `world.getGravity()` call
+        // inside `setupLevel` / `levelLoad` reactions sees the new value.
+        if let Some(world) = &self.level {
+            self.script_ctx.gravity.set(world.initial_gravity);
+        }
+
+        // Derive material properties from texture names so the renderer can
+        // populate per-material uniforms (shininess) without re-parsing.
+        let texture_materials: Vec<crate::material::Material> = self
+            .level
+            .as_ref()
+            .map(|world| {
+                let mut warned = std::collections::HashSet::new();
+                world
+                    .texture_names
+                    .iter()
+                    .map(|n| crate::material::derive_material(n, &mut warned))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let renderer = match self.renderer.as_mut() {
+            Some(r) => r,
+            None => {
+                log::error!("[Engine] install_level_payload called with no renderer");
+                return;
+            }
+        };
+
+        if let Some(world) = self.level.as_ref() {
+            let geometry = render::level_world_to_geometry(world, &texture_materials);
+            renderer.install_level_geometry(&geometry);
+        }
+        self.level_timings.record("geometry_upload");
+
+        if let Some(textures) = self.texture_set.as_ref() {
+            renderer.install_textures(textures);
+        }
+        self.level_timings.record("texture_upload");
+
+        // One `LightComponent` entity per map-authored light; stable
+        // `EntityId`s the bridge's dirty tracker keys off for the level's
+        // lifetime.
+        {
+            let level_lights = renderer.level_lights().to_vec();
+            let fgd_sample_float_count = (renderer.scripted_sample_byte_offset() / 4) as u32;
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            self.light_bridge.populate_from_level(
+                &level_lights,
+                &mut registry,
+                fgd_sample_float_count,
+            );
+        }
+
+        // Fog volumes — one entity per record + a renderer-side pixel-scale
+        // push. Done after light bridge populate so the registry's first fog
+        // entity-id always lands after the light entities.
+        if let Some(world) = self.level.as_ref() {
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            self.fog_volume_bridge
+                .populate_from_level(&mut registry, &world.fog_volumes);
+            renderer.set_fog_pixel_scale(world.fog_pixel_scale);
+            renderer.set_fog_cell_masks(world.fog_cell_masks.clone());
+        }
+
+        // Populate before the first game tick so movement collision is ready.
+        if let Some(world) = self.level.as_ref() {
+            self.collision_world.populate_from_level(world);
+        }
+        self.level_timings.record("bridges_populated");
+
+        // Sweep map entities through classname dispatch. The returned set of
+        // handled classnames is stashed and consumed by the data-archetype
+        // sweep below, after the data script populates `data_registry.entities`.
+        if let Some(world) = self.level.as_ref() {
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            let all_entities: Vec<crate::scripting::map_entity::MapEntity> =
+                world.map_entities.iter().cloned().map(Into::into).collect();
+            let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
+                .into_iter()
+                .partition(|e| e.classname == PLAYER_START_CLASSNAME);
+            self.pending_spawn_points = Some(spawn_points);
+            let handled =
+                apply_classname_dispatch(&map_entities, &self.classname_dispatch, &mut registry);
+            if !map_entities.is_empty() {
+                log::info!(
+                    "[Loader] dispatched {total} map entities; {built_in} classname(s) handled by built-in handlers",
+                    built_in = handled.len(),
+                    total = map_entities.len(),
+                );
+            }
+            self.builtin_handled = Some(handled);
+            self.pending_map_entities = Some(map_entities);
+        }
+        self.level_timings.record("classname_dispatch");
+
+        // Register sprite collections for every distinct `sprite` name in
+        // the registry. Covers map-spawned emitters; descriptor-spawned
+        // emitters get a second pass after the data script runs.
+        let texture_root = self.content_root.join("textures");
+        {
+            use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+            use crate::scripting::registry::{ComponentKind, ComponentValue};
+            let registry = self.script_ctx.registry.borrow();
+            let mut registered: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for (_id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
+                let ComponentValue::BillboardEmitter(c) = value else {
+                    continue;
+                };
+                let _: &BillboardEmitterComponent = c;
+                let collection = c.sprite.clone();
+                if collection.is_empty() || !registered.insert(collection.clone()) {
+                    continue;
+                }
+                let frames = fx::smoke::load_collection_frames(&texture_root, &collection)
+                    .unwrap_or_else(|| {
+                        vec![fx::smoke::SpriteFrame {
+                            data: vec![255, 255, 255, 255],
+                            width: 1,
+                            height: 1,
+                        }]
+                    });
+                renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
+                self.particle_render.register_sprite(&collection);
+            }
+        }
+
+        // Data script runs once at level open. Errors surface as an empty
+        // manifest so the level still loads.
+        if let Some(world) = &self.level {
+            if let Some(data_script) = &world.data_script {
+                let mut manifest = self
+                    .script_runtime
+                    .run_data_script(data_script, &self.content_root);
+                manifest.reactions =
+                    validate_sequence_primitives(manifest.reactions, &self.sequence_registry);
+                self.script_ctx
+                    .data_registry
+                    .borrow_mut()
+                    .populate_from_manifest(manifest);
+                self.progress_tracker.initialize(
+                    &self.script_ctx.data_registry.borrow(),
+                    &self.script_ctx.registry.borrow(),
+                );
+            }
+        }
+        self.level_timings.record("data_script");
+
+        // Data-archetype sweep: now that `registerEntity` has populated
+        // `data_registry.entities`, materialize every matching map placement
+        // that the built-in dispatch did not already handle.
+        if self.level.is_some() {
+            let handled = self.builtin_handled.take().unwrap_or_default();
+            let descriptors = self.script_ctx.data_registry.borrow().entities.clone();
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            let map_entities = self.pending_map_entities.take().unwrap_or_default();
+            let descriptor_handled =
+                apply_data_archetype_dispatch(&map_entities, &descriptors, &handled, &mut registry);
+            if !descriptor_handled.is_empty() {
+                log::info!(
+                    "[Loader] dispatched {} map entities through descriptor archetypes",
+                    descriptor_handled.len(),
+                );
+            }
+
+            // Spawn one entity per `info_player_start` placement, routing
+            // each through its `entity_class` (default `"player"`).
+            let player_start_used = match self.pending_spawn_points.take() {
+                Some(spawn_points) if !spawn_points.is_empty() => {
+                    spawn_from_player_starts(&spawn_points, &descriptors, &mut registry);
+                    true
+                }
+                _ => {
+                    log::info!("[Loader] no info_player_start in map; skipping player spawn");
+                    false
+                }
+            };
+            // Drop the registry borrow before touching `self.level` / `self.camera`.
+            drop(registry);
+
+            // Fallback: with no player start, position the camera at the
+            // geometry center so the user isn't dropped at the boot
+            // placeholder forever.
+            if !player_start_used {
+                if let Some(world) = self.level.as_ref() {
+                    self.camera.position = world.spawn_position();
+                    self.frame_timing
+                        .push_state(InterpolableState::new(self.camera.position));
+                }
+            }
+
+            // Re-borrow for the dynamic-light absorb step below.
+            let registry = self.script_ctx.registry.borrow();
+
+            // Pick up any descriptor-spawned `LightComponent`s so they
+            // participate in the per-frame light bridge pack.
+            self.light_bridge.absorb_dynamic_lights(&registry);
+        }
+
+        // Descriptor-spawned emitters may carry sprite collections not seen
+        // during the install-time sweep above. Re-register any new
+        // collections so the renderer pass has them ready before the first
+        // frame draws.
+        if let Some(renderer) = self.renderer.as_mut() {
+            use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+            use crate::scripting::registry::{ComponentKind, ComponentValue};
+            let texture_root = self.content_root.join("textures");
+            let registry = self.script_ctx.registry.borrow();
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for (_id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
+                let ComponentValue::BillboardEmitter(c) = value else {
+                    continue;
+                };
+                let _: &BillboardEmitterComponent = c;
+                let collection = c.sprite.clone();
+                if collection.is_empty() || !seen.insert(collection.clone()) {
+                    continue;
+                }
+                let frames = fx::smoke::load_collection_frames(&texture_root, &collection)
+                    .unwrap_or_else(|| {
+                        vec![fx::smoke::SpriteFrame {
+                            data: vec![255, 255, 255, 255],
+                            width: 1,
+                            height: 1,
+                        }]
+                    });
+                renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
+                self.particle_render.register_sprite(&collection);
+            }
+        }
+        self.level_timings.record("archetype_sweep");
+
+        fire_named_event_with_sequences(
+            "levelLoad",
+            &self.script_ctx.data_registry.borrow(),
+            &self.sequence_registry,
+            &self.reaction_registry,
+            &self.script_ctx,
+        );
+        self.level_timings.record("level_load_event");
+        self.script_time = 0.0;
+    }
+
     fn handle_diagnostic_action(&mut self, action: DiagnosticAction) {
         match action {
             DiagnosticAction::ToggleWireframe => {

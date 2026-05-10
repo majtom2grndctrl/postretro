@@ -1286,30 +1286,40 @@ impl App {
                 );
             }
 
+            // Capture the first spawn-point position and facing before take() consumes
+            // the vec. Camera move is independent of spawn success — failures inside
+            // spawn_from_player_starts log and continue; we still teleport so the user
+            // isn't stranded at the boot placeholder.
+            let first_spawn: Option<(glam::Vec3, glam::Vec3)> = self
+                .pending_spawn_points
+                .as_ref()
+                .and_then(|v| v.first())
+                .map(|e| (e.origin, e.angles));
+
             // Spawn one entity per `info_player_start` placement, routing
             // each through its `entity_class` (default `"player"`).
-            let player_start_used = match self.pending_spawn_points.take() {
+            match self.pending_spawn_points.take() {
                 Some(spawn_points) if !spawn_points.is_empty() => {
                     spawn_from_player_starts(&spawn_points, &descriptors, &mut registry);
-                    true
                 }
                 _ => {
                     log::info!("[Loader] no info_player_start in map; skipping player spawn");
-                    false
                 }
-            };
+            }
             // Drop the registry borrow before touching `self.level` / `self.camera`.
             drop(registry);
 
-            // Fallback: with no player start, position the camera at the
-            // geometry center so the user isn't dropped at the boot
-            // placeholder forever.
-            if !player_start_used {
-                if let Some(world) = self.level.as_ref() {
-                    self.camera.position = world.spawn_position();
-                    self.frame_timing
-                        .push_state(InterpolableState::new(self.camera.position));
-                }
+            if let Some((pos, angles)) = first_spawn {
+                self.camera.position = pos;
+                // angles is engine-convention radians (YXZ): x=pitch, y=yaw.
+                self.camera.yaw = angles.y;
+                self.camera.pitch = angles.x;
+                self.frame_timing.push_state(InterpolableState::new(pos));
+            } else if let Some(world) = self.level.as_ref() {
+                // Fallback when no info_player_start: center on level geometry.
+                self.camera.position = world.spawn_position();
+                self.frame_timing
+                    .push_state(InterpolableState::new(self.camera.position));
             }
 
             // Re-borrow for the dynamic-light absorb step below.

@@ -10,7 +10,6 @@ use wgpu::util::DeviceExt;
 use crate::startup::SplashSource;
 use crate::texture::LoadedTexture;
 
-/// Resolve a `SplashSource` to its on-disk path.
 fn resolve_path(source: &SplashSource) -> PathBuf {
     match source {
         SplashSource::Base => SplashSource::base_path(),
@@ -18,13 +17,8 @@ fn resolve_path(source: &SplashSource) -> PathBuf {
     }
 }
 
-/// Decode the splash PNG referenced by `source` into a CPU-side
-/// `LoadedTexture`. Performs no wgpu work — the renderer uploads separately.
-///
-/// Returns an error on missing file, IO failure, or PNG decode failure. The
-/// splash path does not fall back to a checkerboard placeholder: a missing
-/// base splash is a packaging bug, and a missing mod-supplied splash is a
-/// mod-author bug. The caller decides how to surface the error.
+/// CPU-only decode; no fallback placeholder. Missing base splash = packaging bug;
+/// missing mod splash = mod-author bug. Caller surfaces the error.
 pub(crate) fn load_splash(source: &SplashSource) -> Result<LoadedTexture> {
     let path = resolve_path(source);
 
@@ -41,34 +35,19 @@ pub(crate) fn load_splash(source: &SplashSource) -> Result<LoadedTexture> {
     })
 }
 
-/// Size of `SplashUbo` in bytes — must match the WGSL struct in
-/// `splash_vert.wgsl` (`screen_size: vec2<f32>` + `tex_size: vec2<f32>`).
+// Must match `SplashUbo` in splash_vert.wgsl (two vec2<f32>, no padding).
 const SPLASH_UBO_SIZE: u64 = 16;
-// Two adjacent vec2<f32> pack to 16 bytes with no padding under WGSL layout
-// rules. This assert proves byte count only — adding a non-vec2 field requires
-// re-checking padding manually.
+// Adding a non-vec2 field requires re-checking padding manually.
 const _: () = assert!(std::mem::size_of::<[f32; 4]>() == SPLASH_UBO_SIZE as usize);
 
 const SPLASH_VERT_WGSL: &str = include_str!("../shaders/splash_vert.wgsl");
 const SPLASH_FRAG_WGSL: &str = include_str!("../shaders/splash_frag.wgsl");
 
-/// GPU-side splash texture format. Matches world textures so wgpu's sRGB
-/// decode-on-sample lines up with the sRGB swapchain's encode-on-write —
-/// no manual gamma in the fragment shader.
+// sRGB decode-on-sample pairs with sRGB encode-on-write — no manual gamma in the shader.
 const SPLASH_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// Upload a CPU-side `LoadedTexture` into a GPU texture suitable for the
-/// splash pass. Returns the texture and its (width, height) so the caller
-/// can hand both to `Renderer::install_splash`.
-///
-/// Free function (not a `SplashPipeline` method) so the caller can decode
-/// and upload in the post-black-frame window (Splash frame 0) without the
-/// pipeline owning the decode timing. The pipeline already exists when this
-/// is called; keeping upload separate is a sequencing choice, not a
-/// dependency constraint.
-///
-/// Lives in the renderer module so all wgpu calls stay inside the renderer
-/// boundary (per `context/lib/development_guide.md` §4.1).
+/// Free function so the caller controls upload timing independently of pipeline
+/// lifetime. All wgpu calls live here per the renderer-owns-GPU rule.
 pub(crate) fn upload_splash_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -107,8 +86,14 @@ pub(crate) fn upload_splash_texture(
     (texture, [loaded.width, loaded.height])
 }
 
-/// Pack the splash UBO bytes — `screen_size` then `tex_size` as
-/// `vec2<f32>` each. Layout must match the WGSL struct in `splash_vert.wgsl`.
+// Linear-space sRGB(21, 27, 35). Keep in sync with SPLASH_BG in splash_frag.wgsl.
+const SPLASH_BG_COLOR: wgpu::Color = wgpu::Color {
+    r: 0.00750,
+    g: 0.01093,
+    b: 0.01672,
+    a: 1.0,
+};
+
 fn pack_splash_ubo(screen: [u32; 2], tex: [u32; 2]) -> [u8; SPLASH_UBO_SIZE as usize] {
     let mut out = [0u8; SPLASH_UBO_SIZE as usize];
     out[0..4].copy_from_slice(&(screen[0] as f32).to_le_bytes());
@@ -118,9 +103,7 @@ fn pack_splash_ubo(screen: [u32; 2], tex: [u32; 2]) -> [u8; SPLASH_UBO_SIZE as u
     out
 }
 
-/// Fullscreen splash render pipeline. The pipeline + sampler + UBO are
-/// created at renderer init; `bind_group` becomes `Some` when
-/// `install_splash` is called and `None` after `clear_splash`.
+/// `bind_group` is `None` until `install` is called; cleared by `clear`.
 pub(crate) struct SplashPipeline {
     pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
@@ -158,11 +141,8 @@ impl SplashPipeline {
                     },
                     count: None,
                 },
-                // 2: nearest sampler (declared filtering so the BGL pairs
-                // cleanly with a `Float { filterable: true }` texture).
-                // A non-filtering sampler satisfies a Filtering binding in
-                // wgpu; the reverse is not true — do not change the BGL to
-                // NonFiltering.
+                // 2: nearest sampler. BGL must be Filtering to pair with
+                // Float { filterable: true } — a NonFiltering BGL would reject it.
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -245,9 +225,7 @@ impl SplashPipeline {
         }
     }
 
-    /// Bind a new splash texture: build a bind group for it and write the
-    /// UBO with the texture's dimensions paired with the current screen
-    /// dimensions. Replaces any previously-bound splash.
+    /// Bind a new splash texture. Replaces any previously-bound splash.
     pub(crate) fn install(
         &mut self,
         device: &wgpu::Device,
@@ -289,10 +267,7 @@ impl SplashPipeline {
         self.bind_group.is_some()
     }
 
-    /// Update the UBO with a new screen size while keeping the bound
-    /// texture's dimensions. No-op if no splash is bound — the caller
-    /// (`Renderer::resize`) checks `has_splash()` first, but we double-check
-    /// here so this stays safe in isolation.
+    /// No-op when no splash is bound; double-checked here for safety in isolation.
     pub(crate) fn update_screen_size(&self, queue: &wgpu::Queue, screen_size: [u32; 2]) {
         if self.tex_size.is_some() {
             self.write_ubo(queue, screen_size);
@@ -305,11 +280,8 @@ impl SplashPipeline {
         queue.write_buffer(&self.ubo, 0, &bytes);
     }
 
-    /// Encode the splash render pass into `encoder`, clearing the swapchain
-    /// view to black and drawing the fullscreen triangle if a splash is
-    /// bound. With no splash bound, the pass clears to black and draws
-    /// nothing — used by the first Splash frame to paint a black screen
-    /// before the splash texture has been decoded and uploaded.
+    /// Clears to the design background; draws logo triangle when a splash is bound.
+    /// With no bind group, the clear-only path paints Splash frame 0's black background.
     pub(crate) fn encode(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Splash Pass"),
@@ -318,7 +290,7 @@ impl SplashPipeline {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: wgpu::LoadOp::Clear(SPLASH_BG_COLOR),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -340,8 +312,7 @@ mod tests {
 
     #[test]
     fn load_splash_base_decodes_committed_png() {
-        // Resolve the splash path absolutely from CARGO_MANIFEST_DIR so this
-        // test is not racy with other tests that might change the working directory.
+        // Absolute path from CARGO_MANIFEST_DIR — avoids working-directory races.
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let splash_path = std::path::Path::new(manifest_dir)
             .ancestors()

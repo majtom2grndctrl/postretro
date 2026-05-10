@@ -1,7 +1,7 @@
 // Splash vertex shader — emits a fullscreen triangle (no vertex buffer) and
-// computes aspect-correct UVs that letterbox the splash texture into the
-// swapchain. The fragment shader pairs with this; sampler is ClampToEdge so
-// the letterbox bars sample the splash's solid edge texels.
+// computes aspect-correct UVs that center the splash texture at 1/5 scale.
+// UVs outside [0,1] are handled by the fragment shader (background fill),
+// not by ClampToEdge.
 
 struct SplashUbo {
     screen_size: vec2<f32>,
@@ -15,13 +15,12 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
 };
 
-// Three-vertex fullscreen triangle. Positions chosen so the triangle covers
-// the whole NDC rectangle [-1,1]^2; the unused fourth corner is outside the
-// triangle and gets clipped. UV at the corners spans [0,1] across the full
-// rect (the off-screen vertices land beyond [0,1] but get clipped).
+// Logo scale relative to letterboxed full-fit size. UVs outside [0,1]^2
+// spill to the fragment shader's background fill rather than edge texels.
+const LOGO_SCALE: f32 = 0.4;
+
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
-    // (x, y) in clip space; (u, v) in [0, 1] across the rect.
     var positions = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>( 3.0, -1.0),
@@ -36,14 +35,8 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
     let pos = positions[vid];
     let uv_full = uvs[vid];
 
-    // Aspect-correct letterbox: scale UVs around 0.5 so the texture fits
-    // within the screen without stretching. The axis whose ratio is larger
-    // (relative to the texture's aspect) gets shrunk; the other fills.
-    //
-    // ratio = (screen_aspect / tex_aspect). When >1, the screen is wider
-    // than the texture, so the texture should fill height and leave
-    // horizontal letterbox bars: shrink U by 1/ratio. When <1, the screen
-    // is taller, so shrink V by ratio.
+    // ratio > 1 = screen wider than texture (letterbox x); < 1 = taller (letterbox y).
+    // Dividing by scale * LOGO_SCALE expands UVs beyond [0,1]; fragment fills the bars.
     let screen_aspect = ubo.screen_size.x / ubo.screen_size.y;
     let tex_aspect = ubo.tex_size.x / ubo.tex_size.y;
     let ratio = screen_aspect / tex_aspect;
@@ -55,10 +48,7 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
         scale.y = ratio;
     }
 
-    // Divide (not multiply) by scale: this maps screen [0,1] to a UV range
-    // wider than [0,1] on the letterboxed axis. ClampToEdge then samples the
-    // edge texel for out-of-range UVs, filling the bars.
-    let uv = vec2<f32>(0.5, 0.5) + (uv_full - vec2<f32>(0.5, 0.5)) / scale;
+    let uv = vec2<f32>(0.5, 0.5) + (uv_full - vec2<f32>(0.5, 0.5)) / (scale * LOGO_SCALE);
 
     var out: VsOut;
     out.position = vec4<f32>(pos, 0.0, 1.0);

@@ -50,35 +50,25 @@ pub enum PrlLoadError {
     NoWorldspawnGravity,
 }
 
-/// Per-face draw metadata. Face → index-range mapping now lives on BVH
-/// leaves; `FaceMeta` only carries the per-face attributes that downstream
-/// CPU code still needs (texture name, cell id, material class). These
-/// fields are not read yet — they stay around for the lighting baker and
-/// editor diagnostics slated for Milestone 5+.
+/// Face → index-range mapping lives on BVH leaves; `FaceMeta` carries only
+/// the per-face attributes CPU code still needs (lighting baker, editor diagnostics).
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FaceMeta {
-    /// BSP leaf index this face belongs to (also the runtime cell id).
     pub leaf_index: u32,
-    /// Index into the texture names list. `None` for untextured faces.
     pub texture_index: Option<u32>,
-    /// Texture dimensions (width, height). Default (64, 64) for missing textures.
     #[allow(dead_code)]
-    pub texture_dimensions: (u32, u32),
-    /// Texture name from PRL data. Empty string if no texture data.
+    pub texture_dimensions: (u32, u32), // defaults to (64, 64) for missing textures
     pub texture_name: String,
-    /// Material type derived from texture name prefix.
     pub material: Material,
 }
 
-/// A BSP tree child reference: either an interior node or a leaf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BspChild {
     Node(usize),
     Leaf(usize),
 }
 
-/// BSP interior node: splitting plane + front/back children.
 #[derive(Debug, Clone)]
 pub struct NodeData {
     pub plane_normal: Vec3,
@@ -87,7 +77,6 @@ pub struct NodeData {
     pub back: BspChild,
 }
 
-/// BSP leaf: contains face range, bounds, and solid flag.
 #[derive(Debug, Clone)]
 pub struct LeafData {
     pub bounds_min: Vec3,
@@ -97,17 +86,14 @@ pub struct LeafData {
     pub is_solid: bool,
 }
 
-/// A portal connecting two adjacent BSP leaves, loaded from the Portals section.
 #[derive(Debug, Clone)]
 pub struct PortalData {
-    /// Convex polygon vertices in world space.
-    pub polygon: Vec<Vec3>,
+    pub polygon: Vec<Vec3>, // convex, world space
     pub front_leaf: usize,
     pub back_leaf: usize,
 }
 
-/// Runtime shape discriminant for engine-side lights. Mirrors
-/// `postretro-level-compiler::map_data::LightType` at the wire boundary.
+/// Mirrors `postretro-level-compiler::map_data::LightType` at the wire boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LightType {
     Point,
@@ -115,8 +101,7 @@ pub enum LightType {
     Directional,
 }
 
-/// Runtime falloff discriminant. Mirrors
-/// `postretro-level-compiler::map_data::FalloffModel`.
+/// Mirrors `postretro-level-compiler::map_data::FalloffModel`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FalloffModel {
     Linear,
@@ -124,9 +109,7 @@ pub enum FalloffModel {
     InverseSquared,
 }
 
-/// Engine-side light loaded from the AlphaLights PRL section (ID 18).
-///
-/// FGD-authored lights flow through this path; script-registered lights arrive via `registerEntity` and the data-archetype sweep instead.
+/// From PRL section 18. FGD-authored; script-registered lights arrive via `registerEntity`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapLight {
     pub origin: [f64; 3],
@@ -138,28 +121,18 @@ pub struct MapLight {
     pub cone_angle_inner: f32,
     pub cone_angle_outer: f32,
     pub cone_direction: [f32; 3],
-    /// Whether this light should cast shadows. The direct-lighting path does
-    /// not consume this yet; the shader's `shadow_info` slot is zeroed at
-    /// upload time. Reserved for when shadow-map support is wired up.
+    /// Shadow-map support not yet wired; shader's `shadow_info` slot is zeroed at upload.
     pub cast_shadows: bool,
-    /// Runtime counterpart of the compiler's `MapLight.is_dynamic`. Sourced
-    /// from the `_dynamic` key in the `.map` file via the AlphaLights wire
-    /// format. Dynamic lights are excluded from the static spec buffer and
-    /// are instead handled by the per-frame dynamic light loop.
+    /// Dynamic lights go into the per-frame loop; static lights are baked and excluded.
     pub is_dynamic: bool,
-    /// Author-supplied script tags loaded from the `LightTags` section (ID
-    /// 26). Space-delimited in the PRL wire format; split here into a
-    /// `Vec<String>`. An entity matches `world.query({ tag: "t" })` when any
-    /// tag equals `"t"`. Empty means untagged.
+    /// From LightTags section (ID 26). Space-delimited on wire; split here.
+    /// `world.query({ tag: "t" })` matches when any tag equals `"t"`.
     pub tags: Vec<String>,
-    /// BSP leaf index containing the light origin, baked at compile time.
-    /// `u32::MAX` (`ALPHA_LIGHT_LEAF_UNASSIGNED`) means the light could not
-    /// be assigned to a non-solid leaf and is excluded from portal-graph
-    /// reachability filtering and chunk light lists.
+    /// `u32::MAX` (`ALPHA_LIGHT_LEAF_UNASSIGNED`) = couldn't assign to a non-solid leaf;
+    /// excluded from portal-graph reachability and chunk light lists.
     pub leaf_index: u32,
 }
 
-/// BSP tree + BVH level data loaded from a .prl file.
 #[derive(Debug)]
 pub struct LevelWorld {
     pub vertices: Vec<WorldVertex>,
@@ -167,109 +140,53 @@ pub struct LevelWorld {
     pub face_meta: Vec<FaceMeta>,
     pub leaves: Vec<LeafData>,
     pub nodes: Vec<NodeData>,
-    /// Root of the BSP tree. For a single-leaf tree (no nodes), this is BspChild::Leaf(0).
+    /// Single-leaf tree → `BspChild::Leaf(0)`.
     pub root: BspChild,
-    /// Portal polygons loaded from the Portals section.
     pub portals: Vec<PortalData>,
-    /// Portal indices per leaf (adjacency list). `leaf_portals[i]` lists all
-    /// portal indices touching leaf `i`.
+    /// `leaf_portals[i]` = all portal indices touching leaf `i`.
     pub leaf_portals: Vec<Vec<usize>>,
-    /// Whether portal data was present in the file.
     pub has_portals: bool,
-    /// Texture names from the TextureNames section, indexed by face texture_index.
     pub texture_names: Vec<String>,
-    /// Global BVH loaded from the `Bvh` section. Always present — the loader
-    /// rejects files that lack a BVH section.
+    /// Always present — loader rejects files without a BVH section.
     pub bvh: BvhTree,
-    /// Lights loaded from the interim AlphaLights section (ID 18). Empty
-    /// `Vec` if the section is absent (e.g. maps compiled before this
-    /// milestone). Consumed by the renderer's direct-lighting path.
+    /// Empty when section 18 is absent (maps predating lighting foundation).
     pub lights: Vec<MapLight>,
-    /// Per-light influence volumes loaded from the LightInfluence section
-    /// (ID 21). Index `i` corresponds to `lights[i]`. Empty if the section
-    /// is absent — the renderer treats all lights as infinite-bound.
+    /// Index `i` corresponds to `lights[i]`. Empty → all lights treated as infinite-bound.
     pub light_influences: Vec<crate::lighting::influence::LightInfluence>,
-    /// Baked SH L2 irradiance volume loaded from the ShVolume section
-    /// (ID 20). `None` for maps without baked indirect — the renderer
-    /// degrades to `ambient_floor + direct_sum`.
+    /// `None` → renderer degrades to `ambient_floor + direct_sum`.
     pub sh_volume: Option<ShVolumeSection>,
-    /// Baked directional lightmap atlas loaded from the Lightmap section
-    /// (ID 22). `None` for maps without baked direct — the renderer binds a
-    /// 1×1 white placeholder and bumped-Lambert degrades to flat white.
+    /// `None` → 1×1 white placeholder; bumped-Lambert degrades to flat white.
     pub lightmap: Option<LightmapSection>,
-    /// Chunk light list (ID 23). `None` for legacy maps — the runtime falls
-    /// back to iterating the full spec buffer. See
-    /// `chunk_light_list::ChunkGrid::fallback`.
+    /// `None` → full spec-buffer scan fallback. See `ChunkGrid::fallback`.
     pub chunk_light_list: Option<ChunkLightListSection>,
-    /// Per-face animated-light chunks (ID 24). Produced by `prl-build` for
-    /// maps that carry animated lights; consumed by the weight-map compose
-    /// pass to cross-check `AnimatedLightWeightMaps.chunk_rects.len()`.
+    /// Emitted by `prl-build` for animated-light maps; cross-checked against weight-map chunk count.
     pub animated_light_chunks: Option<AnimatedLightChunksSection>,
-    /// Per-chunk atlas rectangles + per-texel weight lists (ID 25). `None`
-    /// when the map has no animated lights — the renderer falls back to a
-    /// 1×1 zero atlas for the animated-contribution slot.
+    /// `None` when no animated lights — renderer binds a 1×1 zero atlas.
     pub animated_light_weight_maps: Option<AnimatedLightWeightMapsSection>,
-    /// Per-animated-light delta SH probe grids (ID 27). Each grid carries the
-    /// peak (brightness = 1.0, base color) SH contribution for one animated
-    /// light, in `AnimatedBakedLights` index order. The runtime SH compose
-    /// pass accumulates these weighted by each light's animation curve.
-    /// `None` when the map has no animated lights — the compose pass falls
-    /// back to a base→total copy.
+    /// Peak SH delta grids (brightness=1.0) per animated light, accumulated weighted by curve.
+    /// `None` when no animated lights — compose pass falls back to base→total copy.
     pub delta_sh_volumes: Option<DeltaShVolumesSection>,
-    /// Compiled data-script payload (ID 28). `None` when the level has no
-    /// `data_script` worldspawn KVP. The runtime evaluates this in a short-
-    /// lived data context at level load to populate the data registries.
+    /// `None` when level has no `data_script` worldspawn KVP.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     pub data_script: Option<DataScriptSection>,
-    /// FGD map entities for built-in classname dispatch and the data-archetype
-    /// spawn sweep. Loaded from the `MapEntity` PRL section (ID 29). Empty when
-    /// the map carries no non-light, non-worldspawn entities (the section is
-    /// omitted in that case).
-    ///
-    /// Held as the format-crate's wire type — the loader is a strict
-    /// subsystem that does not depend on the scripting tree. The dispatch
-    /// entry point converts these records to `scripting::map_entity::MapEntity`
-    /// at the boundary.
+    /// Held as wire type — loader doesn't depend on scripting tree.
+    /// Dispatch entry point converts to `scripting::map_entity::MapEntity`.
     pub map_entities: Vec<MapEntityRecord>,
-    /// Per-region volumetric fog volumes loaded from the FogVolumes section
-    /// (ID 30). Each record carries an engine-space AABB plus density / colour
-    /// / scatter parameters. Empty when the section is absent or the map
-    /// authored no `fog_volume` brushes.
+    /// Empty when section absent or no `fog_volume` brushes authored.
     pub fog_volumes: Vec<FogVolumeRecord>,
-    /// Worldspawn `fog_pixel_scale` downscale factor for the volumetric fog
-    /// pass (1=full-res, 8=coarsest). Defaults to 4 when the section is
-    /// absent.
+    /// Downscale factor (1=full-res, 8=coarsest). Defaults to 4 when absent.
     pub fog_pixel_scale: u32,
-    /// Worldspawn `initialGravity` (m/s², negative = downward). The engine
-    /// seeds `App::current_gravity` from this on every level load so the
-    /// scripting `world.getGravity()` primitive sees the authored value
-    /// before any user code runs.
+    /// Seeds `App::current_gravity` so `world.getGravity()` sees the authored value before scripts run.
     pub initial_gravity: f32,
-    /// Per-BSP-leaf bitmask of overlapping fog volumes loaded from the
-    /// FogCellMasks section (ID 31). `masks[L]` has bit `i` set when fog
-    /// volume `i` overlaps leaf `L`. The runtime ORs together masks for
-    /// visible cells to derive the active fog-volume set for the fog
-    /// raymarch pass.
-    ///
-    /// `None` when the section is absent. This is the legacy-PRL fallback:
-    /// `compute_fog_cell_mask` treats `(Culled(_), None)` as "all canonical
-    /// slots active" (`all_slots_mask`) so a level baked before section 31
-    /// existed still renders all canonical fog volumes. `live_mask` continues
-    /// to gate density-zero slots. Section absence does not imply
-    /// `volume_count == 0` — section 30 (FogVolumes) may be present without
-    /// section 31.
+    /// `masks[L]` has bit `i` set when fog volume `i` overlaps leaf `L`.
+    /// `None` = legacy PRL without section 31: `compute_fog_cell_mask` treats
+    /// `(Culled, None)` as all canonical slots active. Section 30 may be
+    /// present without section 31.
     pub fog_cell_masks: Option<Vec<u32>>,
 }
 
 impl LevelWorld {
-    /// Find which BSP leaf contains the given position via BSP tree descent.
-    ///
-    /// At each node, tests the position against the splitting plane and descends
-    /// into the appropriate child. Returns the leaf index.
-    ///
-    /// Fallback behavior:
-    /// - If position is on the plane (within epsilon), chooses front.
-    /// - If the tree is empty (no nodes), returns leaf 0.
+    /// On-plane position → front child. Empty tree → leaf 0.
     pub fn find_leaf(&self, position: Vec3) -> usize {
         let mut current = self.root;
 
@@ -289,7 +206,6 @@ impl LevelWorld {
         }
     }
 
-    /// Compute a reasonable spawn position: center of the level's geometry bounds.
     pub fn spawn_position(&self) -> Vec3 {
         let mut mins = Vec3::splat(f32::MAX);
         let mut maxs = Vec3::splat(f32::MIN);
@@ -304,7 +220,6 @@ impl LevelWorld {
     }
 }
 
-/// Build a per-face leaf index mapping from leaf face ranges.
 #[allow(dead_code)]
 pub fn face_leaf_indices(world: &LevelWorld) -> Vec<u32> {
     let mut indices = vec![0u32; world.face_meta.len()];
@@ -320,7 +235,7 @@ pub fn face_leaf_indices(world: &LevelWorld) -> Vec<u32> {
     indices
 }
 
-/// Decode a PRL sentinel-encoded child reference.
+// Positive → Node(v); negative → Leaf(-1 - v).
 fn decode_child(value: i32) -> BspChild {
     if value >= 0 {
         BspChild::Node(value as usize)
@@ -356,9 +271,7 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 cone_direction: r.cone_direction,
                 cast_shadows: r.cast_shadows,
                 is_dynamic: r.is_dynamic,
-                // Tags are intentionally left empty here; they are populated in
-                // the separate LightTags section pass below.
-                tags: vec![],
+                tags: vec![], // populated by LightTags section pass below
                 leaf_index: r.leaf_index,
             }
         })
@@ -411,13 +324,10 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 
     let meta = prl_format::read_container(&mut cursor)?;
 
-    // Geometry section — the only supported on-disk geometry shape. Pre-BVH
-    // maps are rejected outright (see `NoBvh` below).
     let geom_data = prl_format::read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)?
         .ok_or(PrlLoadError::NoGeometry)?;
     let geom = GeometrySection::from_bytes(&geom_data)?;
 
-    // TextureNames section (optional).
     let texture_names_data =
         prl_format::read_section_data(&mut cursor, &meta, SectionId::TextureNames as u32)?;
     let texture_names_section = match texture_names_data {
@@ -426,16 +336,13 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     };
     let texture_names: Vec<String> = texture_names_section.map(|s| s.names).unwrap_or_default();
 
-    // Build vertices and face_meta.
     let mut warned_prefixes = HashSet::new();
     let vertices: Vec<WorldVertex> = geom
         .vertices
         .iter()
         .map(|v| WorldVertex {
             position: v.position,
-            // Store raw texel-space UVs; normalized in main.rs after texture
-            // dimensions are known.
-            base_uv: v.uv,
+            base_uv: v.uv, // raw texel-space; normalized after texture dimensions are known
             normal_oct: v.normal_oct,
             tangent_packed: v.tangent_packed,
             lightmap_uv: v.lightmap_uv,
@@ -476,8 +383,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         texture_names.len()
     );
 
-    // BVH section — required. Pre-BVH maps lack this section and cannot be
-    // loaded; rebuild them with `prl-build`.
+    // Required. Pre-BVH maps must be rebuilt with `prl-build`.
     let bvh_data = prl_format::read_section_data(&mut cursor, &meta, SectionId::Bvh as u32)?
         .ok_or(PrlLoadError::NoBvh)?;
     let bvh_section = BvhSection::from_bytes(&bvh_data)?;
@@ -509,30 +415,26 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         "BVH nodes carry unexpected flag bits",
     );
 
-    // BSP nodes section (optional — absent if tree is a single leaf).
+    // Absent for single-leaf trees.
     let nodes_section =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::BspNodes as u32)? {
             Some(data) => Some(BspNodesSection::from_bytes(&data)?),
             None => None,
         };
 
-    // BSP leaves section (optional).
     let leaves_section =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::BspLeaves as u32)? {
             Some(data) => Some(BspLeavesSection::from_bytes(&data)?),
             None => None,
         };
 
-    // Portals section (optional).
     let portals_section =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::Portals as u32)? {
             Some(data) => Some(PortalsSection::from_bytes(&data)?),
             None => None,
         };
 
-    // AlphaLights section (optional). Missing for maps compiled before the
-    // Lighting Foundation milestone — fall back to an empty light list with
-    // a warning so older maps still load.
+    // Optional — older maps fall back to empty with a warning.
     let mut lights: Vec<MapLight> = match prl_format::read_section_data(
         &mut cursor,
         &meta,
@@ -553,9 +455,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
     };
 
-    // LightTags section (optional). Entries correspond 1:1 with AlphaLights
-    // records in the same order; a mismatch is a format error. Absence means
-    // no light carries a tag.
+    // 1:1 with AlphaLights; count mismatch = format error. Absence = no tags.
     if let Some(data) =
         prl_format::read_section_data(&mut cursor, &meta, SectionId::LightTags as u32)?
     {
@@ -583,8 +483,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         log::info!("[PRL] LightTags: {tagged} tagged lights");
     }
 
-    // LightInfluence section (optional). Missing for legacy maps — fall back
-    // to empty (all lights treated as infinite-bound).
+    // Optional — absent → all lights treated as infinite-bound.
     let light_influences: Vec<crate::lighting::influence::LightInfluence> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::LightInfluence as u32)? {
             Some(data) => {
@@ -618,8 +517,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
-    // ShVolume section (optional). Missing for legacy maps — the renderer
-    // falls back to `ambient_floor + direct_sum`.
+    // Optional — absent → renderer falls back to `ambient_floor + direct_sum`.
     let sh_volume: Option<ShVolumeSection> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::ShVolume as u32)? {
             Some(data) => {
@@ -642,9 +540,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
-    // Lightmap section (optional). Missing for maps compiled before the
-    // directional-lightmap plan shipped — the renderer falls back to a 1×1
-    // white placeholder and bumped-Lambert degrades to flat white.
+    // Optional — absent → 1×1 white placeholder; bumped-Lambert degrades to flat white.
     let lightmap: Option<LightmapSection> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::Lightmap as u32)? {
             Some(data) => {
@@ -666,9 +562,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
-    // ChunkLightList section (optional). Missing for maps compiled before
-    // Task A of `lighting-chunk-lists/` — the runtime falls back to iterating
-    // the full spec-only light buffer.
+    // Optional — absent → full spec-buffer scan fallback.
     let chunk_light_list: Option<ChunkLightListSection> = match prl_format::read_section_data(
         &mut cursor,
         &meta,
@@ -693,9 +587,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
     };
 
-    // AnimatedLightChunks section (optional). Emitted by `prl-build` for maps
-    // that carry animated lights. Used at runtime to cross-check the
-    // weight-maps section count.
+    // Optional — cross-checked against weight-map chunk count at runtime.
     let animated_light_chunks: Option<AnimatedLightChunksSection> =
         match prl_format::read_section_data(
             &mut cursor,
@@ -714,9 +606,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => None,
         };
 
-    // AnimatedLightWeightMaps section (optional). Missing for maps with zero
-    // animated lights — the runtime falls back to a 1×1 zero atlas for the
-    // animated-contribution slot on bind group 4.
+    // Optional — absent → 1×1 zero atlas on animated-contribution slot.
     let animated_light_weight_maps: Option<AnimatedLightWeightMapsSection> =
         match prl_format::read_section_data(
             &mut cursor,
@@ -736,8 +626,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => None,
         };
 
-    // DeltaShVolumes section (optional). Missing for maps with no animated
-    // lights — the SH compose pass falls back to a base→total copy.
+    // Optional — absent → SH compose pass falls back to base→total copy.
     let delta_sh_volumes: Option<DeltaShVolumesSection> = match prl_format::read_section_data(
         &mut cursor,
         &meta,
@@ -756,9 +645,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
 
-    // DataScript section (ID 28, optional). Compiled bytes plus original
-    // source path; the runtime evaluates these in a short-lived data context
-    // at level load. Absence means the map authored no `data_script` KVP.
+    // Optional — absent when map has no `data_script` worldspawn KVP.
     let data_script: Option<DataScriptSection> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::DataScript as u32)? {
             Some(data) => {
@@ -773,10 +660,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => None,
         };
 
-    // MapEntity section (ID 29, optional). Absent for maps with no non-light,
-    // non-worldspawn entities — the runtime simply has nothing to dispatch.
-    // Records carry through to dispatch in their wire shape; the scripting
-    // layer adapts them at the dispatch entry point.
+    // Optional — absent when no non-light, non-worldspawn entities exist.
     let map_entities: Vec<MapEntityRecord> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::MapEntity as u32)? {
             Some(data) => {
@@ -787,11 +671,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => Vec::new(),
         };
 
-    // FogVolumes section (ID 30). Required because it carries the worldspawn
-    // `initial_gravity` value alongside `pixel_scale` and the per-region fog
-    // volumes. `prl-build` always emits the section; absence indicates a
-    // pre-gravity legacy PRL and is rejected so the engine never silently
-    // falls back to a hardcoded gravity default.
+    // Required — carries `initial_gravity` alongside fog volumes. Absence = pre-gravity PRL;
+    // rejected so the engine never silently falls back to a hardcoded default.
     let (fog_volumes, fog_pixel_scale, initial_gravity): (Vec<FogVolumeRecord>, u32, f32) =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogVolumes as u32)? {
             Some(data) => {
@@ -811,13 +692,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => return Err(PrlLoadError::NoWorldspawnGravity),
         };
 
-    // FogCellMasks section (ID 31, optional). Per-BSP-leaf bitmask of which
-    // fog volumes overlap each leaf. Absent for legacy PRLs or maps that
-    // authored no fog entities (`fog_volume` brushes, `fog_lamp` point
-    // entities, or `fog_tube` point entities). `None` triggers the legacy-PRL
-    // fallback in
-    // `compute_fog_cell_mask`: all canonical slots are treated as active via
-    // `all_slots_mask`, so fog volumes still render on maps predating section 31.
+    // Optional — absent for legacy PRLs or maps with no fog entities.
+    // None → `compute_fog_cell_mask` treats all canonical slots active.
     let fog_cell_masks: Option<Vec<u32>> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32)? {
             Some(data) => {
@@ -830,7 +706,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 
     let has_portals = portals_section.is_some();
 
-    // Build runtime nodes from the nodes section.
     let nodes: Vec<NodeData> = match &nodes_section {
         Some(section) => section
             .nodes
@@ -845,7 +720,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => Vec::new(),
     };
 
-    // Build runtime leaves from the leaves section.
     let leaves: Vec<LeafData> = match &leaves_section {
         Some(leaf_sec) => leaf_sec
             .leaves
@@ -877,14 +751,12 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
     };
 
-    // Determine BSP root. If nodes exist, root is node 0. Otherwise, leaf 0.
     let root = if nodes.is_empty() {
         BspChild::Leaf(0)
     } else {
         BspChild::Node(0)
     };
 
-    // Load portal data and build adjacency list.
     let (portals, leaf_portals) = if let Some(ps) = &portals_section {
         let portal_data: Vec<PortalData> = ps
             .portals
@@ -1319,8 +1191,6 @@ mod tests {
         tmp
     }
 
-    /// Default FogVolumes section blob — required by `load_prl` for the
-    /// worldspawn `initial_gravity` value. Empty volume list, default scalars.
     fn default_fog_volumes_blob() -> prl_format::SectionBlob {
         prl_format::SectionBlob {
             section_id: SectionId::FogVolumes as u32,

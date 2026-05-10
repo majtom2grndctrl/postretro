@@ -44,22 +44,10 @@ use smoke::SmokePass;
 
 use crate::fx::smoke::SpriteFrame;
 
-/// Compute the per-frame fog-volume cell mask from the visibility result and
-/// the baked per-leaf fog-volume bitmasks (PRL section 31).
-///
-/// - `Culled(leaves)` + masks present: OR each visible leaf's `u32` mask.
-/// - `Culled(leaves)` + masks absent: fall back to "all canonical slots
-///   visible" so a level missing section 31 still draws fog (regression-safe
-///   for legacy PRLs).
-/// - `DrawAll`: every canonical slot is visible —
-///   `(1 << canonical_volume_count) - 1`.
-///
-/// `canonical_volume_count` is capped at `MAX_FOG_VOLUMES` (16) by
-/// `FogPass::set_canonical_volumes`, so the `1 << count` shift never reaches
-/// 32 and the result fits in `u32`.
-///
-/// Must be called after `FogPass::set_canonical_volumes`; if called before,
-/// `canonical_volume_count` is 0 and the mask silently returns 0.
+/// Derives the per-frame active fog-volume bitmask.
+/// `Culled` + masks present: OR visible-leaf masks. `Culled` + absent: all slots active
+/// (legacy PRL fallback). `DrawAll`: all slots.
+/// Must be called after `FogPass::set_canonical_volumes`; before = 0 canonical count = 0 mask.
 fn compute_fog_cell_mask(
     visible: &VisibleCells,
     fog_cell_masks: Option<&[u32]>,
@@ -90,13 +78,8 @@ fn compute_fog_cell_mask(
     }
 }
 
-/// Same algorithm as `sphere_intersects_any_aabb` in `fog_volume_bridge.rs`,
-/// but takes `&[(Vec3, Vec3)]` instead of `impl IntoIterator<Item = &'a FogVolumeAabb>`.
-///
-/// Returns `true` when `aabbs` is empty: safe fallback for frames before
-/// `set_fog_aabbs` has populated the list. Passing spots through is
-/// conservative; the fog pass is gated by `FogPass::active()` so they are
-/// discarded before reaching the raymarch if there is nothing to scatter into.
+/// Returns `true` when `aabbs` is empty — conservative for pre-`set_fog_aabbs` frames;
+/// spots are discarded by `FogPass::active()` before reaching the raymarch anyway.
 fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec3)]) -> bool {
     if aabbs.is_empty() {
         return true;
@@ -112,9 +95,8 @@ fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec
     false
 }
 
-// `curve_eval.wgsl` reads `anim_samples` by lexical name; `forward.wgsl`
-// declares that buffer. WGSL resolves references at module scope regardless of
-// textual order, so appending the helper after `forward.wgsl` is safe.
+// `curve_eval.wgsl` reads `anim_samples` declared in `forward.wgsl`; WGSL resolves
+// module-scope names regardless of textual order, so appending after is safe.
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",
@@ -123,32 +105,23 @@ const SHADER_SOURCE: &str = concat!(
 
 const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 
-// Depth pre-pass: vertex-only; enables `depth_compare: Equal` in the forward
-// pass so each pixel is shaded exactly once (zero shading overdraw).
+// Depth pre-pass: vertex-only; enables Equal depth compare → zero shading overdraw.
 const DEPTH_PREPASS_SHADER_SOURCE: &str = include_str!("../shaders/depth_prepass.wgsl");
 
-// Spot shadow depth pass: vertex-only; writes Depth32Float per slot via a
-// dynamic-offset uniform selecting the per-slot light-space matrix.
+// Spot shadow: vertex-only; per-slot matrix selected via dynamic-offset uniform.
 const SPOT_SHADOW_SHADER_SOURCE: &str = include_str!("../shaders/spot_shadow.wgsl");
 
-// Pair index `i` → query slots `[2i, 2i+1]`. Indexed by `FrameTiming::new`'s
-// labels vec so label ordering and callsite indices can't drift independently.
+// Pair index i → query slots [2i, 2i+1]. Labels vec keeps ordering and callsite indices in sync.
 const TIMING_PAIR_CULL: usize = 0;
 const TIMING_PAIR_ANIMATED_LM_COMPOSE: usize = 1;
 const TIMING_PAIR_DEPTH_PREPASS: usize = 2;
 const TIMING_PAIR_FORWARD: usize = 3;
 const TIMING_PAIR_COUNT: usize = 4;
 
-// std140 aligns vec3<f32> to 16 bytes, so camera_position (vec3) and
-// ambient_floor (f32) share one slot. Must match the WGSL `Uniforms` struct
-// in forward.wgsl and wireframe.wgsl — both shaders bind the same buffer.
-//   0..64    view_proj
-//   64..76   camera_position (vec3<f32>)
-//   76..80   ambient_floor (f32)
-//   80..84   light_count (u32)
-//   84..88   time (elapsed seconds for SH animation curves)
-//   88..92   lighting_isolation (u32, 0..=9; Alt+Shift+4)
-//   92..96   indirect_scale (f32)
+// Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
+// std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
+//   0..64   view_proj  64..76  camera_position  76..80  ambient_floor
+//   80..84  light_count  84..88  time  88..92  lighting_isolation  92..96  indirect_scale
 const UNIFORM_SIZE: usize = 96;
 
 /// Lighting-term isolation mode for leak/bleed debugging (cycled by Alt+Shift+4).
@@ -229,8 +202,7 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes
 }
 
-/// Lowest value where a player can still navigate dark areas; tuned via the
-/// ambient-floor slider (Alt+Shift+{ / Alt+Shift+}).
+/// Minimum useful ambient; tuned via Alt+Shift+{ / Alt+Shift+}.
 pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.001;
 
 pub const DEFAULT_INDIRECT_SCALE: f32 = 0.10;
@@ -295,10 +267,8 @@ fn extract_r_channel(rgba: &[u8]) -> Vec<u8> {
     rgba.iter().step_by(4).copied().collect()
 }
 
-// std140 rounds the struct size to a multiple of 16. The trailing vec3<f32>
-// _pad field forces the size to 32 bytes to match the WGSL `MaterialUniform`.
-//   0..4   shininess (f32)
-//   4..32  pad
+// std140: trailing _pad forces size to 32 bytes to match WGSL `MaterialUniform`.
+//   0..4  shininess   4..32  pad
 const MATERIAL_UNIFORM_SIZE: usize = 32;
 
 fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
@@ -502,12 +472,9 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// Create the renderer for the given window. Geometry and textures are
-    /// installed later via `install_level_geometry` / `install_textures` once
-    /// the level-load worker delivers its payload.
+    /// Geometry and textures installed later via `install_level_geometry` / `install_textures`.
     pub fn new(window: &Arc<Window>) -> Result<Self> {
-        // No geometry yet — use dummy buffers until `install_level_geometry`
-        // replaces them.
+        // Dummy buffers until `install_level_geometry` replaces them.
         let geometry: Option<&LevelGeometry> = None;
         let texture_set: Option<&TextureSet> = None;
         let size = window.inner_size();
@@ -530,8 +497,6 @@ impl Renderer {
 
         log::info!("[Renderer] GPU adapter: {}", adapter.get_info().name);
 
-        // Vulkan/Metal/DX12 support multi_draw_indexed_indirect; WebGL2 does not
-        // (not a target). Fall back to singular draw_indexed_indirect.
         let downlevel = adapter.get_downlevel_capabilities();
         let has_multi_draw_indirect = downlevel
             .flags
@@ -544,8 +509,7 @@ impl Renderer {
             );
         }
 
-        // Only enable GPU timing when POSTRETRO_GPU_TIMING=1 AND the adapter
-        // supports TIMESTAMP_QUERY. FrameTiming=None → zero runtime cost.
+        // FrameTiming=None → zero runtime cost when timing isn't requested or supported.
         let adapter_features = adapter.features();
         let gpu_timing_requested =
             std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1");
@@ -561,19 +525,13 @@ impl Renderer {
             );
         }
 
-        // WebGPU downlevel default is 4 bind groups; the forward pipeline uses
-        // groups 0–5 (camera, material, lights, SH, lightmap, shadow pool).
-        // 8 is the WebGPU cap and is supported on all desktop backends.
-        //
-        // The forward fragment shader binds exactly 16 sampled textures
-        // (3 material + 9 SH bands + 3 lightmap + 1 shadow depth) — the
-        // WebGPU spec floor for max_sampled_textures_per_shader_stage. Adding
-        // another sampled texture requires bumping this limit or collapsing the
-        // 9 SH band textures into a texture array.
+        // Forward pipeline uses groups 0–5 (camera, material, lights, SH, lightmap, shadow).
+        // Fragment shader binds 16 sampled textures (WebGPU spec floor):
+        // 3 material + 9 SH bands + 3 lightmap + 1 shadow. Adding more requires bumping
+        // this limit or collapsing SH bands into a texture array.
+        // SH compose writes 9 storage textures; WebGPU floor is 4 but desktop backends support ≥9.
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
-            // SH compose writes 9 storage textures. WebGPU floor is 4;
-            // Metal/Vulkan/DX12 support ≥9.
             max_storage_textures_per_shader_stage: 9,
             ..wgpu::Limits::default()
         };
@@ -661,9 +619,6 @@ impl Renderer {
         let view_proj = build_default_view_projection(
             surface_config.width as f32 / surface_config.height as f32,
         );
-        // Only dynamic lights go into the GPU real-time loop. Static lights are
-        // baked into the lightmap; putting them in the loop would double-apply
-        // their direct contribution on top of the bake.
         let (level_lights, dynamic_influences) = filter_dynamic_lights(
             geometry.map(|g| g.lights).unwrap_or(&[]),
             geometry.map(|g| g.light_influences).unwrap_or(&[]),
@@ -691,13 +646,9 @@ impl Renderer {
                 label: Some("Uniform Bind Group Layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    // COMPUTE visibility added so the animated-lightmap
-                    // compose pass can reuse this layout (same uniform
-                    // buffer, `uniforms.time` drives curve sampling).
-                    // CONTRACT: `render::animated_lightmap::AnimatedLightmapResources::new`
-                    // relies on COMPUTE being set here — dropping it will
-                    // fail wgpu validation at compute pipeline creation.
-                    // See the doc-comment on that function for detail.
+                    // COMPUTE required: animated-lightmap compose reuses this BGL
+                    // (same buffer; `uniforms.time` drives curve sampling).
+                    // Dropping COMPUTE fails wgpu validation at compute pipeline creation.
                     visibility: wgpu::ShaderStages::VERTEX
                         | wgpu::ShaderStages::FRAGMENT
                         | wgpu::ShaderStages::COMPUTE,
@@ -719,9 +670,8 @@ impl Renderer {
             }],
         });
 
-        // Group 1: per-material
-        //   0 = diffuse (sRGB), 1 = sampler, 2 = specular (R8), 3 = shininess uniform
-        //   4 = normal map (Rgba8Unorm, NOT sRGB; decode: n = sample.rgb * 2.0 - 1.0)
+        // Group 1: 0=diffuse(sRGB), 1=sampler, 2=specular(R8), 3=shininess,
+        //          4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1)
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Material Bind Group Layout"),
@@ -775,10 +725,8 @@ impl Renderer {
                 ],
             });
 
-        // Group 2: direct-light + specular/chunk buffers
-        //   0 = dynamic GpuLight array, 1 = influence volumes
-        //   2 = spec-only static lights, 3 = ChunkGridInfo (has_chunk_grid=0 → full scan)
-        //   4 = per-chunk offset table, 5 = flat chunk index list
+        // Group 2: 0=dynamic lights, 1=influence volumes, 2=spec-only statics,
+        //          3=ChunkGridInfo, 4=chunk offsets, 5=chunk indices
         let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -821,8 +769,7 @@ impl Renderer {
             }
         }
 
-        // wgpu rejects zero-size storage buffers; pad to one dummy record when empty.
-        // `light_count` stays at 0 so the dummy is never read by the shader.
+        // wgpu rejects zero-size storage buffers — pad to one dummy; light_count stays 0.
         let lights_data = if !level_lights.is_empty() {
             pack_lights(&level_lights)
         } else {
@@ -834,14 +781,14 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // BGL owned here so the forward pipeline layout and pool bind group share a definition.
+        // BGL owned here so forward pipeline layout and shadow pool bind group share it.
         let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&device);
         let spot_shadow_pool = SpotShadowPool::new(&device, &spot_shadow_bgl);
         log::info!(
             "[Renderer] Spot shadow pool initialized (8 × 1024×1024 Depth32Float = 32 MiB VRAM)"
         );
 
-        // Influence volume buffer (binding 1). Same dummy strategy as lights.
+        // Influence volume buffer — same dummy strategy as lights.
         let influence_data = if !dynamic_influences.is_empty() {
             influence::pack_influence(&dynamic_influences)
         } else {
@@ -853,8 +800,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Static-only light buffer for specular; dynamic lights excluded by pack_spec_lights.
-        // 1-record dummy when empty (avoids zero-size storage binding).
+        // Specular-only static lights; 1-record dummy avoids zero-size storage binding.
         let spec_lights_data = {
             let packed = geometry
                 .map(|g| pack_spec_lights(g.lights))
@@ -871,9 +817,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Chunk grid (group 2 bindings 3, 4, 5). Uses the PRL section when
-        // present; otherwise binds a fallback payload with `has_chunk_grid = 0`
-        // so the shader iterates the full spec buffer.
+        // Absent → fallback payload with has_chunk_grid=0; shader iterates full spec buffer.
         let chunk_grid = match geometry.and_then(|g| g.chunk_light_list) {
             Some(sec) => ChunkGrid::from_section(sec),
             None => ChunkGrid::fallback(),
@@ -936,7 +880,7 @@ impl Renderer {
             ],
         });
 
-        // Create shared sampler: nearest filtering for retro pixel aesthetic, repeat.
+        // Nearest + repeat — retro pixel aesthetic.
         let base_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Base Texture Sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -948,7 +892,7 @@ impl Renderer {
             ..Default::default()
         });
 
-        // Absent specular → zeros in R channel → no highlight, no shader branch.
+        // Absent specular → zero R → no highlight, no shader branch.
         let black_specular_texture = upload_texture_data(
             &device,
             &queue,
@@ -1014,10 +958,7 @@ impl Renderer {
                     None => black_specular_view.clone(),
                 };
 
-                // Normal-map upload: linear `Rgba8Unorm` (NOT sRGB — tangent
-                // vectors must not gamma-correct). Falls back to the shared
-                // neutral-normal placeholder when no `_n` sibling was present
-                // or it failed validation in the loader.
+                // Rgba8Unorm, NOT sRGB — tangent vectors must not gamma-correct.
                 let normal_view = match normal_set.and_then(|s| s.get(idx)).and_then(|o| o.as_ref())
                 {
                     Some(normal_loaded) => {
@@ -1132,7 +1073,6 @@ impl Renderer {
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
 
-        // Absent SH section → dummy 1×1×1 textures; shader skips via `has_sh_volume == 0`.
         let sh_volume_resources = ShVolumeResources::new(
             &device,
             &queue,
@@ -1148,8 +1088,6 @@ impl Renderer {
             &uniform_bind_group_layout,
         );
 
-        // Absent weight-map section → 1×1 zero atlas; forward shader never branches on it.
-        // Cross-section validation errors surface as init failures (map loads are unrecoverable).
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
             &device,
@@ -1162,10 +1100,7 @@ impl Renderer {
         )
         .map_err(|msg| anyhow::anyhow!("[Renderer] animated lightmap init failed: {msg}"))?;
 
-        // Group 4: directional lightmap atlas (baked static direct lighting).
-        // Animated-contribution atlas bound at group 4 binding 3 — from `animated_lightmap`
-        // (real texture or 1×1 zero dummy). Layout created before the bind group so the
-        // pipeline layout can reference it first.
+        // Group 4: lightmap atlas. Animated-contribution atlas at binding 3 (real or 1×1 zero dummy).
         let lightmap_bind_group_layout = crate::lighting::lightmap::bind_group_layout(&device);
         let lightmap_resources = LightmapResources::new(
             &device,
@@ -1267,8 +1202,7 @@ impl Renderer {
             cache: None,
         });
 
-        // Wireframe overlay: group 0 = uniforms, group 1 = cull_status storage buffer.
-        // Colors are driven by per-leaf cull status from the compute shader.
+        // Wireframe: group 0 = uniforms, group 1 = per-leaf cull status from compute shader.
         let wireframe_cull_status_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Wireframe Cull Status BGL"),
@@ -1362,7 +1296,6 @@ impl Renderer {
             cache: None,
         });
 
-        // Depth pre-pass: group 0 only, fragment: None (wgpu allows depth-only pipelines).
         let depth_prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Depth Pre-Pass Pipeline Layout"),
             bind_group_layouts: &[Some(&uniform_bind_group_layout)],
@@ -1385,10 +1318,7 @@ impl Renderer {
                         array_stride: crate::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[
-                            // Mirrors the forward pipeline's vertex layout so
-                            // we can share the same vertex buffer binding.
-                            // Only position is used; the remaining attributes
-                            // are declared to match the shared layout.
+                            // Shares the forward vertex buffer — only position used; rest declared to match.
                             wgpu::VertexAttribute {
                                 offset: 0,
                                 shader_location: 0,
@@ -1432,9 +1362,8 @@ impl Renderer {
                 cache: None,
             });
 
-        // Spot shadow depth pipeline: shared across all 8 slots; slot selected via
-        // dynamic offset into shadow_vs_uniform_buffer. Depth bias (constant=2, slope=1.5)
-        // suppresses self-shadow acne without Peter-Panning (back-face cull, not front-face).
+        // Spot shadow pipeline: shared across all 8 slots via dynamic-offset uniform.
+        // Depth bias (constant=2, slope=1.5) suppresses acne without Peter-Panning.
         let shadow_vs_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shadow VS BGL"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -1499,7 +1428,7 @@ impl Renderer {
                 cache: None,
             });
 
-        // Align each mat4 slot to min_uniform_buffer_offset_alignment for legal dynamic offsets.
+        // min_uniform_buffer_offset_alignment required for dynamic-offset bindings.
         let min_ubo_align = device.limits().min_uniform_buffer_offset_alignment.max(64);
         let shadow_vs_stride = min_ubo_align;
         let shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1534,7 +1463,7 @@ impl Renderer {
             None
         };
 
-        // Billboard sprite pipeline. See: context/lib/rendering_pipeline.md §7.4
+        // See: context/lib/rendering_pipeline.md §7.4
         let smoke_pass = SmokePass::new(
             &device,
             surface_format,
@@ -1544,13 +1473,9 @@ impl Renderer {
             &sh_volume_resources.bind_group_layout,
         );
 
-        // Splash pipeline — created unconditionally; the bind group is `None`
-        // until `install_splash_from_loaded` is called.
-        // See: context/lib/boot_sequence.md §8 · crates/postretro/src/render/splash.rs
+        // Bind group is None until `install_splash_from_loaded`.
         let splash_pipeline = SplashPipeline::new(&device, surface_format);
 
-        // Volumetric fog pass. Pixel scale is the worldspawn default until the
-        // app pushes a per-level value via `set_fog_pixel_scale`.
         let mut fog = FogPass::new(
             &device,
             surface_config.width,
@@ -1561,9 +1486,7 @@ impl Renderer {
             &sh_volume_resources.bind_group_layout,
             &spot_shadow_bgl,
         );
-        // Match the actual surface format — `FogPass::new` hardcodes
-        // `Rgba8UnormSrgb`, but the swapchain may have picked a different
-        // sRGB or non-sRGB variant.
+        // Swapchain may differ from the hardcoded Rgba8UnormSrgb default.
         fog.rebuild_composite_for_format(&device, surface_format);
 
         if has_geometry {
@@ -1647,8 +1570,7 @@ impl Renderer {
         })
     }
 
-    /// When multiple emitters share a collection, the first caller's `spec_intensity`
-    /// and `lifetime` win — these are per-collection, not per-emitter.
+    /// First caller's `spec_intensity` and `lifetime` win — per-collection, not per-emitter.
     pub fn register_smoke_collection(
         &mut self,
         collection: &str,
@@ -1666,12 +1588,8 @@ impl Renderer {
         );
     }
 
-    /// Upload level geometry to the GPU. Replaces dummy vertex/index buffers
-    /// created at init time with real geometry, rebuilds the lighting bind
-    /// group, SH volume, lightmap, and BVH-backed compute cull pipeline.
-    ///
-    /// Called from the boot state machine after the level-load worker delivers
-    /// its payload. See: context/lib/boot_sequence.md §8
+    /// Replaces dummy buffers with real geometry; rebuilds lighting, SH, lightmap, and cull pipeline.
+    /// See: context/lib/boot_sequence.md §8
     pub fn install_level_geometry(&mut self, geometry: &LevelGeometry<'_>) {
         let has_geometry = !geometry.vertices.is_empty() && !geometry.indices.is_empty();
 
@@ -1903,10 +1821,7 @@ impl Renderer {
         }
     }
 
-    /// Upload textures to the GPU. Rebuilds all material bind groups.
-    ///
-    /// Called from the boot state machine after `install_level_geometry`.
-    /// See: context/lib/boot_sequence.md §8
+    /// Rebuilds all material bind groups. See: context/lib/boot_sequence.md §8
     pub fn install_textures(&mut self, texture_set: &TextureSet) {
         let mut gpu_textures: Vec<GpuTexture> = Vec::new();
         let specular_set = texture_set.specular.as_slice();
@@ -2060,10 +1975,6 @@ impl Renderer {
         );
     }
 
-    /// Decode a `LoadedTexture` into a GPU splash texture, bind it to the
-    /// splash pipeline, and write the UBO. Returns the texture dimensions
-    /// `[width, height]` for the caller's log line.
-    ///
     /// May be called more than once (mod-override swap in splash frame 1).
     pub fn install_splash_from_loaded(&mut self, loaded: &LoadedTexture) -> [u32; 2] {
         let (texture, dims) = splash::upload_splash_texture(&self.device, &self.queue, loaded);
@@ -2073,9 +1984,7 @@ impl Renderer {
         dims
     }
 
-    /// Encode and submit a splash-phase frame — clears to black and draws the
-    /// fullscreen splash triangle if a texture is bound. Returns `Err` on
-    /// swapchain failure; the caller exits the event loop on error.
+    /// Returns `Err` on swapchain failure; caller exits the event loop on error.
     pub fn render_splash_frame(&mut self) -> Result<()> {
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
@@ -2115,8 +2024,7 @@ impl Renderer {
         Ok(())
     }
 
-    /// Release the splash bind group. The splash pipeline still exists; a
-    /// subsequent `install_splash_from_loaded` can re-bind.
+    /// Pipeline survives; `install_splash_from_loaded` can re-bind.
     pub fn clear_splash(&mut self) {
         self.splash_pipeline.clear();
     }
@@ -2140,7 +2048,7 @@ impl Renderer {
         self.lighting_isolation
     }
 
-    /// Alt+Shift+V diagnostic chord. Rebuilds the swapchain via surface.configure.
+    /// Rebuilds the swapchain via surface.configure (Alt+Shift+V diagnostic chord).
     pub fn toggle_vsync(&mut self) -> bool {
         self.vsync_enabled = !self.vsync_enabled;
         self.surface_config.present_mode = if self.vsync_enabled {
@@ -2156,8 +2064,7 @@ impl Renderer {
         self.vsync_enabled
     }
 
-    /// Caller must update view-projection via `update_per_frame_uniforms` — the camera
-    /// owns aspect ratio, not the renderer.
+    /// Camera owns aspect ratio; caller must also call `update_per_frame_uniforms`.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
@@ -2190,8 +2097,7 @@ impl Renderer {
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
 
-        // Must upload before the compose pass and SH fragment pass — both read
-        // the descriptor buffer. set_active is called during Game logic (before Render).
+        // Must precede the compose and SH fragment passes (both read the descriptor buffer).
         self.sh_volume_resources
             .animation
             .upload_descriptors_if_dirty(&self.queue);
@@ -2203,8 +2109,7 @@ impl Renderer {
         self.sh_volume_resources.animation.set_active(slot, active);
     }
 
-    /// Must run **before** `update_dynamic_light_slots` — slot assignment reads
-    /// the bridge-produced colors/intensities and then rewrites the same buffer.
+    /// Must run before `update_dynamic_light_slots` — slot assignment reads then rewrites this buffer.
     pub fn upload_bridge_lights(&mut self, lights_bytes: &[u8]) {
         debug_assert_eq!(
             lights_bytes.len(),
@@ -2222,8 +2127,7 @@ impl Renderer {
             .write_buffer(&self.lights_buffer, 0, lights_bytes);
     }
 
-    /// Mismatched length logs a warning and skips the upload (fail soft) rather
-    /// than crashing the frame if the bridge invariant ever slips.
+    /// Mismatched length logs a warning and skips upload — fail soft over crashing the frame.
     pub fn upload_bridge_descriptors(&mut self, descriptor_bytes: &[u8]) {
         let expected = self.level_lights.len() * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
         if descriptor_bytes.len() != expected {
@@ -2247,7 +2151,7 @@ impl Renderer {
         );
     }
 
-    /// Writes into `anim_samples` at the scripted-region offset (after FGD samples).
+    /// Writes at scripted-region offset (after FGD samples).
     pub fn upload_bridge_samples(&mut self, samples_bytes: &[u8]) {
         if samples_bytes.is_empty() {
             return;
@@ -2260,7 +2164,7 @@ impl Renderer {
         );
     }
 
-    /// Divide by 4 for the float index; pass as `fgd_sample_float_count` to `LightBridge`.
+    /// Divide by 4 for float index; pass as `fgd_sample_float_count` to `LightBridge`.
     pub fn scripted_sample_byte_offset(&self) -> usize {
         self.sh_volume_resources.scripted_sample_byte_offset
     }
@@ -2269,15 +2173,9 @@ impl Renderer {
         &self.level_lights
     }
 
-    /// Build the per-frame `FogSpotLight` list from the dynamic spot lights
-    /// that received a shadow slot this frame. The raymarch shader uses
-    /// `slot` to index `light_space_matrices.m[slot]` for shadow comparison,
-    /// so unslotted spots are excluded — they have no usable light-space
-    /// matrix in the shader's view.
-    ///
-    /// Pre-multiplies `color × intensity × effective_brightness` so the GPU
-    /// path is purely additive; mirrors the fog point-light packing in
-    /// `FogVolumeBridge::update_points`.
+    /// Collects dynamic spots with a shadow slot this frame.
+    /// Unslotted spots excluded — no usable light-space matrix in the shader.
+    /// Pre-multiplies color × intensity × brightness; mirrors `FogVolumeBridge::update_points`.
     fn collect_fog_spot_lights(&self) -> Vec<crate::fx::fog_volume::FogSpotLight> {
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let slot_assignment = &self.spot_shadow_pool.slot_assignment;
@@ -2335,16 +2233,9 @@ impl Renderer {
         out
     }
 
-    /// Stash the canonical fog-volume list for this frame. Bytes must be a
-    /// tightly packed `[FogVolume]` array in original PRL record order; the
-    /// renderer never sees the script-side type. `live_mask` carries bit `i`
-    /// when canonical slot `i` has density > 0.
-    ///
-    /// The actual GPU upload happens in `render_frame_indirect` after the
-    /// per-frame visible-cell mask is known — that step ANDs `live_mask`
-    /// with the portal-cull mask and dense-repacks survivors into the GPU
-    /// buffer. Empty input zeroes the canonical list and `live_mask`, which
-    /// causes `FogPass::active` to return false for the rest of the frame.
+    /// Bytes: tightly packed `[FogVolume]` in PRL order. `live_mask` bit `i` = slot `i` has density > 0.
+    /// GPU repack happens in `render_frame_indirect` after the portal-cull mask is known.
+    /// Empty input clears the list → `FogPass::active` returns false.
     pub fn upload_fog_volumes(&mut self, bytes: &[u8], planes: &[Vec<[f32; 4]>], live_mask: u32) {
         let stride = std::mem::size_of::<crate::fx::fog_volume::FogVolume>();
         if bytes.is_empty() {
@@ -2358,9 +2249,7 @@ impl Renderer {
                 bytes.len(),
                 stride,
             );
-            // Zero the canonical list so the pass skips this frame entirely.
-            // Without this, malformed input leaves the previous frame's
-            // volumes active and the raymarch keeps drawing stale data.
+            // Zero the canonical list — otherwise stale volumes from the previous frame persist.
             self.fog.set_canonical_volumes(&[], &[], 0);
             return;
         }
@@ -2368,35 +2257,24 @@ impl Renderer {
         self.fog.set_canonical_volumes(volumes, planes, live_mask);
     }
 
-    /// Set the per-BSP-leaf fog-volume bitmask table loaded from PRL section 31.
-    /// Called once at level load. When `masks` is `None` (level predates
-    /// section 31 or has no fog volumes) and visibility is `Culled`, all
-    /// canonical slots remain active — same behaviour as `DrawAll` — so legacy
-    /// PRLs continue rendering fog without baked masks. `live_mask` still
-    /// suppresses any canonical slots whose density is zero.
+    /// `None` = legacy PRL without section 31: all canonical slots treated active.
+    /// `live_mask` still suppresses density-zero slots.
     pub fn set_fog_cell_masks(&mut self, masks: Option<Vec<u32>>) {
         self.fog_cell_masks = masks;
     }
 
-    /// Cache the active fog-volume AABB list for this frame. Must be called
-    /// after `FogVolumeBridge::update_volumes` populates the bridge's AABB
-    /// cache and before `collect_fog_spot_lights` consumes it. AABBs are
-    /// CPU-side culling data, not GPU upload bytes, so they can't go through
-    /// `upload_fog_volumes`. An empty slice clears the cache so spots aren't
-    /// kept alive against a fog volume that has turned off.
+    /// Must be called after bridge AABB cache is populated and before `collect_fog_spot_lights`.
+    /// CPU-side culling data only — can't go through `upload_fog_volumes`.
+    /// Empty slice clears the cache so spots aren't kept against a volume that turned off.
     pub fn set_fog_aabbs(&mut self, aabbs: &[(Vec3, Vec3)]) {
         self.active_fog_aabbs.clear();
         self.active_fog_aabbs.extend_from_slice(aabbs);
     }
 
-    /// Upload the per-frame fog point-light buffer. Bytes must be a tightly
-    /// packed `[FogPointLight]` array. Empty input zeroes `self.fog.point_count`
-    /// so the shader skips stale records from the previous frame.
+    /// Bytes: tightly packed `[FogPointLight]`. Empty input zeroes `point_count`.
     pub fn upload_fog_points(&mut self, bytes: &[u8]) {
         let stride = std::mem::size_of::<crate::fx::fog_volume::FogPointLight>();
         if bytes.is_empty() {
-            // Zero the live count so the shader doesn't iterate stale
-            // records left in the buffer from a previous frame.
             self.fog.point_count = 0;
             return;
         }
@@ -2425,16 +2303,14 @@ impl Renderer {
         );
     }
 
-    /// Empty slice = no suppression (all lights eligible for shadow slots).
     pub fn set_light_effective_brightness(&mut self, effective_brightness: &[f32]) {
         self.light_effective_brightness.clear();
         self.light_effective_brightness
             .extend_from_slice(effective_brightness);
     }
 
-    /// Lights with effective brightness below 0.01 are excluded from slot ranking
-    /// so an animated-dark light doesn't waste one of the 8 shadow slots.
-    /// Empty/short `effective_brightness` = all-1.0 (first frame runs before bridge).
+    /// Sub-0.01 lights excluded from slot ranking — animated-dark lights don't waste a shadow slot.
+    /// Short/empty `effective_brightness` = all-1.0 (first frame runs before bridge).
     pub fn update_dynamic_light_slots(
         &mut self,
         camera_position: Vec3,
@@ -2447,8 +2323,7 @@ impl Renderer {
             return;
         }
 
-        // Empty visible_leaf_mask = DrawAll sentinel; ALPHA_LIGHT_LEAF_UNASSIGNED =
-        // compiler couldn't assign the light to a non-solid leaf → always cull.
+        // Empty visible_leaf_mask = DrawAll. ALPHA_LIGHT_LEAF_UNASSIGNED = unassigned → always cull.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let mut visible_lights = vec![false; self.level_lights.len()];
         for (i, light) in self.level_lights.iter().enumerate() {
@@ -2478,10 +2353,8 @@ impl Renderer {
             light_influences,
         );
 
-        // Why: most frames the packed bytes are identical to the previous
-        // upload (no light moved, no animation tick changed values). Skip the
-        // queue.write_buffer in that case. The scratch Vec is reused across
-        // frames so the pack itself does not allocate.
+        // Skip write_buffer when packed bytes are unchanged (common case: no light moved).
+        // Scratch Vec reused across frames — pack doesn't allocate.
         let mut scratch = std::mem::take(&mut self.lights_pack_scratch);
         pack_lights_with_slots_into(&mut scratch, &self.level_lights, &slot_assignment);
         if scratch != self.last_lights_upload {
@@ -2490,8 +2363,8 @@ impl Renderer {
         }
         self.lights_pack_scratch = scratch;
 
-        // Upload each slot's light-space matrix to both the fragment-side storage buffer
-        // (group 5 binding 2) and the vertex-side dynamic-offset uniform buffer.
+        // Upload slot matrices to both fragment-side storage (group 5 binding 2)
+        // and vertex-side dynamic-offset uniform buffer.
         const MAT_BYTES: usize = 64;
         let stride = self.shadow_vs_stride as usize;
         let mut fragment_matrices =
@@ -2514,8 +2387,6 @@ impl Renderer {
             vertex_uniforms[slot_usize * stride..slot_usize * stride + MAT_BYTES]
                 .copy_from_slice(&bytes);
         }
-        // Note: these two writes follow the same per-frame pattern as lights_buffer above;
-        // future work could apply the same skip-when-unchanged caching.
         self.queue.write_buffer(
             &self.spot_shadow_pool.matrices_buffer,
             0,
@@ -2553,8 +2424,6 @@ impl Renderer {
         self.compute_cull.is_some()
     }
 
-    /// Compute shader writes one `DrawIndexedIndirect` per surviving BVH leaf;
-    /// render pass consumes them via multi_draw_indexed_indirect (or singular fallback).
     pub fn render_frame_indirect(
         &mut self,
         visible: &VisibleCells,
@@ -2594,8 +2463,7 @@ impl Renderer {
                 label: Some("Frame Encoder"),
             });
 
-        // Writes DrawIndexedIndirect commands in the same submission as the render passes —
-        // no readback or GPU sync needed between cull and draw.
+        // Same submission as render passes — no readback or GPU sync between cull and draw.
         if let Some(cull) = &mut self.compute_cull {
             let cull_ts = self
                 .frame_timing
@@ -2655,8 +2523,7 @@ impl Renderer {
             }
         }
 
-        // Must run before the depth pre-pass so the storage→sampled barrier resolves
-        // before any forward fragment samples the atlas (wgpu infers the transition).
+        // Before depth pre-pass: storage→sampled barrier must resolve before forward sampling.
         if self.animated_lightmap.is_active() {
             let animated_ts = self
                 .frame_timing
@@ -2671,13 +2538,11 @@ impl Renderer {
             );
         }
 
-        // Encoded before depth pre-pass so the storage-write → sampled-read barrier
-        // resolves before any forward fragment samples SH.
+        // Before depth pre-pass: storage-write → sampled-read barrier for SH.
         self.sh_compose
             .dispatch(&mut encoder, &self.uniform_bind_group);
 
-        // mem::take avoids a simultaneous borrow of self; put it back after the call
-        // so the next frame reuses the same allocation.
+        // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
         let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
         self.update_dynamic_light_slots(
             self.last_camera_position,
@@ -2721,7 +2586,6 @@ impl Renderer {
             }
         }
 
-        // Depth pre-pass: same vertex/index/indirect as the forward pass; layout binds group 0 only.
         {
             let depth_ts = self
                 .frame_timing
@@ -2749,8 +2613,7 @@ impl Renderer {
                 depth_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
                 if let Some(cull) = &self.compute_cull {
-                    // None = no per-bucket texture bind (depth pre-pass layout is group 0 only).
-                    cull.draw_indirect(&mut depth_pass, None);
+                    cull.draw_indirect(&mut depth_pass, None); // None = no texture bind (group 0 only)
                 }
             }
         }
@@ -2779,8 +2642,8 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        // Load: pre-pass filled it; Store: wireframe overlay reads it below.
-                        load: wgpu::LoadOp::Load,
+                        load: wgpu::LoadOp::Load, // pre-pass filled it; wireframe reads it below
+
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -2817,8 +2680,7 @@ impl Renderer {
             }
         }
 
-        // Billboard sprite pass: after opaque forward, before wireframe overlay.
-        // Alpha additive; depth test on, depth write off. One draw per collection.
+        // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
         if self.smoke_pass.has_any_sheet() && !particle_collections.is_empty() {
             let mut smoke_pass_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Billboard Sprite Pass"),
@@ -2853,15 +2715,9 @@ impl Renderer {
             }
         }
 
-        // Volumetric fog: low-res raymarch (compute) + additive composite blit.
-        // Skipped entirely when no fog volumes are active for this frame —
-        // the scatter target need not be cleared because the composite is not
-        // issued. See: context/lib/rendering_pipeline.md §7.5
-        //
-        // Portal-based fog culling: OR each visible leaf's fog-volume bitmask
-        // (from PRL section 31) into a per-frame `cell_mask`, then dense-pack
-        // the surviving canonical slots into the GPU buffer. `DrawAll` skips
-        // the OR loop and treats every canonical slot as visible.
+        // Volumetric fog: low-res compute raymarch + additive composite.
+        // Skipped when no active volumes — scatter target need not be cleared.
+        // See: context/lib/rendering_pipeline.md §7.5
         let cell_mask = compute_fog_cell_mask(
             visible,
             self.fog_cell_masks.as_deref(),
@@ -2869,16 +2725,7 @@ impl Renderer {
         );
         self.fog.repack_active(&self.queue, cell_mask);
         if self.fog.active() {
-            // Repack the dynamic spot lights that own a shadow slot this
-            // frame as `FogSpotLight` records — same source the shadow pass
-            // already consumed (`level_lights` × `slot_assignment`). Only
-            // shadow-slotted spots contribute to the fog beam pass; the
-            // raymarch shader looks up `light_space_matrices.m[slot]` to
-            // sample shadow occlusion, so a slotless spot has no usable
-            // light-space matrix.
-            //
-            // Spots upload before params so `FogParams.spot_count` packs
-            // this frame's count, not the previous frame's.
+            // Spots before params so FogParams.spot_count reflects this frame's count.
             let fog_spots = self.collect_fog_spot_lights();
             self.fog.upload_spots(&self.queue, &fog_spots);
 
@@ -2892,9 +2739,7 @@ impl Renderer {
             );
 
             let (scatter_w, scatter_h) = self.fog.scatter_dims();
-            // 8×8 workgroup matches the WGSL `@workgroup_size(8, 8)` declaration
-            // in fog_volume.wgsl. Round up so partial tiles still cover the
-            // scatter target's edge pixels.
+            // 8×8 matches @workgroup_size(8,8); div_ceil covers edge pixels.
             let groups_x = scatter_w.div_ceil(8);
             let groups_y = scatter_h.div_ceil(8);
             {
@@ -2926,9 +2771,7 @@ impl Renderer {
             });
             composite.set_pipeline(&self.fog.composite_pipeline);
             composite.set_bind_group(0, &self.fog.composite_bind_group, &[]);
-            // Fullscreen triangle: 3 vertices, 1 instance. Geometry is generated
-            // in the vertex shader from `vertex_index` — no vertex buffer.
-            composite.draw(0..3, 0..1);
+            composite.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
         }
 
         if self.wireframe_enabled
@@ -2978,8 +2821,7 @@ impl Renderer {
                     wgpu::IndexFormat::Uint32,
                 );
 
-                // Draw every BVH leaf with its leaf index as instance_index
-                // so the shader can look up the per-leaf cull status.
+                // instance_index = leaf index so shader looks up per-leaf cull status.
                 for (leaf_idx, leaf) in self.bvh_leaves.iter().enumerate() {
                     let wire_offset = leaf.index_offset * 2;
                     let wire_count = leaf.index_count * 2;
@@ -3064,15 +2906,15 @@ fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
     bytes
 }
 
-// Static lights are baked into the lightmap; including them in the runtime loop
-// would double-apply their contribution. Short influences → zero-radius placeholder.
+// Static lights are baked — including them would double-apply their contribution.
+// Short influence list → zero-radius placeholder.
 fn filter_dynamic_lights(
     lights: &[MapLight],
     influences: &[LightInfluence],
 ) -> (Vec<MapLight>, Vec<LightInfluence>) {
     lights
         .iter()
-        // enumerate before filter so i is the original index into influences
+        // enumerate before filter so i preserves the original index into influences
         .enumerate()
         .filter(|(_, l)| l.is_dynamic)
         .map(|(i, l)| {
@@ -3085,9 +2927,6 @@ fn filter_dynamic_lights(
         .unzip()
 }
 
-/// Convert a loaded `LevelWorld` and its derived materials into a
-/// `LevelGeometry` suitable for `Renderer::install_level_geometry`.
-/// Called on the main thread between worker delivery and GPU upload.
 /// See: context/lib/boot_sequence.md §8
 pub fn level_world_to_geometry<'a>(
     world: &'a crate::prl::LevelWorld,
@@ -3115,37 +2954,28 @@ mod tests {
 
     #[test]
     fn compute_fog_cell_mask_culled_unions_visible_leaf_masks() {
-        // 4 leaves, 3 fog volumes. Leaf 0 overlaps vol 0, leaf 1 overlaps
-        // vol 1, leaf 2 overlaps vols 0 + 2, leaf 3 has no fog.
-        let masks = vec![0b001u32, 0b010, 0b101, 0b000];
+        let masks = vec![0b001u32, 0b010, 0b101, 0b000]; // 4 leaves, 3 fog volumes
         let visible = VisibleCells::Culled(vec![1, 2]);
         let active = compute_fog_cell_mask(&visible, Some(&masks), 3);
-        // leaf 1 → 0b010, leaf 2 → 0b101 → union 0b111
-        assert_eq!(active, 0b111);
+        assert_eq!(active, 0b111); // leaf1→0b010, leaf2→0b101 → OR 0b111
     }
 
     #[test]
     fn compute_fog_cell_mask_drawall_returns_all_canonical_slots() {
         let visible = VisibleCells::DrawAll;
-        // Masks present but ignored on the DrawAll path — DrawAll keeps every
-        // canonical slot eligible so a fallback path still draws fog.
-        let masks = vec![0u32; 4];
+        let masks = vec![0u32; 4]; // present but ignored on DrawAll path
         assert_eq!(compute_fog_cell_mask(&visible, Some(&masks), 3), 0b111);
         assert_eq!(compute_fog_cell_mask(&visible, None, 3), 0b111);
     }
 
     #[test]
     fn compute_fog_cell_mask_culled_without_baked_masks_falls_back_to_all_slots() {
-        // Legacy PRL without section 31 + Culled visibility ⇒ keep every
-        // canonical slot eligible so fog still renders.
         let visible = VisibleCells::Culled(vec![0, 1, 2]);
         assert_eq!(compute_fog_cell_mask(&visible, None, 4), 0b1111);
     }
 
     #[test]
     fn compute_fog_cell_mask_zero_canonical_volumes_returns_zero() {
-        // Pre-load / level-clear case — no canonical volumes loaded, all-slots
-        // mask resolves to zero and the pass skips.
         assert_eq!(compute_fog_cell_mask(&VisibleCells::DrawAll, None, 0), 0);
         assert_eq!(
             compute_fog_cell_mask(&VisibleCells::Culled(vec![0]), Some(&[0xFFu32]), 0),
@@ -3178,8 +3008,6 @@ mod tests {
 
     #[test]
     fn sphere_intersects_any_fog_aabb_empty_list_passes_everything() {
-        // Empty AABB list = no fog active (or pre-`set_fog_aabbs`). Safe
-        // fallback: don't drop spots — the fog pass is gated elsewhere.
         assert!(sphere_intersects_any_fog_aabb(
             Vec3::new(0.0, 0.0, 0.0),
             1.0,
@@ -3189,8 +3017,7 @@ mod tests {
 
     #[test]
     fn sphere_intersects_any_fog_aabb_grazing_edge_passes() {
-        // Sphere just barely touches the AABB face: distance == radius
-        // counts as intersecting (matches sphere_intersects_any_aabb).
+        // distance == radius counts as intersecting (matches sphere_intersects_any_aabb).
         let aabbs = vec![(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0))];
         assert!(sphere_intersects_any_fog_aabb(
             Vec3::new(2.0, 0.5, 0.5),

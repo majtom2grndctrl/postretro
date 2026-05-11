@@ -598,6 +598,12 @@ impl ApplicationHandler for App {
                     .frame
                     .set(self.script_ctx.frame.get().wrapping_add(1));
 
+                // Accumulate movement events across all ticks; drain after the
+                // tick loop completes so reactions see fully-settled post-tick
+                // world state and event order is never interleaved with ongoing
+                // physics simulation. See: context/lib/entity_model.md §5
+                let mut pending_movement_events: Vec<&'static str> = Vec::new();
+
                 for _ in 0..ticks {
                     let forward_axis = snapshot.axis_value(Action::MoveForward);
                     let right_axis = snapshot.axis_value(Action::MoveRight);
@@ -610,34 +616,72 @@ impl ApplicationHandler for App {
                         camera::MOVE_SPEED
                     };
 
-                    let forward = self.camera.forward();
-                    let right = self.camera.right();
-                    let mut move_dir =
-                        forward * forward_axis + right * right_axis + Vec3::Y * up_axis;
+                    // Camera-vs-pawn split (entity_model.md §5/§7):
+                    //   - If a PlayerMovementComponent entity exists, its
+                    //     position drives `camera.position` (yaw/pitch stay
+                    //     mouse-driven).
+                    //   - Otherwise, fly-cam moves the camera directly so the
+                    //     engine is navigable without a player spawn (dev maps,
+                    //     levels without a player descriptor).
+                    let has_player_pawn = {
+                        use crate::scripting::registry::ComponentKind;
+                        let registry = self.script_ctx.registry.borrow();
+                        registry
+                            .iter_with_kind(ComponentKind::PlayerMovement)
+                            .next()
+                            .is_some()
+                    };
 
-                    // Normalize to prevent faster diagonal movement, but only
-                    // if there's actual movement input.
-                    if move_dir.length_squared() > 0.0 {
-                        move_dir = move_dir.normalize();
+                    if !has_player_pawn {
+                        let forward = self.camera.forward();
+                        let right = self.camera.right();
+                        let mut move_dir =
+                            forward * forward_axis + right * right_axis + Vec3::Y * up_axis;
+
+                        // Normalize to prevent faster diagonal movement, but only
+                        // if there's actual movement input.
+                        if move_dir.length_squared() > 0.0 {
+                            move_dir = move_dir.normalize();
+                        }
+
+                        self.camera.position += move_dir * speed * tick_dt;
                     }
 
-                    self.camera.position += move_dir * speed * tick_dt;
-
-                    // Order 1 player update: drive the movement system for any
-                    // entity that carries a `PlayerMovementComponent`. The
-                    // fly-cam above stays in place — the camera-vs-pawn split
-                    // lands with a later milestone. Events fire after the
-                    // entity update so reaction targets see the post-tick state.
+                    // Order 1: movement-component tick (all entities carrying
+                    // PlayerMovementComponent, per entity_model.md §5).
                     let jump_pressed = snapshot.button(Action::Jump).is_active();
                     let movement_events =
                         self.run_movement_tick(forward_axis, right_axis, jump_pressed, tick_dt);
-                    for event_name in &movement_events {
-                        let _ =
-                            fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                    pending_movement_events.extend(movement_events);
+
+                    // Camera follows the first pawn's position (eye-height
+                    // offset above the capsule center). Yaw/pitch are owned by
+                    // the mouse-driven look path and are not touched here.
+                    if has_player_pawn {
+                        use crate::scripting::registry::{
+                            ComponentKind, ComponentValue, Transform,
+                        };
+                        let registry = self.script_ctx.registry.borrow();
+                        for (id, value) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
+                            let ComponentValue::PlayerMovement(component) = value else {
+                                continue;
+                            };
+                            if let Ok(transform) = registry.get_component::<Transform>(id) {
+                                self.camera.position = transform.position
+                                    + Vec3::new(0.0, component.capsule.eye_height, 0.0);
+                                break;
+                            }
+                        }
                     }
 
                     self.frame_timing
                         .push_state(InterpolableState::new(self.camera.position));
+                }
+
+                // Drain collected movement events after all ticks complete so
+                // reactions observe the final post-tick state of every entity.
+                for event_name in &pending_movement_events {
+                    let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
 
                 // Level-relative monotonic clock consumed by light_bridge.update,
@@ -1390,23 +1434,24 @@ impl App {
     }
 
     /// Drive `movement::tick` for every entity carrying a
-    /// `PlayerMovementComponent`. Returns the list of event names to fire
-    /// (already de-duplicated by event kind: at most one `landed` and one
-    /// `jumped` per entity per tick — but multiple entities each contribute).
-    /// The caller fires them through `fire_named_event` so reactions see the
-    /// post-tick world state.
+    /// `PlayerMovementComponent`. Returns the list of event names to fire.
+    /// Each entity contributes at most one `landed` and one `jumped` entry per
+    /// tick; multiple entities each contribute independently (no cross-entity
+    /// deduplication). The caller accumulates these across ticks and drains
+    /// them after the tick loop so reactions see the fully-settled post-tick
+    /// world state.
     fn run_movement_tick(
         &mut self,
         forward_axis: f32,
         right_axis: f32,
         jump_pressed: bool,
         tick_dt: f32,
-    ) -> Vec<String> {
+    ) -> Vec<&'static str> {
         use crate::movement::{MovementInput, tick as movement_tick};
         use crate::scripting::components::player_movement::PlayerMovementComponent;
         use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, Transform};
 
-        let mut events_out = Vec::new();
+        let mut events_out: Vec<&'static str> = Vec::new();
         let mut snapshots: Vec<(EntityId, PlayerMovementComponent, Vec3)> = Vec::new();
         {
             let registry = self.script_ctx.registry.borrow();
@@ -1450,10 +1495,10 @@ impl App {
             }
             let _ = registry.set_component(id, component);
             if events.landed {
-                events_out.push("landed".to_string());
+                events_out.push("landed");
             }
             if events.jumped {
-                events_out.push("jumped".to_string());
+                events_out.push("jumped");
             }
         }
 

@@ -187,9 +187,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("CapsuleParams")
-        .doc("Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`.")
+        .doc("Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`. `eyeHeight` is the camera attachment point measured upward from the capsule center.")
         .field("radius", "f32", "Capsule radius in world units. Must be > 0.")
         .field("halfHeight", "f32", "Cylinder half-height in world units. Must be > 0.")
+        .field("eyeHeight", "f32", "Camera attachment point measured upward from the capsule center in world units. Must lie in (0, halfHeight + radius].")
         .finish();
     registry
         .register_type("GroundParams")

@@ -72,7 +72,11 @@ impl fmt::Display for EntityId {
     }
 }
 
-/// Enumeration of every component kind the scripting surface knows about.
+/// All component kinds the engine tracks internally.
+///
+/// Not all variants are queryable via the script surface (`worldQuery`).
+/// `PlayerMovement` is engine-internal: the movement system owns it and
+/// scripts cannot read or write it through `worldQuery`.
 ///
 /// `#[repr(u16)]` makes the discriminant a zero-cost index into the
 /// component-storage vector array. Not `#[non_exhaustive]`: the enum is
@@ -132,8 +136,7 @@ impl Default for Transform {
 
 /// Serde-serializable container for every concrete component struct.
 ///
-/// The `kind` discriminant matches [`ComponentKind`] one-to-one; downstream
-/// FFI plans serialize this directly to/from JS/Luau tables.
+/// The `kind` discriminant matches [`ComponentKind`] one-to-one.
 // Not Copy: FogVolumeComponent carries a heap-backed Vec<f32> (density curve).
 // Do not add Copy here without first removing that field.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

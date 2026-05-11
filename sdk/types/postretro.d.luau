@@ -118,12 +118,14 @@ export type PlayerMovementDescriptor = {
   fall: FallParams,
 }
 
---- Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`.
+--- Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`. `eyeHeight` is the camera attachment point measured upward from the capsule center.
 export type CapsuleParams = {
   --- Capsule radius in world units. Must be > 0.
   radius: number,
   --- Cylinder half-height in world units. Must be > 0.
   halfHeight: number,
+  --- Camera attachment point measured upward from the capsule center in world units. Must lie in (0, halfHeight + radius].
+  eyeHeight: number,
 }
 
 --- On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization.

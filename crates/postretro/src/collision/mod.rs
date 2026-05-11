@@ -110,10 +110,11 @@ impl Default for CollisionWorld {
 /// the capsule's `+Y` axis maps directly to world `+Y`, matching the
 /// player-capsule convention documented at the top of this module.
 ///
-/// Returns `None` when no impact occurs within `max_toi` or the dispatcher
-/// reports the pair as unsupported (treated as "no hit" for the movement
-/// caller's purposes — a hard error would be louder than warranted given the
-/// inputs are fixed at the call sites).
+/// Returns `None` when no impact occurs within `max_toi`. `cast_shapes` also
+/// returns `Err` for unsupported shape pairs, but that is impossible for
+/// Capsule × TriMesh (always supported by parry3d). Returning `None` on `Err`
+/// rather than panicking avoids a `Result` return type that would add noise at
+/// every call site for a condition that cannot occur.
 pub(crate) fn cast_capsule(
     world: &CollisionWorld,
     pos: Point<f32>,

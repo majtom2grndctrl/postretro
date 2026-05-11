@@ -143,10 +143,14 @@ fn find_descriptor<'a>(
     descriptors.iter().find(|d| d.classname == classname)
 }
 
-/// Attach emitter and light components from a descriptor to an already-spawned
-/// entity. KVP overrides are applied before attachment. The light is always
-/// forced dynamic regardless of the descriptor's `is_dynamic` field, with a
-/// `warn!` if the descriptor had it set to `false`.
+/// Attach emitter, light, and movement components from a descriptor to an
+/// already-spawned entity. `initial_*` KVP overrides are applied to `emitter`
+/// and `light` before attachment; `movement` receives descriptor values
+/// verbatim — no per-placement override mechanism exists for movement params.
+/// The light is always forced dynamic regardless of the descriptor's
+/// `is_dynamic` field (baked indirect lighting is not supported for
+/// descriptor-spawned lights), with a `warn!` if the descriptor had it set to
+/// `false`.
 fn attach_descriptor_components(
     registry: &mut EntityRegistry,
     id: EntityId,
@@ -281,8 +285,9 @@ pub(crate) const PLAYER_START_CLASSNAME: &str = "info_player_start";
 /// Spawn one entity per `info_player_start` placement, using each placement's
 /// `entity_class` KVP (default `"player"`) to look up an
 /// [`EntityTypeDescriptor`]. Component attachment mirrors
-/// [`apply_data_archetype_dispatch`] — emitter, light (forced dynamic) — and
-/// the per-placement KVP bag is forwarded with `entity_class` stripped so it
+/// [`apply_data_archetype_dispatch`] — emitter, light (forced dynamic), and
+/// movement (when present in the descriptor) — and the per-placement KVP bag
+/// is forwarded with `entity_class` stripped so it
 /// is not confused with an `initial_*`-style override. Tags from the
 /// `info_player_start` placement are passed directly to `try_spawn`.
 pub(crate) fn spawn_from_player_starts(

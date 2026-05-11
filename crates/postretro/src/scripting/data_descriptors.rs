@@ -1,5 +1,5 @@
 // Data-context descriptor types: `LevelManifest`/`ReactionDescriptor`, `EntityTypeDescriptor`,
-// and `LightDescriptor`; JS and Luau deserialization paths for all of them.
+// `LightDescriptor`, and `PlayerMovementDescriptor`; JS and Luau deserialization paths for all of them.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
 use mlua::{Table, Value as LuaValue};
@@ -133,6 +133,11 @@ pub(crate) struct PlayerMovementDescriptor {
 pub(crate) struct CapsuleParams {
     pub(crate) radius: f32,
     pub(crate) half_height: f32,
+    /// Camera attachment point measured upward from the capsule center, in
+    /// meters. The camera-follow path adds this to the pawn's position each
+    /// tick to derive eye position. Must lie in `(0, half_height + radius]` —
+    /// the upper bound is the top of the capsule.
+    pub(crate) eye_height: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -423,7 +428,7 @@ fn get_required_u32_js<'js>(
 }
 
 /// Deserialize an entity-type descriptor from a JS object. Shape:
-/// `{ classname: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ classname: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor } }`.
 /// Component sub-objects parse via `serde_json` after a recursive walk through
 /// the existing `js_to_json` helper — matches how `LightAnimation` /
 /// `BillboardEmitterComponent` cross the FFI elsewhere.
@@ -503,15 +508,24 @@ fn movement_descriptor_from_js<'js>(
     obj: &Object<'js>,
 ) -> Result<PlayerMovementDescriptor, DescriptorError> {
     let capsule_obj: Object = get_required_object_js(obj, "capsule")?;
+    let radius = validate_positive_finite(
+        get_required_f32_js(&capsule_obj, "radius")?,
+        "movement.capsule.radius",
+    )?;
+    let half_height = validate_positive_finite(
+        get_required_f32_js(&capsule_obj, "halfHeight")?,
+        "movement.capsule.halfHeight",
+    )?;
+    let eye_height = validate_in_range_finite_exclusive_min(
+        get_required_f32_js(&capsule_obj, "eyeHeight")?,
+        0.0,
+        half_height + radius,
+        "movement.capsule.eyeHeight",
+    )?;
     let capsule = CapsuleParams {
-        radius: validate_positive_finite(
-            get_required_f32_js(&capsule_obj, "radius")?,
-            "movement.capsule.radius",
-        )?,
-        half_height: validate_positive_finite(
-            get_required_f32_js(&capsule_obj, "halfHeight")?,
-            "movement.capsule.halfHeight",
-        )?,
+        radius,
+        half_height,
+        eye_height,
     };
 
     let ground_obj: Object = get_required_object_js(obj, "ground")?;
@@ -573,7 +587,11 @@ fn movement_descriptor_from_js<'js>(
         )?,
         bunny_hop: get_required_bool_js(&air_obj, "bunnyHop")?,
         jumps,
-        jump_ceiling: get_required_f32_js(&air_obj, "jumpCeiling")?,
+        jump_ceiling: if jumps > 0 || jump_ceiling_present {
+            get_required_f32_js(&air_obj, "jumpCeiling")?
+        } else {
+            0.0
+        },
     };
 
     let fall_obj: Object = get_required_object_js(obj, "fall")?;
@@ -651,6 +669,23 @@ fn validate_in_range_finite(
     if !value.is_finite() || value < min || value > max {
         return Err(DescriptorError::InvalidShape {
             reason: format!("`{field}` must be a finite value in [{min}, {max}], got {value}"),
+        });
+    }
+    Ok(value)
+}
+
+/// Validate a finite value in `(min, max]` — strictly greater than `min`, at
+/// most `max`. Used by `eyeHeight` which must be > 0 and at most the capsule
+/// top (`half_height + radius`).
+fn validate_in_range_finite_exclusive_min(
+    value: f32,
+    min: f32,
+    max: f32,
+    field: &str,
+) -> Result<f32, DescriptorError> {
+    if !value.is_finite() || value <= min || value > max {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a finite value in ({min}, {max}], got {value}"),
         });
     }
     Ok(value)
@@ -862,7 +897,8 @@ fn get_required_u32_lua(table: &Table, field: &'static str) -> Result<u32, Descr
     }
 }
 
-/// Mirror of [`entity_descriptor_from_js`] for Luau tables.
+/// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
+/// `{ classname: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor } }`.
 pub(crate) fn entity_descriptor_from_lua(
     value: LuaValue,
 ) -> Result<EntityTypeDescriptor, DescriptorError> {
@@ -954,15 +990,24 @@ fn movement_descriptor_from_lua(
     table: &Table,
 ) -> Result<PlayerMovementDescriptor, DescriptorError> {
     let capsule_table = get_required_table_lua(table, "capsule")?;
+    let radius = validate_positive_finite(
+        get_required_f32_lua(&capsule_table, "radius")?,
+        "movement.capsule.radius",
+    )?;
+    let half_height = validate_positive_finite(
+        get_required_f32_lua(&capsule_table, "halfHeight")?,
+        "movement.capsule.halfHeight",
+    )?;
+    let eye_height = validate_in_range_finite_exclusive_min(
+        get_required_f32_lua(&capsule_table, "eyeHeight")?,
+        0.0,
+        half_height + radius,
+        "movement.capsule.eyeHeight",
+    )?;
     let capsule = CapsuleParams {
-        radius: validate_positive_finite(
-            get_required_f32_lua(&capsule_table, "radius")?,
-            "movement.capsule.radius",
-        )?,
-        half_height: validate_positive_finite(
-            get_required_f32_lua(&capsule_table, "halfHeight")?,
-            "movement.capsule.halfHeight",
-        )?,
+        radius,
+        half_height,
+        eye_height,
     };
 
     let ground_table = get_required_table_lua(table, "ground")?;
@@ -1016,7 +1061,11 @@ fn movement_descriptor_from_lua(
         )?,
         bunny_hop: get_required_bool_lua(&air_table, "bunnyHop")?,
         jumps,
-        jump_ceiling: get_required_f32_lua(&air_table, "jumpCeiling")?,
+        jump_ceiling: if jumps > 0 || jump_ceiling_present {
+            get_required_f32_lua(&air_table, "jumpCeiling")?
+        } else {
+            0.0
+        },
     };
 
     let fall_table = get_required_table_lua(table, "fall")?;
@@ -1529,7 +1578,7 @@ mod tests {
         classname: "player",
         components: {
             movement: {
-                capsule: { radius: 0.4, halfHeight: 0.8 },
+                capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
                 ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
                 air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
                 fall: { terminalVelocity: 40.0 }
@@ -1545,6 +1594,7 @@ mod tests {
         let m = d.movement.expect("movement present");
         assert_eq!(m.capsule.radius, 0.4);
         assert_eq!(m.capsule.half_height, 0.8);
+        assert_eq!(m.capsule.eye_height, 0.5);
         assert_eq!(m.ground.speed, 7.0);
         assert_eq!(m.ground.max_slope, 45.0);
         assert_eq!(m.air.forward_steer, 0.0);
@@ -1560,7 +1610,7 @@ mod tests {
             classname: "player",
             components: {
                 movement: {
-                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
                     ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, jumps: 0, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
@@ -1577,7 +1627,7 @@ mod tests {
             classname: "player",
             components: {
                 movement: {
-                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
                     ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 2 },
                     fall: { terminalVelocity: 40.0 }
@@ -1616,7 +1666,7 @@ mod tests {
             classname: "player",
             components: {
                 movement: {
-                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
                     ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 95.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
@@ -1633,7 +1683,7 @@ mod tests {
             classname: "player",
             components: {
                 movement: {
-                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
                     ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 1.5, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
@@ -1650,7 +1700,7 @@ mod tests {
             classname: "player",
             components: {
                 movement: {
-                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
                     ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 0.0 }
@@ -1662,12 +1712,84 @@ mod tests {
     }
 
     #[test]
+    fn js_movement_eye_height_zero_is_rejected() {
+        // eye_height must be strictly positive: 0.0 sits at the capsule center,
+        // not a sensible eye position.
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.0 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_eye_height_above_capsule_top_is_rejected() {
+        // capsule top = half_height + radius = 1.2; eye_height = 1.5 exceeds it.
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 1.5 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_eye_height_at_capsule_top_is_accepted() {
+        // Exactly at capsule top (half_height + radius = 1.2) is permitted.
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 1.2 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert_eq!(d.movement.unwrap().capsule.eye_height, 1.2);
+    }
+
+    #[test]
+    fn js_movement_missing_eye_height_reports_missing_field() {
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert_eq!(err, DescriptorError::MissingField { field: "eyeHeight" });
+    }
+
+    #[test]
     fn lua_movement_descriptor_full_shape_parses() {
         let src = r#"return {
             classname = "player",
             components = {
                 movement = {
-                    capsule = { radius = 0.4, halfHeight = 0.8 },
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
                     ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
@@ -1676,9 +1798,27 @@ mod tests {
         }"#;
         let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
         let m = d.movement.expect("movement present");
+        assert_eq!(m.capsule.eye_height, 0.5);
         assert_eq!(m.ground.jump_velocity, 5.5);
         assert_eq!(m.air.jumps, 0);
         assert_eq!(m.fall.terminal_velocity, 40.0);
+    }
+
+    #[test]
+    fn lua_movement_eye_height_above_capsule_top_is_rejected() {
+        let src = r#"return {
+            classname = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 1.5 },
+                    ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 
     #[test]
@@ -1687,7 +1827,7 @@ mod tests {
             classname = "player",
             components = {
                 movement = {
-                    capsule = { radius = 0.4, halfHeight = 0.8 },
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
                     ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 2 },
                     fall = { terminalVelocity = 40.0 }
@@ -1717,5 +1857,47 @@ mod tests {
         }"#;
         let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
         assert_eq!(err, DescriptorError::MissingField { field: "capsule" });
+    }
+
+    #[test]
+    fn js_movement_jumps_zero_without_ceiling_is_valid() {
+        // `jumpCeiling` is only meaningful when `air.jumps > 0`; omitting it
+        // when jumps == 0 should succeed with jump_ceiling defaulting to 0.0.
+        let src = r#"({
+            classname: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let m = d.movement.expect("movement present");
+        assert_eq!(m.air.jumps, 0);
+        assert_eq!(m.air.jump_ceiling, 0.0);
+    }
+
+    #[test]
+    fn lua_movement_jumps_zero_without_ceiling_is_valid() {
+        // `jumpCeiling` is only meaningful when `air.jumps > 0`; omitting it
+        // when jumps == 0 should succeed with jump_ceiling defaulting to 0.0.
+        let src = r#"return {
+            classname = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
+                    ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        let m = d.movement.expect("movement present");
+        assert_eq!(m.air.jumps, 0);
+        assert_eq!(m.air.jump_ceiling, 0.0);
     }
 }

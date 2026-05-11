@@ -25,6 +25,12 @@ pub(crate) struct PlayerMovementComponent {
     pub(crate) is_grounded: bool,
     pub(crate) velocity: Vec3,
     pub(crate) air_jumps_remaining: u32,
+    /// Consecutive ticks the player has spent without floor contact. Used to
+    /// gate `landed` event emission so the 1-tick airborne blip introduced by
+    /// the step-up probe's vertical lift cannot fire spurious landings during
+    /// normal walking. Reset to 0 on any tick with floor contact; incremented
+    /// otherwise.
+    pub(crate) air_ticks: u32,
 }
 
 impl PlayerMovementComponent {
@@ -43,6 +49,7 @@ impl PlayerMovementComponent {
             is_grounded: false,
             velocity: Vec3::ZERO,
             air_jumps_remaining,
+            air_ticks: 0,
         }
     }
 }

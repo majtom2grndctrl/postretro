@@ -1,7 +1,5 @@
-// Player movement system: gravity, jump, air control, friction, capsule
-// sweep-and-slide against the world trimesh. Runs in game logic (Order 1).
-//
-// See: context/lib/entity_model.md §5 (frame ordering), §7 (collision)
+// Player movement system: gravity, jump, air control, friction, capsule sweep-and-slide.
+// Caller supplies the world gravity scalar (from `ScriptCtx::gravity`). See: context/lib/entity_model.md §5, §7
 
 use glam::{Vec2, Vec3};
 use parry3d::math::{Point, Vector};
@@ -10,11 +8,20 @@ use parry3d::shape::Capsule;
 use crate::collision::{CollisionWorld, cast_capsule};
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 
-/// Per-tick input plumbed in from the engine's input layer. Caller is
-/// responsible for normalizing `wish_dir` magnitudes outside `[0, 1]` — the
-/// tick treats `length() > 0` as "input present" and uses the raw direction.
+/// Linear ground deceleration applied to horizontal velocity when grounded
+/// and no movement input is held. Plain exponential-style velocity decay
+/// (`v *= max(0, 1 - k*dt)`) — not the Q3 stop/slide-threshold friction
+/// model. Value matches Quake's default `sv_friction` (6.0). Promote to
+/// `GroundParams` if per-entity friction tuning becomes necessary.
+const GROUND_STOP_FRICTION: f32 = 6.0;
+
+/// Per-tick input plumbed in from the engine's input layer. Keep `wish_dir`
+/// component magnitudes within `[0, 1]` — the raw x/y values drive threshold
+/// checks (`.length_squared() < 0.001`, `.y.abs() > 1e-3`) that are
+/// sensitive to diagonal magnitudes. The 3D world-space direction derived from
+/// `wish_dir` is normalized internally before being applied to locomotion.
 pub(crate) struct MovementInput {
-    pub(crate) wish_dir: Vec2,
+    pub(crate) wish_dir: Vec2, // x = right, y = forward
     pub(crate) jump_pressed: bool,
     pub(crate) facing_yaw: f32,
 }
@@ -106,13 +113,19 @@ pub(crate) fn tick(
             );
         }
     } else if input_dir_3d.length_squared() > 0.0 {
-        let facing_dir = Vec3::new(-input.facing_yaw.sin(), 0.0, -input.facing_yaw.cos());
-        let steer = component.air.forward_steer.clamp(0.0, 1.0);
-        let blended = input_dir_3d.lerp(facing_dir, steer);
-        let wish_dir_3d = if blended.length_squared() > 0.0 {
-            blended.normalize()
+        // Blend toward facing only on forward/back input: strafing left/right
+        // should not redirect the capsule toward the player's nose.
+        let wish_dir_3d = if input.wish_dir.y.abs() > 1e-3 {
+            let facing_dir = Vec3::new(-input.facing_yaw.sin(), 0.0, -input.facing_yaw.cos());
+            let steer = component.air.forward_steer.clamp(0.0, 1.0);
+            let blended = input_dir_3d.lerp(facing_dir, steer);
+            if blended.length_squared() > 0.0 {
+                blended.normalize()
+            } else {
+                Vec3::ZERO
+            }
         } else {
-            Vec3::ZERO
+            input_dir_3d
         };
         let wish_speed = component.air.max_control_speed;
         pm_accelerate(
@@ -135,14 +148,14 @@ pub(crate) fn tick(
         }
     }
 
-    // 6. Friction on the ground when no input — simple linear decay; mirrors
-    // Q3-style "stop" friction for the no-input case only so PM_Accelerate's
-    // projection cap continues to govern actively-driven motion.
+    // 6. Friction on the ground when no input — simple linear velocity decay.
+    // Applied only in the no-input case so PM_Accelerate's projection cap
+    // continues to govern actively-driven motion.
     if component.is_grounded && input.wish_dir.length_squared() < 0.001 {
         let horiz = Vec2::new(component.velocity.x, component.velocity.z);
         let h_speed = horiz.length();
         if h_speed > 0.0 {
-            let drop = h_speed * 6.0 * dt;
+            let drop = h_speed * GROUND_STOP_FRICTION * dt;
             let new_speed = (h_speed - drop).max(0.0);
             let scale = new_speed / h_speed;
             component.velocity.x *= scale;
@@ -161,17 +174,21 @@ pub(crate) fn tick(
     let mut remaining_dt = dt;
     let mut hit_floor_this_tick = false;
 
-    // Step-up probe before the main loop: if the immediate horizontal motion
-    // is blocked at the capsule's base level, try lifting by `step_height`
-    // and re-casting forward. If the lifted cast clears the same distance,
-    // commit the lift. Kept simple — full step-up correctness comes with the
-    // integration-test task.
+    // Step-up probe before the main loop: if horizontal motion is blocked by
+    // a wall-like surface, try lifting by `step_height` and re-casting. If
+    // the lifted cast clears the same distance, commit the lift. Only wall-like
+    // normals (|ny| < cos_walkable) trigger a lift — floor contact must be
+    // excluded or the capsule would teleport upward every tick while resting.
     let horiz_vel = Vec3::new(component.velocity.x, 0.0, component.velocity.z);
     let horiz_speed = horiz_vel.length();
     let step_height = component.ground.step_height;
     if component.is_grounded && horiz_speed > 1e-4 && step_height > 0.0 {
         let dir = horiz_vel / horiz_speed;
-        let probe_dist = horiz_speed * remaining_dt;
+        // Lookahead must cover capsule.radius beyond the leading edge so the probe
+        // detects obstacles the capsule isn't yet touching. step_height + radius
+        // guarantees detection when the capsule center is a full radius away from
+        // the riser — otherwise the player can stop before step-up ever fires.
+        let probe_dist = (horiz_speed * remaining_dt).max(step_height + component.capsule.radius);
         let probe = cast_capsule(
             collision_world,
             Point::new(current_pos.x, current_pos.y, current_pos.z),
@@ -180,8 +197,10 @@ pub(crate) fn tick(
             probe_dist,
         );
         if let Some(hit) = probe {
-            if hit.time_of_impact < probe_dist {
-                let lifted = current_pos + Vec3::new(0.0, step_height, 0.0);
+            if hit.time_of_impact < probe_dist && hit.normal2.y.abs() < component.cos_walkable {
+                // Small margin ensures the capsule hemisphere clears the step's top edge;
+                // gravity settles the capsule onto the ledge surface on the next tick.
+                let lifted = current_pos + Vec3::new(0.0, step_height + 0.02, 0.0);
                 let lifted_probe = cast_capsule(
                     collision_world,
                     Point::new(lifted.x, lifted.y, lifted.z),
@@ -234,6 +253,16 @@ pub(crate) fn tick(
                 if normal.y >= component.cos_walkable {
                     hit_floor_this_tick = true;
                     component.velocity.y = 0.0;
+                    // Resting-contact unstick: parry reports TOI=0 when the
+                    // capsule's bottom hemisphere is in (or microscopically
+                    // below) the floor surface. Without nudging out of that
+                    // contact, the next sweep iteration repeats the TOI=0 hit
+                    // and horizontal motion stalls at the floor's exact y.
+                    // The lift is well below settle_tol and does not affect
+                    // tests that assert position envelopes.
+                    if toi <= 1e-6 {
+                        current_pos.y += 1e-4;
+                    }
                 } else {
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
@@ -252,7 +281,20 @@ pub(crate) fn tick(
         component.is_grounded = false;
     }
 
-    if !was_grounded && component.is_grounded {
+    // Air-tick hysteresis. The step-up probe lifts the capsule above the floor
+    // for one tick when a wall-like contact is found; the next tick has no
+    // floor contact and `is_grounded` clears, then gravity restores contact —
+    // producing a 1-tick airborne→grounded edge during normal walking. Gating
+    // `landed` on >=3 consecutive airborne ticks suppresses the blip while
+    // still firing for real jumps and falls (tens of ticks airborne).
+    let prev_air_ticks = component.air_ticks;
+    if component.is_grounded {
+        component.air_ticks = 0;
+    } else {
+        component.air_ticks = component.air_ticks.saturating_add(1);
+    }
+
+    if !was_grounded && component.is_grounded && prev_air_ticks >= 3 {
         events.landed = true;
     }
 
@@ -279,6 +321,7 @@ mod tests {
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,
+                eye_height: 0.5,
             },
             ground: GroundParams {
                 speed: 7.0,
@@ -360,8 +403,11 @@ mod tests {
     /// Note: the movement code clears `is_grounded` every tick that has no
     /// floor contact during the sweep, so during horizontal-only motion the
     /// flag oscillates as the player drops a sub-millimeter step into the
-    /// floor each tick. The test asserts on position envelopes and velocity
-    /// caps rather than the per-tick flag.
+    /// floor each tick. This happens because the step-up probe lifts the
+    /// capsule above the floor surface when a wall-like normal is found;
+    /// subsequent gravity pulls it back, causing the oscillation. The test
+    /// asserts on position envelopes and velocity caps rather than the
+    /// per-tick flag.
     fn settle_player(desc: &PlayerMovementDescriptor) -> (PlayerMovementComponent, Vec3) {
         let comp = PlayerMovementComponent::from_descriptor(desc);
         // Start a hair above the floor so the first tick's gravity step closes
@@ -438,12 +484,11 @@ mod tests {
             "player should still be on the floor before the ledge, got x={}",
             pos.x
         );
-        // Note: the step-up probe in `tick` triggers on any forward sweep that
-        // reports a hit, including the floor-contact reflex; so during walking
-        // the capsule may "step up" by `ground.step_height` per tick before
-        // gravity returns it. Accept any y between floor and one step above.
+        // The step-up probe is gated on wall-like normals (|ny| < cos_walkable),
+        // so flat-floor walking does not trigger it and y stays near floor_y.
+        // A small tolerance covers gravity's sub-millimeter settle each tick.
         let walk_y_min = floor_y - settle_tol;
-        let walk_y_max = floor_y + desc.ground.step_height + settle_tol;
+        let walk_y_max = floor_y + settle_tol;
         assert!(
             pos.y >= walk_y_min && pos.y <= walk_y_max,
             "player y during walk should be in [{}, {}], got {}",
@@ -574,7 +619,7 @@ mod tests {
         // Wall slide: velocity component along +X (into the wall) is bled off
         // by the per-tick sweep-and-slide projection.
         assert!(
-            comp.velocity.x.abs() < VEL_EPS + 1.0,
+            comp.velocity.x.abs() < 0.1,
             "wall slide should not produce a large +X velocity, got vx={}",
             comp.velocity.x
         );

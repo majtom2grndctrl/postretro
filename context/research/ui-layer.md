@@ -305,42 +305,44 @@ The SDK exposes a thin TS/Luau vocabulary that produces descriptor object
 literals. Same pattern as `flicker` and `pulse` for lights — helpers return
 plain data; registration primitives consume the data.
 
-The factory function API is the baseline: every helper takes a plain object
-and returns a descriptor. Both authoring surfaces below desugar to that same
-shape at build time — no extra runtime, no additional VM.
+**Canonical authoring surface: factory functions with positional children.**
+Capitalized component names. The lineage is Compose and SwiftUI, not React or
+HTML. That framing is deliberate: there is no CSS cascade, no event bubbling,
+no document flow, no `querySelector`. Modders who arrive expecting React
+conventions will misread the model. Modders who arrive expecting Compose or
+SwiftUI will not.
 
-**TS/TSX modders** can write factory calls directly or use JSX as syntactic
-sugar. SWC transforms TSX at build time; the output is identical factory
-calls. No React runtime. No live VM component model.
+TS form:
 
-```tsx
-// Proposed design — JSX desugars to factory calls via SWC
-import { hud, vstack, text, hbar } from "postretro"
-
-hud({ anchor: "bottomLeft", child:
-  <vstack gap={4}>
-    <text bind="player.weapon.current" />
-    <hbar bind="player.ammo.current" max="player.ammo.max" />
-  </vstack>
-})
+```ts
+// Proposed design
+const HealthHud = () => VStack({ spacing: 8 },
+  Text("HP"),
+  HealthBar({ max: 100 }),
+)
 ```
 
-**Luau modders** get an equivalent ergonomic win from table-call and
-string-call sugar — `f { ... }` and `f "string"` are valid Luau call syntax,
-no parentheses required. Descriptor trees read as naturally nested blocks.
+Luau form:
 
-```luau
--- Proposed design — table-call sugar, no extra runtime
-hud { anchor = "bottomLeft", child =
-  vstack { gap = 4, children = {
-    text { bind = "player.weapon.current" },
-    hbar { bind = "player.ammo.current", max = "player.ammo.max" },
-  }}
-}
+```lua
+-- Proposed design
+local HealthHud = function() return VStack({ spacing = 8 },
+  Text "HP",
+  HealthBar { max = 100 }
+) end
 ```
 
-Both surface forms compile down to the same descriptor object the engine
-ingests. Helpers exist for ergonomics and IDE completion.
+Props object first, then positional children. Capitalized names follow the
+Compose/SwiftUI convention. The two forms are mechanically translatable — same
+tree shape, same argument order, same component names.
+
+**JSX is available** as an optional alternative. SWC transforms it to
+identical factory calls at build time; no React runtime, no live VM. Lead with
+factory calls in examples and docs; JSX is an escape hatch for modders who
+prefer it.
+
+Both forms compile down to the same descriptor object the engine ingests.
+Helpers exist for ergonomics and IDE completion.
 
 **SDK file layout** mirrors the entity-domain convention from
 `scripting.md` §7:

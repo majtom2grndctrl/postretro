@@ -305,21 +305,42 @@ The SDK exposes a thin TS/Luau vocabulary that produces descriptor object
 literals. Same pattern as `flicker` and `pulse` for lights — helpers return
 plain data; registration primitives consume the data.
 
-```ts
-// Proposed design — SDK helpers under sdk/lib/ui/
-import { hud, vstack, hstack, text, bar, panel, button, image } from "postretro"
+The factory function API is the baseline: every helper takes a plain object
+and returns a descriptor. Both authoring surfaces below desugar to that same
+shape at build time — no extra runtime, no additional VM.
 
-hud({
-  anchor: "bottomLeft",
-  child: vstack({ gap: 4, children: [
-    text({ bind: "player.weapon.current" }),
-    hbar({ bind: "player.ammo.current", max: "player.ammo.max" }),
-  ]}),
+**TS/TSX modders** can write factory calls directly or use JSX as syntactic
+sugar. SWC transforms TSX at build time; the output is identical factory
+calls. No React runtime. No live VM component model.
+
+```tsx
+// Proposed design — JSX desugars to factory calls via SWC
+import { hud, vstack, text, hbar } from "postretro"
+
+hud({ anchor: "bottomLeft", child:
+  <vstack gap={4}>
+    <text bind="player.weapon.current" />
+    <hbar bind="player.ammo.current" max="player.ammo.max" />
+  </vstack>
 })
 ```
 
-Helpers are sugar over the underlying widget kinds. The primitive surface
-takes raw descriptors; helpers exist for ergonomics and IDE completion.
+**Luau modders** get an equivalent ergonomic win from table-call and
+string-call sugar — `f { ... }` and `f "string"` are valid Luau call syntax,
+no parentheses required. Descriptor trees read as naturally nested blocks.
+
+```luau
+-- Proposed design — table-call sugar, no extra runtime
+hud { anchor = "bottomLeft", child =
+  vstack { gap = 4, children = {
+    text { bind = "player.weapon.current" },
+    hbar { bind = "player.ammo.current", max = "player.ammo.max" },
+  }}
+}
+```
+
+Both surface forms compile down to the same descriptor object the engine
+ingests. Helpers exist for ergonomics and IDE completion.
 
 **SDK file layout** mirrors the entity-domain convention from
 `scripting.md` §7:

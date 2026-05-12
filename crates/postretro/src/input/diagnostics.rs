@@ -44,51 +44,17 @@ pub enum DiagnosticAction {
     /// against real CPU cost when the meter is saturated against the frame
     /// budget.
     ToggleVsync,
-    /// Lower the renderer's ambient floor by one step (0.025), clamped to
-    /// 0.0. Interim diagnostic chord — ambient floor will move to the
-    /// settings menu when one exists. Sub-plan 3 acceptance criterion.
-    LowerAmbientFloor,
-    /// Raise the renderer's ambient floor by one step (0.025), clamped to
-    /// 1.0. Interim diagnostic chord — ambient floor will move to the
-    /// settings menu when one exists. Sub-plan 3 acceptance criterion.
-    RaiseAmbientFloor,
-    /// Cycle the lighting-term isolation mode used to isolate individual
-    /// lighting contributions during leak/bleed debugging.
-    ///
-    /// Cycles through nine modes (ambient floor always contributes):
-    ///   0 — Normal             (all terms; production shading)
-    ///   1 — DirectOnly         (lightmap + dynamic + specular)
-    ///   2 — IndirectOnly       (SH indirect + specular)
-    ///   3 — AmbientOnly        (ambient floor only)
-    ///   4 — LightmapOnly       (static lightmap atlas)
-    ///   5 — StaticSHOnly       (static SH indirect)
-    ///   6 — AnimatedDeltaOnly  (animated SH delta)
-    ///   7 — DynamicOnly        (dynamic direct lights)
-    ///   8 — SpecularOnly       (specular only)
-    ///
-    /// When diagnosing "light leaks through a wall," each "*Only" mode
-    /// isolates a single contribution so the offending path is unambiguous.
-    CycleLightingIsolation,
-    /// Lower the SH indirect scale by one step, clamped to 0.0.
-    LowerIndirectScale,
-    /// Raise the SH indirect scale by one step, clamped to 1.0.
-    RaiseIndirectScale,
     /// Toggle the egui debug panel visibility. Bound to `Alt+Shift+Backquote`.
     /// Only present when the `dev-tools` cargo feature is enabled; without
     /// the feature, the variant doesn't exist and the chord is not registered.
     ///
-    /// Task 3 will register the chord and wire the panel toggle; for now the
-    /// variant exists so the `dev-tools` feature gate is fully plumbed.
+    /// Ambient floor, indirect scale, and lighting isolation are now driven
+    /// by egui controls in the debug panel — their dedicated chords were
+    /// removed when this variant was promoted to a real binding.
     #[cfg(feature = "dev-tools")]
     #[allow(dead_code)]
     ToggleDebugPanel,
 }
-
-/// Per-press step size for the ambient-floor diagnostic chords.
-pub const AMBIENT_FLOOR_STEP: f32 = 0.00125;
-
-/// Per-press step size for the indirect-scale diagnostic chords.
-pub const INDIRECT_SCALE_STEP: f32 = 0.05;
 
 /// A modifier+key combination bound to a diagnostic action.
 #[derive(Debug, Clone, Copy)]
@@ -185,36 +151,11 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
             key: KeyCode::KeyV,
             action: DiagnosticAction::ToggleVsync,
         },
-        // `Alt+Shift+{` and `Alt+Shift+}` adjust the ambient floor at runtime.
-        // KeyCode is positional, so the chord matches whichever physical
-        // key sits where `[` / `]` are on a US layout — the player still
-        // holds Shift to type the brace, which is exactly what the chord
-        // requires.
+        #[cfg(feature = "dev-tools")]
         DiagnosticChord {
             modifiers: Modifiers::ALT_SHIFT,
-            key: KeyCode::BracketLeft,
-            action: DiagnosticAction::LowerAmbientFloor,
-        },
-        DiagnosticChord {
-            modifiers: Modifiers::ALT_SHIFT,
-            key: KeyCode::BracketRight,
-            action: DiagnosticAction::RaiseAmbientFloor,
-        },
-        DiagnosticChord {
-            modifiers: Modifiers::ALT_SHIFT,
-            key: KeyCode::Digit4,
-            action: DiagnosticAction::CycleLightingIsolation,
-        },
-        // `Alt+Shift+-` and `Alt+Shift+=` adjust the SH indirect scale at runtime.
-        DiagnosticChord {
-            modifiers: Modifiers::ALT_SHIFT,
-            key: KeyCode::Minus,
-            action: DiagnosticAction::LowerIndirectScale,
-        },
-        DiagnosticChord {
-            modifiers: Modifiers::ALT_SHIFT,
-            key: KeyCode::Equal,
-            action: DiagnosticAction::RaiseIndirectScale,
+            key: KeyCode::Backquote,
+            action: DiagnosticAction::ToggleDebugPanel,
         },
     ]
 }
@@ -289,31 +230,14 @@ mod tests {
         assert_eq!(action, Some(DiagnosticAction::ToggleVsync));
     }
 
+    #[cfg(feature = "dev-tools")]
     #[test]
-    fn alt_shift_bracket_left_fires_lower_ambient_floor() {
+    fn alt_shift_backquote_fires_toggle_debug_panel() {
         let mut d = fresh();
         d.handle_key(KeyCode::ShiftLeft, true, false);
         d.handle_key(KeyCode::AltLeft, true, false);
-        let action = d.handle_key(KeyCode::BracketLeft, true, false);
-        assert_eq!(action, Some(DiagnosticAction::LowerAmbientFloor));
-    }
-
-    #[test]
-    fn alt_shift_bracket_right_fires_raise_ambient_floor() {
-        let mut d = fresh();
-        d.handle_key(KeyCode::ShiftLeft, true, false);
-        d.handle_key(KeyCode::AltLeft, true, false);
-        let action = d.handle_key(KeyCode::BracketRight, true, false);
-        assert_eq!(action, Some(DiagnosticAction::RaiseAmbientFloor));
-    }
-
-    #[test]
-    fn alt_shift_digit4_fires_cycle_lighting_isolation() {
-        let mut d = fresh();
-        d.handle_key(KeyCode::ShiftLeft, true, false);
-        d.handle_key(KeyCode::AltLeft, true, false);
-        let action = d.handle_key(KeyCode::Digit4, true, false);
-        assert_eq!(action, Some(DiagnosticAction::CycleLightingIsolation));
+        let action = d.handle_key(KeyCode::Backquote, true, false);
+        assert_eq!(action, Some(DiagnosticAction::ToggleDebugPanel));
     }
 
     #[test]
@@ -414,6 +338,18 @@ mod tests {
                 chord.action,
             );
         }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn default_chords_include_toggle_debug_panel() {
+        let has_toggle = default_diagnostic_chords()
+            .into_iter()
+            .any(|c| c.action == DiagnosticAction::ToggleDebugPanel);
+        assert!(
+            has_toggle,
+            "ToggleDebugPanel must be present in default chord table when dev-tools is enabled"
+        );
     }
 
     #[test]

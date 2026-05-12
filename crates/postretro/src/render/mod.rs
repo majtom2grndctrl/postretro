@@ -2,6 +2,8 @@
 // See: context/lib/rendering_pipeline.md
 
 pub mod animated_lightmap;
+#[cfg(feature = "dev-tools")]
+pub mod debug_ui;
 pub mod fog_pass;
 pub mod frame_timing;
 pub mod sh_compose;
@@ -127,6 +129,10 @@ const UNIFORM_SIZE: usize = 96;
 /// Lighting-term isolation mode for leak/bleed debugging (cycled by Alt+Shift+4).
 /// The ambient floor always contributes so interior geometry is never pitch black.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Variants beyond `Normal` are constructed by the upcoming egui debug-panel
+// dropdown (Task 4/5 of the egui-debug-ui-foundation plan); the dedicated
+// cycle chord that previously built them was removed in Task 3.
+#[allow(dead_code)]
 #[repr(u32)]
 pub enum LightingIsolation {
     Normal = 0,
@@ -142,6 +148,7 @@ pub enum LightingIsolation {
 }
 
 impl LightingIsolation {
+    #[allow(dead_code)]
     pub fn cycle(self) -> Self {
         match self {
             LightingIsolation::Normal => LightingIsolation::NoLightmap,
@@ -157,6 +164,7 @@ impl LightingIsolation {
         }
     }
 
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             LightingIsolation::Normal => "Normal (all terms)",
@@ -472,6 +480,15 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// The adapter's `max_texture_dimension_2d` limit. Exposed for callers that
+    /// need it to construct CPU-side helpers (e.g. egui-winit's `State::new`
+    /// caps emitted texture sizes against this). Keeps wgpu types from leaking
+    /// across the renderer boundary; only the scalar limit escapes.
+    #[cfg(feature = "dev-tools")]
+    pub fn max_texture_dimension_2d(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+
     /// Geometry and textures installed later via `install_level_geometry` / `install_textures`.
     pub fn new(window: &Arc<Window>) -> Result<Self> {
         // Dummy buffers until `install_level_geometry` replaces them.
@@ -2032,6 +2049,7 @@ impl Renderer {
     }
 
     /// Takes effect on the next `update_per_frame_uniforms` upload.
+    #[allow(dead_code)]
     pub fn cycle_lighting_isolation(&mut self) -> LightingIsolation {
         self.lighting_isolation = self.lighting_isolation.cycle();
         log::info!(
@@ -2391,19 +2409,23 @@ impl Renderer {
         self.spot_shadow_pool.slot_assignment = slot_assignment;
     }
 
+    #[allow(dead_code)]
     pub fn ambient_floor(&self) -> f32 {
         self.ambient_floor
     }
 
+    #[allow(dead_code)]
     pub fn set_ambient_floor(&mut self, value: f32) {
         self.ambient_floor = value.clamp(0.0, 1.0);
     }
 
+    #[allow(dead_code)]
     pub fn indirect_scale(&self) -> f32 {
         self.indirect_scale
     }
 
     /// Takes effect on the next `update_per_frame_uniforms` upload.
+    #[allow(dead_code)]
     pub fn set_indirect_scale(&mut self, value: f32) {
         self.indirect_scale = value.max(0.0);
     }

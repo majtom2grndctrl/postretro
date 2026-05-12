@@ -1571,48 +1571,11 @@ impl App {
                     log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
                 }
             }
-            DiagnosticAction::LowerAmbientFloor => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    let next = renderer.ambient_floor() - input::AMBIENT_FLOOR_STEP;
-                    renderer.set_ambient_floor(next);
-                    log::info!("[Renderer] ambient floor: {:.5}", renderer.ambient_floor());
-                }
-            }
-            DiagnosticAction::RaiseAmbientFloor => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    let next = renderer.ambient_floor() + input::AMBIENT_FLOOR_STEP;
-                    renderer.set_ambient_floor(next);
-                    log::info!("[Renderer] ambient floor: {:.5}", renderer.ambient_floor());
-                }
-            }
-            DiagnosticAction::LowerIndirectScale => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    let next = renderer.indirect_scale() - input::INDIRECT_SCALE_STEP;
-                    renderer.set_indirect_scale(next);
-                    log::info!(
-                        "[Renderer] indirect scale: {:.2}",
-                        renderer.indirect_scale()
-                    );
-                }
-            }
-            DiagnosticAction::RaiseIndirectScale => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    let next = renderer.indirect_scale() + input::INDIRECT_SCALE_STEP;
-                    renderer.set_indirect_scale(next);
-                    log::info!(
-                        "[Renderer] indirect scale: {:.2}",
-                        renderer.indirect_scale()
-                    );
-                }
-            }
-            DiagnosticAction::CycleLightingIsolation => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.cycle_lighting_isolation();
-                }
-            }
-            // Task 3 will flesh this out (toggle the egui debug panel).
-            // For now the arm exists so the match stays exhaustive when the
-            // `dev-tools` feature gates the variant in.
+            // Task 4 introduces the `DebugUi` field; Task 5 will wire the
+            // panel visibility toggle here. The arm exists now so the match
+            // stays exhaustive when the `dev-tools` feature gates the variant
+            // in. Ambient floor / indirect scale / lighting isolation are now
+            // driven by egui widgets in the debug panel.
             #[cfg(feature = "dev-tools")]
             DiagnosticAction::ToggleDebugPanel => {
                 log::debug!("[dev-tools] ToggleDebugPanel chord fired (panel not yet wired)");

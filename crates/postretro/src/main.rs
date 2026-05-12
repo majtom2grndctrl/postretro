@@ -1568,6 +1568,13 @@ impl App {
                     renderer.cycle_lighting_isolation();
                 }
             }
+            // Task 3 will flesh this out (toggle the egui debug panel).
+            // For now the arm exists so the match stays exhaustive when the
+            // `dev-tools` feature gates the variant in.
+            #[cfg(feature = "dev-tools")]
+            DiagnosticAction::ToggleDebugPanel => {
+                log::debug!("[dev-tools] ToggleDebugPanel chord fired (panel not yet wired)");
+            }
         }
     }
 }

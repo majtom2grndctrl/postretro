@@ -56,6 +56,20 @@ env_logger.workspace = true
 # Workspace members
 postretro-level-format.workspace = true
 
+# Debug UI (egui) — only compiled in when the `dev-tools` feature is enabled.
+# Pinned to 0.34: that release line requires `wgpu ^29` and `winit ^0.30`,
+# which matches the workspace's `wgpu = "29"` / `winit = "0.30"`. See
+# `context/plans/in-progress/egui-debug-ui-foundation/research.md` for the
+# compatibility matrix.
+egui = { version = "0.34", optional = true }
+egui-winit = { version = "0.34", optional = true }
+egui-wgpu = { version = "0.34", optional = true, features = ["winit"] }
+
+[features]
+# Pulls in the egui-based debug panel and its diagnostic chord. Without this
+# feature, none of the egui crates are linked.
+dev-tools = ["dep:egui", "dep:egui-winit", "dep:egui-wgpu"]
+
 [build-dependencies]
 postretro-script-compiler = { path = "../script-compiler" }
 

@@ -73,6 +73,15 @@ pub enum DiagnosticAction {
     LowerIndirectScale,
     /// Raise the SH indirect scale by one step, clamped to 1.0.
     RaiseIndirectScale,
+    /// Toggle the egui debug panel visibility. Bound to `Alt+Shift+Backquote`.
+    /// Only present when the `dev-tools` cargo feature is enabled; without
+    /// the feature, the variant doesn't exist and the chord is not registered.
+    ///
+    /// Task 3 will register the chord and wire the panel toggle; for now the
+    /// variant exists so the `dev-tools` feature gate is fully plumbed.
+    #[cfg(feature = "dev-tools")]
+    #[allow(dead_code)]
+    ToggleDebugPanel,
 }
 
 /// Per-press step size for the ambient-floor diagnostic chords.

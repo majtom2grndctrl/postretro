@@ -42,7 +42,7 @@ use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
-use crate::input::{Action, DiagnosticAction};
+use crate::input::{Action, DiagnosticAction, InputFocus};
 use crate::render::Renderer;
 use crate::scripting::builtins::{
     ClassnameDispatch, PLAYER_START_CLASSNAME, apply_classname_dispatch,
@@ -161,6 +161,7 @@ fn main() -> Result<()> {
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
         input_system: input::InputSystem::new(input::default_bindings()),
+        input_focus: InputFocus::Gameplay,
         gamepad_system: input::gamepad::GamepadSystem::new(),
         frame_timing: FrameTiming::new(initial_state),
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
@@ -228,6 +229,10 @@ struct App {
 
     camera: Camera,
     input_system: input::InputSystem,
+
+    /// Coarse owner of keyboard/mouse focus. Drives pointer-lock acquire/release
+    /// via `set_input_focus`. See: context/lib/input.md
+    input_focus: InputFocus,
     gamepad_system: Option<input::gamepad::GamepadSystem>,
     frame_timing: FrameTiming,
 
@@ -414,10 +419,9 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
         self.camera.update_aspect(size.width, size.height);
 
-        input::cursor::capture_cursor(&window);
-
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
+        self.set_input_focus(InputFocus::Gameplay);
         self.frame_timing.last_frame = Instant::now();
         self.boot_state = BootState::Splash;
 
@@ -469,9 +473,7 @@ impl ApplicationHandler for App {
                 self.camera.update_aspect(size.width, size.height);
             }
             WindowEvent::CloseRequested => {
-                if let Some(ws) = self.window_state.as_ref() {
-                    input::cursor::release_cursor(&ws.window);
-                }
+                self.set_input_focus(InputFocus::Menu);
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
             }
@@ -483,9 +485,7 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => {
-                if let Some(ws) = self.window_state.as_ref() {
-                    input::cursor::release_cursor(&ws.window);
-                }
+                self.set_input_focus(InputFocus::Menu);
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
             }
@@ -512,12 +512,18 @@ impl ApplicationHandler for App {
                     .handle_mouse_button(button, state.is_pressed());
             }
             WindowEvent::Focused(focused) => {
-                if let Some(ws) = self.window_state.as_ref() {
-                    input::cursor::handle_focus_change(focused, &ws.window);
-                    if !focused {
-                        self.input_system.clear_all();
-                        self.diagnostic_inputs.clear_modifiers();
-                    }
+                if focused {
+                    // Re-acquire the cursor for whichever focus mode the user
+                    // chose; the stored focus is untouched on focus loss so
+                    // this restores the pre-blur state.
+                    self.reapply_focus();
+                } else if let Some(ws) = self.window_state.as_ref() {
+                    // Release the cursor while unfocused but leave
+                    // `input_focus` alone — the user's chosen focus mode
+                    // outlives transient OS focus loss.
+                    input::cursor::release_cursor(&ws.window);
+                    self.input_system.clear_all();
+                    self.diagnostic_inputs.clear_modifiers();
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -1503,6 +1509,42 @@ impl App {
         }
 
         events_out
+    }
+
+    /// Transition input focus, acquiring or releasing the cursor as required
+    /// and clearing carry-over input state so keys/mouse held during the
+    /// transition do not stick in the new mode.
+    fn set_input_focus(&mut self, focus: InputFocus) {
+        self.input_focus = focus;
+        let Some(ws) = self.window_state.as_ref() else {
+            return;
+        };
+        match focus {
+            InputFocus::Gameplay => {
+                input::cursor::capture_cursor(&ws.window);
+            }
+            InputFocus::DevTools | InputFocus::Menu => {
+                input::cursor::release_cursor(&ws.window);
+            }
+        }
+        // Both directions clear: returning to Gameplay must not see keys that
+        // were "held" by a UI consumer; entering UI must not leak gameplay
+        // chords into the overlay.
+        self.input_system.clear_all();
+        self.diagnostic_inputs.clear_modifiers();
+    }
+
+    /// Re-apply the current focus's cursor state without changing the stored
+    /// focus. Called on window re-focus so the cursor mode matches the user's
+    /// chosen focus after transient OS focus loss.
+    fn reapply_focus(&mut self) {
+        let Some(ws) = self.window_state.as_ref() else {
+            return;
+        };
+        match self.input_focus {
+            InputFocus::Gameplay => input::cursor::capture_cursor(&ws.window),
+            InputFocus::DevTools | InputFocus::Menu => input::cursor::release_cursor(&ws.window),
+        }
     }
 
     fn handle_diagnostic_action(&mut self, action: DiagnosticAction) {

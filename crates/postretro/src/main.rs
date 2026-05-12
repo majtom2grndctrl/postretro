@@ -194,6 +194,8 @@ fn main() -> Result<()> {
         level_timings: StartupTimings::new(),
         level_rx: None,
         level_worker: None,
+        #[cfg(feature = "dev-tools")]
+        debug_ui: None,
     };
 
     event_loop
@@ -373,6 +375,12 @@ struct App {
     /// Detached on shutdown — drop discards the JoinHandle without joining;
     /// the OS thread reaps when its work returns.
     level_worker: Option<JoinHandle<()>>,
+
+    /// CPU-side egui state. `None` until `resumed()` initialises the renderer
+    /// (the constructor needs the device's `max_texture_dimension_2d` limit).
+    /// GPU resources land here via Task 5.
+    #[cfg(feature = "dev-tools")]
+    debug_ui: Option<render::debug_ui::DebugUi>,
 }
 
 struct WindowState {
@@ -421,6 +429,17 @@ impl ApplicationHandler for App {
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
+
+        #[cfg(feature = "dev-tools")]
+        {
+            if let (Some(renderer), Some(ws)) =
+                (self.renderer.as_ref(), self.window_state.as_ref())
+            {
+                let max_texture = renderer.max_texture_dimension_2d();
+                self.debug_ui = Some(render::debug_ui::DebugUi::new(&ws.window, max_texture));
+            }
+        }
+
         self.set_input_focus(InputFocus::Gameplay);
         self.frame_timing.last_frame = Instant::now();
         self.boot_state = BootState::Splash;
@@ -437,6 +456,12 @@ impl ApplicationHandler for App {
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         self.window_state = None;
         self.renderer = None;
+        // Re-built on the next `resumed()` since it borrows the new window
+        // and reads the new renderer's device limits.
+        #[cfg(feature = "dev-tools")]
+        {
+            self.debug_ui = None;
+        }
         // Fog-volume entities live in the script registry; clearing the
         // bridge's id table here keeps it from referencing stale slots if a
         // future surface re-creation re-runs `populate_from_level`.

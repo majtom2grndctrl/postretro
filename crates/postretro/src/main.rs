@@ -490,6 +490,26 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
+        // Feed every window event to egui-winit so it can keep its internal
+        // state current (scale factor, modifier state, cursor position, etc.)
+        // regardless of focus. We only honor `response.consumed` below when
+        // focus is not Gameplay — gameplay always wins event ownership.
+        #[cfg(feature = "dev-tools")]
+        let egui_consumed: bool = {
+            let mut consumed = false;
+            if let (Some(debug_ui), Some(ws)) =
+                (self.debug_ui.as_mut(), self.window_state.as_ref())
+            {
+                let response = debug_ui.on_window_event(&ws.window, &event);
+                if self.input_focus != InputFocus::Gameplay {
+                    consumed = response.consumed;
+                }
+            }
+            consumed
+        };
+        #[cfg(not(feature = "dev-tools"))]
+        let egui_consumed: bool = false;
+
         match event {
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -520,6 +540,53 @@ impl ApplicationHandler for App {
                 if let PhysicalKey::Code(code) = key_event.physical_key {
                     let pressed = key_event.state.is_pressed();
 
+                    // Modifier-only key events always feed the diagnostic
+                    // resolver — even when egui consumes them — so its
+                    // modifier tracking stays current and `Alt+Shift+Backquote`
+                    // remains resolvable while the panel has focus.
+                    let is_modifier_key = matches!(
+                        code,
+                        winit::keyboard::KeyCode::ShiftLeft
+                            | winit::keyboard::KeyCode::ShiftRight
+                            | winit::keyboard::KeyCode::AltLeft
+                            | winit::keyboard::KeyCode::AltRight
+                            | winit::keyboard::KeyCode::ControlLeft
+                            | winit::keyboard::KeyCode::ControlRight
+                            | winit::keyboard::KeyCode::SuperLeft
+                            | winit::keyboard::KeyCode::SuperRight
+                    );
+
+                    if egui_consumed {
+                        // egui owns this event. Keep modifier tracking current
+                        // so the toggle chord still resolves once the panel is
+                        // open, but do not forward to the input system or fire
+                        // any other diagnostic chord.
+                        if is_modifier_key {
+                            let _ = self.diagnostic_inputs.handle_key(
+                                code,
+                                pressed,
+                                key_event.repeat,
+                            );
+                        }
+                        // The toggle chord (`Alt+Shift+Backquote`) is reachable
+                        // even when egui consumes the keypress — no egui widget
+                        // binds it, so a targeted check here is unambiguous.
+                        // See: context/lib/input.md §7
+                        #[cfg(feature = "dev-tools")]
+                        if !is_modifier_key {
+                            if let Some(action) = self.diagnostic_inputs.handle_key(
+                                code,
+                                pressed,
+                                key_event.repeat,
+                            ) {
+                                if action == DiagnosticAction::ToggleDebugPanel {
+                                    self.handle_diagnostic_action(action);
+                                }
+                            }
+                        }
+                        return;
+                    }
+
                     // Chord resolver runs first: owns Alt+Shift+ modifier
                     // tracking and fires only on a clean rising edge.
                     if let Some(action) =
@@ -533,6 +600,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput { button, state, .. } => {
+                if egui_consumed {
+                    return;
+                }
                 self.input_system
                     .handle_mouse_button(button, state.is_pressed());
             }
@@ -1790,6 +1860,55 @@ mod tests {
     #[test]
     fn content_root_from_map_returns_dot_for_bare_filename() {
         assert_eq!(content_root_from_map("test.prl"), PathBuf::from("."));
+    }
+
+    /// Mirrors the consumed-event gate in `window_event` for keyboard input:
+    /// when egui reports `consumed`, only the `ToggleDebugPanel` chord is
+    /// allowed to fire; every other resolved diagnostic action is dropped and
+    /// no input-system forwarding happens.
+    ///
+    /// This is a unit test of the gate's *decision* — exercising the full
+    /// `App::window_event` path would require a window and GPU, which tests
+    /// run without (see context/lib/testing_guide.md §3).
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn consumed_event_gate_passes_only_toggle_debug_panel() {
+        use crate::input::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
+        use winit::keyboard::KeyCode;
+
+        // Helper mirroring the consumed-branch decision in `window_event`:
+        // returns `Some(action)` only if the chord is `ToggleDebugPanel`.
+        fn consumed_gate(
+            diagnostics: &mut DiagnosticInputs,
+            code: KeyCode,
+            pressed: bool,
+            repeat: bool,
+        ) -> Option<DiagnosticAction> {
+            diagnostics
+                .handle_key(code, pressed, repeat)
+                .filter(|a| *a == DiagnosticAction::ToggleDebugPanel)
+        }
+
+        let mut diagnostics = DiagnosticInputs::new(default_diagnostic_chords());
+        // Modifier-only events are still forwarded so the resolver's
+        // Alt+Shift state stays current under the consumed gate.
+        diagnostics.handle_key(KeyCode::ShiftLeft, true, false);
+        diagnostics.handle_key(KeyCode::AltLeft, true, false);
+
+        // Alt+Shift+Backslash (ToggleWireframe) — dropped by the gate.
+        let blocked = consumed_gate(&mut diagnostics, KeyCode::Backslash, true, false);
+        assert_eq!(
+            blocked, None,
+            "consumed-event gate must suppress non-toggle diagnostic chords",
+        );
+
+        // Alt+Shift+Backquote (ToggleDebugPanel) — passes the gate.
+        let allowed = consumed_gate(&mut diagnostics, KeyCode::Backquote, true, false);
+        assert_eq!(
+            allowed,
+            Some(DiagnosticAction::ToggleDebugPanel),
+            "consumed-event gate must allow ToggleDebugPanel through",
+        );
     }
 
     /// Regression: on a multi-tick frame, look rotation must be applied

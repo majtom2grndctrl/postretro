@@ -853,15 +853,65 @@ impl ApplicationHandler for App {
                         }
                         let particle_collections: Vec<(&str, &[u8])> =
                             self.particle_render.iter_collections().collect();
-                        if let Err(err) = renderer.render_frame_indirect(
+                        let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
                             &visible_leaf_mask,
                             view_proj,
                             &particle_collections,
                         ) {
-                            self.exit_result = Err(err);
-                            event_loop.exit();
-                        } else if self.pending_level_log {
+                            Ok(opt) => opt,
+                            Err(err) => {
+                                self.exit_result = Err(err);
+                                event_loop.exit();
+                                return;
+                            }
+                        };
+                        if let Some(surface_texture) = surface_texture {
+                            #[cfg(feature = "dev-tools")]
+                            {
+                                if let Some(debug_ui) = self.debug_ui.as_mut() {
+                                    if debug_ui.is_visible() {
+                                        if let Some(ws) = self.window_state.as_ref() {
+                                            let window = &ws.window;
+                                            let raw_input =
+                                                debug_ui.winit_state.take_egui_input(window);
+                                            let full_output =
+                                                debug_ui.ctx.clone().run_ui(raw_input, |_ui| {
+                                                    // Panel body lands in Task 7.
+                                                });
+                                            debug_ui.winit_state.handle_platform_output(
+                                                window,
+                                                full_output.platform_output,
+                                            );
+                                            let paint_jobs = debug_ui.ctx.tessellate(
+                                                full_output.shapes,
+                                                full_output.pixels_per_point,
+                                            );
+                                            let surface_view = surface_texture.texture.create_view(
+                                                &wgpu::TextureViewDescriptor::default(),
+                                            );
+                                            let (sw, sh) = renderer.surface_size();
+                                            let screen_desc = egui_wgpu::ScreenDescriptor {
+                                                size_in_pixels: [sw, sh],
+                                                pixels_per_point: window.scale_factor() as f32,
+                                            };
+                                            if let Err(err) = renderer.render_debug_ui(
+                                                full_output.textures_delta,
+                                                paint_jobs,
+                                                screen_desc,
+                                                &surface_view,
+                                            ) {
+                                                self.exit_result = Err(err);
+                                                event_loop.exit();
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            surface_texture.present();
+                        }
+                        if self.pending_level_log {
                             // First level frame just submitted — close out
                             // log line C with the present-cost of the frame
                             // the user is about to see.
@@ -1603,7 +1653,25 @@ impl App {
             // driven by egui widgets in the debug panel.
             #[cfg(feature = "dev-tools")]
             DiagnosticAction::ToggleDebugPanel => {
-                log::debug!("[dev-tools] ToggleDebugPanel chord fired (panel not yet wired)");
+                let now_visible = if let Some(debug_ui) = self.debug_ui.as_mut() {
+                    let v = !debug_ui.is_visible();
+                    debug_ui.set_visible(v);
+                    v
+                } else {
+                    return;
+                };
+                // Lazy GPU init the first time the panel is shown. The renderer
+                // logs `[DebugUi] GPU renderer initialized` exactly once.
+                if now_visible {
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        renderer.ensure_debug_ui_gpu();
+                    }
+                }
+                self.set_input_focus(if now_visible {
+                    InputFocus::DevTools
+                } else {
+                    InputFocus::Gameplay
+                });
             }
         }
     }

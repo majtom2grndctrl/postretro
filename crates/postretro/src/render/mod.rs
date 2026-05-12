@@ -377,6 +377,12 @@ pub struct Renderer {
     /// and `AnimatedLightmapResources` without recreating the layout inline.
     uniform_bind_group_layout: wgpu::BindGroupLayout,
 
+    /// GPU half of the debug UI. Lazily constructed by `ensure_debug_ui_gpu`
+    /// on first panel open; stays resident for the rest of the session.
+    /// `None` until then; never allocated in a no-`dev-tools` build.
+    #[cfg(feature = "dev-tools")]
+    debug_ui_gpu: Option<debug_ui::DebugUiGpu>,
+
     /// Always bound; maps with zero lights get a 1-element dummy buffer —
     /// wgpu rejects zero-sized storage buffer bindings.
     lighting_bind_group: wgpu::BindGroup,
@@ -487,6 +493,93 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn max_texture_dimension_2d(&self) -> u32 {
         self.device.limits().max_texture_dimension_2d
+    }
+
+    /// `(width, height)` of the current swapchain in pixels. Used by the
+    /// debug-UI overlay pass to build the egui screen descriptor without
+    /// leaking the `surface_config` field across the renderer boundary.
+    #[cfg(feature = "dev-tools")]
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.surface_config.width, self.surface_config.height)
+    }
+
+    /// Lazily constructs the egui-wgpu renderer on first panel open. Idempotent:
+    /// subsequent calls are no-ops. The init log fires exactly once per
+    /// session, used by the acceptance criteria to verify lazy init.
+    #[cfg(feature = "dev-tools")]
+    pub fn ensure_debug_ui_gpu(&mut self) {
+        if self.debug_ui_gpu.is_none() {
+            self.debug_ui_gpu = Some(debug_ui::DebugUiGpu::new(
+                &self.device,
+                self.surface_config.format,
+            ));
+            log::info!("[DebugUi] GPU renderer initialized");
+        }
+    }
+
+    /// Records the egui overlay pass against `surface_view`. Caller (`App`)
+    /// has already tessellated the frame's shapes into `paint_jobs`. Loads
+    /// the existing swapchain color and stores it back — no depth attachment.
+    /// Submits its own encoder so it stays a self-contained pass appended
+    /// after `render_frame_indirect`'s world submission.
+    #[cfg(feature = "dev-tools")]
+    pub fn render_debug_ui(
+        &mut self,
+        textures_delta: egui::TexturesDelta,
+        paint_jobs: Vec<egui::ClippedPrimitive>,
+        screen_desc: egui_wgpu::ScreenDescriptor,
+        surface_view: &wgpu::TextureView,
+    ) -> Result<()> {
+        self.ensure_debug_ui_gpu();
+        let gpu = self
+            .debug_ui_gpu
+            .as_mut()
+            .expect("ensure_debug_ui_gpu populated debug_ui_gpu");
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("egui Encoder"),
+            });
+
+        for (id, image_delta) in &textures_delta.set {
+            gpu.renderer
+                .update_texture(&self.device, &self.queue, *id, image_delta);
+        }
+        let user_cmd_bufs = gpu.renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &paint_jobs,
+            &screen_desc,
+        );
+
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: surface_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            gpu.renderer
+                .render(&mut pass.forget_lifetime(), &paint_jobs, &screen_desc);
+        }
+
+        for id in &textures_delta.free {
+            gpu.renderer.free_texture(id);
+        }
+
+        self.queue
+            .submit(user_cmd_bufs.into_iter().chain(std::iter::once(encoder.finish())));
+        Ok(())
     }
 
     /// Geometry and textures installed later via `install_level_geometry` / `install_textures`.
@@ -1584,6 +1677,8 @@ impl Renderer {
             has_multi_draw_indirect,
             stored_texture_materials: Vec::new(),
             uniform_bind_group_layout,
+            #[cfg(feature = "dev-tools")]
+            debug_ui_gpu: None,
         })
     }
 
@@ -2445,7 +2540,7 @@ impl Renderer {
         visible_leaf_mask: &[bool],
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
-    ) -> Result<()> {
+    ) -> Result<Option<wgpu::SurfaceTexture>> {
         self.debug_frame = self.debug_frame.wrapping_add(1);
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
@@ -2454,11 +2549,11 @@ impl Renderer {
                 tex
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(());
+                return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.surface_config);
-                return Ok(());
+                return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 anyhow::bail!("surface lost");
@@ -2851,13 +2946,14 @@ impl Renderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
 
         if let Some(timing) = self.frame_timing.as_mut() {
             timing.post_submit(&self.device);
         }
 
-        Ok(())
+        // Caller (`App`) presents after optionally appending the egui overlay
+        // pass via `render_debug_ui`. See plan §Task 5.
+        Ok(Some(output))
     }
 }
 

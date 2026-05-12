@@ -4,11 +4,29 @@
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-/// Placeholder for the GPU-side renderer state populated in Task 5
-/// (egui_wgpu::Renderer + screen descriptor). Kept here as a unit struct so
-/// `DebugUi` can carry the `Option<DebugUiGpu>` field shape now and avoid
-/// churning the type when Task 5 fills it in.
-pub struct DebugUiGpu;
+/// GPU-side egui state. Lives on `Renderer` (the GPU boundary), constructed
+/// lazily on first panel open via `Renderer::ensure_debug_ui_gpu`. The CPU
+/// half (`DebugUi`) lives on `App`.
+pub struct DebugUiGpu {
+    pub renderer: egui_wgpu::Renderer,
+}
+
+impl DebugUiGpu {
+    /// Constructs `egui_wgpu::Renderer` against the swapchain format.
+    /// No depth attachment, no MSAA, no dithering — the engine renders egui
+    /// as a 2D overlay after the world draw.
+    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
+        let options = egui_wgpu::RendererOptions {
+            msaa_samples: 1,
+            depth_stencil_format: None,
+            dithering: false,
+            predictable_texture_filtering: false,
+        };
+        Self {
+            renderer: egui_wgpu::Renderer::new(device, surface_format, options),
+        }
+    }
+}
 
 /// Diagnostics-panel widget state. The panel binds these to renderer setters
 /// each frame; default values mirror the renderer's stock values so the panel
@@ -32,18 +50,16 @@ impl Default for DiagnosticsState {
 
 /// CPU-side egui state. Lives on `App` as `Option<DebugUi>` so the engine can
 /// boot before the renderer is available (the constructor needs the device's
-/// `max_texture_dimension_2d` limit). GPU resources live in `gpu` once Task 5
-/// installs them.
+/// `max_texture_dimension_2d` limit). The GPU half (`DebugUiGpu`) lives on
+/// `Renderer` and is constructed lazily on first panel open.
 ///
-/// Fields/methods are constructed here but not consumed until later tasks in
-/// the egui-debug-ui-foundation plan wire them up (Task 5 GPU renderer, Task
-/// 6 panel layout, Task 7 input arbitration). `#[allow(dead_code)]` keeps the
-/// shape locked in without warnings until then.
+/// Fields/methods that are not yet consumed by later tasks (Task 6 panel
+/// layout, Task 7 input arbitration) are kept under `#[allow(dead_code)]` to
+/// lock in the shape without compiler warnings.
 #[allow(dead_code)]
 pub struct DebugUi {
-    ctx: egui::Context,
-    winit_state: egui_winit::State,
-    pub gpu: Option<DebugUiGpu>,
+    pub ctx: egui::Context,
+    pub winit_state: egui_winit::State,
     visible: bool,
     pub panel_state: DiagnosticsState,
 }
@@ -63,7 +79,6 @@ impl DebugUi {
         Self {
             ctx,
             winit_state,
-            gpu: None,
             visible: false,
             panel_state: DiagnosticsState::default(),
         }

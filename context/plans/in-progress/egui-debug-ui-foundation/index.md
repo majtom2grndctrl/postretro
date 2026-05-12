@@ -20,10 +20,12 @@ readout.
 - An `InputFocus` enum on `App` (Gameplay / DevTools / Menu) that owns pointer
   lock + cursor visibility transitions. Lives in `crates/postretro/src/input/`
   and is always compiled — pointer lock is not a dev-tools concern.
-- Existing chord-based diagnostic actions (`DiagnosticAction` and
-  `DiagnosticInputs`) move behind `#[cfg(feature = "dev-tools")]`. The narrowed
-  chord set survives; valued chords (ambient floor, indirect scale, lighting
-  isolation) are removed from `DiagnosticAction` and replaced by egui widgets.
+- `DiagnosticAction` and `DiagnosticInputs` stay always-compiled; the
+  production chord set (`ToggleWireframe`, `DumpPortalWalk`, `ToggleVsync`)
+  survives without `dev-tools`. Valued chords (ambient floor, indirect scale,
+  lighting isolation) are removed from `DiagnosticAction` and replaced by egui
+  widgets. The `ToggleDebugPanel` arm in `handle_diagnostic_action` is gated on
+  `dev-tools`.
 - A `DebugUi` subsystem inside the renderer module that owns the
   `egui::Context`, the `egui_winit::State`, and a lazy `Option<DebugUiGpu>`
   holding `egui_wgpu::Renderer`. The GPU half is constructed on first panel
@@ -41,6 +43,9 @@ readout.
 - One proof-of-concept panel: "Diagnostics". Hosts an ambient-floor slider, an
   indirect-scale slider, a lighting-isolation mode dropdown, and a read-only
   GPU pass timing block sourced from `render::frame_timing::FrameTiming`.
+- The Diagnostics panel is only active while a level is loaded and rendering
+  via `render_frame_indirect`. The splash render path is out of scope; it
+  neither hosts the overlay nor needs restructuring.
 
 ### Out of scope
 
@@ -60,8 +65,7 @@ readout.
 ## Acceptance criteria
 
 - [ ] `cargo build -p postretro` (default features) succeeds without compiling
-      egui, egui-winit, or egui-wgpu. `cargo tree -p postretro` confirms none
-      appear.
+      egui, egui-winit, or egui-wgpu. `cargo tree -p postretro --no-default-features | grep -E 'egui|egui-winit|egui-wgpu'` produces no output.
 - [ ] `cargo build -p postretro --features dev-tools` succeeds.
 - [ ] In a `--features dev-tools` build, launching the engine and not pressing
       the debug-panel chord leaves the egui-wgpu renderer uninitialized: no
@@ -72,7 +76,7 @@ readout.
       fires exactly once. Second open/close cycle does not fire it again.
 - [ ] While the panel is open: cursor is visible, pointer lock is released,
       raw mouse-delta no longer rotates the camera, gameplay `WASD` keys do not
-      fire move actions when keyboard focus is inside an egui text widget.
+      fire move actions when egui consumes the keyboard event.
 - [ ] Closing the panel restores pointer lock and gameplay input within the
       same frame; camera resumes responding to mouse motion next frame.
 - [ ] Window-focus-loss while the panel is closed releases the cursor as today;
@@ -80,11 +84,10 @@ readout.
       `handle_focus_change` path is preserved.
 - [ ] The Diagnostics panel's ambient-floor slider, indirect-scale slider, and
       lighting-isolation dropdown produce visible scene changes equivalent to
-      the chord-driven versions they replace. The slider ranges match the
-      existing clamps (ambient floor 0..=1, indirect scale 0..=1) and the
-      dropdown lists the same nine `LightingIsolation` variants.
+      the chord-driven versions they replace. The slider ranges are 0..=1 for both (ambient floor matches `set_ambient_floor`'s clamp; indirect scale adds an upper bound the setter does not enforce) and the
+      dropdown lists the same ten `LightingIsolation` variants.
 - [ ] With `POSTRETRO_GPU_TIMING=1` on a TIMESTAMP_QUERY-capable adapter, the
-      Diagnostics panel shows a per-pass timing block (`cull`,
+      Diagnostics panel shows a per-pass timing block (`cull`, `animated_lm_compose`,
       `depth_prepass`, `forward`) sampled from the same averaging window the
       log uses. Without timing support, the block shows a single
       "GPU timing unavailable" line.
@@ -123,8 +126,9 @@ Replace direct `capture_cursor` / `release_cursor` call sites in
 `WindowEvent::Focused` with `set_input_focus` calls. The `Focused(false)` path
 should not change the stored focus — it releases the cursor while the window
 is unfocused but the focus mode remains whatever the user chose. Add a
-companion `fn reapply_focus(&mut self)` that re-runs the acquire side; call it
-from `Focused(true)`.
+companion `fn reapply_focus(&mut self)` that dispatches on `input_focus`:
+re-acquires the cursor for `Gameplay`, ensures the cursor is released for
+`DevTools` or `Menu`. Call it from `Focused(true)`.
 
 ### Task 2: dev-tools feature flag + dependency wiring
 
@@ -132,10 +136,15 @@ Add a `dev-tools` feature to `crates/postretro/Cargo.toml`. The feature
 activates optional dependencies `egui`, `egui-winit`, and `egui-wgpu` pinned to
 `0.34` (versions confirmed against `wgpu 29` — see `research.md`).
 
-Move `mod input::diagnostics` and its `pub use` re-exports in
-`crates/postretro/src/input/mod.rs` behind `#[cfg(feature = "dev-tools")]`. Do
-the same for the `diagnostic_inputs` field on `App`, all its call sites in
-`window_event`, and the `handle_diagnostic_action` method. Use
+`mod input::diagnostics`, `DiagnosticAction`, `DiagnosticInputs`,
+`diagnostic_inputs` on `App`, and `handle_diagnostic_action` remain
+always-compiled — they serve the production chord set (`ToggleWireframe`,
+`DumpPortalWalk`, `ToggleVsync`). Only the `ToggleDebugPanel` match arm inside
+`handle_diagnostic_action` and any egui call sites it invokes are wrapped in
+`#[cfg(feature = "dev-tools")]`. The `ToggleDebugPanel` variant in
+`DiagnosticAction` is also gated `#[cfg(feature = "dev-tools")]` — this
+prevents a non-exhaustive match compile error in production builds where the
+arm is absent. Use
 `#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]` on any helper
 that becomes orphaned in a no-feature build but is shared with feature-on
 code.
@@ -146,8 +155,14 @@ In `crates/postretro/src/input/diagnostics.rs`, remove the
 `LowerAmbientFloor`, `RaiseAmbientFloor`, `LowerIndirectScale`,
 `RaiseIndirectScale`, and `CycleLightingIsolation` variants from
 `DiagnosticAction`. Drop their entries from `default_diagnostic_chords`. Drop
-`AMBIENT_FLOOR_STEP` and `INDIRECT_SCALE_STEP`. Add a new variant
-`ToggleDebugPanel` and a chord for it (`Alt+Shift+Backquote`).
+`AMBIENT_FLOOR_STEP` and `INDIRECT_SCALE_STEP`. Also remove
+`AMBIENT_FLOOR_STEP` and `INDIRECT_SCALE_STEP` from the
+`pub use diagnostics::{ ... }` re-export in
+`crates/postretro/src/input/mod.rs` to avoid broken imports. Add a new variant
+`ToggleDebugPanel` and a chord for it: `KeyCode::Backquote` with
+`Modifiers::ALT_SHIFT`, consistent with the existing chord resolver.
+Annotate the variant with `#[cfg(feature = "dev-tools")]` so it does not
+appear in the production enum.
 
 Update `handle_diagnostic_action` in `main.rs` to drop the removed arms and
 add a `ToggleDebugPanel` arm that flips the debug-panel visibility (Task 5)
@@ -164,12 +179,20 @@ Create `crates/postretro/src/render/debug_ui/mod.rs` gated on
 under the same gate.
 
 `DebugUi` owns:
-- `ctx: egui::Context` (constructed eagerly — pure CPU, tiny).
-- `winit_state: egui_winit::State` (constructed eagerly).
+- `ctx: egui::Context` (constructed in `resumed` — pure CPU, tiny).
+- `winit_state: egui_winit::State` (constructed in `resumed`, after the
+  renderer is initialized — constructor requires `ViewportId::ROOT`, `&window`
+  as display handle, theme `None`, ppp from `window.scale_factor()`, and
+  max-texture-side from `renderer.device.limits().max_texture_dimension_2d`).
 - `gpu: Option<DebugUiGpu>` (lazy; see Task 5).
 - `visible: bool` (starts `false`).
 - Diagnostic panel state struct (the snapshot the panel reads/writes — see
   Task 7).
+
+`DebugUi` itself is stored as `Option<DebugUi>` on `App` (initialized to
+`None`). It is constructed inside `App::resumed` after the window is created.
+All event-routing and render call sites guard with
+`if let Some(debug_ui) = &mut self.debug_ui`.
 
 Expose:
 - `fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> egui_winit::EventResponse`
@@ -181,7 +204,7 @@ Expose:
 
 `DebugUiGpu` (same module, same gate) owns `egui_wgpu::Renderer` plus any
 scratch buffers it needs. Constructor takes `&wgpu::Device`, the swapchain
-surface format (passed in from `Renderer::surface_format` — already a field on
+surface format (read from `self.surface_config.format` on
 `Renderer`), depth format `None`, sample count `1`, dithering `false`.
 
 Add `Renderer::ensure_debug_ui_gpu(&mut self)` (feature-gated) that initializes
@@ -190,18 +213,29 @@ the CPU half lives on `App` so it can run input-event handling before the
 renderer is borrowed in the render call.
 
 Add `Renderer::render_debug_ui(...)` (feature-gated) that takes the egui
-full output, the screen descriptor, the encoder, and the swapchain view, and
-records one render pass:
+full output, the screen descriptor, and the swapchain view, and records one
+render pass:
 
 - Load swapchain color, store; no depth attachment.
-- Calls `egui_wgpu::Renderer::update_buffers` and `render`.
-- Calls `free_textures` after the pass.
+- Before the pass: for each `(id, image_delta)` in `textures_delta.set`, calls
+  `egui_wgpu::Renderer::update_texture(device, queue, id, &image_delta)`;
+  then calls `update_buffers(device, queue, encoder, &paint_jobs, &screen_desc)`.
+- Records the render pass: calls `render(render_pass, &paint_jobs, &screen_desc)`.
+- After the pass: for each `id` in `textures_delta.free`, calls `free_texture(id)`.
 
-Call site in `Renderer::render_frame_indirect`: after the wireframe overlay
-pass closes (line ~2825), before the `frame_timing.encode_resolve` call (line
-~2827). Egui draws on top of the world but its work is measured by the same
-present timeline as everything else. If the panel is not visible, skip the
-pass entirely — the lazy GPU half may still be `None`.
+`render_debug_ui` is a separate `pub fn` on `Renderer`, not embedded inside
+`render_frame_indirect`. To allow both to write to the same surface texture,
+`render_frame_indirect` is restructured: it submits the world encoder (including
+wireframe overlay and `frame_timing.encode_resolve`) but returns the
+`wgpu::SurfaceTexture` to `App` instead of calling `present()` directly. `App`
+then calls `render_debug_ui` if the panel is visible, passing a `TextureView`
+derived from the returned surface texture. `App` calls `surface_texture.present()`
+after both render calls complete. When the panel is not visible (or `dev-tools`
+is off), `App` calls `present()` immediately after `render_frame_indirect`.
+Call sequence in `RedrawRequested`:
+`let output = renderer.render_frame_indirect(...)?` →
+`renderer.render_debug_ui(full_output, screen_desc, &surface_view)?` (feature-gated, skipped when not visible) →
+`output.present()`.
 
 ### Task 6: Event routing — egui first, gated dispatch downstream
 
@@ -213,21 +247,20 @@ In `App::window_event` for `KeyboardInput`, `MouseInput`, `CursorMoved`,
    `EventResponse`.
 2. If `response.consumed`, return early — do not forward to the input system
    or the diagnostic chord resolver.
-3. The `ToggleDebugPanel` chord must remain reachable: route it through the
-   diagnostic chord resolver *before* egui sees the event when the panel is
-   closed, and *after* egui sees it when the panel is open. Simplest pin:
-   resolve the panel-toggle chord on every keyboard event regardless of
-   `consumed` (since `Alt+Shift+Backquote` is not a chord any egui widget
-   binds), but skip the rest of the diagnostic chord table when consumed.
+3. The `ToggleDebugPanel` chord must remain reachable whether or not egui
+   consumed the event. Resolve it on every keyboard event regardless of
+   `consumed` (`Alt+Shift+Backquote` is not a chord any egui widget binds),
+   then skip the rest of the diagnostic chord table when consumed.
 
 Resize / scale-factor events feed `egui_winit::State` unconditionally
 (`run_first_pass` reads the pixels-per-point); they do not need to be gated on
-focus.
+focus. `ModifiersChanged` events also feed `egui_winit::State` unconditionally
+so modifier state stays current across focus transitions.
 
-`Focused(false)` calls `set_input_focus(Gameplay)` only if the user had not
-explicitly entered `DevTools`. Simpler pin: leave focus as-is on blur (cursor
-already releases via the existing path) and re-apply on `Focused(true)` —
-this preserves panel state across alt-tab.
+`Focused(false)`: leave `input_focus` as-is; the existing cursor-release path
+handles pointer visibility. `Focused(true)`: call `reapply_focus()` to
+re-lock if `Gameplay`, or restore cursor-free state if `DevTools`. Panel
+state is preserved across alt-tab.
 
 ### Task 7: Diagnostics panel + renderer setter wiring
 
@@ -237,35 +270,41 @@ stays small), implement the immediate-mode panel body:
 - Ambient floor: `egui::Slider::new(&mut state.ambient_floor, 0.0..=1.0)`.
   After draw, if changed: write back through a `&mut Renderer` setter.
 - Indirect scale: same pattern, range `0.0..=1.0`.
-- Lighting isolation: `egui::ComboBox` over the nine `LightingIsolation`
+- Lighting isolation: `egui::ComboBox` over the ten `LightingIsolation`
   variants. The renderer already has `cycle_lighting_isolation`; this plan
   adds `Renderer::set_lighting_isolation(&mut self, mode: LightingIsolation)`
-  and `Renderer::lighting_isolation(&self) -> LightingIsolation`, both
-  feature-gated only if the type is not already exposed (verify against
-  `render/mod.rs` — the public surface around `LightingIsolation` may already
-  cover this).
+  and `Renderer::lighting_isolation(&self) -> LightingIsolation`. Both take/
+  return the enum (not a `u32` index) for type safety. Gate both methods
+  behind `#[cfg(feature = "dev-tools")]`. If `LightingIsolation` is not
+  already re-exported from `render`, add a `pub use` for it under the same
+  gate.
 - GPU timing block: read averaged-window snapshots from
-  `render::frame_timing::FrameTiming`. The current `FrameTiming` logs to
+  `render::frame_timing::FrameTiming` (the GPU-timestamp helper in `render/`, distinct from the CPU-side `frame_timing::FrameTiming` at the crate root). The current `FrameTiming` logs to
   `log::info!` at the 120-frame boundary and does not retain the result.
   This task adds a `pub fn last_window(&self) -> Option<&FrameTimingSnapshot>`
   (or equivalent) returning the most recent averaged tuple of
   `(label, avg_ms, skip_count)` so the panel reads the same numbers the log
   prints. The snapshot is overwritten each window; missing snapshot or no
   timing support renders "GPU timing unavailable".
+  `FrameTimingSnapshot` is a spec-only proposed shape — remove this definition
+  once the code exists:
+  `struct FrameTimingSnapshot { passes: Vec<(&'static str, f32 /* avg_ms */, u32 /* skip_count */)> }`.
+  Each entry matches one pass label (`cull`, `animated_lm_compose`,
+  `depth_prepass`, `forward`). `skip_count` is per-pass (frames where that
+  pass's timestamp was unavailable within the window).
 
 Frame integration in `App::window_event` `RedrawRequested`, after
 gameplay/snapshot/render setup but before the renderer draws the egui pass:
 
 1. `let raw_input = debug_ui.winit_state.take_egui_input(window);`
-2. `debug_ui.ctx.begin_pass(raw_input);` (or `run` if simpler — see egui 0.34
-   docs).
-3. If `debug_ui.visible`, build the Diagnostics panel UI; widgets read/write
-   through a small `DiagnosticsView` value snapshotted from / committed back to
-   the renderer.
-4. `let full_output = debug_ui.ctx.end_pass();`
-5. Pass `full_output` (textures_delta + paint jobs) to
+2. `let full_output = debug_ui.ctx.run(raw_input, |ctx| {`
+   `    if debug_ui.visible {`
+   `        // build Diagnostics panel; widgets read/write through DiagnosticsView`
+   `    }`
+   `});`
+3. Pass `full_output` (textures_delta + paint jobs) to
    `renderer.render_debug_ui(...)` after the world is drawn (Task 5).
-6. `debug_ui.winit_state.handle_platform_output(window, full_output.platform_output)`.
+4. `debug_ui.winit_state.handle_platform_output(window, full_output.platform_output)`.
 
 ## Sequencing
 
@@ -309,20 +348,24 @@ depends on a `FrameTiming::last_window` accessor introduced in this task.
 
 - `crates/postretro/Cargo.toml` — add `[features] dev-tools = [...]`, three
   optional egui deps.
-- `crates/postretro/src/input/mod.rs` — gate `mod diagnostics` and its
-  `pub use`s; add `pub use focus::InputFocus`.
+- `crates/postretro/src/input/mod.rs` — add `pub use focus::InputFocus`.
+  `mod diagnostics` and its `pub use`s stay always-compiled.
 - `crates/postretro/src/input/diagnostics.rs` — remove five valued variants;
   add `ToggleDebugPanel`; update default chord table and tests.
-- `crates/postretro/src/main.rs` — add `input_focus`, optional `debug_ui`
-  field on `App`; replace direct cursor calls with `set_input_focus`; route
+- `crates/postretro/src/main.rs` — add `input_focus`, optional
+  `debug_ui: Option<DebugUi>` field on `App`, constructed in `resumed`;
+  replace direct cursor calls with `set_input_focus`; route
   events egui-first; trigger panel toggle from `handle_diagnostic_action`;
   wire egui frame steps inside `RedrawRequested`.
 - `crates/postretro/src/render/mod.rs` — `pub mod debug_ui` (gated); optional
-  `debug_ui_gpu` field; `ensure_debug_ui_gpu`; `render_debug_ui`;
+  `debug_ui_gpu` field; `ensure_debug_ui_gpu`; `render_frame_indirect`
+  restructured to return `wgpu::SurfaceTexture` rather than calling `present()`;
+  `render_debug_ui` as a separate `pub fn` taking
+  `(full_output, screen_desc, surface_view)`;
   `set_lighting_isolation` if missing; pass `surface_format` into
-  `egui_wgpu::Renderer::new` (already stored as `Renderer::surface_format`).
+  `egui_wgpu::Renderer::new` (sourced from `self.surface_config.format`).
 - `crates/postretro/src/render/frame_timing.rs` — add a `last_window`
-  accessor that retains the most recent averaged snapshot.
+  accessor that retains the most recent averaged snapshot. (GPU-side `FrameTiming`; not the CPU-side `frame_timing.rs` at the crate root.)
 
 **Ownership split (the key call-out for the implementor):** `egui::Context`
 and `egui_winit::State` live on `App` (CPU; needed in event handlers before
@@ -343,24 +386,3 @@ it appears in the enum match arms in `set_input_focus`, which counts as a use.
 depth-stencil attachment (egui is 2D). Verify the swapchain view borrow is not
 moved into the wireframe pass — current code re-acquires it per pass.
 
-## Open questions
-
-- **Default `Alt+Shift+Backquote` placement.** Backquote sits to the left of
-  `1` on US layouts. `KeyCode::Backquote` matches that position. Acceptable?
-  An alternative is `KeyCode::F1` outside the Alt+Shift namespace, but mixing
-  namespaces breaks the rule in `input.md §7`. Recommend `Backquote`.
-- **Frame ordering of egui input vs game input.** This spec pins egui-first;
-  consumed-event short-circuits the game input path. An alternative is to
-  always feed both and let game-action resolution ignore consumed flags — but
-  that means a key typed into a text field would also fire `Shoot` if bound.
-  Recommend egui-first.
-- **Pointer-lock policy on alt-tab while panel is open.** Two options:
-  (a) on blur, release cursor but keep `InputFocus::DevTools` so re-focus does
-  not re-lock; (b) treat blur as a transient overlay that the existing
-  `handle_focus_change` covers — keep focus as-is, let the cursor release
-  follow the OS. Recommend (a); preserves user intent across task switches.
-- **Should `Renderer::set_lighting_isolation` accept a `LightingIsolation`
-  enum or a `u32` index?** The enum is safer; verify the public surface in
-  `render/mod.rs` and reuse if exposed. The existing
-  `cycle_lighting_isolation` returns the new variant — adding `set_` is
-  trivial.

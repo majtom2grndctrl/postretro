@@ -126,12 +126,11 @@ const TIMING_PAIR_COUNT: usize = 4;
 //   80..84  light_count  84..88  time  88..92  lighting_isolation  92..96  indirect_scale
 const UNIFORM_SIZE: usize = 96;
 
-/// Lighting-term isolation mode for leak/bleed debugging (cycled by Alt+Shift+4).
+/// Lighting-term isolation mode for leak/bleed debugging.
 /// The ambient floor always contributes so interior geometry is never pitch black.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// Variants beyond `Normal` are constructed by the upcoming egui debug-panel
-// dropdown (Task 4/5 of the egui-debug-ui-foundation plan); the dedicated
-// cycle chord that previously built them was removed in Task 3.
+// Variants beyond Normal are selected via the Diagnostics panel dropdown (dev-tools feature).
+// The keyboard cycle chord was removed; the panel is the only trigger.
 #[allow(dead_code)]
 #[repr(u32)]
 pub enum LightingIsolation {
@@ -225,7 +224,7 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes
 }
 
-/// Minimum useful ambient; tuned via Alt+Shift+{ / Alt+Shift+}.
+/// Minimum useful ambient. Default value seeded into the Diagnostics panel slider on first open.
 pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.001;
 
 pub const DEFAULT_INDIRECT_SCALE: f32 = 0.10;
@@ -2541,25 +2540,25 @@ impl Renderer {
         self.spot_shadow_pool.slot_assignment = slot_assignment;
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn ambient_floor(&self) -> f32 {
         self.ambient_floor
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn set_ambient_floor(&mut self, value: f32) {
         self.ambient_floor = value.clamp(0.0, 1.0);
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn indirect_scale(&self) -> f32 {
         self.indirect_scale
     }
 
     /// Takes effect on the next `update_per_frame_uniforms` upload.
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn set_indirect_scale(&mut self, value: f32) {
-        self.indirect_scale = value.max(0.0);
+        self.indirect_scale = value.clamp(0.0, 1.0);
     }
 
     pub fn is_ready(&self) -> bool {

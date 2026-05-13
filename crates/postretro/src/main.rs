@@ -945,10 +945,22 @@ impl ApplicationHandler for App {
                                             let window = &ws.window;
                                             let raw_input =
                                                 debug_ui.winit_state.take_egui_input(window);
-                                            let full_output =
-                                                debug_ui.ctx.clone().run_ui(raw_input, |_ui| {
-                                                    // Panel body lands in Task 7.
-                                                });
+                                            // Snapshot is `Option<&FrameTimingSnapshot>`
+                                            // borrowed from `renderer`; clone the inner
+                                            // value so the closure can take `&mut renderer`
+                                            // without aliasing.
+                                            let timing_snapshot =
+                                                renderer.frame_timing_snapshot().cloned();
+                                            let panel_state = &mut debug_ui.panel_state;
+                                            let ctx_clone = debug_ui.ctx.clone();
+                                            let full_output = ctx_clone.run_ui(raw_input, |ui| {
+                                                render::debug_ui::draw_diagnostics_panel(
+                                                    ui.ctx(),
+                                                    panel_state,
+                                                    renderer,
+                                                    timing_snapshot.as_ref(),
+                                                );
+                                            });
                                             debug_ui.winit_state.handle_platform_output(
                                                 window,
                                                 full_output.platform_output,

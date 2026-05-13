@@ -4,6 +4,10 @@
 use winit::event::WindowEvent;
 use winit::window::Window;
 
+use super::LightingIsolation;
+use super::Renderer;
+use super::frame_timing::FrameTimingSnapshot;
+
 /// GPU-side egui state. Lives on `Renderer` (the GPU boundary), constructed
 /// lazily on first panel open via `Renderer::ensure_debug_ui_gpu`. The CPU
 /// half (`DebugUi`) lives on `App`.
@@ -31,19 +35,21 @@ impl DebugUiGpu {
 /// Diagnostics-panel widget state. The panel binds these to renderer setters
 /// each frame; default values mirror the renderer's stock values so the panel
 /// reads sensibly before any user interaction has happened.
-///
-/// Consumed by the panel layout in Task 6; `#[allow(dead_code)]` until then.
-#[allow(dead_code)]
 pub struct DiagnosticsState {
     pub ambient_floor: f32,
     pub indirect_scale: f32,
+    /// Tracks whether the slider state has been seeded from the live renderer
+    /// values. The first time the panel renders, it pulls current values so
+    /// the sliders don't snap the world to defaults on first open.
+    seeded: bool,
 }
 
 impl Default for DiagnosticsState {
     fn default() -> Self {
         Self {
-            ambient_floor: 0.0,
-            indirect_scale: 1.0,
+            ambient_floor: super::DEFAULT_AMBIENT_FLOOR,
+            indirect_scale: super::DEFAULT_INDIRECT_SCALE,
+            seeded: false,
         }
     }
 }
@@ -114,4 +120,72 @@ impl DebugUi {
         // warning-clean.
         self.visible && self.ctx.egui_wants_keyboard_input()
     }
+}
+
+/// Renders the Diagnostics panel for one frame. Writes through `renderer`
+/// setters when sliders / dropdowns change, so the world picks up the new
+/// values on the next `update_per_frame_uniforms` upload.
+///
+/// `frame_timing` is the most recent averaged GPU-timing window, or `None`
+/// when GPU timing is disabled. When present-but-empty (zero passes), the
+/// "unavailable" line still renders — defensive against an empty
+/// `pass_labels` vec slipping past construction.
+pub fn draw_diagnostics_panel(
+    ctx: &egui::Context,
+    state: &mut DiagnosticsState,
+    renderer: &mut Renderer,
+    frame_timing: Option<&FrameTimingSnapshot>,
+) {
+    // Seed slider state from live renderer values on first draw so toggling
+    // the panel open does not snap ambient floor / indirect scale to whatever
+    // defaults `DiagnosticsState` was constructed with.
+    if !state.seeded {
+        state.ambient_floor = renderer.ambient_floor();
+        state.indirect_scale = renderer.indirect_scale();
+        state.seeded = true;
+    }
+
+    egui::Window::new("Diagnostics").show(ctx, |ui| {
+        ui.label("Ambient Floor");
+        if ui
+            .add(egui::Slider::new(&mut state.ambient_floor, 0.0_f32..=1.0))
+            .changed()
+        {
+            renderer.set_ambient_floor(state.ambient_floor);
+        }
+
+        ui.label("Indirect Scale");
+        if ui
+            .add(egui::Slider::new(&mut state.indirect_scale, 0.0_f32..=1.0))
+            .changed()
+        {
+            renderer.set_indirect_scale(state.indirect_scale);
+        }
+
+        let mut mode = renderer.lighting_isolation();
+        let prev_mode = mode;
+        egui::ComboBox::from_label("Lighting Isolation")
+            .selected_text(mode.label())
+            .show_ui(ui, |ui| {
+                for variant in LightingIsolation::ALL_VARIANTS {
+                    ui.selectable_value(&mut mode, variant, variant.label());
+                }
+            });
+        if mode != prev_mode {
+            renderer.set_lighting_isolation(mode);
+        }
+
+        ui.separator();
+        ui.label("GPU Timing");
+        match frame_timing {
+            Some(snapshot) if !snapshot.passes.is_empty() => {
+                for (label, avg_ms, _skip) in &snapshot.passes {
+                    ui.label(format!("{label}: {avg_ms:.2} ms"));
+                }
+            }
+            _ => {
+                ui.label("GPU timing unavailable");
+            }
+        }
+    });
 }

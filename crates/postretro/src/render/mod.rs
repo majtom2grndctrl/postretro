@@ -148,6 +148,21 @@ pub enum LightingIsolation {
 }
 
 impl LightingIsolation {
+    /// All variants in display order. Used by the debug UI dropdown.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub const ALL_VARIANTS: [LightingIsolation; 10] = [
+        LightingIsolation::Normal,
+        LightingIsolation::NoLightmap,
+        LightingIsolation::DirectOnly,
+        LightingIsolation::IndirectOnly,
+        LightingIsolation::AmbientOnly,
+        LightingIsolation::LightmapOnly,
+        LightingIsolation::StaticSHOnly,
+        LightingIsolation::AnimatedDeltaOnly,
+        LightingIsolation::DynamicOnly,
+        LightingIsolation::SpecularOnly,
+    ];
+
     #[allow(dead_code)]
     pub fn cycle(self) -> Self {
         match self {
@@ -2152,6 +2167,30 @@ impl Renderer {
             self.lighting_isolation.label(),
         );
         self.lighting_isolation
+    }
+
+    /// Direct setter used by the debug-panel dropdown. Logs only on actual
+    /// transition so spam-clicks on the current mode stay quiet.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_lighting_isolation(&mut self, mode: LightingIsolation) {
+        if self.lighting_isolation != mode {
+            self.lighting_isolation = mode;
+            log::info!("[Renderer] Lighting isolation: {}", mode.label());
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn lighting_isolation(&self) -> LightingIsolation {
+        self.lighting_isolation
+    }
+
+    /// Most recent averaged GPU-timing window, or `None` when GPU timing is
+    /// disabled / no window has elapsed yet. The debug panel reads this each
+    /// frame; the underlying snapshot is overwritten every
+    /// `AVG_WINDOW_FRAMES` frames.
+    #[cfg(feature = "dev-tools")]
+    pub fn frame_timing_snapshot(&self) -> Option<&frame_timing::FrameTimingSnapshot> {
+        self.frame_timing.as_ref().and_then(|t| t.last_window())
     }
 
     /// Rebuilds the swapchain via surface.configure (Alt+Shift+V diagnostic chord).

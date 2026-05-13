@@ -25,7 +25,9 @@ pub enum InputFocus {
 }
 
 impl InputFocus {
-    /// True when the cursor should be captured for this focus mode.
+    /// Returns true if this focus mode should capture and lock the cursor for gameplay.
+    /// No production call site yet — this method is retained for behavioral-pinning tests
+    /// and will be called by menu/dev-UI consumers when those systems land.
     #[allow(dead_code)]
     pub fn captures_cursor(self) -> bool {
         matches!(self, InputFocus::Gameplay)

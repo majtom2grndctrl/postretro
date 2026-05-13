@@ -13,10 +13,9 @@ pub enum InputFocus {
     /// Player has the cursor locked; gameplay consumes input.
     Gameplay,
     /// Debug overlay (egui) consumes input; cursor released.
-    /// Constructed by the debug-UI chord in Task 3 of egui-debug-ui-foundation;
-    /// the match arms in `App::set_input_focus` / `App::reapply_focus` are the
-    /// other half of the wiring.
-    #[allow(dead_code)]
+    /// Toggled by `DiagnosticAction::ToggleDebugPanel`; `App::set_input_focus`
+    /// and `App::reapply_focus` are the other half of the wiring.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     DevTools,
     /// Menu UI consumes input; cursor released.
     Menu,

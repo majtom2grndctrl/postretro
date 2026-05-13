@@ -45,14 +45,10 @@ pub enum DiagnosticAction {
     /// budget.
     ToggleVsync,
     /// Toggle the egui debug panel visibility. Bound to `Alt+Shift+Backquote`.
-    /// Only present when the `dev-tools` cargo feature is enabled; without
-    /// the feature, the variant doesn't exist and the chord is not registered.
-    ///
-    /// Ambient floor, indirect scale, and lighting isolation are now driven
-    /// by egui controls in the debug panel — their dedicated chords were
-    /// removed when this variant was promoted to a real binding.
+    /// Fires through `App::handle_diagnostic_action`, which also shifts
+    /// `InputFocus` between `DevTools` and `Gameplay`. Feature-gated:
+    /// without `dev-tools`, this variant and its chord are absent.
     #[cfg(feature = "dev-tools")]
-    #[allow(dead_code)]
     ToggleDebugPanel,
 }
 

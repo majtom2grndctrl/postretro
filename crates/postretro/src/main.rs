@@ -593,15 +593,27 @@ impl ApplicationHandler for App {
                         self.handle_diagnostic_action(action);
                     }
 
-                    self.input_system.handle_keyboard_event(code, pressed);
+                    // Only Gameplay forwards keys to the action system. When
+                    // the debug panel (or future menu) owns focus, WASD must
+                    // not drive the camera even though egui leaves
+                    // `consumed = false` for non-text widgets like sliders.
+                    // See: context/lib/input.md §5
+                    if self.input_focus == InputFocus::Gameplay {
+                        self.input_system.handle_keyboard_event(code, pressed);
+                    }
                 }
             }
             WindowEvent::MouseInput { button, state, .. } => {
                 if egui_consumed {
                     return;
                 }
-                self.input_system
-                    .handle_mouse_button(button, state.is_pressed());
+                // Same focus gate as the keyboard path: mouse-button actions
+                // (fire, alt-fire) must not fire while DevTools/Menu owns
+                // input. See: context/lib/input.md §5
+                if self.input_focus == InputFocus::Gameplay {
+                    self.input_system
+                        .handle_mouse_button(button, state.is_pressed());
+                }
             }
             WindowEvent::Focused(focused) => {
                 if focused {
@@ -1738,9 +1750,10 @@ impl App {
                     log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
                 }
             }
-            // Lazy GPU init only on first open; subsequent toggles just flip
-            // visibility. InputFocus shifts to DevTools/Gameplay to gate game
-            // input while the panel is shown.
+            // Toggle just flips visibility and shifts InputFocus to gate
+            // game input. Lazy GPU init happens inside `render_debug_ui` on
+            // the renderer the first time the panel paints; no explicit init
+            // call is needed here.
             #[cfg(feature = "dev-tools")]
             DiagnosticAction::ToggleDebugPanel => {
                 let now_visible = if let Some(debug_ui) = self.debug_ui.as_mut() {
@@ -1750,13 +1763,6 @@ impl App {
                 } else {
                     return;
                 };
-                // Lazy GPU init the first time the panel is shown. The renderer
-                // logs `[DebugUi] GPU renderer initialized` exactly once.
-                if now_visible {
-                    if let Some(renderer) = self.renderer.as_mut() {
-                        renderer.ensure_debug_ui_gpu();
-                    }
-                }
                 self.set_input_focus(if now_visible {
                     InputFocus::DevTools
                 } else {

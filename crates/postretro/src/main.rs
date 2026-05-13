@@ -432,8 +432,7 @@ impl ApplicationHandler for App {
 
         #[cfg(feature = "dev-tools")]
         {
-            if let (Some(renderer), Some(ws)) =
-                (self.renderer.as_ref(), self.window_state.as_ref())
+            if let (Some(renderer), Some(ws)) = (self.renderer.as_ref(), self.window_state.as_ref())
             {
                 let max_texture = renderer.max_texture_dimension_2d();
                 self.debug_ui = Some(render::debug_ui::DebugUi::new(&ws.window, max_texture));
@@ -497,8 +496,7 @@ impl ApplicationHandler for App {
         #[cfg(feature = "dev-tools")]
         let egui_consumed: bool = {
             let mut consumed = false;
-            if let (Some(debug_ui), Some(ws)) =
-                (self.debug_ui.as_mut(), self.window_state.as_ref())
+            if let (Some(debug_ui), Some(ws)) = (self.debug_ui.as_mut(), self.window_state.as_ref())
             {
                 let response = debug_ui.on_window_event(&ws.window, &event);
                 if self.input_focus != InputFocus::Gameplay {
@@ -562,11 +560,9 @@ impl ApplicationHandler for App {
                         // open, but do not forward to the input system or fire
                         // any other diagnostic chord.
                         if is_modifier_key {
-                            let _ = self.diagnostic_inputs.handle_key(
-                                code,
-                                pressed,
-                                key_event.repeat,
-                            );
+                            let _ =
+                                self.diagnostic_inputs
+                                    .handle_key(code, pressed, key_event.repeat);
                         }
                         // The toggle chord (`Alt+Shift+Backquote`) is reachable
                         // even when egui consumes the keypress — no egui widget
@@ -574,11 +570,10 @@ impl ApplicationHandler for App {
                         // See: context/lib/input.md §7
                         #[cfg(feature = "dev-tools")]
                         if !is_modifier_key {
-                            if let Some(action) = self.diagnostic_inputs.handle_key(
-                                code,
-                                pressed,
-                                key_event.repeat,
-                            ) {
+                            if let Some(action) =
+                                self.diagnostic_inputs
+                                    .handle_key(code, pressed, key_event.repeat)
+                            {
                                 if action == DiagnosticAction::ToggleDebugPanel {
                                     self.handle_diagnostic_action(action);
                                 }

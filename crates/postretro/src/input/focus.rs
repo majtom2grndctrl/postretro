@@ -18,6 +18,9 @@ pub enum InputFocus {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     DevTools,
     /// Menu UI consumes input; cursor released.
+    /// No consumer yet — wired through `App::set_input_focus` and
+    /// `reapply_focus` so the menu system can drop in without re-plumbing.
+    #[allow(dead_code)]
     Menu,
 }
 

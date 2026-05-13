@@ -378,7 +378,8 @@ struct App {
 
     /// CPU-side egui state. `None` until `resumed()` initialises the renderer
     /// (the constructor needs the device's `max_texture_dimension_2d` limit).
-    /// GPU resources land here via Task 5.
+    /// GPU half lives on `Renderer` as `debug_ui_gpu`; lazy-initialized on
+    /// first panel open.
     #[cfg(feature = "dev-tools")]
     debug_ui: Option<render::debug_ui::DebugUi>,
 }
@@ -489,10 +490,11 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        // Feed every window event to egui-winit so it can keep its internal
-        // state current (scale factor, modifier state, cursor position, etc.)
-        // regardless of focus. We only honor `response.consumed` below when
-        // focus is not Gameplay — gameplay always wins event ownership.
+        // Feed every window event to egui-winit to keep its internal state
+        // current (scale factor, modifier state, cursor position) regardless
+        // of focus. `response.consumed` is honored only in DevTools/Menu
+        // focus — gameplay ignores it. ToggleDebugPanel punches through
+        // regardless so the panel can always be closed.
         #[cfg(feature = "dev-tools")]
         let egui_consumed: bool = {
             let mut consumed = false;
@@ -516,7 +518,7 @@ impl ApplicationHandler for App {
                 self.camera.update_aspect(size.width, size.height);
             }
             WindowEvent::CloseRequested => {
-                self.set_input_focus(InputFocus::Menu);
+                self.release_cursor_for_exit();
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
             }
@@ -528,7 +530,7 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => {
-                self.set_input_focus(InputFocus::Menu);
+                self.release_cursor_for_exit();
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
             }
@@ -964,19 +966,11 @@ impl ApplicationHandler for App {
                                                 full_output.shapes,
                                                 full_output.pixels_per_point,
                                             );
-                                            let surface_view = surface_texture.texture.create_view(
-                                                &wgpu::TextureViewDescriptor::default(),
-                                            );
-                                            let (sw, sh) = renderer.surface_size();
-                                            let screen_desc = egui_wgpu::ScreenDescriptor {
-                                                size_in_pixels: [sw, sh],
-                                                pixels_per_point: window.scale_factor() as f32,
-                                            };
                                             if let Err(err) = renderer.render_debug_ui(
+                                                &surface_texture,
                                                 full_output.textures_delta,
                                                 paint_jobs,
-                                                screen_desc,
-                                                &surface_view,
+                                                window.scale_factor() as f32,
                                             ) {
                                                 self.exit_result = Err(err);
                                                 event_loop.exit();
@@ -1077,6 +1071,12 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        // Raw mouse deltas only rotate the camera while gameplay owns input.
+        // When the debug panel (DevTools) or a menu is open, the cursor is
+        // released and raw deltas must not leak into the look path.
+        if self.input_focus != InputFocus::Gameplay {
+            return;
+        }
         if let DeviceEvent::MouseMotion { delta } = event {
             self.input_system.handle_mouse_delta(delta.0, delta.1);
         }
@@ -1682,8 +1682,23 @@ impl App {
         // Both directions clear: returning to Gameplay must not see keys that
         // were "held" by a UI consumer; entering UI must not leak gameplay
         // chords into the overlay.
+        //
+        // Known minor UX gap: on Gameplay → DevTools, modifiers are cleared
+        // even if Alt+Shift are still physically held (the chord that opened
+        // the panel). Closing the panel without releasing requires re-pressing
+        // those modifiers. Accepted because the symmetric stale-state
+        // protection is worth more than the one-keystroke regression.
         self.input_system.clear_all();
         self.diagnostic_inputs.clear_modifiers();
+    }
+
+    /// Release pointer lock as part of the exit path. Does not mutate
+    /// `input_focus` — exiting is not a UI state and future menu code that
+    /// inspects `input_focus == Menu` should not see a false positive here.
+    fn release_cursor_for_exit(&self) {
+        if let Some(ws) = self.window_state.as_ref() {
+            input::cursor::release_cursor(&ws.window);
+        }
     }
 
     /// Re-apply the current focus's cursor state without changing the stored
@@ -1723,11 +1738,9 @@ impl App {
                     log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
                 }
             }
-            // Task 4 introduces the `DebugUi` field; Task 5 will wire the
-            // panel visibility toggle here. The arm exists now so the match
-            // stays exhaustive when the `dev-tools` feature gates the variant
-            // in. Ambient floor / indirect scale / lighting isolation are now
-            // driven by egui widgets in the debug panel.
+            // Lazy GPU init only on first open; subsequent toggles just flip
+            // visibility. InputFocus shifts to DevTools/Gameplay to gate game
+            // input while the panel is shown.
             #[cfg(feature = "dev-tools")]
             DiagnosticAction::ToggleDebugPanel => {
                 let now_visible = if let Some(debug_ui) = self.debug_ui.as_mut() {

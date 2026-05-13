@@ -510,14 +510,6 @@ impl Renderer {
         self.device.limits().max_texture_dimension_2d
     }
 
-    /// `(width, height)` of the current swapchain in pixels. Used by the
-    /// debug-UI overlay pass to build the egui screen descriptor without
-    /// leaking the `surface_config` field across the renderer boundary.
-    #[cfg(feature = "dev-tools")]
-    pub fn surface_size(&self) -> (u32, u32) {
-        (self.surface_config.width, self.surface_config.height)
-    }
-
     /// Lazily constructs the egui-wgpu renderer on first panel open. Idempotent:
     /// subsequent calls are no-ops. The init log fires exactly once per
     /// session, used by the acceptance criteria to verify lazy init.
@@ -532,19 +524,33 @@ impl Renderer {
         }
     }
 
-    /// Records the egui overlay pass against `surface_view`. Caller (`App`)
-    /// has already tessellated the frame's shapes into `paint_jobs`. Loads
-    /// the existing swapchain color and stores it back — no depth attachment.
-    /// Submits its own encoder so it stays a self-contained pass appended
-    /// after `render_frame_indirect`'s world submission.
+    /// Records the egui overlay pass against the surface texture. Caller
+    /// (`App`) has already tessellated the frame's shapes into `paint_jobs`;
+    /// the view + screen descriptor are built here so the wgpu boundary stays
+    /// inside the renderer module. Loads the existing swapchain color and
+    /// stores it back — no depth attachment.
+    ///
+    /// Egui overlay runs in a separate command encoder submission after the
+    /// world draw, using LoadOp::Load to composite on top. This deviates from
+    /// the spec's "before frame_timing.encode_resolve" placement — threading a
+    /// shared encoder across the renderer/App boundary was more complex than
+    /// the benefit justified.
     #[cfg(feature = "dev-tools")]
     pub fn render_debug_ui(
         &mut self,
+        surface_texture: &wgpu::SurfaceTexture,
         textures_delta: egui::TexturesDelta,
         paint_jobs: Vec<egui::ClippedPrimitive>,
-        screen_desc: egui_wgpu::ScreenDescriptor,
-        surface_view: &wgpu::TextureView,
+        pixels_per_point: f32,
     ) -> Result<()> {
+        let surface_view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let screen_desc = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.surface_config.width, self.surface_config.height],
+            pixels_per_point,
+        };
+
         self.ensure_debug_ui_gpu();
         let gpu = self
             .debug_ui_gpu
@@ -573,7 +579,7 @@ impl Renderer {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui Overlay Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: surface_view,
+                    view: &surface_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -592,8 +598,11 @@ impl Renderer {
             gpu.renderer.free_texture(id);
         }
 
-        self.queue
-            .submit(user_cmd_bufs.into_iter().chain(std::iter::once(encoder.finish())));
+        self.queue.submit(
+            user_cmd_bufs
+                .into_iter()
+                .chain(std::iter::once(encoder.finish())),
+        );
         Ok(())
     }
 
@@ -2156,17 +2165,6 @@ impl Renderer {
             if self.wireframe_enabled { "on" } else { "off" },
         );
         self.wireframe_enabled
-    }
-
-    /// Takes effect on the next `update_per_frame_uniforms` upload.
-    #[allow(dead_code)]
-    pub fn cycle_lighting_isolation(&mut self) -> LightingIsolation {
-        self.lighting_isolation = self.lighting_isolation.cycle();
-        log::info!(
-            "[Renderer] Lighting isolation: {}",
-            self.lighting_isolation.label(),
-        );
-        self.lighting_isolation
     }
 
     /// Direct setter used by the debug-panel dropdown. Logs only on actual

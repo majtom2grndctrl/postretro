@@ -1,5 +1,5 @@
 // Debug UI overlay: egui context, winit event bridge, diagnostics panel.
-// See: context/lib/rendering_pipeline.md
+// See: context/lib/rendering_pipeline.md §11 · context/lib/input.md §7
 
 use winit::event::WindowEvent;
 use winit::window::Window;
@@ -57,7 +57,6 @@ impl Default for DiagnosticsState {
 /// CPU-side egui state. Lives on `App` as `Option<DebugUi>`.
 /// Initialized in `resumed()` (needs device `max_texture_dimension_2d`).
 /// GPU half (`DebugUiGpu`) lives on `Renderer`; lazy-initialized on first panel open.
-#[allow(dead_code)]
 pub struct DebugUi {
     pub ctx: egui::Context,
     pub winit_state: egui_winit::State,
@@ -65,7 +64,6 @@ pub struct DebugUi {
     pub panel_state: DiagnosticsState,
 }
 
-#[allow(dead_code)]
 impl DebugUi {
     pub fn new(window: &Window, max_texture_side: u32) -> Self {
         let ctx = egui::Context::default();
@@ -99,18 +97,6 @@ impl DebugUi {
 
     pub fn is_visible(&self) -> bool {
         self.visible
-    }
-
-    /// Pointer input is captured by egui only when the panel is visible.
-    /// Without the `visible` gate, an invisible egui context would still claim
-    /// hover/clicks against any background widgets it has retained from prior
-    /// frames.
-    pub fn wants_pointer_input(&self) -> bool {
-        self.visible && self.ctx.egui_wants_pointer_input()
-    }
-
-    pub fn wants_keyboard_input(&self) -> bool {
-        self.visible && self.ctx.egui_wants_keyboard_input()
     }
 }
 

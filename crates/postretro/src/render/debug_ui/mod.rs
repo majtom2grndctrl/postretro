@@ -1,5 +1,5 @@
-// Debug UI: CPU-side egui context + winit event bridge.
-// See: context/plans/in-progress/egui-debug-ui-foundation/
+// Debug UI overlay: egui context, winit event bridge, diagnostics panel.
+// See: context/lib/rendering_pipeline.md
 
 use winit::event::WindowEvent;
 use winit::window::Window;
@@ -54,14 +54,9 @@ impl Default for DiagnosticsState {
     }
 }
 
-/// CPU-side egui state. Lives on `App` as `Option<DebugUi>` so the engine can
-/// boot before the renderer is available (the constructor needs the device's
-/// `max_texture_dimension_2d` limit). The GPU half (`DebugUiGpu`) lives on
-/// `Renderer` and is constructed lazily on first panel open.
-///
-/// Fields/methods that are not yet consumed by later tasks (Task 6 panel
-/// layout, Task 7 input arbitration) are kept under `#[allow(dead_code)]` to
-/// lock in the shape without compiler warnings.
+/// CPU-side egui state. Lives on `App` as `Option<DebugUi>`.
+/// Initialized in `resumed()` (needs device `max_texture_dimension_2d`).
+/// GPU half (`DebugUiGpu`) lives on `Renderer`; lazy-initialized on first panel open.
 #[allow(dead_code)]
 pub struct DebugUi {
     pub ctx: egui::Context,
@@ -115,9 +110,6 @@ impl DebugUi {
     }
 
     pub fn wants_keyboard_input(&self) -> bool {
-        // `egui_wants_keyboard_input` is the 0.34 rename; the older name still
-        // resolves but warns. Stick with the current spelling so the build is
-        // warning-clean.
         self.visible && self.ctx.egui_wants_keyboard_input()
     }
 }

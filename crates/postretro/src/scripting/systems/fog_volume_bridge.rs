@@ -492,6 +492,10 @@ fn sample_saturation_curve_at(animation: &FogAnimation, start_ms: f64, now_ms: f
     Some(sample_density_curve(curve, t))
 }
 
+/// Sample `animation.min_brightness` at the current wall-clock time. Returns `None`
+/// when the animation carries no min_brightness curve — the component's static
+/// min_brightness is left untouched in that case. Shares the same phase math as
+/// the density channel so both channels move in lockstep on the same timeline.
 fn sample_min_brightness_curve_at(
     animation: &FogAnimation,
     start_ms: f64,
@@ -502,6 +506,10 @@ fn sample_min_brightness_curve_at(
     Some(sample_density_curve(curve, t))
 }
 
+/// Sample `animation.light_range` at the current wall-clock time. Returns `None`
+/// when the animation carries no light_range curve — the component's static
+/// light_range is left untouched in that case. Shares the same phase math as
+/// the density channel so both channels move in lockstep on the same timeline.
 fn sample_light_range_curve_at(
     animation: &FogAnimation,
     start_ms: f64,

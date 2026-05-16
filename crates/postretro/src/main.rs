@@ -1201,11 +1201,17 @@ impl App {
                 // Mod init runs before the worker spawns so any splash
                 // override registered during init can land before the level
                 // load begins.
+                //
+                // In debug builds, compile any stale definition scripts first
+                // so the hot-reload watcher starts from a consistent baseline.
+                // Release builds no-op.
+                let script_root = self.content_root.join("scripts");
+                self.script_runtime
+                    .compile_stale_scripts(&script_root, &self.content_root);
                 if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
                     log::error!("[Scripting] mod_init failed: {err}");
                 }
                 // Hot-reload watcher (debug-only); release builds no-op.
-                let script_root = self.content_root.join("scripts");
                 if let Err(err) = self
                     .script_runtime
                     .start_watcher(&script_root, &self.content_root)

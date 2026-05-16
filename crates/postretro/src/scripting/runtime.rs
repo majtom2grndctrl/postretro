@@ -139,6 +139,31 @@ impl ScriptRuntime {
         Ok(ReloadSummary::default())
     }
 
+    /// In debug builds: walk `script_root` recursively and `mod_root`
+    /// non-recursively, recompiling any `.ts` file whose sibling `.js` is
+    /// missing or older. No-op in release builds.
+    ///
+    /// Call this before [`ScriptRuntime::run_mod_init`] so domain scripts
+    /// edited between sessions are compiled before the engine loads them.
+    /// The two scopes mirror [`ScriptWatcher::spawn`]: nested helpers under
+    /// `scripts/` are walked recursively; top-level mod-root files
+    /// (`start-script.ts` and any siblings imported by it) are walked one
+    /// level. The scan mirrors the per-file freshness check in
+    /// `compile_start_script_if_stale` — same `<=` mtime comparison, same
+    /// compiler detection cascade, same error-logging strategy (warn and
+    /// continue rather than hard-fail). A missing `scripts-build` is logged
+    /// once and the scan returns without compiling.
+    pub(crate) fn compile_stale_scripts(&self, script_root: &Path, mod_root: &Path) {
+        #[cfg(debug_assertions)]
+        {
+            scan_and_compile_stale_ts(script_root, mod_root);
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (script_root, mod_root);
+        }
+    }
+
     pub(crate) fn quickjs(&self) -> &QuickJsSubsystem {
         &self.quickjs
     }
@@ -557,6 +582,165 @@ fn compile_start_script_if_stale(ts_path: &Path, js_path: &Path) -> Result<(), S
             .to_string()
     })?;
     super::watcher::run_ts_compiler(&compiler, ts_path, js_path)
+}
+
+/// In debug builds: walk `script_root` recursively and recompile any `.ts`
+/// file whose sibling `.js` is missing or older than the `.ts`. Detects the
+/// compiler once up front; logs a warning and returns early if not found.
+/// Per-file compile failures are logged as warnings; the scan continues so one
+/// broken file does not block the rest.
+#[cfg(debug_assertions)]
+fn scan_and_compile_stale_ts(script_root: &Path, mod_root: &Path) {
+    let script_root_present = script_root.is_dir();
+    let mod_root_present = mod_root.is_dir() && mod_root != script_root;
+    if !script_root_present && !mod_root_present {
+        return;
+    }
+
+    let compiler = match super::watcher::TsCompilerPath::detect() {
+        Some(c) => c,
+        None => {
+            log::warn!(
+                "[Scripting] startup TS scan: `scripts-build` not found — \
+                 stale `.ts` files will not be recompiled. \
+                 Install `scripts-build` on PATH or next to the engine binary.",
+            );
+            return;
+        }
+    };
+
+    let mut compiled = 0u32;
+    let mut failed = 0u32;
+    if script_root_present {
+        visit_ts_files(script_root, &compiler, &mut compiled, &mut failed);
+    }
+    // mod_root walked one level only — nested helpers belong under scripts/.
+    if mod_root_present {
+        visit_ts_files_shallow(mod_root, &compiler, &mut compiled, &mut failed);
+    }
+
+    if compiled > 0 || failed > 0 {
+        log::info!("[Scripting] startup TS scan: {compiled} recompiled, {failed} failed");
+    }
+}
+
+/// Non-recursive variant of `visit_ts_files` for the mod-root scope.
+/// Subdirectories are not descended — they are the watcher's `script_root`
+/// territory and are handled by the recursive walk.
+#[cfg(debug_assertions)]
+fn visit_ts_files_shallow(
+    dir: &Path,
+    compiler: &super::watcher::TsCompilerPath,
+    compiled: &mut u32,
+    failed: &mut u32,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(err) => {
+            log::warn!(
+                "[Scripting] startup TS scan: cannot read directory `{}`: {err}",
+                dir.display(),
+            );
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("ts") {
+            continue;
+        }
+        compile_one_if_stale(&path, compiler, compiled, failed);
+    }
+}
+
+/// Recursively walk `dir`, compiling stale `.ts` files. Subdirectory traversal
+/// errors (e.g. permission denied) are logged and skipped.
+#[cfg(debug_assertions)]
+fn visit_ts_files(
+    dir: &Path,
+    compiler: &super::watcher::TsCompilerPath,
+    compiled: &mut u32,
+    failed: &mut u32,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(err) => {
+            log::warn!(
+                "[Scripting] startup TS scan: cannot read directory `{}`: {err}",
+                dir.display(),
+            );
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+
+        if file_type.is_dir() {
+            visit_ts_files(&path, compiler, compiled, failed);
+            continue;
+        }
+
+        if path.extension().and_then(|s| s.to_str()) != Some("ts") {
+            continue;
+        }
+        compile_one_if_stale(&path, compiler, compiled, failed);
+    }
+}
+
+/// Compile a single `.ts` file when its sibling `.js` is missing or older.
+/// Same `<=` mtime comparison as `compile_start_script_if_stale` so a
+/// same-second save still triggers a rebuild.
+#[cfg(debug_assertions)]
+fn compile_one_if_stale(
+    path: &Path,
+    compiler: &super::watcher::TsCompilerPath,
+    compiled: &mut u32,
+    failed: &mut u32,
+) {
+    let js_path = super::watcher::compiled_output_for(path);
+    let ts_mtime = match fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(err) => {
+            log::warn!(
+                "[Scripting] startup TS scan: stat `{}`: {err}",
+                path.display(),
+            );
+            return;
+        }
+    };
+    let needs_build = match fs::metadata(&js_path).and_then(|m| m.modified()) {
+        Ok(js_mtime) => js_mtime <= ts_mtime,
+        Err(_) => true,
+    };
+    if !needs_build {
+        return;
+    }
+    match super::watcher::run_ts_compiler(compiler, path, &js_path) {
+        Ok(()) => {
+            log::debug!("[Scripting] startup TS scan: compiled `{}`", path.display(),);
+            *compiled += 1;
+        }
+        Err(msg) => {
+            log::warn!(
+                "[Scripting] startup TS scan: compile failed for `{}`: {msg}",
+                path.display(),
+            );
+            *failed += 1;
+        }
+    }
 }
 
 fn run_mod_init_quickjs(
@@ -1372,5 +1556,220 @@ mod tests {
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "GuardedMod");
+    }
+
+    // --- compile_stale_scripts tests -----------------------------------------
+
+    #[test]
+    fn compile_stale_scripts_is_noop_for_nonexistent_directory() {
+        // Passing a directory that does not exist must not panic or error.
+        // No compiler is invoked because `scan_and_compile_stale_ts` returns
+        // early when the path is not a directory.
+        let (rt, _ctx) = runtime();
+        let absent = std::env::temp_dir().join("postretro_scan_absent_dir_test");
+        assert!(!absent.exists(), "test setup: dir must not pre-exist");
+        // Should silently no-op.
+        rt.compile_stale_scripts(&absent, &absent);
+    }
+
+    #[test]
+    fn compile_stale_scripts_is_noop_when_no_ts_files_present() {
+        // `scripts/` directory exists but contains only `.luau` files. The
+        // scan walks the directory and finds nothing to compile.
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("scan_no_ts");
+        std::fs::write(dir.join("archetypes.luau"), "-- luau only\n").unwrap();
+        // Must complete without panic; no compiler binary needed.
+        rt.compile_stale_scripts(&dir, &dir);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn compile_stale_scripts_recompiles_ts_with_stale_js_sibling() {
+        // Acceptance criterion: a `.ts` file whose sibling `.js` is older than
+        // the `.ts` (or absent) gets recompiled by the startup scan.
+        use std::time::{Duration, SystemTime};
+
+        let compiler_path = ensure_scripts_build();
+        let (_rt, _ctx) = runtime();
+        let dir = temp_mod_root("scan_stale_ts");
+
+        let ts_path = dir.join("archetypes.ts");
+        let js_path = dir.join("archetypes.js");
+
+        fs::write(&ts_path, "export const x: number = 1;\n").unwrap();
+
+        // Write a JS sibling backdated by 5 seconds so it is definitely older
+        // than the TS. Use `set_modified` (std 1.75+) if available; fall back
+        // to simply not writing the JS at all (trigger the "missing sibling"
+        // code path instead).
+        fs::write(&js_path, "// stale\n").unwrap();
+        let stale_time = SystemTime::now()
+            .checked_sub(Duration::from_secs(5))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        if let Ok(file) = std::fs::File::options().write(true).open(&js_path) {
+            // `set_modified` is gated on the platform supporting it; ignore
+            // failures gracefully — the missing-sibling path is exercised
+            // instead if the mtime cannot be set.
+            let _ = file.set_modified(stale_time);
+            drop(file);
+        }
+
+        // Override PATH so `TsCompilerPath::detect()` finds our binary.
+        // `set_var` is only safe in single-threaded contexts; cargo test runs
+        // each `#[test]` on its own thread but a cargo test binary runs all
+        // threads in the same process, so we use the direct-call variant of
+        // the private helper instead of mutating the process environment.
+        // Instead, we invoke `scan_and_compile_stale_ts` with a synthesized
+        // compiler path via the `watcher` module's public API directly.
+        let _ = compiler_path; // compiler path used below via watcher API
+        // Since `compile_stale_scripts` relies on `TsCompilerPath::detect()`,
+        // which reads `current_exe`, we cannot inject an arbitrary path. But
+        // we can test the helper `visit_ts_files` directly, which is what
+        // `scan_and_compile_stale_ts` delegates to.
+        let mut compiled = 0u32;
+        let mut failed = 0u32;
+        let compiler =
+            super::super::watcher::TsCompilerPath::ScriptsBuildOnPath(ensure_scripts_build());
+        super::visit_ts_files(&dir, &compiler, &mut compiled, &mut failed);
+
+        assert_eq!(failed, 0, "no compile failures expected; failed={failed}",);
+        assert_eq!(
+            compiled, 1,
+            "exactly one stale .ts file should have been compiled",
+        );
+        assert!(
+            js_path.is_file(),
+            "compiled output `{}` must exist after scan",
+            js_path.display(),
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn compile_stale_scripts_skips_fresh_ts_files() {
+        // A `.ts` whose `.js` sibling is newer is skipped.
+        let dir = temp_mod_root("scan_fresh_ts");
+        let ts_path = dir.join("archetypes.ts");
+        let js_path = dir.join("archetypes.js");
+
+        // Write the JS first so it has an older mtime, then write the TS so
+        // it ends up newer. Because filesystem mtime granularity may be 1s on
+        // some platforms, we forcibly set the JS mtime to the future.
+        fs::write(&js_path, "// fresh\n").unwrap();
+        fs::write(&ts_path, "export const x: number = 1;\n").unwrap();
+
+        // Backdate the TS by 5 seconds to make the JS appear newer.
+        let old_time = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(5))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if let Ok(f) = std::fs::File::options().write(true).open(&ts_path) {
+            let _ = f.set_modified(old_time);
+        }
+
+        let mut compiled = 0u32;
+        let mut failed = 0u32;
+        // `ensure_scripts_build` not needed — the TS is fresh so no compile runs.
+        // We still need a valid `TsCompilerPath` to pass to `visit_ts_files`.
+        // Use a dummy path — it will never be invoked.
+        let compiler = super::super::watcher::TsCompilerPath::ScriptsBuildOnPath(
+            std::path::PathBuf::from("/dev/null/scripts-build-dummy"),
+        );
+        super::visit_ts_files(&dir, &compiler, &mut compiled, &mut failed);
+
+        assert_eq!(compiled, 0, "fresh .ts must not be recompiled");
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn compile_stale_scripts_walks_subdirectories() {
+        // A stale `.ts` nested inside a subdirectory must be found and
+        // compiled.
+        let dir = temp_mod_root("scan_nested_ts");
+        let sub = dir.join("actors");
+        fs::create_dir_all(&sub).unwrap();
+
+        let ts_path = sub.join("player.ts");
+        let js_path = sub.join("player.js");
+        fs::write(&ts_path, "export const role: string = 'player';\n").unwrap();
+        // No JS sibling → needs build.
+
+        let mut compiled = 0u32;
+        let mut failed = 0u32;
+        let compiler =
+            super::super::watcher::TsCompilerPath::ScriptsBuildOnPath(ensure_scripts_build());
+        super::visit_ts_files(&dir, &compiler, &mut compiled, &mut failed);
+
+        assert_eq!(failed, 0);
+        assert_eq!(compiled, 1, "nested stale .ts should be compiled");
+        assert!(
+            js_path.is_file(),
+            "compiled output `{}` must exist",
+            js_path.display(),
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn visit_ts_files_shallow_skips_nested_directories() {
+        // Mod-root scope is one level only — nested `.ts` files are the
+        // recursive `script_root` walk's territory.
+        let dir = temp_mod_root("scan_shallow");
+        fs::write(dir.join("start-script.ts"), "export {};\n").unwrap();
+        let nested = dir.join("scripts");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("nested.ts"), "export {};\n").unwrap();
+
+        let mut compiled = 0u32;
+        let mut failed = 0u32;
+        let compiler =
+            super::super::watcher::TsCompilerPath::ScriptsBuildOnPath(ensure_scripts_build());
+        super::visit_ts_files_shallow(&dir, &compiler, &mut compiled, &mut failed);
+
+        assert_eq!(failed, 0);
+        assert_eq!(
+            compiled, 1,
+            "only top-level start-script.ts should compile; nested/nested.ts must be left for the recursive walk"
+        );
+        assert!(dir.join("start-script.js").is_file());
+        assert!(
+            !nested.join("nested.js").is_file(),
+            "shallow walk must not descend into subdirectories"
+        );
+    }
+
+    /// Locate the freshly-built `scripts-build` binary. Mirrors the same
+    /// helper in `watcher.rs` tests. CARGO_MANIFEST_DIR is always set by cargo.
+    fn ensure_scripts_build() -> std::path::PathBuf {
+        fn scripts_build_binary() -> Option<std::path::PathBuf> {
+            let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let name = if cfg!(windows) {
+                "scripts-build.exe"
+            } else {
+                "scripts-build"
+            };
+            let mut dir: Option<&std::path::Path> = Some(manifest.as_path());
+            while let Some(d) = dir {
+                for profile in ["debug", "release"] {
+                    let candidate = d.join("target").join(profile).join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+                dir = d.parent();
+            }
+            None
+        }
+
+        if let Some(p) = scripts_build_binary() {
+            return p;
+        }
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "-p", "postretro-script-compiler"])
+            .status()
+            .expect("cargo build scripts-build");
+        assert!(status.success(), "failed to build scripts-build");
+        scripts_build_binary().expect("scripts-build should exist after build")
     }
 }

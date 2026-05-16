@@ -56,6 +56,13 @@ use crate::fx::smoke::SpriteFrame;
 /// - `fog_reachable` non-empty + masks absent: legacy-PRL fallback — keep all
 ///   canonical slots active so a PRL without section 31 still renders fog.
 ///
+/// `camera_leaf`'s own fog mask bits are always unioned into the result when
+/// masks are present, regardless of whether the camera leaf appears in
+/// `fog_reachable`. Portal traversal can omit the camera leaf on transient
+/// frames (e.g., grazing a portal seam); unioning prevents fog the camera is
+/// inside from flickering off. Idempotent when the camera leaf is already in
+/// `fog_reachable`.
+///
 /// Must be called after `FogPass::set_canonical_volumes`; before = 0
 /// canonical count = 0 mask.
 fn compute_fog_cell_mask(
@@ -2485,29 +2492,33 @@ impl Renderer {
 
     /// Sub-0.01 lights excluded from slot ranking — animated-dark lights don't waste a shadow slot.
     /// Short/empty `effective_brightness` = all-1.0 (first frame runs before bridge).
+    ///
+    /// `light_reachable_leaf_mask` is the wider fog/light-reachable leaf set
+    /// (includes empty `face_count == 0` portal-reachable leaves), not the
+    /// face-visible set — lights in empty reachable leaves stay eligible.
     pub fn update_dynamic_light_slots(
         &mut self,
         camera_position: Vec3,
         camera_near_clip: f32,
         light_influences: &[LightInfluence],
         effective_brightness: &[f32],
-        visible_leaf_mask: &[bool],
+        light_reachable_leaf_mask: &[bool],
     ) {
         if self.level_lights.is_empty() {
             return;
         }
 
-        // Empty visible_leaf_mask = DrawAll. ALPHA_LIGHT_LEAF_UNASSIGNED = unassigned → always cull.
+        // Empty light_reachable_leaf_mask = DrawAll. ALPHA_LIGHT_LEAF_UNASSIGNED = unassigned → always cull.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let mut visible_lights = vec![false; self.level_lights.len()];
         for (i, light) in self.level_lights.iter().enumerate() {
             let leaf_visible = if light.leaf_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
                 false
-            } else if visible_leaf_mask.is_empty() {
+            } else if light_reachable_leaf_mask.is_empty() {
                 true
             } else {
                 let li = light.leaf_index as usize;
-                li < visible_leaf_mask.len() && visible_leaf_mask[li]
+                li < light_reachable_leaf_mask.len() && light_reachable_leaf_mask[li]
             };
             if !leaf_visible {
                 continue;
@@ -2606,7 +2617,7 @@ impl Renderer {
     pub fn render_frame_indirect(
         &mut self,
         visible: &VisibleCells,
-        visible_leaf_mask: &[bool],
+        light_reachable_leaf_mask: &[bool],
         fog_reachable: &[u32],
         camera_leaf: Option<u32>,
         view_proj: Mat4,
@@ -2732,7 +2743,7 @@ impl Renderer {
             crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
             &influences,
             &eff_brightness,
-            visible_leaf_mask,
+            light_reachable_leaf_mask,
         );
         self.light_effective_brightness = eff_brightness;
         self.dynamic_light_influences = influences;

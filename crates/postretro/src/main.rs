@@ -349,7 +349,7 @@ struct App {
     /// Seconds since level load, not wall clock. Resets to zero on level
     /// unload. Maintained for any future engine consumers that need a
     /// level-relative monotonic clock.
-    script_time: f32,
+    script_time: f64,
 
     /// Per-stage durations for log line A — engine boot
     /// (args_parsed, script_runtime_ctor, event_loop_created, window_created,
@@ -796,7 +796,10 @@ impl ApplicationHandler for App {
 
                 // Level-relative monotonic clock consumed by light_bridge.update,
                 // the emitter sim, and the map-light collector.
-                self.script_time += frame_dt;
+                // Widen to f64 at the accumulation boundary so summing across
+                // long sessions (30+ min at 144 Hz) doesn't quantize the
+                // millisecond-precision clock the fog volume bridge consumes.
+                self.script_time += frame_dt as f64;
 
                 // Position interpolated from tick-state slots; yaw/pitch from
                 // `self.camera` directly so zero-tick frames still see this
@@ -844,7 +847,7 @@ impl ApplicationHandler for App {
                 // empty (face_count == 0) portal-reachable leaves stay
                 // eligible. Empty slice = DrawAll sentinel: keep every
                 // leaf-assigned light eligible on fallback paths.
-                let visible_leaf_mask: Vec<bool> = match self.level.as_ref() {
+                let light_reachable_leaf_mask: Vec<bool> = match self.level.as_ref() {
                     None => Vec::new(),
                     Some(_) if fog_reachable.is_empty() => Vec::new(),
                     Some(world) => {
@@ -866,7 +869,7 @@ impl ApplicationHandler for App {
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
                         self.emitter_bridge
-                            .update(&mut registry, frame_dt, self.script_time);
+                            .update(&mut registry, frame_dt, self.script_time as f32);
                     }
 
                     // Particle sim — after emitter bridge, before light bridge.
@@ -886,7 +889,8 @@ impl ApplicationHandler for App {
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
                         if let Some(update) =
-                            self.light_bridge.update(&mut registry, self.script_time)
+                            self.light_bridge
+                                .update(&mut registry, self.script_time as f32)
                         {
                             if update.has_dirty_data {
                                 renderer.upload_bridge_lights(&update.lights_bytes);
@@ -916,7 +920,7 @@ impl ApplicationHandler for App {
                         // so the existing pack path picks them up unchanged.
                         let mut registry = self.script_ctx.registry.borrow_mut();
                         self.fog_volume_bridge
-                            .tick(&mut registry, self.script_time as f64);
+                            .tick(&mut registry, self.script_time);
                     }
                     let all_lights = {
                         let registry = self.script_ctx.registry.borrow();
@@ -929,7 +933,7 @@ impl ApplicationHandler for App {
                         }
                         renderer.set_fog_aabbs(self.fog_volume_bridge.active_aabbs());
                         self.light_bridge
-                            .collect_all_as_map_lights(&registry, self.script_time)
+                            .collect_all_as_map_lights(&registry, self.script_time as f32)
                     };
                     let point_bytes = self.fog_volume_bridge.update_points(&all_lights);
                     renderer.upload_fog_points(point_bytes);
@@ -947,12 +951,12 @@ impl ApplicationHandler for App {
                             self.particle_render.iter_collections().collect();
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
-                            &visible_leaf_mask,
+                            &light_reachable_leaf_mask,
                             &fog_reachable,
                             Some(stats.camera_leaf),
                             view_proj,
                             &particle_collections,
-                            self.script_time as f64,
+                            self.script_time,
                         ) {
                             Ok(opt) => opt,
                             Err(err) => {

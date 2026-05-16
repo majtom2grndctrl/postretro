@@ -486,31 +486,48 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // SH irradiance is band-limited and the SH grid is much coarser than the
     // march step size. Sampling 9 trilinear 3D fetches per step is wasted
-    // bandwidth — we cache one sample and refresh every `sh_stride` steps
+    // bandwidth — we cache one sample and refresh whenever the march has
+    // advanced more than `sh_coverage_dist` world units since the last sample
     // (reset at each sub-interval boundary) to bound drift without per-step cost.
     // The cache lives in scalar locals (no array, no callee pointer) so it stays
     // in registers and never hits the Metal private-memory trap.
     //
-    // `sh_stride` is derived once per ray from the SH grid cell size and the
-    // fog march step size, so the meters-per-cache-sample budget stays
-    // proportional to the baked SH resolution regardless of `--probe-spacing`
-    // or `fog_step_size`. `cell_size` is a per-axis world-space length
-    // (matches `probe_spacing_meters` on the host); taking the minimum
-    // component is the conservative choice for anisotropic grids. Floored at
-    // 1 (a stride of 0 would loop) and capped at `MAX_SH_RESAMPLE_STRIDE` to
-    // keep pathological inputs (very small `step_size`) bounded.
+    // Why distance-based, not step-count-based: an animated fog_lamp density
+    // shifts the `transmittance < 0.01` early-out break point by ±1 step
+    // frame-to-frame. With a step-count schedule, that ±1 step shift changes
+    // which `cached_sh` value governs the final step (up to stride-1 steps
+    // stale) for radial volumes, where per-step `fade` varies sharply with
+    // position — producing a frame-to-frame radiance discontinuity (flicker).
+    // A distance-based schedule is shift-invariant in world space: cached_sh
+    // at world position P is the same whether the loop reached P in N or N+1
+    // steps, so the per-frame delta collapses to just the smooth contribution
+    // of the extra step itself.
+    //
+    // `sh_coverage_dist` is derived once per ray from the SH grid cell size,
+    // so the meters-per-cache-sample budget stays proportional to the baked
+    // SH resolution regardless of `--probe-spacing` or `fog_step_size`.
+    // `cell_size` is a per-axis world-space length (matches
+    // `probe_spacing_meters` on the host); taking the minimum component is
+    // the conservative choice for anisotropic grids. Floored at `step` (one
+    // sample per step minimum) and capped at `MAX_SH_RESAMPLE_STRIDE * step`
+    // to keep pathological inputs (very small `step_size`) bounded — these
+    // bounds preserve the historical stride [1, MAX_SH_RESAMPLE_STRIDE]
+    // semantics, just expressed in distance.
     //
     // Default-case sanity: cell_size = 1.0m, step = 0.5m →
-    //   stride = clamp(4.0 * 1.0 / 0.5, 1, 32) = 8 — matches the previous
-    //   hardcoded value, so default visual output is unchanged.
+    //   sh_coverage_dist = clamp(4.0, 0.5, 16.0) = 4.0m, i.e. ~one sample
+    //   every 8 steps — matches the previous hardcoded stride 8, so default
+    //   visual output is unchanged.
     let cell_min = min(min(sh_grid.cell_size.x, sh_grid.cell_size.y), sh_grid.cell_size.z);
-    let sh_stride = clamp(
-        u32(SH_COVERAGE_CELLS * cell_min / step),
-        1u,
-        MAX_SH_RESAMPLE_STRIDE,
+    let sh_coverage_dist = clamp(
+        SH_COVERAGE_CELLS * cell_min,
+        step,
+        f32(MAX_SH_RESAMPLE_STRIDE) * step,
     );
     var cached_sh: vec3<f32> = vec3<f32>(0.0);
-    var sh_steps_since_sample: u32 = 0u;
+    // Sentinel triggering a fresh sample on the first eligible step. Any value
+    // <= -sh_coverage_dist works; -1e30 is safely beyond any plausible `t`.
+    var t_last_sh_sample: f32 = -1.0e30;
 
     for (var ui: u32 = 0u; ui < union_count; ui = ui + 1u) {
         if transmittance < 0.01 { break; }
@@ -523,7 +540,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var t = sub_enter + step * 0.5;
         // Force a fresh SH sample at the first eligible step in each new
         // sub-interval (gaps between sub-intervals can be large).
-        sh_steps_since_sample = sh_stride;
+        t_last_sh_sample = -1.0e30;
 
         loop {
             if t >= sub_exit { break; }
@@ -643,11 +660,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // color, then apply saturation and tint before folding into accum.
                 var step_scatter: vec3<f32> = vec3<f32>(0.0);
 
-                if sh_steps_since_sample >= sh_stride {
+                // Distance-based refresh: resample when the march has advanced
+                // at least `sh_coverage_dist` world units past the last sample.
+                // This keeps the cache schedule a function of world position
+                // (not step index), so animated-density-induced ±1 step shifts
+                // at the early-out don't change which cached value governs the
+                // boundary step.
+                if t - t_last_sh_sample >= sh_coverage_dist {
                     cached_sh = sample_sh_fog(pos);
-                    sh_steps_since_sample = 0u;
+                    t_last_sh_sample = t;
                 }
-                sh_steps_since_sample = sh_steps_since_sample + 1u;
                 step_scatter = step_scatter + cached_sh;
 
                 // Dynamic spot beams.

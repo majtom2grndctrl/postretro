@@ -140,7 +140,7 @@ export function registerLevelManifest(_ctx: unknown) {
     // density curve, evaluated per-frame across `periodMs` on each
     // matched volume.
     for (const fog of fogs) {
-      const steps = fogPulse(fog.id, 0.2, 1.0, 1.5);
+      const steps = fogPulse(fog.id, 0.2, 1.0, 5000);
       reactions.push(registerReaction("levelLoad", { sequence: steps }));
     }
   }

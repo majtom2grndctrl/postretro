@@ -344,12 +344,31 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let depth_dims = textureDimensions(depth_texture);
     let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / vec2<f32>(out_dims);
 
-    // Nearest full-res depth texel for this low-res fragment.
-    let depth_xy = vec2<u32>(
-        min(u32(uv.x * f32(depth_dims.x)), depth_dims.x - 1u),
-        min(u32(uv.y * f32(depth_dims.y)), depth_dims.y - 1u),
-    );
-    let depth_ndc = textureLoad(depth_texture, vec2<i32>(depth_xy), 0);
+    // Min-over-block depth tap: take the closest hit across every full-res
+    // depth texel covered by this low-res scatter texel. A single nearest
+    // sample lets fog bleed through thin silhouettes when the sub-pixel that
+    // actually contained the foreground geometry isn't the one we picked;
+    // min-reducing the block selects the nearest surface, which is the right
+    // upper bound for the ray's `max_t`. The loop is bounded by the compile-
+    // time constant `MAX_PIXEL_SCALE = 8` (matches the FGD `fog_pixel_scale`
+    // range [1, 8]) so WGSL can unroll/bound it; runtime `pixel_scale` values
+    // truncate via the inner `break`s. The `min(..., depth_dims - 1)` clamp
+    // handles window sizes that aren't an exact multiple of `pixel_scale`.
+    let ps_x = depth_dims.x / out_dims.x;
+    let ps_y = depth_dims.y / out_dims.y;
+    let base = vec2<u32>(gid.x * ps_x, gid.y * ps_y);
+    let depth_max = depth_dims - vec2<u32>(1u);
+    var depth_ndc: f32 = 1.0;
+    for (var dy: u32 = 0u; dy < 8u; dy = dy + 1u) {
+        if dy >= ps_y { break; }
+        for (var dx: u32 = 0u; dx < 8u; dx = dx + 1u) {
+            if dx >= ps_x { break; }
+            let sx = min(base.x + dx, depth_max.x);
+            let sy = min(base.y + dy, depth_max.y);
+            let sample = textureLoad(depth_texture, vec2<i32>(vec2<u32>(sx, sy)), 0);
+            depth_ndc = min(depth_ndc, sample);
+        }
+    }
     let ray = reconstruct_ray(uv, depth_ndc);
 
     let step = max(fog.step_size, 1.0e-3);

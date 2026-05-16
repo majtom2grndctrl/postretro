@@ -201,7 +201,8 @@ struct FogSpotLight {
 // Copy-pasted from forward.wgsl (sh_irradiance + sample_sh_indirect_fast).
 // WGSL has no include mechanism — this is a source-level copy, not string-concat
 // composition. rendering_pipeline.md §8 is the extraction pattern when a third
-// consumer appears; two callers don't justify the indirection.
+// consumer appears. Current consumers: fog_volume.wgsl + forward.wgsl +
+// billboard.wgsl — three callers; extraction may now be warranted.
 
 fn sh_irradiance(
     b0: vec3<f32>, b1: vec3<f32>, b2: vec3<f32>, b3: vec3<f32>,
@@ -361,6 +362,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ps_x = depth_dims.x / out_dims.x;
     let ps_y = depth_dims.y / out_dims.y;
     let base = vec2<u32>(gid.x * ps_x, gid.y * ps_y);
+    // depth_dims is always > 0 (the surface depth texture is never zero-sized), so this subtraction never wraps.
     let depth_max = depth_dims - vec2<u32>(1u);
     var depth_ndc: f32 = 1.0;
     for (var dy: u32 = 0u; dy < MAX_PIXEL_SCALE; dy = dy + 1u) {

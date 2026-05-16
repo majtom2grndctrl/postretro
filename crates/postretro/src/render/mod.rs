@@ -77,7 +77,9 @@ fn compute_fog_cell_mask(
         (1u32 << canonical_volume_count).wrapping_sub(1)
     };
     match (fog_reachable.is_empty(), fog_cell_masks) {
-        // Empty fog_reachable: DrawAll equivalent — portal isolation doesn't apply.
+        // Empty fog_reachable: portal isolation doesn't apply — either the world is
+        // empty (DrawAll arm), or a non-portal fallback ran (solid-leaf, exterior,
+        // no-portals) and produced no fog_reachable set. All canonical slots active.
         (true, _) => all_slots_mask,
         // AND against `all_slots_mask` so reserved bits 16..32 in the baked
         // mask (or trailing bits past the loaded canonical count) cannot set
@@ -2736,6 +2738,7 @@ impl Renderer {
             .dispatch(&mut encoder, &self.uniform_bind_group);
 
         // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
+        // Both eff_brightness and influences use this pattern for the same reason.
         let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
         let influences = std::mem::take(&mut self.dynamic_light_influences);
         self.update_dynamic_light_slots(
@@ -3038,7 +3041,7 @@ impl Renderer {
         }
 
         // Caller (`App`) presents after optionally appending the egui overlay
-        // pass via `render_debug_ui`. See plan §Task 5.
+        // pass via `render_debug_ui`.
         Ok(Some(output))
     }
 }
@@ -3154,7 +3157,10 @@ mod tests {
         let masks = vec![0b001u32, 0b010, 0b101, 0b000]; // 4 leaves, 3 fog volumes
         let fog_reachable = [1u32, 2];
         let active = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(1));
-        assert_eq!(active, 0b111); // leaf1→0b010, leaf2→0b101 → OR 0b111
+        assert_eq!(active, 0b111); // leaf1→0b010, leaf2→0b101 → OR 0b111; camera-leaf
+                                   // union (camera_leaf=1, already in reachable set) is
+                                   // idempotent here — see
+                                   // compute_fog_cell_mask_camera_leaf_union_is_idempotent_when_already_reachable
     }
 
     #[test]

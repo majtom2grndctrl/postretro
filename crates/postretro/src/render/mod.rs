@@ -3161,10 +3161,10 @@ mod tests {
         let masks = vec![0b001u32, 0b010, 0b101, 0b000]; // 4 leaves, 3 fog volumes
         let fog_reachable = [1u32, 2];
         let active = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(1));
-        assert_eq!(active, 0b111); // leaf1→0b010, leaf2→0b101 → OR 0b111; camera-leaf
-                                   // union (camera_leaf=1, already in reachable set) is
-                                   // idempotent here — see
-                                   // compute_fog_cell_mask_camera_leaf_union_is_idempotent_when_already_reachable
+        // leaf1→0b010, leaf2→0b101 → OR 0b111; camera-leaf union (camera_leaf=1,
+        // already in reachable set) is idempotent here — see
+        // compute_fog_cell_mask_camera_leaf_union_is_idempotent_when_already_reachable
+        assert_eq!(active, 0b111);
     }
 
     #[test]

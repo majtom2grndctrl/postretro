@@ -33,12 +33,13 @@ All engine-bound script state — entity-type registrations and per-level reacti
 - [ ] A `start-script.ts` returning `{ name: "x", entities: [defineEntity({ classname: "y" })] }` from `setupMod()` causes the engine to populate `DataRegistry.entities` with one descriptor for classname `"y"` before any level loads.
 - [ ] A `start-script.ts` returning `{ name: "x" }` (no `entities` field) succeeds — `entities` is optional.
 - [ ] A `start-script.ts` whose `setupMod()` return has `entities` set to something other than an array fails `run_mod_init` with a `ScriptError::InvalidArgument` whose message names the offending field.
-- [ ] Identical entity descriptors registered across multiple `setupMod()` calls (e.g. debug reload) follow the same silent-no-op vs. overwrite-with-debug-log semantics as the previous `upsert_entity_type` path.
+- [ ] Duplicate classnames within a single `setupMod()` return follow the existing `upsert_entity_type` semantics: identical descriptors collapse silently; differing descriptors last-write-win and `log::debug!`. (Mod-init is engine-init-only — no across-call case to specify.)
 - [ ] All `.ts` / `.luau` scripts under `content/dev/` and `sdk/behaviors/reference/` compile (TS via `scripts-build`, Luau via `mlua::Compiler`) and run their `setupMod` / `setupLevel` successfully against the dev-mod scene (`content/dev/maps/campaign-test.prl`).
-- [ ] No script under `content/` or `sdk/behaviors/` performs entity registration as a top-level side effect. Static check: grep for `defineEntity(` outside of an `export function setup` body or an exported `const` whose name appears in a `setupMod` return finds zero hits.
 - [ ] `tsc --noEmit` over `content/dev/start-script.ts` rejects a `setupMod` return that supplies a malformed `EntityTypeDescriptor` (e.g. missing `classname`) at the call site, citing the offending descriptor literal — not just the return statement.
 - [ ] `cargo test -p postretro --lib scripting` passes, including the data-script manifest deserialization tests retargeted to `setupLevel`.
-- [ ] `cargo run -p postretro --bin gen-script-types` produces `sdk/types/postretro.d.ts` and `sdk/types/postretro.d.luau` with: no `registerEntity` declaration; a `defineEntity(d: EntityTypeDescriptor): EntityTypeDescriptor` declaration; a `defineReaction` declaration replacing `registerReaction`; and a `ModManifest` type whose `entities` field is `EntityTypeDescriptor[]?`. The drift test under `cargo test -p postretro` is green against the committed files.
+- [ ] `cargo run -p postretro --bin gen-script-types` produces `sdk/types/postretro.d.ts` and `sdk/types/postretro.d.luau` with: no `registerEntity` declaration; a `ModManifest` type whose `entities` field is `EntityTypeDescriptor[]?`; and `EntityTypeDescriptor` still present in the emitted type graph. The drift test under `cargo test -p postretro` is green against the committed files.
+- [ ] A parity test under `cargo test -p postretro` fails if the field set on the `ModManifest` registered type (primitives/mod.rs) diverges from `ModManifestResult` (runtime.rs). `ModManifestResult` is canonical; the registered type exists only so the generator can emit it.
+- [ ] `sdk/lib/data_script.ts` exports `defineEntity(d: EntityTypeDescriptor): EntityTypeDescriptor` and `defineReaction` with correct TypeScript signatures. `sdk/lib/data_script.luau` provides `defineEntity` and `defineReaction` as Luau globals with functionally equivalent parameter shapes and return types — same semantics and field contracts, not necessarily identical source.
 - [ ] `context/lib/scripting.md` describes the new contract: no mention of `registerEntity` as a primitive; `setupMod` / `setupLevel` documented as the only entry points; `defineEntity` / `defineReaction` documented as pure builders whose only effect is type-checked construction.
 
 ## Boundary inventory
@@ -57,7 +58,7 @@ All engine-bound script state — entity-type registrations and per-level reacti
 
 ### Task 1: Extend `ModManifestResult` and the mod-init parser
 
-Add `entities: Vec<EntityTypeDescriptor>` to `ModManifestResult` in `crates/postretro/src/scripting/runtime.rs` (struct at line 25). In `run_mod_init_quickjs` and `run_mod_init_luau`, after reading `name`, read an optional `entities` value from the returned object/table. Missing key → empty `Vec`. Present-but-not-array → `ScriptError::InvalidArgument` naming `entities`. Each array element parses via the same `EntityTypeDescriptor::from_js_value` / `from_lua_value` deserializer used today by the `registerEntity` primitive (lift the relevant conversion out of `entity.rs` if not already public; the descriptor already has serde derives). On the success path, do not yet apply the entities — Task 3 wires the consumer.
+Add `entities: Vec<EntityTypeDescriptor>` to `ModManifestResult` in `crates/postretro/src/scripting/runtime.rs` (struct at line 25). In `run_mod_init_quickjs` and `run_mod_init_luau`, after reading `name`, read an optional `entities` value from the returned object/table. Missing key → empty `Vec`. Present-but-not-array → `ScriptError::InvalidArgument` naming `entities`. Each array element parses via the free-standing `entity_descriptor_from_js` / `entity_descriptor_from_lua` functions already used by the `registerEntity` primitive in `entity.rs` (both are already `pub(crate)` in `data_descriptors.rs`). On the success path, do not yet apply the entities — Task 3 wires the consumer.
 
 ### Task 2: Remove `registerEntity` primitive
 
@@ -65,34 +66,36 @@ Delete the `registerEntity` registration block in `crates/postretro/src/scriptin
 
 ### Task 3: Wire `ModManifestResult.entities` into `DataRegistry`
 
-In `ScriptRuntime::run_mod_init` (runtime.rs:244), after `self.mod_manifest = Some(manifest)`, drain `manifest.entities` into `DataRegistry.upsert_entity_type` via the `ScriptCtx::data_registry` handle. Keep the existing `upsert_entity_type` semantics: identical re-inserts are silent, differing re-inserts overwrite and `log::debug!`. The `DataRegistry.entities` field stays — it's still the engine-global store; only the writer changes from "script primitive closure" to "Rust ingestion after `setupMod`". Update the comment on `DataRegistry::entities` (data_registry.rs:18–22) to reflect the new writer.
+`ScriptRuntime` does not hold a `DataRegistry` handle — and shouldn't. The return-channel model wants the runtime to parse and return; the caller owns lifecycle state. `ScriptRuntime::run_mod_init` returns the parsed `ModManifestResult` (or surfaces it via its stored `mod_manifest` slot); the caller — the engine boot path that invokes `run_mod_init` — drains `manifest.entities` into `DataRegistry.upsert_entity_type` after a successful return. Identify the call site (boot sequence — see `context/lib/boot_sequence.md`) and add the drain there. Keep the existing `upsert_entity_type` semantics: identical re-inserts silent, differing re-inserts overwrite and `log::debug!`. The `DataRegistry.entities` field stays — it's still the engine-global store; only the writer moves from "script primitive closure" to "boot-side ingestion after `setupMod`". Update the comment on `DataRegistry::entities` (data_registry.rs:18–22) to reflect the new writer.
 
 ### Task 4: Rename `registerLevelManifest` → `setupLevel`
 
-In `run_data_script_quickjs` (runtime.rs:447) and `run_data_script_luau` (runtime.rs:537), change the global lookup from `"registerLevelManifest"` to `"setupLevel"`. Update every diagnostic string that names the entry point (runtime.rs:452, 478, 540, plus the `from_js_value` / `from_lua_value` error messages in data_descriptors.rs at lines 221, 247). Update the doc comments on `LevelManifest` in `data_descriptors.rs` (lines 167–171, 215, 240) and on the runtime functions. The two existing in-runtime unit tests at runtime.rs:984 and runtime.rs:1004 must rename their script-side function and continue to pass.
+In `run_data_script_quickjs` (defined at runtime.rs:404; `"registerLevelManifest"` lookup at line 447) and `run_data_script_luau` (defined at runtime.rs:501; lookup at line 537), change the global lookup string to `"setupLevel"`. Update every diagnostic string that names the entry point (runtime.rs:452, 478, 540, plus the `from_js_value` / `from_lua_value` error messages in data_descriptors.rs at lines 221, 247). Update the doc comments on `LevelManifest` in `data_descriptors.rs` (lines 167–171) and the fn-level comments at lines 216, 241 and on the runtime functions. The two existing in-runtime unit tests at runtime.rs:984 and runtime.rs:1004 must rename their script-side function and continue to pass.
 
 ### Task 5: Rename `registerReaction` → `defineReaction` in SDK
 
-Rename the exported function in `sdk/lib/data_script.ts` (line ~70) and `sdk/lib/data_script.luau` (`DataScriptSdk.registerReaction`). It is purely an identity-style builder — no Rust impact. Update the Luau prelude wiring in `crates/postretro/src/scripting/luau.rs` if it lifts `registerReaction` by name into globals (check the `DATA_SCRIPT_LUAU_FIELDS`-equivalent constant). TS auto-promotion via `ExportToGlobal` picks up the rename without further wiring.
+Rename the exported function in `sdk/lib/data_script.ts` (line ~70) and `sdk/lib/data_script.luau` (`DataScriptSdk.registerReaction`). It is purely an identity-style builder — no Rust impact. Update `DATA_SCRIPT_FIELDS` in `crates/postretro/src/scripting/luau.rs` (line 77): replace `"registerReaction"` with `"defineReaction"` and remove the stale `"registerEntities"` (plural) entry. TS auto-promotion via `ExportToGlobal` picks up the rename without further wiring.
 
 ### Task 6: Add `defineEntity` SDK builder
 
-Add `defineEntity(d: EntityTypeDescriptor): EntityTypeDescriptor` to `sdk/lib/data_script.ts` and an analogous `defineEntity` in `sdk/lib/data_script.luau`. Body is the identity function — its sole purpose is to give authors a typed construction site. Add it to the Luau field-lifting list alongside `defineReaction` so it appears as a Luau global. Update the canonical-example header comment in `data_script.luau` (lines 9–28) to show the new shape.
+Add `defineEntity(d: EntityTypeDescriptor): EntityTypeDescriptor` to `sdk/lib/data_script.ts` and an analogous `defineEntity` in `sdk/lib/data_script.luau`. Body is the identity function — its sole purpose is to give authors a typed construction site. The TS and Luau implementations must be functionally equivalent: same parameter shape (`EntityTypeDescriptor`), same return type, same identity behavior. Literal source parity is not required — TypeScript annotations and Luau type syntax differ by design. Add `"defineEntity"` to `DATA_SCRIPT_FIELDS` in `crates/postretro/src/scripting/luau.rs` alongside `"defineReaction"`. Post-change list: `&["defineReaction", "defineEntity"]`. Update the canonical-example header comment in `data_script.luau` (lines 9–28) to show the new shape.
 
 ### Task 7: Update the type generator
 
 In `crates/postretro/src/bin/gen_script_types.rs` and `crates/postretro/src/scripting/typedef.rs`:
 - Confirm `registerEntity` no longer appears (it falls out automatically once Task 2 deletes the registration).
-- Extend the `ModManifest` registered type (primitives/mod.rs:224) to include the optional `entities` field — type `EntityTypeDescriptor[]`, doc "Engine-global entity-type registrations. Survive level unload."
+- Extend the `ModManifest` registered type (primitives/mod.rs:224) to include the optional `entities` field — type `EntityTypeDescriptor[]`, doc "Engine-global entity-type registrations. Survive level unload." `ModManifestResult` (runtime.rs) is the canonical shape; the registered type mirrors it solely so `gen-script-types` can emit it. Add a parity test that asserts the two field sets match, so drift fails CI rather than silently desynchronizing scripts from runtime.
 - Confirm `EntityTypeDescriptor` is reachable from the type-graph walk (it must already be, since it's a Rust serde type; verify it gets emitted to the SDK files even though it's no longer a primitive parameter).
 - Emit a `LevelManifest` type whose entry-point comment names `setupLevel` rather than `registerLevelManifest`.
 - The drift test (in `cargo test -p postretro`, currently keyed off the registry hash) regenerates and re-commits expected files.
+
+`defineEntity` and `defineReaction` are pure SDK builders — their types live in `sdk/lib/data_script.{ts,luau}` and are not emitted by `gen-script-types`. The type generator's scope is the primitive registry only.
 
 ### Task 8: Migrate user and reference scripts
 
 - `content/dev/start-script.ts`: replace the side-effect `import "./scripts/player";` with `import { playerEntity } from "./scripts/player";`. Have `setupMod()` return `{ name: "dev", entities: [playerEntity] }`. Also import and concatenate `referenceEntities` from `sdk/behaviors/reference/entities.ts`.
 - `content/dev/scripts/player.ts`: replace the top-level `registerEntity({...})` call with `export const playerEntity = defineEntity({...})`.
-- `content/dev/scripts/arena-lights.ts` (lines 14–22): pull the two `registerEntity` calls out of `setupLevel(_ctx)`. Move those entity descriptors to module-level `export const`s; have `start-script.ts` aggregate them through its `setupMod` return. Rename the function from `registerLevelManifest` to `setupLevel`. Rename `registerReaction(...)` calls to `defineReaction(...)`.
+- `content/dev/scripts/arena-lights.ts` (lines 14–19): pull the two `registerEntity` calls out of `setupLevel(_ctx)`. Move those entity descriptors to a module-level `export const arenaLightEntities: EntityTypeDescriptor[]` array; have `start-script.ts` import and spread it in its `setupMod` return. Rename the function from `registerLevelManifest` to `setupLevel`. Rename `registerReaction(...)` calls to `defineReaction(...)`.
 - `content/dev/scripts/fog-pulse-demo.ts`: rename `registerLevelManifest` → `setupLevel`; rename `registerReaction` → `defineReaction`.
 - `sdk/behaviors/reference/entities.ts`: replace `registerReferenceEntities()` (which calls `registerEntity` for side effect) with an exported `referenceEntities: EntityTypeDescriptor[]` array built via `defineEntity`. Same change in `entities.luau` (`M.referenceEntities = { ... }`). Update the file header comment to drop the "must run inside `registerLevelManifest`" guidance — it's now data, not a function.
 - Regenerate `content/dev/start-script.js` and every compiled `.js` sibling under `content/dev/scripts/` via `cargo run -p postretro-script-compiler` (or rely on the debug auto-compile on next engine start).
@@ -134,7 +137,7 @@ let entities: Vec<EntityTypeDescriptor> = if obj.contains_key("entities")? {
     let mut out = Vec::with_capacity(arr.len());
     for i in 0..arr.len() {
         let v: JsValue = arr.get(i)?;
-        out.push(EntityTypeDescriptor::from_js_value(&ctx, v)?);
+        out.push(entity_descriptor_from_js(&ctx, v)?);
     }
     out
 } else {
@@ -143,20 +146,20 @@ let entities: Vec<EntityTypeDescriptor> = if obj.contains_key("entities")? {
 out = Ok(ModManifestResult { name, entities });
 ```
 
-The Luau mirror reads from a `Table` and uses `EntityTypeDescriptor::from_lua_value`. Both deserializers already exist — `registerEntity`'s closure calls them today via rquickjs/mlua type conversion. Promote whatever conversion path the closure uses (likely `FromJs`/`FromLua` derives on `EntityTypeDescriptor`) to a public-in-crate function if it isn't one already.
+The Luau mirror reads from a `Table` and uses `entity_descriptor_from_lua`. Both free functions already exist in `data_descriptors.rs` as `pub(crate)` — `registerEntity`'s closure calls them today. No promotion needed.
 
-**Ingestion** (Task 3, at end of `ScriptRuntime::run_mod_init`):
+**Ingestion** (Task 3, in the boot caller after `run_mod_init` returns):
 
 ```rust
-// Proposed design — after `self.mod_manifest = Some(manifest)`:
-let entities = std::mem::take(&mut self.mod_manifest.as_mut().unwrap().entities);
-let mut reg = self.ctx.data_registry.borrow_mut();
-for desc in entities {
-    reg.upsert_entity_type(desc);
+// Proposed design — at the boot site that drives mod init.
+script_runtime.run_mod_init(&source)?;
+let manifest = script_runtime.mod_manifest_mut().expect("set by run_mod_init");
+for desc in std::mem::take(&mut manifest.entities) {
+    data_registry.upsert_entity_type(desc);
 }
 ```
 
-(Whether to retain the descriptors on the manifest after draining is a minor decision — draining keeps a single owner; cloning preserves observability for debug tooling. Drain unless a use case for the second copy surfaces during implementation.)
+`ScriptRuntime` exposes the parsed manifest (or returns it from `run_mod_init`); the boot path drains entities into the registry it already owns. No new field on `ScriptRuntime`, no new parameter through the runtime API — the registry stays where it lives today.
 
 **SDK `defineEntity`** (Task 6):
 
@@ -178,12 +181,13 @@ end
 
 ```ts
 import { playerEntity } from "./scripts/player";
+import { arenaLightEntities } from "./scripts/arena-lights";
 import { referenceEntities } from "postretro-sdk/behaviors/reference/entities";
 
 export function setupMod() {
   return {
     name: "dev",
-    entities: [playerEntity, ...referenceEntities],
+    entities: [playerEntity, ...arenaLightEntities, ...referenceEntities],
   };
 }
 ```
@@ -202,5 +206,4 @@ export const playerEntity = defineEntity({
 ## Open questions
 
 - **Aggregation ergonomics for arena-lights.** `arena-lights.ts` registers two entity types today inside `setupLevel`. Hoisting those to module-level `export const`s and aggregating in `start-script.ts` works, but it duplicates the file's role (it now both exports level reactions and exports entity descriptors). Acceptable, or worth introducing a per-file `defineModule({ entities, setupLevel })` convention? Deferring — current shape is fine.
-- **Should `EntityTypeDescriptor::from_js_value` / `from_lua_value` be lifted into `data_descriptors.rs`?** It exists in some form for the `registerEntity` primitive's argument coercion. If it's currently only reachable through rquickjs `FromJs`, Task 1 may need to add a thin wrapper. Resolve during Task 1.
 - **`LevelManifest`-borne entities (future).** Out of scope here, but if it lands later we'd add an optional `entities` to `LevelManifest` with a documented "level-scoped" lifetime. Not a blocker now — leaving the door open in the descriptor type, not in the parsing path.

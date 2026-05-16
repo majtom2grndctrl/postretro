@@ -82,6 +82,10 @@ const MAX_FOG_VOLUMES: u32 = 16u;
 // could otherwise produce.
 const MAX_SH_RESAMPLE_STRIDE: u32 = 32u;
 
+// Upper bound on the depth-tap block size. Matches the FGD `fog_pixel_scale`
+// range [1, 8]; runtime `pixel_scale` values truncate via the inner `break`s.
+const MAX_PIXEL_SCALE: u32 = 8u;
+
 // World-space coverage budget per cached SH sample, expressed as a multiple of
 // the SH grid cell size. SH irradiance is band-limited and the historical
 // quality bar (hardcoded stride 8 with default 1m probes / 0.5m step) cached
@@ -350,18 +354,18 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // actually contained the foreground geometry isn't the one we picked;
     // min-reducing the block selects the nearest surface, which is the right
     // upper bound for the ray's `max_t`. The loop is bounded by the compile-
-    // time constant `MAX_PIXEL_SCALE = 8` (matches the FGD `fog_pixel_scale`
-    // range [1, 8]) so WGSL can unroll/bound it; runtime `pixel_scale` values
-    // truncate via the inner `break`s. The `min(..., depth_dims - 1)` clamp
-    // handles window sizes that aren't an exact multiple of `pixel_scale`.
+    // time constant `MAX_PIXEL_SCALE` so WGSL can unroll/bound it; runtime
+    // `pixel_scale` values truncate via the inner `break`s. The
+    // `min(..., depth_dims - 1)` clamp handles window sizes that aren't an
+    // exact multiple of `pixel_scale`.
     let ps_x = depth_dims.x / out_dims.x;
     let ps_y = depth_dims.y / out_dims.y;
     let base = vec2<u32>(gid.x * ps_x, gid.y * ps_y);
     let depth_max = depth_dims - vec2<u32>(1u);
     var depth_ndc: f32 = 1.0;
-    for (var dy: u32 = 0u; dy < 8u; dy = dy + 1u) {
+    for (var dy: u32 = 0u; dy < MAX_PIXEL_SCALE; dy = dy + 1u) {
         if dy >= ps_y { break; }
-        for (var dx: u32 = 0u; dx < 8u; dx = dx + 1u) {
+        for (var dx: u32 = 0u; dx < MAX_PIXEL_SCALE; dx = dx + 1u) {
             if dx >= ps_x { break; }
             let sx = min(base.x + dx, depth_max.x);
             let sy = min(base.y + dy, depth_max.y);
@@ -709,8 +713,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(scatter_output, vec2<i32>(gid.xy), vec4<f32>(accum, 1.0 - transmittance));
 }
 
-// Silence "unused binding" warnings for the animated buffers and the
-// comparison sampler. The fog pass shares group 3 with the forward pipeline
+// Keeps bindings reflected so wgpu does not reject the pipeline. wgpu
+// rejects a pipeline when the BindGroupLayout declares a binding that shader
+// reflection omits. The fog pass shares group 3 with the forward pipeline
 // and group 5's sampler_comparison with forward's shadow pass — both
 // layouts must be satisfied even though fog reads depth via textureLoad.
 fn _keep_bindings_live() -> f32 {

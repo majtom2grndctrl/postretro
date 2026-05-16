@@ -372,7 +372,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ray = reconstruct_ray(uv, depth_ndc);
 
     let step = max(fog.step_size, 1.0e-3);
-    let start_t = max(fog.near_clip, step * 0.5);
+    let start_t = fog.near_clip;
     var transmittance: f32 = 1.0;
     var accum: vec3<f32> = vec3<f32>(0.0);
 

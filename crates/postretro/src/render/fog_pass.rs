@@ -93,10 +93,9 @@ pub struct FogPass {
     /// because the surface depth texture is recreated on every resize.
     pub bind_group: wgpu::BindGroup,
 
-    /// Number of dense-packed `FogVolume` records the shader iterates over
-    /// this frame. Set per-frame by `repack_active` from `(cell_mask &
-    /// live_mask) | sticky`, where `sticky` carries forward slots seen within
-    /// the last `FOG_HYSTERESIS_SECONDS`. Shader loops against this.
+    /// Number of dense-packed `FogVolume` records the shader iterates this
+    /// frame. Updated per-frame by `repack_active`. Shader loops against this
+    /// count; trailing buffer slots are stale-but-safe.
     pub active_count: u32,
     /// Canonical fog-volume list in source order (one entry per
     /// `fog_volume` brush / `fog_lamp` / `fog_tube` entity in the PRL).
@@ -727,11 +726,11 @@ impl FogPass {
             }
         }
         // Both the volumes buffer tail past `active_count` and the planes
-        // buffer (when no upload happens this frame, including the
-        // `active_count == 0` case above where we issue no writes at all) may
-        // hold stale records from a previous frame. Safe: the shader loops
-        // `0..active_count` and gates plane reads on `plane_count > 0u`, so
-        // stale slots / stale plane bytes are never observed.
+        // buffer (when no upload happens this frame — e.g. active_count == 0
+        // or planes_scratch is empty) may hold stale records from a previous
+        // frame. Safe: the shader loops `0..active_count` and gates plane reads
+        // on `plane_count > 0u`, so stale slots / stale plane bytes are never
+        // observed.
     }
 
     /// Number of canonical fog-volume slots currently loaded. Used by callers

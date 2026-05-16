@@ -33,6 +33,13 @@ pub const BIND_FOG_PLANES: u32 = 6;
 /// buffer. Each plane is `(nx, ny, nz, d)` packed as four `f32`s.
 pub const FOG_PLANE_SIZE: usize = 16;
 
+/// AABB inflation applied per axis on `set_canonical_volumes` upload. 1 mm in
+/// world-space meters — large enough to swamp the float rounding that drives
+/// boundary-cell flicker as the camera grazes a face, small enough to be a
+/// sub-texel visual no-op. Plane-bounded volumes are unaffected: their clip
+/// planes live in a separate buffer and bound the volume tightly regardless.
+const AABB_EPSILON: f32 = 1.0e-3;
+
 pub struct FogPass {
     pub pixel_scale: u32,
     pub step_size: f32,
@@ -85,6 +92,14 @@ pub struct FogPass {
     /// `fog_volume` brush / `fog_lamp` / `fog_tube` entity in the PRL).
     /// Re-packed per-frame by `repack_active`. Empty when no level is loaded
     /// or the level has no fog volumes.
+    ///
+    /// Each volume's `min`/`max_v` is inflated by `AABB_EPSILON` (1 mm in
+    /// world-space meters) per axis on upload in `set_canonical_volumes`. This
+    /// hides sub-millimeter ambiguity at AABB faces that otherwise causes a
+    /// frame-coherent boundary-cell to flicker in/out of the visible set as
+    /// the camera grazes a face. Plane-bounded clip planes live in their own
+    /// buffer and clip independently, so the inflation does not bleed fog past
+    /// a primitive brush's actual extent.
     canonical_volumes: Vec<FogVolume>,
     /// Bit `i` set ⇒ canonical slot `i` has density > 0 and is eligible for
     /// upload. ANDed with the visible-cell-derived mask to produce the
@@ -556,7 +571,23 @@ impl FogPass {
             );
         }
         self.canonical_volumes.clear();
-        self.canonical_volumes.extend_from_slice(&volumes[..count]);
+        // Inflate each volume's AABB by AABB_EPSILON per axis on the way in.
+        // See the `canonical_volumes` field comment for why. `center`,
+        // `half_diag`, and `inv_half_ext` are derived offline by the bridge
+        // and intentionally left untouched — the radial / ellipsoid fade math
+        // uses the un-inflated extents, while the AABB-membership test the
+        // visibility pass keys off of sees the inflated bounds.
+        self.canonical_volumes.reserve(count);
+        for v in &volumes[..count] {
+            let mut inflated = *v;
+            inflated.min[0] -= AABB_EPSILON;
+            inflated.min[1] -= AABB_EPSILON;
+            inflated.min[2] -= AABB_EPSILON;
+            inflated.max_v[0] += AABB_EPSILON;
+            inflated.max_v[1] += AABB_EPSILON;
+            inflated.max_v[2] += AABB_EPSILON;
+            self.canonical_volumes.push(inflated);
+        }
         self.canonical_planes.clear();
         // The bridge guarantees `planes.len() == volumes.len()`, but defend
         // against truncation by zipping over the kept canonical slots.

@@ -34,7 +34,7 @@ Eliminate visible fog flickering in `campaign-test.prl` (and any map with fog vo
 - [ ] Loading a PRL whose `FogCellMasks` section length does not equal `leaves.len()` does not crash; renderer logs a warning and falls back to "all slots active" until the next level load.
 - [ ] After ~30 minutes of uptime, fog-volume animation curves continue to interpolate smoothly with no visible sub-second density steps.
 - [ ] Existing fog tests (`render/mod.rs` `compute_fog_cell_mask` tests, `level-format/src/fog_cell_masks.rs` `union_active_mask` tests) pass with the new dual-set plumbing; new tests cover camera-leaf union and length-mismatch fallback.
-- [ ] A fog volume whose host leaf exits the fog-reachable set for N frames or fewer (N = HYSTERESIS compile-time constant) remains rendered without visible deactivation.
+- [ ] A fog volume whose host leaf exits the fog-reachable set for less than `FOG_HYSTERESIS_SECONDS` (300 ms) remains rendered without visible deactivation.
 - [ ] No new `cargo clippy` warnings; `cargo test --workspace` passes.
 
 ## Tasks
@@ -73,7 +73,7 @@ In `fog_volume_bridge.rs::tick` and `sample_*_curve_at` helpers, accept and oper
 
 ### Task 10: Sticky-frame fog activation
 
-Add `last_active_frame: Vec<u32>` on `FogPass`, sized to `canonical_volumes.len()`, tracking the most recent frame index each volume was in `cell_mask & live_mask`. In `repack_active`, OR in any volume whose `last_active_frame >= current_frame.saturating_sub(HYSTERESIS)` (e.g. `HYSTERESIS = 8`). The slab-clip prologue in WGSL early-outs cheaply for volumes the ray doesn't intersect, so the cost is bounded. Resize `last_active_frame` in `set_canonical_volumes` to match the new `canonical_volumes.len()`, initializing new slots to 0. Reset (zero) the entire vec on level load.
+Add `last_active_time: Vec<f64>` on `FogPass`, sized to `canonical_volumes.len()`, tracking the most recent wall-clock time (seconds) each volume was in `cell_mask & live_mask`. In `repack_active`, accept `now_seconds: f64` (use the same time source Task 9 widens) and OR in any volume whose `now_seconds - last_active_time[i] < FOG_HYSTERESIS_SECONDS` (`const FOG_HYSTERESIS_SECONDS: f64 = 0.3`). 0.3 s is framerate-independent — comfortable headroom at 144 Hz and 240 Hz where a frame-count constant would underflow. The slab-clip prologue in WGSL early-outs cheaply for volumes the ray doesn't intersect, so stale activation costs only the repacked-buffer bytes. Resize `last_active_time` in `set_canonical_volumes` to match `canonical_volumes.len()`, initializing new slots to `f64::NEG_INFINITY`. Reset (fill `f64::NEG_INFINITY`) on level load so initial frames don't spuriously activate stale volumes.
 
 ## Sequencing
 
@@ -121,12 +121,12 @@ for (var dy: u32 = 0u; dy < 8u; dy = dy + 1u) {
 
 Upper bound `8` matches the `fog_pixel_scale` max (1–8 per `build_pipeline.md` table). Clamp `base.x + dx` and `base.y + dy` to `depth_dims - 1` before sampling to handle window sizes not divisible by `pixel_scale`.
 
-**Sticky activation (Task 10).** `repack_active` runs once per frame in `render_frame_indirect`. Introduce `frame_counter: u32` on `Renderer`; increment each frame in `render_frame_indirect`, pass into `repack_active`. Hysteresis tunable as a const; 8 frames at 60 Hz ≈ 130 ms — long enough to mask single-frame portal narrowings, short enough that a genuinely-occluded volume drops out before the user notices.
+**Sticky activation (Task 10).** `repack_active` runs once per frame in `render_frame_indirect`. Pass `now_seconds: f64` (same source as Task 9's animation widening) through to `repack_active`. Time-based, not frame-counted, so the constant is unaffected by 60 Hz vs 144 Hz vs 240 Hz framerate targets. Cost asymmetry favors staleness: visible flicker is the artifact we're fixing; ghost fog has near-zero per-pixel cost via the slab-clip early-out and only manifests if the player re-enters another fog volume overlapping the same screen area within 300 ms.
 
 **Affected files (summary):**
 - `crates/postretro/src/visibility.rs` — split return shape (Task 1)
 - `crates/postretro/src/main.rs` — visibility callsite + thread new list (Task 1)
-- `crates/postretro/src/render/mod.rs` — `compute_fog_cell_mask` signature, `update_dynamic_light_slots` mask + influences, `render_frame_indirect` plumbing (Tasks 1, 2, 3, 10)
+- `crates/postretro/src/render/mod.rs` — `compute_fog_cell_mask` signature, `update_dynamic_light_slots` mask + influences, `render_frame_indirect` plumbing including `now_seconds` thread to `repack_active` (Tasks 1, 2, 3, 10)
 - `crates/postretro/src/render/fog_pass.rs` — `set_canonical_volumes` epsilon, `repack_active` hysteresis (Tasks 6, 10)
 - `crates/postretro/src/shaders/fog_volume.wgsl` — depth min-block, start_t (Tasks 5, 7)
 - `crates/postretro/src/prl.rs` — mask-length validation (Task 4)
@@ -134,5 +134,4 @@ Upper bound `8` matches the `fog_pixel_scale` max (1–8 per `build_pipeline.md`
 
 ## Open questions
 
-- **Hysteresis tuning (Task 10).** `HYSTERESIS = 8` frames is a starting guess. May need to bump if testers see single-frame drops on faster cameras, or shrink if stale volumes cause visible "ghost fog" past portal closures. Decide during implementation review.
-- **Per-volume vs global epsilon (Task 6).** 1 mm is a uniform inflation. If any author-facing fog volume is authored at sub-mm precision this is fine; verify against the FGD's documented density/radius scales in `build_pipeline.md`.
+- **Hysteresis tuning (Task 10).** `FOG_HYSTERESIS_SECONDS = 0.3` is the initial value, chosen for cheap-insurance behavior (well under the human "world changed" threshold of ~500 ms; well over any portal-narrowing transient). Adjust in playtest if testers see ghost fog past portal closures or residual flicker on fast camera moves.

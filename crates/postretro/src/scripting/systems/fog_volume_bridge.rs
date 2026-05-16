@@ -69,8 +69,9 @@ pub(crate) struct FogVolumeBridge {
     /// Per-entity start times for `FogVolumeComponent.animation`. Populated
     /// lazily by `tick` the first frame an animation is observed; cleared
     /// when an animation goes away (script clears it, or `play_count`
-    /// settles). Start time is also reset when the animation payload changes
-    /// mid-flight (detected by value comparison in `tick`).
+    /// settles). Start time resets whenever any field of `FogAnimation`
+    /// changes (detected by full-struct equality in `tick`) — including
+    /// `period_ms` changes with an otherwise-identical curve.
     anim_slots: HashMap<EntityId, FogAnimSlot>,
     /// Set to `true` the first time the point-light cap warning fires; suppresses
     /// per-frame log spam when the scene consistently exceeds `MAX_FOG_POINT_LIGHTS`.

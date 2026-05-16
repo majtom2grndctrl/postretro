@@ -891,8 +891,7 @@ mod tests {
         let vp = proj * view;
 
         let mut scratch = Vec::new();
-        let (result, _frustum) =
-            determine_visible_cells(position, vp, &world, false, &mut scratch);
+        let (result, _frustum) = determine_visible_cells(position, vp, &world, false, &mut scratch);
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
                 assert_eq!(cells.len(), 1, "should cull leaf behind camera");

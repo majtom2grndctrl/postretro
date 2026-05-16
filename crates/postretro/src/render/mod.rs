@@ -2596,6 +2596,7 @@ impl Renderer {
         self.compute_cull.is_some()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render_frame_indirect(
         &mut self,
         visible: &VisibleCells,
@@ -3150,7 +3151,10 @@ mod tests {
     #[test]
     fn compute_fog_cell_mask_culled_without_baked_masks_falls_back_to_all_slots() {
         let fog_reachable = [0u32, 1, 2];
-        assert_eq!(compute_fog_cell_mask(&fog_reachable, None, 4, Some(0)), 0b1111);
+        assert_eq!(
+            compute_fog_cell_mask(&fog_reachable, None, 4, Some(0)),
+            0b1111
+        );
     }
 
     #[test]

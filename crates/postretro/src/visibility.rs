@@ -73,6 +73,24 @@ impl VisibilityStats {
     }
 }
 
+/// Per-frame visibility output. Carries two leaf sets:
+///
+/// - `visible_cells`: drawable set — faces submitted to the renderer
+///   (portal-reachable, `!is_solid`, `face_count > 0`).
+/// - `fog_reachable`: wider set used for portal-isolated effects (fog
+///   culling, dynamic-light leaf gating). Same portal-reachability and
+///   `!is_solid` predicates as `visible_cells`, but without the
+///   `face_count > 0` filter — empty leaves still bound light/fog
+///   influence even though they have no geometry to draw. Populated
+///   only on the portal path; empty on every fallback (where the
+///   downstream consumer treats empty as "no portal isolation").
+#[derive(Debug)]
+pub struct VisibilityResult {
+    pub visible_cells: VisibleCells,
+    pub fog_reachable: Vec<u32>,
+    pub stats: VisibilityStats,
+}
+
 // --- Frustum culling ---
 
 /// A plane in Hessian normal form: dot(normal, point) + dist >= 0 for points on the inside.
@@ -229,6 +247,10 @@ enum LeafVisPath {
 struct LeafVisResult {
     /// Visible leaf indices, or `None` for the empty-world DrawAll case.
     leaves: Option<Vec<usize>>,
+    /// Wider, fog/light-reachable leaf set. Same predicates as `leaves`
+    /// minus the `face_count > 0` filter. Populated only on the portal
+    /// path; empty on every other variant.
+    fog_reachable: Vec<u32>,
     camera_leaf: u32,
     total_faces: u32,
     path: LeafVisPath,
@@ -264,6 +286,7 @@ fn determine_visible_leaf_set(
     if world.leaves.is_empty() {
         return LeafVisResult {
             leaves: None,
+            fog_reachable: Vec::new(),
             camera_leaf: 0,
             total_faces,
             path: LeafVisPath::EmptyWorld,
@@ -287,6 +310,7 @@ fn determine_visible_leaf_set(
         let visible = visible_leaves_frustum_all(&world.leaves, &frustum);
         return LeafVisResult {
             leaves: Some(visible),
+            fog_reachable: Vec::new(),
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
             path: LeafVisPath::SolidLeaf,
@@ -306,6 +330,7 @@ fn determine_visible_leaf_set(
         let visible = visible_leaves_frustum_all(&world.leaves, &frustum);
         return LeafVisResult {
             leaves: Some(visible),
+            fog_reachable: Vec::new(),
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
             path: LeafVisPath::ExteriorCamera,
@@ -338,8 +363,23 @@ fn determine_visible_leaf_set(
             .map(|(i, _)| i)
             .collect();
 
+        // Wider set for fog and dynamic-light leaf gating: drop the
+        // `face_count > 0` predicate so empty leaves on the portal walk
+        // still bound light/fog influence. `!is_solid` and the portal
+        // reachability bit stay.
+        let fog_reachable: Vec<u32> = world
+            .leaves
+            .iter()
+            .enumerate()
+            .filter(|(leaf_idx, leaf)| {
+                !leaf.is_solid && portal_visible.get(*leaf_idx).copied().unwrap_or(false)
+            })
+            .map(|(i, _)| i as u32)
+            .collect();
+
         return LeafVisResult {
             leaves: Some(leaves),
+            fog_reachable,
             camera_leaf: camera_leaf_idx as u32,
             total_faces,
             path: LeafVisPath::Portal,
@@ -351,6 +391,7 @@ fn determine_visible_leaf_set(
     let visible = visible_leaves_frustum_all(&world.leaves, &frustum);
     LeafVisResult {
         leaves: Some(visible),
+        fog_reachable: Vec::new(),
         camera_leaf: camera_leaf_idx as u32,
         total_faces,
         path: LeafVisPath::NoPortals,
@@ -425,7 +466,7 @@ pub fn determine_visible_cells(
     world: &LevelWorld,
     capture_portal_walk: bool,
     scratch: &mut Vec<u32>,
-) -> (VisibleCells, VisibilityStats, Frustum) {
+) -> (VisibilityResult, Frustum) {
     let result = determine_visible_leaf_set(camera_position, view_proj, world, capture_portal_walk);
 
     let visible_leaves = match result.leaves {
@@ -436,7 +477,14 @@ pub fn determine_visible_cells(
                 drawn_faces: result.total_faces,
                 path: VisibilityPath::EmptyWorldFallback,
             };
-            return (VisibleCells::DrawAll, stats, result.frustum);
+            return (
+                VisibilityResult {
+                    visible_cells: VisibleCells::DrawAll,
+                    fog_reachable: result.fog_reachable,
+                    stats,
+                },
+                result.frustum,
+            );
         }
         Some(ref leaves) => leaves,
     };
@@ -447,9 +495,13 @@ pub fn determine_visible_cells(
     }
 
     let stats = build_visibility_stats(&result, visible_leaves, world);
+    let fog_reachable = result.fog_reachable;
     (
-        VisibleCells::Culled(std::mem::take(scratch)),
-        stats,
+        VisibilityResult {
+            visible_cells: VisibleCells::Culled(std::mem::take(scratch)),
+            fog_reachable,
+            stats,
+        },
         result.frustum,
     )
 }
@@ -770,16 +822,21 @@ mod tests {
         let world = two_leaf_prl_world();
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
-        let (result, stats, _frustum) =
+        let (result, _frustum) =
             determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
-        match result {
+        match result.visible_cells {
             VisibleCells::Culled(cells) => {
                 assert!(cells.contains(&0), "camera leaf 0 should be visible");
             }
             VisibleCells::DrawAll => panic!("expected Culled"),
         }
-        assert_eq!(stats.total_faces, 2);
-        assert!(matches!(stats.path, VisibilityPath::NoPortalsFallback));
+        assert_eq!(result.stats.total_faces, 2);
+        assert!(matches!(
+            result.stats.path,
+            VisibilityPath::NoPortalsFallback
+        ));
+        // No-portals fallback does not populate the wider fog/light set.
+        assert!(result.fog_reachable.is_empty());
     }
 
     #[test]
@@ -813,11 +870,15 @@ mod tests {
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();
-        let (result, stats, _frustum) =
+        let (result, _frustum) =
             determine_visible_cells(Vec3::ZERO, vp, &world, false, &mut scratch);
-        assert!(matches!(result, VisibleCells::DrawAll));
-        assert_eq!(stats.total_faces, 0);
-        assert!(matches!(stats.path, VisibilityPath::EmptyWorldFallback));
+        assert!(matches!(result.visible_cells, VisibleCells::DrawAll));
+        assert_eq!(result.stats.total_faces, 0);
+        assert!(matches!(
+            result.stats.path,
+            VisibilityPath::EmptyWorldFallback
+        ));
+        assert!(result.fog_reachable.is_empty());
     }
 
     #[test]
@@ -830,16 +891,19 @@ mod tests {
         let vp = proj * view;
 
         let mut scratch = Vec::new();
-        let (result, stats, _frustum) =
+        let (result, _frustum) =
             determine_visible_cells(position, vp, &world, false, &mut scratch);
-        match result {
+        match result.visible_cells {
             VisibleCells::Culled(cells) => {
                 assert_eq!(cells.len(), 1, "should cull leaf behind camera");
                 assert_eq!(cells[0], 0);
             }
             VisibleCells::DrawAll => panic!("expected Culled"),
         }
-        assert!(matches!(stats.path, VisibilityPath::NoPortalsFallback));
+        assert!(matches!(
+            result.stats.path,
+            VisibilityPath::NoPortalsFallback
+        ));
     }
 
     #[test]
@@ -849,17 +913,21 @@ mod tests {
         world.leaves[0].is_solid = true;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
-        let (result, stats, _frustum) =
+        let (result, _frustum) =
             determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         // Solid fallback draws all non-solid non-zero leaves.
-        match result {
+        match result.visible_cells {
             VisibleCells::Culled(cells) => {
                 assert!(cells.contains(&1), "non-solid leaf 1 should be visible");
                 assert!(!cells.contains(&0), "solid leaf 0 should not appear");
             }
             VisibleCells::DrawAll => panic!("expected Culled"),
         }
-        assert!(matches!(stats.path, VisibilityPath::SolidLeafFallback));
+        assert!(matches!(
+            result.stats.path,
+            VisibilityPath::SolidLeafFallback
+        ));
+        assert!(result.fog_reachable.is_empty());
     }
 
     #[test]
@@ -869,15 +937,19 @@ mod tests {
         world.leaves[0].face_count = 0;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
-        let (result, stats, _frustum) =
+        let (result, _frustum) =
             determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
-        match result {
+        match result.visible_cells {
             VisibleCells::Culled(cells) => {
                 // Leaf 1 still has faces; leaf 0 is excluded (zero face count).
                 assert!(cells.contains(&1));
             }
             VisibleCells::DrawAll => panic!("expected Culled"),
         }
-        assert!(matches!(stats.path, VisibilityPath::ExteriorCameraFallback));
+        assert!(matches!(
+            result.stats.path,
+            VisibilityPath::ExteriorCameraFallback
+        ));
+        assert!(result.fog_reachable.is_empty());
     }
 }

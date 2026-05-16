@@ -46,28 +46,47 @@ use smoke::SmokePass;
 
 use crate::fx::smoke::SpriteFrame;
 
-/// Derives the per-frame active fog-volume bitmask.
-/// `Culled` + masks present: OR visible-leaf masks. `Culled` + absent: all slots active
-/// (legacy PRL fallback). `DrawAll`: all slots.
-/// Must be called after `FogPass::set_canonical_volumes`; before = 0 canonical count = 0 mask.
+/// Derives the per-frame active fog-volume bitmask from the wider
+/// fog-reachable leaf set produced by portal traversal.
+///
+/// - `fog_reachable` non-empty + masks present: OR each reachable leaf's mask.
+/// - `fog_reachable` empty: portal isolation doesn't apply — empty world,
+///   solid-leaf camera, exterior camera, or no-portals map. Every canonical
+///   slot stays active.
+/// - `fog_reachable` non-empty + masks absent: legacy-PRL fallback — keep all
+///   canonical slots active so a PRL without section 31 still renders fog.
+///
+/// Must be called after `FogPass::set_canonical_volumes`; before = 0
+/// canonical count = 0 mask.
 fn compute_fog_cell_mask(
-    visible: &VisibleCells,
+    fog_reachable: &[u32],
     fog_cell_masks: Option<&[u32]>,
     canonical_volume_count: u32,
+    camera_leaf: Option<u32>,
 ) -> u32 {
     let all_slots_mask = if canonical_volume_count >= 32 {
         u32::MAX
     } else {
         (1u32 << canonical_volume_count).wrapping_sub(1)
     };
-    match (visible, fog_cell_masks) {
-        // DrawAll: portal isolation doesn't apply — solid leaf, exterior camera, no-portals map, or empty world.
-        (VisibleCells::DrawAll, _) => all_slots_mask,
+    match (fog_reachable.is_empty(), fog_cell_masks) {
+        // Empty fog_reachable: DrawAll equivalent — portal isolation doesn't apply.
+        (true, _) => all_slots_mask,
         // AND against `all_slots_mask` so reserved bits 16..32 in the baked
         // mask (or trailing bits past the loaded canonical count) cannot set
         // a phantom active slot the GPU buffer doesn't carry.
-        (VisibleCells::Culled(leaves), Some(masks)) => {
-            union_active_mask(leaves, masks) & all_slots_mask
+        //
+        // Union in the camera leaf's fog mask: portal traversal can omit the
+        // camera leaf from `fog_reachable` in transient frames (e.g., crossing
+        // a portal boundary), but fog the camera is inside must remain active
+        // to prevent flicker. Idempotent when the camera leaf is already in
+        // `fog_reachable`.
+        (false, Some(masks)) => {
+            let mut active = union_active_mask(fog_reachable, masks);
+            if let Some(cl) = camera_leaf {
+                active |= masks.get(cl as usize).copied().unwrap_or(0);
+            }
+            active & all_slots_mask
         }
         // Culled visibility + missing baked masks: fall back to "all slots
         // visible" so a legacy PRL without section 31 still renders fog
@@ -76,7 +95,7 @@ fn compute_fog_cell_mask(
         // so `active_count` will be 0 after repack and the fog pass is skipped
         // correctly via the `FogPass::active()` guard. No phantom slots are
         // activated on a zero-volume level.
-        (VisibleCells::Culled(_), None) => all_slots_mask,
+        (false, None) => all_slots_mask,
     }
 }
 
@@ -2574,6 +2593,8 @@ impl Renderer {
         &mut self,
         visible: &VisibleCells,
         visible_leaf_mask: &[bool],
+        fog_reachable: &[u32],
+        camera_leaf: Option<u32>,
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
     ) -> Result<Option<wgpu::SurfaceTexture>> {
@@ -2865,9 +2886,10 @@ impl Renderer {
         // Skipped when no active volumes — scatter target need not be cleared.
         // See: context/lib/rendering_pipeline.md §7.5
         let cell_mask = compute_fog_cell_mask(
-            visible,
+            fog_reachable,
             self.fog_cell_masks.as_deref(),
             self.fog.canonical_volume_count(),
+            camera_leaf,
         );
         self.fog.repack_active(&self.queue, cell_mask);
         if self.fog.active() {
@@ -3102,32 +3124,54 @@ mod tests {
     #[test]
     fn compute_fog_cell_mask_culled_unions_visible_leaf_masks() {
         let masks = vec![0b001u32, 0b010, 0b101, 0b000]; // 4 leaves, 3 fog volumes
-        let visible = VisibleCells::Culled(vec![1, 2]);
-        let active = compute_fog_cell_mask(&visible, Some(&masks), 3);
+        let fog_reachable = [1u32, 2];
+        let active = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(1));
         assert_eq!(active, 0b111); // leaf1→0b010, leaf2→0b101 → OR 0b111
     }
 
     #[test]
     fn compute_fog_cell_mask_drawall_returns_all_canonical_slots() {
-        let visible = VisibleCells::DrawAll;
         let masks = vec![0u32; 4]; // present but ignored on DrawAll path
-        assert_eq!(compute_fog_cell_mask(&visible, Some(&masks), 3), 0b111);
-        assert_eq!(compute_fog_cell_mask(&visible, None, 3), 0b111);
+        // Empty fog_reachable signals DrawAll-equivalent (portal isolation N/A).
+        assert_eq!(compute_fog_cell_mask(&[], Some(&masks), 3, Some(0)), 0b111);
+        assert_eq!(compute_fog_cell_mask(&[], None, 3, Some(0)), 0b111);
     }
 
     #[test]
     fn compute_fog_cell_mask_culled_without_baked_masks_falls_back_to_all_slots() {
-        let visible = VisibleCells::Culled(vec![0, 1, 2]);
-        assert_eq!(compute_fog_cell_mask(&visible, None, 4), 0b1111);
+        let fog_reachable = [0u32, 1, 2];
+        assert_eq!(compute_fog_cell_mask(&fog_reachable, None, 4, Some(0)), 0b1111);
     }
 
     #[test]
     fn compute_fog_cell_mask_zero_canonical_volumes_returns_zero() {
-        assert_eq!(compute_fog_cell_mask(&VisibleCells::DrawAll, None, 0), 0);
+        assert_eq!(compute_fog_cell_mask(&[], None, 0, Some(0)), 0);
         assert_eq!(
-            compute_fog_cell_mask(&VisibleCells::Culled(vec![0]), Some(&[0xFFu32]), 0),
+            compute_fog_cell_mask(&[0u32], Some(&[0xFFu32]), 0, Some(0)),
             0
         );
+    }
+
+    #[test]
+    fn compute_fog_cell_mask_unions_camera_leaf_when_absent_from_fog_reachable() {
+        // Camera in leaf 3 (not in fog_reachable). Its 0b100 bit must still appear.
+        // Regression: portal traversal can transiently omit the camera leaf,
+        // causing fog the camera is inside to flicker off.
+        let masks = vec![0b001u32, 0b010, 0b000, 0b100];
+        let fog_reachable = [0u32, 1];
+        let active = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(3));
+        // 0b001 | 0b010 (union) | 0b100 (camera leaf) = 0b111
+        assert_eq!(active, 0b111);
+    }
+
+    #[test]
+    fn compute_fog_cell_mask_camera_leaf_union_is_idempotent_when_already_reachable() {
+        let masks = vec![0b001u32, 0b010, 0b100];
+        let fog_reachable = [0u32, 2];
+        let with_cam = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(2));
+        let without_cam = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, None);
+        assert_eq!(with_cam, without_cam);
+        assert_eq!(with_cam, 0b101);
     }
 
     #[test]

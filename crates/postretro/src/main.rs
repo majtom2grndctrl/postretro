@@ -65,7 +65,7 @@ use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::startup::{BootState, LoadOutcome, SplashSource, StartupTimings, spawn_level_worker};
 use crate::texture::TextureSet;
-use crate::visibility::{VisibilityPath, VisibilityStats, VisibleCells};
+use crate::visibility::{VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells};
 
 const DEFAULT_MAP_PATH: &str = "content/dev/maps/campaign-test.prl";
 
@@ -811,7 +811,7 @@ impl ApplicationHandler for App {
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 
                 // Portal DFS → cell IDs → visible-cell bitmask → indirect draw buffer.
-                let (visible_cells, stats, _frustum) = match self.level.as_ref() {
+                let (vis_result, _frustum) = match self.level.as_ref() {
                     Some(world) => visibility::determine_visible_cells(
                         interp.position,
                         view_proj,
@@ -820,24 +820,36 @@ impl ApplicationHandler for App {
                         &mut self.scratch_cells,
                     ),
                     None => (
-                        VisibleCells::DrawAll,
-                        VisibilityStats {
-                            camera_leaf: 0,
-                            total_faces: 0,
-                            drawn_faces: 0,
-                            path: VisibilityPath::EmptyWorldFallback,
+                        VisibilityResult {
+                            visible_cells: VisibleCells::DrawAll,
+                            fog_reachable: Vec::new(),
+                            stats: VisibilityStats {
+                                camera_leaf: 0,
+                                total_faces: 0,
+                                drawn_faces: 0,
+                                path: VisibilityPath::EmptyWorldFallback,
+                            },
                         },
                         visibility::extract_frustum_planes(view_proj),
                     ),
                 };
+                let VisibilityResult {
+                    visible_cells,
+                    fog_reachable,
+                    stats,
+                } = vis_result;
 
-                // Empty slice = DrawAll sentinel: `update_dynamic_light_slots`
-                // keeps every leaf-assigned light eligible on that path.
-                let visible_leaf_mask: Vec<bool> = match (&visible_cells, self.level.as_ref()) {
-                    (VisibleCells::DrawAll, _) | (_, None) => Vec::new(),
-                    (VisibleCells::Culled(cell_ids), Some(world)) => {
+                // Build the per-leaf bool mask for `update_dynamic_light_slots`
+                // from the wider fog/light-reachable set so dynamic lights in
+                // empty (face_count == 0) portal-reachable leaves stay
+                // eligible. Empty slice = DrawAll sentinel: keep every
+                // leaf-assigned light eligible on fallback paths.
+                let visible_leaf_mask: Vec<bool> = match self.level.as_ref() {
+                    None => Vec::new(),
+                    Some(_) if fog_reachable.is_empty() => Vec::new(),
+                    Some(world) => {
                         let mut mask = vec![false; world.leaves.len()];
-                        for &id in cell_ids {
+                        for &id in &fog_reachable {
                             let i = id as usize;
                             if i < mask.len() {
                                 mask[i] = true;
@@ -935,6 +947,8 @@ impl ApplicationHandler for App {
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
                             &visible_leaf_mask,
+                            &fog_reachable,
+                            Some(stats.camera_leaf),
                             view_proj,
                             &particle_collections,
                         ) {

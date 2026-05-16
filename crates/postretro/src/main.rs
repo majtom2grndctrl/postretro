@@ -952,6 +952,7 @@ impl ApplicationHandler for App {
                             Some(stats.camera_leaf),
                             view_proj,
                             &particle_collections,
+                            self.script_time as f64,
                         ) {
                             Ok(opt) => opt,
                             Err(err) => {

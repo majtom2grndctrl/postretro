@@ -2604,6 +2604,7 @@ impl Renderer {
         camera_leaf: Option<u32>,
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
+        now_seconds: f64,
     ) -> Result<Option<wgpu::SurfaceTexture>> {
         self.debug_frame = self.debug_frame.wrapping_add(1);
         let output = match self.surface.get_current_texture() {
@@ -2900,7 +2901,7 @@ impl Renderer {
             self.fog.canonical_volume_count(),
             camera_leaf,
         );
-        self.fog.repack_active(&self.queue, cell_mask);
+        self.fog.repack_active(&self.queue, cell_mask, now_seconds);
         if self.fog.active() {
             // Spots before params so FogParams.spot_count reflects this frame's count.
             let fog_spots = self.collect_fog_spot_lights();

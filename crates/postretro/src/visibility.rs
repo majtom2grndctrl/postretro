@@ -41,9 +41,11 @@ pub struct VisibilityStats {
 #[derive(Debug, Clone, Copy)]
 pub enum VisibilityPath {
     /// Primary PRL rendering path using per-frame portal traversal.
-    /// Portal traversal narrows the frustum at every hop, so the reach
-    /// of the portal walk is also the final visibility set — no separate
+    /// Portal traversal narrows the frustum at every hop, so no separate
     /// AABB cull runs on this path and `drawn_faces == walk_reach`.
+    /// `walk_reach` counts only drawable leaves (`face_count > 0`); the
+    /// wider `fog_reachable` set (which includes empty leaves) is tracked
+    /// separately on `VisibilityResult` and is not reflected here.
     PrlPortal { walk_reach: u32 },
     /// Fallback: world has no leaves to cull against. DrawAll with every
     /// face in the level submitted.
@@ -81,9 +83,12 @@ impl VisibilityStats {
 ///   culling, dynamic-light leaf gating). Same portal-reachability and
 ///   `!is_solid` predicates as `visible_cells`, but without the
 ///   `face_count > 0` filter — empty leaves still bound light/fog
-///   influence even though they have no geometry to draw. Populated
-///   only on the portal path; empty on every fallback (where the
-///   downstream consumer treats empty as "no portal isolation").
+///   influence even though they have no geometry to draw. Do not add the
+///   `face_count > 0` predicate to this set; empty leaves must remain
+///   eligible for fog and dynamic-light gating (that predicate's removal
+///   is the point of this field). Populated only on the portal path;
+///   empty on every fallback (where the downstream consumer treats empty
+///   as "no portal isolation").
 #[derive(Debug)]
 pub struct VisibilityResult {
     pub visible_cells: VisibleCells,

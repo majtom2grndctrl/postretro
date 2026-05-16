@@ -446,6 +446,10 @@ pub struct Renderer {
     lights_pack_scratch: Vec<u8>,
     #[allow(dead_code)]
     level_lights: Vec<MapLight>,
+    /// CPU-side cache of per-light influence volumes; parallel to `level_lights`.
+    /// Consumed by `SpotShadowPool::rank_lights` to frustum-cull shadow candidates.
+    /// Rebuilt in `Renderer::new` and `reload_geometry` from `filter_dynamic_lights`.
+    dynamic_light_influences: Vec<LightInfluence>,
     /// Lights near zero are excluded from shadow slot ranking. Empty = no suppression.
     light_effective_brightness: Vec<f32>,
     /// Cached from `update_per_frame_uniforms` so the shadow pass can re-rank lights.
@@ -1682,6 +1686,7 @@ impl Renderer {
             last_lights_upload: Vec::new(),
             lights_pack_scratch: Vec::new(),
             level_lights,
+            dynamic_light_influences: dynamic_influences,
             light_effective_brightness: Vec::new(),
             last_camera_position: Vec3::ZERO,
             spot_shadow_pool,
@@ -1827,6 +1832,8 @@ impl Renderer {
                 contents: &influence_data,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
+        // Cache CPU-side for shadow slot ranking (consumed by `update_dynamic_light_slots`).
+        self.dynamic_light_influences = dynamic_influences;
 
         let spec_lights_data = {
             let packed = pack_spec_lights(geometry.lights);
@@ -2711,14 +2718,16 @@ impl Renderer {
 
         // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
         let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
+        let influences = std::mem::take(&mut self.dynamic_light_influences);
         self.update_dynamic_light_slots(
             self.last_camera_position,
             crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
-            &[],
+            &influences,
             &eff_brightness,
             visible_leaf_mask,
         );
         self.light_effective_brightness = eff_brightness;
+        self.dynamic_light_influences = influences;
         if self.has_geometry && self.index_count > 0 {
             let stride = self.shadow_vs_stride;
             let slot_assignment = self.spot_shadow_pool.slot_assignment.clone();

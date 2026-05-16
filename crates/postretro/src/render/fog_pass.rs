@@ -950,7 +950,10 @@ mod tests {
             0.0,
             FOG_HYSTERESIS_SECONDS,
         );
-        assert!(m0 & bit_i != 0, "slot must be active on first visible frame");
+        assert!(
+            m0 & bit_i != 0,
+            "slot must be active on first visible frame"
+        );
 
         // Frame 1: slot i is no longer in the visible cell set, but we're
         // still inside the sticky window — slot must remain active.

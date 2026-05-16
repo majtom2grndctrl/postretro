@@ -868,8 +868,11 @@ impl ApplicationHandler for App {
                     // frame so they don't appear stuck at origin.
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
-                        self.emitter_bridge
-                            .update(&mut registry, frame_dt, self.script_time as f32);
+                        self.emitter_bridge.update(
+                            &mut registry,
+                            frame_dt,
+                            self.script_time as f32,
+                        );
                     }
 
                     // Particle sim — after emitter bridge, before light bridge.
@@ -888,9 +891,9 @@ impl ApplicationHandler for App {
                     // allocates slots, so scripted lights reflect their new state.
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
-                        if let Some(update) =
-                            self.light_bridge
-                                .update(&mut registry, self.script_time as f32)
+                        if let Some(update) = self
+                            .light_bridge
+                            .update(&mut registry, self.script_time as f32)
                         {
                             if update.has_dirty_data {
                                 renderer.upload_bridge_lights(&update.lights_bytes);
@@ -919,8 +922,7 @@ impl ApplicationHandler for App {
                         // writes sampled values into each `FogVolumeComponent`
                         // so the existing pack path picks them up unchanged.
                         let mut registry = self.script_ctx.registry.borrow_mut();
-                        self.fog_volume_bridge
-                            .tick(&mut registry, self.script_time);
+                        self.fog_volume_bridge.tick(&mut registry, self.script_time);
                     }
                     let all_lights = {
                         let registry = self.script_ctx.registry.borrow();

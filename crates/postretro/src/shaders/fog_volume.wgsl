@@ -73,13 +73,11 @@ struct LightSpaceMatrices {
 // Must match MAX_FOG_VOLUMES in the Rust fog_volume module.
 const MAX_FOG_VOLUMES: u32 = 16u;
 
-// Upper bound for the runtime-derived SH resample stride. The dynamic
-// expression in `cs_main` divides `SH_COVERAGE_METERS / fog.step_size`; if a
-// map ships with a pathologically small `fog_step_size` the quotient could
-// climb high enough to violate the band-limit assumption (one sample per ~4
-// SH cells). 32 keeps the worst case bounded at ~16m of coverage per sample
-// — still defensible visually, and far below the runaway values a tiny step
-// could otherwise produce.
+// Upper bound on `sh_coverage_dist` expressed in steps: the clamp ceiling
+// is `MAX_SH_RESAMPLE_STRIDE * step`, so a pathologically small `fog_step_size`
+// cannot push the coverage window beyond ~16m (default: 32 × 0.5m).
+// Preserves the historical stride-[1, 32] band while expressing the bound
+// in distance rather than step count.
 const MAX_SH_RESAMPLE_STRIDE: u32 = 32u;
 
 // Upper bound on the depth-tap block size. Matches the FGD `fog_pixel_scale`
@@ -200,9 +198,9 @@ struct FogSpotLight {
 //
 // Copy-pasted from forward.wgsl (sh_irradiance + sample_sh_indirect_fast).
 // WGSL has no include mechanism — this is a source-level copy, not string-concat
-// composition. rendering_pipeline.md §8 is the extraction pattern when a third
-// consumer appears. Current consumers: fog_volume.wgsl + forward.wgsl +
-// billboard.wgsl — three callers; extraction may now be warranted.
+// composition. Current consumers: fog_volume.wgsl + forward.wgsl +
+// billboard.wgsl. Extraction is deferred; see rendering_pipeline.md §8 for
+// the extraction pattern.
 
 fn sh_irradiance(
     b0: vec3<f32>, b1: vec3<f32>, b2: vec3<f32>, b3: vec3<f32>,
@@ -498,10 +496,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // which `cached_sh` value governs the final step (up to stride-1 steps
     // stale) for radial volumes, where per-step `fade` varies sharply with
     // position — producing a frame-to-frame radiance discontinuity (flicker).
-    // A distance-based schedule is shift-invariant in world space: cached_sh
-    // at world position P is the same whether the loop reached P in N or N+1
-    // steps, so the per-frame delta collapses to just the smooth contribution
-    // of the extra step itself.
+    // A distance-based schedule is frame-stable: the t-sequence is
+    // deterministic per ray, so `cached_sh` at step k holds the same value
+    // every frame regardless of where the early-out fires. The animated
+    // early-out only controls whether a smooth additional contribution lands
+    // — it does not alter which cached value governed prior steps.
     //
     // `sh_coverage_dist` is derived once per ray from the SH grid cell size,
     // so the meters-per-cache-sample budget stays proportional to the baked

@@ -1756,6 +1756,62 @@ mod tests {
     }
 
     #[test]
+    fn load_prl_drops_fog_cell_masks_when_masks_longer_than_leaves() {
+        use postretro_level_format::fog_cell_masks::FogCellMasksSection;
+
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        // One leaf but two masks — oversized FogCellMasks must degrade
+        // to None so the renderer's "all slots active" fallback engages.
+        let leaves = BspLeavesSection {
+            leaves: vec![BspLeafRecord {
+                face_start: 0,
+                face_count: 1,
+                bounds_min: [0.0, 0.0, 0.0],
+                bounds_max: [2.0, 2.0, 2.0],
+                is_solid: 0,
+            }],
+        };
+        let masks = FogCellMasksSection {
+            masks: vec![0x0000_0001, 0x0000_0002],
+        };
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::BspLeaves as u32,
+                version: 1,
+                data: leaves.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::FogCellMasks as u32,
+                version: 1,
+                data: masks.to_bytes(),
+            },
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_fog_cell_masks_oversized.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+        assert!(
+            world.fog_cell_masks.is_none(),
+            "oversized FogCellMasks should be dropped to None"
+        );
+        assert_eq!(world.leaves.len(), 1);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
     fn load_prl_absent_fog_cell_masks_yields_none() {
         let geom = sample_geometry();
         let bvh = sample_bvh_section();

@@ -40,7 +40,7 @@ pub struct FogVolumeAabb {
 /// round-trip through the script-visible `FogVolumeComponent` where each
 /// `setFogAnimation` would clobber the moment a curve was installed.
 struct FogAnimSlot {
-    animation_start_time_ms: f32,
+    animation_start_time_ms: f64,
     cached_animation: FogAnimation,
 }
 
@@ -173,7 +173,12 @@ impl FogVolumeBridge {
     ///
     /// `time_seconds` is engine wall-clock time; sampling is done in
     /// milliseconds because `FogAnimation.period_ms` is millisecond-keyed.
-    pub(crate) fn tick(&mut self, registry: &mut EntityRegistry, time_seconds: f32) {
+    ///
+    /// Taken as `f64` so `(now_ms - start_ms)` retains sub-second precision
+    /// after long uptimes — at ~30 minutes an `f32` ms count loses enough
+    /// mantissa bits that density steps become visible. Narrowing to `f32`
+    /// happens at the curve-sample leaf, after the difference is computed.
+    pub(crate) fn tick(&mut self, registry: &mut EntityRegistry, time_seconds: f64) {
         let now_ms = time_seconds * 1000.0;
         let mut updates: Vec<(EntityId, FogVolumeComponent)> = Vec::new();
         let mut clear_slots: Vec<EntityId> = Vec::new();
@@ -470,10 +475,9 @@ fn sphere_intersects_any_aabb<'a>(
 /// Sample `animation.density` at the current wall-clock time. Returns `None`
 /// when the animation carries no density curve — the component's static
 /// density is left untouched in that case.
-fn sample_density_curve_at(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Option<f32> {
+fn sample_density_curve_at(animation: &FogAnimation, start_ms: f64, now_ms: f64) -> Option<f32> {
     let curve = animation.density.as_ref()?;
-    let phase_offset = animation.phase.unwrap_or(0.0);
-    let t = ((now_ms - start_ms) / animation.period_ms + phase_offset).rem_euclid(1.0);
+    let t = normalized_phase(animation, start_ms, now_ms);
     Some(sample_density_curve(curve, t))
 }
 
@@ -481,33 +485,41 @@ fn sample_density_curve_at(animation: &FogAnimation, start_ms: f32, now_ms: f32)
 /// when the animation carries no saturation curve — the component's static
 /// saturation is left untouched in that case. Shares the same phase math as
 /// the density channel so both channels move in lockstep on the same timeline.
-fn sample_saturation_curve_at(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Option<f32> {
+fn sample_saturation_curve_at(animation: &FogAnimation, start_ms: f64, now_ms: f64) -> Option<f32> {
     let curve = animation.saturation.as_ref()?;
-    let phase_offset = animation.phase.unwrap_or(0.0);
-    let t = ((now_ms - start_ms) / animation.period_ms + phase_offset).rem_euclid(1.0);
+    let t = normalized_phase(animation, start_ms, now_ms);
     Some(sample_density_curve(curve, t))
 }
 
 fn sample_min_brightness_curve_at(
     animation: &FogAnimation,
-    start_ms: f32,
-    now_ms: f32,
+    start_ms: f64,
+    now_ms: f64,
 ) -> Option<f32> {
     let curve = animation.min_brightness.as_ref()?;
-    let phase_offset = animation.phase.unwrap_or(0.0);
-    let t = ((now_ms - start_ms) / animation.period_ms + phase_offset).rem_euclid(1.0);
+    let t = normalized_phase(animation, start_ms, now_ms);
     Some(sample_density_curve(curve, t))
 }
 
 fn sample_light_range_curve_at(
     animation: &FogAnimation,
-    start_ms: f32,
-    now_ms: f32,
+    start_ms: f64,
+    now_ms: f64,
 ) -> Option<f32> {
     let curve = animation.light_range.as_ref()?;
-    let phase_offset = animation.phase.unwrap_or(0.0);
-    let t = ((now_ms - start_ms) / animation.period_ms + phase_offset).rem_euclid(1.0);
+    let t = normalized_phase(animation, start_ms, now_ms);
     Some(sample_density_curve(curve, t))
+}
+
+/// Compute the normalised `[0.0, 1.0)` phase for the current frame. Difference
+/// and modulo run in `f64` so a `now_ms` past ~30 minutes still resolves
+/// sub-second timing; narrowing to `f32` happens once, here, after the
+/// difference is reduced into `[0.0, 1.0)`.
+fn normalized_phase(animation: &FogAnimation, start_ms: f64, now_ms: f64) -> f32 {
+    let period_ms = animation.period_ms as f64;
+    let phase_offset = animation.phase.unwrap_or(0.0) as f64;
+    let t = ((now_ms - start_ms) / period_ms + phase_offset).rem_euclid(1.0);
+    t as f32
 }
 
 /// Linear interpolation across an N-sample density curve, where samples are
@@ -552,16 +564,19 @@ struct SettledValues {
 /// `set_fog_animation::validate` and never reaches here.
 fn settle_play_count(
     animation: &FogAnimation,
-    start_ms: f32,
-    now_ms: f32,
+    start_ms: f64,
+    now_ms: f64,
 ) -> Option<SettledValues> {
     let play_count = animation.play_count?;
     debug_assert!(play_count > 0, "play_count coerced to >= 1 at install time");
     if animation.period_ms <= 0.0 {
         return None;
     }
-    let elapsed_periods = (now_ms - start_ms) / animation.period_ms;
-    if elapsed_periods < play_count as f32 {
+    // Comparison in f64: at long uptimes an f32 `now_ms - start_ms` loses
+    // mantissa bits faster than the period denominator, so the quotient could
+    // round past `play_count` a frame early. f64 keeps the boundary precise.
+    let elapsed_periods = (now_ms - start_ms) / animation.period_ms as f64;
+    if elapsed_periods < play_count as f64 {
         return None;
     }
     Some(SettledValues {

@@ -915,7 +915,8 @@ impl ApplicationHandler for App {
                         // writes sampled values into each `FogVolumeComponent`
                         // so the existing pack path picks them up unchanged.
                         let mut registry = self.script_ctx.registry.borrow_mut();
-                        self.fog_volume_bridge.tick(&mut registry, self.script_time);
+                        self.fog_volume_bridge
+                            .tick(&mut registry, self.script_time as f64);
                     }
                     let all_lights = {
                         let registry = self.script_ctx.registry.borrow();

@@ -94,8 +94,9 @@ pub struct FogPass {
     pub bind_group: wgpu::BindGroup,
 
     /// Number of dense-packed `FogVolume` records the shader iterates over
-    /// this frame. Set per-frame by `repack_active` after AND-ing the visible-
-    /// cell mask against the bridge's live mask. Shader loops against this.
+    /// this frame. Set per-frame by `repack_active` from `(cell_mask &
+    /// live_mask) | sticky`, where `sticky` carries forward slots seen within
+    /// the last `FOG_HYSTERESIS_SECONDS`. Shader loops against this.
     pub active_count: u32,
     /// Canonical fog-volume list in source order (one entry per
     /// `fog_volume` brush / `fog_lamp` / `fog_tube` entity in the PRL).
@@ -129,9 +130,10 @@ pub struct FogPass {
     /// Wall-clock time (seconds) at which each canonical slot was last seen
     /// in `cell_mask & live_mask`. Parallel to `canonical_volumes`; slots
     /// never observed sit at `f64::NEG_INFINITY` so the hysteresis comparison
-    /// can never bring a stale volume back. Reset to `NEG_INFINITY` on every
-    /// `set_canonical_volumes` (level load / fog-list rebuild) so volumes from
-    /// the previous level don't leak forward.
+    /// can never bring a stale volume back. New slots added by
+    /// `set_canonical_volumes` initialize to `NEG_INFINITY`; entries are reset
+    /// on level load via `clear_for_level_load` so volumes from the previous
+    /// level don't leak forward.
     last_active_time: Vec<f64>,
     /// Most recent spot light count for dynamic beams.
     pub spot_count: u32,
@@ -623,12 +625,6 @@ impl FogPass {
                 self.canonical_planes.len(),
                 count,
             );
-            debug_assert!(
-                self.canonical_planes.len() >= count,
-                "canonical plane list shorter than volume list: {} < {}",
-                self.canonical_planes.len(),
-                count,
-            );
             while self.canonical_planes.len() < count {
                 self.canonical_planes.push(Vec::new());
             }
@@ -650,51 +646,41 @@ impl FogPass {
         );
         let count_mask = (1u32 << count).wrapping_sub(1);
         self.live_mask = live_mask & count_mask;
-        // Reset the hysteresis timestamps on every canonical rebuild — this is
-        // the level-load entry point as well as the catch-all for any future
-        // mid-level fog-list rebuild. NEG_INFINITY guarantees the first
-        // hysteresis comparison can never bring a stale slot in.
-        self.last_active_time.clear();
-        self.last_active_time
-            .resize(self.canonical_volumes.len(), f64::NEG_INFINITY);
+        // Preserve hysteresis timestamps across frames — `set_canonical_volumes`
+        // is called every frame from `upload_fog_volumes`, so wiping the vec
+        // here would defeat the sticky window. Grow with NEG_INFINITY for newly
+        // added slots; shrink without clearing existing entries. Full reset on
+        // level load is the caller's responsibility via `clear_for_level_load`.
+        let new_len = self.canonical_volumes.len();
+        if self.last_active_time.len() < new_len {
+            self.last_active_time.resize(new_len, f64::NEG_INFINITY);
+        } else {
+            self.last_active_time.truncate(new_len);
+        }
     }
 
-    /// Compute the per-frame `active_mask` from the visible-cell-derived
-    /// `cell_mask` ANDed against `live_mask`, dense-pack the surviving
-    /// canonical slots into the GPU buffer, and update `active_count`.
+    /// Reset hysteresis state for a fresh level. Drops all stored last-active
+    /// timestamps to `NEG_INFINITY` so the first frame after load cannot
+    /// activate a stale volume via the sticky window.
+    pub fn clear_for_level_load(&mut self) {
+        self.last_active_time.fill(f64::NEG_INFINITY);
+    }
+
+    /// Compute the per-frame `active_mask` as `(cell_mask & live_mask) |
+    /// sticky`, where `sticky` is the set of live slots last seen within
+    /// `FOG_HYSTERESIS_SECONDS`, dense-pack the surviving canonical slots into
+    /// the GPU buffer, and update `active_count`. The hysteresis window hides
+    /// single-frame deactivations caused by transient portal narrowing.
     /// The repack scratch buffers retain their capacity across frames, so no
     /// allocation occurs on the steady-state per-frame path.
     pub fn repack_active(&mut self, queue: &wgpu::Queue, cell_mask: u32, now_seconds: f64) {
-        // Volumes currently inside the visible-cell-derived set; refresh their
-        // hysteresis timestamp before we fold the sticky-window back in.
-        let in_cell_mask = cell_mask & self.live_mask;
-        let mut refresh = in_cell_mask;
-        while refresh != 0 {
-            let i = refresh.trailing_zeros() as usize;
-            refresh &= refresh - 1;
-            if let Some(t) = self.last_active_time.get_mut(i) {
-                *t = now_seconds;
-            }
-        }
-        // OR in any live volume whose last-active timestamp is within the
-        // hysteresis window. Limit iteration to live slots so a dead slot's
-        // NEG_INFINITY entry can't be mistakenly extended, and so we never
-        // touch reserved bits past `canonical_volumes.len()`.
-        let mut sticky = 0u32;
-        let mut live = self.live_mask;
-        while live != 0 {
-            let i = live.trailing_zeros() as usize;
-            live &= live - 1;
-            let last = self
-                .last_active_time
-                .get(i)
-                .copied()
-                .unwrap_or(f64::NEG_INFINITY);
-            if now_seconds - last < FOG_HYSTERESIS_SECONDS {
-                sticky |= 1u32 << i;
-            }
-        }
-        let active_mask = in_cell_mask | sticky;
+        let active_mask = compute_active_mask_with_hysteresis(
+            &mut self.last_active_time,
+            self.live_mask,
+            cell_mask,
+            now_seconds,
+            FOG_HYSTERESIS_SECONDS,
+        );
         self.repack_scratch.clear();
         self.planes_scratch.clear();
         // Iterate by bit so we naturally produce dense, source-order output.
@@ -722,9 +708,6 @@ impl FogPass {
             }
         }
         self.active_count = self.repack_scratch.len() as u32;
-        // GPU buffer tail past `active_count` may hold stale records from a
-        // previous frame, but that is safe: the shader loops only `0..active_count`,
-        // so stale slots are never read.
         if self.active_count > 0 {
             // Upload unconditionally when active_count > 0 — the dense layout
             // changes each frame based on the per-frame visible set, so we
@@ -743,6 +726,12 @@ impl FogPass {
                 queue.write_buffer(&self.fog_planes_buffer, 0, plane_bytes);
             }
         }
+        // Both the volumes buffer tail past `active_count` and the planes
+        // buffer (when no upload happens this frame, including the
+        // `active_count == 0` case above where we issue no writes at all) may
+        // hold stale records from a previous frame. Safe: the shader loops
+        // `0..active_count` and gates plane reads on `plane_count > 0u`, so
+        // stale slots / stale plane bytes are never observed.
     }
 
     /// Number of canonical fog-volume slots currently loaded. Used by callers
@@ -819,6 +808,46 @@ impl FogPass {
 }
 
 // --- Helpers ---
+
+/// Pure data-logic helper extracted from `repack_active`: compose the per-frame
+/// active mask as `(cell_mask & live_mask) | sticky`, where `sticky` is the set
+/// of live slots last seen within `hysteresis_seconds`. Refreshes
+/// `last_active_time` entries for slots in the current visible set as a side
+/// effect — the sticky window is a wall-clock measurement, so the timestamp
+/// update has to happen here. Only iterates set bits of `live_mask` so
+/// NEG_INFINITY entries for dead slots stay untouched and reserved bits past
+/// the canonical count are never observed.
+fn compute_active_mask_with_hysteresis(
+    last_active_time: &mut [f64],
+    live_mask: u32,
+    cell_mask: u32,
+    now_seconds: f64,
+    hysteresis_seconds: f64,
+) -> u32 {
+    let in_cell_mask = cell_mask & live_mask;
+    let mut refresh = in_cell_mask;
+    while refresh != 0 {
+        let i = refresh.trailing_zeros() as usize;
+        refresh &= refresh - 1;
+        if let Some(t) = last_active_time.get_mut(i) {
+            *t = now_seconds;
+        }
+    }
+    let mut sticky = 0u32;
+    let mut live = live_mask;
+    while live != 0 {
+        let i = live.trailing_zeros() as usize;
+        live &= live - 1;
+        let last = last_active_time
+            .get(i)
+            .copied()
+            .unwrap_or(f64::NEG_INFINITY);
+        if now_seconds - last < hysteresis_seconds {
+            sticky |= 1u32 << i;
+        }
+    }
+    in_cell_mask | sticky
+}
 
 fn scatter_dims_for(width: u32, height: u32, pixel_scale: u32) -> (u32, u32) {
     let scale = pixel_scale.max(1);
@@ -900,6 +929,61 @@ fn build_group6(
 
 #[cfg(test)]
 mod tests {
+    use super::{FOG_HYSTERESIS_SECONDS, compute_active_mask_with_hysteresis};
+
+    // Regression: `set_canonical_volumes` runs every frame and previously
+    // wiped `last_active_time`, so the 300 ms sticky window never fired and a
+    // volume dropped from the visible cell set deactivated immediately.
+    #[test]
+    fn fog_hysteresis_keeps_slot_active_within_sticky_window_then_drops_after() {
+        // Four canonical slots, all live.
+        let mut last_active = vec![f64::NEG_INFINITY; 4];
+        let live_mask = 0b1111u32;
+        let slot_i = 1usize;
+        let bit_i = 1u32 << slot_i;
+
+        // Frame 0: slot i is in the visible cell set — must be active.
+        let m0 = compute_active_mask_with_hysteresis(
+            &mut last_active,
+            live_mask,
+            bit_i,
+            0.0,
+            FOG_HYSTERESIS_SECONDS,
+        );
+        assert!(m0 & bit_i != 0, "slot must be active on first visible frame");
+
+        // Frame 1: slot i is no longer in the visible cell set, but we're
+        // still inside the sticky window — slot must remain active.
+        let within_window = FOG_HYSTERESIS_SECONDS * 0.5;
+        let m1 = compute_active_mask_with_hysteresis(
+            &mut last_active,
+            live_mask,
+            0,
+            within_window,
+            FOG_HYSTERESIS_SECONDS,
+        );
+        assert!(
+            m1 & bit_i != 0,
+            "slot must remain active within sticky window (mask=0b{:04b})",
+            m1
+        );
+
+        // Frame 2: well past the sticky window — slot must drop.
+        let past_window = FOG_HYSTERESIS_SECONDS * 2.0;
+        let m2 = compute_active_mask_with_hysteresis(
+            &mut last_active,
+            live_mask,
+            0,
+            past_window,
+            FOG_HYSTERESIS_SECONDS,
+        );
+        assert!(
+            m2 & bit_i == 0,
+            "slot must drop after sticky window expires (mask=0b{:04b})",
+            m2
+        );
+    }
+
     /// The fog raymarch shader must parse cleanly and declare the expected
     /// compute entry point. Catches WGSL regressions before pipeline creation.
     #[test]

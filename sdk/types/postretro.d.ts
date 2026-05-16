@@ -269,19 +269,42 @@ declare module "postretro" {
   // -------------------------------------------------------------------------
   // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.
 
-  /** Typed light handle returned by `world.query({ component: "light" })`. */
-  export interface LightEntityHandle extends LightEntity {
-    setAnimation(anim: LightAnimation | null): void;
+  /** Capability for entities with a scalar animation channel (brightness, density, etc.). `Channel` is type-level documentation — the handle's implementation closure knows which descriptor channel to drive. */
+  export interface AnimatableScalar<Channel extends string> {
+    /** Sine pulse oscillating between `min` and `max` over `periodMs`. Loops forever. */
+    pulse(opts: { min: number; max: number; periodMs: number }): SequenceStep[];
+    /** One-shot linear ramp from `from` to `to` over `periodMs`. Plays exactly once. */
+    fade(opts: { from: number; to: number; periodMs: number }): SequenceStep[];
+    /** Irregular flicker between `min` and `max` at `rate` Hz. Loops forever. */
+    flicker(opts: { min: number; max: number; rate: number }): SequenceStep[];
+    readonly __channel?: Channel;
   }
 
-  /** Typed fog-volume handle returned by `world.query({ component: "fog_volume" })`.
-   * Currently a pass-through alias for the snapshot — fog has no engine-side
-   * animation primitive and the tick-callback helpers were removed alongside
-   * the Live VM API. */
-  export type FogVolumeHandle = FogVolumeEntity;
+  /** Capability for entities with a vec3 animation channel. */
+  export interface AnimatableVec3<Channel extends string> {
+    /** Uniform cycle through the given vectors over `periodMs`. */
+    cycle(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+    readonly __channel?: Channel;
+  }
+
+  /** Typed light handle returned by `world.query({ component: "light" })`. Composes the brightness scalar capability with vec3 channels declared directly (TypeScript collapses duplicate method names, so secondary vec3 channels are not pulled in via `AnimatableVec3` extension). */
+  export interface LightEntityHandle extends LightEntity, AnimatableScalar<"brightness"> {
+    /** Cycle through RGB colors over `periodMs`. Dynamic lights only. */
+    colorShift(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+    /** Sweep the `direction` channel through unit vectors over `periodMs`. */
+    sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+  }
+
+  /** Typed fog-volume handle returned by `world.query({ component: "fog_volume" })`. Composes the density scalar capability with secondary saturation methods declared directly. */
+  export interface FogVolumeHandle extends FogVolumeEntity, AnimatableScalar<"density"> {
+    /** Looping sine pulse on the `saturation` channel. */
+    pulseSaturation(opts: { min: number; max: number; periodMs: number }): SequenceStep[];
+    /** One-shot linear ramp on the `saturation` channel. */
+    fadeSaturation(opts: { from: number; to: number; periodMs: number }): SequenceStep[];
+  }
 
   /** Maps a component-name literal to the rich entity handle type. `"light"`
-   * yields `LightEntityHandle` (with `setAnimation`); `"emitter"` yields
+   * yields `LightEntityHandle` (capability methods); `"emitter"` yields
    * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
    * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle`.
    * Other component names fall back to the bare `Entity` shape (`id`,
@@ -310,32 +333,6 @@ declare module "postretro" {
   /** Per-channel keyframe accepted by `timeline` / `sequence`. */
   export type Keyframe<T extends number[]> = [number, ...T];
 
-  /** Returns an 8-sample irregular flicker brightness curve. */
-  export function flicker(
-    minBrightness: number,
-    maxBrightness: number,
-    rate: number,
-  ): LightAnimation;
-
-  /** Returns a 16-sample sine pulse brightness curve. */
-  export function pulse(
-    minBrightness: number,
-    maxBrightness: number,
-    periodMs: number,
-  ): LightAnimation;
-
-  /** Cycles uniformly through the given RGB colors. Dynamic lights only. */
-  export function colorShift(
-    colors: [number, number, number][],
-    periodMs: number,
-  ): LightAnimation;
-
-  /** Sweeps the light's `direction` through the given normalized vectors. */
-  export function sweep(
-    directions: [number, number, number][],
-    periodMs: number,
-  ): LightAnimation;
-
   /** Validate `[absolute_ms, ...value]` keyframes; pass-through on success. */
   export function timeline<T extends number[]>(
     keyframes: [number, ...T][],
@@ -345,22 +342,6 @@ declare module "postretro" {
   export function sequence<T extends number[]>(
     keyframes: [number, ...T][],
   ): [number, ...T][];
-
-  /** Looping sine-curve density animation between `min` and `max` over `periodMs`. Returns a single `setFogAnimation` step. */
-  export function fogPulse(
-    id: EntityId,
-    min: number,
-    max: number,
-    periodMs: number,
-  ): SetFogAnimationStep[];
-
-  /** One-shot linear density ramp from `from` to `to` over `periodMs`. Returns a single `setFogAnimation` step. */
-  export function fogFade(
-    id: EntityId,
-    from: number,
-    to: number,
-    periodMs: number,
-  ): SetFogAnimationStep[];
 
   // -------------------------------------------------------------------------
   // Data script vocabulary — pure descriptor builders consumed by the engine
@@ -430,7 +411,7 @@ declare module "postretro" {
     };
   };
 
-  /** Sequence step that installs (or clears, when `args` is `null`) a dual-channel animation (density and/or saturation) on a single fog volume. Emitted by the SDK `fogPulse` / `fogFade` constructors. */
+  /** Sequence step that installs (or clears, when `args` is `null`) a dual-channel animation (density and/or saturation) on a single fog volume. Emitted by the `FogVolumeHandle` capability methods (`pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation`). */
   export type SetFogAnimationStep = {
     id: EntityId;
     primitive: "setFogAnimation";

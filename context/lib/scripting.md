@@ -81,17 +81,37 @@ In debug builds, the runtime also emits these files at startup as a convenience 
 
 ### SDK library globals
 
-Higher-level vocabulary (`world`, `flicker`, `pulse`, `timeline`, etc.) is provided by the SDK library, evaluated as a prelude in every scripting context before user scripts load.
+Higher-level vocabulary (`world`, `timeline`, `sequence`, etc.) is provided by the SDK library, evaluated as a prelude in every scripting context before user scripts load.
 
 **Module layout.** SDK source under `sdk/lib/` is organized as:
 
 - `sdk/lib/world.{ts,luau}` — thin generic query wrapper. Delegates to entity-type-specific handle wrappers when a `component:` filter is given.
-- `sdk/lib/entities/lights.{ts,luau}` — light vocabulary: the `LightEntityHandle` wrapper plus `flicker`, `pulse`, `colorShift`, `sweep` animation constructors.
+- `sdk/lib/entities/lights.{ts,luau}` — light vocabulary: `LightEntityHandle` wrapper with `pulse`, `fade`, `flicker`, `colorShift`, `sweep` methods.
 - `sdk/lib/entities/emitters.{ts,luau}` — emitter vocabulary: the `emitter()` component constructor plus `smokeEmitter`, `sparkEmitter`, `dustEmitter` presets.
-- `sdk/lib/entities/fog_volumes.{ts,luau}` — fog volume vocabulary: the `FogVolumeHandle` wrapper plus `fogPulse`, `fogFade` density-curve constructors.
+- `sdk/lib/entities/fog_volumes.{ts,luau}` — fog volume vocabulary: `FogVolumeHandle` wrapper with density-curve methods.
 - `sdk/lib/entities/transforms.{ts,luau}` — transform-only handle type (`TransformHandle`). Type-only; no runtime globals promoted.
 - `sdk/lib/util/keyframes.{ts,luau}` — structurally generic keyframe utilities: the `Keyframe` type alias, `timeline`, and `sequence`. Not light-specific; usable for any keyframed animation.
 - `sdk/lib/data_script.{ts,luau}` — definition-context vocabulary.
+
+### Animation capabilities
+
+Animatable channels on entity handles are typed through two capability interfaces:
+
+```typescript
+interface AnimatableScalar<Channel extends string> {
+  pulse(opts: { min: number; max: number; periodMs: number }): SequenceStep[];
+  fade(opts: { from: number; to: number; periodMs: number }): SequenceStep[];
+  flicker(opts: { min: number; max: number; rate: number }): SequenceStep[];
+}
+
+interface AnimatableVec3<Channel extends string> {
+  cycle(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+}
+```
+
+Handle types compose them by channel: `LightEntityHandle extends AnimatableScalar<"brightness">` and adds `colorShift`/`sweep` directly; `FogVolumeHandle extends AnimatableScalar<"density">` and adds `pulseSaturation`/`fadeSaturation` directly. The `Channel` type parameter is type-level documentation — it does not affect runtime dispatch.
+
+**Rule for future entity types.** When adding an animatable scalar or vec3 channel to a new handle type, compose the existing capability interface rather than introducing free-function constructors. The handle method is the canonical way to construct animation step descriptors. See `sdk/lib/entities/*.ts` for reference implementations.
 
 **TypeScript:** `sdk/lib/prelude.js` is generated at build time by `postretro`'s `build.rs` (via `postretro-script-compiler` as a `[build-dependencies]` entry) and written to `$OUT_DIR`. It is embedded in the engine binary via `include_str!(concat!(env!("OUT_DIR"), "/prelude.js"))` and evaluated in every QuickJS context. The file is gitignored and never committed — `cargo build` regenerates it automatically from `sdk/lib/**/*.ts`. Authors import SDK symbols as bare specifiers: `import { world, flicker, timeline } from "postretro"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
 

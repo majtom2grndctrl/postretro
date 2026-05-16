@@ -10,11 +10,12 @@
 //    `pulse_fog` volume's `scatter` is set to `0.4` on `levelLoad` in a
 //    single dispatch — no per-volume sequence, no per-volume reaction.
 //
-// 2. `Sequence` (per-id steps). The `fogPulse` SDK constructor emits a
-//    step array stamped with one entity id per step. The sequence path
-//    is the only way to deliver a *time-varying* curve, because each
-//    step carries its own `args` payload. Tag-targeting can't express
-//    that — a tag-targeted reaction fires once with one args bag.
+// 2. `Sequence` (per-id steps). The `FogVolumeHandle.pulse` capability
+//    method emits a step array stamped with the handle's entity id. The
+//    sequence path is the only way to deliver a *time-varying* curve,
+//    because each step carries its own `args` payload. Tag-targeting
+//    can't express that — a tag-targeted reaction fires once with one
+//    args bag.
 //
 // Authors picking between the two: if every target gets the same value,
 // reach for `Primitive`; if the values differ across steps (animation
@@ -23,7 +24,6 @@
 // per-id args; this scene shows the other half of the surface.
 
 import {
-  fogPulse,
   type NamedReactionDescriptor,
   registerReaction,
   world,
@@ -46,11 +46,11 @@ export function registerLevelManifest(_ctx: unknown) {
     );
 
     // Per-id Sequence: one reaction per volume, each carrying a single
-    // `setFogAnimation` step built by `fogPulse`. The bridge evaluates
-    // the density curve per-frame across `periodMs` (here 1500 ms),
-    // looping forever.
+    // `setFogAnimation` step built by the handle's `pulse` capability
+    // method. The bridge evaluates the density curve per-frame across
+    // `periodMs` (here 1500 ms), looping forever.
     for (const fog of fogs) {
-      const steps = fogPulse(fog.id, 0.2, 1.0, 1500);
+      const steps = fog.pulse({ min: 0.2, max: 1.0, periodMs: 1500 });
       reactions.push(registerReaction("levelLoad", { sequence: steps }));
     }
   }

@@ -1,104 +1,45 @@
-// Light entity handle and pure animation constructors (flicker, pulse, colorShift, sweep).
-// Governed by context/lib/entity_model.md.
+// Light entity handle and capability-method implementations
+// (pulse / fade / flicker / colorShift / sweep) returning sequence-step
+// arrays. Governed by context/lib/entity_model.md.
 
-import { setLightAnimation } from "postretro";
 import type {
   EntityId,
   LightAnimation,
   LightEntity as GeneratedLightEntity,
   Vec3,
 } from "postretro";
+import type { AnimatableScalar } from "../animation";
+import type { SequenceStep } from "../data_script";
 
 /**
- * Typed handle returned by `world.query` for a light entity. Wraps the
- * generated `LightEntity` snapshot with a single convenience method that
- * calls the underlying scripting primitive.
+ * Typed handle returned by `world.query` for a light entity. Composes
+ * the generated `LightEntity` snapshot with capability methods that emit
+ * `setLightAnimation` step arrays. Authors call methods on the handle
+ * rather than passing `light.id` into free functions.
  *
- * `setIntensity` / `setColor` transition helpers were removed alongside
- * the Live VM tick API — they relied on `getComponent` to read live
- * state. Callers that need a transition build a one-cycle
- * `LightAnimation` (`playCount: 1`) themselves and pass it to
- * `setAnimation`.
+ * Each capability method returns a single-element `SequenceStep[]`
+ * suitable for splicing into a `registerReaction({ sequence: [...] })`
+ * body.
  */
-export interface LightEntity extends GeneratedLightEntity {
-  /**
-   * Replace the light's animation. Pass `null` to clear it. Last call
-   * wins — lights are always interruptible.
-   */
-  setAnimation(anim: LightAnimation | null): void;
+export interface LightEntityHandle
+  extends GeneratedLightEntity,
+    AnimatableScalar<"brightness"> {
+  /** Cycle through RGB colors over `periodMs`. Dynamic lights only. */
+  colorShift(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+  /** Sweep the `direction` channel through unit vectors over `periodMs`. */
+  sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
 }
 
-export function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntity {
-  const id: EntityId = snapshot.id;
-
-  const handle: LightEntity = {
-    ...snapshot,
-
-    setAnimation(anim: LightAnimation | null): void {
-      if (anim && anim.color && !snapshot.isDynamic) {
-        throw new Error(
-          `setAnimation: light ${idDebug(id)} is not dynamic; color animation is only valid on dynamic lights`,
-        );
-      }
-      setLightAnimation(id, anim);
-    },
-  };
-
-  return handle;
-}
-
-function idDebug(id: EntityId): string {
-  // `EntityId` is a branded number — print the underlying value for
-  // error messages without leaking the brand in the type.
-  return String(id as unknown as number);
-}
-
-// Fixed pattern reused for every `flicker` call — deterministic across reloads, no PRNG needed.
+// Fixed pattern reused for every `flicker` call — deterministic across
+// reloads, no PRNG needed.
 const FLICKER_PATTERN: ReadonlyArray<number> = [
   0.95, 0.40, 1.00, 0.72, 0.15, 0.88, 0.30, 0.65,
 ];
 
-/**
- * Returns an 8-sample irregular brightness curve flickering between
- * `minBrightness` and `maxBrightness`.
- *
- * `rate` is the flicker frequency in Hz — `periodMs` is `1000 / rate`.
- * Callers set `phase` at the call site if they need to stagger multiple
- * flickering lights.
- */
-export function flicker(
-  minBrightness: number,
-  maxBrightness: number,
-  rate: number,
-): LightAnimation {
-  const lo = Math.min(minBrightness, maxBrightness);
-  const hi = Math.max(minBrightness, maxBrightness);
-  const span = hi - lo;
-  const brightness = FLICKER_PATTERN.map((t) => lo + t * span);
-  return {
-    periodMs: 1000 / rate,
-    phase: null,
-    playCount: null,
-    brightness,
-    color: null,
-    direction: null,
-  };
-}
-
-/**
- * Returns a 16-sample sine-approximating brightness curve oscillating
- * between `minBrightness` and `maxBrightness` over one full `periodMs`.
- *
- * Sample `i` is evaluated at `i / 16` of the period.
- */
-export function pulse(
-  minBrightness: number,
-  maxBrightness: number,
-  periodMs: number,
-): LightAnimation {
+function buildPulse(min: number, max: number, periodMs: number): LightAnimation {
   const SAMPLES = 16;
-  const lo = Math.min(minBrightness, maxBrightness);
-  const hi = Math.max(minBrightness, maxBrightness);
+  const lo = Math.min(min, max);
+  const hi = Math.max(min, max);
   const mid = (lo + hi) * 0.5;
   const amp = (hi - lo) * 0.5;
   const brightness: number[] = new Array(SAMPLES);
@@ -110,58 +51,138 @@ export function pulse(
     periodMs,
     phase: null,
     playCount: null,
+    startActive: null,
     brightness,
     color: null,
     direction: null,
   };
 }
 
-/**
- * Cycles uniformly through the given RGB `colors` over `periodMs`.
- *
- * Only valid on dynamic lights; the engine rejects color animation on
- * baked lights (the `wrapLightEntity` handle wrapper in this file surfaces that with a clearer error).
- */
-export function colorShift(
-  colors: [number, number, number][],
-  periodMs: number,
-): LightAnimation {
-  const color: Vec3[] = colors.map(([r, g, b]) => ({ x: r, y: g, z: b }));
+function buildFade(from: number, to: number, periodMs: number): LightAnimation {
+  const SAMPLES = 16;
+  const brightness: number[] = new Array(SAMPLES);
+  for (let i = 0; i < SAMPLES; i++) {
+    const t = i / (SAMPLES - 1);
+    brightness[i] = from + (to - from) * t;
+  }
+  return {
+    periodMs,
+    phase: null,
+    playCount: 1,
+    startActive: null,
+    brightness,
+    color: null,
+    direction: null,
+  };
+}
+
+function buildFlicker(min: number, max: number, rate: number): LightAnimation {
+  const lo = Math.min(min, max);
+  const hi = Math.max(min, max);
+  const span = hi - lo;
+  const brightness = FLICKER_PATTERN.map((t) => lo + t * span);
+  return {
+    periodMs: 1000 / rate,
+    phase: null,
+    playCount: null,
+    startActive: null,
+    brightness,
+    color: null,
+    direction: null,
+  };
+}
+
+function buildColorShift(values: Vec3[], periodMs: number): LightAnimation {
+  const color: Vec3[] = values.map((v) => ({ x: v.x, y: v.y, z: v.z }));
   return {
     periodMs,
     phase: null,
     playCount: null,
+    startActive: null,
     brightness: null,
     color,
     direction: null,
   };
 }
 
-/**
- * Sweeps the light's `direction` channel through `directions` over
- * `periodMs`. Direction samples are normalized defensively even though
- * the primitive also normalizes non-unit inputs — zero-length samples
- * still error at the primitive seam.
- */
-export function sweep(
-  directions: [number, number, number][],
-  periodMs: number,
-): LightAnimation {
-  const direction: Vec3[] = directions.map(([x, y, z]) => {
+function buildSweep(values: Vec3[], periodMs: number): LightAnimation {
+  // Direction samples are normalized defensively even though the
+  // primitive also normalizes non-unit inputs — zero-length samples
+  // still error at the primitive seam.
+  const direction: Vec3[] = values.map(({ x, y, z }) => {
     const len = Math.sqrt(x * x + y * y + z * z);
     if (len > 0) {
       return { x: x / len, y: y / len, z: z / len };
     }
-    // Pass zero-length through untouched; the primitive will reject it
-    // with `InvalidArgument` and a specific error message.
     return { x, y, z };
   });
   return {
     periodMs,
     phase: null,
     playCount: null,
+    startActive: null,
     brightness: null,
     color: null,
     direction,
   };
+}
+
+export function wrapLightEntity(snapshot: GeneratedLightEntity): LightEntityHandle {
+  const id: EntityId = snapshot.id;
+
+  const handle: LightEntityHandle = {
+    ...snapshot,
+
+    pulse(opts: { min: number; max: number; periodMs: number }): SequenceStep[] {
+      return [
+        {
+          id,
+          primitive: "setLightAnimation",
+          args: buildPulse(opts.min, opts.max, opts.periodMs),
+        },
+      ];
+    },
+
+    fade(opts: { from: number; to: number; periodMs: number }): SequenceStep[] {
+      return [
+        {
+          id,
+          primitive: "setLightAnimation",
+          args: buildFade(opts.from, opts.to, opts.periodMs),
+        },
+      ];
+    },
+
+    flicker(opts: { min: number; max: number; rate: number }): SequenceStep[] {
+      return [
+        {
+          id,
+          primitive: "setLightAnimation",
+          args: buildFlicker(opts.min, opts.max, opts.rate),
+        },
+      ];
+    },
+
+    colorShift(opts: { values: Vec3[]; periodMs: number }): SequenceStep[] {
+      return [
+        {
+          id,
+          primitive: "setLightAnimation",
+          args: buildColorShift(opts.values, opts.periodMs),
+        },
+      ];
+    },
+
+    sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[] {
+      return [
+        {
+          id,
+          primitive: "setLightAnimation",
+          args: buildSweep(opts.values, opts.periodMs),
+        },
+      ];
+    },
+  };
+
+  return handle;
 }

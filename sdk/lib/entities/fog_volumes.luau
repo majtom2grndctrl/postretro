@@ -1,25 +1,17 @@
 --!strict
 -- Fog volume entity vocabulary: the `FogVolumeHandle` returned by
--- `world:query({ component = "fog_volume" })`, plus the pure animation
--- constructors (`fogPulse`, `fogFade`) that produce sequence-step
--- arrays for `registerReaction("levelLoad", { sequence = ... })`.
---
--- The handle is read-only — fog volumes carry dual-channel animation
--- (density and/or saturation) through the `setFogAnimation` reaction
--- primitive, and the Live VM script tick API
--- has been removed. Static one-shot tweaks still go through
--- `setFogDensity`, `setFogScatter`, `setFogEdgeSoftness`,
--- `setFogFalloff`, or `setFogParams`. `fogPulse` and `fogFade` are pure
--- builders that emit `setFogAnimation` step arrays.
+-- `world:query({ component = "fog_volume" })`. The handle composes the
+-- generated `FogVolumeEntity` snapshot with capability methods
+-- (`pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation`)
+-- that return `{SetFogAnimationStep}` arrays suitable for splicing into
+-- a `registerReaction("...", { sequence = ... })` body.
 --
 -- `wrapFogVolumeEntity` is included in the returned table; the Luau
 -- prelude evaluator (`luau.rs`) extracts it and installs it as a
--- temporary global before `world.luau` evaluates. It is nil'd out by the
--- prelude after `world.luau` has been evaluated. The public builders
--- (`fogPulse`, `fogFade`) are lifted to bare globals via the
--- `FOG_VOLUMES_LUAU_FIELDS` slice in `luau.rs` — same mechanism that
--- promotes `flicker` / `pulse` / `colorShift` / `sweep` from
--- `entities/lights.luau`.
+-- temporary global before `world.luau` evaluates. It is nil'd out by
+-- the prelude after `world.luau` has been evaluated. No other fields
+-- from this module are promoted to bare globals — the old free
+-- constructors (`fogPulse`, `fogFade`) are now handle methods.
 --
 -- Fog ambient color is derived from the SH irradiance volume and is not
 -- settable via script.
@@ -31,123 +23,125 @@
 -- generated `sdk/types/postretro.d.luau` definitions file.
 
 --- Typed handle returned by `world:query` for a fog-volume entity.
---- Read-only; authors animate fog through sequenced reactions, not
---- methods on the handle.
+--- Carries the query-time snapshot fields plus capability methods called
+--- with `:` (e.g. `fog:pulse({ min = 0.2, max = 1.0, periodMs = 1500 })`).
 export type FogVolumeHandle = {
   id: EntityId,
   position: Vec3,
   tags: {string},
   component: FogVolumeComponent,
+
+  pulse: (self: FogVolumeHandle, opts: { min: number, max: number, periodMs: number }) -> {SetFogAnimationStep},
+  fade: (self: FogVolumeHandle, opts: { from: number, to: number, periodMs: number }) -> {SetFogAnimationStep},
+  flicker: (self: FogVolumeHandle, opts: { min: number, max: number, rate: number }) -> {SetFogAnimationStep},
+  pulseSaturation: (self: FogVolumeHandle, opts: { min: number, max: number, periodMs: number }) -> {SetFogAnimationStep},
+  fadeSaturation: (self: FogVolumeHandle, opts: { from: number, to: number, periodMs: number }) -> {SetFogAnimationStep},
 }
 
 local FogVolumesSdk = {}
 
 -- ---------------------------------------------------------------------
--- Handle construction
+-- Curve builders
 -- ---------------------------------------------------------------------
 
---- Wrap a `FogVolumeEntity` snapshot returned by `worldQuery`. Used by
---- `world.luau` for `world:query({ component = "fog_volume" })`.
---- Read-only -- no mutation methods. Authors register reactions to
---- animate fog.
-function FogVolumesSdk.wrapFogVolumeEntity(snapshot: FogVolumeEntity): FogVolumeHandle
-  return {
-    id = snapshot.id,
-    position = snapshot.position,
-    tags = snapshot.tags,
-    component = snapshot.component,
-  }
-end
+-- Same 8-step irregular pattern lights.luau uses for `flicker`.
+local FLICKER_PATTERN: {number} = {
+  0.95, 0.40, 1.00, 0.72, 0.15, 0.88, 0.30, 0.65,
+}
 
--- ---------------------------------------------------------------------
--- Density curves
--- ---------------------------------------------------------------------
-
---- Returns a single-step sequence array installing a looping sine-curve
---- `FogAnimation` on the target fog volume, oscillating between `min`
---- and `max` over `periodMs`.
----
---- One `setFogAnimation` step, not N `setFogDensity` steps: the sequence
---- dispatcher fires every step on the same frame, so a multi-step density
---- array collapses to its last value. Time-varying playback is the fog
---- bridge's job via the `FogAnimation` channel. Greps for the old
---- "16 setFogDensity steps" pattern land here.
----
---- The curve is 17 samples: `mid + amp * sin(2*pi*i/16)` for `i` in
---- `[0, 16]`; the 1-indexed Luau loop converts via `(i - 1)`. Sample
---- 17 equals sample 1, making the cycle continuous. The sampler treats
---- N samples as N−1 intervals on [0, 1]; the wrap sample encodes
---- cyclic intent so the final interval interpolates cleanly back to the
---- start rather than snapping. `min` / `max` are normalized so the
---- caller may pass them in either order. `playCount` is `nil` — a
---- pulse loops forever.
----
---- Note: fog uses linear interpolation on CPU; lights use Catmull-Rom
---- on GPU. The two produce visually similar motion at a given keyframe
---- density but differ in curvature between keyframes.
-function FogVolumesSdk.fogPulse(
-  id: EntityId,
-  min: number,
-  max: number,
-  periodMs: number
-): {SetFogAnimationStep}
+-- 17 samples (16 + 1 wrap): the linear sampler treats N samples as N-1
+-- intervals on [0, 1]; the wrap sample encodes cyclic intent so the
+-- final interval interpolates cleanly back to the start. (Lights pulse
+-- uses 16 samples on GPU Catmull-Rom; fog uses CPU linear, so the wrap
+-- sample matters here.)
+local function buildPulseSamples(min: number, max: number): {number}
   local SAMPLES = 16
   local lo = math.min(min, max)
   local hi = math.max(min, max)
   local mid = (lo + hi) * 0.5
   local amp = (hi - lo) * 0.5
-  local density: {number} = {}
-  -- Loop to SAMPLES (inclusive) to emit 17 samples: i=1..17 maps to theta 0..2π.
-  -- The final sample equals the first, encoding cyclic intent for the linear sampler.
+  local out: {number} = {}
   for i = 1, SAMPLES + 1 do
     local theta = ((i - 1) / SAMPLES) * math.pi * 2
-    density[i] = mid + amp * math.sin(theta)
+    out[i] = mid + amp * math.sin(theta)
   end
-  local animation: FogAnimation = {
-    periodMs = periodMs,
-    phase = nil,
-    playCount = nil,
-    density = density,
-  }
-  return { { id = id, primitive = "setFogAnimation", args = animation } }
+  return out
 end
 
---- Returns a single-step sequence array installing a one-shot linear
---- `FogAnimation` that ramps density from `from` to `to` over
---- `periodMs`.
----
---- One `setFogAnimation` step — see the note on `fogPulse` for why
---- multiple `setFogDensity` steps don't produce interpolation.
---- `playCount = 1` so the curve plays exactly once; the bridge writes
---- the final keyframe back as static density.
----
---- The curve is 16 evenly-spaced samples; sample `i` (1-indexed) is
---- `from + (to - from) * ((i - 1) / 15)`, so the first sample carries
---- `from` exactly and the last carries `to` exactly.
----
---- Note: fog animation curves (density and saturation) are sampled with
---- linear interpolation on CPU each frame. Light curves use Catmull-Rom
---- on GPU, so a fog fade and a light fade with the same shape are visually
---- similar but not mathematically identical at keyframe boundaries.
-function FogVolumesSdk.fogFade(
-  id: EntityId,
-  from: number,
-  to: number,
-  periodMs: number
-): {SetFogAnimationStep}
+local function buildFadeSamples(from: number, to: number): {number}
   local SAMPLES = 16
-  local density: {number} = {}
+  local out: {number} = {}
   for i = 1, SAMPLES do
     local t = (i - 1) / (SAMPLES - 1)
-    density[i] = from + (to - from) * t
+    out[i] = from + (to - from) * t
   end
-  local animation: FogAnimation = {
+  return out
+end
+
+local function buildFlickerSamples(min: number, max: number): {number}
+  local lo = math.min(min, max)
+  local hi = math.max(min, max)
+  local span = hi - lo
+  local out: {number} = {}
+  for i, t in ipairs(FLICKER_PATTERN) do
+    out[i] = lo + t * span
+  end
+  return out
+end
+
+local function densityAnim(periodMs: number, density: {number}, playCount: number?): FogAnimation
+  return {
     periodMs = periodMs,
     phase = nil,
-    playCount = 1,
+    playCount = playCount,
     density = density,
   }
-  return { { id = id, primitive = "setFogAnimation", args = animation } }
+end
+
+local function saturationAnim(periodMs: number, saturation: {number}, playCount: number?): FogAnimation
+  return {
+    periodMs = periodMs,
+    phase = nil,
+    playCount = playCount,
+    saturation = saturation,
+  }
+end
+
+-- ---------------------------------------------------------------------
+-- Handle construction
+-- ---------------------------------------------------------------------
+
+function FogVolumesSdk.wrapFogVolumeEntity(snapshot: FogVolumeEntity): FogVolumeHandle
+  local id: EntityId = snapshot.id
+
+  local handle: FogVolumeHandle = {
+    id = id,
+    position = snapshot.position,
+    tags = snapshot.tags,
+    component = snapshot.component,
+
+    pulse = function(self: FogVolumeHandle, opts: { min: number, max: number, periodMs: number }): {SetFogAnimationStep}
+      return { { id = id, primitive = "setFogAnimation", args = densityAnim(opts.periodMs, buildPulseSamples(opts.min, opts.max), nil) } }
+    end,
+
+    fade = function(self: FogVolumeHandle, opts: { from: number, to: number, periodMs: number }): {SetFogAnimationStep}
+      return { { id = id, primitive = "setFogAnimation", args = densityAnim(opts.periodMs, buildFadeSamples(opts.from, opts.to), 1) } }
+    end,
+
+    flicker = function(self: FogVolumeHandle, opts: { min: number, max: number, rate: number }): {SetFogAnimationStep}
+      return { { id = id, primitive = "setFogAnimation", args = densityAnim(1000 / opts.rate, buildFlickerSamples(opts.min, opts.max), nil) } }
+    end,
+
+    pulseSaturation = function(self: FogVolumeHandle, opts: { min: number, max: number, periodMs: number }): {SetFogAnimationStep}
+      return { { id = id, primitive = "setFogAnimation", args = saturationAnim(opts.periodMs, buildPulseSamples(opts.min, opts.max), nil) } }
+    end,
+
+    fadeSaturation = function(self: FogVolumeHandle, opts: { from: number, to: number, periodMs: number }): {SetFogAnimationStep}
+      return { { id = id, primitive = "setFogAnimation", args = saturationAnim(opts.periodMs, buildFadeSamples(opts.from, opts.to), 1) } }
+    end,
+  }
+
+  return handle
 end
 
 return FogVolumesSdk

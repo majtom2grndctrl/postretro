@@ -268,11 +268,30 @@ declare function worldSetGravity(value: number): ()
 -- ---------------------------------------------------------------------------
 -- SDK library — embedded into every Luau context via `include_str!` and
 -- evaluated during state construction. `world.luau`'s return value becomes
--- global `world`; `entities/lights.luau`'s return value is destructured into
--- light-vocabulary globals (`flicker`, `pulse`, `colorShift`, `sweep`);
--- `util/keyframes.luau` supplies `timeline` and `sequence`.
+-- global `world`; `util/keyframes.luau` supplies `timeline` and `sequence`.
+-- Animation curve construction lives on entity handles
+-- (`LightEntityHandle`, `FogVolumeHandle`) as capability methods, not as
+-- bare globals.
+
+--- Capability for entities with a scalar animation channel. `Channel` is
+--- type-level documentation only; the handle's implementation knows which
+--- channel to drive. Composed by `LightEntityHandle` (brightness) and
+--- `FogVolumeHandle` (density).
+export type AnimatableScalar<Channel> = {
+  pulse: (self: any, opts: { min: number, max: number, periodMs: number }) -> {SequenceStep},
+  fade: (self: any, opts: { from: number, to: number, periodMs: number }) -> {SequenceStep},
+  flicker: (self: any, opts: { min: number, max: number, rate: number }) -> {SequenceStep},
+}
+
+--- Capability for entities with a vec3 animation channel.
+export type AnimatableVec3<Channel> = {
+  cycle: (self: any, opts: { values: {Vec3}, periodMs: number }) -> {SequenceStep},
+}
 
 --- Typed light handle returned by `world:query({ component = "light" })`.
+--- Composes the brightness scalar capability with vec3 channels declared
+--- directly (Luau lacks TS-style multiple-interface extension; secondary
+--- channels are inlined).
 export type LightEntityHandle = {
   id: EntityId,
   position: Vec3,
@@ -280,7 +299,11 @@ export type LightEntityHandle = {
   tags: {string},
   component: LightComponent,
 
-  setAnimation: (self: LightEntityHandle, anim: LightAnimation?) -> (),
+  pulse: (self: LightEntityHandle, opts: { min: number, max: number, periodMs: number }) -> {SetLightAnimationStep},
+  fade: (self: LightEntityHandle, opts: { from: number, to: number, periodMs: number }) -> {SetLightAnimationStep},
+  flicker: (self: LightEntityHandle, opts: { min: number, max: number, rate: number }) -> {SetLightAnimationStep},
+  colorShift: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
+  sweep: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
 }
 
 --- Generic entity handle returned by `world:query` when the component is
@@ -292,18 +315,23 @@ export type EntityHandle = {
 }
 
 --- Typed fog-volume handle returned by `world:query({ component = "fog_volume" })`.
---- Currently a pass-through alias for the snapshot — fog has no engine-side
---- animation primitive and the tick-callback helpers were removed alongside
---- the Live VM API.
+--- Composes the density scalar capability with secondary saturation
+--- methods declared directly.
 export type FogVolumeHandle = {
   id: EntityId,
   position: Vec3,
   tags: {string},
   component: FogVolumeComponent,
+
+  pulse: (self: FogVolumeHandle, opts: { min: number, max: number, periodMs: number }) -> {SetFogAnimationStep},
+  fade: (self: FogVolumeHandle, opts: { from: number, to: number, periodMs: number }) -> {SetFogAnimationStep},
+  flicker: (self: FogVolumeHandle, opts: { min: number, max: number, rate: number }) -> {SetFogAnimationStep},
+  pulseSaturation: (self: FogVolumeHandle, opts: { min: number, max: number, periodMs: number }) -> {SetFogAnimationStep},
+  fadeSaturation: (self: FogVolumeHandle, opts: { from: number, to: number, periodMs: number }) -> {SetFogAnimationStep},
 }
 
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
---- `"light"` returns `LightEntityHandle` values (with `:setAnimation`);
+--- `"light"` returns `LightEntityHandle` values (with capability methods);
 --- `"emitter"` returns `EmitterEntity` values carrying the full
 --- `BillboardEmitterComponent` snapshot under `component`; `"fog_volume"`
 --- returns `FogVolumeHandle` values; other components fall back to the
@@ -328,18 +356,6 @@ export type World = {
 export type Keyframe = {number}
 
 declare world: World
-
---- 8-sample irregular flicker brightness curve.
-declare function flicker(minBrightness: number, maxBrightness: number, rate: number): LightAnimation
-
---- 16-sample sine pulse brightness curve.
-declare function pulse(minBrightness: number, maxBrightness: number, periodMs: number): LightAnimation
-
---- Cycles uniformly through the given RGB colors. Dynamic lights only.
-declare function colorShift(colors: {{number}}, periodMs: number): LightAnimation
-
---- Sweeps the light's `direction` through normalized vectors over `periodMs`.
-declare function sweep(directions: {{number}}, periodMs: number): LightAnimation
 
 --- Validate `{absolute_ms, ...value}` keyframes; pass-through on success.
 declare function timeline(keyframes: {Keyframe}): {Keyframe}
@@ -418,7 +434,8 @@ export type SetFogParamsStep = {
 
 --- Sequence step that installs (or clears, when `args` is `nil`) a
 --- dual-channel animation (density and/or saturation) on a single fog volume.
---- Emitted by the SDK `fogPulse` / `fogFade` constructors.
+--- Emitted by the `FogVolumeHandle` capability methods (`pulse`, `fade`,
+--- `flicker`, `pulseSaturation`, `fadeSaturation`).
 export type SetFogAnimationStep = {
   id: EntityId,
   primitive: "setFogAnimation",

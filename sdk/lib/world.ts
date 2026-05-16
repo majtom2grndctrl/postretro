@@ -10,7 +10,7 @@ import type {
   WorldQueryFilter,
 } from "postretro";
 import { wrapLightEntity } from "./entities/lights";
-import type { LightEntity } from "./entities/lights";
+import type { LightEntityHandle } from "./entities/lights";
 import { wrapFogVolumeEntity } from "./entities/fog_volumes";
 import type { FogVolumeHandle } from "./entities/fog_volumes";
 
@@ -20,7 +20,7 @@ import type { FogVolumeHandle } from "./entities/fog_volumes";
  * carrying the full `BillboardEmitterComponent` snapshot under `component`.
  */
 export type EntityForComponent<T extends string> =
-  T extends "light" ? LightEntity :
+  T extends "light" ? LightEntityHandle :
   T extends "emitter" ? EmitterEntity :
   T extends "fog_volume" ? FogVolumeHandle :
   Entity;
@@ -29,8 +29,9 @@ export type EntityForComponent<T extends string> =
 export interface World {
   /**
    * Query entities matching the filter. The return type is selected by
-   * the literal `component` string: `"light"` yields `LightEntity[]`
-   * (with convenience method `setAnimation`); `"emitter"` yields handles
+   * the literal `component` string: `"light"` yields `LightEntityHandle[]`
+   * (carrying `pulse` / `fade` / `flicker` / `colorShift` / `sweep`
+   * capability methods); `"emitter"` yields handles
    * carrying the full `BillboardEmitterComponent` snapshot under `component`;
    * any other component name yields base `Entity[]` (id, position, tags).
    *

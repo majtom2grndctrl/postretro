@@ -751,6 +751,21 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
     };
 
+    // FogCellMasks is indexed by leaf id; a length mismatch means the masks
+    // can't be safely consulted. Drop them and let the renderer fall back to
+    // "all canonical slots active" (see `compute_fog_cell_mask`).
+    let fog_cell_masks = match fog_cell_masks {
+        Some(masks) if masks.len() != leaves.len() => {
+            log::warn!(
+                "[Loader] FogCellMasks length ({}) does not match leaves length ({}); ignoring masks (all slots active)",
+                masks.len(),
+                leaves.len(),
+            );
+            None
+        }
+        other => other,
+    };
+
     let root = if nodes.is_empty() {
         BspChild::Leaf(0)
     } else {
@@ -1618,8 +1633,26 @@ mod tests {
 
         let geom = sample_geometry();
         let bvh = sample_bvh_section();
+        let leaves = BspLeavesSection {
+            leaves: vec![
+                BspLeafRecord {
+                    face_start: 0,
+                    face_count: 1,
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    is_solid: 0,
+                },
+                BspLeafRecord {
+                    face_start: 1,
+                    face_count: 1,
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    is_solid: 0,
+                },
+            ],
+        };
         let masks = FogCellMasksSection {
-            masks: vec![0x0000_0000, 0x0000_0001, 0x0000_8000, 0x0000_FFFF],
+            masks: vec![0x0000_0001, 0x0000_8000],
         };
 
         let sections = vec![
@@ -1634,6 +1667,11 @@ mod tests {
                 data: bvh.to_bytes(),
             },
             prl_format::SectionBlob {
+                section_id: SectionId::BspLeaves as u32,
+                version: 1,
+                data: leaves.to_bytes(),
+            },
+            prl_format::SectionBlob {
                 section_id: SectionId::FogCellMasks as u32,
                 version: 1,
                 data: masks.to_bytes(),
@@ -1646,8 +1684,73 @@ mod tests {
 
         assert_eq!(
             world.fog_cell_masks,
-            Some(vec![0x0000_0000u32, 0x0000_0001, 0x0000_8000, 0x0000_FFFF])
+            Some(vec![0x0000_0001u32, 0x0000_8000])
         );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_drops_fog_cell_masks_when_length_mismatches_leaves() {
+        use postretro_level_format::fog_cell_masks::FogCellMasksSection;
+
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        // Two leaves but only one mask — truncated FogCellMasks must degrade
+        // to None so the renderer's "all slots active" fallback engages.
+        let leaves = BspLeavesSection {
+            leaves: vec![
+                BspLeafRecord {
+                    face_start: 0,
+                    face_count: 1,
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    is_solid: 0,
+                },
+                BspLeafRecord {
+                    face_start: 1,
+                    face_count: 1,
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    is_solid: 0,
+                },
+            ],
+        };
+        let masks = FogCellMasksSection {
+            masks: vec![0x0000_0001],
+        };
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::BspLeaves as u32,
+                version: 1,
+                data: leaves.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::FogCellMasks as u32,
+                version: 1,
+                data: masks.to_bytes(),
+            },
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_fog_cell_masks_truncated.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+        assert!(
+            world.fog_cell_masks.is_none(),
+            "truncated FogCellMasks should be dropped to None"
+        );
+        assert_eq!(world.leaves.len(), 2);
 
         std::fs::remove_file(&tmp).ok();
     }

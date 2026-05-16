@@ -32,16 +32,17 @@ Eliminate visible fog flickering in `campaign-test.prl` (and any map with fog vo
 - [ ] Spot lights whose host leaf has zero faces still scatter visible beams in fog as the camera approaches; beams do not blink as adjacent leaves enter/exit the drawable set.
 - [ ] Walking the camera into a wall inside a fog volume leaves the fog visible at the near plane — fog does not punch a hole around the camera.
 - [ ] A fog-volume AABB whose face lies on a leaf split plane renders without per-frame inclusion/exclusion as the camera grazes the plane.
-- [ ] Loading a PRL whose `FogCellMasks` section is shorter than `leaves.len()` does not crash; renderer logs a warning and falls back to "all slots active" until the next level load.
+- [ ] Loading a PRL whose `FogCellMasks` section length does not equal `leaves.len()` does not crash; renderer logs a warning and falls back to "all slots active" until the next level load.
 - [ ] After ~30 minutes of uptime, fog-volume animation curves continue to interpolate smoothly with no visible sub-second density steps.
 - [ ] Existing fog tests (`render/mod.rs` `compute_fog_cell_mask` tests, `level-format/src/fog_cell_masks.rs` `union_active_mask` tests) pass with the new dual-set plumbing; new tests cover camera-leaf union and length-mismatch fallback.
+- [ ] A fog volume whose host leaf exits the fog-reachable set for N frames or fewer (N = HYSTERESIS compile-time constant) remains rendered without visible deactivation.
 - [ ] No new `cargo clippy` warnings; `cargo test --workspace` passes.
 
 ## Tasks
 
 ### Task 1: Dual leaf-set in visibility
 
-Split `determine_visible_cells` output so callers get both the existing drawable list and a wider fog/light-reachable list. Portal traversal (`portal_vis::portal_traverse`) already records reachability without consulting `face_count`; the `face_count > 0` predicate currently lives only in the post-traversal filter (`visibility.rs` portal-path and `visible_leaves_frustum_all`). Introduce a `fog_reachable_leaves: Vec<u32>` alongside `VisibleCells`, produced from the same traversal sweep with the `face_count` predicate dropped (the `!is_solid` and `portal_visible[idx]` predicates stay). Each visibility-mode arm (`Portal`, `SolidLeaf`, `ExteriorCamera`, `NoPortals`) returns the appropriate fog-reachable list — solid-leaf and exterior-camera paths return every non-solid leaf (matching today's `DrawAll` semantics for fog). Thread the new list from `main.rs` through `Renderer::render_frame_indirect` into `compute_fog_cell_mask` *and* into `update_dynamic_light_slots`. Update existing callers that don't need the wider set to ignore it.
+Split `determine_visible_cells` output so callers get both the existing drawable list and a wider fog/light-reachable list. Portal traversal (`portal_vis::portal_traverse`) already records reachability without consulting `face_count`; the `face_count > 0` predicate currently lives only in the post-traversal filter (`visibility.rs` portal-path and `visible_leaves_frustum_all`). Introduce a `fog_reachable_leaves: Vec<u32>` alongside `VisibleCells`, produced from the same traversal sweep with the `face_count` predicate dropped (the `!is_solid` and `portal_visible[idx]` predicates stay). Each visibility-mode arm (`Portal`, `SolidLeaf`, `ExteriorCamera`, `NoPortals`, `EmptyWorld`) returns the appropriate fog-reachable list — solid-leaf and exterior-camera paths return every non-solid leaf (matching today's `DrawAll` semantics for fog); `EmptyWorld` returns an empty list. Thread the new list from `main.rs` through `Renderer::render_frame_indirect` into `compute_fog_cell_mask` *and* into `update_dynamic_light_slots`. Update existing callers that don't need the wider set to ignore it.
 
 ### Task 2: Camera leaf union in fog mask
 
@@ -53,15 +54,15 @@ In `update_dynamic_light_slots` (`render/mod.rs`), build `visible_leaf_mask` fro
 
 ### Task 4: PRL fog_cell_masks length validation
 
-In `prl.rs` where `FogCellMasks` parses (around line 697), compare `masks.len()` against `leaves.len()` (already loaded earlier in the same function). On mismatch, log at `warn!`, set `level_world.fog_cell_masks = None`, continue load. The renderer's existing "masks absent → all slots active" fallback (see `rendering_pipeline.md` §7.5) handles the degraded case. Add a unit test that loads a synthetic PRL with truncated masks.
+In `prl.rs` where `FogCellMasks` parses (around line 697), compare `masks.len()` against `leaves.len()` (already loaded earlier in the same function). On any length mismatch (shorter or longer), log at `warn!`, set `level_world.fog_cell_masks = None`, continue load. The renderer's existing "masks absent → all slots active" fallback (see `rendering_pipeline.md` §7.5) handles the degraded case. Add a unit test that loads a synthetic PRL with truncated masks.
 
 ### Task 5: Min-over-block depth tap
 
-In `fog_volume.wgsl` (the `cs_main` depth-load block around line 348), replace the single `textureLoad` with a `min`-reduce over the `pixel_scale × pixel_scale` block of full-res depth samples covered by the scatter texel. The scale is derivable from `depth_dims / out_dims`. Min selects the closest hit, so fog never bleeds through silhouettes. Bound the loop with constant comparisons against the static-known max `pixel_scale = 8` (per `worldspawn.fog_pixel_scale` range) to keep WGSL happy.
+In `fog_volume.wgsl` (the `cs_main` depth-load block around line 348), replace the single `textureLoad` with a `min`-reduce over the `pixel_scale × pixel_scale` block of full-res depth samples covered by the scatter texel. The scale is derivable from `depth_dims / out_dims`. Min selects the closest hit, so fog never bleeds through silhouettes. Bound the loop with constant comparisons against the static-known max `pixel_scale = 8` (`fog_pixel_scale ∈ [1, 8]` per the FGD range) to keep WGSL happy; values outside this range silently truncate the tap block.
 
 ### Task 6: AABB epsilon inflation on upload
 
-In `FogPass::set_canonical_volumes` (`render/fog_pass.rs:544`), expand each canonical volume's `min`/`max` by `1.0e-3` (1 mm) in each axis before storing on `FogPass::canonical_volumes`. Document the epsilon next to the field. Plane-bounded clip planes inside the AABB are unaffected — they live in their own buffer and clip independently.
+In `FogPass::set_canonical_volumes` (`render/fog_pass.rs:544`), expand each canonical volume's `min`/`max` by `1.0e-3` (1 mm in meter-unit world space) in each axis before storing on `FogPass::canonical_volumes`. Document the epsilon next to the field. Plane-bounded clip planes inside the AABB are unaffected — they live in their own buffer and clip independently.
 
 ### Task 7: Drop start_t step-floor
 
@@ -73,17 +74,17 @@ Add `LevelWorld::find_leaf_with_hint(position: Vec3, prev_leaf: Option<usize>) -
 
 ### Task 9: f64 fog animation timing
 
-In `fog_volume_bridge.rs::tick` and `sample_*_curve_at` helpers, accept and operate on `time_seconds: f64` (or compute `now_ms` as f64 internally). Compute `(now_ms - start_ms)` and `% period_ms` in f64; narrow to f32 only at the leaf where the curve is sampled. Caller chain: `main.rs` script-time source likely already in seconds — widen at the bridge boundary so other consumers don't change.
+In `fog_volume_bridge.rs::tick` and `sample_*_curve_at` helpers, accept and operate on `time_seconds: f64` (or compute `now_ms` as f64 internally). Compute `(now_ms - start_ms)` and `% period_ms` in f64; narrow to f32 only at the leaf where the curve is sampled. Caller chain: verify the upstream time source type in `main.rs` before widening (check `ScriptClock` or equivalent); widen `tick`'s `time_seconds` parameter from `f32` to `f64` at the bridge boundary so callers above it remain unchanged.
 
 ### Task 10: Sticky-frame fog activation
 
-Add `last_active_frame: Vec<u32>` on `FogPass`, sized to `canonical_volumes.len()`, tracking the most recent frame index each volume was in `cell_mask & live_mask`. In `repack_active`, OR in any volume whose `last_active_frame >= current_frame - HYSTERESIS` (e.g. `HYSTERESIS = 8`). The slab-clip prologue in WGSL early-outs cheaply for volumes the ray doesn't intersect, so the cost is bounded. Reset on level load.
+Add `last_active_frame: Vec<u32>` on `FogPass`, sized to `canonical_volumes.len()`, tracking the most recent frame index each volume was in `cell_mask & live_mask`. In `repack_active`, OR in any volume whose `last_active_frame >= current_frame.saturating_sub(HYSTERESIS)` (e.g. `HYSTERESIS = 8`). The slab-clip prologue in WGSL early-outs cheaply for volumes the ray doesn't intersect, so the cost is bounded. Resize `last_active_frame` in `set_canonical_volumes` to match the new `canonical_volumes.len()`, initializing new slots to 0. Reset (zero) the entire vec on level load.
 
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — defines the new fog/light-reachable list; downstream tasks consume it.
 
-**Phase 2 (concurrent):** Task 2, Task 3 — both consume the new list; touch different functions in `render/mod.rs`. Land sequentially if file-merge conflicts surface, otherwise parallel.
+**Phase 2 (sequential):** Task 2 then Task 3 — both edit `render_frame_indirect` in `render/mod.rs`; conflict is near-certain.
 
 **Phase 3 (concurrent):** Tasks 4, 5, 6, 7, 8, 9, 10 — independent files / independent functions. Fully parallel.
 
@@ -102,7 +103,7 @@ pub struct VisibilityResult {
 
 `render_frame_indirect` takes the result; `compute_fog_cell_mask` (definition at `render/mod.rs:53`, call at `:2867`) takes `fog_reachable` instead of `visible_cells`.
 
-**Camera leaf (Task 2).** `compute_fog_cell_mask` currently signature `(&VisibleCells, &[u32], u32) -> u32`. Add `camera_leaf: Option<u32>`; after the OR-loop, `if let Some(cl) = camera_leaf { active |= masks.get(cl as usize).copied().unwrap_or(0); }`.
+**Camera leaf (Task 2).** `compute_fog_cell_mask` currently signature `(&VisibleCells, Option<&[u32]>, u32) -> u32`. Add `camera_leaf: Option<u32>`; after the OR-loop, `if let Some(cl) = camera_leaf { if let Some(masks) = fog_cell_masks { active |= masks.get(cl as usize).copied().unwrap_or(0); } }`.
 
 **Light influences (Task 3).** `update_dynamic_light_slots` (signature at `render/mod.rs:2456`) already accepts `light_influences: &[LightInfluence]` but the call at `:2696` passes `&[]`. Find the renderer field that owns `LightInfluence` data (look for the producer of the `light_influences` storage buffer in the lighting pass) and pass that slice through. If the data is computed inside `render_frame_indirect`, hoist it above the call.
 
@@ -123,9 +124,9 @@ for (var dy: u32 = 0u; dy < 8u; dy = dy + 1u) {
 }
 ```
 
-Upper bound `8` matches the `fog_pixel_scale` max (1–8 per `build_pipeline.md` table).
+Upper bound `8` matches the `fog_pixel_scale` max (1–8 per `build_pipeline.md` table). Clamp `base.x + dx` and `base.y + dy` to `depth_dims - 1` before sampling to handle window sizes not divisible by `pixel_scale`.
 
-**Sticky activation (Task 10).** `repack_active` runs once per frame in `render_frame_indirect`. Pass the renderer's existing frame counter (or read from `FogParams.frame_index` if exposed) into `repack_active`. Hysteresis tunable as a const; 8 frames at 60 Hz ≈ 130 ms — long enough to mask single-frame portal narrowings, short enough that a genuinely-occluded volume drops out before the user notices.
+**Sticky activation (Task 10).** `repack_active` runs once per frame in `render_frame_indirect`. Introduce `frame_counter: u32` on `Renderer`; increment each frame in `render_frame_indirect`, pass into `repack_active`. Hysteresis tunable as a const; 8 frames at 60 Hz ≈ 130 ms — long enough to mask single-frame portal narrowings, short enough that a genuinely-occluded volume drops out before the user notices.
 
 **Affected files (summary):**
 - `crates/postretro/src/visibility.rs` — split return shape (Task 1)

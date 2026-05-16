@@ -1433,7 +1433,7 @@ impl App {
             self.fog_volume_bridge
                 .populate_from_level(&mut registry, &world.fog_volumes);
             renderer.set_fog_pixel_scale(world.fog_pixel_scale);
-            renderer.set_fog_cell_masks(world.fog_cell_masks.clone());
+            renderer.install_fog_cell_masks_for_level(world.fog_cell_masks.clone());
         }
 
         // Populate before the first game tick so movement collision is ready.

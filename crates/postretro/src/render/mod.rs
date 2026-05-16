@@ -2434,14 +2434,18 @@ impl Renderer {
         self.fog.set_canonical_volumes(volumes, planes, live_mask);
     }
 
+    /// Installs per-cell fog visibility masks for a freshly loaded level and
+    /// resets the fog pass's hysteresis timestamps in the same step.
+    ///
     /// `None` = legacy PRL without section 31: all canonical slots treated active.
     /// `live_mask` still suppresses density-zero slots.
     ///
-    /// Called from the level-load path, so this is also the seam where we
-    /// reset the fog pass's hysteresis timestamps — otherwise volumes from the
-    /// previous level could ride the sticky window into the first frames of
-    /// the new level.
-    pub fn set_fog_cell_masks(&mut self, masks: Option<Vec<u32>>) {
+    /// Resetting hysteresis is part of the contract: without it, volumes from
+    /// the previous level could ride the sticky window into the first frames
+    /// of the new level. Because of that coupling, this method is only valid
+    /// at level-load boundaries — mid-session fog-volume hot-reloads must use
+    /// a different seam that preserves hysteresis state.
+    pub fn install_fog_cell_masks_for_level(&mut self, masks: Option<Vec<u32>>) {
         self.fog_cell_masks = masks;
         self.fog.clear_for_level_load();
     }

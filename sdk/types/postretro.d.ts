@@ -346,6 +346,22 @@ declare module "postretro" {
     keyframes: [number, ...T][],
   ): [number, ...T][];
 
+  /** Looping sine-curve density animation between `min` and `max` over `periodMs`. Returns a single `setFogAnimation` step. */
+  export function fogPulse(
+    id: EntityId,
+    min: number,
+    max: number,
+    periodMs: number,
+  ): SetFogAnimationStep[];
+
+  /** One-shot linear density ramp from `from` to `to` over `periodMs`. Returns a single `setFogAnimation` step. */
+  export function fogFade(
+    id: EntityId,
+    from: number,
+    to: number,
+    periodMs: number,
+  ): SetFogAnimationStep[];
+
   // -------------------------------------------------------------------------
   // Data script vocabulary — pure descriptor builders consumed by the engine
   // when `registerLevelManifest` returns. See: context/lib/scripting.md §2.

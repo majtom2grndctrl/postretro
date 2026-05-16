@@ -73,16 +73,18 @@ end
 --- bridge's job via the `FogAnimation` channel. Greps for the old
 --- "16 setFogDensity steps" pattern land here.
 ---
---- The curve is 16 samples of `mid + amp * sin(2*pi*i/16)` for `i` in
---- `[0, 16)`; the 1-indexed Luau loop converts via `(i - 1)`.
---- `min` / `max` are normalized so the caller may pass them in either
---- order. `playCount` is `nil` — a pulse loops forever.
+--- The curve is 17 samples: `mid + amp * sin(2*pi*i/16)` for `i` in
+--- `[0, 16]`; the 1-indexed Luau loop converts via `(i - 1)`. Sample
+--- 17 equals sample 1, making the cycle continuous. The sampler treats
+--- N samples as N−1 intervals on [0, 1]; the wrap sample encodes
+--- cyclic intent so the final interval interpolates cleanly back to the
+--- start rather than snapping. `min` / `max` are normalized so the
+--- caller may pass them in either order. `playCount` is `nil` — a
+--- pulse loops forever.
 ---
---- Note: the curve definition matches `pulse` on lights, but the
---- runtime sampling differs — fog is sampled with linear interpolation
---- on CPU each frame, while lights are sampled with Catmull-Rom on
---- GPU. The two produce visually similar motion but are not
---- mathematically identical at keyframe boundaries.
+--- Note: fog uses linear interpolation on CPU; lights use Catmull-Rom
+--- on GPU. The two produce visually similar motion at a given keyframe
+--- density but differ in curvature between keyframes.
 function FogVolumesSdk.fogPulse(
   id: EntityId,
   min: number,
@@ -95,8 +97,9 @@ function FogVolumesSdk.fogPulse(
   local mid = (lo + hi) * 0.5
   local amp = (hi - lo) * 0.5
   local density: {number} = {}
-  for i = 1, SAMPLES do
-    -- `(i - 1)` converts the 1-indexed Luau counter to 0-indexed theta, matching the TypeScript fogPulse sampling.
+  -- Loop to SAMPLES (inclusive) to emit 17 samples: i=1..17 maps to theta 0..2π.
+  -- The final sample equals the first, encoding cyclic intent for the linear sampler.
+  for i = 1, SAMPLES + 1 do
     local theta = ((i - 1) / SAMPLES) * math.pi * 2
     density[i] = mid + amp * math.sin(theta)
   end

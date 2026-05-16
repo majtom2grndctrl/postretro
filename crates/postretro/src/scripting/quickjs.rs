@@ -376,11 +376,12 @@ mod tests {
     #[test]
     fn fog_pulse_returns_single_step_set_fog_animation() {
         // fogPulse must emit exactly one `setFogAnimation` step whose
-        // `args.density` is a 16-sample sine curve, with `playCount = null`
-        // (loop forever). The previous contract (16 `setFogDensity` steps)
-        // was wrong: the sequence dispatcher fires every step on the same
-        // frame, so the 16-step array collapsed to its last value with no
-        // time-varying playback. The animation channel evaluates per-frame
+        // `args.density` is a 17-sample sine curve (16 intervals + wrap sample),
+        // with `playCount = null` (loop forever). The 17th sample equals the
+        // 1st so the linear sampler interpolates cleanly at the period boundary.
+        // The previous contract (16 `setFogDensity` steps) was wrong: the
+        // sequence dispatcher fires every step on the same frame, so the array
+        // collapsed to its last value. The animation channel evaluates per-frame
         // on the bridge side instead.
         let (subsys, _ctx) = setup();
         subsys.definition_ctx().with(|ctx| {
@@ -402,7 +403,7 @@ mod tests {
                 )
                 .unwrap();
             let densities: Vec<f64> = serde_json::from_str(&json).unwrap();
-            assert_eq!(densities.len(), 16);
+            assert_eq!(densities.len(), 17);
             let lo = 0.2_f64;
             let hi = 1.0_f64;
             let mid = (lo + hi) * 0.5;
@@ -415,6 +416,13 @@ mod tests {
                     "sample {i}: expected {expected}, got {got}"
                 );
             }
+            // Wrap sample: sample[16] must equal sample[0].
+            assert!(
+                (densities[16] - densities[0]).abs() < 1e-5,
+                "wrap sample[16] must equal sample[0]; got {} vs {}",
+                densities[16],
+                densities[0]
+            );
         });
     }
 

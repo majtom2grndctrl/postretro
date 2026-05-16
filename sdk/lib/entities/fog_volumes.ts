@@ -63,17 +63,17 @@ export function wrapFogVolumeEntity(
  * bridge's job via the `FogAnimation` channel. Greps for the old
  * "16 setFogDensity steps" pattern land here.
  *
- * The curve is 16 samples of `mid + amp * sin(2π·i/16)` for `i` in
- * `[0, 16)` (sample 0 is at `theta = 0`, matching the `pulse`
- * constructor in `./lights`). `min` / `max` are normalized so the
- * caller may pass them in either order. `playCount` is `null` — a
- * pulse loops forever.
+ * The curve is 17 samples: `mid + amp * sin(2π·i/16)` for `i` in
+ * `[0, 16]`. Sample 16 equals sample 0, making the cycle continuous.
+ * The sampler treats N samples as N−1 intervals on [0, 1]; the wrap
+ * sample encodes cyclic intent so the final interval interpolates
+ * cleanly back to the start rather than snapping. `min` / `max` are
+ * normalized so the caller may pass them in either order. `playCount`
+ * is `null` — a pulse loops forever.
  *
- * Note: the curve definition matches `pulse` on lights, but the runtime
- * sampling differs — fog is sampled with linear interpolation on CPU
- * each frame, while lights are sampled with Catmull-Rom on GPU. The two
- * produce visually similar motion but are not mathematically identical
- * at keyframe boundaries.
+ * Note: fog uses linear interpolation on CPU; lights use Catmull-Rom on
+ * GPU. The two produce visually similar motion at a given keyframe
+ * density but differ in curvature between keyframes.
  */
 export function fogPulse(
   id: EntityId,
@@ -86,8 +86,8 @@ export function fogPulse(
   const hi = Math.max(min, max);
   const mid = (lo + hi) * 0.5;
   const amp = (hi - lo) * 0.5;
-  const density: number[] = new Array(SAMPLES);
-  for (let i = 0; i < SAMPLES; i++) {
+  const density: number[] = new Array(SAMPLES + 1);
+  for (let i = 0; i <= SAMPLES; i++) {
     const theta = (i / SAMPLES) * Math.PI * 2;
     density[i] = mid + amp * Math.sin(theta);
   }

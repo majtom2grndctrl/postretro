@@ -333,12 +333,10 @@ struct App {
     /// `None` before level load and after the sweep consumes it.
     builtin_handled: Option<std::collections::HashSet<String>>,
 
-    /// `player_spawn` placements partitioned out of `world.map_entities`
-    /// during install, awaiting the data-archetype sweep on the same frame.
-    /// The dispatch sweeps must not see these (they are routed by
-    /// `entity_class`, not by their own `classname`); the second sweep
-    /// consumes them via `spawn_from_player_starts`. `None` before level load
-    /// and after the sweep consumes them.
+    /// `player_spawn` placements partitioned from `world.map_entities` during
+    /// install. Consumed on the same frame by `spawn_from_player_starts` — a
+    /// separate path from `apply_data_archetype_dispatch`. `None` before level
+    /// load and after consumed.
     pending_spawn_points: Option<Vec<crate::scripting::map_entity::MapEntity>>,
 
     /// Non-player-start map entities partitioned out of `world.map_entities`

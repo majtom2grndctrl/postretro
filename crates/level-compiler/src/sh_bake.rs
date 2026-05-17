@@ -1027,6 +1027,81 @@ mod tests {
         assert_eq!(a.to_bytes(), b.to_bytes());
     }
 
+    /// Cache-determinism guard: the SH volume bake feeds the build-stage cache,
+    /// which keys cache entries on input hash and serves stored output bytes
+    /// verbatim. The bake fans probes across rayon worker threads via
+    /// `into_par_iter().map().collect()`; this is order-preserving, but
+    /// regressions (e.g. swapping in `par_iter().reduce()` over floats, or
+    /// iterating a `HashMap` to assemble probe output) would silently break
+    /// the cache. This test fans out enough probes to exercise multiple worker
+    /// chunks and asserts byte-for-byte equality on the encoded section.
+    #[test]
+    fn sh_volume_bake_produces_byte_identical_output_on_repeated_runs() {
+        // 4 m × 4 m floor → 5×1×5 probe grid at 1 m spacing = 25 probes,
+        // enough work for rayon to schedule across several threads.
+        let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 0.0, 4.0]]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+
+        // Two static lights — verifies the per-probe sequential light sum is
+        // stable across runs (would catch any future float-reduce swap).
+        let lights = vec![
+            MapLight {
+                origin: DVec3::new(0.5, 1.0, 0.5),
+                light_type: LightType::Point,
+                intensity: 1.0,
+                color: [1.0, 0.5, 0.25],
+                falloff_model: FalloffModel::Linear,
+                falloff_range: 5.0,
+                cone_angle_inner: None,
+                cone_angle_outer: None,
+                cone_direction: None,
+                animation: None,
+                cast_shadows: true,
+                bake_only: false,
+                is_dynamic: false,
+                tags: vec![],
+            },
+            MapLight {
+                origin: DVec3::new(3.0, 2.0, 3.0),
+                light_type: LightType::Point,
+                intensity: 2.0,
+                color: [0.25, 0.5, 1.0],
+                falloff_model: FalloffModel::InverseSquared,
+                falloff_range: 8.0,
+                cone_angle_inner: None,
+                cone_angle_outer: None,
+                cone_direction: None,
+                animation: None,
+                cast_shadows: true,
+                bake_only: false,
+                is_dynamic: false,
+                tags: vec![],
+            },
+        ];
+        let exterior: HashSet<usize> = HashSet::new();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let inputs = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+
+        let bytes_a = bake_sh_volume(&inputs, &config).to_bytes();
+        let bytes_b = bake_sh_volume(&inputs, &config).to_bytes();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "SH volume bake output drifted between runs; the build-stage cache requires \
+             byte-identical output for identical inputs",
+        );
+    }
+
     #[test]
     fn animated_light_produces_descriptor() {
         let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);

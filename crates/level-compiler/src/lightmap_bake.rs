@@ -1236,6 +1236,46 @@ mod tests {
         }
     }
 
+    /// Cache-determinism guard: the lightmap bake is consumed by the build-stage
+    /// cache, which keys cache entries on input hash and reuses stored output
+    /// verbatim. Any run-to-run drift in the encoded section (HashMap iteration
+    /// order leaking into output, parallel-reduce sums with variable ordering,
+    /// RNG without a fixed seed) would defeat the cache. This test fails fast
+    /// if any such drift is reintroduced into the bake path.
+    #[test]
+    fn lightmap_bake_produces_byte_identical_output_on_repeated_runs() {
+        fn run_bake() -> Vec<u8> {
+            let mut geo = unit_quad_geometry();
+            let (bvh, prims, _) = build_bvh(&geo).unwrap();
+            let lights = vec![point_light_above()];
+            let static_lights = StaticBakedLights::from_lights(&lights);
+            let mut inputs = LightmapBakeCtx {
+                bvh: &bvh,
+                primitives: &prims,
+                geometry: &mut geo,
+                lights: &static_lights,
+            };
+            let out = bake_lightmap(
+                &mut inputs,
+                &LightmapConfig {
+                    lightmap_density: 0.25,
+                },
+            )
+            .unwrap();
+            // LightmapSection has a defined on-disk byte layout — comparing
+            // those bytes is the same check the cache substrate applies.
+            out.section.to_bytes()
+        }
+
+        let bytes_a = run_bake();
+        let bytes_b = run_bake();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "lightmap bake output drifted between runs; the build-stage cache requires \
+             byte-identical output for identical inputs",
+        );
+    }
+
     #[test]
     fn lightmap_uvs_in_zero_one_range_after_bake() {
         let mut geo = unit_quad_geometry();

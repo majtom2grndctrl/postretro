@@ -268,7 +268,7 @@ pub(crate) fn resolve_entity_type<'a>(
     data_registry
         .entities
         .iter()
-        .find(|e| e.classname == classname)
+        .find(|e| e.canonical_name.as_deref() == Some(classname))
 }
 
 #[cfg(test)]
@@ -464,7 +464,7 @@ mod tests {
     fn resolve_entity_type_finds_registered_classname() {
         let mut data = DataRegistry::new();
         data.upsert_entity_type(EntityTypeDescriptor {
-            classname: "grunt".to_string(),
+            canonical_name: Some("grunt".to_string()),
             light: None,
             emitter: None,
             movement: None,
@@ -474,7 +474,7 @@ mod tests {
         assert_eq!(
             resolved,
             Some(&EntityTypeDescriptor {
-                classname: "grunt".to_string(),
+                canonical_name: Some("grunt".to_string()),
                 light: None,
                 emitter: None,
                 movement: None,

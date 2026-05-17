@@ -1112,8 +1112,8 @@ declare module \"postretro\" {
 
   /** Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets. */
   export type EntityTypeDescriptor = {
-    /** FGD classname this descriptor binds to. */
-    classname: string;
+    /** FGD canonical map classname this descriptor binds to. Absence means the descriptor is not directly placeable from a map and is only reachable via indirect routing (e.g. `entity_class` on a `player_spawn` marker). */
+    canonicalName?: string;
     /** Optional component presets attached at level-load spawn. */
     components?: EntityTypeComponents;
   };
@@ -1292,8 +1292,8 @@ export type LightDescriptor = {
 
 --- Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.
 export type EntityTypeDescriptor = {
-  --- FGD classname this descriptor binds to.
-  classname: string,
+  --- FGD canonical map classname this descriptor binds to. Absence means the descriptor is not directly placeable from a map and is only reachable via indirect routing (e.g. `entity_class` on a `player_spawn` marker).
+  canonicalName?: string,
   --- Optional component presets attached at level-load spawn.
   components?: EntityTypeComponents,
 }

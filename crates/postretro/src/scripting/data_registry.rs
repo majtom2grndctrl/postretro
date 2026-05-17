@@ -38,27 +38,31 @@ impl DataRegistry {
     }
 
     /// Insert (or overwrite) an entity-type descriptor. Identical re-inserts
-    /// of the same `classname` are silent no-ops; differing re-inserts
-    /// overwrite and log at `debug!`. Survives level unload — only invoke
-    /// from the mod-init path (after `setupMod` returns), not during
-    /// per-level data-script execution.
+    /// keyed on `canonical_name` are silent no-ops; differing re-inserts
+    /// overwrite and log at `debug!`. Descriptors with `canonical_name = None`
+    /// are always appended — they have no addressable name to dedup against.
+    /// Survives level unload — only invoke from the mod-init path (after
+    /// `setupMod` returns), not during per-level data-script execution.
     pub(crate) fn upsert_entity_type(&mut self, descriptor: EntityTypeDescriptor) {
-        if let Some(existing) = self
-            .entities
-            .iter_mut()
-            .find(|e| e.classname == descriptor.classname)
-        {
-            if *existing == descriptor {
+        let descriptor_name = descriptor.canonical_name.clone();
+        if let Some(name) = descriptor_name.as_deref() {
+            if let Some(existing) = self
+                .entities
+                .iter_mut()
+                .find(|e| e.canonical_name.as_deref() == Some(name))
+            {
+                if *existing == descriptor {
+                    return;
+                }
+                log::debug!(
+                    "[Loader] upsert_entity_type: overwriting existing descriptor for `{}`",
+                    name,
+                );
+                *existing = descriptor;
                 return;
             }
-            log::debug!(
-                "[Loader] upsert_entity_type: overwriting existing descriptor for `{}`",
-                descriptor.classname,
-            );
-            *existing = descriptor;
-        } else {
-            self.entities.push(descriptor);
         }
+        self.entities.push(descriptor);
     }
 
     /// Drop every registered reaction. `entities` outlives the clear
@@ -106,7 +110,7 @@ mod tests {
 
     fn grunt_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
-            classname: "grunt".to_string(),
+            canonical_name: Some("grunt".to_string()),
             light: None,
             emitter: None,
             movement: None,
@@ -142,7 +146,7 @@ mod tests {
         let mut r = DataRegistry::new();
         r.upsert_entity_type(grunt_descriptor());
         assert_eq!(r.entities.len(), 1);
-        assert_eq!(r.entities[0].classname, "grunt");
+        assert_eq!(r.entities[0].canonical_name.as_deref(), Some("grunt"));
     }
 
     #[test]

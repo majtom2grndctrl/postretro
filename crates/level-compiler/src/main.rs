@@ -110,6 +110,29 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("map format '{:?}' is not yet supported", args.format);
     }
 
+    // Construct stage cache. Default dir = <workspace-root>/.prl-cache/.
+    let cache_dir = cache::find_workspace_root(args.input.as_ref())
+        .unwrap_or_else(|| {
+            args.input
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf()
+        })
+        .join(".prl-cache");
+    let stage_cache = match cache::StageCache::new(&cache_dir) {
+        Ok(c) => {
+            log::info!("[prl-build] cache directory: {}", cache_dir.display());
+            Some(c)
+        }
+        Err(e) => {
+            log::warn!(
+                "[prl-build] cache disabled: failed to create {}: {e}",
+                cache_dir.display()
+            );
+            None
+        }
+    };
+
     let mut timings = Vec::new();
     let mut progress = BuildProgress::new(started, args.verbose);
 
@@ -190,50 +213,106 @@ fn main() -> anyhow::Result<()> {
     progress.start_stage("Lightmap bake...");
     let stage_start = Instant::now();
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
+    let lightmap_config = lightmap_bake::LightmapConfig {
+        lightmap_density: args.lightmap_density,
+    };
     let final_lightmap_density;
     let lightmap_bake_output = {
-        // Retry on atlas overflow: doubles texel size (halves resolution) up to
-        // MAX_RETRIES times. Degrades quality instead of failing the build.
-        // Per-face planar unwrap wastes atlas area, so large maps hit this often.
-        const MAX_RETRIES: u32 = 3;
-        let mut density = args.lightmap_density;
-        let mut attempt = 0;
-        loop {
-            let mut lm_ctx = lightmap_bake::LightmapBakeCtx {
-                bvh: &bvh,
-                primitives: &bvh_primitives,
-                geometry: &mut geo_result,
-                lights: &static_baked_lights,
-            };
-            let lightmap_config = lightmap_bake::LightmapConfig {
-                lightmap_density: density,
-            };
-            match lightmap_bake::bake_lightmap(&mut lm_ctx, &lightmap_config) {
-                Ok(result) => {
-                    final_lightmap_density = density;
-                    break result;
-                }
-                Err(lightmap_bake::LightmapBakeError::AtlasOverflow {
-                    max,
-                    needed_w,
-                    needed_h,
-                    ..
-                }) if attempt < MAX_RETRIES => {
-                    let next = density * 2.0;
-                    let retries_left = MAX_RETRIES - attempt - 1;
-                    log::warn!(
-                        "Lightmap atlas overflow at {density} m/texel \
-                         (computed {needed_w}x{needed_h} px, limit {max}x{max} px); \
-                         retrying at {next} m/texel ({retries_left} retr{} remaining)",
-                        if retries_left == 1 { "y" } else { "ies" }
-                    );
-                    density = next;
-                    attempt += 1;
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("Lightmap bake failed: {e}"));
-                }
+        // Build serializable inputs for cache key derivation.
+        // Clone geo_result BEFORE bake mutations (split_shared_vertices + UV writes).
+        let lm_inputs = lightmap_bake::LightmapInputs {
+            lights: static_baked_lights
+                .entries()
+                .iter()
+                .map(|e| e.light.clone())
+                .collect(),
+            geometry: geo_result.clone(),
+        };
+        let lm_input_hash = {
+            let mut buf =
+                postcard::to_allocvec(&lm_inputs).expect("postcard serialize LightmapInputs");
+            buf.extend_from_slice(
+                &postcard::to_allocvec(&lightmap_config)
+                    .expect("postcard serialize LightmapConfig"),
+            );
+            *blake3::hash(&buf).as_bytes()
+        };
+        let lm_key = cache::CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &lm_input_hash);
+
+        // Cache lookup
+        let cached = stage_cache.as_ref().and_then(|c| c.get(&lm_key));
+
+        if let Some(cached_bytes) = cached {
+            log::info!("cache: lightmap hit");
+            let section =
+                postretro_level_format::lightmap::LightmapSection::from_bytes(&cached_bytes)
+                    .map_err(|e| anyhow::anyhow!("corrupt lightmap cache entry: {e}"))?;
+            let density = section.texel_density;
+            final_lightmap_density = density;
+            let atlas =
+                lightmap_bake::prepare_atlas(&mut geo_result, &static_baked_lights, density)
+                    .map_err(|e| {
+                        anyhow::anyhow!("lightmap atlas re-prepare failed on cache hit: {e}")
+                    })?;
+            lightmap_bake::LightmapBakeOutput {
+                section,
+                charts: atlas.charts,
+                placements: atlas.placements,
+                atlas_width: atlas.atlas_width,
+                atlas_height: atlas.atlas_height,
             }
+        } else {
+            log::info!("cache: lightmap miss");
+            // Retry on atlas overflow: doubles texel size (halves resolution) up to
+            // MAX_RETRIES times. Degrades quality instead of failing the build.
+            // Per-face planar unwrap wastes atlas area, so large maps hit this often.
+            const MAX_RETRIES: u32 = 3;
+            let mut density = lightmap_config.lightmap_density;
+            let mut attempt = 0;
+            let output = loop {
+                let mut lm_ctx = lightmap_bake::LightmapBakeCtx {
+                    bvh: &bvh,
+                    primitives: &bvh_primitives,
+                    geometry: &mut geo_result,
+                    lights: &static_baked_lights,
+                };
+                match lightmap_bake::bake_lightmap(
+                    &mut lm_ctx,
+                    &lightmap_bake::LightmapConfig {
+                        lightmap_density: density,
+                    },
+                ) {
+                    Ok(result) => {
+                        final_lightmap_density = density;
+                        break result;
+                    }
+                    Err(lightmap_bake::LightmapBakeError::AtlasOverflow {
+                        max,
+                        needed_w,
+                        needed_h,
+                        ..
+                    }) if attempt < MAX_RETRIES => {
+                        let next = density * 2.0;
+                        let retries_left = MAX_RETRIES - attempt - 1;
+                        log::warn!(
+                            "Lightmap atlas overflow at {density} m/texel \
+                             (computed {needed_w}x{needed_h} px, limit {max}x{max} px); \
+                             retrying at {next} m/texel ({retries_left} retr{} remaining)",
+                            if retries_left == 1 { "y" } else { "ies" }
+                        );
+                        density = next;
+                        attempt += 1;
+                    }
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("Lightmap bake failed: {e}"));
+                    }
+                }
+            };
+            // Only cache a successful result.
+            if let Some(ref c) = stage_cache {
+                c.put(&lm_key, &output.section.to_bytes());
+            }
+            output
         }
     };
     timings.push(("Lightmap Bake", stage_start.elapsed()));

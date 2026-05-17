@@ -901,8 +901,10 @@ mod tests {
             static_lights: &static_lights,
             animated_lights: &animated_lights,
         };
-        let sh_volume =
-            crate::sh_bake::bake_sh_volume(&sh_inputs, &crate::sh_bake::ShConfig { probe_spacing: 4.0 });
+        let sh_volume = crate::sh_bake::bake_sh_volume(
+            &sh_inputs,
+            &crate::sh_bake::ShConfig { probe_spacing: 4.0 },
+        );
 
         let portals_section = encode_portals(&generated_portals);
 

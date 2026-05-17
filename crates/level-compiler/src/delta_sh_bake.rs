@@ -337,7 +337,10 @@ mod tests {
             exterior_leaves: &exterior,
             animated_lights: &envelope,
         };
-        assert!(bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 }).is_none());
+        assert!(
+            bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 })
+                .is_none()
+        );
     }
 
     #[test]
@@ -358,7 +361,9 @@ mod tests {
             exterior_leaves: &exterior,
             animated_lights: &envelope,
         };
-        let section = bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 }).expect("expected a section");
+        let section =
+            bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 })
+                .expect("expected a section");
         assert_eq!(section.grids.len(), 1);
         assert_eq!(section.header.animation_descriptor_indices, vec![0]);
         let grid = &section.grids[0];
@@ -389,7 +394,9 @@ mod tests {
             exterior_leaves: &exterior,
             animated_lights: &envelope,
         };
-        let section = bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 }).expect("expected a section");
+        let section =
+            bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 })
+                .expect("expected a section");
         assert_eq!(section.grids.len(), 1);
         let grid = &section.grids[0];
         for probe in &grid.probes {
@@ -428,7 +435,9 @@ mod tests {
             exterior_leaves: &exterior,
             animated_lights: &envelope,
         };
-        let section = bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 }).expect("expected a section");
+        let section =
+            bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 })
+                .expect("expected a section");
         assert_eq!(section.grids.len(), 2);
         assert_eq!(section.header.animation_descriptor_indices, vec![0, 1]);
     }
@@ -449,7 +458,9 @@ mod tests {
             exterior_leaves: &exterior,
             animated_lights: &envelope,
         };
-        let section = bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 }).expect("expected a section");
+        let section =
+            bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 })
+                .expect("expected a section");
         let bytes = section.to_bytes();
         let restored = DeltaShVolumesSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);

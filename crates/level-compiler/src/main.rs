@@ -364,8 +364,7 @@ fn main() -> anyhow::Result<()> {
             exterior_leaves: exterior_leaves_sorted,
         };
         let sh_input_hash = {
-            let mut buf =
-                postcard::to_allocvec(&sh_inputs).expect("postcard serialize ShInputs");
+            let mut buf = postcard::to_allocvec(&sh_inputs).expect("postcard serialize ShInputs");
             buf.extend_from_slice(
                 &postcard::to_allocvec(&sh_config).expect("postcard serialize ShConfig"),
             );
@@ -1172,9 +1171,7 @@ mod tests {
     /// and `ShConfig`, concatenate, blake3.
     fn sh_input_hash(inputs: &ShInputs, config: &ShConfig) -> [u8; 32] {
         let mut buf = postcard::to_allocvec(inputs).expect("postcard serialize ShInputs");
-        buf.extend_from_slice(
-            &postcard::to_allocvec(config).expect("postcard serialize ShConfig"),
-        );
+        buf.extend_from_slice(&postcard::to_allocvec(config).expect("postcard serialize ShConfig"));
         *blake3::hash(&buf).as_bytes()
     }
 

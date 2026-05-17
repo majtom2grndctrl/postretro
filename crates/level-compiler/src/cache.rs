@@ -72,14 +72,12 @@ impl StageCache {
 
         let mut header = [0u8; HEADER_BYTES];
         if let Err(err) = file.read_exact(&mut header) {
-            log::warn!(
-                "[cache] entry {} header read failed: {err}",
-                path.display()
-            );
+            log::warn!("[cache] entry {} header read failed: {err}", path.display());
             return None;
         }
 
-        let declared_len = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let declared_len =
+            u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
         let stored_hash: [u8; HASH_BYTES] = header[LENGTH_PREFIX_BYTES..]
             .try_into()
             .expect("header slice is exactly HASH_BYTES wide");

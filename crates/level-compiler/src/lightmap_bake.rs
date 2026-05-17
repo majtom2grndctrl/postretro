@@ -1082,8 +1082,8 @@ mod tests {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
             },
         )
-            .unwrap()
-            .section;
+        .unwrap()
+        .section;
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
     }
@@ -1106,8 +1106,8 @@ mod tests {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
             },
         )
-            .unwrap()
-            .section;
+        .unwrap()
+        .section;
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
     }
@@ -1129,7 +1129,9 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
             },
-        ).unwrap().section;
+        )
+        .unwrap()
+        .section;
         assert!(section.width >= MIN_ATLAS_DIMENSION);
         assert!(section.height >= MIN_ATLAS_DIMENSION);
         assert_eq!(
@@ -1170,8 +1172,8 @@ mod tests {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
             },
         )
-            .unwrap()
-            .section;
+        .unwrap()
+        .section;
         assert_eq!(section.width, 1);
         assert_eq!(section.height, 1);
     }
@@ -1198,7 +1200,9 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
             },
-        ).unwrap().section;
+        )
+        .unwrap()
+        .section;
         assert!(
             section_static.width >= MIN_ATLAS_DIMENSION,
             "non-animated static light must bake into a real atlas",
@@ -1364,7 +1368,8 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
             },
-        ).unwrap();
+        )
+        .unwrap();
         for v in &geo.geometry.vertices {
             let uv = v.decode_lightmap_uv();
             assert!(
@@ -1515,7 +1520,9 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
             },
-        ).unwrap().section;
+        )
+        .unwrap()
+        .section;
 
         let mut zero_count = 0;
         for t in 0..(section.width * section.height) as usize {
@@ -1689,7 +1696,8 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(
             geo.geometry.vertices.len() > original_vertex_count,

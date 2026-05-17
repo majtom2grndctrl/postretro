@@ -3,7 +3,7 @@
 // entity 0
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
+"initialGravity" "-30"
 "wad" ""
 "data_script" "../scripts/arena-lights.ts"
 "_tb_mod" "dev"
@@ -1135,13 +1135,7 @@
 }
 // entity 1
 {
-"classname" "info_player_start"
-"origin" "512 256 88"
-"angle" "90"
-}
-// entity 2
-{
-"classname" "player"
+"classname" "player_spawn"
 "origin" "1808 2592 72"
 "angle" "90"
 }
@@ -1155,7 +1149,7 @@
 "delay" "0"
 "light" "150"
 }
-// entity 3
+// entity 4
 {
 "classname" "light_spot"
 "origin" "112 960 300"
@@ -1168,7 +1162,7 @@
 "angles" "-15 -38.7 0"
 "_light_radius" "800"
 }
-// entity 4
+// entity 5
 {
 "classname" "light"
 "origin" "1824 512 400"
@@ -1177,7 +1171,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 }
-// entity 5
+// entity 6
 {
 "classname" "light"
 "origin" "-176 2416 140"
@@ -1188,7 +1182,7 @@
 "_tags" "arena_wave_2"
 "_dynamic" "1"
 }
-// entity 6
+// entity 7
 {
 "classname" "light"
 "origin" "-1184 2080 400"
@@ -1197,7 +1191,7 @@
 "_fade" "500"
 "_bake_only" "0"
 }
-// entity 7
+// entity 8
 {
 "classname" "light"
 "origin" "-224 1792 284"
@@ -1208,7 +1202,7 @@
 "_tags" "arena_wave_2"
 "_dynamic" "1"
 }
-// entity 8
+// entity 9
 {
 "classname" "light_spot"
 "origin" "424 968 300"
@@ -1221,7 +1215,7 @@
 "angles" "-15 -60.6 0"
 "_light_radius" "800"
 }
-// entity 9
+// entity 10
 {
 "classname" "light_spot"
 "origin" "968 952 300"
@@ -1234,7 +1228,7 @@
 "angles" "-15 -130.6 0"
 "_light_radius" "800"
 }
-// entity 10
+// entity 11
 {
 "classname" "light_spot"
 "origin" "768 960 300"
@@ -1247,7 +1241,7 @@
 "angles" "-15 -100.3 0"
 "_light_radius" "800"
 }
-// entity 11
+// entity 12
 {
 "classname" "light_spot"
 "origin" "936 664 300"
@@ -1260,7 +1254,7 @@
 "angles" "-15 -154.7 0"
 "_light_radius" "800"
 }
-// entity 12
+// entity 13
 {
 "classname" "light_spot"
 "origin" "936 408 300"
@@ -1273,7 +1267,7 @@
 "angles" "-15 159.6 0"
 "_light_radius" "800"
 }
-// entity 13
+// entity 14
 {
 "classname" "light_spot"
 "origin" "920 136 300"
@@ -1286,7 +1280,7 @@
 "angles" "-15 131.7 0"
 "_light_radius" "800"
 }
-// entity 14
+// entity 15
 {
 "classname" "light_spot"
 "origin" "120 88 300"
@@ -1299,7 +1293,7 @@
 "angles" "-15 44.0 0"
 "_light_radius" "800"
 }
-// entity 15
+// entity 16
 {
 "classname" "light_spot"
 "origin" "448 64 300"
@@ -1312,7 +1306,7 @@
 "angles" "-15 66.5 0"
 "_light_radius" "800"
 }
-// entity 16
+// entity 17
 {
 "classname" "light_spot"
 "origin" "744 72 300"
@@ -1325,7 +1319,7 @@
 "angles" "-15 106.1 0"
 "_light_radius" "800"
 }
-// entity 17
+// entity 18
 {
 "classname" "light"
 "origin" "-1704 2616 140"
@@ -1335,7 +1329,7 @@
 "_bake_only" "0"
 "style" "2"
 }
-// entity 18
+// entity 19
 {
 "classname" "light"
 "origin" "-1704 2232 140"
@@ -1345,7 +1339,7 @@
 "_bake_only" "0"
 "style" "2"
 }
-// entity 19
+// entity 20
 {
 "classname" "light"
 "origin" "-1688 1848 140"
@@ -1355,7 +1349,7 @@
 "_bake_only" "0"
 "style" "2"
 }
-// entity 20
+// entity 21
 {
 "classname" "light"
 "origin" "-1672 1560 140"
@@ -1365,7 +1359,7 @@
 "_bake_only" "0"
 "style" "2"
 }
-// entity 21
+// entity 22
 {
 "classname" "light"
 "origin" "-176 1648 172"
@@ -1376,7 +1370,7 @@
 "_tags" "arena_wave_2"
 "_dynamic" "1"
 }
-// entity 22
+// entity 23
 {
 "classname" "light"
 "origin" "-176 1904 172"
@@ -1387,7 +1381,7 @@
 "_tags" "arena_wave_2"
 "_dynamic" "1"
 }
-// entity 23
+// entity 24
 {
 "classname" "light"
 "origin" "-176 2160 172"
@@ -1398,7 +1392,7 @@
 "_tags" "arena_wave_2"
 "_dynamic" "1"
 }
-// entity 24
+// entity 25
 {
 "classname" "light"
 "origin" "-208 2048 284"
@@ -1409,7 +1403,7 @@
 "_tags" "arena_wave_2"
 "_dynamic" "1"
 }
-// entity 25
+// entity 26
 {
 "classname" "light"
 "origin" "-208 2288 268"
@@ -1420,7 +1414,7 @@
 "_tags" "arena_wave_2"
 "_dynamic" "1"
 }
-// entity 26
+// entity 27
 {
 "classname" "light_spot"
 "origin" "-600 2408 72"
@@ -1432,19 +1426,19 @@
 "delay" "0"
 "_cone2" "30"
 }
-// entity 27
+// entity 28
 {
 "classname" "game_rotator_driver"
 "origin" "640 384 96"
 "_tags" "rotatorDriver"
 }
-// entity 28
+// entity 29
 {
 "classname" "game_damage_source"
 "origin" "384 384 96"
 "_tags" "damageSource"
 }
-// entity 29
+// entity 30
 {
 "classname" "light"
 "origin" "1248 2576 440"
@@ -1454,7 +1448,7 @@
 "delay" "0"
 "light" "150"
 }
-// entity 30
+// entity 31
 {
 "classname" "light"
 "origin" "2400 2656 552"
@@ -1464,7 +1458,7 @@
 "delay" "0"
 "light" "150"
 }
-// entity 31
+// entity 32
 {
 "classname" "light"
 "origin" "2416 1488 552"
@@ -1474,7 +1468,7 @@
 "delay" "0"
 "light" "150"
 }
-// entity 32
+// entity 33
 {
 "classname" "light"
 "origin" "1248 1568 440"
@@ -1484,7 +1478,7 @@
 "delay" "0"
 "light" "150"
 }
-// entity 33
+// entity 34
 {
 "classname" "fog_volume"
 "edge_softness" "20"
@@ -1499,13 +1493,13 @@
 ( 1530.5096679918781 1477.490332008122 138.98066401624396 ) ( 1530.5096679918781 1477.490332008122 501.01933598375626 ) ( 1658.509667991878 1605.490332008122 320 ) concrete_stone_022 0.30737305 -0.65771484 54.735603 0.8660254 0.8660254
 }
 }
-// entity 34
+// entity 35
 {
 "classname" "fog_lamp"
 "origin" "1832 2088 440"
 "_tags" "pulse_fog"
 }
-// entity 35
+// entity 36
 {
 "classname" "fog_volume"
 "_tags" "pulse_fog"

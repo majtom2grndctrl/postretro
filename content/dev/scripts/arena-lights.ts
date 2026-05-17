@@ -12,10 +12,10 @@ import {
 // tag-filtered `worldQuery` rather than component data.
 export const arenaLightEntities: EntityTypeDescriptor[] = [
   defineEntity({
-    classname: "game_rotator_driver",
+    canonicalName: "game_rotator_driver",
   }),
   defineEntity({
-    classname: "game_damage_source",
+    canonicalName: "game_damage_source",
   }),
 ];
 

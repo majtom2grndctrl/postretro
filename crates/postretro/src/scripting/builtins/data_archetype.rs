@@ -308,14 +308,14 @@ pub(crate) fn apply_data_archetype_dispatch(
 /// dispatch sweeps and processed by [`spawn_from_player_starts`].
 pub(crate) const PLAYER_START_CLASSNAME: &str = "player_spawn";
 
-/// Spawn one entity per `info_player_start` placement, using each placement's
+/// Spawn one entity per `player_spawn` placement, using each placement's
 /// `entity_class` KVP (default `"player"`) to look up an
 /// [`EntityTypeDescriptor`]. Component attachment mirrors
 /// [`apply_data_archetype_dispatch`] — emitter, light (forced dynamic), and
 /// movement (when present in the descriptor) — and the per-placement KVP bag
 /// is forwarded with `entity_class` stripped so it
 /// is not confused with an `initial_*`-style override. Tags from the
-/// `info_player_start` placement are passed directly to `try_spawn`.
+/// `player_spawn` placement are passed directly to `try_spawn`.
 pub(crate) fn spawn_from_player_starts(
     spawn_points: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
@@ -366,7 +366,7 @@ pub(crate) fn spawn_from_player_starts(
 
     if !spawn_points.is_empty() {
         log::info!(
-            "[Loader] spawned {spawned} player(s) from {total} info_player_start entries",
+            "[Loader] spawned {spawned} player(s) from {total} player_spawn entries",
             total = spawn_points.len(),
         );
     }

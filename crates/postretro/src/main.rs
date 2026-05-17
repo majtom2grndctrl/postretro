@@ -106,7 +106,7 @@ fn main() -> Result<()> {
     boot_timings.record("args_parsed");
 
     // Camera starts at a placeholder; `install_level_payload` repositions it
-    // to the first `info_player_start` or the level geometry center
+    // to the first `player_spawn` or the level geometry center
     // (`spawn_position()`) when no player start exists.
     let initial_camera_pos = Vec3::new(0.0, 200.0, 500.0);
 
@@ -333,7 +333,7 @@ struct App {
     /// `None` before level load and after the sweep consumes it.
     builtin_handled: Option<std::collections::HashSet<String>>,
 
-    /// `info_player_start` placements partitioned out of `world.map_entities`
+    /// `player_spawn` placements partitioned out of `world.map_entities`
     /// during install, awaiting the data-archetype sweep on the same frame.
     /// The dispatch sweeps must not see these (they are routed by
     /// `entity_class`, not by their own `classname`); the second sweep
@@ -1574,14 +1574,14 @@ impl App {
                 .and_then(|v| v.first())
                 .map(|e| (e.origin, e.angles));
 
-            // Spawn one entity per `info_player_start` placement, routing
+            // Spawn one entity per `player_spawn` placement, routing
             // each through its `entity_class` (default `"player"`).
             match self.pending_spawn_points.take() {
                 Some(spawn_points) if !spawn_points.is_empty() => {
                     spawn_from_player_starts(&spawn_points, &descriptors, &mut registry);
                 }
                 _ => {
-                    log::info!("[Loader] no info_player_start in map; skipping player spawn");
+                    log::info!("[Loader] no player_spawn in map; skipping player spawn");
                 }
             }
             // Drop the registry borrow before touching `self.level` / `self.camera`.
@@ -1594,7 +1594,7 @@ impl App {
                 self.camera.pitch = angles.x;
                 self.frame_timing.push_state(InterpolableState::new(pos));
             } else if let Some(world) = self.level.as_ref() {
-                // Fallback when no info_player_start: center on level geometry.
+                // Fallback when no player_spawn: center on level geometry.
                 self.camera.position = world.spawn_position();
                 self.frame_timing
                     .push_state(InterpolableState::new(self.camera.position));

@@ -1350,7 +1350,7 @@ mod tests {
             globalThis.setupMod = function() {
                 return {
                     name: "TestMod",
-                    entities: [{ canonicalName: "info_player_start" }],
+                    entities: [{ canonicalName: "smoke_pillar" }],
                 };
             };
             "#,
@@ -1364,7 +1364,7 @@ mod tests {
             manifest
                 .entities
                 .iter()
-                .any(|e| e.canonical_name.as_deref() == Some("info_player_start")),
+                .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
             "setupMod's `entities` field must carry the descriptor on the manifest"
         );
     }
@@ -1384,7 +1384,7 @@ mod tests {
             dir.join("start-script.js"),
             r#"
             /* inlined from actors/player.ts */
-            const playerEntity = { canonicalName: "info_player_start" };
+            const playerEntity = { canonicalName: "smoke_pillar" };
             /* end inlined actors/player.ts */
             globalThis.setupMod = function() {
                 return { name: "ImportedDomainMod", entities: [playerEntity] };
@@ -1400,7 +1400,7 @@ mod tests {
             manifest
                 .entities
                 .iter()
-                .any(|e| e.canonical_name.as_deref() == Some("info_player_start")),
+                .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
             "entity type from bundled domain script must appear on the mod manifest"
         );
     }
@@ -1415,7 +1415,7 @@ mod tests {
             function setupMod()
                 return {
                     name = "TestMod",
-                    entities = { { canonicalName = "info_player_start" } },
+                    entities = { { canonicalName = "smoke_pillar" } },
                 }
             end
             "#,
@@ -1429,7 +1429,7 @@ mod tests {
             manifest
                 .entities
                 .iter()
-                .any(|e| e.canonical_name.as_deref() == Some("info_player_start")),
+                .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
             "setupMod's `entities` field must carry the descriptor on the manifest"
         );
     }
@@ -1650,7 +1650,7 @@ mod tests {
             globalThis.setupMod = function() {
                 return {
                     name: "EntitiesMod",
-                    entities: [{ canonicalName: "info_player_start" }],
+                    entities: [{ canonicalName: "smoke_pillar" }],
                 };
             };
             "#,
@@ -1663,7 +1663,7 @@ mod tests {
         assert_eq!(manifest.entities.len(), 1);
         assert_eq!(
             manifest.entities[0].canonical_name.as_deref(),
-            Some("info_player_start"),
+            Some("smoke_pillar"),
         );
     }
 
@@ -1720,7 +1720,7 @@ mod tests {
             function setupMod()
                 return {
                     name = "EntitiesMod",
-                    entities = { { canonicalName = "info_player_start" } },
+                    entities = { { canonicalName = "smoke_pillar" } },
                 }
             end
             "#,
@@ -1733,7 +1733,7 @@ mod tests {
         assert_eq!(manifest.entities.len(), 1);
         assert_eq!(
             manifest.entities[0].canonical_name.as_deref(),
-            Some("info_player_start"),
+            Some("smoke_pillar"),
         );
     }
 
@@ -1789,7 +1789,7 @@ mod tests {
         std::fs::write(
             dir.join("sub.luau"),
             r#"
-            return { descriptor = { canonicalName = "info_player_start" } }
+            return { descriptor = { canonicalName = "smoke_pillar" } }
             "#,
         )
         .unwrap();
@@ -1811,7 +1811,7 @@ mod tests {
             manifest
                 .entities
                 .iter()
-                .any(|e| e.canonical_name.as_deref() == Some("info_player_start")),
+                .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
             "domain script imported via require must contribute its entity type to the manifest"
         );
     }

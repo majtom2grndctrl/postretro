@@ -1160,11 +1160,11 @@ mod tests {
             .map(|e| e.classname.as_str())
             .collect();
         assert!(classnames.contains(&"worldspawn"));
-        assert!(classnames.contains(&"info_player_start"));
+        assert!(classnames.contains(&"player_spawn"));
 
         // Point entities must have 0 brushes.
         for point_classname in &[
-            "info_player_start",
+            "player_spawn",
             "player",
             "light",
             "light_spot",
@@ -1205,12 +1205,12 @@ mod tests {
             "should have at least one collected map entity"
         );
 
-        // info_player_start must be present; check its reserved keys are stripped.
+        // player_spawn must be present; check its reserved keys are stripped.
         let me = map_data
             .map_entities
             .iter()
-            .find(|e| e.classname == "info_player_start")
-            .expect("info_player_start should be in map_entities");
+            .find(|e| e.classname == "player_spawn")
+            .expect("player_spawn should be in map_entities");
         // Reserved keys (`classname`, `origin`, `angle`/`angles`/`mangle`,
         // `_tags`) must not appear in the residual KVP bag.
         for (k, _) in &me.key_values {
@@ -1277,12 +1277,12 @@ mod tests {
         let player_start = map_data
             .entities
             .iter()
-            .find(|e| e.classname == "info_player_start")
-            .expect("should have info_player_start");
+            .find(|e| e.classname == "player_spawn")
+            .expect("should have player_spawn");
 
         let origin = player_start
             .origin
-            .expect("info_player_start should have origin");
+            .expect("player_spawn should have origin");
         assert!(origin.x.is_finite(), "origin x should be finite");
         assert!(origin.y.is_finite(), "origin y should be finite");
         assert!(origin.z.is_finite(), "origin z should be finite");

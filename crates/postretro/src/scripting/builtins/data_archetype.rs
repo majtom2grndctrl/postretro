@@ -139,9 +139,8 @@ fn warn_parse(entity: &MapEntity, key: &str, raw: &str) {
 /// have no map-placement form and are always skipped here.
 ///
 /// Roadmap: composable archetypes, FGD generated from the registry, and a
-/// `mob_spawn` marker (mirroring `player_spawn`) will sit on this lookup —
-/// see `context/plans/drafts/` and `context/plans/roadmap.md`. The
-/// abstraction grows from this single match site.
+/// `mob_spawn` marker (mirroring `player_spawn`) will sit on this lookup.
+/// The abstraction grows from this single match site.
 fn find_descriptor<'a>(
     descriptors: &'a [EntityTypeDescriptor],
     classname: &str,
@@ -251,7 +250,7 @@ pub(crate) fn apply_data_archetype_dispatch(
             // structural marker (worldspawn, player_spawn) routed elsewhere.
             // Warn once per distinct unknown classname per sweep.
             let cls = entity.classname.as_str();
-            let is_structural = cls == "worldspawn" || cls == "player_spawn";
+            let is_structural = cls == "worldspawn" || cls == PLAYER_START_CLASSNAME;
             if !handled_by_builtin.contains(cls)
                 && !is_structural
                 && unknown_warned.insert(cls.to_string())

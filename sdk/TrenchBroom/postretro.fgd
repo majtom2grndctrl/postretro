@@ -22,6 +22,11 @@
     initialGravity(float) : "REQUIRED. Starting gravity (m/s²); negative = downward, positive = upward (−9.81 = Earth). May be changed at runtime via world.setGravity()."
 ]
 
+@BaseClass = EntitySpawn
+[
+    _tags(string) : "Space-delimited tags for script queries" : ""
+]
+
 @BaseClass = Light
 [
     light(integer) : "Intensity" : 300
@@ -120,12 +125,12 @@
 ]
 
 // Player spawn point. At level load the engine spawns one entity per
-// `info_player_start` placement, using `entity_class` to pick the registered
+// `player_spawn` placement, using `entity_class` to pick the registered
 // classname (defaults to `"player"`).
-@PointClass
+@PointClass base(EntitySpawn)
     color(0 220 0)
     size(-16 -16 -24, 16 16 32)
-    = info_player_start : "Player Spawn Point"
+    = player_spawn : "Player Spawn Point"
 [
     angles(angles) : "Facing (pitch yaw roll, degrees)" : "0 0 0"
     entity_class(string) : "Registered classname to spawn" : "player"

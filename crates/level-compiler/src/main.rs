@@ -236,7 +236,7 @@ fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|e| e.light.clone())
                 .collect(),
-            geometry: geo_result.clone(),
+            geometry: geo_result.clone(), // cloned before bake mutations alter vertex order
         };
         let lm_input_hash = {
             let mut buf =
@@ -252,11 +252,14 @@ fn main() -> anyhow::Result<()> {
         // Cache lookup
         let cached = stage_cache.as_ref().and_then(|c| c.get(&lm_key));
 
-        if let Some(cached_bytes) = cached {
-            log::info!("cache: lightmap hit");
-            let section =
-                postretro_level_format::lightmap::LightmapSection::from_bytes(&cached_bytes)
-                    .map_err(|e| anyhow::anyhow!("corrupt lightmap cache entry: {e}"))?;
+        let cached_section = cached.and_then(|bytes| {
+            postretro_level_format::lightmap::LightmapSection::from_bytes(&bytes)
+                .map_err(|e| log::warn!("[cache] corrupt lightmap entry, re-baking: {e}"))
+                .ok()
+        });
+
+        if let Some(section) = cached_section {
+            log::info!("[cache] lightmap hit");
             let density = section.texel_density;
             final_lightmap_density = density;
             let atlas =
@@ -272,7 +275,7 @@ fn main() -> anyhow::Result<()> {
                 atlas_height: atlas.atlas_height,
             }
         } else {
-            log::info!("cache: lightmap miss");
+            log::info!("[cache] lightmap miss");
             // Retry on atlas overflow: doubles texel size (halves resolution) up to
             // MAX_RETRIES times. Degrades quality instead of failing the build.
             // Per-face planar unwrap wastes atlas area, so large maps hit this often.
@@ -348,7 +351,7 @@ fn main() -> anyhow::Result<()> {
     let sh_volume_section = {
         // Build serializable ShInputs for cache key derivation.
         let mut exterior_leaves_sorted: Vec<usize> = exterior_leaves.iter().copied().collect();
-        exterior_leaves_sorted.sort();
+        exterior_leaves_sorted.sort(); // sort required: HashSet iteration order is non-deterministic
         let sh_inputs = sh_bake::ShInputs {
             static_lights: static_baked_lights
                 .entries()
@@ -360,7 +363,7 @@ fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|e| e.light.clone())
                 .collect(),
-            geometry: geo_result.clone(),
+            geometry: geo_result.clone(), // cloned before bake mutations alter vertex order
             exterior_leaves: exterior_leaves_sorted,
         };
         let sh_input_hash = {
@@ -373,12 +376,17 @@ fn main() -> anyhow::Result<()> {
         let sh_key = cache::CacheKey::new("sh_volume", sh_bake::STAGE_VERSION, &sh_input_hash);
 
         let cached = stage_cache.as_ref().and_then(|c| c.get(&sh_key));
-        if let Some(cached_bytes) = cached {
-            log::info!("cache: sh_volume hit");
-            postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&cached_bytes)
-                .map_err(|e| anyhow::anyhow!("corrupt sh_volume cache entry: {e}"))?
+        let cached_sh_section = cached.and_then(|bytes| {
+            postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&bytes)
+                .map_err(|e| log::warn!("[cache] corrupt sh_volume entry, re-baking: {e}"))
+                .ok()
+        });
+
+        if let Some(section) = cached_sh_section {
+            log::info!("[cache] sh_volume hit");
+            section
         } else {
-            log::info!("cache: sh_volume miss");
+            log::info!("[cache] sh_volume miss");
             let sh_ctx = sh_bake::ShBakeCtx {
                 bvh: &bvh,
                 primitives: &bvh_primitives,
@@ -1176,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_hit_skips_lightmap_bake_on_second_run() {
+    fn lightmap_cache_key_matches_on_identical_inputs() {
         let dir = fresh_cache_dir("lm_roundtrip");
         let cache = StageCache::new(&dir).expect("create cache dir");
 
@@ -1214,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_hit_skips_sh_volume_bake_on_second_run() {
+    fn sh_volume_cache_key_matches_on_identical_inputs() {
         let dir = fresh_cache_dir("sh_roundtrip");
         let cache = StageCache::new(&dir).expect("create cache dir");
 
@@ -1296,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_hits_when_non_bake_input_unchanged() {
+    fn cache_key_stable_across_non_bake_fields() {
         // `LightmapInputs` only carries lights + geometry — not fog_pixel_scale,
         // initial_gravity, or any other worldspawn metadata. So editing a
         // worldspawn property no baked stage reads must leave the cache key

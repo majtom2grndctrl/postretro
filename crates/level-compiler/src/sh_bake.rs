@@ -1,5 +1,4 @@
 // SH irradiance volume baker — indirect-only L2 probe grid over the level AABB.
-// See: context/plans/in-progress/lighting-foundation/2-sh-baker.md
 
 use std::collections::HashSet;
 
@@ -70,7 +69,7 @@ impl<'a> ShBakeCtx<'a> {
 
 /// Owned, serializable snapshot of the data the SH volume bake reads. Used for
 /// cache key derivation: postcard-serialize this + ShConfig to get the input hash.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize)]
 pub struct ShInputs {
     pub static_lights: Vec<crate::map_data::MapLight>,
     pub animated_lights: Vec<crate::map_data::MapLight>,
@@ -82,7 +81,7 @@ pub struct ShInputs {
 }
 
 /// CLI-driven configuration for the SH volume bake.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize)]
 pub struct ShConfig {
     pub probe_spacing: f32,
 }

@@ -1091,10 +1091,12 @@ mod tests {
     use crate::geometry::{FaceIndexRange, GeometryResult};
     use crate::lightmap_bake::{LightmapConfig, LightmapInputs};
     use crate::map_data::{FalloffModel, LightType, MapLight};
+    use crate::partition::{Aabb, BspLeaf, BspTree};
     use crate::sh_bake::{ShConfig, ShInputs};
     use glam::DVec3;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1381,14 +1383,14 @@ mod tests {
         let dir = fresh_cache_dir("lm_real_bake");
         let cache = StageCache::new(&dir).expect("create cache dir");
 
-        let geo = minimal_geometry();
+        let mut geo = minimal_geometry();
         let (bvh, prims, _) = bvh_build::build_bvh(&geo).expect("bvh build must succeed");
         let light = baseline_point_light();
         let static_lights = light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
 
         let inputs = LightmapInputs {
             lights: vec![baseline_point_light()],
-            geometry: minimal_geometry(),
+            geometry: geo.clone(), // snapshot before bake mutations alter lightmap UVs
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
@@ -1396,11 +1398,10 @@ mod tests {
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);
 
-        let mut geo_for_bake = minimal_geometry();
         let mut ctx = lightmap_bake::LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
-            geometry: &mut geo_for_bake,
+            geometry: &mut geo, // same instance the BVH was built from
             lights: &static_lights,
         };
         let output = lightmap_bake::bake_lightmap(&mut ctx, &config).expect("bake must succeed");
@@ -1422,9 +1423,6 @@ mod tests {
 
     #[test]
     fn sh_volume_cache_hit_returns_byte_identical_section() {
-        use crate::partition::{Aabb, BspLeaf, BspTree};
-        use std::collections::HashSet;
-
         let dir = fresh_cache_dir("sh_real_bake");
         let cache = StageCache::new(&dir).expect("create cache dir");
 

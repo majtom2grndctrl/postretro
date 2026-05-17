@@ -4,6 +4,7 @@
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
 pub mod bvh_build;
+pub mod cache;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
 pub mod delta_sh_bake;

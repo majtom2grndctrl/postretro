@@ -198,9 +198,10 @@ pub(crate) fn tick(
         );
         if let Some(hit) = probe {
             if hit.time_of_impact < probe_dist && hit.normal2.y.abs() < component.cos_walkable {
-                // Small margin ensures the capsule hemisphere clears the step's top edge;
-                // gravity settles the capsule onto the ledge surface on the next tick.
-                let lifted = current_pos + Vec3::new(0.0, step_height + 0.02, 0.0);
+                // Margin must exceed cast_capsule's target_distance (0.02) so the
+                // lifted hemisphere clears the step's top edge without parry
+                // reporting an immediate skin-contact hit.
+                let lifted = current_pos + Vec3::new(0.0, step_height + 0.05, 0.0);
                 let lifted_probe = cast_capsule(
                     collision_world,
                     Point::new(lifted.x, lifted.y, lifted.z),
@@ -234,6 +235,7 @@ pub(crate) fn tick(
             Vector::new(dir.x, dir.y, dir.z),
             max_toi,
         );
+        let consumed;
         match hit {
             None => {
                 current_pos += velocity * remaining_dt;
@@ -242,7 +244,7 @@ pub(crate) fn tick(
             Some(h) => {
                 let toi = h.time_of_impact.max(0.0);
                 current_pos += dir * toi;
-                let consumed = if speed > 0.0 {
+                consumed = if speed > 0.0 {
                     toi / speed
                 } else {
                     remaining_dt
@@ -266,8 +268,21 @@ pub(crate) fn tick(
                 } else {
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
+                    // parry returns TOI=0 when the capsule sits at exactly
+                    // target_distance from the wall (resting contact). Nudge
+                    // off the skin and advance the remainder tangentially —
+                    // otherwise sliding stalls because every subsequent sweep
+                    // from the same skin distance also reports TOI=0.
+                    if toi <= 1e-6 {
+                        current_pos += normal * 1e-4;
+                        current_pos += component.velocity * remaining_dt;
+                        remaining_dt = 0.0;
+                    }
                 }
             }
+        }
+        if consumed <= 0.0 {
+            break;
         }
     }
 
@@ -630,6 +645,93 @@ mod tests {
             "wall-pinned player y should be near ledge ({}), got y={}",
             ledge_y,
             pos.y
+        );
+    }
+
+    /// Flat floor at y=0 spanning x,z ∈ [-20,20] with a vertical wall at x=5
+    /// (y∈[0,5], z∈[-20,20]). Used to isolate wall-slide behavior from the
+    /// step-up probe path.
+    fn flat_floor_and_wall_world() -> CollisionWorld {
+        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+
+        let f0 = points.len() as u32;
+        points.push(Point::new(-20.0, 0.0, -20.0));
+        points.push(Point::new(20.0, 0.0, -20.0));
+        points.push(Point::new(20.0, 0.0, 20.0));
+        points.push(Point::new(-20.0, 0.0, 20.0));
+        tris.push([f0, f0 + 1, f0 + 2]);
+        tris.push([f0, f0 + 2, f0 + 3]);
+
+        let w0 = points.len() as u32;
+        points.push(Point::new(5.0, 0.0, -20.0));
+        points.push(Point::new(5.0, 0.0, 20.0));
+        points.push(Point::new(5.0, 5.0, 20.0));
+        points.push(Point::new(5.0, 5.0, -20.0));
+        tris.push([w0, w0 + 1, w0 + 2]);
+        tris.push([w0, w0 + 2, w0 + 3]);
+
+        let mesh = TriMesh::new(points, tris);
+        CollisionWorld {
+            mesh,
+            isometry: Isometry::identity(),
+        }
+    }
+
+    // Regression: capsule pressed against a wall produced TOI=0 every sweep
+    // iteration, burning all 4 slots without advancing — player froze instead
+    // of sliding tangentially along the wall.
+    #[test]
+    fn player_slides_along_wall_when_approaching_diagonally() {
+        let desc = canonical_descriptor();
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 5, &idle);
+
+        let diag = MovementInput {
+            wish_dir: Vec2::new(1.0, 1.0).normalize(),
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+
+        for _ in 0..200 {
+            let (next, _ev) = tick(&mut comp, &diag, &world, GRAVITY, DT, pos);
+            pos = next;
+            if pos.x >= 5.0 - desc.capsule.radius - 0.05 {
+                break;
+            }
+        }
+        let wall_limit = 5.0 - desc.capsule.radius + POS_EPS + 1e-3;
+        assert!(
+            pos.x <= wall_limit,
+            "diagonal approach should not penetrate the wall: pos.x={}, limit={}",
+            pos.x,
+            wall_limit
+        );
+        assert!(
+            pos.x > 5.0 - desc.capsule.radius - 0.1,
+            "player should have reached the wall: pos.x={}",
+            pos.x
+        );
+
+        let z_before = pos.z;
+        for _ in 0..30 {
+            let (next, _ev) = tick(&mut comp, &diag, &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        // facing_yaw=0 makes forward=-Z, so diagonal input (right+forward)
+        // produces (+X, 0, -Z) motion. Wall projects out +X; -Z slide remains.
+        assert!(
+            pos.z < z_before - 0.5,
+            "player should slide along -Z while pinned to the wall: z_before={}, z_after={}",
+            z_before,
+            pos.z
         );
     }
 }

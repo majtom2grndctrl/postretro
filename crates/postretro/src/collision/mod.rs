@@ -110,6 +110,12 @@ impl Default for CollisionWorld {
 /// the capsule's `+Y` axis maps directly to world `+Y`, matching the
 /// player-capsule convention documented at the top of this module.
 ///
+/// `target_distance: 0.02` keeps the capsule 2 cm away from surfaces (Quake's
+/// DIST_EPSILON analogue, scaled for the 0.4 m player radius). Paired with
+/// `stop_at_penetration: false` so parry sweeps cleanly when the capsule
+/// starts in contact — otherwise resting contact produces TOI=0 and stalls
+/// the sweep-and-slide loop in `movement::tick`.
+///
 /// Returns `None` when no impact occurs within `max_toi`. `cast_shapes` also
 /// returns `Err` for unsupported shape pairs, but that is impossible for
 /// Capsule × TriMesh (always supported by parry3d). Returning `None` on `Err`
@@ -126,7 +132,8 @@ pub(crate) fn cast_capsule(
     let vel2 = Vector::zeros();
     let options = ShapeCastOptions {
         max_time_of_impact: max_toi,
-        stop_at_penetration: true,
+        target_distance: 0.02,
+        stop_at_penetration: false,
         ..Default::default()
     };
     cast_shapes(

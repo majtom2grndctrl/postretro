@@ -332,19 +332,60 @@ fn main() -> anyhow::Result<()> {
     if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
         anyhow::bail!("light animation validation failed: {msg}");
     }
-    let sh_ctx = sh_bake::ShBakeCtx {
-        bvh: &bvh,
-        primitives: &bvh_primitives,
-        geometry: &geo_result,
-        tree: &result.tree,
-        exterior_leaves: &exterior_leaves,
-        static_lights: &static_baked_lights,
-        animated_lights: &animated_baked_lights,
-    };
     let sh_config = sh_bake::ShConfig {
         probe_spacing: args.probe_spacing,
     };
-    let sh_volume_section = sh_bake::bake_sh_volume(&sh_ctx, &sh_config);
+    let sh_volume_section = {
+        // Build serializable ShInputs for cache key derivation.
+        let mut exterior_leaves_sorted: Vec<usize> = exterior_leaves.iter().copied().collect();
+        exterior_leaves_sorted.sort();
+        let sh_inputs = sh_bake::ShInputs {
+            static_lights: static_baked_lights
+                .entries()
+                .iter()
+                .map(|e| e.light.clone())
+                .collect(),
+            animated_lights: animated_baked_lights
+                .entries()
+                .iter()
+                .map(|e| e.light.clone())
+                .collect(),
+            geometry: geo_result.clone(),
+            exterior_leaves: exterior_leaves_sorted,
+        };
+        let sh_input_hash = {
+            let mut buf =
+                postcard::to_allocvec(&sh_inputs).expect("postcard serialize ShInputs");
+            buf.extend_from_slice(
+                &postcard::to_allocvec(&sh_config).expect("postcard serialize ShConfig"),
+            );
+            *blake3::hash(&buf).as_bytes()
+        };
+        let sh_key = cache::CacheKey::new("sh_volume", sh_bake::STAGE_VERSION, &sh_input_hash);
+
+        let cached = stage_cache.as_ref().and_then(|c| c.get(&sh_key));
+        if let Some(cached_bytes) = cached {
+            log::info!("cache: sh_volume hit");
+            postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&cached_bytes)
+                .map_err(|e| anyhow::anyhow!("corrupt sh_volume cache entry: {e}"))?
+        } else {
+            log::info!("cache: sh_volume miss");
+            let sh_ctx = sh_bake::ShBakeCtx {
+                bvh: &bvh,
+                primitives: &bvh_primitives,
+                geometry: &geo_result,
+                tree: &result.tree,
+                exterior_leaves: &exterior_leaves,
+                static_lights: &static_baked_lights,
+                animated_lights: &animated_baked_lights,
+            };
+            let section = sh_bake::bake_sh_volume(&sh_ctx, &sh_config);
+            if let Some(ref c) = stage_cache {
+                c.put(&sh_key, &section.to_bytes());
+            }
+            section
+        }
+    };
     timings.push(("SH Bake", stage_start.elapsed()));
     if args.verbose {
         sh_bake::log_stats(&sh_volume_section);

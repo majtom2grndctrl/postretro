@@ -21,6 +21,10 @@ use crate::partition::{BspTree, find_leaf_for_point};
 /// Default grid cell size in meters. Overridden by `--probe-spacing`.
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
+/// Bump this when the SH baking algorithm changes. Invalidates all existing
+/// cache entries for this stage.
+pub const STAGE_VERSION: u32 = 1;
+
 const RAYS_PER_PROBE: u32 = 256;
 
 /// Indirect-only: lightmap carries the direct term; folding direct into SH would double-count it at runtime.

@@ -10,7 +10,7 @@
 // Index-space contract: `grids[i]` and `header.animation_descriptor_indices[i]`
 // match `AnimatedBakedLights.entries()[i]` — same iteration order, no remap.
 //
-// See: context/plans/in-progress/lighting-animated-sh/
+// See: context/plans/done/lighting-animated-sh/
 
 use std::collections::HashSet;
 

@@ -146,6 +146,39 @@ Portal traversal is the sole visibility path: per-frame flood-fill from the came
 
 ---
 
+## Build Cache
+
+Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake stages when their inputs are unchanged.
+
+**Location.** `.prl-cache/` at the workspace root (the parent directory containing `Cargo.toml`). Created automatically on first build. Safe to delete at any time — the next build recreates it.
+
+**Participating stages.** Lightmap bake and SH volume bake. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
+
+**Key composition.** `blake3(stage_id || stage_version_le_bytes || input_hash)`.
+
+| Component | Form |
+|-----------|------|
+| `stage_id` | string literal — `"lightmap"` or `"sh_volume"` |
+| `stage_version` | `u32` constant (`STAGE_VERSION`) in each stage's module; bumped manually when the baking algorithm changes |
+| `input_hash` | `blake3(postcard(StageInputs) || postcard(StageConfig))` — covers the serialized data the stage reads |
+
+**Stage version bump rule.** Bump a stage's `STAGE_VERSION` when its output computation changes (algorithm, sampling, formula). The substrate invalidates every entry for that stage on the next build. Do not bump for unrelated changes.
+
+**Determinism invariant.** Both cached stages produce byte-identical output for identical inputs. Any new code in `lightmap_bake.rs` or `sh_bake.rs` must preserve this. Common non-determinism sources to avoid: `HashMap` iteration feeding output ordering, non-order-preserving parallel reductions.
+
+**CLI flags.**
+
+| Flag | Effect |
+|------|--------|
+| `--cache-dir <PATH>` | Use a custom cache directory instead of `.prl-cache/` at the workspace root |
+| `--no-cache` | Disable the cache entirely — neither read nor write, no directory created |
+
+**Entry format.** One file per entry, named by the hex key. Layout: `[u32 le length | 32-byte blake3 hash | payload]`. `get()` validates length and hash before returning payload; mismatch is a soft failure (warning, cache miss).
+
+**Eviction.** No policy-driven eviction. Delete `.prl-cache/` manually when it grows too large. A corrupted entry is discarded as a cache miss without touching other entries.
+
+---
+
 ## Non-Goals
 
 - Runtime level compilation

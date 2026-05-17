@@ -23,6 +23,9 @@ target
 **/maps/autosave/
 autosave/
 
+# prl-build cache directory
+.prl-cache/
+
 # Distribution artifacts
 dist/
 

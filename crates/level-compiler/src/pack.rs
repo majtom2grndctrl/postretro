@@ -892,7 +892,7 @@ mod tests {
         let animated_lights =
             crate::light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
         let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
-        let sh_inputs = crate::sh_bake::BakeInputs {
+        let sh_inputs = crate::sh_bake::ShBakeCtx {
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geo_result,
@@ -901,7 +901,10 @@ mod tests {
             static_lights: &static_lights,
             animated_lights: &animated_lights,
         };
-        let sh_volume = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
+        let sh_volume = crate::sh_bake::bake_sh_volume(
+            &sh_inputs,
+            &crate::sh_bake::ShConfig { probe_spacing: 4.0 },
+        );
 
         let portals_section = encode_portals(&generated_portals);
 
@@ -994,7 +997,7 @@ mod tests {
                 crate::light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
             let animated_lights =
                 crate::light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
-            let sh_inputs = crate::sh_bake::BakeInputs {
+            let sh_inputs = crate::sh_bake::ShBakeCtx {
                 bvh: &bvh,
                 primitives: &primitives,
                 geometry: &geo_result,
@@ -1003,7 +1006,10 @@ mod tests {
                 static_lights: &static_lights,
                 animated_lights: &animated_lights,
             };
-            let section = crate::sh_bake::bake_sh_volume(&sh_inputs, 4.0);
+            let section = crate::sh_bake::bake_sh_volume(
+                &sh_inputs,
+                &crate::sh_bake::ShConfig { probe_spacing: 4.0 },
+            );
 
             // Every real test map has geometry, so the grid must have at
             // least 1 probe along each axis, and the section must round-trip.

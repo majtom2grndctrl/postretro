@@ -4,6 +4,7 @@
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
 pub mod bvh_build;
+pub mod cache;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
 pub mod delta_sh_bake;
@@ -109,6 +110,39 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("map format '{:?}' is not yet supported", args.format);
     }
 
+    // Construct stage cache. Default dir = <workspace-root>/.prl-cache/.
+    // --no-cache disables the cache entirely (no directory is created).
+    // --cache-dir <path> overrides the default location. When both flags are
+    // supplied, --no-cache wins.
+    let stage_cache: Option<cache::StageCache> = if args.no_cache {
+        log::info!("[prl-build] cache disabled via --no-cache");
+        None
+    } else {
+        let dir = args.cache_dir.clone().unwrap_or_else(|| {
+            cache::find_workspace_root(args.input.as_ref())
+                .unwrap_or_else(|| {
+                    args.input
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .to_path_buf()
+                })
+                .join(".prl-cache")
+        });
+        match cache::StageCache::new(&dir) {
+            Ok(c) => {
+                log::info!("[prl-build] cache directory: {}", dir.display());
+                Some(c)
+            }
+            Err(e) => {
+                log::warn!(
+                    "[prl-build] cache disabled: failed to create {}: {e}",
+                    dir.display()
+                );
+                None
+            }
+        }
+    };
+
     let mut timings = Vec::new();
     let mut progress = BuildProgress::new(started, args.verbose);
 
@@ -189,47 +223,109 @@ fn main() -> anyhow::Result<()> {
     progress.start_stage("Lightmap bake...");
     let stage_start = Instant::now();
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
+    let lightmap_config = lightmap_bake::LightmapConfig {
+        lightmap_density: args.lightmap_density,
+    };
     let final_lightmap_density;
     let lightmap_bake_output = {
-        // Retry on atlas overflow: doubles texel size (halves resolution) up to
-        // MAX_RETRIES times. Degrades quality instead of failing the build.
-        // Per-face planar unwrap wastes atlas area, so large maps hit this often.
-        const MAX_RETRIES: u32 = 3;
-        let mut density = args.lightmap_density;
-        let mut attempt = 0;
-        loop {
-            let mut lm_inputs = lightmap_bake::LightmapInputs {
-                bvh: &bvh,
-                primitives: &bvh_primitives,
-                geometry: &mut geo_result,
-                lights: &static_baked_lights,
-            };
-            match lightmap_bake::bake_lightmap(&mut lm_inputs, density) {
-                Ok(result) => {
-                    final_lightmap_density = density;
-                    break result;
-                }
-                Err(lightmap_bake::LightmapBakeError::AtlasOverflow {
-                    max,
-                    needed_w,
-                    needed_h,
-                    ..
-                }) if attempt < MAX_RETRIES => {
-                    let next = density * 2.0;
-                    let retries_left = MAX_RETRIES - attempt - 1;
-                    log::warn!(
-                        "Lightmap atlas overflow at {density} m/texel \
-                         (computed {needed_w}x{needed_h} px, limit {max}x{max} px); \
-                         retrying at {next} m/texel ({retries_left} retr{} remaining)",
-                        if retries_left == 1 { "y" } else { "ies" }
-                    );
-                    density = next;
-                    attempt += 1;
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("Lightmap bake failed: {e}"));
-                }
+        // Build serializable inputs for cache key derivation.
+        // Clone geo_result BEFORE bake mutations (split_shared_vertices + UV writes).
+        let lm_inputs = lightmap_bake::LightmapInputs {
+            lights: static_baked_lights
+                .entries()
+                .iter()
+                .map(|e| e.light.clone())
+                .collect(),
+            geometry: geo_result.clone(), // cloned before bake mutations alter vertex order
+        };
+        let lm_input_hash = {
+            let mut buf =
+                postcard::to_allocvec(&lm_inputs).expect("postcard serialize LightmapInputs");
+            buf.extend_from_slice(
+                &postcard::to_allocvec(&lightmap_config)
+                    .expect("postcard serialize LightmapConfig"),
+            );
+            *blake3::hash(&buf).as_bytes()
+        };
+        let lm_key = cache::CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &lm_input_hash);
+
+        // Cache lookup
+        let cached = stage_cache.as_ref().and_then(|c| c.get(&lm_key));
+
+        let cached_section = cached.and_then(|bytes| {
+            postretro_level_format::lightmap::LightmapSection::from_bytes(&bytes)
+                .map_err(|e| log::warn!("[cache] corrupt lightmap entry, re-baking: {e}"))
+                .ok()
+        });
+
+        if let Some(section) = cached_section {
+            log::info!("[cache] lightmap hit");
+            let density = section.texel_density;
+            final_lightmap_density = density;
+            let atlas =
+                lightmap_bake::prepare_atlas(&mut geo_result, &static_baked_lights, density)
+                    .map_err(|e| {
+                        anyhow::anyhow!("lightmap atlas re-prepare failed on cache hit: {e}")
+                    })?;
+            lightmap_bake::LightmapBakeOutput {
+                section,
+                charts: atlas.charts,
+                placements: atlas.placements,
+                atlas_width: atlas.atlas_width,
+                atlas_height: atlas.atlas_height,
             }
+        } else {
+            log::info!("[cache] lightmap miss");
+            // Retry on atlas overflow: doubles texel size (halves resolution) up to
+            // MAX_RETRIES times. Degrades quality instead of failing the build.
+            // Per-face planar unwrap wastes atlas area, so large maps hit this often.
+            const MAX_RETRIES: u32 = 3;
+            let mut density = lightmap_config.lightmap_density;
+            let mut attempt = 0;
+            let output = loop {
+                let mut lm_ctx = lightmap_bake::LightmapBakeCtx {
+                    bvh: &bvh,
+                    primitives: &bvh_primitives,
+                    geometry: &mut geo_result,
+                    lights: &static_baked_lights,
+                };
+                match lightmap_bake::bake_lightmap(
+                    &mut lm_ctx,
+                    &lightmap_bake::LightmapConfig {
+                        lightmap_density: density,
+                    },
+                ) {
+                    Ok(result) => {
+                        final_lightmap_density = density;
+                        break result;
+                    }
+                    Err(lightmap_bake::LightmapBakeError::AtlasOverflow {
+                        max,
+                        needed_w,
+                        needed_h,
+                        ..
+                    }) if attempt < MAX_RETRIES => {
+                        let next = density * 2.0;
+                        let retries_left = MAX_RETRIES - attempt - 1;
+                        log::warn!(
+                            "Lightmap atlas overflow at {density} m/texel \
+                             (computed {needed_w}x{needed_h} px, limit {max}x{max} px); \
+                             retrying at {next} m/texel ({retries_left} retr{} remaining)",
+                            if retries_left == 1 { "y" } else { "ies" }
+                        );
+                        density = next;
+                        attempt += 1;
+                    }
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("Lightmap bake failed: {e}"));
+                    }
+                }
+            };
+            // Only cache a successful result.
+            if let Some(ref c) = stage_cache {
+                c.put(&lm_key, &output.section.to_bytes());
+            }
+            output
         }
     };
     timings.push(("Lightmap Bake", stage_start.elapsed()));
@@ -249,16 +345,64 @@ fn main() -> anyhow::Result<()> {
     if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
         anyhow::bail!("light animation validation failed: {msg}");
     }
-    let sh_inputs = sh_bake::BakeInputs {
-        bvh: &bvh,
-        primitives: &bvh_primitives,
-        geometry: &geo_result,
-        tree: &result.tree,
-        exterior_leaves: &exterior_leaves,
-        static_lights: &static_baked_lights,
-        animated_lights: &animated_baked_lights,
+    let sh_config = sh_bake::ShConfig {
+        probe_spacing: args.probe_spacing,
     };
-    let sh_volume_section = sh_bake::bake_sh_volume(&sh_inputs, args.probe_spacing);
+    let sh_volume_section = {
+        // Build serializable ShInputs for cache key derivation.
+        let mut exterior_leaves_sorted: Vec<usize> = exterior_leaves.iter().copied().collect();
+        exterior_leaves_sorted.sort(); // sort required: HashSet iteration order is non-deterministic
+        let sh_inputs = sh_bake::ShInputs {
+            static_lights: static_baked_lights
+                .entries()
+                .iter()
+                .map(|e| e.light.clone())
+                .collect(),
+            animated_lights: animated_baked_lights
+                .entries()
+                .iter()
+                .map(|e| e.light.clone())
+                .collect(),
+            geometry: geo_result.clone(), // cloned before bake mutations alter vertex order
+            exterior_leaves: exterior_leaves_sorted,
+        };
+        let sh_input_hash = {
+            let mut buf = postcard::to_allocvec(&sh_inputs).expect("postcard serialize ShInputs");
+            buf.extend_from_slice(
+                &postcard::to_allocvec(&sh_config).expect("postcard serialize ShConfig"),
+            );
+            *blake3::hash(&buf).as_bytes()
+        };
+        let sh_key = cache::CacheKey::new("sh_volume", sh_bake::STAGE_VERSION, &sh_input_hash);
+
+        let cached = stage_cache.as_ref().and_then(|c| c.get(&sh_key));
+        let cached_sh_section = cached.and_then(|bytes| {
+            postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&bytes)
+                .map_err(|e| log::warn!("[cache] corrupt sh_volume entry, re-baking: {e}"))
+                .ok()
+        });
+
+        if let Some(section) = cached_sh_section {
+            log::info!("[cache] sh_volume hit");
+            section
+        } else {
+            log::info!("[cache] sh_volume miss");
+            let sh_ctx = sh_bake::ShBakeCtx {
+                bvh: &bvh,
+                primitives: &bvh_primitives,
+                geometry: &geo_result,
+                tree: &result.tree,
+                exterior_leaves: &exterior_leaves,
+                static_lights: &static_baked_lights,
+                animated_lights: &animated_baked_lights,
+            };
+            let section = sh_bake::bake_sh_volume(&sh_ctx, &sh_config);
+            if let Some(ref c) = stage_cache {
+                c.put(&sh_key, &section.to_bytes());
+            }
+            section
+        }
+    };
     timings.push(("SH Bake", stage_start.elapsed()));
     if args.verbose {
         sh_bake::log_stats(&sh_volume_section);
@@ -275,7 +419,7 @@ fn main() -> anyhow::Result<()> {
             exterior_leaves: &exterior_leaves,
             animated_lights: &animated_baked_lights,
         };
-        delta_sh_bake::bake_delta_sh_volumes(&inputs, args.probe_spacing)
+        delta_sh_bake::bake_delta_sh_volumes(&inputs, &sh_config)
     };
     timings.push(("Delta SH Bake", stage_start.elapsed()));
     if args.verbose {
@@ -416,6 +560,10 @@ struct Args {
     probe_spacing: f32,
     /// Starting density in meters; baker retries at coarser densities on atlas overflow.
     lightmap_density: f32,
+    /// Override cache directory. None = use the workspace-root default.
+    cache_dir: Option<PathBuf>,
+    /// When true, bypass cache reads and writes entirely.
+    no_cache: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -432,6 +580,8 @@ where
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
     let mut lightmap_density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS;
+    let mut cache_dir: Option<PathBuf> = None;
+    let mut no_cache = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -476,6 +626,15 @@ where
                 }
                 lightmap_density = parsed;
             }
+            "--cache-dir" => {
+                let path = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--cache-dir requires a path"))?;
+                cache_dir = Some(PathBuf::from(path));
+            }
+            "--no-cache" => {
+                no_cache = true;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -488,7 +647,8 @@ where
     let input = input.ok_or_else(|| {
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
-             [--format <FORMAT>] [--probe-spacing <METERS>] [--lightmap-density <METERS>]"
+             [--format <FORMAT>] [--probe-spacing <METERS>] [--lightmap-density <METERS>] \
+             [--cache-dir <PATH>] [--no-cache]"
         )
     })?;
 
@@ -501,6 +661,8 @@ where
         format,
         probe_spacing,
         lightmap_density,
+        cache_dir,
+        no_cache,
     })
 }
 
@@ -836,6 +998,38 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_no_cache_flag() {
+        let args = vec!["input.map".to_string(), "--no-cache".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(parsed.no_cache);
+    }
+
+    #[test]
+    fn parse_args_cache_dir_flag() {
+        let args = vec![
+            "input.map".to_string(),
+            "--cache-dir".to_string(),
+            "/tmp/my-cache".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.cache_dir, Some(PathBuf::from("/tmp/my-cache")));
+    }
+
+    #[test]
+    fn parse_args_cache_dir_requires_value() {
+        let args = vec!["input.map".to_string(), "--cache-dir".to_string()];
+        assert!(parse_args_from(args.into_iter()).is_err());
+    }
+
+    #[test]
+    fn parse_args_no_cache_defaults() {
+        let args = vec!["input.map".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(!parsed.no_cache);
+        assert!(parsed.cache_dir.is_none());
+    }
+
+    #[test]
     fn data_script_absent_kvp_emits_no_section() {
         let result = compile_worldspawn_data_script(Path::new("/dev/null/fake.map"), None)
             .expect("None KVP must succeed");
@@ -883,5 +1077,408 @@ mod tests {
             "source_path should reference the .luau file, got: {}",
             section.source_path
         );
+    }
+
+    // --- Build-stage cache integration tests (Task 7) ---
+    //
+    // These tests live alongside the parse_args tests because the level
+    // compiler is a binary crate (no `[lib]` target), so a separate
+    // `tests/` integration file cannot `use` the in-crate modules. They
+    // exercise the end-to-end cache flow at the key-derivation +
+    // StageCache layer, matching the exact computation used in `main`.
+
+    use crate::cache::{CacheKey, StageCache};
+    use crate::geometry::{FaceIndexRange, GeometryResult};
+    use crate::lightmap_bake::{LightmapConfig, LightmapInputs};
+    use crate::map_data::{FalloffModel, LightType, MapLight};
+    use crate::partition::{Aabb, BspLeaf, BspTree};
+    use crate::sh_bake::{ShConfig, ShInputs};
+    use glam::DVec3;
+    use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
+    use postretro_level_format::texture_names::TextureNamesSection;
+    use std::collections::HashSet;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Unique per-test temp directory under the OS temp dir. Mirrors the
+    /// `fresh_temp_dir` helper inside `cache.rs` to avoid the extra
+    /// `tempfile` dep for a handful of tests.
+    fn fresh_cache_dir(label: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "postretro_cache_int_{label}_{stamp}_{nonce}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// Single-quad geometry — matches the shape used by determinism tests in
+    /// `lightmap_bake.rs` / `sh_bake.rs`. Sufficient for hashing because the
+    /// cache key only depends on the serialized bytes, not on the bake
+    /// running to completion.
+    fn minimal_geometry() -> GeometryResult {
+        let v = |p: [f32; 3], uv: [f32; 2]| {
+            Vertex::new(p, uv, [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0])
+        };
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices: vec![
+                    v([0.0, 0.0, 0.0], [0.0, 0.0]),
+                    v([1.0, 0.0, 0.0], [1.0, 0.0]),
+                    v([1.0, 0.0, 1.0], [1.0, 1.0]),
+                    v([0.0, 0.0, 1.0], [0.0, 1.0]),
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                faces: vec![FaceMeta {
+                    leaf_index: 0,
+                    texture_index: 0,
+                }],
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges: vec![FaceIndexRange {
+                index_offset: 0,
+                index_count: 6,
+            }],
+        }
+    }
+
+    fn baseline_point_light() -> MapLight {
+        MapLight {
+            origin: DVec3::new(0.5, 1.0, 0.5),
+            light_type: LightType::Point,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 5.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            animation: None,
+            cast_shadows: true,
+            bake_only: false,
+            is_dynamic: false,
+            tags: vec![],
+        }
+    }
+
+    /// Replicates the lightmap key derivation in `main`: postcard
+    /// `LightmapInputs` and `LightmapConfig`, concatenate, blake3.
+    fn lightmap_input_hash(inputs: &LightmapInputs, config: &LightmapConfig) -> [u8; 32] {
+        let mut buf = postcard::to_allocvec(inputs).expect("postcard serialize LightmapInputs");
+        buf.extend_from_slice(
+            &postcard::to_allocvec(config).expect("postcard serialize LightmapConfig"),
+        );
+        *blake3::hash(&buf).as_bytes()
+    }
+
+    /// Replicates the SH key derivation in `main`: postcard `ShInputs`
+    /// and `ShConfig`, concatenate, blake3.
+    fn sh_input_hash(inputs: &ShInputs, config: &ShConfig) -> [u8; 32] {
+        let mut buf = postcard::to_allocvec(inputs).expect("postcard serialize ShInputs");
+        buf.extend_from_slice(&postcard::to_allocvec(config).expect("postcard serialize ShConfig"));
+        *blake3::hash(&buf).as_bytes()
+    }
+
+    #[test]
+    fn lightmap_cache_key_matches_on_identical_inputs() {
+        let dir = fresh_cache_dir("lm_roundtrip");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let inputs = LightmapInputs {
+            lights: vec![baseline_point_light()],
+            geometry: minimal_geometry(),
+        };
+        let config = LightmapConfig {
+            lightmap_density: 0.25,
+        };
+        let hash = lightmap_input_hash(&inputs, &config);
+        let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);
+
+        // Run 1: first lookup must miss; then the stage would bake and `put`.
+        assert!(
+            cache.get(&key).is_none(),
+            "fresh cache must miss before the first bake"
+        );
+        let payload = b"lightmap-section-bytes-stand-in".to_vec();
+        cache.put(&key, &payload);
+
+        // Run 2: identical inputs must hit the cache and return the same bytes.
+        let inputs_again = LightmapInputs {
+            lights: vec![baseline_point_light()],
+            geometry: minimal_geometry(),
+        };
+        let hash_again = lightmap_input_hash(&inputs_again, &config);
+        let key_again = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash_again);
+        let loaded = cache
+            .get(&key_again)
+            .expect("identical inputs must hit the cache");
+        assert_eq!(loaded, payload);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sh_volume_cache_key_matches_on_identical_inputs() {
+        let dir = fresh_cache_dir("sh_roundtrip");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let inputs = ShInputs {
+            static_lights: vec![baseline_point_light()],
+            animated_lights: Vec::new(),
+            geometry: minimal_geometry(),
+            exterior_leaves: Vec::new(),
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+        let hash = sh_input_hash(&inputs, &config);
+        let key = CacheKey::new("sh_volume", sh_bake::STAGE_VERSION, &hash);
+
+        assert!(
+            cache.get(&key).is_none(),
+            "fresh cache must miss before the first bake"
+        );
+        let payload = b"sh-volume-section-bytes-stand-in".to_vec();
+        cache.put(&key, &payload);
+
+        let inputs_again = ShInputs {
+            static_lights: vec![baseline_point_light()],
+            animated_lights: Vec::new(),
+            geometry: minimal_geometry(),
+            exterior_leaves: Vec::new(),
+        };
+        let hash_again = sh_input_hash(&inputs_again, &config);
+        let key_again = CacheKey::new("sh_volume", sh_bake::STAGE_VERSION, &hash_again);
+        let loaded = cache
+            .get(&key_again)
+            .expect("identical inputs must hit the cache");
+        assert_eq!(loaded, payload);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_misses_when_light_changes() {
+        let dir = fresh_cache_dir("lm_light_change");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let baseline = LightmapInputs {
+            lights: vec![baseline_point_light()],
+            geometry: minimal_geometry(),
+        };
+        let config = LightmapConfig {
+            lightmap_density: 0.25,
+        };
+        let key_a = CacheKey::new(
+            "lightmap",
+            lightmap_bake::STAGE_VERSION,
+            &lightmap_input_hash(&baseline, &config),
+        );
+        cache.put(&key_a, b"baseline-section-stand-in");
+
+        // Edit the light: intensity bump must produce a different cache key.
+        let mut changed_light = baseline_point_light();
+        changed_light.intensity = 2.0;
+        let edited = LightmapInputs {
+            lights: vec![changed_light],
+            geometry: minimal_geometry(),
+        };
+        let key_b = CacheKey::new(
+            "lightmap",
+            lightmap_bake::STAGE_VERSION,
+            &lightmap_input_hash(&edited, &config),
+        );
+        assert_ne!(
+            key_a.as_filename(),
+            key_b.as_filename(),
+            "changing a light must change the cache key"
+        );
+        assert!(
+            cache.get(&key_b).is_none(),
+            "edited light must miss the cache"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_key_stable_across_non_bake_fields() {
+        // `LightmapInputs` only carries lights + geometry — not fog_pixel_scale,
+        // initial_gravity, or any other worldspawn metadata. So editing a
+        // worldspawn property no baked stage reads must leave the cache key
+        // unchanged. We model that by hashing two identical `LightmapInputs`
+        // values (the unrelated property literally cannot leak into the key
+        // because it has no field to land in) and asserting both keys match.
+        let dir = fresh_cache_dir("lm_irrelevant_edit");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let inputs_first = LightmapInputs {
+            lights: vec![baseline_point_light()],
+            geometry: minimal_geometry(),
+        };
+        let inputs_second = LightmapInputs {
+            lights: vec![baseline_point_light()],
+            geometry: minimal_geometry(),
+        };
+        let config = LightmapConfig {
+            lightmap_density: 0.25,
+        };
+
+        let key_first = CacheKey::new(
+            "lightmap",
+            lightmap_bake::STAGE_VERSION,
+            &lightmap_input_hash(&inputs_first, &config),
+        );
+        let key_second = CacheKey::new(
+            "lightmap",
+            lightmap_bake::STAGE_VERSION,
+            &lightmap_input_hash(&inputs_second, &config),
+        );
+        assert_eq!(
+            key_first.as_filename(),
+            key_second.as_filename(),
+            "identical lightmap inputs must produce identical keys",
+        );
+
+        let payload = b"placeholder-lightmap-bytes".to_vec();
+        cache.put(&key_first, &payload);
+        let loaded = cache
+            .get(&key_second)
+            .expect("non-bake-input edit must keep cache hit");
+        assert_eq!(loaded, payload);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_version_bump_invalidates_cache() {
+        let dir = fresh_cache_dir("stage_version_bump");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let input_hash = [0x42u8; 32];
+        let key_v1 = CacheKey::new("lightmap", 1, &input_hash);
+        let key_v2 = CacheKey::new("lightmap", 2, &input_hash);
+
+        cache.put(&key_v1, b"baked-with-old-algorithm");
+
+        assert_ne!(
+            key_v1.as_filename(),
+            key_v2.as_filename(),
+            "stage version is folded into the filename digest, so bumping it must change the key",
+        );
+        assert!(
+            cache.get(&key_v2).is_none(),
+            "a stage version bump must invalidate prior entries",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lightmap_cache_hit_returns_byte_identical_section() {
+        let dir = fresh_cache_dir("lm_real_bake");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let mut geo = minimal_geometry();
+        let (bvh, prims, _) = bvh_build::build_bvh(&geo).expect("bvh build must succeed");
+        let light = baseline_point_light();
+        let static_lights = light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+
+        let inputs = LightmapInputs {
+            lights: vec![baseline_point_light()],
+            geometry: geo.clone(), // snapshot before bake mutations alter lightmap UVs
+        };
+        let config = LightmapConfig {
+            lightmap_density: 0.25,
+        };
+        let hash = lightmap_input_hash(&inputs, &config);
+        let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);
+
+        let mut ctx = lightmap_bake::LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &mut geo, // same instance the BVH was built from
+            lights: &static_lights,
+        };
+        let output = lightmap_bake::bake_lightmap(&mut ctx, &config).expect("bake must succeed");
+
+        let baked_bytes = output.section.to_bytes();
+        cache.put(&key, &baked_bytes);
+
+        let loaded_bytes = cache.get(&key).expect("cache must hit after put");
+        let section = postretro_level_format::lightmap::LightmapSection::from_bytes(&loaded_bytes)
+            .expect("deserialization must succeed");
+        let round_tripped = section.to_bytes();
+        assert_eq!(
+            baked_bytes, round_tripped,
+            "cache round-trip must be byte-identical"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sh_volume_cache_hit_returns_byte_identical_section() {
+        let dir = fresh_cache_dir("sh_real_bake");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let geo = minimal_geometry();
+        let (bvh, prims, _) = bvh_build::build_bvh(&geo).expect("bvh build must succeed");
+        let light = baseline_point_light();
+        let static_lights = light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+        let animated_lights = light_namespaces::AnimatedBakedLights::from_lights(&[]);
+
+        let tree = BspTree {
+            nodes: Vec::new(),
+            leaves: vec![BspLeaf {
+                face_indices: Vec::new(),
+                bounds: Aabb {
+                    min: DVec3::splat(-1000.0),
+                    max: DVec3::splat(1000.0),
+                },
+                is_solid: false,
+                defining_planes: Vec::new(),
+            }],
+        };
+
+        let inputs = ShInputs {
+            static_lights: vec![baseline_point_light()],
+            animated_lights: Vec::new(),
+            geometry: minimal_geometry(),
+            exterior_leaves: Vec::new(),
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+        let hash = sh_input_hash(&inputs, &config);
+        let key = CacheKey::new("sh_volume", sh_bake::STAGE_VERSION, &hash);
+
+        let exterior: HashSet<usize> = HashSet::new();
+        let ctx = sh_bake::ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+        };
+        let section = sh_bake::bake_sh_volume(&ctx, &config);
+
+        let baked_bytes = section.to_bytes();
+        cache.put(&key, &baked_bytes);
+
+        let loaded_bytes = cache.get(&key).expect("cache must hit after put");
+        let section2 = postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&loaded_bytes)
+            .expect("deserialization must succeed");
+        let round_tripped = section2.to_bytes();
+        assert_eq!(
+            baked_bytes, round_tripped,
+            "sh volume cache round-trip must be byte-identical"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -16,6 +16,7 @@ pub const NO_TEXTURE: u32 = u32::MAX;
 /// bitangent sign, 0 for negative. The tangent's v-component is encoded at
 /// 15-bit precision to make room for the sign bit.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Vertex {
     /// World-space position (Y-up, engine meters).
     pub position: [f32; 3],
@@ -100,6 +101,7 @@ fn quantize_lightmap_uv(uv: [f32; 2]) -> [u16; 2] {
 /// `FaceMeta` carries only the per-face attributes the renderer needs to resolve
 /// cells and textures.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FaceMeta {
     /// Raw BSP leaf index this face belongs to (= runtime cell id).
     pub leaf_index: u32,
@@ -124,6 +126,7 @@ pub struct FaceMeta {
 ///   u16 tangent_u, u16 tangent_v_with_sign   (octahedral tangent + sign, 4 bytes)
 ///   u16 lm_u, u16 lm_v                       (quantized lightmap UV, 4 bytes)
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GeometrySection {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,

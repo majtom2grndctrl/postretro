@@ -16,7 +16,7 @@ use crate::partition::BspTree;
 /// These are consumed by BVH primitive collection and then discarded — the
 /// serialized `FaceMeta` in `GeometrySection` does not carry them because all
 /// runtime index ranges belong to BVH leaves.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct FaceIndexRange {
     pub index_offset: u32,
     pub index_count: u32,
@@ -24,6 +24,7 @@ pub struct FaceIndexRange {
 
 /// Result of geometry extraction: geometry section, texture name table, and
 /// the per-face index ranges used downstream by the BVH builder.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct GeometryResult {
     pub geometry: GeometrySection,
     pub texture_names: TextureNamesSection,

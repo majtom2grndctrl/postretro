@@ -506,13 +506,19 @@ mod tests {
     {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let mut lm_inputs = crate::lightmap_bake::LightmapInputs {
+        let mut lm_ctx = crate::lightmap_bake::LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
         };
-        let lm_output = crate::lightmap_bake::bake_lightmap(&mut lm_inputs, 0.25).unwrap();
+        let lm_output = crate::lightmap_bake::bake_lightmap(
+            &mut lm_ctx,
+            &crate::lightmap_bake::LightmapConfig {
+                lightmap_density: 0.25,
+            },
+        )
+        .unwrap();
 
         let chunk_section = build_chunks(&lm_output.charts);
 

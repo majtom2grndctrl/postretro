@@ -6,7 +6,11 @@ rust-version.workspace = true
 description = "Shared level format types for Postretro"
 license.workspace = true
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
+serde = { workspace = true, optional = true }
 glam.workspace = true
 thiserror.workspace = true
 

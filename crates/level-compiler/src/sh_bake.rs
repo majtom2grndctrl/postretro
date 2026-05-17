@@ -1,5 +1,4 @@
 // SH irradiance volume baker — indirect-only L2 probe grid over the level AABB.
-// See: context/plans/in-progress/lighting-foundation/2-sh-baker.md
 
 use std::collections::HashSet;
 
@@ -20,6 +19,10 @@ use crate::partition::{BspTree, find_leaf_for_point};
 
 /// Default grid cell size in meters. Overridden by `--probe-spacing`.
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
+
+/// Bump this when the SH baking algorithm changes. Invalidates all existing
+/// cache entries for this stage.
+pub const STAGE_VERSION: u32 = 1;
 
 const RAYS_PER_PROBE: u32 = 256;
 
@@ -42,7 +45,7 @@ pub(crate) struct RaytracingCtx<'a> {
     pub geometry: &'a GeometryResult,
 }
 
-pub struct BakeInputs<'a> {
+pub struct ShBakeCtx<'a> {
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
@@ -54,7 +57,7 @@ pub struct BakeInputs<'a> {
     pub animated_lights: &'a AnimatedBakedLights<'a>,
 }
 
-impl<'a> BakeInputs<'a> {
+impl<'a> ShBakeCtx<'a> {
     fn ray_ctx(&self) -> RaytracingCtx<'a> {
         RaytracingCtx {
             bvh: self.bvh,
@@ -64,9 +67,29 @@ impl<'a> BakeInputs<'a> {
     }
 }
 
+/// Owned, serializable snapshot of the data the SH volume bake reads. Used for
+/// cache key derivation: postcard-serialize this + ShConfig to get the input hash.
+#[derive(serde::Serialize)]
+pub struct ShInputs {
+    pub static_lights: Vec<crate::map_data::MapLight>,
+    pub animated_lights: Vec<crate::map_data::MapLight>,
+    pub geometry: crate::geometry::GeometryResult,
+    /// Sorted list of exterior BSP leaf indices. Probes in these leaves are
+    /// flagged invalid. Included so the hash catches changes that affect probe
+    /// validity even when geometry is otherwise unchanged.
+    pub exterior_leaves: Vec<usize>,
+}
+
+/// CLI-driven configuration for the SH volume bake.
+#[derive(serde::Serialize)]
+pub struct ShConfig {
+    pub probe_spacing: f32,
+}
+
 /// Returns an empty section (`grid_dimensions == [0,0,0]`) for empty geometry,
 /// matching the "no SH section" degradation path at runtime.
-pub fn bake_sh_volume(inputs: &BakeInputs<'_>, probe_spacing_meters: f32) -> ShVolumeSection {
+pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSection {
+    let probe_spacing_meters = config.probe_spacing;
     let geom = &inputs.geometry.geometry;
     if geom.vertices.is_empty() {
         return ShVolumeSection {
@@ -157,7 +180,7 @@ pub fn log_stats(section: &ShVolumeSection) {
     );
 }
 
-fn world_aabb(inputs: &BakeInputs<'_>) -> (DVec3, DVec3) {
+fn world_aabb(inputs: &ShBakeCtx<'_>) -> (DVec3, DVec3) {
     let mut min = DVec3::splat(f64::INFINITY);
     let mut max = DVec3::splat(f64::NEG_INFINITY);
     for v in &inputs.geometry.geometry.vertices {
@@ -572,7 +595,7 @@ pub(crate) fn bake_probe_direct_rgb(
 }
 
 fn bake_probe_rgb(
-    inputs: &BakeInputs<'_>,
+    inputs: &ShBakeCtx<'_>,
     probe_pos: Vec3,
     static_lights: &[&MapLight],
 ) -> [f32; 27] {
@@ -868,7 +891,7 @@ mod tests {
         let lights: &[MapLight] = &[];
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
-        let inputs = BakeInputs {
+        let inputs = ShBakeCtx {
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geo,
@@ -877,7 +900,7 @@ mod tests {
             static_lights: &static_lights,
             animated_lights: &animated_lights,
         };
-        let section = bake_sh_volume(&inputs, 1.0);
+        let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.grid_dimensions, [0, 0, 0]);
         assert!(section.probes.is_empty());
     }
@@ -993,7 +1016,7 @@ mod tests {
         let lights = std::slice::from_ref(&light);
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
-        let inputs = BakeInputs {
+        let inputs = ShBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1002,9 +1025,84 @@ mod tests {
             static_lights: &static_lights,
             animated_lights: &animated_lights,
         };
-        let a = bake_sh_volume(&inputs, 1.0);
-        let b = bake_sh_volume(&inputs, 1.0);
+        let a = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
+        let b = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(a.to_bytes(), b.to_bytes());
+    }
+
+    /// Cache-determinism guard: the SH volume bake feeds the build-stage cache,
+    /// which keys cache entries on input hash and serves stored output bytes
+    /// verbatim. The bake fans probes across rayon worker threads via
+    /// `into_par_iter().map().collect()`; this is order-preserving, but
+    /// regressions (e.g. swapping in `par_iter().reduce()` over floats, or
+    /// iterating a `HashMap` to assemble probe output) would silently break
+    /// the cache. This test fans out enough probes to exercise multiple worker
+    /// chunks and asserts byte-for-byte equality on the encoded section.
+    #[test]
+    fn sh_volume_bake_produces_byte_identical_output_on_repeated_runs() {
+        // 4 m × 4 m floor → 5×1×5 probe grid at 1 m spacing = 25 probes,
+        // enough work for rayon to schedule across several threads.
+        let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 0.0, 4.0]]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+
+        // Two static lights — verifies the per-probe sequential light sum is
+        // stable across runs (would catch any future float-reduce swap).
+        let lights = vec![
+            MapLight {
+                origin: DVec3::new(0.5, 1.0, 0.5),
+                light_type: LightType::Point,
+                intensity: 1.0,
+                color: [1.0, 0.5, 0.25],
+                falloff_model: FalloffModel::Linear,
+                falloff_range: 5.0,
+                cone_angle_inner: None,
+                cone_angle_outer: None,
+                cone_direction: None,
+                animation: None,
+                cast_shadows: true,
+                bake_only: false,
+                is_dynamic: false,
+                tags: vec![],
+            },
+            MapLight {
+                origin: DVec3::new(3.0, 2.0, 3.0),
+                light_type: LightType::Point,
+                intensity: 2.0,
+                color: [0.25, 0.5, 1.0],
+                falloff_model: FalloffModel::InverseSquared,
+                falloff_range: 8.0,
+                cone_angle_inner: None,
+                cone_angle_outer: None,
+                cone_direction: None,
+                animation: None,
+                cast_shadows: true,
+                bake_only: false,
+                is_dynamic: false,
+                tags: vec![],
+            },
+        ];
+        let exterior: HashSet<usize> = HashSet::new();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let inputs = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+
+        let bytes_a = bake_sh_volume(&inputs, &config).to_bytes();
+        let bytes_b = bake_sh_volume(&inputs, &config).to_bytes();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "SH volume bake output drifted between runs; the build-stage cache requires \
+             byte-identical output for identical inputs",
+        );
     }
 
     #[test]
@@ -1039,7 +1137,7 @@ mod tests {
         let lights = std::slice::from_ref(&animated);
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
-        let inputs = BakeInputs {
+        let inputs = ShBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1048,7 +1146,7 @@ mod tests {
             static_lights: &static_lights,
             animated_lights: &animated_lights,
         };
-        let section = bake_sh_volume(&inputs, 1.0);
+        let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.animation_descriptors.len(), 1);
         assert_eq!(section.animation_descriptors[0].period, 1.0);
         assert_eq!(
@@ -1094,7 +1192,7 @@ mod tests {
         let lights = std::slice::from_ref(&light);
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
-        let inputs = BakeInputs {
+        let inputs = ShBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1103,7 +1201,7 @@ mod tests {
             static_lights: &static_lights,
             animated_lights: &animated_lights,
         };
-        let section = bake_sh_volume(&inputs, 1.0);
+        let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.animation_descriptors.len(), 1);
         let base_color = section.animation_descriptors[0].base_color;
         let expected = [0.5 * 3.0, 1.0 * 3.0, 0.8 * 3.0];
@@ -1125,7 +1223,7 @@ mod tests {
         let lights: &[MapLight] = &[];
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
-        let inputs = BakeInputs {
+        let inputs = ShBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1134,7 +1232,7 @@ mod tests {
             static_lights: &static_lights,
             animated_lights: &animated_lights,
         };
-        let section = bake_sh_volume(&inputs, 1.0);
+        let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert!(section.animation_descriptors.is_empty());
         // animated_light_count is the last u32 of the 48-byte header (bytes 44..48).
         let bytes = section.to_bytes();
@@ -1161,7 +1259,7 @@ mod tests {
         let lights: &[MapLight] = &[];
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
-        let inputs = BakeInputs {
+        let inputs = ShBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1170,7 +1268,7 @@ mod tests {
             static_lights: &static_lights,
             animated_lights: &animated_lights,
         };
-        let section = bake_sh_volume(&inputs, 1.0);
+        let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         for probe in &section.probes {
             assert_eq!(probe.validity, 0);
         }
@@ -1243,7 +1341,7 @@ mod tests {
 
     #[test]
     fn bake_sh_volume_marks_exterior_leaf_probes_invalid() {
-        // Integration: verifies BakeInputs correctly wires exterior_leaves through the full bake.
+        // Integration: verifies ShBakeCtx correctly wires exterior_leaves through the full bake.
         let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
@@ -1252,7 +1350,7 @@ mod tests {
         let lights: &[MapLight] = &[];
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
-        let inputs = BakeInputs {
+        let inputs = ShBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &geo,
@@ -1261,7 +1359,7 @@ mod tests {
             static_lights: &static_lights,
             animated_lights: &animated_lights,
         };
-        let section = bake_sh_volume(&inputs, 1.0);
+        let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert!(
             !section.probes.is_empty(),
             "expected at least one probe in the bake output",
@@ -1286,7 +1384,7 @@ mod tests {
             let lights: &[MapLight] = &[];
             let static_lights = StaticBakedLights::from_lights(lights);
             let animated_lights = AnimatedBakedLights::from_lights(lights);
-            let inputs = BakeInputs {
+            let inputs = ShBakeCtx {
                 bvh: &bvh,
                 primitives: &prims,
                 geometry: &geo,
@@ -1295,7 +1393,7 @@ mod tests {
                 static_lights: &static_lights,
                 animated_lights: &animated_lights,
             };
-            bake_sh_volume(&inputs, 1.0)
+            bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 })
         };
 
         let mut dyn_light = MapLight {
@@ -1320,7 +1418,7 @@ mod tests {
             let lights = std::slice::from_ref(&dyn_light);
             let static_lights = StaticBakedLights::from_lights(lights);
             let animated_lights = AnimatedBakedLights::from_lights(lights);
-            let inputs = BakeInputs {
+            let inputs = ShBakeCtx {
                 bvh: &bvh,
                 primitives: &prims,
                 geometry: &geo,
@@ -1329,7 +1427,7 @@ mod tests {
                 static_lights: &static_lights,
                 animated_lights: &animated_lights,
             };
-            bake_sh_volume(&inputs, 1.0)
+            bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 })
         };
 
         assert_eq!(with_dynamic.probes.len(), baseline.probes.len());

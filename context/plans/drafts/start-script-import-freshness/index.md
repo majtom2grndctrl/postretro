@@ -17,8 +17,10 @@ mtime gate makes the freshness model accurate without adding parsing complexity.
 - Remove the mtime gate on the mod-root bundle entry in debug builds.
   `run_mod_init` always invokes `scripts-build` before evaluating
   `start-script.js` when `start-script.ts` is present.
-- Apply the same policy in the startup scan: mod-root bundle entry is always
-  rebuilt, not conditionally.
+- Apply the same policy in the startup scan: all top-level mod-root `.ts`
+  files are always rebuilt, not conditionally. They are bundle components —
+  `swc_bundler` re-bundles them anyway, so filename-matching the entry buys
+  nothing.
 - Nested `.ts` files under `script_root` keep their per-file mtime check —
   those are individual compilation targets, not bundle entries.
 
@@ -42,9 +44,9 @@ mtime gate makes the freshness model accurate without adding parsing complexity.
 - [ ] `start-script.ts` present and `scripts-build` missing: `run_mod_init` returns
       `ScriptError::InvalidArgument`. Behavior change from today — a fresh `.js`
       previously masked the missing compiler.
-- [ ] The startup scan rebuilds the mod-root bundle entry unconditionally.
-      A single `compile_stale_scripts` call leaves no stale `start-script.js`
-      behind.
+- [ ] The startup scan rebuilds every top-level mod-root `.ts` file
+      unconditionally. A single `compile_stale_scripts` call leaves no stale
+      `start-script.js` behind.
 - [ ] Nested `.ts` files under `script_root` still use the per-file mtime
       check. No change to their compilation behavior.
 - [ ] Release builds (`cfg(not(debug_assertions))`) are unchanged.
@@ -60,14 +62,17 @@ the `.js` is fresh. Remove that check — always invoke `scripts-build` when
 ### Task 2: Apply the same policy in the startup scan
 
 `visit_ts_files_shallow` calls `compile_one_if_stale` for each `.ts` it finds
-in the mod root. For the mod-root bundle entry, drop the mtime guard and always
-compile. Files under `script_root` (the recursive walk) are unchanged.
+in the mod root. Drop the mtime guard for every top-level mod-root `.ts` —
+they are all bundle components. Files under `script_root` (the recursive walk)
+are unchanged.
 
 ### Task 3: Update tests
 
 - `visit_ts_files_shallow_skips_nested_directories` exercises the shallow path.
-  Audit which assertions become wrong under always-rebuild and update them.
-  (`compile_stale_scripts_skips_fresh_ts_files` calls the deep walk — unchanged.)
+  Write `start-script.ts` plus a `start-script.js` sibling with a newer mtime,
+  call `visit_ts_files_shallow`, assert the `.ts` still compiles — proves the
+  mtime gate is gone. (`compile_stale_scripts_skips_fresh_ts_files` calls the
+  deep walk — unchanged.)
 - Integration test: write `start-script.ts` importing `./helper.ts`, build the
   bundle, modify only `helper.ts`, call `run_mod_init`, assert `start-script.js`
   was rewritten.

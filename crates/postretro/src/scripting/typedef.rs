@@ -132,6 +132,26 @@ fn rust_to_ts(ty_name: &str) -> String {
     }
 }
 
+/// Translate a registered field's `(name, rust_type)` into the Luau-correct
+/// `(name, type_string)` pair. Luau optional fields use `name: T?` rather than
+/// the TypeScript `name?: T`; the field registry encodes optionality with a
+/// trailing `?` in the field name (e.g. `canonicalName?`). Strip that suffix
+/// and ensure the rendered type carries the `?` instead. If the underlying
+/// type already renders to `T?` (e.g. via `Option<T>`), avoid double-suffixing.
+fn luau_field_parts<'a>(name: &'a str, ty_name: &str) -> (&'a str, String) {
+    let rendered = rust_to_luau(ty_name);
+    if let Some(stripped) = name.strip_suffix('?') {
+        let ty = if rendered.ends_with('?') {
+            rendered
+        } else {
+            format!("{rendered}?")
+        };
+        (stripped, ty)
+    } else {
+        (name, rendered)
+    }
+}
+
 /// Map a Rust type name to its Luau spelling. Mirrors `rust_to_ts`.
 fn rust_to_luau(ty_name: &str) -> String {
     let short = short_name(ty_name);
@@ -638,7 +658,10 @@ fn emit_luau_type(ty: &RegisteredType, out: &mut String) {
             if !any_doc {
                 let body = fields
                     .iter()
-                    .map(|f| format!("{}: {}", f.name, rust_to_luau(f.ty_name)))
+                    .map(|f| {
+                        let (name, ty) = luau_field_parts(f.name, f.ty_name);
+                        format!("{name}: {ty}")
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 writeln!(out, "export type {} = {{ {body} }}", ty.name).unwrap();
@@ -646,13 +669,8 @@ fn emit_luau_type(ty: &RegisteredType, out: &mut String) {
                 writeln!(out, "export type {} = {{", ty.name).unwrap();
                 for f in fields {
                     luau_doc_line(f.doc, LUAU_FIELD_INDENT, out);
-                    writeln!(
-                        out,
-                        "{LUAU_FIELD_INDENT}{}: {},",
-                        f.name,
-                        rust_to_luau(f.ty_name)
-                    )
-                    .unwrap();
+                    let (name, ty_str) = luau_field_parts(f.name, f.ty_name);
+                    writeln!(out, "{LUAU_FIELD_INDENT}{name}: {ty_str},").unwrap();
                 }
                 writeln!(out, "}}").unwrap();
             }
@@ -1293,9 +1311,9 @@ export type LightDescriptor = {
 --- Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.
 export type EntityTypeDescriptor = {
   --- FGD canonical map classname this descriptor binds to. Absence means the descriptor is not directly placeable from a map and is only reachable via indirect routing (e.g. `entity_class` on a `player_spawn` marker).
-  canonicalName?: string,
+  canonicalName: string?,
   --- Optional component presets attached at level-load spawn.
-  components?: EntityTypeComponents,
+  components: EntityTypeComponents?,
 }
 
 --- Engine-managed billboard emitter component shape. Carried by `BillboardEmitter` ECS entities and produced by SDK `emitter()`/`smokeEmitter()`/etc.
@@ -1371,7 +1389,7 @@ export type FogVolumeEntity = {
 }
 
 --- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
-export type EntityTypeComponents = { light?: LightDescriptor?, emitter?: BillboardEmitterComponent?, movement?: PlayerMovementDescriptor? }
+export type EntityTypeComponents = { light: LightDescriptor?, emitter: BillboardEmitterComponent?, movement: PlayerMovementDescriptor? }
 
 --- Authored player-movement component preset. All four sub-objects are required when `movement` is present; the data-archetype spawn path materializes the runtime movement component from this.
 export type PlayerMovementDescriptor = {
@@ -1436,7 +1454,7 @@ export type ModManifest = {
   --- Human-readable mod name. Required.
   name: string,
   --- Engine-global entity-type registrations. Survive level unload.
-  entities?: {EntityTypeDescriptor},
+  entities: {EntityTypeDescriptor}?,
 }
 
 --- Returns true if the entity id refers to a live entity.

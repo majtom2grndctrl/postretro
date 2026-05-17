@@ -26,9 +26,9 @@ export type LightDescriptor = {
 --- Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.
 export type EntityTypeDescriptor = {
   --- FGD canonical map classname this descriptor binds to. Absence means the descriptor is not directly placeable from a map and is only reachable via indirect routing (e.g. `entity_class` on a `player_spawn` marker).
-  canonicalName?: string,
+  canonicalName: string?,
   --- Optional component presets attached at level-load spawn.
-  components?: EntityTypeComponents,
+  components: EntityTypeComponents?,
 }
 
 --- Engine-managed billboard emitter component shape. Carried by `BillboardEmitter` ECS entities and produced by SDK `emitter()`/`smokeEmitter()`/etc.
@@ -104,7 +104,7 @@ export type FogVolumeEntity = {
 }
 
 --- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
-export type EntityTypeComponents = { light?: LightDescriptor?, emitter?: BillboardEmitterComponent?, movement?: PlayerMovementDescriptor? }
+export type EntityTypeComponents = { light: LightDescriptor?, emitter: BillboardEmitterComponent?, movement: PlayerMovementDescriptor? }
 
 --- Authored player-movement component preset. All four sub-objects are required when `movement` is present; the data-archetype spawn path materializes the runtime movement component from this.
 export type PlayerMovementDescriptor = {
@@ -169,7 +169,7 @@ export type ModManifest = {
   --- Human-readable mod name. Required.
   name: string,
   --- Engine-global entity-type registrations. Survive level unload.
-  entities?: {EntityTypeDescriptor},
+  entities: {EntityTypeDescriptor}?,
 }
 
 export type LightKind = "Point" | "Spot" | "Directional"

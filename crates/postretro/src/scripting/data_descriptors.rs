@@ -111,9 +111,9 @@ impl LightDescriptor {
 /// `canonical_name` is the FGD/map classname this descriptor is directly
 /// placeable as. When `None`, the descriptor has no map-placement form — it
 /// is only reachable via indirect routing (e.g. an `entity_class` KVP on a
-/// `player_spawn` marker, or — future — by tag from another spawn). Absence
-/// is structural: descriptors with no `canonical_name` cannot be matched
-/// against a `MapEntity.classname` by the data-archetype dispatch.
+/// `player_spawn` marker). Absence is structural: descriptors with no
+/// `canonical_name` cannot be matched against a `MapEntity.classname` by the
+/// data-archetype dispatch.
 ///
 /// Optional `light` / `emitter` / `movement` carry per-entity-type component
 /// presets. The level-load spawn path materializes these into a fresh ECS

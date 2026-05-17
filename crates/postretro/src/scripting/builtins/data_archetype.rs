@@ -869,7 +869,6 @@ mod tests {
         assert_eq!(handled.len(), 0);
     }
 
-
     #[test]
     fn descriptor_with_no_canonical_name_is_unreachable_from_direct_placement() {
         // A descriptor with `canonical_name = None` has no direct map-placement

@@ -1939,4 +1939,3 @@ mod tests {
         assert_eq!(m.air.jump_ceiling, 0.0);
     }
 }
-

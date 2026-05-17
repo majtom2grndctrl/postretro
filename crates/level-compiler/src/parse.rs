@@ -1163,13 +1163,7 @@ mod tests {
         assert!(classnames.contains(&"player_spawn"));
 
         // Point entities must have 0 brushes.
-        for point_classname in &[
-            "player_spawn",
-            "player",
-            "light",
-            "light_spot",
-            "fog_lamp",
-        ] {
+        for point_classname in &["player_spawn", "player", "light", "light_spot", "fog_lamp"] {
             let brush_count = map_data
                 .entity_brushes
                 .iter()

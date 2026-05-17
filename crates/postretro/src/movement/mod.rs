@@ -220,6 +220,10 @@ pub(crate) fn tick(
         }
     }
 
+    if component.is_grounded && component.velocity.y.abs() < 1e-3 {
+        component.velocity.y = 0.0;
+    }
+
     for _ in 0..4 {
         let velocity = component.velocity;
         let speed = velocity.length();
@@ -244,45 +248,61 @@ pub(crate) fn tick(
             Some(h) => {
                 let toi = h.time_of_impact.max(0.0);
                 current_pos += dir * toi;
-                consumed = if speed > 0.0 {
+                let natural_consumed = if speed > 0.0 {
                     toi / speed
                 } else {
                     remaining_dt
                 };
-                remaining_dt = (remaining_dt - consumed).max(0.0);
 
                 let normal = Vec3::new(h.normal2.x, h.normal2.y, h.normal2.z);
                 if normal.y >= component.cos_walkable {
                     hit_floor_this_tick = true;
                     component.velocity.y = 0.0;
-                    // Resting-contact unstick: parry reports TOI=0 when the
-                    // capsule's bottom hemisphere is in (or microscopically
-                    // below) the floor surface. Without nudging out of that
-                    // contact, the next sweep iteration repeats the TOI=0 hit
-                    // and horizontal motion stalls at the floor's exact y.
-                    // The lift is well below settle_tol and does not affect
-                    // tests that assert position envelopes.
+                    let v_dot_n = component.velocity.dot(normal);
+                    component.velocity -= normal * v_dot_n;
                     if toi <= 1e-6 {
-                        current_pos.y += 1e-4;
+                        // 0.025 must exceed cast_capsule's 0.02 target_distance.
+                        current_pos.y += 0.025;
+                        consumed = remaining_dt * 0.25;
+                    } else {
+                        consumed = natural_consumed;
                     }
                 } else {
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
-                    // parry returns TOI=0 when the capsule sits at exactly
-                    // target_distance from the wall (resting contact). Nudge
-                    // off the skin and advance the remainder tangentially —
-                    // otherwise sliding stalls because every subsequent sweep
-                    // from the same skin distance also reports TOI=0.
                     if toi <= 1e-6 {
-                        current_pos += normal * 1e-4;
-                        current_pos += component.velocity * remaining_dt;
-                        remaining_dt = 0.0;
+                        // 0.025 must exceed cast_capsule's 0.02 target_distance.
+                        current_pos += normal * 0.025;
+                        consumed = remaining_dt * 0.25;
+                    } else {
+                        consumed = natural_consumed;
                     }
                 }
+                remaining_dt = (remaining_dt - consumed).max(0.0);
             }
         }
         if consumed <= 0.0 {
             break;
+        }
+    }
+
+    if component.velocity.y <= 0.0 {
+        let step_height = component.ground.step_height;
+        if step_height > 0.0 {
+            let down_hit = cast_capsule(
+                collision_world,
+                Point::new(current_pos.x, current_pos.y, current_pos.z),
+                &capsule,
+                Vector::new(0.0, -1.0, 0.0),
+                step_height,
+            );
+            if let Some(h) = down_hit {
+                let n = Vec3::new(h.normal2.x, h.normal2.y, h.normal2.z);
+                if n.y >= component.cos_walkable {
+                    current_pos.y -= h.time_of_impact;
+                    hit_floor_this_tick = true;
+                }
+            }
         }
     }
 
@@ -625,9 +645,12 @@ mod tests {
             let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
             pos = next;
         }
+        // Skin-width oscillation: the wall-unstick nudge (0.025) exceeds
+        // cast_capsule's target_distance (0.02) on each TOI=0 contact, so a
+        // pinned player oscillates within ~one skin width of the wall.
         assert!(
-            (pos.x - x_pinned).abs() < POS_EPS + 1e-3,
-            "wall-pinned player x should be stable: before={}, after={}",
+            (pos.x - x_pinned).abs() < 0.03,
+            "wall-pinned player x should stay within skin width: before={}, after={}",
             x_pinned,
             pos.x
         );

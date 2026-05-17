@@ -107,12 +107,20 @@ impl LightDescriptor {
 
 /// Author-side description of an entity type. Carried on `ModManifest.entities`
 /// and drained into `DataRegistry` after `setupMod()` returns.
-/// `classname` is required; optional `light` / `emitter` / `movement` carry
-/// per-entity-type component presets. The level-load spawn path materializes
-/// these into a fresh ECS entity per matching map placement.
+///
+/// `canonical_name` is the FGD/map classname this descriptor is directly
+/// placeable as. When `None`, the descriptor has no map-placement form — it
+/// is only reachable via indirect routing (e.g. an `entity_class` KVP on a
+/// `player_spawn` marker, or — future — by tag from another spawn). Absence
+/// is structural: descriptors with no `canonical_name` cannot be matched
+/// against a `MapEntity.classname` by the data-archetype dispatch.
+///
+/// Optional `light` / `emitter` / `movement` carry per-entity-type component
+/// presets. The level-load spawn path materializes these into a fresh ECS
+/// entity per matching placement.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EntityTypeDescriptor {
-    pub(crate) classname: String,
+    pub(crate) canonical_name: Option<String>,
     pub(crate) light: Option<LightDescriptor>,
     pub(crate) emitter: Option<BillboardEmitterComponent>,
     pub(crate) movement: Option<PlayerMovementDescriptor>,
@@ -427,10 +435,13 @@ fn get_required_u32_js<'js>(
 }
 
 /// Deserialize an entity-type descriptor from a JS object. Shape:
-/// `{ classname: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor } }`.
+/// `{ canonicalName?: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor } }`.
 /// Component sub-objects parse via `serde_json` after a recursive walk through
 /// the existing `js_to_json` helper — matches how `LightAnimation` /
 /// `BillboardEmitterComponent` cross the FFI elsewhere.
+///
+/// `canonicalName` is optional; absence means the descriptor has no direct
+/// map-placement form (see `EntityTypeDescriptor`).
 pub(crate) fn entity_descriptor_from_js<'js>(
     ctx: &Ctx<'js>,
     value: JsValue<'js>,
@@ -438,7 +449,16 @@ pub(crate) fn entity_descriptor_from_js<'js>(
     let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
         reason: "entity entry must be an object".to_string(),
     })?;
-    let classname = get_required_string_js(&obj, "classname")?;
+    let canonical_name = if obj.contains_key("canonicalName").map_err(js_err)? {
+        let raw: JsValue = obj.get("canonicalName").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            Some(String::from_js_value_required(raw, "canonicalName")?)
+        }
+    } else {
+        None
+    };
 
     let mut light = None;
     let mut emitter = None;
@@ -496,7 +516,7 @@ pub(crate) fn entity_descriptor_from_js<'js>(
     }
 
     Ok(EntityTypeDescriptor {
-        classname,
+        canonical_name,
         light,
         emitter,
         movement,
@@ -897,7 +917,10 @@ fn get_required_u32_lua(table: &Table, field: &'static str) -> Result<u32, Descr
 }
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
-/// `{ classname: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor } }`.
+/// `{ canonicalName?: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor } }`.
+///
+/// `canonicalName` is optional; absence means the descriptor has no direct
+/// map-placement form (see `EntityTypeDescriptor`).
 pub(crate) fn entity_descriptor_from_lua(
     value: LuaValue,
 ) -> Result<EntityTypeDescriptor, DescriptorError> {
@@ -909,7 +932,23 @@ pub(crate) fn entity_descriptor_from_lua(
             });
         }
     };
-    let classname = get_required_string_lua(&table, "classname")?;
+    let canonical_name = if table.contains_key("canonicalName").map_err(lua_err)? {
+        let raw: LuaValue = table.get("canonicalName").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::String(s) => Some(s.to_str().map_err(lua_err)?.to_string()),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "'canonicalName' must be a string, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    } else {
+        None
+    };
 
     let mut light = None;
     let mut emitter = None;
@@ -978,7 +1017,7 @@ pub(crate) fn entity_descriptor_from_lua(
     }
 
     Ok(EntityTypeDescriptor {
-        classname,
+        canonical_name,
         light,
         emitter,
         movement,
@@ -1454,7 +1493,7 @@ mod tests {
     #[test]
     fn entity_descriptor_with_emitter_only_deserializes() {
         let src = r#"({
-            classname: "smoke_pillar",
+            canonicalName: "smoke_pillar",
             components: {
                 emitter: {
                     rate: 12.0,
@@ -1473,7 +1512,7 @@ mod tests {
             }
         })"#;
         let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
-        assert_eq!(d.classname, "smoke_pillar");
+        assert_eq!(d.canonical_name.as_deref(), Some("smoke_pillar"));
         assert!(d.light.is_none());
         let e = d.emitter.expect("emitter present");
         assert_eq!(e.rate, 12.0);
@@ -1483,7 +1522,7 @@ mod tests {
     #[test]
     fn entity_descriptor_with_light_only_deserializes() {
         let src = r#"({
-            classname: "campfire",
+            canonicalName: "campfire",
             components: {
                 light: {
                     color: [1.0, 0.6, 0.2],
@@ -1494,7 +1533,7 @@ mod tests {
             }
         })"#;
         let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
-        assert_eq!(d.classname, "campfire");
+        assert_eq!(d.canonical_name.as_deref(), Some("campfire"));
         assert!(d.emitter.is_none());
         let l = d.light.expect("light present");
         assert_eq!(l.color, [1.0, 0.6, 0.2]);
@@ -1506,7 +1545,7 @@ mod tests {
     #[test]
     fn entity_descriptor_with_both_components_deserializes() {
         let src = r#"({
-            classname: "torch",
+            canonicalName: "torch",
             components: {
                 light: { color: [1, 1, 1], intensity: 2.0, range: 6.0, is_dynamic: true },
                 emitter: {
@@ -1518,16 +1557,16 @@ mod tests {
             }
         })"#;
         let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
-        assert_eq!(d.classname, "torch");
+        assert_eq!(d.canonical_name.as_deref(), Some("torch"));
         assert!(d.light.is_some());
         assert!(d.emitter.is_some());
     }
 
     #[test]
     fn entity_descriptor_without_components_field_deserializes() {
-        let src = r#"({ classname: "vignette" })"#;
+        let src = r#"({ canonicalName: "vignette" })"#;
         let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
-        assert_eq!(d.classname, "vignette");
+        assert_eq!(d.canonical_name.as_deref(), Some("vignette"));
         assert!(d.light.is_none());
         assert!(d.emitter.is_none());
     }
@@ -1535,7 +1574,7 @@ mod tests {
     #[test]
     fn entity_descriptor_with_emitter_only_deserializes_lua() {
         let src = r#"return {
-            classname = "smoke_pillar",
+            canonicalName = "smoke_pillar",
             components = {
                 emitter = {
                     rate = 12.0,
@@ -1553,20 +1592,20 @@ mod tests {
             }
         }"#;
         let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
-        assert_eq!(d.classname, "smoke_pillar");
+        assert_eq!(d.canonical_name.as_deref(), Some("smoke_pillar"));
         assert!(d.emitter.is_some());
     }
 
     #[test]
     fn entity_descriptor_with_light_only_deserializes_lua() {
         let src = r#"return {
-            classname = "campfire",
+            canonicalName = "campfire",
             components = {
                 light = { color = { 1.0, 0.6, 0.2 }, intensity = 4.0, range = 10.0, is_dynamic = false }
             }
         }"#;
         let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
-        assert_eq!(d.classname, "campfire");
+        assert_eq!(d.canonical_name.as_deref(), Some("campfire"));
         let l = d.light.expect("light present");
         assert_eq!(l.intensity, 4.0);
     }
@@ -1574,7 +1613,7 @@ mod tests {
     // --- PlayerMovementDescriptor parsing ----------------------------------
 
     const JS_PLAYER_MOVEMENT: &str = r#"({
-        classname: "player",
+        canonicalName: "player",
         components: {
             movement: {
                 capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
@@ -1606,7 +1645,7 @@ mod tests {
     fn js_movement_missing_air_field_reports_missing_field() {
         // `bunnyHop` removed from `air`.
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
@@ -1623,7 +1662,7 @@ mod tests {
     #[test]
     fn js_movement_jumps_positive_without_ceiling_errors() {
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
@@ -1645,7 +1684,7 @@ mod tests {
     #[test]
     fn js_movement_capsule_radius_zero_is_rejected() {
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.0, halfHeight: 0.8 },
@@ -1662,7 +1701,7 @@ mod tests {
     #[test]
     fn js_movement_max_slope_out_of_range_is_rejected() {
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
@@ -1679,7 +1718,7 @@ mod tests {
     #[test]
     fn js_movement_forward_steer_out_of_range_is_rejected() {
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
@@ -1696,7 +1735,7 @@ mod tests {
     #[test]
     fn js_movement_terminal_velocity_zero_is_rejected() {
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
@@ -1715,7 +1754,7 @@ mod tests {
         // eye_height must be strictly positive: 0.0 sits at the capsule center,
         // not a sensible eye position.
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.0 },
@@ -1733,7 +1772,7 @@ mod tests {
     fn js_movement_eye_height_above_capsule_top_is_rejected() {
         // capsule top = half_height + radius = 1.2; eye_height = 1.5 exceeds it.
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 1.5 },
@@ -1751,7 +1790,7 @@ mod tests {
     fn js_movement_eye_height_at_capsule_top_is_accepted() {
         // Exactly at capsule top (half_height + radius = 1.2) is permitted.
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 1.2 },
@@ -1768,7 +1807,7 @@ mod tests {
     #[test]
     fn js_movement_missing_eye_height_reports_missing_field() {
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8 },
@@ -1785,7 +1824,7 @@ mod tests {
     #[test]
     fn lua_movement_descriptor_full_shape_parses() {
         let src = r#"return {
-            classname = "player",
+            canonicalName = "player",
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
@@ -1806,7 +1845,7 @@ mod tests {
     #[test]
     fn lua_movement_eye_height_above_capsule_top_is_rejected() {
         let src = r#"return {
-            classname = "player",
+            canonicalName = "player",
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 1.5 },
@@ -1823,7 +1862,7 @@ mod tests {
     #[test]
     fn lua_movement_jumps_positive_without_ceiling_errors() {
         let src = r#"return {
-            classname = "player",
+            canonicalName = "player",
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
@@ -1845,7 +1884,7 @@ mod tests {
     #[test]
     fn lua_movement_missing_capsule_block_reports_missing_field() {
         let src = r#"return {
-            classname = "player",
+            canonicalName = "player",
             components = {
                 movement = {
                     ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
@@ -1863,7 +1902,7 @@ mod tests {
         // `jumpCeiling` is only meaningful when `air.jumps > 0`; omitting it
         // when jumps == 0 should succeed with jump_ceiling defaulting to 0.0.
         let src = r#"({
-            classname: "player",
+            canonicalName: "player",
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
@@ -1884,7 +1923,7 @@ mod tests {
         // `jumpCeiling` is only meaningful when `air.jumps > 0`; omitting it
         // when jumps == 0 should succeed with jump_ceiling defaulting to 0.0.
         let src = r#"return {
-            classname = "player",
+            canonicalName = "player",
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
@@ -1900,3 +1939,4 @@ mod tests {
         assert_eq!(m.air.jump_ceiling, 0.0);
     }
 }
+

@@ -1350,7 +1350,7 @@ mod tests {
             globalThis.setupMod = function() {
                 return {
                     name: "TestMod",
-                    entities: [{ classname: "info_player_start" }],
+                    entities: [{ canonicalName: "info_player_start" }],
                 };
             };
             "#,
@@ -1364,7 +1364,7 @@ mod tests {
             manifest
                 .entities
                 .iter()
-                .any(|e| e.classname == "info_player_start"),
+                .any(|e| e.canonical_name.as_deref() == Some("info_player_start")),
             "setupMod's `entities` field must carry the descriptor on the manifest"
         );
     }
@@ -1384,7 +1384,7 @@ mod tests {
             dir.join("start-script.js"),
             r#"
             /* inlined from actors/player.ts */
-            const playerEntity = { classname: "info_player_start" };
+            const playerEntity = { canonicalName: "info_player_start" };
             /* end inlined actors/player.ts */
             globalThis.setupMod = function() {
                 return { name: "ImportedDomainMod", entities: [playerEntity] };
@@ -1400,7 +1400,7 @@ mod tests {
             manifest
                 .entities
                 .iter()
-                .any(|e| e.classname == "info_player_start"),
+                .any(|e| e.canonical_name.as_deref() == Some("info_player_start")),
             "entity type from bundled domain script must appear on the mod manifest"
         );
     }
@@ -1415,7 +1415,7 @@ mod tests {
             function setupMod()
                 return {
                     name = "TestMod",
-                    entities = { { classname = "info_player_start" } },
+                    entities = { { canonicalName = "info_player_start" } },
                 }
             end
             "#,
@@ -1429,7 +1429,7 @@ mod tests {
             manifest
                 .entities
                 .iter()
-                .any(|e| e.classname == "info_player_start"),
+                .any(|e| e.canonical_name.as_deref() == Some("info_player_start")),
             "setupMod's `entities` field must carry the descriptor on the manifest"
         );
     }
@@ -1650,7 +1650,7 @@ mod tests {
             globalThis.setupMod = function() {
                 return {
                     name: "EntitiesMod",
-                    entities: [{ classname: "info_player_start" }],
+                    entities: [{ canonicalName: "info_player_start" }],
                 };
             };
             "#,
@@ -1661,7 +1661,10 @@ mod tests {
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "EntitiesMod");
         assert_eq!(manifest.entities.len(), 1);
-        assert_eq!(manifest.entities[0].classname, "info_player_start");
+        assert_eq!(
+            manifest.entities[0].canonical_name.as_deref(),
+            Some("info_player_start"),
+        );
     }
 
     #[test]
@@ -1717,7 +1720,7 @@ mod tests {
             function setupMod()
                 return {
                     name = "EntitiesMod",
-                    entities = { { classname = "info_player_start" } },
+                    entities = { { canonicalName = "info_player_start" } },
                 }
             end
             "#,
@@ -1728,7 +1731,10 @@ mod tests {
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "EntitiesMod");
         assert_eq!(manifest.entities.len(), 1);
-        assert_eq!(manifest.entities[0].classname, "info_player_start");
+        assert_eq!(
+            manifest.entities[0].canonical_name.as_deref(),
+            Some("info_player_start"),
+        );
     }
 
     #[test]
@@ -1783,7 +1789,7 @@ mod tests {
         std::fs::write(
             dir.join("sub.luau"),
             r#"
-            return { descriptor = { classname = "info_player_start" } }
+            return { descriptor = { canonicalName = "info_player_start" } }
             "#,
         )
         .unwrap();
@@ -1805,7 +1811,7 @@ mod tests {
             manifest
                 .entities
                 .iter()
-                .any(|e| e.classname == "info_player_start"),
+                .any(|e| e.canonical_name.as_deref() == Some("info_player_start")),
             "domain script imported via require must contribute its entity type to the manifest"
         );
     }

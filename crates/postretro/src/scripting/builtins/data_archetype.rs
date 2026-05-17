@@ -133,14 +133,22 @@ fn warn_parse(entity: &MapEntity, key: &str, raw: &str) {
     );
 }
 
-/// Find an `EntityTypeDescriptor` for `classname` in `descriptors`. Linear
-/// scan — descriptor lists are small (one entry per registered class) so a
-/// HashMap would be premature.
+/// Find an `EntityTypeDescriptor` whose `canonical_name` equals `classname`.
+/// Linear scan — descriptor lists are small (one entry per registered class)
+/// so a HashMap would be premature. Descriptors with `canonical_name = None`
+/// have no map-placement form and are always skipped here.
+///
+/// Roadmap: composable archetypes, FGD generated from the registry, and a
+/// `mob_spawn` marker (mirroring `player_spawn`) will sit on this lookup —
+/// see `context/plans/drafts/` and `context/lib/plans/roadmap.md`. The
+/// abstraction grows from this single match site.
 fn find_descriptor<'a>(
     descriptors: &'a [EntityTypeDescriptor],
     classname: &str,
 ) -> Option<&'a EntityTypeDescriptor> {
-    descriptors.iter().find(|d| d.classname == classname)
+    descriptors
+        .iter()
+        .find(|d| d.canonical_name.as_deref() == Some(classname))
 }
 
 /// Attach emitter, light, and movement components from a descriptor to an
@@ -223,13 +231,31 @@ pub(crate) fn apply_data_archetype_dispatch(
     handled_by_builtin: &HashSet<String>,
     registry: &mut EntityRegistry,
 ) -> HashSet<String> {
-    // Warn-once tracking for descriptor/built-in collisions.
-    // scoped per sweep; current callers run exactly once per level load.
+    // Warn-once tracking for descriptor/built-in collisions and for placements
+    // referencing a classname that has no descriptor match.
+    // Scoped per sweep; current callers run exactly once per level load.
     let mut collision_warned: HashSet<String> = HashSet::new();
+    let mut unknown_warned: HashSet<String> = HashSet::new();
     let mut handled: HashSet<String> = HashSet::new();
 
     for entity in entities {
         let Some(descriptor) = find_descriptor(descriptors, &entity.classname) else {
+            // No descriptor match. The built-in dispatch already handled this
+            // classname (or attempted to) when it appears in `handled_by_builtin`;
+            // otherwise the classname is either an unmodeled placement or a
+            // structural marker (worldspawn, player_spawn) routed elsewhere.
+            // Warn once per distinct unknown classname per sweep.
+            let cls = entity.classname.as_str();
+            let is_structural = cls == "worldspawn" || cls == "player_spawn";
+            if !handled_by_builtin.contains(cls)
+                && !is_structural
+                && unknown_warned.insert(cls.to_string())
+            {
+                log::warn!(
+                    "[Loader] {origin}: classname `{cls}` has no registered descriptor;                      placement dropped",
+                    origin = entity.diagnostic_origin(),
+                );
+            }
             continue;
         };
 
@@ -277,10 +303,10 @@ pub(crate) fn apply_data_archetype_dispatch(
     handled
 }
 
-/// Classname for the FGD `info_player_start` point entity. Spawn points are
+/// Classname for the FGD `player_spawn` point entity. Spawn points are
 /// extracted from `world.map_entities` before the built-in / data-archetype
 /// dispatch sweeps and processed by [`spawn_from_player_starts`].
-pub(crate) const PLAYER_START_CLASSNAME: &str = "info_player_start";
+pub(crate) const PLAYER_START_CLASSNAME: &str = "player_spawn";
 
 /// Spawn one entity per `info_player_start` placement, using each placement's
 /// `entity_class` KVP (default `"player"`) to look up an
@@ -367,7 +393,7 @@ mod tests {
 
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
-            classname: classname.to_string(),
+            canonical_name: Some(classname.to_string()),
             light: Some(LightDescriptor {
                 color: [0.5, 0.5, 0.5],
                 intensity: 1.0,
@@ -600,7 +626,7 @@ mod tests {
         // without a redundant prefix.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
-            classname: "campfire".to_string(),
+            canonical_name: Some("campfire".to_string()),
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -639,7 +665,7 @@ mod tests {
         // consumption. Only `initial_velocity` writes to the field.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
-            classname: "campfire".to_string(),
+            canonical_name: Some("campfire".to_string()),
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -675,7 +701,7 @@ mod tests {
         // `initial_rate` overrides the descriptor's `rate` default at spawn.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
-            classname: "campfire".to_string(),
+            canonical_name: Some("campfire".to_string()),
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -708,7 +734,7 @@ mod tests {
     fn emitter_initial_burst_kvp_overrides_u32_field() {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
-            classname: "burstfire".to_string(),
+            canonical_name: Some("burstfire".to_string()),
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 0.0,
@@ -743,7 +769,7 @@ mod tests {
         // but leave the descriptor's value untouched. No crash.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
-            classname: "smolder".to_string(),
+            canonical_name: Some("smolder".to_string()),
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -796,7 +822,7 @@ mod tests {
 
         // Register a data-archetype descriptor for the same classname.
         let descriptors = vec![EntityTypeDescriptor {
-            classname: "billboard_emitter".to_string(),
+            canonical_name: Some("billboard_emitter".to_string()),
             light: Some(LightDescriptor {
                 color: [1.0, 0.0, 0.0],
                 intensity: 5.0,
@@ -843,13 +869,78 @@ mod tests {
         assert_eq!(handled.len(), 0);
     }
 
+
+    #[test]
+    fn descriptor_with_no_canonical_name_is_unreachable_from_direct_placement() {
+        // A descriptor with `canonical_name = None` has no direct map-placement
+        // form. Two `.map` placements naming "ghost" in a single dispatch pass
+        // must not spawn the descriptor — and the unknown-classname warn must
+        // fire exactly once per distinct classname per sweep (verified by the
+        // warn-dedup `HashSet` contract; the `log::warn!` itself is not
+        // captured here).
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![EntityTypeDescriptor {
+            canonical_name: None,
+            light: Some(LightDescriptor {
+                color: [1.0, 1.0, 1.0],
+                intensity: 1.0,
+                range: 5.0,
+                is_dynamic: true,
+            }),
+            emitter: None,
+            movement: None,
+        }];
+        let placements = vec![placement("ghost", &[]), placement("ghost", &[])];
+        let handled =
+            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        assert_eq!(handled.len(), 0);
+        assert!(
+            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+                .next()
+                .is_none(),
+            "descriptor with no canonical_name must not spawn from direct placement",
+        );
+    }
+
+    #[test]
+    fn descriptor_with_some_canonical_name_spawns_from_direct_placement() {
+        // Regression guard: the canonical_name = Some(...) path still routes a
+        // direct map placement to the matching descriptor.
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![light_descriptor("foo", true)];
+        let placements = vec![placement("foo", &[])];
+        let handled =
+            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        assert_eq!(handled.len(), 1);
+        assert!(handled.contains("foo"));
+        assert!(
+            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+                .next()
+                .is_some(),
+        );
+    }
+
+    #[test]
+    fn player_spawn_marker_routes_to_named_descriptor_via_entity_class() {
+        // A `player_spawn` marker resolves its target via `entity_class` (or
+        // the default `"player"`). A descriptor with canonical_name =
+        // Some("player") receives the spawn — exactly one entity lands.
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![stub_descriptor("player")];
+        let points = vec![spawn_point(&[])];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        assert_eq!(live_count(&reg), 1);
+    }
+
     // --- spawn_from_player_starts -------------------------------------------
 
     /// A descriptor with no components — sufficient as a stub `"player"` entry
     /// for spawn-point tests that only care about transform / tags / KVPs.
     fn stub_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
-            classname: classname.to_string(),
+            canonical_name: Some(classname.to_string()),
             light: None,
             emitter: None,
             movement: None,

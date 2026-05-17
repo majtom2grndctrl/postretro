@@ -72,7 +72,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("EntityTypeDescriptor")
         .doc("Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.")
-        .field("classname", "String", "FGD classname this descriptor binds to.")
+        .field("canonicalName?", "String", "FGD canonical map classname this descriptor binds to. Absence means the descriptor is not directly placeable from a map and is only reachable via indirect routing (e.g. `entity_class` on a `player_spawn` marker).")
         .field(
             "components?",
             "EntityTypeComponents",

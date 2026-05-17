@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use glam::DVec3;
+use serde::{Deserialize, Serialize};
 
 impl Default for TextureProjection {
     fn default() -> Self {
@@ -129,7 +130,7 @@ pub struct MapEntityRecord {
 }
 
 /// Light shape. Governs which fields of `MapLight` are meaningful.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LightType {
     /// Omnidirectional point light.
     Point,
@@ -144,7 +145,7 @@ pub enum LightType {
 ///
 /// `falloff_range` is the zero-intensity distance (Linear) or the clamp
 /// distance (InverseDistance / InverseSquared).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FalloffModel {
     /// `brightness = 1 - (distance / falloff_range)`, clamped at 0.
     Linear,
@@ -162,7 +163,7 @@ pub enum FalloffModel {
 /// Format-agnostic: Quake light styles, Doom sector effects, UDMF curves,
 /// and hand-authored data all translate to this shape. Translators own their
 /// format's preset vocabulary and expand presets into sample curves.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LightAnimation {
     pub period: f32,
     /// 0-1 offset within the cycle — desync otherwise-identical presets.
@@ -185,7 +186,7 @@ pub struct LightAnimation {
 /// consume `Vec<MapLight>`; neither sees source-format vocabulary.
 ///
 /// See `context/lib/build_pipeline.md` §Custom FGD and §PRL Compilation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapLight {
     /// Position in engine space (Y-up), meters. Directional lights still
     /// carry a position for probe/debug purposes but it is not used for

@@ -11,7 +11,7 @@ name = "prl-build"
 path = "src/main.rs"
 
 [dependencies]
-postretro-level-format.workspace = true
+postretro-level-format = { workspace = true, features = ["serde"] }
 shambler.workspace = true
 glam.workspace = true
 anyhow.workspace = true
@@ -24,3 +24,5 @@ bvh = { version = "0.11", default-features = false }
 nalgebra = { version = "0.33", default-features = false, features = ["std"] }
 png.workspace = true
 blake3 = "1"
+postcard = "1"
+serde.workspace = true

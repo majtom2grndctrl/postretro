@@ -199,13 +199,16 @@ fn main() -> anyhow::Result<()> {
         let mut density = args.lightmap_density;
         let mut attempt = 0;
         loop {
-            let mut lm_inputs = lightmap_bake::LightmapInputs {
+            let mut lm_ctx = lightmap_bake::LightmapBakeCtx {
                 bvh: &bvh,
                 primitives: &bvh_primitives,
                 geometry: &mut geo_result,
                 lights: &static_baked_lights,
             };
-            match lightmap_bake::bake_lightmap(&mut lm_inputs, density) {
+            let lightmap_config = lightmap_bake::LightmapConfig {
+                lightmap_density: density,
+            };
+            match lightmap_bake::bake_lightmap(&mut lm_ctx, &lightmap_config) {
                 Ok(result) => {
                     final_lightmap_density = density;
                     break result;
@@ -250,7 +253,7 @@ fn main() -> anyhow::Result<()> {
     if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
         anyhow::bail!("light animation validation failed: {msg}");
     }
-    let sh_inputs = sh_bake::BakeInputs {
+    let sh_ctx = sh_bake::ShBakeCtx {
         bvh: &bvh,
         primitives: &bvh_primitives,
         geometry: &geo_result,
@@ -259,7 +262,10 @@ fn main() -> anyhow::Result<()> {
         static_lights: &static_baked_lights,
         animated_lights: &animated_baked_lights,
     };
-    let sh_volume_section = sh_bake::bake_sh_volume(&sh_inputs, args.probe_spacing);
+    let sh_config = sh_bake::ShConfig {
+        probe_spacing: args.probe_spacing,
+    };
+    let sh_volume_section = sh_bake::bake_sh_volume(&sh_ctx, &sh_config);
     timings.push(("SH Bake", stage_start.elapsed()));
     if args.verbose {
         sh_bake::log_stats(&sh_volume_section);
@@ -276,7 +282,7 @@ fn main() -> anyhow::Result<()> {
             exterior_leaves: &exterior_leaves,
             animated_lights: &animated_baked_lights,
         };
-        delta_sh_bake::bake_delta_sh_volumes(&inputs, args.probe_spacing)
+        delta_sh_bake::bake_delta_sh_volumes(&inputs, &sh_config)
     };
     timings.push(("Delta SH Bake", stage_start.elapsed()));
     if args.verbose {

@@ -46,7 +46,7 @@ const AABB_PADDING_METERS: f32 = 0.5;
 /// "infinite" influence sphere.
 const DIRECTIONAL_FALLBACK_RANGE_METERS: f32 = 100.0;
 
-/// Inputs for the delta SH bake. Mirrors `sh_bake::BakeInputs` (same BVH,
+/// Inputs for the delta SH bake. Mirrors `sh_bake::ShBakeCtx` (same BVH,
 /// same geometry, same BSP tree) plus the animated-light envelope.
 pub struct DeltaBakeInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
@@ -62,11 +62,12 @@ pub struct DeltaBakeInputs<'a> {
 /// in that case (an empty section is wasted bytes).
 pub fn bake_delta_sh_volumes(
     inputs: &DeltaBakeInputs<'_>,
-    probe_spacing_meters: f32,
+    config: &crate::sh_bake::ShConfig,
 ) -> Option<DeltaShVolumesSection> {
     if inputs.animated_lights.is_empty() {
         return None;
     }
+    let probe_spacing_meters = config.probe_spacing;
 
     let world_aabb = world_aabb_for_directional(inputs);
     let entries = inputs.animated_lights.entries();
@@ -336,7 +337,7 @@ mod tests {
             exterior_leaves: &exterior,
             animated_lights: &envelope,
         };
-        assert!(bake_delta_sh_volumes(&inputs, 1.0).is_none());
+        assert!(bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 }).is_none());
     }
 
     #[test]
@@ -357,7 +358,7 @@ mod tests {
             exterior_leaves: &exterior,
             animated_lights: &envelope,
         };
-        let section = bake_delta_sh_volumes(&inputs, 1.0).expect("expected a section");
+        let section = bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 }).expect("expected a section");
         assert_eq!(section.grids.len(), 1);
         assert_eq!(section.header.animation_descriptor_indices, vec![0]);
         let grid = &section.grids[0];
@@ -388,7 +389,7 @@ mod tests {
             exterior_leaves: &exterior,
             animated_lights: &envelope,
         };
-        let section = bake_delta_sh_volumes(&inputs, 1.0).expect("expected a section");
+        let section = bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 }).expect("expected a section");
         assert_eq!(section.grids.len(), 1);
         let grid = &section.grids[0];
         for probe in &grid.probes {
@@ -427,7 +428,7 @@ mod tests {
             exterior_leaves: &exterior,
             animated_lights: &envelope,
         };
-        let section = bake_delta_sh_volumes(&inputs, 1.0).expect("expected a section");
+        let section = bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 }).expect("expected a section");
         assert_eq!(section.grids.len(), 2);
         assert_eq!(section.header.animation_descriptor_indices, vec![0, 1]);
     }
@@ -448,7 +449,7 @@ mod tests {
             exterior_leaves: &exterior,
             animated_lights: &envelope,
         };
-        let section = bake_delta_sh_volumes(&inputs, 1.0).expect("expected a section");
+        let section = bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 }).expect("expected a section");
         let bytes = section.to_bytes();
         let restored = DeltaShVolumesSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);

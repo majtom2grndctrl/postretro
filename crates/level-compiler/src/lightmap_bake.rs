@@ -63,12 +63,31 @@ pub enum LightmapBakeError {
     },
 }
 
-pub struct LightmapInputs<'a> {
+pub struct LightmapBakeCtx<'a> {
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
     /// Mutable: baker writes per-vertex lightmap UVs back after atlas placement.
     pub geometry: &'a mut GeometryResult,
     pub lights: &'a StaticBakedLights<'a>,
+}
+
+/// Owned, serializable snapshot of the data the lightmap bake reads. Used for
+/// cache key derivation: postcard-serialize this + LightmapConfig to get the
+/// input hash.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct LightmapInputs {
+    /// Static-baked lights (filter: !is_dynamic && animation.is_none()).
+    pub lights: Vec<crate::map_data::MapLight>,
+    /// Geometry at the point the bake runs. Pins vertex positions, UVs, and
+    /// index data — everything that affects chart shapes and shadow queries.
+    pub geometry: crate::geometry::GeometryResult,
+}
+
+/// CLI-driven configuration for the lightmap bake. Fields are included in the
+/// cache key so adding a flag here automatically invalidates stale entries.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct LightmapConfig {
+    pub lightmap_density: f32,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
@@ -85,9 +104,10 @@ pub struct LightmapBakeOutput {
 
 /// Bake a directional lightmap. Returns a placeholder when there is nothing to bake.
 pub fn bake_lightmap(
-    inputs: &mut LightmapInputs<'_>,
-    texel_density: f32,
+    inputs: &mut LightmapBakeCtx<'_>,
+    config: &LightmapConfig,
 ) -> Result<LightmapBakeOutput, LightmapBakeError> {
+    let texel_density = config.lightmap_density;
     if inputs.geometry.geometry.vertices.is_empty() || inputs.geometry.geometry.faces.is_empty() {
         return Ok(LightmapBakeOutput {
             section: LightmapSection::placeholder(),
@@ -979,13 +999,18 @@ mod tests {
         let prims: Vec<BvhPrimitive> = Vec::new();
         let lights = vec![point_light_above()];
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let mut inputs = LightmapInputs {
+        let mut inputs = LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
         };
-        let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS)
+        let section = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
+            },
+        )
             .unwrap()
             .section;
         assert_eq!(section.width, 1);
@@ -998,13 +1023,18 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights: Vec<MapLight> = Vec::new();
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let mut inputs = LightmapInputs {
+        let mut inputs = LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
         };
-        let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS)
+        let section = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
+            },
+        )
             .unwrap()
             .section;
         assert_eq!(section.width, 1);
@@ -1017,13 +1047,18 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights = vec![point_light_above()];
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let mut inputs = LightmapInputs {
+        let mut inputs = LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
         };
-        let section = bake_lightmap(&mut inputs, 0.25).unwrap().section;
+        let section = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+            },
+        ).unwrap().section;
         assert!(section.width >= MIN_ATLAS_DIMENSION);
         assert!(section.height >= MIN_ATLAS_DIMENSION);
         assert_eq!(
@@ -1052,13 +1087,18 @@ mod tests {
         dyn_light.is_dynamic = true;
         let lights = vec![dyn_light];
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let mut inputs = LightmapInputs {
+        let mut inputs = LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
         };
-        let section = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS)
+        let section = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
+            },
+        )
             .unwrap()
             .section;
         assert_eq!(section.width, 1);
@@ -1076,13 +1116,18 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo_static).unwrap();
         let base = point_light_above();
         let static_base = StaticBakedLights::from_lights(std::slice::from_ref(&base));
-        let mut inputs = LightmapInputs {
+        let mut inputs = LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo_static,
             lights: &static_base,
         };
-        let section_static = bake_lightmap(&mut inputs, 0.25).unwrap().section;
+        let section_static = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+            },
+        ).unwrap().section;
         assert!(
             section_static.width >= MIN_ATLAS_DIMENSION,
             "non-animated static light must bake into a real atlas",
@@ -1093,13 +1138,20 @@ mod tests {
         let mut geo_dyn = unit_quad_geometry();
         let (bvh_d, prims_d, _) = build_bvh(&geo_dyn).unwrap();
         let static_dyn = StaticBakedLights::from_lights(std::slice::from_ref(&dyn_light));
-        let mut inputs_d = LightmapInputs {
+        let mut inputs_d = LightmapBakeCtx {
             bvh: &bvh_d,
             primitives: &prims_d,
             geometry: &mut geo_dyn,
             lights: &static_dyn,
         };
-        let section_dyn = bake_lightmap(&mut inputs_d, 0.25).unwrap().section;
+        let section_dyn = bake_lightmap(
+            &mut inputs_d,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+            },
+        )
+        .unwrap()
+        .section;
         assert_eq!(section_dyn.width, 1, "is_dynamic light must not bake");
 
         let mut anim_light = point_light_above();
@@ -1114,13 +1166,20 @@ mod tests {
         let mut geo_anim = unit_quad_geometry();
         let (bvh_a, prims_a, _) = build_bvh(&geo_anim).unwrap();
         let static_anim = StaticBakedLights::from_lights(std::slice::from_ref(&anim_light));
-        let mut inputs_a = LightmapInputs {
+        let mut inputs_a = LightmapBakeCtx {
             bvh: &bvh_a,
             primitives: &prims_a,
             geometry: &mut geo_anim,
             lights: &static_anim,
         };
-        let section_anim = bake_lightmap(&mut inputs_a, 0.25).unwrap().section;
+        let section_anim = bake_lightmap(
+            &mut inputs_a,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+            },
+        )
+        .unwrap()
+        .section;
         assert_eq!(
             section_anim.width, 1,
             "animated light must not contribute to the static atlas",
@@ -1131,13 +1190,20 @@ mod tests {
         let mut geo_bo = unit_quad_geometry();
         let (bvh_b, prims_b, _) = build_bvh(&geo_bo).unwrap();
         let static_bo = StaticBakedLights::from_lights(std::slice::from_ref(&bake_only_anim));
-        let mut inputs_b = LightmapInputs {
+        let mut inputs_b = LightmapBakeCtx {
             bvh: &bvh_b,
             primitives: &prims_b,
             geometry: &mut geo_bo,
             lights: &static_bo,
         };
-        let section_bo = bake_lightmap(&mut inputs_b, 0.25).unwrap().section;
+        let section_bo = bake_lightmap(
+            &mut inputs_b,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+            },
+        )
+        .unwrap()
+        .section;
         assert_eq!(
             section_bo.width, 1,
             "bake_only animated light must not contribute to the static atlas",
@@ -1176,13 +1242,18 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights = vec![point_light_above()];
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let mut inputs = LightmapInputs {
+        let mut inputs = LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
         };
-        let _ = bake_lightmap(&mut inputs, 0.25).unwrap();
+        let _ = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+            },
+        ).unwrap();
         for v in &geo.geometry.vertices {
             let uv = v.decode_lightmap_uv();
             assert!(
@@ -1322,13 +1393,18 @@ mod tests {
         };
         let lights = vec![light];
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let mut inputs = LightmapInputs {
+        let mut inputs = LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
         };
-        let section = bake_lightmap(&mut inputs, 0.25).unwrap().section;
+        let section = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+            },
+        ).unwrap().section;
 
         let mut zero_count = 0;
         for t in 0..(section.width * section.height) as usize {
@@ -1399,13 +1475,18 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights = vec![point_light_above()];
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let mut inputs = LightmapInputs {
+        let mut inputs = LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
         };
-        let result = bake_lightmap(&mut inputs, DEFAULT_TEXEL_DENSITY_METERS);
+        let result = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
+            },
+        );
         match result {
             Err(LightmapBakeError::ChartTooLarge { .. })
             | Err(LightmapBakeError::AtlasOverflow { .. }) => {}
@@ -1486,13 +1567,18 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights = vec![point_light_above()];
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let mut inputs = LightmapInputs {
+        let mut inputs = LightmapBakeCtx {
             bvh: &bvh,
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
         };
-        let _ = bake_lightmap(&mut inputs, 0.25).unwrap();
+        let _ = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+            },
+        ).unwrap();
 
         assert!(
             geo.geometry.vertices.len() > original_vertex_count,

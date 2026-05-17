@@ -46,8 +46,7 @@ stale bundle running and changes appear lost.
 - [ ] Editing a `.ts` file that `start-script.ts` imports transitively
       (direct import, or import-of-import) causes the next `run_mod_init`
       call in a debug build to recompile `start-script.js` before evaluating
-      it. Observable: the new bundle's exported behavior takes effect on the
-      next mod-init without the user touching `start-script.ts`.
+      it. Observable: the `[Scripting]` compile log line appears and `start-script.js` has an updated mtime on the next mod-init without the user touching `start-script.ts`.
 - [ ] When no `.ts` in the transitive closure has changed since
       `start-script.js` was last written, `run_mod_init` does not invoke
       `scripts-build`. Observable via absence of the `[Scripting]` compile
@@ -84,17 +83,14 @@ parsing is unnecessary), resolves each relative specifier the same way the
 bundler does (`./foo` → tries `.ts`, `.tsx`, `.js`, `.mjs`, then `<dir>/index.<ext>`),
 canonicalizes resolved paths to deduplicate, and skips bare specifiers.
 Unresolvable relative specifiers are reported in the returned value so the
-caller can decide to force-rebuild. The walker lives next to the existing
-freshness helpers in `crates/postretro/src/scripting/runtime.rs` (or a new
-sibling module if `runtime.rs` would cross the file-size yellow flag — see
-`context/lib/development_guide.md` §2.1).
+caller can decide to force-rebuild. The walker lives in a new sibling module `crates/postretro/src/scripting/import_graph.rs` — `runtime.rs` is already 2053 lines, well past the 600-line split threshold (development_guide.md §2.1).
 
 ### Task 2: Wire the walker into `compile_start_script_if_stale`
 
 Change the bundle-is-stale decision so the comparison is `js_mtime <= max(ts_mtime
 for ts in transitive_closure(start_script_ts))` instead of `js_mtime <= ts_mtime`
 for the entry alone. On any unresolved relative specifier in the closure,
-treat as stale. The single existing `<=` mtime comparison (which handles
+treat as stale. The rebuild itself runs through the existing `run_ts_compiler` call in `compile_start_script_if_stale`; any bundler failure returns `Err(String)` which `run_mod_init` maps to `ScriptError::InvalidArgument`, satisfying AC #3. The single existing `<=` mtime comparison (which handles
 same-second saves) is preserved per file.
 
 ### Task 3: Apply the same check in the startup scan
@@ -125,8 +121,7 @@ contract and their bundling (if any) is the next mod-init's concern.
 
 ## Sequencing
 
-Task 1 → Task 2 and Task 3 in parallel → Task 4 (some unit tests can land
-with Task 1).
+Task 1 → Task 2 (extract the transitive-aware staleness decision as a shared function) → Task 3 (wire that function into the startup scan) → Task 4 (some unit tests can land with Task 1).
 
 ## Rough sketch
 
@@ -141,9 +136,10 @@ affect import-statement shape, and false positives (e.g. an import string
 inside a comment) only cost extra mtime stats, never correctness.
 
 **Resolver parity:** mirror `resolve_with_extensions` from
-`crates/script-compiler/src/lib.rs` (extension order: `ts`, `tsx`, `js`,
-`mjs`; directory → `index.<ext>`). Diverging here would mean the freshness
+`crates/script-compiler/src/lib.rs` (if the path already points to an existing file, return it directly; otherwise try each extension in order: `ts`, `tsx`, `js`,
+`mjs`; then directory → `index.<ext>`). Diverging here would mean the freshness
 check and the bundler disagree about which files belong to the bundle.
+Non-relative specifiers — anything not matched by `is_relative_specifier` (bare module names, absolute paths, `node:` prefixes) — are treated as external and skipped, matching the bundler's `RelativeOnlyResolver` behavior.
 
 **Canonicalization:** canonicalize each resolved path before insertion into
 the visited set so symlinks and `./a/../b`-style specifiers deduplicate
@@ -152,8 +148,7 @@ correctly. Matches the bundler's `std::fs::canonicalize` step.
 **Failure modes:**
 - Read error on a file in the closure → log a warning, treat as stale
   (rebuild surfaces the underlying error consistently through the bundler).
-- Walker can't read `start-script.ts` itself → fall through to the existing
-  error path in `compile_start_script_if_stale` (stat failure on the entry).
+- Walker can't read `start-script.ts` itself → the stat of the entry at the top of `compile_start_script_if_stale` already returns `Err` before the walker is invoked; walker entry-read failure is therefore unreachable.
 
 ## Open questions
 

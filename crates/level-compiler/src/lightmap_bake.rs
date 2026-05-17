@@ -1,5 +1,4 @@
 // Directional lightmap baker.
-// See: context/plans/ready/lighting-lightmaps/index.md
 
 use std::collections::HashSet;
 
@@ -78,7 +77,7 @@ pub struct LightmapBakeCtx<'a> {
 /// Owned, serializable snapshot of the data the lightmap bake reads. Used for
 /// cache key derivation: postcard-serialize this + LightmapConfig to get the
 /// input hash.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize)]
 pub struct LightmapInputs {
     /// Static-baked lights (filter: !is_dynamic && animation.is_none()).
     pub lights: Vec<crate::map_data::MapLight>,
@@ -89,7 +88,7 @@ pub struct LightmapInputs {
 
 /// CLI-driven configuration for the lightmap bake. Fields are included in the
 /// cache key so adding a flag here automatically invalidates stale entries.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize)]
 pub struct LightmapConfig {
     pub lightmap_density: f32,
 }
@@ -124,9 +123,10 @@ pub struct PreparedAtlas {
 ///
 /// Called both before a fresh bake (cache miss) and on cache hit to
 /// reconstruct charts/placements and re-apply lightmap UVs. The mutations
-/// applied here — vertex splitting and lightmap UV writes — are required by
-/// downstream stages, so they run unconditionally even when the per-texel
-/// bake is skipped.
+/// applied here — vertex splitting and lightmap UV writes — run on all
+/// non-empty geometry, regardless of whether a full per-texel bake is
+/// needed. Empty geometry returns a placeholder immediately without running
+/// any mutations.
 pub fn prepare_atlas(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,

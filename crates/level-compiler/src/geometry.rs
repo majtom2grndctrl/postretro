@@ -24,7 +24,7 @@ pub struct FaceIndexRange {
 
 /// Result of geometry extraction: geometry section, texture name table, and
 /// the per-face index ranges used downstream by the BVH builder.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct GeometryResult {
     pub geometry: GeometrySection,
     pub texture_names: TextureNamesSection,

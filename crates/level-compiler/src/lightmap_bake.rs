@@ -19,6 +19,10 @@ use crate::map_data::{FalloffModel, LightType, MapLight};
 /// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 
+/// Bump this when the lightmap baking algorithm changes. Invalidates all
+/// existing cache entries for this stage.
+pub const STAGE_VERSION: u32 = 1;
+
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
 const MIN_ATLAS_DIMENSION: u32 = 64;
 
@@ -102,15 +106,34 @@ pub struct LightmapBakeOutput {
     pub atlas_height: u32,
 }
 
-/// Bake a directional lightmap. Returns a placeholder when there is nothing to bake.
-pub fn bake_lightmap(
-    inputs: &mut LightmapBakeCtx<'_>,
-    config: &LightmapConfig,
-) -> Result<LightmapBakeOutput, LightmapBakeError> {
-    let texel_density = config.lightmap_density;
-    if inputs.geometry.geometry.vertices.is_empty() || inputs.geometry.geometry.faces.is_empty() {
-        return Ok(LightmapBakeOutput {
-            section: LightmapSection::placeholder(),
+/// Cheap pre-bake setup: chart planning, shelf packing, and writing lightmap
+/// UVs back into the geometry. Returned by [`prepare_atlas`] and consumed both
+/// by a fresh bake (cache miss) and by the cache-hit path that rebuilds
+/// charts/placements without re-running the per-texel ray casting.
+#[derive(Debug)]
+pub struct PreparedAtlas {
+    pub charts: Vec<Chart>,
+    pub placements: Vec<ChartPlacement>,
+    pub atlas_width: u32,
+    pub atlas_height: u32,
+}
+
+/// Prepare atlas charts and assign lightmap UVs into geometry. Runs
+/// `split_shared_vertices`, `plan_charts`, `shelf_pack`, and
+/// `assign_lightmap_uvs`. Does NOT run the per-texel ray casting.
+///
+/// Called both before a fresh bake (cache miss) and on cache hit to
+/// reconstruct charts/placements and re-apply lightmap UVs. The mutations
+/// applied here — vertex splitting and lightmap UV writes — are required by
+/// downstream stages, so they run unconditionally even when the per-texel
+/// bake is skipped.
+pub fn prepare_atlas(
+    geom: &mut GeometryResult,
+    static_lights: &StaticBakedLights<'_>,
+    texel_density: f32,
+) -> Result<PreparedAtlas, LightmapBakeError> {
+    if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
+        return Ok(PreparedAtlas {
             charts: Vec::new(),
             placements: Vec::new(),
             atlas_width: 1,
@@ -118,17 +141,17 @@ pub fn bake_lightmap(
         });
     }
 
-    let static_lights: Vec<&MapLight> = inputs.lights.entries().iter().map(|e| e.light).collect();
     if static_lights.is_empty() {
         // Plan charts anyway — the animated-light-chunks builder needs per-face UV bounds and
-        // placements even when no static lights exist.
-        let charts = plan_charts(inputs.geometry, texel_density);
+        // placements even when no static lights exist. Vertex splitting and UV assignment are
+        // skipped because the empty bake path returns a placeholder section that no atlas
+        // sampling consumes.
+        let charts = plan_charts(geom, texel_density);
         let (atlas_w, atlas_h, placements) = match shelf_pack(&charts, texel_density) {
             Ok(p) => p,
             Err(_) => (1, 1, Vec::new()),
         };
-        return Ok(LightmapBakeOutput {
-            section: LightmapSection::placeholder(),
+        return Ok(PreparedAtlas {
             charts,
             placements,
             atlas_width: atlas_w,
@@ -137,9 +160,9 @@ pub fn bake_lightmap(
     }
 
     // Ensure no vertex index is shared across faces — each face must own its own lightmap UV slot.
-    split_shared_vertices(inputs.geometry);
+    split_shared_vertices(geom);
 
-    let charts = plan_charts(inputs.geometry, texel_density);
+    let charts = plan_charts(geom, texel_density);
 
     for (face_index, chart) in charts.iter().enumerate() {
         if chart.width_texels > MAX_ATLAS_DIMENSION || chart.height_texels > MAX_ATLAS_DIMENSION {
@@ -157,8 +180,7 @@ pub fn bake_lightmap(
 
     let (atlas_w, atlas_h, placements) = shelf_pack(&charts, texel_density)?;
     if placements.is_empty() {
-        return Ok(LightmapBakeOutput {
-            section: LightmapSection::placeholder(),
+        return Ok(PreparedAtlas {
             charts,
             placements,
             atlas_width: atlas_w,
@@ -166,7 +188,56 @@ pub fn bake_lightmap(
         });
     }
 
-    assign_lightmap_uvs(inputs.geometry, &charts, &placements, atlas_w, atlas_h);
+    assign_lightmap_uvs(geom, &charts, &placements, atlas_w, atlas_h);
+
+    Ok(PreparedAtlas {
+        charts,
+        placements,
+        atlas_width: atlas_w,
+        atlas_height: atlas_h,
+    })
+}
+
+/// Bake a directional lightmap. Returns a placeholder when there is nothing to bake.
+pub fn bake_lightmap(
+    inputs: &mut LightmapBakeCtx<'_>,
+    config: &LightmapConfig,
+) -> Result<LightmapBakeOutput, LightmapBakeError> {
+    let texel_density = config.lightmap_density;
+
+    // Short-circuit on empty geometry: nothing for the atlas prep to do and the per-texel pass
+    // would allocate zero-sized buffers.
+    if inputs.geometry.geometry.vertices.is_empty() || inputs.geometry.geometry.faces.is_empty() {
+        return Ok(LightmapBakeOutput {
+            section: LightmapSection::placeholder(),
+            charts: Vec::new(),
+            placements: Vec::new(),
+            atlas_width: 1,
+            atlas_height: 1,
+        });
+    }
+
+    let static_lights_empty = inputs.lights.is_empty();
+    let prepared = prepare_atlas(inputs.geometry, inputs.lights, texel_density)?;
+
+    // No static lights, or atlas prep produced no placements → emit a placeholder section but
+    // return the planned charts/placements so downstream animated-light passes still have
+    // per-face UV bounds.
+    if static_lights_empty || prepared.placements.is_empty() {
+        return Ok(LightmapBakeOutput {
+            section: LightmapSection::placeholder(),
+            charts: prepared.charts,
+            placements: prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        });
+    }
+
+    let static_lights: Vec<&MapLight> = inputs.lights.entries().iter().map(|e| e.light).collect();
+    let charts = prepared.charts;
+    let placements = prepared.placements;
+    let atlas_w = prepared.atlas_width;
+    let atlas_h = prepared.atlas_height;
 
     let mut irradiance = vec![0f32; (atlas_w * atlas_h * 4) as usize];
     let mut direction = vec![Vec3::Y; (atlas_w * atlas_h) as usize];

@@ -36,17 +36,17 @@ This plan also lays the substrate (deterministic stage outputs, serializable int
 
 ## Acceptance criteria
 
-- [ ] Building a `.map` twice with no changes between builds: second build skips the lightmap and SH volume stages (verified via build progress log) and produces a `.prl` byte-identical to the first.
-- [ ] Editing an entity property that no cached stage's input includes (e.g., `worldspawn.fog_pixel_scale`): second build skips both lightmap and SH volume; output PRL differs only in the entity-derived sections.
-- [ ] Moving one light: second build re-bakes both lightmap and SH volume (cache miss); output differs in lighting sections.
-- [ ] `--no-cache` flag: cache is neither read nor written; build behaves as if cache directory is empty; no `.prl-cache/` is created or modified.
-- [ ] `--cache-dir <path>` flag: cache reads and writes are confined to the supplied path.
-- [ ] Bumping a stage's version constant in source invalidates only that stage's entries on the next build (verified by inspecting which entries the next build writes).
-- [ ] Two clean builds of every fixture in `content/dev/maps/` produce byte-identical cache entries for every cached stage. (Determinism gate.)
-- [ ] Cache directory is safe to delete at any time; the next build succeeds and rebuilds all entries.
-- [ ] A corrupted or truncated cache entry is detected (length or hash mismatch), discarded with a warning, and the stage re-runs.
-- [ ] `context/lib/build_pipeline.md` documents the cache: where it lives, how keys are derived, when to bump a stage version, the determinism invariant.
-- [ ] `.prl-cache/` and compiled `.prl` artifacts are listed in the workspace `.gitignore`.
+- [x] Building a `.map` twice with no changes between builds: second build skips the lightmap and SH volume stages (verified via build progress log) and produces a `.prl` byte-identical to the first.
+- [x] Editing an entity property that no cached stage's input includes (e.g., `worldspawn.fog_pixel_scale`): second build skips both lightmap and SH volume; output PRL differs only in the entity-derived sections.
+- [x] Moving one light: second build re-bakes both lightmap and SH volume (cache miss); output differs in lighting sections.
+- [x] `--no-cache` flag: cache is neither read nor written; build behaves as if cache directory is empty; no `.prl-cache/` is created or modified.
+- [x] `--cache-dir <path>` flag: cache reads and writes are confined to the supplied path.
+- [x] Bumping a stage's version constant in source invalidates only that stage's entries on the next build (verified by inspecting which entries the next build writes).
+- [x] Two clean builds of every fixture in `content/dev/maps/` produce byte-identical cache entries for every cached stage. (Determinism gate.)
+- [x] Cache directory is safe to delete at any time; the next build succeeds and rebuilds all entries.
+- [x] A corrupted or truncated cache entry is detected (length or hash mismatch), discarded with a warning, and the stage re-runs.
+- [x] `context/lib/build_pipeline.md` documents the cache: where it lives, how keys are derived, when to bump a stage version, the determinism invariant.
+- [x] `.prl-cache/` and compiled `.prl` artifacts are listed in the workspace `.gitignore`.
 
 ## Tasks
 

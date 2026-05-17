@@ -1375,4 +1375,112 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn lightmap_cache_hit_returns_byte_identical_section() {
+        let dir = fresh_cache_dir("lm_real_bake");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let geo = minimal_geometry();
+        let (bvh, prims, _) = bvh_build::build_bvh(&geo).expect("bvh build must succeed");
+        let light = baseline_point_light();
+        let static_lights = light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+
+        let inputs = LightmapInputs {
+            lights: vec![baseline_point_light()],
+            geometry: minimal_geometry(),
+        };
+        let config = LightmapConfig {
+            lightmap_density: 0.25,
+        };
+        let hash = lightmap_input_hash(&inputs, &config);
+        let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);
+
+        let mut geo_for_bake = minimal_geometry();
+        let mut ctx = lightmap_bake::LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &mut geo_for_bake,
+            lights: &static_lights,
+        };
+        let output = lightmap_bake::bake_lightmap(&mut ctx, &config).expect("bake must succeed");
+
+        let baked_bytes = output.section.to_bytes();
+        cache.put(&key, &baked_bytes);
+
+        let loaded_bytes = cache.get(&key).expect("cache must hit after put");
+        let section = postretro_level_format::lightmap::LightmapSection::from_bytes(&loaded_bytes)
+            .expect("deserialization must succeed");
+        let round_tripped = section.to_bytes();
+        assert_eq!(
+            baked_bytes, round_tripped,
+            "cache round-trip must be byte-identical"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sh_volume_cache_hit_returns_byte_identical_section() {
+        use crate::partition::{Aabb, BspLeaf, BspTree};
+        use std::collections::HashSet;
+
+        let dir = fresh_cache_dir("sh_real_bake");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let geo = minimal_geometry();
+        let (bvh, prims, _) = bvh_build::build_bvh(&geo).expect("bvh build must succeed");
+        let light = baseline_point_light();
+        let static_lights = light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+        let animated_lights = light_namespaces::AnimatedBakedLights::from_lights(&[]);
+
+        let tree = BspTree {
+            nodes: Vec::new(),
+            leaves: vec![BspLeaf {
+                face_indices: Vec::new(),
+                bounds: Aabb {
+                    min: DVec3::splat(-1000.0),
+                    max: DVec3::splat(1000.0),
+                },
+                is_solid: false,
+                defining_planes: Vec::new(),
+            }],
+        };
+
+        let inputs = ShInputs {
+            static_lights: vec![baseline_point_light()],
+            animated_lights: Vec::new(),
+            geometry: minimal_geometry(),
+            exterior_leaves: Vec::new(),
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+        let hash = sh_input_hash(&inputs, &config);
+        let key = CacheKey::new("sh_volume", sh_bake::STAGE_VERSION, &hash);
+
+        let exterior: HashSet<usize> = HashSet::new();
+        let ctx = sh_bake::ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+        };
+        let section = sh_bake::bake_sh_volume(&ctx, &config);
+
+        let baked_bytes = section.to_bytes();
+        cache.put(&key, &baked_bytes);
+
+        let loaded_bytes = cache.get(&key).expect("cache must hit after put");
+        let section2 = postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&loaded_bytes)
+            .expect("deserialization must succeed");
+        let round_tripped = section2.to_bytes();
+        assert_eq!(
+            baked_bytes, round_tripped,
+            "sh volume cache round-trip must be byte-identical"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

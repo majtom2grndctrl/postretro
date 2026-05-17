@@ -2,164 +2,86 @@
 
 ## Goal
 
-`start-script.js` must be rebuilt when any `.ts` file it transitively imports
-is edited — not only when `start-script.ts` itself changes. Today the mod-init
-freshness check only compares `start-script.ts` vs `start-script.js` mtimes,
-so editing a bundled import (e.g. `content/dev/scripts/player.ts`) leaves the
-stale bundle running and changes appear lost.
+`start-script.js` must be rebuilt when any file it transitively imports changes.
+The current mtime check compares only `start-script.ts` vs `start-script.js` —
+editing a bundled import (e.g. `scripts/player.ts`) leaves the stale bundle running.
+
+Fix: in debug builds, always rebuild `start-script.js` before evaluating it.
+`swc_bundler` already re-bundles from scratch on every invocation; removing the
+mtime gate makes the freshness model accurate without adding parsing complexity.
 
 ## Scope
 
 ### In scope
 
-- Expand the mod-init staleness check so a `start-script.js` that is older
-  than any of its transitive `.ts`/`.tsx`/`.js`/`.mjs` imports counts as stale
-  and is rebuilt before `setupMod` runs.
-- Cover both the cold-path entry from `run_mod_init` and the recursive
-  startup TS scan (`compile_stale_scripts`) so the two paths produce
-  consistent results.
-- Apply to debug builds only — the freshness check is already gated on
-  `cfg(debug_assertions)`; release builds ship a pre-built `start-script.js`.
-- Treat unresolved relative imports (file moved/deleted) as a force-rebuild
-  signal so a broken bundle surfaces as a compile error rather than a silent
-  stale run.
-- Bare specifiers (e.g. `"postretro"`) are external by definition and
-  contribute nothing to the freshness comparison.
+- Remove the mtime gate on the mod-root bundle entry in debug builds.
+  `run_mod_init` always invokes `scripts-build` before evaluating
+  `start-script.js` when `start-script.ts` is present.
+- Apply the same policy in the startup scan: mod-root bundle entry is always
+  rebuilt, not conditionally.
+- Nested `.ts` files under `script_root` keep their per-file mtime check —
+  those are individual compilation targets, not bundle entries.
 
 ### Out of scope
 
-- Watching transitive imports at runtime via the FS watcher (the watcher
-  already classifies any mod-root `.ts` edit as `ModInit`; nested edits under
-  `scripts/` already trigger `Scripts`, and the mod-init re-run path runs the
-  same freshness check this plan fixes).
-- Persisting an import graph across runs (the graph is rebuilt each scan).
-- Hot-reload of definition scripts inside a running VM (not implemented;
-  unrelated).
-- Adding a `--list-files` mode to `scripts-build` (see *Rough sketch* for why
-  parsing in-engine is preferred for this iteration).
-- Bundler-level incremental builds (`swc_bundler` re-bundles the whole entry
-  every time; this plan only changes when we *decide* to rebuild).
-- Extending the freshness model to `.luau` `require` graphs.
+- Release builds: unchanged. Pre-compiled `start-script.js` is required;
+  no `scripts-build` invocation.
+- Transitive import graph parsing in the engine.
+- Bundler-level incremental compilation.
+- Extending this policy to `.luau` `require` graphs.
 
 ## Acceptance criteria
 
-- [ ] Editing a `.ts` file that `start-script.ts` imports transitively
-      (direct import, or import-of-import) causes the next `run_mod_init`
-      call in a debug build to recompile `start-script.js` before evaluating
-      it. Observable: the `[Scripting]` compile log line appears and `start-script.js` has an updated mtime on the next mod-init without the user touching `start-script.ts`.
-- [ ] When no `.ts` in the transitive closure has changed since
-      `start-script.js` was last written, `run_mod_init` does not invoke
-      `scripts-build`. Observable via absence of the `[Scripting]` compile
-      log line and unchanged `start-script.js` mtime.
-- [ ] When a relative import named in any reachable `.ts` cannot be resolved
-      from disk (file deleted or renamed), the freshness check treats the
-      bundle as stale and rebuilds, surfacing the bundler's error through
-      the existing `ScriptError::InvalidArgument` path returned from
-      `run_mod_init`.
-- [ ] The startup recursive scan (currently `scan_and_compile_stale_ts`
-      under `mod_root` shallow + `script_root` recursive) accounts for
-      transitive imports when deciding whether `start-script.js` is stale,
-      so a single `compile_stale_scripts` pass leaves no stale mod-root
-      bundle behind.
-- [ ] Bare-specifier imports (e.g. `import { defineEntity } from "postretro"`)
-      are ignored by the freshness check — their presence neither triggers
-      a rebuild nor causes a resolution error.
-- [ ] Release builds (`cfg(not(debug_assertions))`) are unchanged: no scan,
-      no bundler invocation, no new dependencies on the script-compiler
-      crate in the release engine binary.
-- [ ] A cycle in the import graph (`a.ts` imports `b.ts` imports `a.ts`)
-      does not hang or stack-overflow the freshness check; each file is
-      visited at most once per scan.
+- [ ] Editing any `.ts` file that `start-script.ts` imports (directly or
+      transitively) causes the next `run_mod_init` in a debug build to
+      recompile `start-script.js`. Observable: `[Scripting]` compile log line
+      appears and `start-script.js` has an updated mtime.
+- [ ] `run_mod_init` rebuilds the bundle even when `start-script.ts` and all
+      its imports are unchanged. Correctness over rebuild-skip — this is the
+      intended tradeoff at current mod scale.
+- [ ] `scripts-build` not found: same error behavior as today.
+- [ ] The startup scan rebuilds the mod-root bundle entry unconditionally.
+      A single `compile_stale_scripts` call leaves no stale `start-script.js`
+      behind.
+- [ ] Nested `.ts` files under `script_root` still use the per-file mtime
+      check. No change to their compilation behavior.
+- [ ] Release builds (`cfg(not(debug_assertions))`) are unchanged.
 
 ## Tasks
 
-### Task 1: Transitive import walker
+### Task 1: Remove the mtime gate from `compile_start_script_if_stale`
 
-Build a debug-only helper that, given an entry `.ts` path, returns the set
-of on-disk files reachable through relative imports. The walker parses each
-file's `import`/`export` declarations with a lightweight scan (regex or a
-hand-rolled tokenizer over the import-statement prefix is sufficient — full
-parsing is unnecessary), resolves each relative specifier the same way the
-bundler does (`./foo` → tries `.ts`, `.tsx`, `.js`, `.mjs`, then `<dir>/index.<ext>`),
-canonicalizes resolved paths to deduplicate, and skips bare specifiers.
-Unresolvable relative specifiers are reported in the returned value so the
-caller can decide to force-rebuild. The walker lives in a new sibling module `crates/postretro/src/scripting/import_graph.rs` — `runtime.rs` is already 2053 lines, well past the 600-line split threshold (development_guide.md §2.1).
+The function currently compares `js_mtime <= ts_mtime` and returns early if
+the `.js` is fresh. Remove that check — always invoke `scripts-build` when
+`start-script.ts` is present. Rename the function to reflect the unconditional
+behavior (it is no longer a staleness check).
 
-### Task 2: Wire the walker into `compile_start_script_if_stale`
+### Task 2: Apply the same policy in the startup scan
 
-Change the bundle-is-stale decision so the comparison is `js_mtime <= max(ts_mtime
-for ts in transitive_closure(start_script_ts))` instead of `js_mtime <= ts_mtime`
-for the entry alone. On any unresolved relative specifier in the closure,
-treat as stale. The rebuild itself runs through the existing `run_ts_compiler` call in `compile_start_script_if_stale`; any bundler failure returns `Err(String)` which `run_mod_init` maps to `ScriptError::InvalidArgument`, satisfying AC #3. The single existing `<=` mtime comparison (which handles
-same-second saves) is preserved per file.
+`visit_ts_files_shallow` calls `compile_one_if_stale` for each `.ts` it finds
+in the mod root. For the mod-root bundle entry, drop the mtime guard and always
+compile. Files under `script_root` (the recursive walk) are unchanged.
 
-### Task 3: Apply the same check in the startup scan
+### Task 3: Update tests
 
-`scan_and_compile_stale_ts` calls `compile_one_if_stale` for each `.ts` it
-finds. For the specific case of the mod-root entry (`start-script.ts`), it
-must use the transitive-aware decision from Task 2 rather than the per-file
-sibling comparison. Nested `.ts` files under `script_root` keep their
-per-file sibling check — those are leaf compilation targets in the existing
-contract and their bundling (if any) is the next mod-init's concern.
-
-### Task 4: Tests
-
-- Unit test: walker returns the entry plus every reachable relative file;
-  bare specifiers excluded; cycles terminate.
-- Unit test: walker reports unresolved relative specifiers.
-- Integration test (debug-only, mirrors existing
-  `compile_stale_scripts_recompiles_ts_with_stale_js_sibling` style): write
-  `start-script.ts` importing `./helper.ts`, build the `.js`, backdate
-  `start-script.js` so it is older than `helper.ts`, run the freshness
-  check, assert `scripts-build` ran and `start-script.js` was rewritten.
-- Integration test: edit only the deeper grandchild (`a.ts` imports `b.ts`
-  imports `c.ts`; touch `c.ts`); assert rebuild fires.
-- Integration test: no edits → no rebuild.
-- Integration test: missing relative import forces a rebuild attempt; the
-  resulting bundler error propagates through `run_mod_init` as
-  `ScriptError::InvalidArgument`.
+- `compile_stale_scripts_skips_fresh_ts_files` and
+  `visit_ts_files_shallow_skips_nested_directories` exercise the shallow path.
+  Audit which assertions become wrong under always-rebuild and update them.
+- Integration test: write `start-script.ts` importing `./helper.ts`, build the
+  bundle, modify only `helper.ts`, call `run_mod_init`, assert `start-script.js`
+  was rewritten.
+- Integration test: `scripts-build` absent → error surfaces through
+  `run_mod_init` as `ScriptError::InvalidArgument`.
 
 ## Sequencing
 
-Task 1 → Task 2 (extract the transitive-aware staleness decision as a shared function) → Task 3 (wire that function into the startup scan) → Task 4 (some unit tests can land with Task 1).
+Task 1 and Task 2 in parallel → Task 3.
 
-## Rough sketch
+## Future path
 
-**Why parse in-engine instead of adding a `--list-files` mode to
-`scripts-build`:** the sidecar already does the full bundle pipeline
-(parse + resolve + strip + emit) in one shot, and a second sidecar
-invocation per mod-init just to learn the import graph doubles the cost of
-the steady-state "nothing changed" path. An in-engine scan with a small
-regex over `^\s*(import|export)\b.*from\s*["']([^"']+)["']` and
-`^\s*import\s*["']([^"']+)["']` is enough: TS-specific syntax does not
-affect import-statement shape, and false positives (e.g. an import string
-inside a comment) only cost extra mtime stats, never correctness.
-
-**Resolver parity:** mirror `resolve_with_extensions` from
-`crates/script-compiler/src/lib.rs` (if the path already points to an existing file, return it directly; otherwise try each extension in order: `ts`, `tsx`, `js`,
-`mjs`; then directory → `index.<ext>`). Diverging here would mean the freshness
-check and the bundler disagree about which files belong to the bundle.
-Non-relative specifiers — anything not matched by `is_relative_specifier` (bare module names, absolute paths, `node:` prefixes) — are treated as external and skipped, matching the bundler's `RelativeOnlyResolver` behavior.
-
-**Canonicalization:** canonicalize each resolved path before insertion into
-the visited set so symlinks and `./a/../b`-style specifiers deduplicate
-correctly. Matches the bundler's `std::fs::canonicalize` step.
-
-**Failure modes:**
-- Read error on a file in the closure → log a warning, treat as stale
-  (rebuild surfaces the underlying error consistently through the bundler).
-- Walker can't read `start-script.ts` itself → the stat of the entry at the top of `compile_start_script_if_stale` already returns `Err` before the walker is invoked; walker entry-read failure is therefore unreachable.
-
-## Open questions
-
-- Should the walker also follow `.js` and `.mjs` imports (the bundler does)?
-  Recommendation: yes — the resolver already lists those extensions, so a
-  hand-written `start-script.ts → ./vendor.js` import would otherwise miss
-  updates. Confirm with project owner before implementation if there is a
-  reason to restrict to `.ts` only.
-- Is there value in caching the resolved import graph between calls within
-  a single process lifetime? The frame-loop re-runs `run_mod_init` on
-  every `ReloadKind::ModInit` event. A per-process cache keyed on entry
-  mtime would skip re-parsing when nothing changed, but the simpler
-  always-rescan path is fine for now — file counts are small (single
-  digits in the dev mod). Defer until profiling shows it matters.
+When mod scripts grow large enough that always-rebuilding causes noticeable
+latency, switch to a deps manifest: `scripts-build` writes `start-script.js.deps`
+alongside the `.js` on every successful build (one resolved input path per line).
+The freshness check reads the manifest, stats each listed file, and rebuilds only
+when any input is newer than the `.js`. Same staleness contract; exact import
+graph from the bundler itself; no in-engine parsing.

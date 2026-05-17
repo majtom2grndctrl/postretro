@@ -33,7 +33,7 @@ export type {
   SetFogScatterStep,
   SetLightAnimationStep,
 } from "./data_script";
-export { registerReaction } from "./data_script";
+export { defineReaction, defineEntity } from "./data_script";
 
 export type {
   BillboardEmitter,

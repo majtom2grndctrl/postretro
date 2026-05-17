@@ -109,7 +109,7 @@ pub enum FalloffModel {
     InverseSquared,
 }
 
-/// From PRL section 18. FGD-authored; script-registered lights arrive via `registerEntity`.
+/// From PRL section 18. FGD-authored; script-registered entity types arrive via `setupMod()`'s `entities` return field, drained into `DataRegistry` at boot.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapLight {
     pub origin: [f64; 3],

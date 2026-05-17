@@ -54,7 +54,7 @@ The domain folder structure, the fixed `start-script` entry, and the `mods/` dir
 | Level script | Definition (one-shot) | Runs once at level load | Auto-discovered: `levels/<name>/<name>.{ts,luau}` |
 | UI definition script | Declarative (no VM at runtime) | Parsed once; rendered from data | **Open** — format and load point unspecified |
 
-Start scripts and domain scripts call `registerEntity` (writes to engine-global `DataRegistry`). Level scripts call `registerLevelManifest` (per-level reactions). See `scripting.md` §2.
+Start scripts and domain scripts declare entity types as `entities` on the `setupMod()` return value; the engine boot caller drains them into the engine-global `DataRegistry` after `run_mod_init` returns. Level scripts export `setupLevel(ctx)`, which returns per-level reactions; those land in the per-level reaction registry. See `scripting.md` §2.
 
 ---
 
@@ -71,7 +71,7 @@ Start scripts and domain scripts call `registerEntity` (writes to engine-global 
 | 6 | Level load (see §4) | Engine | partial today |
 | 7 | First game tick: Input → Game logic → Audio → Render → Present | Engine | today |
 
-**Open (D2):** how scripts declare tick order across mods. Leading candidate: `updatePriority` field on `registerEntity`.
+**Open (D2):** how scripts declare tick order across mods.
 **Open (D3):** whether `data/` is a single entry file or a lexicographic multi-file scan.
 **Open:** mod manifest format (name, version, dependencies, UI contributions). Required by phase 1.
 **Open:** UI system — declarative format, where definitions live (per-mod `ui/` folder?), and how the renderer consumes them.
@@ -88,7 +88,7 @@ Today:
 | 2 | Geometry and texture upload to GPU |
 | 3 | Spatial subsystems initialized from level data (fog volumes, collision regions resolved against BSP leaves) |
 | 4 | Built-in classname dispatch (hardcoded engine entities — player_start, billboard_emitter, lights, etc.) |
-| 5 | Level script runs in definition-only VM; calls `registerEntity` → engine-global `DataRegistry`; calls `registerLevelManifest` → per-level reaction registry |
+| 5 | Level script runs in a short-lived VM; `setupLevel(ctx)` returns `{reactions}` → per-level reaction registry. Entity types are engine-global and arrive via `setupMod`, not here. |
 | 6 | Entity spawn sweep: match map entity list against `DataRegistry`, spawn |
 | 7 | `levelLoad` event fired |
 
@@ -104,7 +104,7 @@ Planned change: stage 5 level script sourced from `levels/<name>/<name>.{ts,luau
 |-------|-----------|
 | Engine init (preludes, primitive registry) | Process exit |
 | Mod init state (start-script effects) | Mod unload / engine restart (planned) |
-| `DataRegistry` (entity-type descriptors from `registerEntity`) | Engine-global; survives level unload. Cleared on full reload of mod set. |
+| `DataRegistry` (entity-type descriptors from `setupMod` return) | Engine-global; survives level unload. Cleared on full reload of mod set. |
 | Per-level reaction registry | Level unload |
 
 Hot reload (debug only) triggers recompilation of changed script files; definition-context changes require an engine restart.

@@ -23,7 +23,7 @@ export type LightDescriptor = {
   is_dynamic: boolean,
 }
 
---- Argument shape for `registerEntity`. `components` is an optional sub-object carrying typed component presets.
+--- Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.
 export type EntityTypeDescriptor = {
   --- FGD classname this descriptor binds to.
   classname: string,
@@ -168,6 +168,8 @@ export type FallParams = {
 export type ModManifest = {
   --- Human-readable mod name. Required.
   name: string,
+  --- Engine-global entity-type registrations. Survive level unload.
+  entities?: {EntityTypeDescriptor},
 }
 
 export type LightKind = "Point" | "Spot" | "Directional"
@@ -249,9 +251,6 @@ declare function entityExists(id: EntityId): boolean
 
 --- Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in definition and data contexts.
 declare function getEntityProperty(id: EntityId, key: string): string?
-
---- Register an entity type with optional component presets. Definition context only. Survives level unload.
-declare function registerEntity(descriptor: EntityTypeDescriptor): ()
 
 --- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Definition context.
 declare function setLightAnimation(id: EntityId, animation: LightAnimation | null): ()
@@ -365,7 +364,7 @@ declare function sequence(keyframes: {Keyframe}): {Keyframe}
 
 -- ---------------------------------------------------------------------------
 -- Data script vocabulary — pure descriptor builders consumed by the engine
--- when `registerLevelManifest` returns. See: context/lib/scripting.md §2.
+-- when `setupLevel` returns. See: context/lib/scripting.md §2.
 
 --- Progress-subscription reaction body: fires `fire` when entities tagged
 --- `tag` cross kill ratio `at` (0.0–1.0).
@@ -452,7 +451,7 @@ export type SequenceReactionDescriptor = {
   sequence: {SequenceStep},
 }
 
---- Descriptor produced by `registerReaction`. The `name` field is merged
+--- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
 export type ProgressNamedReactionDescriptor = { name: string, progress: { tag: string, at: number, fire: string } }
@@ -460,14 +459,18 @@ export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string
 export type SequenceNamedReactionDescriptor = { name: string, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 
---- Bundle returned from `registerLevelManifest`. The engine deserializes
+--- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
 }
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
-declare function registerReaction(
+declare function defineReaction(
   name: string,
   descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor
 ): NamedReactionDescriptor
+
+--- Pure identity builder for entity-type descriptors. Returns the
+--- descriptor as-is; its sole purpose is a typed construction site.
+declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor

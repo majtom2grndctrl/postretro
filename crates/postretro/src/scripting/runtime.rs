@@ -6,12 +6,14 @@ use std::path::Path;
 
 use postretro_level_format::data_script::DataScriptSection;
 use rquickjs::{
-    CatchResultExt, Context as JsContext, Function as JsFunction, Object as JsObject,
-    Value as JsValue,
+    Array as JsArray, CatchResultExt, Context as JsContext, Function as JsFunction,
+    Object as JsObject, Value as JsValue,
 };
 
 use super::ctx::ScriptCtx;
-use super::data_descriptors::LevelManifest;
+use super::data_descriptors::{
+    EntityTypeDescriptor, LevelManifest, entity_descriptor_from_js, entity_descriptor_from_lua,
+};
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use super::primitives_registry::{PrimitiveRegistry, ScriptPrimitive};
@@ -21,9 +23,13 @@ use super::typedef;
 
 /// Validated `setupMod()` return value. Construct via
 /// [`ScriptRuntime::run_mod_init`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ModManifestResult {
     pub(crate) name: String,
+    /// Entity-type descriptors returned by `setupMod()`. Empty when the
+    /// returned object omits the `entities` field. Drained into `DataRegistry`
+    /// by the boot caller after `run_mod_init` returns.
+    pub(crate) entities: Vec<EntityTypeDescriptor>,
 }
 
 /// Aggregated reload signal returned by
@@ -174,8 +180,10 @@ impl ScriptRuntime {
 
     /// Evaluate a level's data script in a short-lived VM context and return
     /// the resulting `LevelManifest`. Errors are logged and converted to an
-    /// empty manifest — the level loads with empty registries rather than
-    /// failing.
+    /// empty manifest — the level loads with an empty reaction registry
+    /// (per-level reactions are absent) rather than failing. The engine-global
+    /// entity-type registry, populated at mod-init from `setupMod()`'s
+    /// `entities` return field, is unaffected.
     ///
     /// `mod_root` is forwarded to the Luau VM so `require("./shared/loot")`
     /// inside data scripts resolves against the mod root, matching the
@@ -357,6 +365,14 @@ impl ScriptRuntime {
         self.mod_manifest.as_ref()
     }
 
+    /// Mutable accessor for the stored manifest. Used by the boot caller to
+    /// drain `entities` into `DataRegistry` after a successful
+    /// [`ScriptRuntime::run_mod_init`] — the runtime parses and returns; the
+    /// caller owns registry lifecycle. See: context/lib/boot_sequence.md §3.
+    pub(crate) fn mod_manifest_mut(&mut self) -> Option<&mut ModManifestResult> {
+        self.mod_manifest.as_mut()
+    }
+
     /// Read `path` from disk and run it in the appropriate subsystem, chosen
     /// by extension:
     ///
@@ -444,13 +460,11 @@ fn run_data_script_quickjs(
         }
 
         let globals = ctx.globals();
-        let func: JsFunction = match globals.get("registerLevelManifest") {
+        let func: JsFunction = match globals.get("setupLevel") {
             Ok(f) => f,
             Err(e) => {
                 manifest_out = Err(ScriptError::InvalidArgument {
-                    reason: format!(
-                        "data script `{source_path}` did not export `registerLevelManifest`: {e}"
-                    ),
+                    reason: format!("data script `{source_path}` did not export `setupLevel`: {e}"),
                 });
                 return;
             }
@@ -475,7 +489,7 @@ fn run_data_script_quickjs(
                 let msg = caught.to_string();
                 log::error!(
                     target: "script/quickjs",
-                    "data script `{source_path}` registerLevelManifest threw: {msg}",
+                    "data script `{source_path}` setupLevel threw: {msg}",
                 );
                 manifest_out = Err(ScriptError::ScriptThrew {
                     msg,
@@ -534,11 +548,9 @@ fn run_data_script_luau(
 
     let func: mlua::Function =
         lua.globals()
-            .get("registerLevelManifest")
+            .get("setupLevel")
             .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!(
-                    "data script `{source_path}` did not export `registerLevelManifest`: {e}"
-                ),
+                reason: format!("data script `{source_path}` did not export `setupLevel`: {e}"),
             })?;
 
     let arg = lua
@@ -826,7 +838,65 @@ fn run_mod_init_quickjs(
             }
         };
 
-        out = Ok(ModManifestResult { name });
+        // Optional `entities` array. Missing key → empty Vec. Present-but-not-
+        // array → InvalidArgument. Each element parses via the shared
+        // descriptor reader (`entity_descriptor_from_js`).
+        let entities: Vec<EntityTypeDescriptor> = match obj.contains_key("entities") {
+            Ok(false) => Vec::new(),
+            Ok(true) => match obj.get::<_, JsArray>("entities") {
+                Ok(arr) => {
+                    let mut parsed = Vec::with_capacity(arr.len());
+                    let mut err: Option<ScriptError> = None;
+                    for i in 0..arr.len() {
+                        let v: JsValue = match arr.get(i) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                err = Some(ScriptError::InvalidArgument {
+                                    reason: format!(
+                                        "mod-init: `{source_path}` setupMod `entities[{i}]` could not be read: {e}"
+                                    ),
+                                });
+                                break;
+                            }
+                        };
+                        match entity_descriptor_from_js(&ctx, v) {
+                            Ok(d) => parsed.push(d),
+                            Err(e) => {
+                                err = Some(ScriptError::InvalidArgument {
+                                    reason: format!(
+                                        "mod-init: `{source_path}` setupMod `entities[{i}]` invalid: {e}"
+                                    ),
+                                });
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(e) = err {
+                        out = Err(e);
+                        return;
+                    }
+                    parsed
+                }
+                Err(e) => {
+                    out = Err(ScriptError::InvalidArgument {
+                        reason: format!(
+                            "mod-init: `{source_path}` setupMod `entities` field must be an array: {e}"
+                        ),
+                    });
+                    return;
+                }
+            },
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` setupMod return value `entities` lookup failed: {e}"
+                    ),
+                });
+                return;
+            }
+        };
+
+        out = Ok(ModManifestResult { name, entities });
     });
 
     out
@@ -887,7 +957,60 @@ fn run_mod_init_luau(
             reason: format!("mod-init: `{source_path}` setupMod return value missing `name`: {e}"),
         })?;
 
-    Ok(ModManifestResult { name })
+    // Optional `entities` array. Missing key → empty Vec. Present-but-not-table
+    // → InvalidArgument. Each element parses via the shared descriptor reader
+    // (`entity_descriptor_from_lua`).
+    let entities: Vec<EntityTypeDescriptor> = if table.contains_key("entities").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` setupMod return value `entities` lookup failed: {e}"
+            ),
+        }
+    })? {
+        let raw: mlua::Value = table
+            .get("entities")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` setupMod `entities` field could not be read: {e}"
+                ),
+            })?;
+        match raw {
+            mlua::Value::Nil => Vec::new(),
+            mlua::Value::Table(arr) => {
+                let len = arr.raw_len();
+                let mut out = Vec::with_capacity(len);
+                for i in 1..=(len as i64) {
+                    let item: mlua::Value =
+                        arr.get(i).map_err(|e| ScriptError::InvalidArgument {
+                            reason: format!(
+                                "mod-init: `{source_path}` setupMod `entities[{i}]` could not be read: {e}"
+                            ),
+                        })?;
+                    let descriptor = entity_descriptor_from_lua(item).map_err(|e| {
+                        ScriptError::InvalidArgument {
+                            reason: format!(
+                                "mod-init: `{source_path}` setupMod `entities[{i}]` invalid: {e}"
+                            ),
+                        }
+                    })?;
+                    out.push(descriptor);
+                }
+                out
+            }
+            other => {
+                return Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` setupMod `entities` field must be an array, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    Ok(ModManifestResult { name, entities })
 }
 
 #[cfg(test)]
@@ -986,7 +1109,7 @@ mod tests {
         let section = data_section(
             "/maps/data.js",
             r#"
-            globalThis.registerLevelManifest = function(ctx) {
+            globalThis.setupLevel = function(ctx) {
                 return {
                     reactions: [
                         { name: "wave1Complete", primitive: "moveGeometry", tag: "reactor" },
@@ -1006,7 +1129,7 @@ mod tests {
         let section = data_section(
             "/maps/data.luau",
             r#"
-            function registerLevelManifest(ctx)
+            function setupLevel(ctx)
                 return {
                     reactions = {
                         { name = "wave1Complete", primitive = "moveGeometry", tag = "reactor" },
@@ -1040,7 +1163,7 @@ mod tests {
             &dir.join("data.luau").to_string_lossy(),
             r#"
             local m = require("./shared")
-            function registerLevelManifest(ctx)
+            function setupLevel(ctx)
                 return { reactions = { m.reaction } }
             end
             "#,
@@ -1065,7 +1188,7 @@ mod tests {
             assert(io == nil, "io must be denied in data context")
             assert(os.execute == nil, "os.execute must be denied in data context")
             assert(dofile == nil, "dofile must be denied in data context")
-            function registerLevelManifest(ctx)
+            function setupLevel(ctx)
                 return { reactions = {} }
             end
             "#,
@@ -1085,7 +1208,7 @@ mod tests {
             "/maps/denylist_ok.luau",
             r#"
             assert(io == nil)
-            function registerLevelManifest(ctx)
+            function setupLevel(ctx)
                 return {
                     reactions = {
                         { name = "ok", primitive = "moveGeometry", tag = "t" },
@@ -1107,7 +1230,7 @@ mod tests {
         let (rt, _ctx) = runtime();
         let section = data_section(
             "/maps/no_export.js",
-            "// script with no registerLevelManifest export\nlet x = 1;",
+            "// script with no setupLevel export\nlet x = 1;",
         );
         let manifest = rt.run_data_script(&section, &std::env::temp_dir());
         assert!(manifest.reactions.is_empty());
@@ -1215,15 +1338,21 @@ mod tests {
     }
 
     #[test]
-    fn mod_init_quickjs_registers_entity_type() {
-        let (mut rt, ctx) = runtime();
+    fn mod_init_quickjs_manifest_carries_entity_descriptor() {
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("js_register");
-        // start-script.js: registers a player type, then exports `setupMod`.
+        // start-script.js: `setupMod` returns a player entity descriptor on
+        // the manifest's `entities` field. Boot-side ingestion drains
+        // the field into `DataRegistry`; this test asserts the manifest shape.
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            registerEntity({ classname: "info_player_start" });
-            globalThis.setupMod = function() { return { name: "TestMod" }; };
+            globalThis.setupMod = function() {
+                return {
+                    name: "TestMod",
+                    entities: [{ classname: "info_player_start" }],
+                };
+            };
             "#,
         )
         .unwrap();
@@ -1231,32 +1360,35 @@ mod tests {
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "TestMod");
-        let dr = ctx.data_registry.borrow();
         assert!(
-            dr.entities
+            manifest
+                .entities
                 .iter()
                 .any(|e| e.classname == "info_player_start"),
-            "registerEntity from start-script must populate the data registry"
+            "setupMod's `entities` field must carry the descriptor on the manifest"
         );
     }
 
     #[test]
-    fn mod_init_quickjs_imported_domain_script_registers_entity_type() {
+    fn mod_init_quickjs_imported_domain_script_manifest_carries_entity_descriptor() {
         // Acceptance criterion: an entity type defined in a domain script that
         // was bundled into start-script.js by `scripts-build` (not defined
-        // directly in start-script itself) is present in the engine-global
-        // type registry after mod-init. `scripts-build` inlines all imports
-        // at build time, so the fixture is a single JS file whose registration
-        // code is structured to make the inlined-import intent clear.
-        let (mut rt, ctx) = runtime();
+        // directly in start-script itself) is carried on the mod manifest
+        // after mod-init. `scripts-build` inlines all imports at build time,
+        // so the fixture is a single JS file whose intent — a descriptor
+        // exported from a bundled domain script and aggregated into the
+        // `setupMod` return — is made explicit by the inlined-comment markers.
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("js_imported_domain");
         std::fs::write(
             dir.join("start-script.js"),
             r#"
             /* inlined from actors/player.ts */
-            registerEntity({ classname: "info_player_start" });
+            const playerEntity = { classname: "info_player_start" };
             /* end inlined actors/player.ts */
-            globalThis.setupMod = function() { return { name: "ImportedDomainMod" }; };
+            globalThis.setupMod = function() {
+                return { name: "ImportedDomainMod", entities: [playerEntity] };
+            };
             "#,
         )
         .unwrap();
@@ -1264,25 +1396,27 @@ mod tests {
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "ImportedDomainMod");
-        let dr = ctx.data_registry.borrow();
         assert!(
-            dr.entities
+            manifest
+                .entities
                 .iter()
                 .any(|e| e.classname == "info_player_start"),
-            "entity type from bundled domain script must appear in the engine-global registry"
+            "entity type from bundled domain script must appear on the mod manifest"
         );
     }
 
     #[test]
-    fn mod_init_luau_registers_entity_type() {
-        let (mut rt, ctx) = runtime();
+    fn mod_init_luau_manifest_carries_entity_descriptor() {
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("luau_register");
         std::fs::write(
             dir.join("start-script.luau"),
             r#"
-            registerEntity({ classname = "info_player_start" })
             function setupMod()
-                return { name = "TestMod" }
+                return {
+                    name = "TestMod",
+                    entities = { { classname = "info_player_start" } },
+                }
             end
             "#,
         )
@@ -1291,12 +1425,12 @@ mod tests {
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "TestMod");
-        let dr = ctx.data_registry.borrow();
         assert!(
-            dr.entities
+            manifest
+                .entities
                 .iter()
                 .any(|e| e.classname == "info_player_start"),
-            "registerEntity from start-script.luau must populate the data registry"
+            "setupMod's `entities` field must carry the descriptor on the manifest"
         );
     }
 
@@ -1503,10 +1637,149 @@ mod tests {
     }
 
     #[test]
+    fn mod_init_quickjs_entities_field_parses_descriptor() {
+        // `setupMod()` returns an `entities` array; each element should parse
+        // into an `EntityTypeDescriptor` and be carried on the manifest. The
+        // Ingestion into `DataRegistry` is handled by the boot caller; this
+        // test covers only the parse path.
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_entities_field");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "EntitiesMod",
+                    entities: [{ classname: "info_player_start" }],
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.name, "EntitiesMod");
+        assert_eq!(manifest.entities.len(), 1);
+        assert_eq!(manifest.entities[0].classname, "info_player_start");
+    }
+
+    #[test]
+    fn mod_init_quickjs_entities_missing_key_gives_empty_vec() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_entities_missing");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() { return { name: "NoEntitiesMod" }; };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert!(manifest.entities.is_empty());
+    }
+
+    #[test]
+    fn mod_init_quickjs_entities_not_array_gives_error() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_entities_bad");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return { name: "Bad", entities: "bad" };
+            };
+            "#,
+        )
+        .unwrap();
+
+        let err = rt.run_mod_init(&dir).expect_err("entities must be array");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("entities"),
+                    "expected 'entities' in reason, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mod_init_luau_entities_field_parses_descriptor() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_entities_field");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            function setupMod()
+                return {
+                    name = "EntitiesMod",
+                    entities = { { classname = "info_player_start" } },
+                }
+            end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.name, "EntitiesMod");
+        assert_eq!(manifest.entities.len(), 1);
+        assert_eq!(manifest.entities[0].classname, "info_player_start");
+    }
+
+    #[test]
+    fn mod_init_luau_entities_missing_key_gives_empty_vec() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_entities_missing");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            function setupMod() return { name = "NoEntitiesMod" } end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert!(manifest.entities.is_empty());
+    }
+
+    #[test]
+    fn mod_init_luau_entities_not_array_gives_error() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_entities_bad");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            function setupMod()
+                return { name = "Bad", entities = "bad" }
+            end
+            "#,
+        )
+        .unwrap();
+
+        let err = rt.run_mod_init(&dir).expect_err("entities must be array");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("entities"),
+                    "expected 'entities' in reason, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn mod_init_luau_require_resolves_from_mod_root() {
-        let (mut rt, ctx) = runtime();
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("luau_require");
-        // Sub-module returns a descriptor; start-script imports it and registers.
+        // Sub-module returns a descriptor; start-script imports it and folds
+        // it into the manifest's `entities` field.
         std::fs::write(
             dir.join("sub.luau"),
             r#"
@@ -1518,9 +1791,8 @@ mod tests {
             dir.join("start-script.luau"),
             r#"
             local m = require("./sub")
-            registerEntity(m.descriptor)
             function setupMod()
-                return { name = "Imported" }
+                return { name = "Imported", entities = { m.descriptor } }
             end
             "#,
         )
@@ -1529,12 +1801,12 @@ mod tests {
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "Imported");
-        let dr = ctx.data_registry.borrow();
         assert!(
-            dr.entities
+            manifest
+                .entities
                 .iter()
                 .any(|e| e.classname == "info_player_start"),
-            "domain script imported via require must register its entity type"
+            "domain script imported via require must contribute its entity type to the manifest"
         );
     }
 

@@ -4,7 +4,7 @@
 -- generated `FogVolumeEntity` snapshot with capability methods
 -- (`pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation`)
 -- that return `{SetFogAnimationStep}` arrays suitable for splicing into
--- a `registerReaction("...", { sequence = ... })` body.
+-- a `defineReaction("...", { sequence = ... })` body.
 --
 -- `wrapFogVolumeEntity` is included in the returned table; the Luau
 -- prelude evaluator (`luau.rs`) extracts it and installs it as a

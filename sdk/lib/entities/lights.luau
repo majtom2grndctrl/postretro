@@ -4,7 +4,7 @@
 -- generated `LightEntity` snapshot with capability methods (`pulse`,
 -- `fade`, `flicker`, `colorShift`, `sweep`) that return
 -- `{SetLightAnimationStep}` arrays suitable for splicing into a
--- `registerReaction("...", { sequence = ... })` body.
+-- `defineReaction("...", { sequence = ... })` body.
 --
 -- `wrapLightEntity` is included in the returned table; the Luau prelude
 -- evaluator (`luau.rs`) extracts it and installs it as a temporary

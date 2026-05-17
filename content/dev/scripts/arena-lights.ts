@@ -1,22 +1,25 @@
 import {
+  type EntityTypeDescriptor,
   type NamedReactionDescriptor,
-  registerEntity,
-  registerReaction,
+  defineEntity,
+  defineReaction,
   world,
 } from "postretro";
 
-export function registerLevelManifest(_ctx: unknown) {
-  // Reference behavior archetype registrations. Components are intentionally
-  // empty: both archetypes are pure tag/transform carriers and the
-  // behavior scripts (`rotator-driver.ts`, `damage-source.ts`) locate
-  // their work via tag-filtered `worldQuery` rather than component data.
-  registerEntity({
+// Reference behavior archetype descriptors. Components are intentionally
+// empty: both archetypes are pure tag/transform carriers and the behavior
+// scripts (`rotator-driver.ts`, `damage-source.ts`) locate their work via
+// tag-filtered `worldQuery` rather than component data.
+export const arenaLightEntities: EntityTypeDescriptor[] = [
+  defineEntity({
     classname: "game_rotator_driver",
-  });
-  registerEntity({
+  }),
+  defineEntity({
     classname: "game_damage_source",
-  });
+  }),
+];
 
+export function setupLevel(_ctx: unknown) {
   const reactions: NamedReactionDescriptor[] = [];
 
   // Arena 1: angular sweep from the NW corner, counterclockwise.
@@ -79,7 +82,7 @@ export function registerLevelManifest(_ctx: unknown) {
       },
     }));
 
-    reactions.push(registerReaction("levelLoad", { sequence: steps }));
+    reactions.push(defineReaction("levelLoad", { sequence: steps }));
   }
 
   // Arena 2: west-wall wave, south → north (descending engine-x order).
@@ -117,7 +120,7 @@ export function registerLevelManifest(_ctx: unknown) {
       },
     }));
 
-    reactions.push(registerReaction("levelLoad", { sequence: steps }));
+    reactions.push(defineReaction("levelLoad", { sequence: steps }));
   }
 
   // Fog demo: both fog entity types in the map carry the "pulse_fog" tag,
@@ -128,7 +131,7 @@ export function registerLevelManifest(_ctx: unknown) {
     // Tag-targeted Primitive: one descriptor, batch-applied to every
     // "pulse_fog" volume regardless of entity subtype.
     reactions.push(
-      registerReaction("levelLoad", {
+      defineReaction("levelLoad", {
         primitive: "setFogScatter",
         tag: "pulse_fog",
         args: { scatter: 0.4 },
@@ -140,7 +143,7 @@ export function registerLevelManifest(_ctx: unknown) {
     // matched volume.
     for (const fog of fogs) {
       const steps = fog.pulse({ min: 0.2, max: 1.0, periodMs: 5000 });
-      reactions.push(registerReaction("levelLoad", { sequence: steps }));
+      reactions.push(defineReaction("levelLoad", { sequence: steps }));
     }
   }
 

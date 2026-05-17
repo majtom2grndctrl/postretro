@@ -1,6 +1,6 @@
-import { registerEntity } from "postretro";
+import { defineEntity } from "postretro";
 
-registerEntity({
+export const playerEntity = defineEntity({
   classname: "player",
   components: {
     movement: {

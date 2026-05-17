@@ -112,7 +112,7 @@ fn main() -> Result<()> {
 
     let initial_state = InterpolableState::new(initial_camera_pos);
 
-    // Scripting bootstrap. The data script runs once per level load.
+    // Scripting bootstrap: primitive registry, runtime construction, and SDK type emission.
     // See: context/lib/scripting.md
     let script_ctx = ScriptCtx::new();
     let mut script_registry = PrimitiveRegistry::new();
@@ -652,6 +652,18 @@ impl ApplicationHandler for App {
                             log::info!("[Scripting] start-script changed — re-running mod init",);
                             if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
                                 log::error!("[Scripting] mod-init re-run failed: {err}",);
+                            } else if let Some(manifest) = self.script_runtime.mod_manifest_mut() {
+                                // Hot-reload path: drain entity descriptors
+                                // from the refreshed manifest into the
+                                // engine-global `DataRegistry`. Identical
+                                // re-inserts are silent; differing ones
+                                // overwrite. Runtime parses; caller owns
+                                // lifecycle. See:
+                                // context/lib/boot_sequence.md §3.
+                                let mut data_registry = self.script_ctx.data_registry.borrow_mut();
+                                for desc in std::mem::take(&mut manifest.entities) {
+                                    data_registry.upsert_entity_type(desc);
+                                }
                             }
                             // `pending_splash_override` is intentionally not checked here:
                             // we are in `Running` state, the splash phase is over, and
@@ -1210,6 +1222,15 @@ impl App {
                     .compile_stale_scripts(&script_root, &self.content_root);
                 if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
                     log::error!("[Scripting] mod_init failed: {err}");
+                } else if let Some(manifest) = self.script_runtime.mod_manifest_mut() {
+                    // Drain entity-type descriptors from the validated
+                    // `setupMod()` return value into the engine-global
+                    // `DataRegistry`. Runtime parses; caller owns lifecycle.
+                    // See: context/lib/boot_sequence.md §3.
+                    let mut data_registry = self.script_ctx.data_registry.borrow_mut();
+                    for desc in std::mem::take(&mut manifest.entities) {
+                        data_registry.upsert_entity_type(desc);
+                    }
                 }
                 // Hot-reload watcher (debug-only); release builds no-op.
                 if let Err(err) = self
@@ -1526,9 +1547,9 @@ impl App {
         }
         self.level_timings.record("data_script");
 
-        // Data-archetype sweep: now that `registerEntity` has populated
-        // `data_registry.entities`, materialize every matching map placement
-        // that the built-in dispatch did not already handle.
+        // Data-archetype sweep: `data_registry.entities` was populated from
+        // `setupMod()`'s return value at mod-init. Materialize every matching
+        // map placement that the built-in dispatch did not already handle.
         if self.level.is_some() {
             let handled = self.builtin_handled.take().unwrap_or_default();
             let descriptors = self.script_ctx.data_registry.borrow().entities.clone();

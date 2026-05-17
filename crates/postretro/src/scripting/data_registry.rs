@@ -1,5 +1,5 @@
-// Data-script registries: per-level reactions from registerLevelManifest() and
-// engine-global entity types from registerEntity().
+// Data-script registries: per-level reactions from setupLevel() and
+// engine-global entity types drained from setupMod()'s `entities` return field.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
 // Held inside `ScriptCtx` (not directly on `App`) so primitive closures can
@@ -9,15 +9,17 @@ use super::data_descriptors::{EntityTypeDescriptor, LevelManifest, NamedReaction
 
 /// Data registries collected from data-context script execution.
 /// `reactions` are per-level and cleared on unload; `entities` are
-/// engine-global (populated via `registerEntity`) and survive level unload.
+/// engine-global (populated via the mod-init path) and survive level unload.
 #[derive(Debug, Default)]
 pub(crate) struct DataRegistry {
     /// Reactions registered for this level. Each entry pairs an event name
     /// with the descriptor body the script supplied.
     pub(crate) reactions: Vec<NamedReaction>,
-    /// Entity-type descriptors. Engine-global — survive level unload. Written
-    /// by the `registerEntity` primitive; read by the data-archetype spawn sweep.
-    /// Not populated from `registerLevelManifest`.
+    /// Entity-type descriptors. Engine-global — survive level unload.
+    /// Populated by the boot caller after `run_mod_init`: it drains the
+    /// `entities` field of the validated `setupMod()` return value into here
+    /// via [`Self::upsert_entity_type`]. Read by the data-archetype spawn
+    /// sweep. Not populated from `setupLevel()`.
     pub(crate) entities: Vec<EntityTypeDescriptor>,
 }
 
@@ -28,8 +30,8 @@ impl DataRegistry {
 
     /// Append a manifest's reactions. Existing reactions are preserved — call
     /// [`Self::clear`] first for a fresh population. Entity-type descriptors
-    /// arrive separately via the `registerEntity` primitive (they outlive
-    /// level unload).
+    /// arrive separately via `setupMod()`'s `entities` return field (they
+    /// outlive level unload).
     pub(crate) fn populate_from_manifest(&mut self, manifest: LevelManifest) {
         let LevelManifest { reactions } = manifest;
         self.reactions.extend(reactions);
@@ -37,8 +39,9 @@ impl DataRegistry {
 
     /// Insert (or overwrite) an entity-type descriptor. Identical re-inserts
     /// of the same `classname` are silent no-ops; differing re-inserts
-    /// overwrite and log at `debug!`. Survives level unload — callers should
-    /// only invoke this from the data context.
+    /// overwrite and log at `debug!`. Survives level unload — only invoke
+    /// from the mod-init path (after `setupMod` returns), not during
+    /// per-level data-script execution.
     pub(crate) fn upsert_entity_type(&mut self, descriptor: EntityTypeDescriptor) {
         if let Some(existing) = self
             .entities
@@ -49,7 +52,7 @@ impl DataRegistry {
                 return;
             }
             log::debug!(
-                "[Loader] registerEntity overwriting existing descriptor for `{}`",
+                "[Loader] upsert_entity_type: overwriting existing descriptor for `{}`",
                 descriptor.classname,
             );
             *existing = descriptor;
@@ -59,7 +62,7 @@ impl DataRegistry {
     }
 
     /// Drop every registered reaction. `entities` outlives the clear
-    /// (engine-global; set via `registerEntity`); only `reactions` are
+    /// (engine-global; set via the mod-init path); only `reactions` are
     /// per-level and wiped here. Called on level unload.
     /// See [`Self::upsert_entity_type`].
     pub(crate) fn clear(&mut self) {

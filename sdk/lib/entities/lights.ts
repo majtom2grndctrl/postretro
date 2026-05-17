@@ -18,7 +18,7 @@ import type { SequenceStep } from "../data_script";
  * rather than passing `light.id` into free functions.
  *
  * Each capability method returns a single-element `SequenceStep[]`
- * suitable for splicing into a `registerReaction({ sequence: [...] })`
+ * suitable for splicing into a `defineReaction({ sequence: [...] })`
  * body.
  */
 export interface LightEntityHandle

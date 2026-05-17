@@ -1,7 +1,7 @@
 // Data-archetype spawn path: walks `world.map_entities` against the
-// `DataRegistry.entities` table built by `registerEntity`, materializing each
-// matching placement into an ECS entity with the descriptor's component
-// presets attached.
+// `DataRegistry.entities` table populated at `setupMod()` ingestion time,
+// materializing each matching placement into an ECS entity with the
+// descriptor's component presets attached.
 //
 // See: context/lib/build_pipeline.md §Built-in Classname Routing
 //      context/lib/scripting.md §2 (data context lifecycle)
@@ -63,7 +63,7 @@ fn apply_light_kvp_overrides(descriptor: &mut LightDescriptor, entity: &MapEntit
             continue;
         };
         match field {
-            // Mirror the validation that `registerEntity` applies: reject
+            // Mirror the validation applied at descriptor parse time: reject
             // negative or non-finite values at parse time so a bad override
             // never lands on the descriptor (e.g. `initial_intensity -5.0`).
             "intensity" => parse_into_nonneg_f32(raw, &mut descriptor.intensity, entity, key),
@@ -507,10 +507,10 @@ mod tests {
 
     #[test]
     fn initial_intensity_negative_falls_back_to_descriptor_default() {
-        // Validation that runs at `registerEntity` time rejects negative
+        // Validation applied at descriptor parse time rejects negative
         // intensity. The KVP override path must apply the same check, so a
         // map author writing `initial_intensity = -5.0` does not produce
-        // a descriptor that would have been rejected at script time.
+        // a descriptor that would have been rejected at ingestion time.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![light_descriptor("torch", true)];
         let placements = vec![placement("torch", &[("initial_intensity", "-5.0")])];
@@ -779,7 +779,7 @@ mod tests {
     }
 
     /// End-to-end pin for AC #11: a classname registered both as a built-in
-    /// AND via `registerEntity` must spawn through the built-in path only.
+    /// AND via `setupMod()` ingestion must spawn through the built-in path only.
     /// Drives both dispatch sweeps in the same order `main.rs` does:
     /// `apply_classname_dispatch` first, then `apply_data_archetype_dispatch`
     /// with the returned `handled` set. Asserts exactly one entity exists.

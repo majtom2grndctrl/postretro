@@ -24,7 +24,7 @@ declare module "postretro" {
     is_dynamic: boolean;
   };
 
-  /** Argument shape for `registerEntity`. `components` is an optional sub-object carrying typed component presets. */
+  /** Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets. */
   export type EntityTypeDescriptor = {
     /** FGD classname this descriptor binds to. */
     classname: string;
@@ -169,6 +169,8 @@ declare module "postretro" {
   export type ModManifest = {
     /** Human-readable mod name. Required. */
     name: string;
+    /** Engine-global entity-type registrations. Survive level unload. */
+    entities?: ReadonlyArray<EntityTypeDescriptor>;
   };
 
   export type LightKind = "Point" | "Spot" | "Directional";
@@ -250,9 +252,6 @@ declare module "postretro" {
 
   /** Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in definition and data contexts. */
   export function getEntityProperty(id: EntityId, key: string): string | null;
-
-  /** Register an entity type with optional component presets. Definition context only. Survives level unload. */
-  export function registerEntity(descriptor: EntityTypeDescriptor): void;
 
   /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Definition context. */
   export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
@@ -345,7 +344,7 @@ declare module "postretro" {
 
   // -------------------------------------------------------------------------
   // Data script vocabulary — pure descriptor builders consumed by the engine
-  // when `registerLevelManifest` returns. See: context/lib/scripting.md §2.
+  // when `setupLevel` returns. See: context/lib/scripting.md §2.
 
   /** Progress-subscription reaction body: fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
   export type ProgressReactionDescriptor = {
@@ -433,24 +432,27 @@ declare module "postretro" {
     sequence: SequenceStep[];
   };
 
-  /** Descriptor produced by `registerReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
+  /** Descriptor produced by `defineReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
   export type NamedReactionDescriptor = { name: string } & (
     | ProgressReactionDescriptor
     | PrimitiveReactionDescriptor
     | SequenceReactionDescriptor
   );
 
-  /** Bundle returned from `registerLevelManifest`. The engine deserializes this shape in one pass at level load. */
+  /** Bundle returned from `setupLevel`. The engine deserializes this shape in one pass at level load. */
   export type LevelManifest = {
     reactions: NamedReactionDescriptor[];
   };
 
   /** Build a named reaction descriptor. Pure: returns a plain object, no FFI. */
-  export function registerReaction(
+  export function defineReaction(
     name: string,
     descriptor:
       | ProgressReactionDescriptor
       | PrimitiveReactionDescriptor
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
+
+  /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
+  export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
 }

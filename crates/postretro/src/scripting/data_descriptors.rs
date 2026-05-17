@@ -105,7 +105,8 @@ impl LightDescriptor {
     }
 }
 
-/// Author-side description of an entity type registered via `registerEntity`.
+/// Author-side description of an entity type. Carried on `ModManifest.entities`
+/// and drained into `DataRegistry` after `setupMod()` returns.
 /// `classname` is required; optional `light` / `emitter` / `movement` carry
 /// per-entity-type component presets. The level-load spawn path materializes
 /// these into a fresh ECS entity per matching map placement.
@@ -164,11 +165,12 @@ pub(crate) struct FallParams {
     pub(crate) terminal_velocity: f32,
 }
 
-/// The full bundle returned by a level's `registerLevelManifest(ctx)` export.
+/// The full bundle returned by a level's `setupLevel(ctx)` export.
 ///
-/// Entity-type descriptors are not part of the manifest; they arrive via
-/// `registerEntity` during the same data-script run and survive level unload.
-/// `LevelManifest` carries only per-level reactions.
+/// Entity-type descriptors are not part of this manifest — they arrive via
+/// `setupMod()`'s `entities` field (mod-init only) and are drained into
+/// `DataRegistry` before any level is loaded. `LevelManifest` carries only
+/// per-level reactions.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct LevelManifest {
     pub(crate) reactions: Vec<NamedReaction>,
@@ -212,13 +214,13 @@ fn validate_primitive_name(name: String) -> Result<String, DescriptorError> {
 
 impl LevelManifest {
     /// Deserialize a top-level `{ reactions }` object returned from
-    /// a QuickJS `registerLevelManifest()` call.
+    /// a QuickJS `setupLevel()` call.
     pub(crate) fn from_js_value<'js>(
         ctx: &Ctx<'js>,
         value: JsValue<'js>,
     ) -> Result<Self, DescriptorError> {
         let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
-            reason: "registerLevelManifest must return an object".to_string(),
+            reason: "setupLevel must return an object".to_string(),
         })?;
 
         let reactions = if obj.contains_key("reactions").map_err(js_err)? {
@@ -237,16 +239,13 @@ impl LevelManifest {
     }
 
     /// Deserialize a top-level `{ reactions }` table returned from a
-    /// Luau `registerLevelManifest()` call.
+    /// Luau `setupLevel()` call.
     pub(crate) fn from_lua_value(value: LuaValue) -> Result<Self, DescriptorError> {
         let table = match value {
             LuaValue::Table(t) => t,
             other => {
                 return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "registerLevelManifest must return a table, got {}",
-                        other.type_name()
-                    ),
+                    reason: format!("setupLevel must return a table, got {}", other.type_name()),
                 });
             }
         };
@@ -1450,7 +1449,7 @@ mod tests {
         assert!(m.reactions.is_empty());
     }
 
-    // --- EntityTypeDescriptor (registerEntity input shape) -------------------
+    // --- EntityTypeDescriptor (passed as ModManifest.entities) ---------------
 
     #[test]
     fn entity_descriptor_with_emitter_only_deserializes() {

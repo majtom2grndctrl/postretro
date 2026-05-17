@@ -234,7 +234,7 @@ fn dispatch_sequence(
     }
 }
 
-/// Called at `registerLevelManifest()` time, before reactions land in [`DataRegistry`].
+/// Called at `setupLevel()` time, before reactions land in [`DataRegistry`].
 /// Drops any `Sequence` reaction whose steps name an unknown primitive; logs an error per rejection.
 pub(crate) fn validate_sequence_primitives(
     reactions: Vec<NamedReaction>,
@@ -249,7 +249,7 @@ pub(crate) fn validate_sequence_primitives(
             for (i, step) in steps.iter().enumerate() {
                 if !sequence_registry.contains(&step.primitive) {
                     log::error!(
-                        "[Scripting] registerLevelManifest: sequence step {i} names unknown primitive \"{}\"",
+                        "[Scripting] setupLevel: sequence step {i} names unknown primitive \"{}\"",
                         step.primitive
                     );
                     return false;

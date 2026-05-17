@@ -42,6 +42,8 @@ The context is dropped after the data script completes. No live reference to the
 
 Each primitive declares one of two scopes: `DefinitionOnly` or `Both`. Both the definition context and the data context install all primitives as real functions — there is no stub install and no enforcement at call time. Scope is advisory metadata: the typedef generator uses it to document which contexts a primitive is available in, producing accurate SDK type definitions and developer guidance.
 
+After `registerEntity`'s removal (entity-type registration now flows through `setupMod`'s return value), `DefinitionOnly` has no in-tree consumer. The enum variant is retained as a hook for future primitives that need definition-context-only visibility. `Both` is the only active scope today — tests cover only the `Both` path, and `DefinitionOnly` install behavior is untested.
+
 ---
 
 ## 4. Primitive Registration
@@ -113,7 +115,7 @@ Handle types compose them by channel: `LightEntityHandle extends AnimatableScala
 
 **Rule for future entity types.** When adding an animatable scalar or vec3 channel to a new handle type, compose the existing capability interface rather than introducing free-function constructors. The handle method is the canonical way to construct animation step descriptors. See `sdk/lib/entities/*.ts` for reference implementations.
 
-**TypeScript:** `sdk/lib/prelude.js` is generated at build time by `postretro`'s `build.rs` (via `postretro-script-compiler` as a `[build-dependencies]` entry) and written to `$OUT_DIR`. It is embedded in the engine binary via `include_str!(concat!(env!("OUT_DIR"), "/prelude.js"))` and evaluated in every QuickJS context. The file is gitignored and never committed — `cargo build` regenerates it automatically from `sdk/lib/**/*.ts`. Authors import SDK symbols as bare specifiers: `import { world, timeline, sequence, registerReaction } from "postretro"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
+**TypeScript:** `sdk/lib/prelude.js` is generated at build time by `postretro`'s `build.rs` (via `postretro-script-compiler` as a `[build-dependencies]` entry) and written to `$OUT_DIR`. It is embedded in the engine binary via `include_str!(concat!(env!("OUT_DIR"), "/prelude.js"))` and evaluated in every QuickJS context. The file is gitignored and never committed — `cargo build` regenerates it automatically from `sdk/lib/**/*.ts`. Authors import SDK symbols as bare specifiers: `import { world, timeline, sequence, defineReaction, defineEntity } from "postretro"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
 
 **Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Return values are destructured into bare globals — no import or require needed. Evaluation order matters: `world.luau` captures `wrapLightEntity` from `entities/lights.luau` and `wrapFogVolumeEntity` from `entities/fog_volumes.luau` as closure upvalues; both must evaluate before `world.luau`. Both bridges are nil'd out after `world.luau` evaluates so author scripts never see them as bare globals. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
 

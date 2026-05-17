@@ -661,8 +661,8 @@ mod tests {
         fs::write(
             &entry,
             r#"
-            import { registerEntity } from "postretro";
-            registerEntity({
+            import { defineEntity } from "postretro";
+            defineEntity({
                 classname: "light_point",
             });
             "#,
@@ -682,8 +682,8 @@ mod tests {
         );
         // The call to the engine-injected global must remain.
         assert!(
-            js.contains("registerEntity"),
-            "bundled output dropped the registerEntity call site: {js}"
+            js.contains("defineEntity"),
+            "bundled output dropped the defineEntity call site: {js}"
         );
 
         let _ = fs::remove_dir_all(&dir);

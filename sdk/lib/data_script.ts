@@ -1,4 +1,4 @@
-// Data-script vocabulary: pure descriptor builders for `registerLevelManifest`.
+// Data-script vocabulary: pure descriptor builders for `setupMod` and `setupLevel`.
 // FFI boundary is the `return` statement — these functions never call back into Rust.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
@@ -60,13 +60,19 @@ export type NamedReactionDescriptor = { name: string } & (
   | SequenceReactionDescriptor
 );
 
-/** Deserialized once at level load; the data-script VM is dropped immediately after. */
+/**
+ * Deserialized once at level load; the data-script VM is dropped immediately after.
+ *
+ * Entity-type registrations are not part of `LevelManifest`. Return them in
+ * `setupMod`'s `entities` field instead — entity types are mod-level, not
+ * level-level.
+ */
 export type LevelManifest = {
   reactions: NamedReactionDescriptor[];
 };
 
-/** Returns a plain object — does not register anything in the engine despite the name. */
-export function registerReaction(
+/** Returns a plain object — pure builder, no engine side effects. */
+export function defineReaction(
   name: string,
   descriptor:
     | ProgressReactionDescriptor
@@ -74,4 +80,12 @@ export function registerReaction(
     | SequenceReactionDescriptor,
 ): NamedReactionDescriptor {
   return { name, ...descriptor } as NamedReactionDescriptor;
+}
+
+/** Identity builder — gives authors a typed construction site for entity
+ * type descriptors returned from `setupMod()`. Pure: no engine side effects. */
+export function defineEntity(
+  descriptor: import("postretro").EntityTypeDescriptor,
+): import("postretro").EntityTypeDescriptor {
+  return descriptor;
 }

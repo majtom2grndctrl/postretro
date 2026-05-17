@@ -71,7 +71,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("EntityTypeDescriptor")
-        .doc("Argument shape for `registerEntity`. `components` is an optional sub-object carrying typed component presets.")
+        .doc("Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.")
         .field("classname", "String", "FGD classname this descriptor binds to.")
         .field(
             "components?",
@@ -224,6 +224,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .register_type("ModManifest")
         .doc("Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.")
         .field("name", "String", "Human-readable mod name. Required.")
+        .field(
+            "entities?",
+            "Vec<EntityTypeDescriptor>",
+            "Engine-global entity-type registrations. Survive level unload.",
+        )
         .finish();
 }
 
@@ -261,10 +266,15 @@ mod tests {
             "worldSetGravity",
             "setLightAnimation",
             "getEntityProperty",
-            "registerEntity",
         ] {
             assert!(names.contains(&expected), "missing primitive {expected}");
         }
+        // `registerEntity` was removed; entity-type registration now flows
+        // through `setupMod()`'s `entities` return field.
+        assert!(
+            !names.contains(&"registerEntity"),
+            "registerEntity primitive must be removed",
+        );
         // The Live VM primitives are gone — they must NOT appear.
         for forbidden in [
             "spawnEntity",
@@ -278,6 +288,58 @@ mod tests {
             assert!(
                 !names.contains(&forbidden),
                 "primitive {forbidden} must be removed",
+            );
+        }
+    }
+
+    #[test]
+    fn mod_manifest_registered_type_matches_mod_manifest_result() {
+        // Parity guard: the `ModManifest` shape emitted to the SDK
+        // (`gen-script-types`) must mirror `ModManifestResult` in
+        // `runtime.rs`. If the canonical struct grows a field, this test
+        // forces the registered type to follow.
+        //
+        // The expected field list is derived from `ModManifestResult`'s
+        // definition. Field-presence assertions below construct a value of
+        // that struct so any rename or removal in `runtime.rs` is a compile
+        // error here.
+        use crate::scripting::primitives_registry::TypeShape;
+        use crate::scripting::runtime::ModManifestResult;
+
+        // Compile-time anchor: ensure the struct still has `name` and
+        // `entities` fields (and nothing else load-bearing). Adding a field
+        // here would fail to compile; removing one likewise.
+        let _shape_anchor = ModManifestResult {
+            name: String::new(),
+            entities: Vec::new(),
+        };
+        let expected_fields: &[&str] = &["name", "entities"];
+
+        let mut r = PrimitiveRegistry::new();
+        register_shared_types(&mut r);
+        let registered = r
+            .iter_types()
+            .find(|t| t.name == "ModManifest")
+            .expect("ModManifest must be registered");
+        let fields = match &registered.shape {
+            TypeShape::Struct { fields } => fields,
+            other => panic!("ModManifest must be a Struct, got {other:?}"),
+        };
+        // Strip the optional-marker suffix so `entities?` matches `entities`.
+        let got_names: Vec<&str> = fields
+            .iter()
+            .map(|f| f.name.trim_end_matches('?'))
+            .collect();
+        for expected in expected_fields {
+            assert!(
+                got_names.contains(expected),
+                "ModManifest registered type missing field `{expected}`; has {got_names:?}",
+            );
+        }
+        for got in &got_names {
+            assert!(
+                expected_fields.contains(got),
+                "ModManifest registered type has extra field `{got}` not in ModManifestResult; expected {expected_fields:?}",
             );
         }
     }

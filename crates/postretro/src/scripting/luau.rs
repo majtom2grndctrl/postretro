@@ -49,9 +49,9 @@ const EMITTERS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/emitt
 const FOG_VOLUMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/fog_volumes.luau");
 
 /// SDK library prelude — `data_script.luau` returns a table whose fields
-/// (`registerReaction`, `registerEntities`) are destructured into globals so
+/// (`defineReaction`, `defineEntity`) are destructured into globals so
 /// data-script authors call them by bare name. Pure descriptor builders;
-/// no FFI happens until `registerLevelManifest` returns.
+/// no FFI happens until `setupMod` or `setupLevel` returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
 
 /// Lights SDK fields lifted to globals after evaluating
@@ -78,12 +78,16 @@ const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
-const DATA_SCRIPT_FIELDS: &[&str] = &["registerReaction", "registerEntities"];
+const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity"];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
-/// globals. Must be called after primitives are installed (the prelude
-/// references `worldQuery`, `setLightAnimation`) and
-/// before `sandbox(true)` (which freezes `_G`).
+/// globals. Must be called after primitives are installed and before
+/// `sandbox(true)` (which freezes `_G`). The primitive dependency applies
+/// to `entities/lights.luau`, `world.luau`, and `fog_volumes.luau` — they
+/// reference primitives like `worldQuery` and `setLightAnimation`.
+/// `data_script.luau` is also evaluated as a prelude step but has no
+/// primitive dependencies; it's pure data builders (`defineReaction`,
+/// `defineEntity`).
 /// The prelude source uses type annotations declared in postretro.d.luau (luau-lsp only); the runtime evaluates the .luau source without loading the declaration file.
 pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
     // Step 1: evaluate `entities/lights.luau`. The only exported field is
@@ -459,7 +463,7 @@ pub(crate) fn build_lua_state(
     }
 
     // 6. SDK prelude — installs `world`, `timeline`, `sequence`,
-    //    `registerReaction`, and emitter constructors as bare globals.
+    //    `defineReaction`, and emitter constructors as bare globals.
     //    Capability methods (pulse, fade, flicker, etc.) live on handles
     //    returned by `world:query`; they are not bare globals.
     //    Must run before `sandbox(true)` because the prelude writes to `_G`,

@@ -25,20 +25,20 @@
 
 import {
   type NamedReactionDescriptor,
-  registerReaction,
+  defineReaction,
   world,
 } from "postretro";
 
-export function registerLevelManifest(_ctx: unknown) {
+export function setupLevel(_ctx: unknown) {
   const reactions: NamedReactionDescriptor[] = [];
 
   const fogs = world.query({ component: "fog_volume", tag: "pulse_fog" });
   if (fogs.length > 0) {
     // Tag-targeted Primitive: one descriptor, batch-applied to every
-    // `pulse_fog` volume. No SDK helper — `registerReaction` with the
+    // `pulse_fog` volume. No SDK helper — `defineReaction` with the
     // primitive shape is the API.
     reactions.push(
-      registerReaction("levelLoad", {
+      defineReaction("levelLoad", {
         primitive: "setFogScatter",
         tag: "pulse_fog",
         args: { scatter: 0.4 },
@@ -51,7 +51,7 @@ export function registerLevelManifest(_ctx: unknown) {
     // `periodMs` (here 1500 ms), looping forever.
     for (const fog of fogs) {
       const steps = fog.pulse({ min: 0.2, max: 1.0, periodMs: 1500 });
-      reactions.push(registerReaction("levelLoad", { sequence: steps }));
+      reactions.push(defineReaction("levelLoad", { sequence: steps }));
     }
   }
 

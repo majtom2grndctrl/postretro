@@ -18,7 +18,7 @@ import type { SequenceStep } from "../data_script";
  * `setFogAnimation` step arrays.
  *
  * Authors animate fog by registering sequenced reactions —
- * `registerReaction("levelLoad", { sequence: fog.pulse({ ... }) })` —
+ * `defineReaction("levelLoad", { sequence: fog.pulse({ ... }) })` —
  * rather than mutating the handle. Static one-shot tweaks still go
  * through the `setFogDensity` / `setFogScatter` / `setFogEdgeSoftness` /
  * `setFogFalloff` / `setFogParams` step descriptors.

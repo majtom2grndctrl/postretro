@@ -156,9 +156,12 @@ impl StageCache {
     }
 }
 
-/// Walk parent directories from `start` looking for a `Cargo.toml`. Returns
-/// the directory containing it — used as the default location for the cache
-/// directory when the CLI flag is omitted.
+/// Walk parent directories from `start` looking for the first `Cargo.toml`
+/// encountered. Returns the directory containing it, used as the default cache
+/// root when the CLI flag is omitted. This finds the nearest crate or workspace
+/// manifest — not necessarily a `[workspace]` root — so callers should treat
+/// the result as "a reasonable ancestor with a manifest", not a guaranteed
+/// workspace root.
 pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
     let mut current: Option<&Path> = Some(start);
     while let Some(dir) = current {

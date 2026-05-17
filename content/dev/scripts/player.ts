@@ -1,6 +1,7 @@
 import { defineEntity } from "postretro";
 
 export const playerEntity = defineEntity({
+  canonicalName: "player",
   components: {
     movement: {
       capsule: { radius: 0.2, halfHeight: 0.8, eyeHeight: 0.5 },

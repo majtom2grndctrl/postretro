@@ -140,7 +140,7 @@ fn warn_parse(entity: &MapEntity, key: &str, raw: &str) {
 ///
 /// Roadmap: composable archetypes, FGD generated from the registry, and a
 /// `mob_spawn` marker (mirroring `player_spawn`) will sit on this lookup —
-/// see `context/plans/drafts/` and `context/lib/plans/roadmap.md`. The
+/// see `context/plans/drafts/` and `context/plans/roadmap.md`. The
 /// abstraction grows from this single match site.
 fn find_descriptor<'a>(
     descriptors: &'a [EntityTypeDescriptor],
@@ -225,6 +225,11 @@ fn attach_descriptor_components(
 /// set already covers the collision cases. Contrast with
 /// [`super::apply_classname_dispatch`], which includes every classname a
 /// handler was attempted for, independent of spawn success.
+///
+/// Placements whose classname is not found in either the descriptor list or
+/// `handled_by_builtin`, and is not in the structural exclusion set
+/// (`worldspawn`, `player_spawn`), log a `warn!` once per distinct classname
+/// per sweep.
 pub(crate) fn apply_data_archetype_dispatch(
     entities: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
@@ -252,7 +257,7 @@ pub(crate) fn apply_data_archetype_dispatch(
                 && unknown_warned.insert(cls.to_string())
             {
                 log::warn!(
-                    "[Loader] {origin}: classname `{cls}` has no registered descriptor;                      placement dropped",
+                    "[Loader] {origin}: classname `{cls}` has no registered descriptor; placement dropped",
                     origin = entity.diagnostic_origin(),
                 );
             }
@@ -804,8 +809,9 @@ mod tests {
         assert_eq!(component.burst, None);
     }
 
-    /// End-to-end pin for AC #11: a classname registered both as a built-in
-    /// AND via `setupMod()` ingestion must spawn through the built-in path only.
+    /// Guards built-in priority over data-archetype dispatch end-to-end: a
+    /// classname registered both as a built-in AND via `setupMod()` ingestion
+    /// must spawn through the built-in path only.
     /// Drives both dispatch sweeps in the same order `main.rs` does:
     /// `apply_classname_dispatch` first, then `apply_data_archetype_dispatch`
     /// with the returned `handled` set. Asserts exactly one entity exists.

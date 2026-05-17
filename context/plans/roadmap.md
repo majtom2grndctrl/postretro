@@ -133,7 +133,7 @@ Plans ship in this sequence:
 - [ ] **Mod script layer** — mod-level script execution layer that runs before any level loads. Player entity types declared here; prerequisite for player spawn. `context/plans/ready/M7--mod-script-layer/`
 - [ ] **Collision foundation** — parry3d dependency; `CollisionWorld` backed by PRL static geometry trimesh; Rust-owned, not script-visible. `context/plans/ready/M7--collision-foundation/`
 - [ ] **Gravity primitives** — `initialGravity` worldspawn KVP; `world.getGravity()` / `world.setGravity()` behavior-scope primitives; SDK and docs updated. Depends on scripting primitives folder. `context/plans/drafts/M7--gravity-primitives/`
-- [ ] **Player spawn** — `info_player_start` FGD entry with `entity_class` KVP; level load spawns player entities from it. Depends on mod script layer. `context/plans/drafts/M7--player-spawn/`
+- [x] **Player spawn** — `player_spawn` FGD entry with `entity_class` KVP; level load spawns player entities from it. Depends on mod script layer.
 - [ ] **Movement scripts** — TypeScript and Luau reference movement scripts with full feature parity (gravity, wall slide, step-up, jump, strafe, air control); contract test asserts matching output. Depends on collision foundation, gravity primitives, player spawn. `context/plans/drafts/M7--movement-scripts/`
 
 **Testable outcome:** player walks through a PRL level with full collision response — no clipping, wall slide, step-up, jump. Modder can edit and hot-reload the movement script in either TypeScript or Luau.

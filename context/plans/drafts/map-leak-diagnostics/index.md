@@ -49,7 +49,7 @@ Leak detection runs early (right after flood-fill), so downstream stages (PVS, B
 
 - **Hard-error gate** in `prl-build`: when the flood-fill from the player-start seed fails to seal any interior, exit with a non-zero status and an actionable error message.
 - **Pointfile output (`.pts`)**: a polyline tracing a path from the player-start (or any interior seed) through portals to the nearest void-adjacent leaf. Format matches Quake/ericw-tools convention (one vertex per line, `x y z\n`).
-- **Seed selection**: find an interior reference point from a canonical entity (e.g. `info_player_start`); fall back to the bounding-box center with a warning if none exists.
+- **Seed selection**: find an interior reference point from a canonical entity (e.g. `player_spawn`); fall back to the bounding-box center with a warning if none exists.
 - **CLI flag** `--allow-leaks` to downgrade the error back to a warning, for modders who deliberately ship unsealed test maps. Default is strict.
 - **SDF baker coupling**: with leaks gated out upstream, the parity test in `sdf_bake.rs::parity_inside` can assume watertight input; drop the current +Y-infinity heuristic in favor of seeding from the same player-start point used for the leak-detection flood-fill. Migrate the seed through `SdfBakeInputs`.
 - **Documentation**: add a short "fixing leaks" note to `context/lib/build_pipeline.md` with a screenshot/instructions for loading `.pts` in TrenchBroom.
@@ -66,7 +66,7 @@ Leak detection runs early (right after flood-fill), so downstream stages (PVS, B
 ## Open questions
 
 1. **Pointfile format compatibility.** Does TrenchBroom's current `.pts` loader match the original Quake format exactly, or is there a TB-native variant? Verify before implementation to avoid a format mismatch surprising the user.
-2. **Seed entity canonicalization.** The FGD already defines `info_player_start`. Is there ever a map with multiple starts (co-op / deathmatch variants)? If so, any of them should work; pick the first one deterministically.
+2. **Seed entity canonicalization.** Resolved: the FGD defines `player_spawn` and the engine spawns one entity per marker, so multi-start maps (co-op / deathmatch variants) are supported. Leak detection picks the first `player_spawn` deterministically.
 3. **Error message taxonomy.** Should we distinguish "no player-start entity" from "player-start is in the void" from "player-start is in a sealed interior but another empty leaf leaks"? The first two are authoring errors with different fixes; the last is the classic leak.
 
 ---
@@ -85,7 +85,7 @@ Leak detection runs early (right after flood-fill), so downstream stages (PVS, B
 
 ## Rough implementation sketch
 
-1. **Seed resolution.** In `prl-build`, extract the `info_player_start` origin from the parsed entity list before the BSP stage; thread it into flood-fill inputs.
+1. **Seed resolution.** In `prl-build`, extract the `player_spawn` origin from the parsed entity list before the BSP stage; thread it into flood-fill inputs.
 2. **Flood-fill upgrade.** Change the current warn path in `visibility/mod.rs` to return a `LeakReport { seed_leaf, void_leaf, portal_path }` when no interior remains. The caller in `main.rs` decides whether to error or warn based on `--allow-leaks`.
 3. **Pointfile writer.** New module `postretro-level-compiler/src/leak_report.rs`. Takes a `LeakReport` and writes the `.pts` file. Path reconstruction: walk portals backward from the first void-adjacent empty leaf to the seed leaf, emit portal centroids as vertices.
 4. **SDF baker seed.** Thread the same player-start origin into `SdfBakeInputs`; replace `parity_inside`'s +Y ray with a ray from the brick center to the seed, counting intersections.

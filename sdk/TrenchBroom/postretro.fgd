@@ -1,6 +1,6 @@
 // Postretro FGD: entity definitions for TrenchBroom authoring.
 // Parsed by postretro-level-compiler.
-// See: context/lib/build_pipeline.md §Custom FGD
+// See: context/lib/build_pipeline.md §Built-in Classname Routing
 
 @SolidClass = worldspawn : "World"
 [

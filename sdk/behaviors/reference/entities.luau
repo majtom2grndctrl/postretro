@@ -19,11 +19,11 @@ M.DAMAGE_SOURCE_CLASSNAME = "game_damage_source"
 --- authored on the placement.
 M.referenceEntities = {
   defineEntity({
-    classname = M.ROTATOR_DRIVER_CLASSNAME,
+    canonicalName = M.ROTATOR_DRIVER_CLASSNAME,
     components = { light = nil, emitter = nil },
   }),
   defineEntity({
-    classname = M.DAMAGE_SOURCE_CLASSNAME,
+    canonicalName = M.DAMAGE_SOURCE_CLASSNAME,
     components = { light = nil, emitter = nil },
   }),
 }

@@ -23,11 +23,11 @@ export const DAMAGE_SOURCE_CLASSNAME = "game_damage_source";
  */
 export const referenceEntities: EntityTypeDescriptor[] = [
   defineEntity({
-    classname: ROTATOR_DRIVER_CLASSNAME,
+    canonicalName: ROTATOR_DRIVER_CLASSNAME,
     components: { light: null, emitter: null },
   }),
   defineEntity({
-    classname: DAMAGE_SOURCE_CLASSNAME,
+    canonicalName: DAMAGE_SOURCE_CLASSNAME,
     components: { light: null, emitter: null },
   }),
 ];

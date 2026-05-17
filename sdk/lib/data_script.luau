@@ -63,10 +63,11 @@ export type SetLightAnimationStep = {
   args: any,
 }
 
---- Fog sequence step shapes — the per-primitive variants emitted by the
---- SDK `fogPulse` / `fogFade` constructors and accepted by sequence
---- reactions. Mirrors the generated step types in `postretro.d.luau`;
---- new sequenced fog primitives extend both unions in lockstep.
+--- Fog sequence step shapes accepted by sequence reactions. Mirrors the
+--- generated step types in `postretro.d.luau`; new sequenced fog
+--- primitives extend both unions in lockstep.
+--- `SetFogAnimationStep` is declared in `postretro.d.luau` (SDK lib block)
+--- and included in `SequenceStep` below — no local redeclaration needed.
 export type SetFogDensityStep = {
   id: number,
   primitive: "setFogDensity",
@@ -97,7 +98,9 @@ export type SetFogParamsStep = {
   args: { density: number?, scatter: number?, edgeSoftness: number?, falloff: number? },
 }
 
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep
+-- `SetFogAnimationStep` is declared in `postretro.d.luau` (the SDK lib
+-- block generated from the primitive registry) and is not redeclared here.
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep
 
 --- Descriptor produced by `registerReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read

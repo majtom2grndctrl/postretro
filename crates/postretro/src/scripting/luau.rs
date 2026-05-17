@@ -458,7 +458,10 @@ pub(crate) fn build_lua_state(
         install_require_resolver(&lua, root)?;
     }
 
-    // 6. SDK prelude — installs `world`, `flicker`, `pulse`, etc. as globals.
+    // 6. SDK prelude — installs `world`, `timeline`, `sequence`,
+    //    `registerReaction`, and emitter constructors as bare globals.
+    //    Capability methods (pulse, fade, flicker, etc.) live on handles
+    //    returned by `world:query`; they are not bare globals.
     //    Must run before `sandbox(true)` because the prelude writes to `_G`,
     //    and after primitive install because the prelude calls them.
     evaluate_prelude(&lua)?;

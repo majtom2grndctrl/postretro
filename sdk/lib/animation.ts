@@ -7,7 +7,7 @@
 // dispatch. The handle's implementation closure knows which descriptor
 // channel to drive.
 //
-// See: context/lib/scripting.md §7.
+// See: context/lib/scripting.md §7 (Animation capabilities).
 
 import type { Vec3 } from "postretro";
 import type { SequenceStep } from "./data_script";
@@ -26,7 +26,7 @@ export interface AnimatableScalar<Channel extends string> {
 
 /** Capability for entities with a vec3 animation channel. */
 export interface AnimatableVec3<Channel extends string> {
-  /** Uniform cycle through the given vectors over `periodMs`. */
+  /** Uniform cycle through the given vectors over `periodMs`. No handle composes this directly — vec3 channels are declared with channel-named methods (`colorShift`, `sweep`) on the handle to avoid TypeScript method-name collision. This interface documents the algorithm shape for future handles. */
   cycle(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
   readonly __channel?: Channel;
 }

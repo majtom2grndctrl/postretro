@@ -31,12 +31,14 @@ export interface World {
    * Query entities matching the filter. The return type is selected by
    * the literal `component` string: `"light"` yields `LightEntityHandle[]`
    * (carrying `pulse` / `fade` / `flicker` / `colorShift` / `sweep`
-   * capability methods); `"emitter"` yields handles
-   * carrying the full `BillboardEmitterComponent` snapshot under `component`;
-   * any other component name yields base `Entity[]` (id, position, tags).
+   * capability methods); `"fog_volume"` yields `FogVolumeHandle[]` (carrying
+   * `pulse` / `fade` / `flicker` / `pulseSaturation` / `fadeSaturation`
+   * capability methods); `"emitter"` yields handles carrying the full
+   * `BillboardEmitterComponent` snapshot under `component`; any other
+   * component name yields base `Entity[]` (id, position, tags).
    *
-   * Supported component strings: `"light"`, `"transform"`, `"emitter"`,
-   * `"particle"`, `"sprite_visual"`. Note that `"particle"` and
+   * Supported component strings: `"light"`, `"fog_volume"`, `"transform"`,
+   * `"emitter"`, `"particle"`, `"sprite_visual"`. Note that `"particle"` and
    * `"sprite_visual"` always return `[]` (engine-managed; scripts never
    * iterate individual particles or sprite visuals). Unknown component
    * strings throw `InvalidArgument` at runtime.

@@ -42,10 +42,10 @@ const FLICKER_PATTERN: ReadonlyArray<number> = [
   0.95, 0.40, 1.00, 0.72, 0.15, 0.88, 0.30, 0.65,
 ];
 
-// 17 samples (16 + 1 wrap): the linear sampler treats N samples as N-1
-// intervals on [0, 1]; the wrap sample encodes cyclic intent so the
-// final interval interpolates cleanly back to the start rather than
-// snapping. See the long-form note that lived on the old `fogPulse`.
+// 17 samples (16 + 1 wrap): fog uses a CPU linear sampler that treats N
+// samples as N-1 intervals on [0, 1]; the wrap sample closes the final
+// interval so the sine interpolates cleanly back to the start rather than
+// snapping. Lights use GPU Catmull-Rom and don't need the wrap sample.
 function buildPulseSamples(min: number, max: number): number[] {
   const SAMPLES = 16;
   const lo = Math.min(min, max);

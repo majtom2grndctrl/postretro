@@ -21,15 +21,19 @@ export type EntityHandle = {
 }
 
 --- Typed vocabulary object returned from `world:query`.
---- Pass `{ component = "light", tag = "..." }` to get light handle
---- values with `:setAnimation`; `{ component = "emitter", ... }` yields
+--- Pass `{ component = "light", tag = "..." }` to get light handles
+--- with capability methods (`:pulse`, `:fade`, `:flicker`, `:colorShift`,
+--- `:sweep`); `{ component = "fog_volume", ... }` yields fog volume handles
+--- with capability methods (`:pulse`, `:fade`, `:flicker`, `:pulseSaturation`,
+--- `:fadeSaturation`); `{ component = "emitter", ... }` yields
 --- handles carrying the full `BillboardEmitterComponent` snapshot under
 --- `component`; any other component filter returns `EntityHandle` values
 --- (id, position, tags).
 ---
---- Supported component strings: `"light"`, `"transform"`, `"emitter"`,
---- `"particle"`, `"sprite_visual"`. `"particle"` and `"sprite_visual"`
---- always return `{}` (engine-managed). Unknown strings error at runtime.
+--- Supported component strings: `"light"`, `"fog_volume"`, `"transform"`,
+--- `"emitter"`, `"particle"`, `"sprite_visual"`. `"particle"` and
+--- `"sprite_visual"` always return `{}` (engine-managed). Unknown strings
+--- error at runtime.
 export type World = {
   query: (self: World, filter: WorldQueryFilter) -> {EntityHandle},
   --- Current world gravity in m/s² (negative = downward; positive = upward).

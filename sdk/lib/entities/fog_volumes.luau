@@ -15,7 +15,7 @@
 --
 -- Fog ambient color is derived from the SH irradiance volume and is not
 -- settable via script.
--- See docs/scripting-reference.md.
+-- See: context/lib/scripting.md §10.2 (fog reaction primitives).
 -- ---------------------------------------------------------------------
 
 -- `EntityId`, `FogAnimation`, `FogVolumeComponent`, `FogVolumeEntity`,

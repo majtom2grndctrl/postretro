@@ -353,12 +353,13 @@ impl<'js> FromJs<'js> for ComponentValue {
             }
             "light" => {
                 // setComponent("light",...) is intentionally blocked — scripts
-                // use the LightEntity handle's setAnimation method instead.
+                // use LightEntityHandle capability methods to animate lights.
                 let _ = o;
                 Err(rquickjs::Exception::throw_type(
                     ctx,
                     "LightComponent is read-only via setComponent; \
-                     use a LightEntity handle's setAnimation method instead",
+                     use a LightEntityHandle capability method (pulse, fade, flicker, colorShift, or sweep) \
+                     to build a setLightAnimation reaction step",
                 ))
             }
             "billboard_emitter" | "particle_state" | "sprite_visual" => {
@@ -562,7 +563,8 @@ impl FromLua for ComponentValue {
                 let _ = t;
                 Err(mlua::Error::RuntimeError(
                     "LightComponent is read-only via setComponent; \
-                     use a LightEntity handle's setAnimation method instead"
+                     use a LightEntityHandle capability method (pulse, fade, flicker, colorShift, or sweep) \
+                     to build a setLightAnimation reaction step"
                         .to_string(),
                 ))
             }

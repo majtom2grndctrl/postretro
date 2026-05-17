@@ -111,25 +111,35 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Construct stage cache. Default dir = <workspace-root>/.prl-cache/.
-    let cache_dir = cache::find_workspace_root(args.input.as_ref())
-        .unwrap_or_else(|| {
-            args.input
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .to_path_buf()
-        })
-        .join(".prl-cache");
-    let stage_cache = match cache::StageCache::new(&cache_dir) {
-        Ok(c) => {
-            log::info!("[prl-build] cache directory: {}", cache_dir.display());
-            Some(c)
-        }
-        Err(e) => {
-            log::warn!(
-                "[prl-build] cache disabled: failed to create {}: {e}",
-                cache_dir.display()
-            );
-            None
+    // --no-cache disables the cache entirely (no directory is created).
+    // --cache-dir <path> overrides the default location. When both flags are
+    // supplied, --no-cache wins.
+    let stage_cache: Option<cache::StageCache> = if args.no_cache {
+        log::info!("[prl-build] cache disabled via --no-cache");
+        None
+    } else {
+        let dir = args.cache_dir.clone().unwrap_or_else(|| {
+            cache::find_workspace_root(args.input.as_ref())
+                .unwrap_or_else(|| {
+                    args.input
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .to_path_buf()
+                })
+                .join(".prl-cache")
+        });
+        match cache::StageCache::new(&dir) {
+            Ok(c) => {
+                log::info!("[prl-build] cache directory: {}", dir.display());
+                Some(c)
+            }
+            Err(e) => {
+                log::warn!(
+                    "[prl-build] cache disabled: failed to create {}: {e}",
+                    dir.display()
+                );
+                None
+            }
         }
     };
 
@@ -543,6 +553,10 @@ struct Args {
     probe_spacing: f32,
     /// Starting density in meters; baker retries at coarser densities on atlas overflow.
     lightmap_density: f32,
+    /// Override cache directory. None = use the workspace-root default.
+    cache_dir: Option<PathBuf>,
+    /// When true, bypass cache reads and writes entirely.
+    no_cache: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -559,6 +573,8 @@ where
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
     let mut lightmap_density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS;
+    let mut cache_dir: Option<PathBuf> = None;
+    let mut no_cache = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -603,6 +619,15 @@ where
                 }
                 lightmap_density = parsed;
             }
+            "--cache-dir" => {
+                let path = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--cache-dir requires a path"))?;
+                cache_dir = Some(PathBuf::from(path));
+            }
+            "--no-cache" => {
+                no_cache = true;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -615,7 +640,8 @@ where
     let input = input.ok_or_else(|| {
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
-             [--format <FORMAT>] [--probe-spacing <METERS>] [--lightmap-density <METERS>]"
+             [--format <FORMAT>] [--probe-spacing <METERS>] [--lightmap-density <METERS>] \
+             [--cache-dir <PATH>] [--no-cache]"
         )
     })?;
 
@@ -628,6 +654,8 @@ where
         format,
         probe_spacing,
         lightmap_density,
+        cache_dir,
+        no_cache,
     })
 }
 
@@ -960,6 +988,38 @@ mod tests {
         let args = vec!["input.map".to_string(), "--format".to_string()];
         let result = parse_args_from(args.into_iter());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_args_no_cache_flag() {
+        let args = vec!["input.map".to_string(), "--no-cache".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(parsed.no_cache);
+    }
+
+    #[test]
+    fn parse_args_cache_dir_flag() {
+        let args = vec![
+            "input.map".to_string(),
+            "--cache-dir".to_string(),
+            "/tmp/my-cache".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.cache_dir, Some(PathBuf::from("/tmp/my-cache")));
+    }
+
+    #[test]
+    fn parse_args_cache_dir_requires_value() {
+        let args = vec!["input.map".to_string(), "--cache-dir".to_string()];
+        assert!(parse_args_from(args.into_iter()).is_err());
+    }
+
+    #[test]
+    fn parse_args_no_cache_defaults() {
+        let args = vec!["input.map".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(!parsed.no_cache);
+        assert!(parsed.cache_dir.is_none());
     }
 
     #[test]

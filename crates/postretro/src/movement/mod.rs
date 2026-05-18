@@ -507,6 +507,8 @@ mod tests {
             fall: FallParams {
                 terminal_velocity: 40.0,
             },
+            stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
+            stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
         }
     }
 

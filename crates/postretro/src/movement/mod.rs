@@ -286,7 +286,14 @@ pub(crate) fn tick(
         }
     }
 
-    if component.velocity.y <= 0.0 {
+    // Wall slide can project a small +vy when the capsule corners the edge of a
+    // riser; clamp here so the ground-stick guard below still fires and prevents
+    // the corner contact from latching the player above the floor.
+    if was_grounded && !events.jumped && component.velocity.y > 0.0 {
+        component.velocity.y = 0.0;
+    }
+
+    if was_grounded && component.velocity.y <= 0.0 {
         let step_height = component.ground.step_height;
         if step_height > 0.0 {
             let down_hit = cast_capsule(
@@ -294,7 +301,8 @@ pub(crate) fn tick(
                 Point::new(current_pos.x, current_pos.y, current_pos.z),
                 &capsule,
                 Vector::new(0.0, -1.0, 0.0),
-                step_height,
+                // covers step_height + 0.05 lift + 0.02 skin + headroom
+                step_height + 0.1,
             );
             if let Some(h) = down_hit {
                 let n = Vec3::new(h.normal2.x, h.normal2.y, h.normal2.z);
@@ -699,6 +707,175 @@ mod tests {
             mesh,
             isometry: Isometry::identity(),
         }
+    }
+
+    // Regression: step-up lift (step_height + 0.05) exceeded the ground-stick
+    // down-cast range (step_height), so a wall-walking player oscillated between
+    // lifted-and-airborne and snapped-to-floor states each tick — visible as
+    // ~0.35 m camera jitter.
+    #[test]
+    fn wall_slide_does_not_bounce_y() {
+        let desc = canonical_descriptor();
+        let world = ledge_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        let ledge_y = 0.3 + desc.capsule.half_height + desc.capsule.radius;
+
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 5, &idle);
+
+        let walk = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        for _ in 0..300 {
+            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            pos = next;
+            if pos.x > 14.0 && pos.y > ledge_y - 0.05 {
+                break;
+            }
+        }
+        assert!(
+            pos.x > 13.5,
+            "setup: player should reach ledge near wall, got x={}",
+            pos.x
+        );
+
+        let mut y_samples = Vec::with_capacity(60);
+        let mut grounded_after_settle = Vec::with_capacity(60);
+        for i in 0..60 {
+            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            pos = next;
+            y_samples.push(pos.y);
+            if i >= 5 {
+                grounded_after_settle.push(comp.is_grounded);
+            }
+        }
+        let y_min = y_samples.iter().cloned().fold(f32::INFINITY, f32::min);
+        let y_max = y_samples.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            y_max - y_min < 0.03,
+            "wall-pinned y envelope should stay within skin width, got {} (min={}, max={})",
+            y_max - y_min,
+            y_min,
+            y_max
+        );
+        let non_grounded = grounded_after_settle.iter().filter(|g| !*g).count();
+        assert!(
+            non_grounded <= 2,
+            "is_grounded should be stable; got {} non-grounded ticks out of {}",
+            non_grounded,
+            grounded_after_settle.len()
+        );
+    }
+
+    #[test]
+    fn walking_along_wall_keeps_horizontal_speed() {
+        let desc = canonical_descriptor();
+        let world = ledge_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        let ledge_y = 0.3 + desc.capsule.half_height + desc.capsule.radius;
+
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 5, &idle);
+
+        let walk = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        for _ in 0..300 {
+            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            pos = next;
+            if pos.x > 14.0 && pos.y > ledge_y - 0.05 {
+                break;
+            }
+        }
+
+        let z_start = pos.z;
+        let diag = MovementInput {
+            wish_dir: Vec2::new(1.0, 1.0).normalize(),
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        for _ in 0..120 {
+            let (next, _ev) = tick(&mut comp, &diag, &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        let z_advance = (pos.z - z_start).abs();
+        let min_z_advance = desc.ground.speed * (120.0 / 60.0) * 0.5;
+        assert!(
+            z_advance >= min_z_advance,
+            "tangential -Z advance should be >= {}, got {}",
+            min_z_advance,
+            z_advance
+        );
+        let h_speed = (comp.velocity.x.powi(2) + comp.velocity.z.powi(2)).sqrt();
+        assert!(
+            h_speed > desc.ground.speed * 0.4,
+            "horizontal speed after 120 ticks should exceed {}, got {}",
+            desc.ground.speed * 0.4,
+            h_speed
+        );
+    }
+
+    #[test]
+    fn walking_into_wall_y_stable_per_tick() {
+        let desc = canonical_descriptor();
+        let world = ledge_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        let ledge_y = 0.3 + desc.capsule.half_height + desc.capsule.radius;
+
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 5, &idle);
+
+        let walk = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        for _ in 0..300 {
+            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            pos = next;
+            if pos.x > 14.0 && pos.y > ledge_y - 0.05 {
+                break;
+            }
+        }
+
+        let wall_contact_x = 15.0 - desc.capsule.radius - 0.05;
+        let mut prev_y = pos.y;
+        let mut in_contact = false;
+        for _ in 0..60 {
+            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            pos = next;
+            if pos.x >= wall_contact_x {
+                in_contact = true;
+            }
+            if in_contact {
+                let dy = (pos.y - prev_y).abs();
+                assert!(
+                    dy < 0.03,
+                    "per-tick |dy| should stay within skin width after wall contact, got {} (prev_y={}, y={})",
+                    dy,
+                    prev_y,
+                    pos.y
+                );
+            }
+            prev_y = pos.y;
+        }
+        assert!(in_contact, "test setup: should have reached wall contact");
     }
 
     // Regression: capsule pressed against a wall produced TOI=0 every sweep

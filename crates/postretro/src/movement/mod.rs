@@ -272,10 +272,23 @@ pub(crate) fn tick(
         component.velocity.y = 0.0;
     }
 
+    // Stuck-stop deadzone bookkeeping. `slide_start_xz` lets the post-loop
+    // check measure horizontal progress this tick. `last_wall_normal` carries
+    // the most recent non-floor contact normal so we can detect a *second*
+    // wall normal pointing in a significantly different horizontal direction
+    // within the same tick — the corner-wedge case that produces orbital
+    // jitter. `max_iters_exhausted` is bookkeeping reserved for a future
+    // widening of the heuristic; it is intentionally unused today.
+    let slide_start_xz = Vec2::new(current_pos.x, current_pos.z);
+    let mut last_wall_normal: Option<Vec3> = None;
+    let mut multi_wall_contact_seen = false;
+    let mut max_iters_exhausted = true;
+
     for _ in 0..4 {
         let velocity = component.velocity;
         let speed = velocity.length();
         if speed < 1e-6 || remaining_dt <= 0.0 {
+            max_iters_exhausted = false;
             break;
         }
         let dir = velocity / speed;
@@ -291,6 +304,7 @@ pub(crate) fn tick(
         match hit {
             None => {
                 current_pos += velocity * remaining_dt;
+                max_iters_exhausted = false;
                 break;
             }
             Some(h) => {
@@ -316,6 +330,32 @@ pub(crate) fn tick(
                         consumed = natural_consumed;
                     }
                 } else {
+                    // Non-floor (wall-ish) contact. Track for the corner-wedge
+                    // detector: a second wall normal pointing in a different
+                    // horizontal direction within the same tick means the
+                    // slide loop is bouncing between two walls — a signature
+                    // of the orbital-jitter pattern.
+                    let horiz_n = Vec3::new(normal.x, 0.0, normal.z);
+                    if let Some(prev) = last_wall_normal {
+                        let prev_len_sq = prev.length_squared();
+                        let cur_len_sq = horiz_n.length_squared();
+                        if prev_len_sq > 1e-6 && cur_len_sq > 1e-6 {
+                            let cos_between =
+                                prev.dot(horiz_n) / (prev_len_sq.sqrt() * cur_len_sq.sqrt());
+                            // cos <= 0.5 ⇒ angle >= 60° between the two
+                            // horizontal wall normals. A clean wall slide
+                            // re-hits the same surface (cos ~ 1); any
+                            // significantly different horizontal normal in
+                            // the same tick means we've contacted a second
+                            // wall (corner / inside angle), which is the
+                            // wedge case that produces the orbital pattern.
+                            if cos_between <= 0.5 {
+                                multi_wall_contact_seen = true;
+                            }
+                        }
+                    }
+                    last_wall_normal = Some(horiz_n);
+
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
                     if toi <= 1e-6 {
@@ -330,9 +370,44 @@ pub(crate) fn tick(
             }
         }
         if consumed <= 0.0 {
+            max_iters_exhausted = false;
             break;
         }
     }
+
+    // Stuck-stop deadzone: classic Quake/Source corner-wedge mitigation.
+    // Fires only when the slide loop saw two wall contacts whose horizontal
+    // normals differ by >= 60° within the same tick AND total net horizontal
+    // displacement was below `stuck_stop_threshold`. That is the geometric
+    // signature of a corner wedge — the capsule alternated between two
+    // distinct wall projections (commonly perpendicular interior corners)
+    // without making meaningful forward progress.
+    //
+    // When triggered we zero `velocity.x`/`velocity.z` and roll back the
+    // horizontal component of `current_pos` to its pre-slide value, neutering
+    // the per-iteration 0.025 m skin-distance pushes that constitute the
+    // orbital jitter. `velocity.y` and any vertical motion from gravity /
+    // step-up / ground-stick are preserved so the rest of the tick (and
+    // future ticks) handle gravity correctly.
+    //
+    // We deliberately do NOT trigger on "max iterations + low displacement"
+    // alone: a player walking straight into a flat wall also exhausts the
+    // iteration budget and has near-zero net displacement, yet must keep
+    // their tangential velocity for natural wall slide. Net displacement
+    // cannot distinguish the two cases — second-wall contact can.
+    if component.stuck_stop_enabled && multi_wall_contact_seen {
+        let horiz_disp = (Vec2::new(current_pos.x, current_pos.z) - slide_start_xz).length();
+        if horiz_disp < component.stuck_stop_threshold {
+            component.velocity.x = 0.0;
+            component.velocity.z = 0.0;
+            current_pos.x = slide_start_xz.x;
+            current_pos.z = slide_start_xz.y;
+        }
+    }
+    // Detector-only side-channel: avoid an unused-binding warning when the
+    // deadzone path does not consume `max_iters_exhausted`. Keeping the
+    // bookkeeping is intentional in case the heuristic is widened later.
+    let _ = max_iters_exhausted;
 
     // Wall slide can project a small +vy when the capsule corners the edge of a
     // riser; clamp here so the ground-stick guard below still fires and prevents
@@ -1118,6 +1193,242 @@ mod tests {
             "player should slide along -Z while pinned to the wall: z_before={}, z_after={}",
             z_before,
             pos.z
+        );
+    }
+
+    /// Two perpendicular walls forming an interior corner at (x=5, z=5),
+    /// floor below at y=0. The east wall (x=5, y∈[0,5], z∈[-20,5]) and the
+    /// north wall (x∈[-20,5], y∈[0,5], z=5) meet at a 90° interior corner so
+    /// a player driven into the corner experiences both wall normals (-X, -Z)
+    /// in the same tick — the geometric setup the deadzone targets.
+    fn corner_world() -> CollisionWorld {
+        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+
+        // Floor.
+        let f0 = points.len() as u32;
+        points.push(Point::new(-20.0, 0.0, -20.0));
+        points.push(Point::new(20.0, 0.0, -20.0));
+        points.push(Point::new(20.0, 0.0, 20.0));
+        points.push(Point::new(-20.0, 0.0, 20.0));
+        tris.push([f0, f0 + 1, f0 + 2]);
+        tris.push([f0, f0 + 2, f0 + 3]);
+
+        // East wall at x=5 facing -X.
+        let e0 = points.len() as u32;
+        points.push(Point::new(5.0, 0.0, -20.0));
+        points.push(Point::new(5.0, 0.0, 5.0));
+        points.push(Point::new(5.0, 5.0, 5.0));
+        points.push(Point::new(5.0, 5.0, -20.0));
+        tris.push([e0, e0 + 1, e0 + 2]);
+        tris.push([e0, e0 + 2, e0 + 3]);
+
+        // North wall at z=5 facing -Z.
+        let n0 = points.len() as u32;
+        points.push(Point::new(-20.0, 0.0, 5.0));
+        points.push(Point::new(-20.0, 5.0, 5.0));
+        points.push(Point::new(5.0, 5.0, 5.0));
+        points.push(Point::new(5.0, 0.0, 5.0));
+        tris.push([n0, n0 + 1, n0 + 2]);
+        tris.push([n0, n0 + 2, n0 + 3]);
+
+        let mesh = TriMesh::new(points, tris);
+        CollisionWorld {
+            mesh,
+            isometry: Isometry::identity(),
+        }
+    }
+
+    /// Drive the player diagonally toward the corner at (x=5, z=5) until the
+    /// capsule is firmly wedged, then return the last 10 tick-boundary (x,z)
+    /// samples. Used by the deadzone tests below.
+    fn wedge_player_in_corner(
+        desc: &PlayerMovementDescriptor,
+        comp: &mut PlayerMovementComponent,
+        pos: &mut Vec3,
+        world: &CollisionWorld,
+    ) -> Vec<(f32, f32)> {
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(comp, world, pos, 10, &idle);
+
+        // facing_yaw=0 ⇒ forward=-Z, so wish_dir=(1,-1).norm() gives input
+        // (+X, 0, +Z): straight at the +X / +Z corner.
+        let toward_corner = MovementInput {
+            wish_dir: Vec2::new(1.0, -1.0).normalize(),
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        // Approach and reach the corner.
+        for _ in 0..240 {
+            let (next, _ev) = tick(comp, &toward_corner, world, GRAVITY, DT, *pos);
+            *pos = next;
+            if pos.x >= 5.0 - desc.capsule.radius - 0.05
+                && pos.z >= 5.0 - desc.capsule.radius - 0.05
+            {
+                break;
+            }
+        }
+        // Press into the corner for 50 ticks so any pinned pattern stabilises.
+        for _ in 0..50 {
+            let (next, _ev) = tick(comp, &toward_corner, world, GRAVITY, DT, *pos);
+            *pos = next;
+        }
+        // Sample the last 10 tick-boundary positions.
+        let mut samples = Vec::with_capacity(10);
+        for _ in 0..10 {
+            let (next, _ev) = tick(comp, &toward_corner, world, GRAVITY, DT, *pos);
+            *pos = next;
+            samples.push((pos.x, pos.z));
+        }
+        samples
+    }
+
+    #[test]
+    fn wedging_into_corner_zeros_horizontal_velocity_when_deadzone_enabled() {
+        let desc = canonical_descriptor();
+        let world = corner_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        assert!(comp.stuck_stop_enabled, "deadzone is on by default");
+
+        let samples = wedge_player_in_corner(&desc, &mut comp, &mut pos, &world);
+        let xs: Vec<f32> = samples.iter().map(|(x, _)| *x).collect();
+        let zs: Vec<f32> = samples.iter().map(|(_, z)| *z).collect();
+        let x_range = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            - xs.iter().cloned().fold(f32::INFINITY, f32::min);
+        let z_range = zs.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            - zs.iter().cloned().fold(f32::INFINITY, f32::min);
+
+        // With the deadzone on, the corner-wedge detector zeroes horizontal
+        // velocity and rolls back XZ when contradictory wall normals appear,
+        // so the player's XZ position is flat across consecutive ticks.
+        let eps = 5.0e-4;
+        assert!(
+            x_range < eps,
+            "deadzone enabled: x range across last 10 ticks should be < {} m, got {}",
+            eps,
+            x_range
+        );
+        assert!(
+            z_range < eps,
+            "deadzone enabled: z range across last 10 ticks should be < {} m, got {}",
+            eps,
+            z_range
+        );
+    }
+
+    #[test]
+    fn wedging_into_corner_keeps_motion_when_deadzone_disabled() {
+        let desc = canonical_descriptor();
+        let world = corner_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        // Disable the deadzone to reproduce the pre-fix orbital pattern.
+        comp.stuck_stop_enabled = false;
+
+        let samples = wedge_player_in_corner(&desc, &mut comp, &mut pos, &world);
+        let xs: Vec<f32> = samples.iter().map(|(x, _)| *x).collect();
+        let zs: Vec<f32> = samples.iter().map(|(_, z)| *z).collect();
+        let x_range = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            - xs.iter().cloned().fold(f32::INFINITY, f32::min);
+        let z_range = zs.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            - zs.iter().cloned().fold(f32::INFINITY, f32::min);
+
+        // Without the deadzone the per-iteration 0.025 m wall skin-pushes
+        // accumulate in alternating directions, producing sub-millimetre to
+        // multi-millimetre XZ wobble each tick. We assert at least one axis
+        // exceeds the deadzone-enabled threshold by an order of magnitude —
+        // this is what proves the flag actually gates behaviour.
+        assert!(
+            x_range.max(z_range) > 5.0e-3,
+            "deadzone disabled: expected XZ wobble > 5e-3 m over 10 ticks, got x_range={}, z_range={}",
+            x_range,
+            z_range
+        );
+    }
+
+    #[test]
+    fn sliding_along_wall_diagonally_not_affected_by_deadzone() {
+        let desc = canonical_descriptor();
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        assert!(comp.stuck_stop_enabled);
+
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 5, &idle);
+
+        let diag = MovementInput {
+            wish_dir: Vec2::new(1.0, 1.0).normalize(),
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        for _ in 0..200 {
+            let (next, _ev) = tick(&mut comp, &diag, &world, GRAVITY, DT, pos);
+            pos = next;
+            if pos.x >= 5.0 - desc.capsule.radius - 0.05 {
+                break;
+            }
+        }
+        // facing_yaw=0 ⇒ forward=-Z; diagonal input (right+forward) gives
+        // (+X, 0, -Z). Wall projects out +X but -Z slide must remain.
+        let z_before = pos.z;
+        for _ in 0..60 {
+            let (next, _ev) = tick(&mut comp, &diag, &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        let z_advance = z_before - pos.z;
+        assert!(
+            z_advance > 1.0,
+            "diagonal wall slide should still produce tangential -Z motion with deadzone on: z_before={}, z_after={}, advance={}",
+            z_before,
+            pos.z,
+            z_advance
+        );
+    }
+
+    #[test]
+    fn walking_along_flat_floor_not_affected_by_deadzone() {
+        let desc = canonical_descriptor();
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        assert!(comp.stuck_stop_enabled);
+
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle);
+
+        let walk = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        let x_start = pos.x;
+        // 30 ticks (0.5 s) at 7 m/s ⇒ comfortably >1.5 m on open floor.
+        for _ in 0..30 {
+            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        let advance = pos.x - x_start;
+        assert!(
+            advance > 1.5,
+            "flat-floor walk should advance > 1.5 m in 30 ticks, got {}",
+            advance
+        );
+        let h_speed = (comp.velocity.x.powi(2) + comp.velocity.z.powi(2)).sqrt();
+        assert!(
+            h_speed > desc.ground.speed * 0.8,
+            "flat-floor walk should keep h_speed near ground.speed={}, got {}",
+            desc.ground.speed,
+            h_speed
         );
     }
 }

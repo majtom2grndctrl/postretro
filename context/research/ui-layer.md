@@ -6,7 +6,7 @@
 > **Read this when:** thinking about how PostRetro will render HUDs, menus,
 > dialogs, minigame chrome, and how modders author the same. Captures the
 > architectural shape before any code lands.
-> **Key invariant:** scripts declare widget trees and state slots; Rust owns
+> **Key invariant:** scripts declare widget trees and state values; Rust owns
 > the live UI. No script VM runs continuously to drive UI.
 > **Related:** `context/lib/scripting.md` · `context/lib/entity_model.md` ·
 > `context/lib/rendering_pipeline.md` · `context/lib/index.md`
@@ -32,7 +32,7 @@ in Rust, covers the surface area without a live VM.
 | Principle | Invariant |
 |-----------|-----------|
 | **Declare, don't drive.** | Scripts emit widget descriptors at load time. Rust owns the live tree, layout, and dispatch. |
-| **State slots are the only dynamic surface.** | Built-in slots (e.g. `player.health`) and user-declared slots are the named values widgets bind to. Renderer reads slots each frame. |
+| **State values are the only dynamic surface.** | Engine-owned values (e.g. `player.health`) and modder-declared values are what widgets bind to. Renderer dereferences `StateValue<T>` handles each frame. |
 | **Reactions are the only event surface.** | UI events (input, focus, threshold crossings) fire pre-registered reactions from the engine-global reaction registry. |
 | **Renderer owns GPU.** | UI is one more pass in the renderer module. Layout produces draw commands; submission stays inside renderer. |
 | **Retro by default, capable underneath.** | Bitmap-grid layout, blocky panels, pixel snapping. Underlying stack supports shaped text and flex for SDK richness. |
@@ -44,7 +44,7 @@ in Rust, covers the surface area without a live VM.
 Three concepts cover the surface:
 
 - **Descriptors** — object literals registered once at level/mod load.
-- **State slots** — named, typed values owned by Rust. Widgets bind to them.
+- **State** — named, typed values owned by Rust. Declared via `defineState`; widgets bind via `StateValue<T>` handles.
 - **Reactions** — pre-registered tag-targeted Rust handlers. UI events resolve
   to reactions; no script callback fires at runtime.
 
@@ -179,21 +179,54 @@ default theme.
 
 ---
 
-## 9. State Slot Contract
+## 9. State API
 
-A state slot is a named, typed value owned by Rust. Widgets bind by name;
-reactions trigger on threshold crossings.
+Rust owns all authoritative state. Because of that, the script-side API sheds the entire Redux ceremony — no actions, reducers, selectors, middleware, derived state, or async wiring in script. Rust handles coalescing writes within a frame, persistence for marked values, schema validation and clamping, change broadcast, read-only enforcement for engine-owned values, defaults, and reset.
+
+State is declared in namespaced modules using `defineState`. The namespace lives in the export name, not in a string key. Property access is real property access, not bracket-with-dotted-string.
+
+```ts
+// Proposed design — content/scripts/state.ts
+import { defineState } from "postretro/state"
+
+export const audio = defineState("audio", {
+  master: { type: "number", default: 80, range: [0, 100], persist: true },
+  music:  { type: "number", default: 70, range: [0, 100], persist: true },
+  sfx:    { type: "number", default: 90, range: [0, 100], persist: true },
+})
+
+export const a11y = defineState("a11y", {
+  subtitles: { type: "boolean", default: false, persist: true },
+  captions:  { type: "boolean", default: true,  persist: true },
+})
+
+export const menu = defineState("menu", {
+  currentTab: { type: "enum", values: ["audio", "video", "input", "a11y"], default: "audio" },
+})
+
+// Engine-owned: scripts can read, cannot write.
+export const player = defineState("player", {
+  health: { type: "number", readonly: true },
+  armor:  { type: "number", readonly: true },
+})
+```
+
+`StateValue<T>` is the per-value handle. Three operations:
+
+- `audio.master` — the handle. Pass to descriptors as a binding.
+- `audio.master.get()` — read current value. Legal only inside handlers.
+- `audio.master.set(v)` — write. Legal only inside handlers.
+- `audio.master.reset()` — restore declared default.
+
+**Handles vs. imperative I/O.** Descriptors take handles; the engine dereferences them at render time. Handlers do imperative I/O via `.get()` and `.set()`. Calling `.get()` during descriptor build captures a stale snapshot — exactly the bug the model prevents.
 
 | Aspect | Behavior |
 |--------|----------|
-| **Built-in slots** | Engine publishes `player.health`, `player.armor`, `player.ammo.<weapon>`, `player.weapon.current`, `level.name`, `hud.objective`. Stable names; survive refactor. |
-| **User-declared slots** | `registerState({ name, type, default })` at load time. Stored in the engine slot table. Updated via `setState(name, value)` reactions. |
-| **Types** | Scalar (number, bool, string), tuple (vec2/vec3/color), enum (named string variants), array (homogeneous). No nested objects. Flat surface. |
-| **Update path** | Game logic writes; UI reads. Writes from script context happen via reactions, never directly from a live VM. |
-| **Diffing** | Renderer compares slot values across frames to invalidate cached layout regions. |
-
-Widgets bind by dotted slot path: `bind: "player.ammo.current"`. Format
-templates may pull related slots: `format: "{}/{player.ammo.max}"`.
+| **Engine-owned values** | `player.health`, `player.armor`, `player.ammo.<weapon>`, `player.weapon.current`, `level.name`, `hud.objective`. Stable names; survive refactor. `readonly: true` — scripts read, cannot write. |
+| **Modder-declared values** | `defineState(namespace, schema)` at load time. Types: number, boolean, string, enum, array. No nested objects. Flat surface. |
+| **Persistence** | `persist: true` survives map transitions. Rust serializes and restores on engine start. |
+| **Update path** | Game logic writes engine-owned values. Handlers write modder-declared values. No writes from descriptor build time. |
+| **Diffing** | Renderer compares values across frames to invalidate cached layout regions. |
 
 ---
 
@@ -305,7 +338,9 @@ The SDK exposes a thin TS/Luau vocabulary that produces descriptor object
 literals. Same pattern as `flicker` and `pulse` for lights — helpers return
 plain data; registration primitives consume the data.
 
-**Canonical authoring surface: factory functions with positional children.**
+### Authoring surface
+
+**Canonical form: factory functions with positional children.**
 Capitalized component names. The lineage is Compose and SwiftUI, not React or
 HTML. That framing is deliberate: there is no CSS cascade, no event bubbling,
 no document flow, no `querySelector`. Modders who arrive expecting React
@@ -344,20 +379,220 @@ prefer it.
 Both forms compile down to the same descriptor object the engine ingests.
 Helpers exist for ergonomics and IDE completion.
 
-**SDK file layout** mirrors the entity-domain convention from
-`scripting.md` §7:
+### Modder-defined components
+
+Components are plain functions. No `defineComponent` wrapper, no decorator, no
+inheritance. Same call shape as SDK built-ins — props object first, children
+positional after. A modder-defined component is indistinguishable from an SDK
+widget at the call site.
+
+```ts
+// Proposed design
+type PanelProps = {
+  title: string                 // required
+  hint?: string                 // optional
+  background?: "panel" | "panelMuted"
+}
+
+export const Panel = (props: PanelProps, ...children: Node[]) =>
+  VStack({ gap: 8, padding: 12, background: props.background ?? "panel" },
+    Text({ text: props.title, style: "panelTitle" }),
+    props.hint ? Text({ text: props.hint, style: "panelHint" }) : null,
+    ...children,
+  )
+```
+
+Prop conventions: required props bare, optional with `?:`, constrained string
+unions for enum-like values, `StateValue<T>` for reactive values, `HandlerRef`
+for callbacks (never a raw closure), children as `...children: Node[]`.
+
+### Accessibility via the type system
+
+Interactive widget types require either `label: string` or `labelledBy: NodeId`.
+The descriptor won't construct without one. Same applies to inputs, toggles,
+and sliders. Accessibility stops being a checklist and becomes a precondition
+for compilation.
+
+`Announce` is a first-class node type, not an attribute:
+
+```ts
+// Proposed design
+Announce({ priority: "polite" }, "Picked up shotgun shells")
+```
+
+The type system enforces several additional classes of correctness. Branded
+`StateValue<T>` prevents binding a boolean state handle to a numeric widget.
+Template-literal-typed intent names prevent typos in event wiring:
+
+```ts
+// Proposed design
+type Intent<S extends string> = ...
+// "menu.confirm" ✓    "menu.confrim" — type error
+```
+
+Discriminated unions per descriptor kind narrow props per kind, so
+widget-specific props can't leak across widget types.
+
+The framework's job: keep modders inside the lines without making the lines
+feel restrictive. Whole classes of bugs — unlabeled interactive elements,
+dangling intents, mistyped state bindings — become impossible to author.
+
+**i18n note.** Accessible names take plain `string` for now. `LocalizedText`
+is a planned future tightening: swap the type alias, regenerate, fix the
+resulting type errors. The structural accessibility obligations survive that
+change because they constrain shape, not content.
+
+### Focus model
+
+Focus comes from tree order by default. Containers declare navigation policy
+via a `focus` prop:
+
+- `focus: "linear"` — top-to-bottom for `VStack`, left-to-right for `HStack`.
+  Respects RTL when layout direction is set.
+- `focus: "spatial"` — grids and free layouts. Nearest-neighbor on D-pad /
+  stick direction.
+- `focus: { mode: "linear", wrap: true, initial: "resume", repeat: { initialDelayMs: 350, intervalMs: 90 } }` — richer policy with wrapping, initial focus hint, and hold-to-repeat rate.
+
+Per-node override for cases where the spatial guess would be wrong:
+`focusNeighbors: { right: "rifle" }`.
+
+`initialFocus` is a screen-level concern, not a per-node concern.
+`restoreOnReturn: true` on a container makes focus sticky across navigations.
+
+```ts
+// Proposed design
+VStack({ focus: "linear" },
+  Button({ id: "resume", label: "Resume", onPress: resume }),
+  Button({ id: "settings", label: "Settings", onPress: openSettings }),
+  Button({ id: "quit", label: "Quit to menu", onPress: quit }),
+)
+
+Grid({ cols: 3, focus: "spatial" }, ...)
+
+HStack({ focus: "spatial" },
+  VStack({ id: "tabs", focus: { mode: "linear", onCommit: "panel" } }, ...),
+  VStack({ id: "panel", focus: { mode: "linear", restoreOnReturn: true } }, ...),
+)
+
+Screen({ initialFocus: "resume" },
+  // ...
+)
+```
+
+There is no `focusOrder: number` field. Tree order is the default order;
+policy props override at the container boundary.
+
+### Deviations from Compose / SwiftUI
+
+The lineage is Compose and SwiftUI. Where we deviate:
+
+- **Declare-then-drop, no recomposition.** Descriptors are declared once and
+  handed to Rust. No `remember {}`, no recomposition keys, no diffing in
+  script.
+- **Named state, not implicit reactivity.** No `@State` / `remember`. Values
+  come from `defineState` namespaces and are explicitly bound via
+  `StateValue<T>` handles.
+- **Property objects, not modifier chains.** `Box({ padding: 8, background: "panel" }, …)` instead of `.padding(8).background(…)`. Less elegant on one axis; serializable, inspectable, and mechanically translatable to Luau on every other axis.
+- **Named handler references, not closures.** `onPress: handlerRef` resolves
+  to a registered handler. Forced by the JSON-as-descriptor model; the side
+  benefit is mod-overridable, discoverable, analyzable handlers.
+- **Input intents over pointer events.** Game UI is gamepad-first. See §16.
+- **`styleRanges` and `onStateCrossing` as first-class primitives.**
+  Continuous-value → style interpolation and discrete-threshold callbacks are
+  central HUD primitives, not afterthoughts.
+
+The unifying theme: where Compose and SwiftUI rely on host-language ergonomics
+and runtime reactivity to make UI pleasant, this model uses the type system and
+an engine-managed state model to make whole classes of UI bugs impossible to
+author.
+
+### SDK file layout
+
+Mirrors the entity-domain convention from `scripting.md` §7:
 
 - `sdk/lib/ui/widgets.{ts,luau}` — widget constructors.
-- `sdk/lib/ui/layout.{ts,luau}` — `vstack`, `hstack`, `grid`, `spacer`.
+- `sdk/lib/ui/layout.{ts,luau}` — `VStack`, `HStack`, `Grid`, `Spacer`.
 - `sdk/lib/ui/theme.{ts,luau}` — theme registration helpers.
-- `sdk/lib/ui/state.{ts,luau}` — `registerState`, `setState`,
-  `onStateCrossing`.
+- `sdk/lib/ui/state.{ts,luau}` — `defineState`, `onStateCrossing`.
 - `sdk/lib/ui/reactions.{ts,luau}` — `flashScreen`, `playSound`, `rumble`,
   `showDialog`, `openMenu`.
 
 ---
 
-## 16. Minigames as Built-in Entity Types
+## 16. Input Model
+
+Mouse-first click-event models break when a player picks up a controller. Game
+UI input is a small state machine, not a sequence of pointer events. Three
+things real game UIs handle that a click model elides:
+
+### Navigation intents vs. widget-internal intents
+
+D-pad Left on a focused list navigates to the previous sibling. D-pad Left on a
+focused slider adjusts its value. Widgets get first refusal on directional
+intents via a `capturesNav` prop:
+
+```ts
+// Proposed design
+Slider({
+  label: "Master volume",
+  value: audio.master,
+  min: 0, max: 100, step: 5,
+  capturesNav: ["nav.left", "nav.right"],   // focused slider eats horizontal nav
+})
+```
+
+When `capturesNav` is set, the listed intents are consumed by the widget before
+the container's navigation policy sees them. Widgets without `capturesNav` let
+all directional intents fall through to the container.
+
+Nav intents are template-literal-typed to catch typos at compile time:
+
+```ts
+// Proposed design
+export type NavIntent =
+  | "nav.up" | "nav.down" | "nav.left" | "nav.right"
+  | "nav.next" | "nav.prev"
+  | "nav.confirm" | "nav.cancel"
+  | "nav.menu" | "nav.options"
+```
+
+### Hold-to-repeat
+
+Declared at the container's `focus` policy, not on individual handlers. Holding
+D-pad Down walks a list at roughly 6 steps/sec, not 60. The rate is
+configurable:
+
+```ts
+// Proposed design
+VStack({
+  focus: { mode: "linear", repeat: { initialDelayMs: 350, intervalMs: 90 } },
+}, ...)
+```
+
+Omitting `repeat` gives a single-fire response per press. Repeat only applies
+to navigation intents; confirm/cancel never repeat.
+
+### Input-mode switching
+
+Mouse motion → pointer mode (cursor visible, focus ring hidden). Stick or D-pad
+press → focus mode (cursor hidden, focus ring visible). The engine manages the
+transition; the current mode is a `StateValue<InputMode>` that any descriptor
+can read:
+
+```ts
+// Proposed design
+import { input } from "postretro/state"
+
+Cursor({ visibleWhen: input.mode, equals: "pointer" })
+FocusRing({ visibleWhen: input.mode, equals: "focus" })
+```
+
+Scripts do not manage input mode. The engine detects the triggering event and
+updates `input.mode`. Descriptors bound to it rerender when the value changes.
+
+---
+
+## 17. Minigames as Built-in Entity Types
 
 Novel simulations (lockpick, hacking puzzle, dialogue tree) live as built-in
 ECS entity types in Rust, configured declaratively. Same shape as
@@ -385,7 +620,7 @@ is a deliberate boundary: scripts do not simulate.
 
 ---
 
-## 17. Lifecycle
+## 18. Lifecycle
 
 | Stage | What happens |
 |-------|--------------|
@@ -399,7 +634,7 @@ vs. per-level registries are the same shape, separate Rust structures.
 
 ---
 
-## 18. Open Questions
+## 19. Open Questions
 
 - **Localization.** String IDs vs. inline literals. How modders ship
   translations. Likely a string table per locale registered like theme tokens.
@@ -421,7 +656,7 @@ vs. per-level registries are the same shape, separate Rust structures.
 
 ---
 
-## 19. Non-Goals
+## 20. Non-Goals
 
 - Live scripting VM driving UI logic.
 - Per-frame script callbacks.

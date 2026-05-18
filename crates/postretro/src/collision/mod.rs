@@ -20,7 +20,7 @@
 //! See: `context/lib/entity_model.md` §7.
 
 use parry3d::math::{Isometry, Point, Vector};
-use parry3d::query::{ShapeCastHit, ShapeCastOptions, cast_shapes};
+use parry3d::query::{Ray, RayCast, RayIntersection, ShapeCastHit, ShapeCastOptions, cast_shapes};
 use parry3d::shape::{Capsule, TriMesh};
 
 use crate::prl::LevelWorld;
@@ -105,10 +105,22 @@ impl Default for CollisionWorld {
     }
 }
 
+/// Capsule sweep skin distance, Quake's DIST_EPSILON analogue scaled for the
+/// 0.4 m player radius. Parry returns hits when separation falls below this
+/// value, so the swept capsule never actually touches geometry — it rests
+/// `SKIN_DISTANCE` away. The slide loop in `movement::tick` relies on this
+/// separation for clearance; do not duplicate the offset by pushing again.
+pub(crate) const SKIN_DISTANCE: f32 = 0.02;
+
 /// Sweep a capsule through the world trimesh along `dir` up to `max_toi`
 /// distance. The capsule's isometry sits at `pos` with identity rotation —
 /// the capsule's `+Y` axis maps directly to world `+Y`, matching the
 /// player-capsule convention documented at the top of this module.
+///
+/// `target_distance: SKIN_DISTANCE` keeps the capsule that far from surfaces.
+/// Paired with `stop_at_penetration: false` so parry sweeps cleanly when the
+/// capsule starts in contact — otherwise resting contact produces TOI=0 and
+/// stalls the sweep-and-slide loop in `movement::tick`.
 ///
 /// Returns `None` when no impact occurs within `max_toi`. `cast_shapes` also
 /// returns `Err` for unsupported shape pairs, but that is impossible for
@@ -126,7 +138,8 @@ pub(crate) fn cast_capsule(
     let vel2 = Vector::zeros();
     let options = ShapeCastOptions {
         max_time_of_impact: max_toi,
-        stop_at_penetration: true,
+        target_distance: SKIN_DISTANCE,
+        stop_at_penetration: false,
         ..Default::default()
     };
     cast_shapes(
@@ -142,11 +155,26 @@ pub(crate) fn cast_capsule(
     .flatten()
 }
 
+/// Cast a ray through the world trimesh, returning the first intersection
+/// (with normal). `solid = true` so the ray exits a triangle hit on the back
+/// face — matches the conventions used by the movement code's ground-stick
+/// fallback.
+pub(crate) fn cast_ray(
+    world: &CollisionWorld,
+    origin: Point<f32>,
+    dir: Vector<f32>,
+    max_toi: f32,
+) -> Option<RayIntersection> {
+    let ray = Ray::new(origin, dir);
+    world
+        .mesh
+        .cast_ray_and_get_normal(&world.isometry, &ray, max_toi, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use parry3d::math::Vector;
-    use parry3d::query::{Ray, RayCast};
 
     /// Two-triangle floor at y=0 spanning the XZ plane from (-1,-1) to (1,1).
     /// Used as a fixture for ray-cast verification independent of PRL plumbing.

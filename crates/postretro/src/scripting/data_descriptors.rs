@@ -136,6 +136,21 @@ pub(crate) struct PlayerMovementDescriptor {
     pub(crate) ground: GroundParams,
     pub(crate) air: AirParams,
     pub(crate) fall: FallParams,
+    /// Stuck-stop deadzone enable flag. See `PlayerMovementComponent` for
+    /// trigger semantics. Defaults to `true`; the JS/Luau parsers fall back
+    /// to this default when the field is omitted, keeping the deadzone
+    /// opt-out (not opt-in) for existing authored descriptors.
+    pub(crate) stuck_stop_enabled: bool,
+    /// Horizontal-displacement threshold (metres) gating the deadzone. See
+    /// `PlayerMovementComponent` for tuning rationale. Defaults to `1.0e-3`.
+    pub(crate) stuck_stop_threshold: f32,
+}
+
+impl PlayerMovementDescriptor {
+    /// Default values for the stuck-stop fields. Used by the JS/Luau parsers
+    /// when the descriptor omits them so existing scripts keep working.
+    pub(crate) const DEFAULT_STUCK_STOP_ENABLED: bool = true;
+    pub(crate) const DEFAULT_STUCK_STOP_THRESHOLD: f32 = 1.0e-3;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -621,11 +636,23 @@ fn movement_descriptor_from_js<'js>(
         )?,
     };
 
+    // Stuck-stop deadzone fields are optional at the wire layer: omitting
+    // them yields the canonical defaults so descriptors authored before the
+    // deadzone shipped continue to parse.
+    let stuck_stop_enabled = get_optional_bool_js(obj, "stuckStopEnabled")?
+        .unwrap_or(PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED);
+    let stuck_stop_threshold = match get_optional_f32_js(obj, "stuckStopThreshold")? {
+        Some(v) => validate_non_negative_finite(v, "movement.stuckStopThreshold")?,
+        None => PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+    };
+
     Ok(PlayerMovementDescriptor {
         capsule,
         ground,
         air,
         fall,
+        stuck_stop_enabled,
+        stuck_stop_threshold,
     })
 }
 
@@ -722,6 +749,52 @@ fn get_required_string_js<'js>(
         return Err(DescriptorError::MissingField { field });
     }
     String::from_js_value_required(raw, field)
+}
+
+/// Read an optional boolean field; returns `Ok(None)` when the key is absent
+/// or null/undefined, `Err` when the key is present but the value is not a
+/// boolean. Used by descriptor fields that have a meaningful default.
+fn get_optional_bool_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<bool>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    raw.as_bool()
+        .map(Some)
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: format!("'{field}' must be a boolean"),
+        })
+}
+
+/// Read an optional finite f32 field. Returns `Ok(None)` when absent/null,
+/// `Err` when present but non-numeric. Numeric values are returned as-is;
+/// callers are responsible for range validation.
+fn get_optional_f32_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<f32>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    if let Some(i) = raw.as_int() {
+        return Ok(Some(i as f32));
+    }
+    if let Some(f) = raw.as_float() {
+        return Ok(Some(f as f32));
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: format!("'{field}' must be a number"),
+    })
 }
 
 fn get_required_f32_js<'js>(
@@ -1114,11 +1187,21 @@ fn movement_descriptor_from_lua(
         )?,
     };
 
+    // Optional at the wire layer; see JS parser for rationale.
+    let stuck_stop_enabled = get_optional_bool_lua(table, "stuckStopEnabled")?
+        .unwrap_or(PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED);
+    let stuck_stop_threshold = match get_optional_f32_lua(table, "stuckStopThreshold")? {
+        Some(v) => validate_non_negative_finite(v, "movement.stuckStopThreshold")?,
+        None => PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+    };
+
     Ok(PlayerMovementDescriptor {
         capsule,
         ground,
         air,
         fall,
+        stuck_stop_enabled,
+        stuck_stop_threshold,
     })
 }
 
@@ -1173,6 +1256,45 @@ fn get_required_f32_lua(table: &Table, field: &'static str) -> Result<f32, Descr
         LuaValue::Nil => Err(DescriptorError::MissingField { field }),
         LuaValue::Integer(i) => Ok(i as f32),
         LuaValue::Number(f) => Ok(f as f32),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("'{field}' must be a number, got {}", other.type_name()),
+        }),
+    }
+}
+
+/// Optional boolean read for the Luau path: absent/nil → `None`, present
+/// non-boolean → `Err`. Mirrors `get_optional_bool_js`.
+fn get_optional_bool_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<bool>, DescriptorError> {
+    if !table.contains_key(field).map_err(lua_err)? {
+        return Ok(None);
+    }
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Boolean(b) => Ok(Some(b)),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("'{field}' must be a boolean, got {}", other.type_name()),
+        }),
+    }
+}
+
+/// Optional f32 read for the Luau path: absent/nil → `None`, present
+/// non-numeric → `Err`. Range validation is the caller's responsibility.
+fn get_optional_f32_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<f32>, DescriptorError> {
+    if !table.contains_key(field).map_err(lua_err)? {
+        return Ok(None);
+    }
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Integer(i) => Ok(Some(i as f32)),
+        LuaValue::Number(f) => Ok(Some(f as f32)),
         other => Err(DescriptorError::InvalidShape {
             reason: format!("'{field}' must be a number, got {}", other.type_name()),
         }),
@@ -1937,5 +2059,134 @@ mod tests {
         let m = d.movement.expect("movement present");
         assert_eq!(m.air.jumps, 0);
         assert_eq!(m.air.jump_ceiling, 0.0);
+    }
+
+    // --- stuck_stop_* parsing ----------------------------------------------
+
+    #[test]
+    fn js_movement_stuck_stop_defaults_when_omitted() {
+        // The deadzone fields are optional on the wire; omitting them yields
+        // the canonical defaults (enabled, 1e-3 threshold).
+        let d = eval_js(JS_PLAYER_MOVEMENT, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap()
+        });
+        let m = d.movement.expect("movement present");
+        assert!(m.stuck_stop_enabled);
+        assert_eq!(m.stuck_stop_threshold, 1.0e-3);
+    }
+
+    #[test]
+    fn js_movement_stuck_stop_explicit_values_parse() {
+        let src = r#"({
+            canonicalName: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 },
+                    stuckStopEnabled: false,
+                    stuckStopThreshold: 0.005
+                }
+            }
+        })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let m = d.movement.expect("movement present");
+        assert!(!m.stuck_stop_enabled);
+        assert_eq!(m.stuck_stop_threshold, 0.005);
+    }
+
+    #[test]
+    fn js_movement_stuck_stop_threshold_negative_is_rejected() {
+        let src = r#"({
+            canonicalName: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 },
+                    stuckStopThreshold: -0.1
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_stuck_stop_enabled_wrong_type_is_rejected() {
+        let src = r#"({
+            canonicalName: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
+                    ground: { speed: 7.0, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 },
+                    stuckStopEnabled: "yes"
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_stuck_stop_defaults_when_omitted() {
+        let src = r#"return {
+            canonicalName = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
+                    ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        let m = d.movement.expect("movement present");
+        assert!(m.stuck_stop_enabled);
+        assert_eq!(m.stuck_stop_threshold, 1.0e-3);
+    }
+
+    #[test]
+    fn lua_movement_stuck_stop_explicit_values_parse() {
+        let src = r#"return {
+            canonicalName = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
+                    ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 },
+                    stuckStopEnabled = false,
+                    stuckStopThreshold = 0.005
+                }
+            }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        let m = d.movement.expect("movement present");
+        assert!(!m.stuck_stop_enabled);
+        assert_eq!(m.stuck_stop_threshold, 0.005);
+    }
+
+    #[test]
+    fn lua_movement_stuck_stop_threshold_negative_is_rejected() {
+        let src = r#"return {
+            canonicalName = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
+                    ground = { speed = 7.0, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 },
+                    stuckStopThreshold = -0.1
+                }
+            }
+        }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 }

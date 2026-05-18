@@ -184,6 +184,16 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("ground", "GroundParams", "On-ground locomotion parameters.")
         .field("air", "AirParams", "Mid-air control parameters.")
         .field("fall", "FallParams", "Falling parameters.")
+        .field(
+            "stuckStopEnabled?",
+            "bool",
+            "Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true.",
+        )
+        .field(
+            "stuckStopThreshold?",
+            "f32",
+            "Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3.",
+        )
         .finish();
     registry
         .register_type("CapsuleParams")

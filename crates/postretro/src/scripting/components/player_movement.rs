@@ -31,6 +31,21 @@ pub(crate) struct PlayerMovementComponent {
     /// normal walking. Reset to 0 on any tick with floor contact; incremented
     /// otherwise.
     pub(crate) air_ticks: u32,
+    /// Stuck-stop deadzone: when enabled, the slide loop zeroes horizontal
+    /// velocity and rolls back XZ position when contradictory wall normals
+    /// (≥60° apart horizontally) are seen within the same tick AND net
+    /// horizontal displacement is below `stuck_stop_threshold`. This is the
+    /// geometric signature of a corner wedge; max-iteration exhaustion alone
+    /// does not trigger it. Suppresses orbital jitter in interior corners.
+    /// Disable for gameplay scenarios that want looser physics-driven
+    /// micro-motion.
+    pub(crate) stuck_stop_enabled: bool,
+    /// Horizontal-displacement threshold (metres). The deadzone fires only
+    /// when contradictory wall normals were seen and net XZ displacement
+    /// this tick is below this value. Tuned well below a single tick's
+    /// normal displacement at the canonical ground speed (7 m/s × 1/60 s ≈
+    /// 0.117 m) yet above floating-point and skin-distance noise (~1e-4 m).
+    pub(crate) stuck_stop_threshold: f32,
 }
 
 impl PlayerMovementComponent {
@@ -50,6 +65,8 @@ impl PlayerMovementComponent {
             velocity: Vec3::ZERO,
             air_jumps_remaining,
             air_ticks: 0,
+            stuck_stop_enabled: desc.stuck_stop_enabled,
+            stuck_stop_threshold: desc.stuck_stop_threshold,
         }
     }
 }

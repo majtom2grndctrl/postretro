@@ -1221,6 +1221,10 @@ declare module \"postretro\" {
     air: AirParams;
     /** Falling parameters. */
     fall: FallParams;
+    /** Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true. */
+    stuckStopEnabled?: boolean;
+    /** Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3. */
+    stuckStopThreshold?: number;
   };
 
   /** Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`. `eyeHeight` is the camera attachment point measured upward from the capsule center. */
@@ -1401,6 +1405,10 @@ export type PlayerMovementDescriptor = {
   air: AirParams,
   --- Falling parameters.
   fall: FallParams,
+  --- Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true.
+  stuckStopEnabled: boolean?,
+  --- Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3.
+  stuckStopThreshold: number?,
 }
 
 --- Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`. `eyeHeight` is the camera attachment point measured upward from the capsule center.

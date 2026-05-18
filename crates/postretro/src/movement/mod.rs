@@ -63,6 +63,76 @@ fn wish_dir_from_input(input: Vec2, facing_yaw: f32) -> Vec3 {
     }
 }
 
+/// Returns the lifted position if a step-up commit is warranted: horizontal
+/// motion is blocked by a wall-like surface AND a walkable surface exists
+/// within `step_height + skin` below the lifted capsule. Returns `None` for
+/// pure walls (nothing walkable above) so the slide loop handles them via
+/// plane projection without a 0.35 m intra-tick excursion.
+fn step_up_lift(
+    collision_world: &CollisionWorld,
+    capsule: &Capsule,
+    current_pos: Vec3,
+    horiz_vel: Vec3,
+    horiz_speed: f32,
+    step_height: f32,
+    cos_walkable: f32,
+    remaining_dt: f32,
+    radius: f32,
+) -> Option<Vec3> {
+    if horiz_speed <= 1e-4 || step_height <= 0.0 {
+        return None;
+    }
+    let dir = horiz_vel / horiz_speed;
+    let probe_dist = (horiz_speed * remaining_dt).max(step_height + radius);
+    let probe = cast_capsule(
+        collision_world,
+        Point::new(current_pos.x, current_pos.y, current_pos.z),
+        capsule,
+        Vector::new(dir.x, dir.y, dir.z),
+        probe_dist,
+    )?;
+    if !(probe.time_of_impact < probe_dist && probe.normal2.y.abs() < cos_walkable) {
+        return None;
+    }
+    // Margin must exceed cast_capsule's target_distance (0.02) so the lifted
+    // hemisphere clears the step's top edge without parry reporting an
+    // immediate skin-contact hit.
+    let lifted = current_pos + Vec3::new(0.0, step_height + 0.05, 0.0);
+    let lifted_probe = cast_capsule(
+        collision_world,
+        Point::new(lifted.x, lifted.y, lifted.z),
+        capsule,
+        Vector::new(dir.x, dir.y, dir.z),
+        probe_dist,
+    );
+    let lifted_clear = match lifted_probe {
+        None => true,
+        Some(h) => h.time_of_impact >= probe_dist - 1e-4,
+    };
+    if !lifted_clear {
+        return None;
+    }
+    // Sample beneath a point advanced past the obstacle: at decision time the
+    // capsule center is still over whatever was below `current_pos` (typically
+    // the lower floor for a step), so probing straight down from `lifted`
+    // would miss a higher walkable surface that only exists past the riser.
+    let sample = lifted + dir * (probe.time_of_impact + radius + 0.02);
+    let down_probe = cast_capsule(
+        collision_world,
+        Point::new(sample.x, sample.y, sample.z),
+        capsule,
+        Vector::new(0.0, -1.0, 0.0),
+        step_height + 0.1,
+    );
+    let lifted_lands_on_walkable = match down_probe {
+        Some(h) => h.normal2.y >= cos_walkable,
+        None => false,
+    };
+    // TEMP: disable Solution 2 to confirm pre-fix test failures.
+    let _ = lifted_lands_on_walkable;
+    Some(lifted)
+}
+
 pub(crate) fn tick(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -174,49 +244,25 @@ pub(crate) fn tick(
     let mut remaining_dt = dt;
     let mut hit_floor_this_tick = false;
 
-    // Step-up probe before the main loop: if horizontal motion is blocked by
-    // a wall-like surface, try lifting by `step_height` and re-casting. If
-    // the lifted cast clears the same distance, commit the lift. Only wall-like
-    // normals (|ny| < cos_walkable) trigger a lift — floor contact must be
-    // excluded or the capsule would teleport upward every tick while resting.
+    // Step-up probe before the main loop: lift only commits when a wall-like
+    // obstacle is in front AND a walkable surface sits beneath the lifted
+    // position. Pure walls skip the lift to avoid intra-tick camera jitter.
     let horiz_vel = Vec3::new(component.velocity.x, 0.0, component.velocity.z);
     let horiz_speed = horiz_vel.length();
     let step_height = component.ground.step_height;
-    if component.is_grounded && horiz_speed > 1e-4 && step_height > 0.0 {
-        let dir = horiz_vel / horiz_speed;
-        // Lookahead must cover capsule.radius beyond the leading edge so the probe
-        // detects obstacles the capsule isn't yet touching. step_height + radius
-        // guarantees detection when the capsule center is a full radius away from
-        // the riser — otherwise the player can stop before step-up ever fires.
-        let probe_dist = (horiz_speed * remaining_dt).max(step_height + component.capsule.radius);
-        let probe = cast_capsule(
+    if component.is_grounded {
+        if let Some(lifted) = step_up_lift(
             collision_world,
-            Point::new(current_pos.x, current_pos.y, current_pos.z),
             &capsule,
-            Vector::new(dir.x, dir.y, dir.z),
-            probe_dist,
-        );
-        if let Some(hit) = probe {
-            if hit.time_of_impact < probe_dist && hit.normal2.y.abs() < component.cos_walkable {
-                // Margin must exceed cast_capsule's target_distance (0.02) so the
-                // lifted hemisphere clears the step's top edge without parry
-                // reporting an immediate skin-contact hit.
-                let lifted = current_pos + Vec3::new(0.0, step_height + 0.05, 0.0);
-                let lifted_probe = cast_capsule(
-                    collision_world,
-                    Point::new(lifted.x, lifted.y, lifted.z),
-                    &capsule,
-                    Vector::new(dir.x, dir.y, dir.z),
-                    probe_dist,
-                );
-                let lifted_clear = match lifted_probe {
-                    None => true,
-                    Some(h) => h.time_of_impact >= probe_dist - 1e-4,
-                };
-                if lifted_clear {
-                    current_pos = lifted;
-                }
-            }
+            current_pos,
+            horiz_vel,
+            horiz_speed,
+            step_height,
+            component.cos_walkable,
+            remaining_dt,
+            component.capsule.radius,
+        ) {
+            current_pos = lifted;
         }
     }
 
@@ -874,6 +920,143 @@ mod tests {
                 );
             }
             prev_y = pos.y;
+        }
+        assert!(in_contact, "test setup: should have reached wall contact");
+    }
+
+    // Regression: step-up probe lifted ~0.35 m every tick when walking into a
+    // pure wall (no walkable surface above). Ground-stick snapped back within
+    // the tick, but the intra-tick excursion produced visible camera jitter.
+    // Direct unit test: pure wall → None.
+    #[test]
+    fn step_up_lift_returns_none_at_pure_wall() {
+        let desc = canonical_descriptor();
+        let world = flat_floor_and_wall_world();
+        let capsule = Capsule::new(
+            Point::new(0.0, -desc.capsule.half_height, 0.0),
+            Point::new(0.0, desc.capsule.half_height, 0.0),
+            desc.capsule.radius,
+        );
+        let cos_walkable = desc.ground.max_slope.to_radians().cos();
+        let floor_y = desc.capsule.half_height + desc.capsule.radius;
+        // Position the capsule just shy of the wall (wall at x=5) so the
+        // forward probe hits it on the first cast.
+        let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y, 0.0);
+        let horiz_vel = Vec3::new(desc.ground.speed, 0.0, 0.0);
+        let horiz_speed = horiz_vel.length();
+
+        let result = step_up_lift(
+            &world,
+            &capsule,
+            current_pos,
+            horiz_vel,
+            horiz_speed,
+            desc.ground.step_height,
+            cos_walkable,
+            DT,
+            desc.capsule.radius,
+        );
+        assert!(
+            result.is_none(),
+            "step_up_lift should return None at a pure wall, got {:?}",
+            result
+        );
+    }
+
+    // Direct unit test: walkable step → Some(lifted) at step_height + 0.05.
+    #[test]
+    fn step_up_lift_returns_some_at_walkable_step() {
+        let desc = canonical_descriptor();
+        let world = ledge_and_wall_world();
+        let capsule = Capsule::new(
+            Point::new(0.0, -desc.capsule.half_height, 0.0),
+            Point::new(0.0, desc.capsule.half_height, 0.0),
+            desc.capsule.radius,
+        );
+        let cos_walkable = desc.ground.max_slope.to_radians().cos();
+        let floor_y = desc.capsule.half_height + desc.capsule.radius;
+        // Approach the step riser at x=5 from the floor side. Lift the
+        // capsule slightly above the floor so the forward probe doesn't
+        // return the floor contact (toi=0, normal +Y) before reaching the
+        // riser.
+        let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y + 0.05, 0.0);
+        let horiz_vel = Vec3::new(desc.ground.speed, 0.0, 0.0);
+        let horiz_speed = horiz_vel.length();
+
+        let result = step_up_lift(
+            &world,
+            &capsule,
+            current_pos,
+            horiz_vel,
+            horiz_speed,
+            desc.ground.step_height,
+            cos_walkable,
+            DT,
+            desc.capsule.radius,
+        );
+        let lifted = result.expect("step_up_lift should return Some at a walkable step");
+        let expected_y = current_pos.y + desc.ground.step_height + 0.05;
+        assert!(
+            approx_eq(lifted.y, expected_y, POS_EPS),
+            "lifted y should be {} (current + step_height + 0.05), got {}",
+            expected_y,
+            lifted.y
+        );
+        assert!(
+            approx_eq(lifted.x, current_pos.x, POS_EPS)
+                && approx_eq(lifted.z, current_pos.z, POS_EPS),
+            "lift should preserve horizontal position, got {:?}",
+            lifted
+        );
+    }
+
+    // Regression: walking into a pure wall produced visible vertical camera
+    // jitter even though tick-boundary `pos.y` snapped back via ground-stick.
+    // Solution 2: step-up only commits when walkable surface exists above.
+    #[test]
+    fn walking_into_wall_y_stays_at_floor() {
+        let desc = canonical_descriptor();
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        let floor_y = desc.capsule.half_height + desc.capsule.radius;
+
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle);
+        let settle_y = pos.y;
+        assert!(
+            (settle_y - floor_y).abs() < 0.02,
+            "test setup: should settle near floor_y={}, got {}",
+            floor_y,
+            settle_y
+        );
+
+        let walk = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            facing_yaw: 0.0,
+        };
+        let wall_contact_x = 5.0 - desc.capsule.radius - 0.05;
+        let mut in_contact = false;
+        for _ in 0..120 {
+            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            pos = next;
+            if pos.x >= wall_contact_x {
+                in_contact = true;
+            }
+            if in_contact {
+                // Compare to settle_y, not floor_y: cast_capsule's 0.02 skin
+                // means the resting capsule sits ~0.02 above geometric floor_y.
+                assert!(
+                    (pos.y - settle_y).abs() < 0.01,
+                    "wall-walking y should stay within 0.01 of settle_y={}, got {}",
+                    settle_y,
+                    pos.y
+                );
+            }
         }
         assert!(in_contact, "test setup: should have reached wall contact");
     }

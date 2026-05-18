@@ -128,9 +128,11 @@ fn step_up_lift(
         Some(h) => h.normal2.y >= cos_walkable,
         None => false,
     };
-    // TEMP: disable Solution 2 to confirm pre-fix test failures.
-    let _ = lifted_lands_on_walkable;
-    Some(lifted)
+    if lifted_lands_on_walkable {
+        Some(lifted)
+    } else {
+        None
+    }
 }
 
 pub(crate) fn tick(
@@ -940,8 +942,9 @@ mod tests {
         let cos_walkable = desc.ground.max_slope.to_radians().cos();
         let floor_y = desc.capsule.half_height + desc.capsule.radius;
         // Position the capsule just shy of the wall (wall at x=5) so the
-        // forward probe hits it on the first cast.
-        let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y, 0.0);
+        // forward probe hits it on the first cast. Lifted slightly above the
+        // floor so the forward probe finds the wall (not the floor contact).
+        let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y + 0.05, 0.0);
         let horiz_vel = Vec3::new(desc.ground.speed, 0.0, 0.0);
         let horiz_speed = horiz_vel.length();
 

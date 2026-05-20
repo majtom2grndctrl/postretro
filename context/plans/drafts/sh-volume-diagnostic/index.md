@@ -24,7 +24,7 @@ Add an in-engine visual diagnostic for baked SH irradiance volumes: wireframe AA
 
 ### Out of scope
 
-- New PRL sections — base grid + delta grids already carry origin, cell_size, and grid_dimensions. Adding a per-delta-volume `targetname` string to the existing `DeltaShVolumes` section is the **only** PRL change in scope.
+- New PRL sections — base grid + delta grids already carry origin, cell_size, and grid_dimensions. Adding a per-delta-volume `targetname` string to the existing `DeltaShVolumesSection` section is the **only** PRL change in scope.
 - Per-probe SH coefficient inspection (numeric readout, dominant-direction arrows, sphere shading by SH).
 - Picking / clicking individual probes in the 3D view.
 - Highlighting the cell the camera is currently inside — that's visually obvious without help.
@@ -33,7 +33,7 @@ Add an in-engine visual diagnostic for baked SH irradiance volumes: wireframe AA
 
 ## Acceptance criteria
 
-- [ ] With the debug panel open and "Show base volume AABB" enabled, a wireframe box bounding the entire SH grid is visible, depth-tested against the world but drawn after world geometry so it shows through transparent walls only where the world allows.
+- [ ] With the debug panel open and "Show base volume AABB" enabled, a wireframe box bounding the entire SH grid is visible, depth-tested against the opaque depth buffer; lines behind opaque geometry are hidden; transparent geometry (billboards, fog) does not occlude lines.
 - [ ] With "Show base-grid cells" enabled, cells within the configured camera radius are drawn as wireframe boxes; cells outside the radius are not drawn. Visible cells render green; cells fully outside the camera frustum or occluded by portal culling render cyan. Toggling off restores the bare AABB or hides geometry entirely depending on the other toggles.
 - [ ] Cell-draw radius slider changes which cells are drawn in real time; reducing the radius reduces the number of cells visible.
 - [ ] With "Show probe markers" enabled, every probe position has a small 3-axis cross marker; in validity mode, markers in solid leaves render red and markers in playable leaves render green.
@@ -70,7 +70,7 @@ Extend `draw_diagnostics_panel` (or add a sibling panel — implementer's call) 
 
 ## Rough sketch
 
-- New module: `crates/postretro/src/render/debug_lines.rs` — `DebugLineRenderer { vertex_buf, pipeline, segments: Vec<DebugLineVertex> }`. `push_line`, `push_aabb`, `push_marker` helpers. Drawn from a new render pass scheduled in `Renderer::render_frame` between the world overlay pass and egui.
+- New module: `crates/postretro/src/render/debug_lines.rs` — `DebugLineRenderer { vertex_buf, pipeline, segments: Vec<DebugLineVertex> }`. `push_line`, `push_aabb`, `push_marker` helpers. Drawn from a new render pass scheduled in `Renderer::render_frame_indirect` after the fog composite pass and before egui.
 - New module: `crates/postretro/src/render/sh_diagnostics.rs` — `ShDiagnosticsState` (panel-bound), `emit(state, sh: &ShVolumeResources, lines: &mut DebugLineRenderer)`.
 - Cell-radius culling: iterate only cells whose center is within `radius` of the camera; map each cell to its containing leaf (or AABB-test against the visible-cell set) for the green/cyan color decision, mirroring the world wireframe's cull-status coloring.
 - Probe validity access: `ShVolumeResources` today holds GPU textures only; add a CPU-side `Vec<u8>` (one byte per probe) populated at load time. Cheap — for a typical map this is a few thousand bytes.

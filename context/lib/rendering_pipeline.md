@@ -198,6 +198,10 @@ Camera position and orientation produce a view matrix each frame, feeding:
 
 Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter support for `TIMESTAMP_QUERY`; silently disabled if the feature is absent. Passes measured: `cull`, `animated_lm_compose`, `depth_prepass`, `forward`. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. Use with `RUST_LOG=info` to see output.
 
+### Debug-Line Renderer
+
+`dev-tools` only. Immediate-mode API: per-frame CPU buffer of `(start, end, color_rgba)` line segments uploaded to a `LineList` vertex buffer and drawn after the fog composite pass and before egui. Depth test on (matching world render target sample count), depth write off — lines occlude against opaque geometry only. Buffer cleared each frame; capped at a fixed segment limit (overflow: log + truncate). First consumer: SH volume diagnostic overlay.
+
 ---
 
 ## 12. Non-Goals

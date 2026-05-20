@@ -17,17 +17,17 @@ Add an in-engine visual diagnostic for baked SH irradiance volumes: wireframe AA
   - Marker scale slider.
   - Cell-draw radius slider (world units).
   - Per-animated-light list: toggle each delta volume's AABB independently; "all on" / "all off" buttons.
-- Cell wireframes are colored by camera-visibility, matching the existing world-wireframe convention: green when the cell intersects the visible set, cyan when frustum/portal-culled.
-- Per-animated-light delta volumes are labeled by the originating light entity's `targetname` (threaded through the bake into PRL); when a light has no `targetname`, the row falls back to `Delta light #N`.
-- Visualizations sample the same `ShVolumeResources` state the renderer already holds; no duplicate CPU mirror of probe data.
-- Tool is gated behind the existing `dev-tools` feature flag (same as the rest of the debug UI).
+- Cell wireframes colored by camera-visibility: green when the cell intersects the visible set, cyan when frustum/portal-culled. Coloring derived from the existing per-leaf cull set (option a): each cell is colored by the leaf its center sits in.
+- Per-animated-light delta volumes labeled by index (`Delta light #N`).
+- Tool is gated behind the existing `dev-tools` feature flag.
 
 ### Out of scope
 
-- New PRL sections — base grid + delta grids already carry origin, cell_size, and grid_dimensions. Adding a per-delta-volume `targetname` string to the existing `DeltaShVolumesSection` section is the **only** PRL change in scope.
+- PRL changes — base grid and delta grids already carry origin, cell_size, and grid_dimensions. No PRL sections added or modified.
+- Compiler changes — no `targetname` plumbing; `Delta light #N` labels are sufficient for v1.
 - Per-probe SH coefficient inspection (numeric readout, dominant-direction arrows, sphere shading by SH).
 - Picking / clicking individual probes in the 3D view.
-- Highlighting the cell the camera is currently inside — that's visually obvious without help.
+- Highlighting the cell the camera is currently inside — visually obvious without help.
 - Reordering or restructuring the existing world-wireframe pipeline (`Alt+Shift+Backslash`); the new debug-line API is additive.
 - A separate debug build target or CLI dump from `prl-build`.
 
@@ -38,7 +38,7 @@ Add an in-engine visual diagnostic for baked SH irradiance volumes: wireframe AA
 - [ ] Cell-draw radius slider changes which cells are drawn in real time; reducing the radius reduces the number of cells visible.
 - [ ] With "Show probe markers" enabled, every probe position has a small 3-axis cross marker; in validity mode, markers in solid leaves render red and markers in playable leaves render green.
 - [ ] Marker scale slider visibly changes marker size in the viewport in real time.
-- [ ] Per animated-light delta volumes, the debug panel lists one row per light, labeled by the light's `targetname` (or `Delta light #N` when no `targetname` was authored); toggling a row's checkbox shows/hides that delta volume's wireframe AABB. "All on" / "all off" affect every row.
+- [ ] Per animated-light delta volumes, the debug panel lists one row per light labeled `Delta light #N`; toggling a row's checkbox shows/hides that delta volume's wireframe AABB. "All on" / "all off" affect every row.
 - [ ] Loading a map with no SH volume section shows the SH diagnostics widget in a disabled state with an explanatory label ("No SH volume baked"); toggles do nothing and no debug geometry is drawn.
 - [ ] Loading a map with an SH volume but zero animated lights shows an empty "Animated light delta volumes" list with an explanatory label; base-volume controls still work.
 - [ ] Disabling the debug panel (Alt+Shift+Backquote) hides all SH diagnostic geometry, regardless of which toggles were on.
@@ -48,37 +48,35 @@ Add an in-engine visual diagnostic for baked SH irradiance volumes: wireframe AA
 
 ### Task 1: Debug-line renderer
 
-Add an additive immediate-mode debug-line API to the renderer module: a per-frame CPU buffer of `(start, end, color_rgba)` line segments uploaded to a small vertex buffer and drawn with `LineList` topology after the world pass and before egui. Pipeline reuses the swapchain color format and the depth buffer (depth test on, depth write off) so lines occlude correctly against world geometry without polluting depth for later passes. Buffer is cleared each frame; the SH diagnostics widget is the first consumer. Existing `wireframe_pipeline` is untouched — that pipeline draws world triangles as lines and serves a different purpose.
+Add an immediate-mode debug-line API to the renderer module: a per-frame CPU buffer of `(start, end, color_rgba)` line segments, capped at a fixed maximum (overflow: log once + truncate). Buffer uploaded to a `LineList` vertex buffer and drawn in `Renderer::render_frame_indirect` after the fog composite pass and before egui. Pipeline: swapchain color format, depth test on (matching the world render target's sample count), depth write off. Buffer cleared each frame. Existing `wireframe_pipeline` is untouched.
 
-### Task 2: PRL — thread animated-light `targetname` into delta volumes
+### Task 2: SH diagnostic geometry emission
 
-Add an optional `name: String` per delta volume to the `DeltaShVolumes` section (section 27). Bumps the section version. Compiler side (`delta_sh_bake.rs` and the upstream entity-parsing path) writes the originating light entity's `targetname` when set, empty string when absent. Loader side reads the field; runtime exposes it via the renderer accessor introduced in Task 3. Pre-release move-fast applies (per `feedback_api_stability`): no compat shim for the old format — old `.prl` files re-bake.
+Add `crates/postretro/src/render/sh_diagnostics.rs`. Each frame, when the debug panel is visible, reads `ShVolumeResources` (base grid origin/cell_size/dimensions, per-probe validity) and `ShDiagnosticsState` (panel-controlled toggles, marker mode, marker scale, cell radius, per-light visibility bitmap) and emits line segments into the debug-line renderer. When the panel is hidden, skip emission entirely.
 
-### Task 3: SH diagnostic geometry emission
+Emit helpers: AABB → 12 edges, grid cell within radius → 12 edges with per-leaf cull color, probe → 3-axis cross (6 segments). Per-probe validity comes from the existing per-probe validity byte baked into section 20; retain it as a CPU-side `Vec<u8>` on `ShVolumeResources` at load time (one byte per probe, z-major order, matching the section layout). Delta volume metadata comes from `Renderer::sh_delta_volumes(&self) -> &[DeltaVolumeMeta]`, where `DeltaVolumeMeta` holds origin / cell_size / grid_dimensions per animated light, sourced from the same data `sh_compose.rs` already loads.
 
-Add an `sh_diagnostics` submodule under `render/` that, each frame, reads `ShVolumeResources` (base grid origin/cell_size/dimensions, per-probe validity, animated-light delta grids and names) plus a small `ShDiagnosticsState` struct (panel-controlled toggles, marker mode, marker scale, cell radius, per-light visibility bitmap) and emits line segments into the debug-line renderer. Helpers: AABB → 12 edges, grid cell within radius → 12 edges with culling color, probe → 3-axis cross marker (6 vertices). Cell visibility / culled coloring uses the same cull-status source feeding the existing world-wireframe pipeline. Probe validity is read from a CPU-side copy of the SH section; if not retained at load today, this task adds retention. Animated-light delta grids and names come from a new `Renderer::sh_delta_volumes()` accessor reading the same data `sh_compose.rs` already loads.
+Add `Renderer::has_sh_volume() -> bool` for the panel to query whether a baked SH volume is present.
 
-### Task 4: Debug panel UI
+### Task 3: Debug panel UI
 
-Extend `draw_diagnostics_panel` (or add a sibling panel — implementer's call) with an "SH Volumes" collapsing section containing the controls listed in scope. Wire each control to a field on `ShDiagnosticsState`, which lives next to `DiagnosticsState` on `DebugUi`. Per-animated-light rows: pull names from the runtime delta-volume list (Task 2 / Task 3); empty names fall back to `Delta light #N`. Seed control state once on first open, mirroring the existing `DiagnosticsState::seeded` pattern.
+Extend `draw_diagnostics_panel` (or add a sibling — implementer's call) with a collapsing "SH Volumes" section containing the controls listed in scope. Wire each control to a field on `ShDiagnosticsState`, which lives alongside `DiagnosticsState` on `DebugUi`. Per-animated-light rows labeled `Delta light #N`. On maps with no SH volume (`has_sh_volume()` returns false), show the disabled-state label; all toggles no-op. Seed control state once on first open, mirroring the existing `DiagnosticsState::seeded` pattern. Per-light bitmap resets on map load.
 
 ## Sequencing
 
-**Phase 1 (concurrent):** Task 1 (debug-line renderer), Task 2 (PRL `name` plumbing) — independent surfaces.
-**Phase 2 (sequential):** Task 3 — consumes Task 1's line API and Task 2's name accessor; introduces `ShDiagnosticsState` shape.
-**Phase 3 (sequential):** Task 4 — depends on the state struct and accessor surface from Task 3.
+**Phase 1 (sequential):** Task 1 — debug-line renderer is a prerequisite for any visualization.
+**Phase 2 (sequential):** Task 2 — consumes Task 1's line API; introduces `ShDiagnosticsState` shape that Task 3 binds against.
+**Phase 3 (sequential):** Task 3 — depends on the state struct and accessor surface from Task 2.
 
 ## Rough sketch
 
-- New module: `crates/postretro/src/render/debug_lines.rs` — `DebugLineRenderer { vertex_buf, pipeline, segments: Vec<DebugLineVertex> }`. `push_line`, `push_aabb`, `push_marker` helpers. Drawn from a new render pass scheduled in `Renderer::render_frame_indirect` after the fog composite pass and before egui.
-- New module: `crates/postretro/src/render/sh_diagnostics.rs` — `ShDiagnosticsState` (panel-bound), `emit(state, sh: &ShVolumeResources, lines: &mut DebugLineRenderer)`.
-- Cell-radius culling: iterate only cells whose center is within `radius` of the camera; map each cell to its containing leaf (or AABB-test against the visible-cell set) for the green/cyan color decision, mirroring the world wireframe's cull-status coloring.
-- Probe validity access: `ShVolumeResources` today holds GPU textures only; add a CPU-side `Vec<u8>` (one byte per probe) populated at load time. Cheap — for a typical map this is a few thousand bytes.
-- Delta volume metadata access: add `Renderer::sh_delta_volumes(&self) -> &[DeltaVolumeMeta]` returning origin / cell_size / grid_dimensions / `name: String` per animated light, sourced from the same data the SH compose path already loads.
-- PRL `name` field: append a length-prefixed UTF-8 string after each delta volume's existing fields in section 27; bump the section version. Empty string when the originating light has no `targetname`.
-- Panel: add a collapsing `egui::CollapsingHeader::new("SH Volumes")` block to `draw_diagnostics_panel`.
+- New module: `crates/postretro/src/render/debug_lines.rs` — `DebugLineRenderer { vertex_buf, pipeline, segments: Vec<DebugLineVertex> }` with a fixed segment cap (tune during Task 1; 256 k segments ≈ 10 MB is a reasonable starting point). `push_line`, `push_aabb`, `push_marker` helpers. Scheduled in `Renderer::render_frame_indirect` after fog composite, before egui. Pipeline sample count matches the world render target.
+- New module: `crates/postretro/src/render/sh_diagnostics.rs` — `ShDiagnosticsState` (panel-bound), `emit(state, sh: &ShVolumeResources, delta_vols: &[DeltaVolumeMeta], lines: &mut DebugLineRenderer)`. Guard: returns immediately when panel is hidden.
+- Probe validity: `ShVolumeResources` gains `validity: Vec<u8>` populated from section 20 at load time.
+- Cell cull color: each cell's center is point-tested into the BSP to find its leaf; the leaf's cull status from the per-leaf cull set determines green vs. cyan, same source as the world-wireframe path.
+- `Renderer::sh_delta_volumes()` + `Renderer::has_sh_volume()` added to the renderer's public accessor surface.
+- Panel: `egui::CollapsingHeader::new("SH Volumes")` block added to `draw_diagnostics_panel`.
 
 ## Open questions
 
-- Cell-radius default: pick a value that shows "the area around the player" without flooding. 8–16 m feels right for typical map scales; tune during Task 3.
-- Cull-status source for cells: the world-wireframe pipeline reads a per-face cull-status buffer. Cells aren't faces — decide whether to (a) reuse the existing per-leaf cull set and color each cell by the leaf its center sits in, or (b) compute a fresh per-cell frustum/portal test in `sh_diagnostics`. Option (a) is cheaper and consistent with how the engine already thinks about visibility; default to (a) unless leaf granularity proves too coarse.
+- Cell-radius default: 8–16 m feels right for typical map scales; tune during Task 2.

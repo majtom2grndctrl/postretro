@@ -297,8 +297,8 @@ fn upload_texture_data(
         view_formats: &[],
     });
 
-    // Mip 0 = caller-supplied data; each subsequent level is a 2×2 box filter
-    // of the previous level. CPU-side because wgpu has no auto-mip generation.
+    // Mip 0 = caller-supplied data; each subsequent level is Lanczos-3 downsampled
+    // from the previous. CPU-side because wgpu has no auto-mip generation.
     let upload_level = |level: u32, level_w: u32, level_h: u32, bytes: &[u8]| {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -342,31 +342,83 @@ fn mip_level_count_for(width: u32, height: u32) -> u32 {
     (width.max(height) as f32).log2().floor() as u32 + 1
 }
 
-// Box-filter downsample to half dimensions. Channel-agnostic; averages each
-// channel independently across the 2×2 source block. Odd dimensions clamp the
-// trailing row/column to a 1× block (still arithmetically correct as an average).
+// Mitchell-Netravali with canonical B=1/3, C=1/3. Support radius 2.
+fn mitchell_netravali(x: f32) -> f32 {
+    const B: f32 = 1.0 / 3.0;
+    const C: f32 = 1.0 / 3.0;
+    let x = x.abs();
+    if x < 1.0 {
+        ((12.0 - 9.0 * B - 6.0 * C) * x * x * x
+            + (-18.0 + 12.0 * B + 6.0 * C) * x * x
+            + (6.0 - 2.0 * B))
+            / 6.0
+    } else if x < 2.0 {
+        ((-B - 6.0 * C) * x * x * x
+            + (6.0 * B + 30.0 * C) * x * x
+            + (-12.0 * B - 48.0 * C) * x
+            + (8.0 * B + 24.0 * C))
+            / 6.0
+    } else {
+        0.0
+    }
+}
+
+// Mitchell-Netravali downsample to half dimensions. Channel-agnostic; separable
+// 1-D horizontal then vertical pass. Clamps source coords to edge (no wrap).
 fn downsample_2x(src: &[u8], src_w: u32, src_h: u32, channels: usize) -> Vec<u8> {
     let dst_w = (src_w / 2).max(1);
     let dst_h = (src_h / 2).max(1);
-    let mut dst = vec![0u8; (dst_w * dst_h) as usize * channels];
     let src_stride = src_w as usize * channels;
-    for y in 0..dst_h {
-        for x in 0..dst_w {
-            let sx0 = (x * 2) as usize;
-            let sy0 = (y * 2) as usize;
-            let sx1 = (sx0 + 1).min(src_w as usize - 1);
-            let sy1 = (sy0 + 1).min(src_h as usize - 1);
-            let p00 = sy0 * src_stride + sx0 * channels;
-            let p10 = sy0 * src_stride + sx1 * channels;
-            let p01 = sy1 * src_stride + sx0 * channels;
-            let p11 = sy1 * src_stride + sx1 * channels;
-            let dst_off = (y as usize * dst_w as usize + x as usize) * channels;
+
+    // Horizontal pass: src_w × src_h → dst_w × src_h (f32 intermediate)
+    let mut horiz = vec![0.0f32; dst_w as usize * src_h as usize * channels];
+    for y in 0..src_h as usize {
+        for x in 0..dst_w as usize {
+            let src_x = (x as f32 + 0.5) * (src_w as f32 / dst_w as f32) - 0.5;
+            let lo = (src_x - 2.0).ceil() as i32;
+            let hi = (src_x + 2.0).floor() as i32;
+            let mut weights = [0.0f32; 4];
+            let mut weight_sum = 0.0f32;
+            for (i, sx) in (lo..=hi).enumerate() {
+                let w = mitchell_netravali(src_x - sx as f32);
+                weights[i] = w;
+                weight_sum += w;
+            }
+            let dst_off = (y * dst_w as usize + x) * channels;
             for c in 0..channels {
-                let sum = src[p00 + c] as u32
-                    + src[p10 + c] as u32
-                    + src[p01 + c] as u32
-                    + src[p11 + c] as u32;
-                dst[dst_off + c] = ((sum + 2) / 4) as u8;
+                let mut acc = 0.0f32;
+                for (i, sx) in (lo..=hi).enumerate() {
+                    let clamped = sx.clamp(0, src_w as i32 - 1) as usize;
+                    acc += src[y * src_stride + clamped * channels + c] as f32 * weights[i];
+                }
+                horiz[dst_off + c] = acc / weight_sum;
+            }
+        }
+    }
+
+    // Vertical pass: dst_w × src_h → dst_w × dst_h (f32 → u8)
+    let horiz_stride = dst_w as usize * channels;
+    let mut dst = vec![0u8; dst_w as usize * dst_h as usize * channels];
+    for y in 0..dst_h as usize {
+        let src_y = (y as f32 + 0.5) * (src_h as f32 / dst_h as f32) - 0.5;
+        let lo = (src_y - 2.0).ceil() as i32;
+        let hi = (src_y + 2.0).floor() as i32;
+        let mut weights = [0.0f32; 4];
+        let mut weight_sum = 0.0f32;
+        for (i, sy) in (lo..=hi).enumerate() {
+            let w = mitchell_netravali(src_y - sy as f32);
+            weights[i] = w;
+            weight_sum += w;
+        }
+        for x in 0..dst_w as usize {
+            let dst_off = (y * dst_w as usize + x) * channels;
+            for c in 0..channels {
+                let mut acc = 0.0f32;
+                for (i, sy) in (lo..=hi).enumerate() {
+                    let clamped = sy.clamp(0, src_h as i32 - 1) as usize;
+                    acc += horiz[clamped * horiz_stride + x * channels + c] as f32 * weights[i];
+                }
+                dst[dst_off + c] = (acc / weight_sum).clamp(0.0, 255.0).round() as u8;
             }
         }
     }
@@ -1125,7 +1177,7 @@ impl Renderer {
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            lod_max_clamp: 8.0,
+            lod_max_clamp: 24.0,
             ..Default::default()
         });
 

@@ -23,6 +23,7 @@ use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sh_volume::ShVolumeSection;
+use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{self as prl_format, SectionId};
 use thiserror::Error;
@@ -147,6 +148,10 @@ pub struct LevelWorld {
     pub leaf_portals: Vec<Vec<usize>>,
     pub has_portals: bool,
     pub texture_names: Vec<String>,
+    /// Per-texture blake3 cache keys (PRL section 32), parallel to `texture_names`.
+    /// Empty when the section is absent (pre-Task-2 PRLs); the texture loader
+    /// degrades to placeholders for entries with no key.
+    pub texture_cache_keys: TextureCacheKeysSection,
     /// Always present — loader rejects files without a BVH section.
     pub bvh: BvhTree,
     /// Empty when section 18 is absent (maps predating lighting foundation).
@@ -335,6 +340,16 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
     let texture_names: Vec<String> = texture_names_section.map(|s| s.names).unwrap_or_default();
+
+    let texture_cache_keys_data =
+        prl_format::read_section_data(&mut cursor, &meta, SectionId::TextureCacheKeys as u32)?;
+    let texture_cache_keys = match texture_cache_keys_data {
+        Some(data) => TextureCacheKeysSection::from_bytes(&data)?,
+        // Pre-Task-2 PRLs predate section 32. Carry an empty section so the
+        // texture loader observes the fixed presence model and degrades each
+        // texture to a placeholder.
+        None => TextureCacheKeysSection { keys: Vec::new() },
+    };
 
     let mut warned_prefixes = HashSet::new();
     let vertices: Vec<WorldVertex> = geom
@@ -845,6 +860,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         leaf_portals,
         has_portals,
         texture_names,
+        texture_cache_keys,
         bvh,
         lights,
         light_influences,
@@ -940,6 +956,7 @@ mod tests {
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
+            texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -995,6 +1012,7 @@ mod tests {
             leaf_portals: vec![vec![]],
             has_portals: false,
             texture_names: vec![],
+            texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -1043,6 +1061,7 @@ mod tests {
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
+            texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -1080,6 +1099,7 @@ mod tests {
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
+            texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],

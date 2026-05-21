@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use wgpu::util::DeviceExt;
 
 use crate::startup::SplashSource;
-use crate::texture::LoadedTexture;
+use crate::ui_texture::UiTexture;
 
 fn resolve_path(source: &SplashSource) -> PathBuf {
     match source {
@@ -19,7 +19,7 @@ fn resolve_path(source: &SplashSource) -> PathBuf {
 
 /// CPU-only decode; no fallback placeholder. Missing base splash = packaging bug;
 /// missing mod splash = mod-author bug. Caller surfaces the error.
-pub(crate) fn load_splash(source: &SplashSource) -> Result<LoadedTexture> {
+pub(crate) fn load_splash(source: &SplashSource) -> Result<UiTexture> {
     let path = resolve_path(source);
 
     let img = image::open(&path)
@@ -27,11 +27,10 @@ pub(crate) fn load_splash(source: &SplashSource) -> Result<LoadedTexture> {
         .to_rgba8();
     let (width, height) = img.dimensions();
 
-    Ok(LoadedTexture {
+    Ok(UiTexture {
         data: img.into_raw(),
         width,
         height,
-        is_placeholder: false,
     })
 }
 
@@ -51,7 +50,7 @@ const SPLASH_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uno
 pub(crate) fn upload_splash_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    loaded: &LoadedTexture,
+    loaded: &UiTexture,
 ) -> (wgpu::Texture, [u32; 2]) {
     let size = wgpu::Extent3d {
         width: loaded.width,
@@ -327,7 +326,6 @@ mod tests {
             (tex.width * tex.height * 4) as usize,
             "RGBA8 byte count matches dimensions",
         );
-        assert!(!tex.is_placeholder, "real splash, not a checkerboard");
     }
 
     #[test]

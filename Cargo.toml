@@ -42,6 +42,9 @@ gilrs = "0.11"
 thiserror = "2"
 anyhow = "1"
 
+# Typed bit flags (e.g. .prm slot mask)
+bitflags = "2"
+
 # Parallelism
 rayon = "1"
 

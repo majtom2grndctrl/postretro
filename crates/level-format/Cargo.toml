@@ -13,6 +13,7 @@ serde = ["dep:serde"]
 serde = { workspace = true, optional = true }
 glam.workspace = true
 thiserror.workspace = true
+bitflags.workspace = true
 
 [dev-dependencies]
 # Microbenchmarks for hot-path helpers (e.g. fog cell-mask OR loop). Pulled in

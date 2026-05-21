@@ -1,5 +1,8 @@
-// Background level-load worker: PRL parse + texture decode + UV normalize.
-// See: context/lib/boot_sequence.md
+// Background level-load worker: PRL parse. Texture decode + GPU upload now
+// run on the main thread from baked `.prm` sidecars (which only the renderer
+// can address). The worker emits the cache-root path so the main thread can
+// locate the sidecars without re-deriving the layout.
+// See: context/lib/boot_sequence.md · context/lib/build_pipeline.md §PRL section IDs · §Baked texture mips
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -7,13 +10,16 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::prl::{self, LevelWorld};
-use crate::texture::{self, TextureSet};
 
 /// Delivered to the main thread after the worker completes. All fields are plain
 /// `Send` — no GPU handles.
 pub(crate) struct LevelPayload {
     pub level: Option<LevelWorld>,
-    pub textures: Option<TextureSet>,
+    /// Cache directory holding the per-texture `.prm` mip sidecars
+    /// (`<workspace>/.build-caches/prm-cache/<hex(blake3)>.prm`). Always
+    /// populated; absent or unusable directories surface per-texture warnings
+    /// from `load_textures` and degrade those entries to placeholders.
+    pub prm_cache_root: PathBuf,
     /// Spliced into level-load `StartupTimings` between `worker_dispatch` and `worker_delivered`.
     pub timings: Vec<(&'static str, Duration)>,
 }
@@ -40,8 +46,10 @@ pub(crate) fn spawn_level_worker(
 }
 
 fn run_worker(map_path: &Path, content_root: &Path) -> LoadOutcome {
-    let mut timings: Vec<(&'static str, Duration)> = Vec::with_capacity(3);
-    let mut cursor = Instant::now();
+    let mut timings: Vec<(&'static str, Duration)> = Vec::with_capacity(2);
+    let cursor = Instant::now();
+
+    let prm_cache_root = derive_prm_cache_root_dev_layout(content_root);
 
     let path_str = map_path.to_string_lossy().into_owned();
     let level = match prl::load_prl(&path_str) {
@@ -53,10 +61,9 @@ fn run_worker(map_path: &Path, content_root: &Path) -> LoadOutcome {
             log::warn!("[Loader] PRL file not found: {p} — starting without map");
             let now = Instant::now();
             timings.push(("prl_parse", now.duration_since(cursor)));
-            // texture_decode and uv_normalize don't run when PRL is missing.
             return Ok(LevelPayload {
                 level: None,
-                textures: None,
+                prm_cache_root,
                 timings,
             });
         }
@@ -67,79 +74,38 @@ fn run_worker(map_path: &Path, content_root: &Path) -> LoadOutcome {
     {
         let now = Instant::now();
         timings.push(("prl_parse", now.duration_since(cursor)));
-        cursor = now;
-    }
-
-    let textures = match level.as_ref() {
-        Some(world) if !world.texture_names.is_empty() => {
-            let texture_root = content_root.join("textures");
-            log::info!(
-                "[Loader] Loading PRL textures from {}",
-                texture_root.display()
-            );
-            let texture_names: Vec<Option<String>> = world
-                .texture_names
-                .iter()
-                .map(|n| Some(n.clone()))
-                .collect();
-            Some(texture::load_textures(&texture_names, &texture_root))
-        }
-        _ => None,
-    };
-    {
-        let now = Instant::now();
-        timings.push(("texture_decode", now.duration_since(cursor)));
-        cursor = now;
-    }
-
-    // Move into a binding to take `&mut` without borrowing through the `Option`.
-    let mut level = level;
-    if let (Some(world), Some(tex_set)) = (level.as_mut(), textures.as_ref()) {
-        normalize_prl_uvs(world, tex_set);
-    }
-    {
-        let now = Instant::now();
-        timings.push(("uv_normalize", now.duration_since(cursor)));
     }
 
     Ok(LevelPayload {
         level,
-        textures,
+        prm_cache_root,
         timings,
     })
 }
 
-/// Normalizes texel-space UVs to [0,1] using decoded texture dimensions.
-/// Runs off-thread: decoded dimensions aren't available until after texture_decode.
-fn normalize_prl_uvs(world: &mut LevelWorld, texture_set: &TextureSet) {
-    let mut normalized = vec![false; world.vertices.len()];
-
-    for leaf in &world.bvh.leaves {
-        let tex_idx = leaf.material_bucket_id as usize;
-        let (w, h) = match texture_set.textures.get(tex_idx) {
-            Some(tex) => (tex.width, tex.height),
-            None => continue,
-        };
-        if w == 0 || h == 0 {
-            continue;
-        }
-
-        let start = leaf.index_offset as usize;
-        let count = leaf.index_count as usize;
-        for i in start..start + count {
-            if let Some(&idx) = world.indices.get(i) {
-                let vi = idx as usize;
-                // Guard against future vertex deduplication — compiler currently emits a fresh copy per face.
-                if vi < normalized.len() && !normalized[vi] {
-                    if let Some(vert) = world.vertices.get_mut(vi) {
-                        vert.base_uv[0] /= w as f32;
-                        vert.base_uv[1] /= h as f32;
-                        normalized[vi] = true;
-                    }
-                }
-            }
-        }
-    }
+/// Cache root: `<workspace>/.build-caches/prm-cache/`. The dev layout points
+/// `content_root` at `content/<mod>/`, so two parents up lands on the
+/// workspace root. Unusual layouts that don't have two ancestors fall back to
+/// the content root itself; `load_textures` then surfaces per-texture warnings
+/// when the directory turns out not to hold any `.prm` files.
+///
+/// The fallback to `content_root` keeps the engine runnable in
+/// shipping/standalone layouts where the two-parent dev-layout assumption
+/// doesn't hold; unusual layouts surface as per-texture placeholder warnings
+/// rather than a startup panic. Shipping layouts are out of scope for now, so
+/// the fallback is deliberately conservative.
+///
+/// Note: the level compiler's `resolve_prm_cache_root_via_cargo` locates the
+/// workspace via a `Cargo.toml` ancestor walk, while this function uses a
+/// fixed two-parent walk. They coincide in the dev layout; the divergence is
+/// intentional — collapsing them to share an implementation would break
+/// shipping layouts where no `Cargo.toml` exists at all.
+fn derive_prm_cache_root_dev_layout(content_root: &Path) -> PathBuf {
+    let workspace = content_root
+        .parent()
+        .and_then(|c| c.parent())
+        .unwrap_or(content_root);
+    workspace.join(".build-caches").join("prm-cache")
 }
 
 #[cfg(test)]

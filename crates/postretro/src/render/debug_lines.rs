@@ -165,8 +165,10 @@ impl DebugLineRenderer {
         // whose value is x-ray visibility from anywhere in the world (bounding
         // AABBs that sit at or beyond the opaque world hull).
         let pipeline = make_pipeline("Debug Lines Pipeline", wgpu::CompareFunction::LessEqual);
-        let overlay_pipeline =
-            make_pipeline("Debug Lines Overlay Pipeline", wgpu::CompareFunction::Always);
+        let overlay_pipeline = make_pipeline(
+            "Debug Lines Overlay Pipeline",
+            wgpu::CompareFunction::Always,
+        );
 
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Debug Lines Vertex Buffer"),
@@ -369,7 +371,10 @@ mod tests {
         }
         assert_eq!(endpoint_counts.len(), 8, "expected 8 distinct corners");
         for (corner, count) in &endpoint_counts {
-            assert_eq!(*count, 3, "corner {corner:?} appears {count} times, expected 3");
+            assert_eq!(
+                *count, 3,
+                "corner {corner:?} appears {count} times, expected 3"
+            );
         }
     }
 
@@ -388,7 +393,10 @@ mod tests {
         for (a, b) in segs {
             let mid = (a + b) * 0.5;
             assert!((mid - center).length() < 1e-5, "segment midpoint != center");
-            assert!(((b - a).length() - size).abs() < 1e-5, "segment length != size");
+            assert!(
+                ((b - a).length() - size).abs() < 1e-5,
+                "segment length != size"
+            );
 
             let d = b - a;
             let axis = if d.x.abs() > f32::EPSILON {

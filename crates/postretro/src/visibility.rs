@@ -804,6 +804,8 @@ mod tests {
             leaf_portals: vec![vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
+            texture_cache_keys:
+                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -857,6 +859,8 @@ mod tests {
             leaf_portals: vec![],
             has_portals: false,
             texture_names: vec![],
+            texture_cache_keys:
+                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],

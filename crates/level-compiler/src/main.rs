@@ -21,6 +21,7 @@ pub mod parse;
 pub mod partition;
 pub mod portals;
 pub mod sh_bake;
+pub mod texture_mips;
 pub mod texture_validation;
 pub mod visibility;
 
@@ -93,6 +94,24 @@ fn resolve_texture_root(map_path: &Path) -> PathBuf {
     content_root.join("textures")
 }
 
+/// Resolve the `.prm` mip-cache root from a map input path.
+///
+/// Lives next to the stage cache under `<workspace>/.build-caches/prm-cache/`.
+/// Falls back to the map's parent directory when no `Cargo.toml` ancestor
+/// is found — covers shipping or standalone layouts that omit the
+/// workspace manifest.
+fn resolve_prm_cache_root_via_cargo(map_path: &Path) -> PathBuf {
+    cache::find_workspace_root(map_path)
+        .unwrap_or_else(|| {
+            map_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf()
+        })
+        .join(".build-caches")
+        .join("prm-cache")
+}
+
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
@@ -110,7 +129,7 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("map format '{:?}' is not yet supported", args.format);
     }
 
-    // Construct stage cache. Default dir = <workspace-root>/.prl-cache/.
+    // Construct stage cache. Default dir = <workspace-root>/.build-caches/prl-cache/.
     // --no-cache disables the cache entirely (no directory is created).
     // --cache-dir <path> overrides the default location. When both flags are
     // supplied, --no-cache wins.
@@ -126,7 +145,8 @@ fn main() -> anyhow::Result<()> {
                         .unwrap_or(std::path::Path::new("."))
                         .to_path_buf()
                 })
-                .join(".prl-cache")
+                .join(".build-caches")
+                .join("prl-cache")
         });
         match cache::StageCache::new(&dir) {
             Ok(c) => {
@@ -508,6 +528,16 @@ fn main() -> anyhow::Result<()> {
         Some(animated_light_chunks_section)
     };
 
+    progress.start_stage("Texture mip bake...");
+    let stage_start = Instant::now();
+    let prm_cache_root = resolve_prm_cache_root_via_cargo(&args.input);
+    let name_to_key = texture_mips::bake_texture_mips(
+        &geo_result.texture_names.names,
+        &texture_root,
+        &prm_cache_root,
+    )?;
+    timings.push(("TextureMips", stage_start.elapsed()));
+
     progress.start_stage("Packing and writing...");
     let stage_start = Instant::now();
 
@@ -515,6 +545,7 @@ fn main() -> anyhow::Result<()> {
     pack::pack_and_write_portals(
         &args.output,
         &geo_result,
+        &name_to_key,
         &vis_result.nodes_section,
         &vis_result.leaves_section,
         &portals_section,

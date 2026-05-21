@@ -25,9 +25,12 @@ use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sh_volume::ShVolumeSection;
+use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{
     SectionBlob, SectionId, read_container, read_section_data, write_prl,
 };
+
+use std::collections::HashMap;
 
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AlphaLightsNs;
@@ -303,16 +306,23 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
     }
 }
 
-/// Write all required sections (geometry, texture names, BSP nodes, BSP leaves,
-/// portals, BVH, alpha lights, light influence, lightmap, chunk light list, SH
-/// volume, and FogVolumes) and conditionally write optional sections
-/// (animated-light chunks and weight maps, light tags, delta SH volumes, data
-/// script, map entities, and fog cell masks) when their arguments are
-/// non-`None`.
+/// Write all required sections (geometry, texture names, texture cache keys,
+/// BSP nodes, BSP leaves, portals, BVH, alpha lights, light influence,
+/// lightmap, chunk light list, SH volume, and FogVolumes) and conditionally
+/// write optional sections (animated-light chunks and weight maps, light tags,
+/// delta SH volumes, data script, map entities, and fog cell masks) when their
+/// arguments are non-`None`.
+///
+/// `texture_cache_keys` maps each texture name (as it appears in
+/// `geo_result.texture_names.names`) to the 32-byte `.prm` filename key
+/// produced by the texture-mip baker. Names absent from the map (no
+/// authored PNG slots found) get an all-zero key, matching the baker's
+/// "nothing to bake" sentinel.
 #[allow(clippy::too_many_arguments)]
 pub fn pack_and_write_portals(
     output: &Path,
     geo_result: &GeometryResult,
+    texture_cache_keys: &HashMap<String, [u8; 32]>,
     nodes: &BspNodesSection,
     leaves: &BspLeavesSection,
     portals: &PortalsSection,
@@ -334,6 +344,15 @@ pub fn pack_and_write_portals(
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
+    let texture_cache_keys_section = TextureCacheKeysSection {
+        keys: geo_result
+            .texture_names
+            .names
+            .iter()
+            .map(|name| texture_cache_keys.get(name).copied().unwrap_or([0u8; 32]))
+            .collect(),
+    };
+    let texture_cache_keys_bytes = texture_cache_keys_section.to_bytes();
     let nodes_bytes = nodes.to_bytes();
     let leaves_bytes = leaves.to_bytes();
     let portals_bytes = portals.to_bytes();
@@ -362,6 +381,11 @@ pub fn pack_and_write_portals(
             section_id: SectionId::TextureNames as u32,
             version: 1,
             data: texture_names_bytes.clone(),
+        },
+        SectionBlob {
+            section_id: SectionId::TextureCacheKeys as u32,
+            version: 1,
+            data: texture_cache_keys_bytes.clone(),
         },
         SectionBlob {
             section_id: SectionId::BspNodes as u32,
@@ -469,6 +493,11 @@ pub fn pack_and_write_portals(
     log::info!("Sections: {}", sections.len());
     log::info!("  Geometry: {} bytes", geometry_bytes.len());
     log::info!("  TextureNames: {} bytes", texture_names_bytes.len());
+    log::info!(
+        "  TextureCacheKeys: {} bytes ({} keys)",
+        texture_cache_keys_bytes.len(),
+        texture_cache_keys_section.keys.len(),
+    );
     log::info!("  BspNodes: {} bytes", nodes_bytes.len());
     log::info!("  BspLeaves: {} bytes", leaves_bytes.len());
     log::info!("  Portals: {} bytes", portals_bytes.len());
@@ -773,9 +802,11 @@ mod tests {
         let bvh = sample_bvh();
 
         let alpha_lights = empty_alpha_lights();
+        let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
         pack_and_write_portals(
             &output,
             &geo_result,
+            &texture_cache_keys,
             &nodes,
             &leaves,
             &portals,
@@ -802,11 +833,15 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        // 11 baseline sections + always-emitted FogVolumes.
-        assert_eq!(meta.header.section_count, 12);
+        // 11 baseline sections + TextureCacheKeys + always-emitted FogVolumes.
+        assert_eq!(meta.header.section_count, 13);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
+        assert!(
+            meta.find_section(SectionId::TextureCacheKeys as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
@@ -834,10 +869,12 @@ mod tests {
         };
         let bvh = sample_bvh();
         let alpha_lights = empty_alpha_lights();
+        let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
 
         let result = pack_and_write_portals(
             output,
             &geo_result,
+            &texture_cache_keys,
             &nodes,
             &leaves,
             &portals,
@@ -914,9 +951,11 @@ mod tests {
 
         let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
         let light_influence = encode_light_influence(&alpha_ns);
+        let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
         pack_and_write_portals(
             &output,
             &geo_result,
+            &texture_cache_keys,
             &vis_result.nodes_section,
             &vis_result.leaves_section,
             &portals_section,
@@ -942,10 +981,14 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        // 11 baseline sections + always-emitted FogVolumes (worldspawn fog_pixel_scale).
-        assert_eq!(meta.header.section_count, 12);
+        // 11 baseline sections + TextureCacheKeys + always-emitted FogVolumes (worldspawn fog_pixel_scale).
+        assert_eq!(meta.header.section_count, 13);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
+        assert!(
+            meta.find_section(SectionId::TextureCacheKeys as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());

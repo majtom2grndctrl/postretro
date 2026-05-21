@@ -2,7 +2,7 @@
 
 ## Goal
 
-Move texture mip-chain generation out of the renderer and into `prl-build`. Mip pyramids bake once at compile time in linear color space, land in per-texture sidecar `.prm` files under `.prl-cache/tex/`, and upload directly at runtime. Zero CPU filtering at level load, gamma-correct mips that don't darken midtones, mips become content-addressed asset data shared across every map that references the texture.
+Move texture mip-chain generation out of the renderer and into `prl-build`. Mip pyramids bake once at compile time in linear color space, land in per-texture sidecar `.prm` files under `content/<mod>/.prl-cache/tex/`, and upload directly at runtime. Zero CPU filtering at level load, gamma-correct mips that don't darken midtones, mips become content-addressed asset data shared across every map that references the texture.
 
 ## Scope
 
@@ -36,7 +36,7 @@ Move texture mip-chain generation out of the renderer and into `prl-build`. Mip 
 - [ ] `cargo run -p postretro -- content/dev/maps/campaign-test.prl` renders the campaign-test map with no rendering errors. Midtones may appear lighter than the current build due to gamma-correct filtering — intended.
 - [ ] `upload_texture_data` performs no CPU downsample. Verifiable by deleting the downsample code path from the renderer crate without breaking the build.
 - [ ] Unit test: gamma-correct Mitchell-Netravali output for a fixed sRGB input matches a golden reference (computed in linear space) within ±1 LSB per channel.
-- [ ] Unit test: a 50/50 black/white sRGB checker filters to sRGB midgrey (~0.73 in byte space) at mid mip levels, **not** the linear midpoint (~0.5). Gamma-correctness regression guard.
+- [ ] Unit test: a 50/50 black/white sRGB checker filters to sRGB-encoded ~187/255 (linear 0.5) at mid mip levels, **not** the naive byte midpoint ~128/255. Gamma-correctness regression guard; tolerance ±1 byte per channel.
 - [ ] Unit test: normal-map mips remain unit-length within 1/127 after filtering (synthetic input).
 - [ ] Loading a PRL whose source PNGs are absent from disk renders correctly — pixel data comes entirely from `.prm` sidecars. The runtime never opens a PNG.
 - [ ] Sampler `lod_max_clamp` for each texture equals `mip_count - 1`, not 24.0.
@@ -47,7 +47,7 @@ Sized to land as separate commits.
 
 ### Task 1: `TextureCacheKeys` section in `postretro-level-format`
 
-Add `SectionId::TextureCacheKeys = 32`, a `TextureCacheKeysSection` type with `to_bytes` / `from_bytes` and a round-trip test. Layout: `u32 count` + `[u8; 32] * count`. `count` equals `TextureNamesSection.names.len()`; entry `i` is the blake3 of the PNG content for texture `i`. Bump `CURRENT_VERSION` to 4 and update the `UnsupportedVersion` test fixture.
+Add `SectionId::TextureCacheKeys = 32`, a `TextureCacheKeysSection` type with `to_bytes` / `from_bytes` and a round-trip test. Layout: `u32 count` + `[u8; 32] * count`. `count` equals `TextureNamesSection.names.len()`; entry `i` is the blake3 of the PNG content for texture `i`. Bump `CURRENT_VERSION` to 4 and update every test that constructs the header or asserts on `CURRENT_VERSION`, and add a v3 reject test that asserts `UnsupportedVersion { version: 3 }`. Extend the hand-written `SectionId::from_u32` match arm to cover the new variant.
 
 Update `context/lib/build_pipeline.md`'s section table at plan promotion time, not during the task.
 
@@ -89,7 +89,6 @@ Task 3 can be unit-tested against a hand-crafted `.prm` fixture + v4 PRL fixture
 - Lift PNG name-lookup helper (`build_name_to_path_map`) from `crates/postretro/src/texture.rs` into `postretro-level-compiler`. The runtime no longer scans the textures directory.
 - Thread the texture root and cache root into `pack.rs`. The CLI in `main.rs` already knows both.
 - Wire Task 2's `(name → key)` output into Task 1's section in `pack.rs`.
-- Add `content/*/.prl-cache/` to `.gitignore` (one entry covers every mod).
 - Remove any now-dead PNG-scanning and downsample code paths from the renderer crate.
 
 ## Sequencing
@@ -169,8 +168,8 @@ Ordering invariant: `keys[i]` corresponds to `names[i]`. A texture with no PNG a
 - PNG name-lookup helper currently in `crates/postretro/src/texture.rs::build_name_to_path_map` moves to `postretro-level-compiler` (shared module). Runtime drops its copy.
 - `pack.rs` gains a `texture_root` and `cache_root` argument. The CLI in `main.rs` already knows both.
 - Compiler's build cache (`cache.rs`) gains a stage entry `"texture_mips"` whose inputs hash is `blake3(all referenced PNG content blake3s, sorted) || STAGE_VERSION`. The cache entry's payload is the `(name → key)` map. The `.prm` files themselves are not stored in `cache.rs` — they live as content-addressed files under `.prl-cache/tex/`.
-- Runtime loader (`crates/postretro/src/level_load.rs` or equivalent) replaces the post-PRL `load_textures(texture_root, …)` call with a `load_textures(prl, mod_cache_root)` call that reads `.prm` files. The texture-root path argument can be removed from that call site.
-- `.gitignore`: add `content/*/.prl-cache/`.
+- Runtime loader (`crates/postretro/src/startup/worker.rs::run_worker`) replaces the post-PRL `load_textures(texture_root, …)` call with a `load_textures(prl, mod_cache_root)` call that reads `.prm` files. The texture-root path argument can be removed from that call site.
+- `.gitignore`: already covers `.prl-cache/` (matches at any depth); no change needed. Confirm at promotion.
 
 ## Open questions
 

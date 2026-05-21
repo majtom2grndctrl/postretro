@@ -139,6 +139,7 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | MapEntity | 29 | When the map has at least one non-light, non-worldspawn entity; per-entity classname, origin, angles, tags, and KVP bag for runtime classname dispatch |
 | FogVolumes | 30 | Always (12-byte overhead when no fog_volume brushes present; carries fog_pixel_scale and initial_gravity) |
 | FogCellMasks | 31 | When at least one fog volume entity is present (fog_volume brush, fog_lamp, or fog_tube) |
+| TextureCacheKeys | 32 | Always; one 32-byte blake3 per TextureNames entry pointing at a `.prm` sidecar under `.build-caches/prm-cache/` |
 
 ### Runtime visibility
 

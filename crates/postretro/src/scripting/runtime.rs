@@ -2177,39 +2177,6 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "TsCompilerPath::detect cannot be hermetically defeated from inside a \
-                test process — `current_exe`'s parent dir and the inherited `PATH` \
-                are both shared with sibling tests (e.g. \
-                `run_mod_init_rebuilds_bundle_when_import_changes`) that need \
-                scripts-build *present*. The same code path is exercised end-to-end \
-                when the engine is launched without a `scripts-build` on PATH or \
-                next to the binary."]
-    #[cfg(debug_assertions)]
-    fn run_mod_init_errors_when_scripts_build_missing_with_ts_present() {
-        // Acceptance criterion: when `start-script.ts` is present and
-        // `scripts-build` is not discoverable, `run_mod_init` must surface a
-        // `ScriptError::InvalidArgument` — not silently use a stale `.js`.
-        let (mut rt, _ctx) = runtime();
-        let dir = temp_mod_root("missing_scripts_build");
-        fs::write(
-            dir.join("start-script.ts"),
-            "globalThis.setupMod = function() { return { name: 'TS' }; };\n",
-        )
-        .unwrap();
-        fs::write(
-            dir.join("start-script.js"),
-            "globalThis.setupMod = function() { return { name: 'StaleJS' }; };\n",
-        )
-        .unwrap();
-
-        let err = rt.run_mod_init(&dir).expect_err("scripts-build missing");
-        assert!(
-            matches!(err, ScriptError::InvalidArgument { .. }),
-            "expected InvalidArgument; got {err:?}",
-        );
-    }
-
     /// Copy `scripts-build` next to the current test executable so
     /// `TsCompilerPath::detect()` finds it via the next-to-engine arm of the
     /// cascade. Returns `false` only when the source binary genuinely cannot be

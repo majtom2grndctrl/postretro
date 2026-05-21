@@ -7,7 +7,7 @@ Two named texture-filtering modes, switchable at runtime. **True Retro** keeps t
 ## Prerequisites
 
 - `baked-texture-mips` (landed). Both modes read the baked mip pyramid; hardware aniso requires a mip chain.
-- `shader-anisotropic-filtering` (in `ready/`). Its manual-aniso path becomes the True Retro branch. This plan converts that plan's compile-time `ENABLE_MANUAL_ANISO` const into the runtime mode test. If it has not landed when this is implemented, see Open Questions.
+- `shader-anisotropic-filtering` (in `ready/`) — **must land first.** It is the entire True Retro branch. This plan replaces its compile-time `ENABLE_MANUAL_ANISO` const with the runtime mode test; without it the True Retro acceptance criterion is untestable and the const would be touched twice. This plan does not define manual aniso itself.
 
 ## Scope
 
@@ -107,7 +107,6 @@ Reconstruction is per-slot because slots may differ in resolution (`dims` from e
 ## Open questions
 
 - **Normal-map averaging under hardware aniso.** Hardware aniso averages *encoded* normal texels along the footprint and decodes once — biasing toward flat `(0.5, 0.5, 1.0)`, the artifact the `shader-anisotropic-filtering` plan avoids by decoding per tap. True Retro keeps that per-tap decode; Post Retro accepts the bias. 2-channel normals (`prm-bc5-normals`: store XY, reconstruct Z) make linear averaging closer to correct and largely retire this. Acceptable for an aesthetic mode now; revisit with BC5.
-- **shader-anisotropic-filtering coordination.** This plan treats that plan's manual aniso as the True Retro branch and replaces its compile-time const with the runtime mode test. If this lands first, the True Retro branch is the current nearest single-tap path and the manual aniso slots into the same branch when it lands. Prefer landing `shader-anisotropic-filtering` first to avoid touching its const twice.
 - **Reconstruction edge feel.** The one-pixel antialiased seam is the deliberate Post Retro difference from True Retro's hard edges. If it reads as too soft, narrow the `fwidth` window (sub-pixel) — costs nothing, sharpens the seam. Decide by eye in the A/B.
 - **Aniso clamp value.** 16 is the wgpu ceiling and the quality default. Task 6 may set it to 8 if the target GPU's aniso cost is too high; "much smaller than Crysis" arenas top out around 16:1 aspect, so 16 is unlikely to be wasted.
 - **GraphicsMode string casing.** Values pinned camelCase (`"trueRetro"`/`"postRetro"`) to match the script-facing key idiom. Switch to a `#[serde(rename_all)]`-style scheme only if manifest parsing moves to serde.

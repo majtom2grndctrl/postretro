@@ -155,10 +155,13 @@ impl ScriptRuntime {
     /// `scripts/` are walked recursively; top-level mod-root files
     /// (`start-script.ts` and any siblings imported by it) are walked one
     /// level. The scan mirrors the per-file freshness check in
-    /// `compile_start_script_if_stale` — same `<=` mtime comparison, same
-    /// compiler detection cascade, same error-logging strategy (warn and
-    /// continue rather than hard-fail). A missing `scripts-build` is logged
-    /// once and the scan returns without compiling.
+    /// `compile_start_script` for top-level mod-root entries (unconditional
+    /// rebuild — they are bundle components) and `compile_one_if_stale` for
+    /// nested `script_root` files (per-file mtime check — they compile to
+    /// individual `.js` outputs). Same compiler detection cascade, same
+    /// error-logging strategy (warn and continue rather than hard-fail). A
+    /// missing `scripts-build` is logged once and the scan returns without
+    /// compiling.
     pub(crate) fn compile_stale_scripts(&self, script_root: &Path, mod_root: &Path) {
         #[cfg(debug_assertions)]
         {
@@ -298,7 +301,7 @@ impl ScriptRuntime {
         #[cfg(debug_assertions)]
         {
             if ts_path.is_file() {
-                if let Err(e) = compile_start_script_if_stale(&ts_path, &js_path) {
+                if let Err(e) = compile_start_script(&ts_path, &js_path) {
                     return Err(ScriptError::InvalidArgument {
                         reason: format!("mod-init: failed to compile `{}`: {e}", ts_path.display()),
                     });
@@ -572,23 +575,17 @@ fn run_data_script_luau(
 // ---------------------------------------------------------------------------
 // Mod-init helpers.
 
-/// In debug builds: compile `ts_path` to `js_path` if `js_path` is missing or
-/// older than `ts_path`. Reuses the `scripts-build` sidecar detection cascade
-/// from the watcher.
+/// Always rebuild `start-script.js` from `start-script.ts` in debug builds.
+///
+/// The mtime gate was removed because `start-script.ts` is a bundle entry, not
+/// a single-file compile: `swc_bundler` traces its imports and re-bundles every
+/// invocation. A `js_mtime > ts_mtime` check missed the case where an imported
+/// helper changed without touching `start-script.ts`, leaving a stale bundle on
+/// disk. Correctness over rebuild-skip — acceptable at current mod scale.
+/// Per-file mtime gating still applies to nested scripts under `script_root`
+/// (see `compile_one_if_stale`).
 #[cfg(debug_assertions)]
-fn compile_start_script_if_stale(ts_path: &Path, js_path: &Path) -> Result<(), String> {
-    let ts_mtime = fs::metadata(ts_path)
-        .and_then(|m| m.modified())
-        .map_err(|e| format!("stat `{}`: {e}", ts_path.display()))?;
-    let needs_build = match fs::metadata(js_path).and_then(|m| m.modified()) {
-        // `<=` catches same-second saves (e.g. `git checkout` followed by
-        // immediate launch) where mtimes are equal but the JS is stale.
-        Ok(js_mtime) => js_mtime <= ts_mtime,
-        Err(_) => true,
-    };
-    if !needs_build {
-        return Ok(());
-    }
+fn compile_start_script(ts_path: &Path, js_path: &Path) -> Result<(), String> {
     let compiler = super::watcher::TsCompilerPath::detect().ok_or_else(|| {
         "scripts-build not found — install it on PATH or ship it next to the engine binary"
             .to_string()
@@ -669,7 +666,11 @@ fn visit_ts_files_shallow(
         if path.extension().and_then(|s| s.to_str()) != Some("ts") {
             continue;
         }
-        compile_one_if_stale(&path, compiler, compiled, failed);
+        // Top-level mod-root `.ts` files are bundle components — `swc_bundler`
+        // re-bundles them from scratch on every invocation, so an mtime gate
+        // here would only mask import-graph changes. Always rebuild; see
+        // `compile_start_script` for the matching rationale on the entry path.
+        compile_one_unconditional(&path, compiler, compiled, failed);
     }
 }
 
@@ -712,9 +713,35 @@ fn visit_ts_files(
     }
 }
 
+/// Compile a single `.ts` file unconditionally — used for top-level mod-root
+/// bundle components. The bundler re-runs from scratch every time, so any
+/// per-file mtime gate would only hide import-graph changes.
+#[cfg(debug_assertions)]
+fn compile_one_unconditional(
+    path: &Path,
+    compiler: &super::watcher::TsCompilerPath,
+    compiled: &mut u32,
+    failed: &mut u32,
+) {
+    let js_path = super::watcher::compiled_output_for(path);
+    match super::watcher::run_ts_compiler(compiler, path, &js_path) {
+        Ok(()) => {
+            log::debug!("[Scripting] startup TS scan: compiled `{}`", path.display(),);
+            *compiled += 1;
+        }
+        Err(msg) => {
+            log::warn!(
+                "[Scripting] startup TS scan: compile failed for `{}`: {msg}",
+                path.display(),
+            );
+            *failed += 1;
+        }
+    }
+}
+
 /// Compile a single `.ts` file when its sibling `.js` is missing or older.
-/// Same `<=` mtime comparison as `compile_start_script_if_stale` so a
-/// same-second save still triggers a rebuild.
+/// Used by the recursive `script_root` walk where each `.ts` is an individual
+/// compilation target (not a bundle component), so mtime gating is meaningful.
 #[cfg(debug_assertions)]
 fn compile_one_if_stale(
     path: &Path,
@@ -1993,8 +2020,30 @@ mod tests {
     fn visit_ts_files_shallow_skips_nested_directories() {
         // Mod-root scope is one level only — nested `.ts` files are the
         // recursive `script_root` walk's territory.
+        //
+        // Regression: the shallow walk previously gated compilation on
+        // `js_mtime <= ts_mtime`, so a fresh-looking `start-script.js`
+        // (e.g. a stale bundle whose imports changed) would be left untouched
+        // (import freshness). The shallow walk now always rebuilds top-level
+        // bundle components, even when the sibling `.js` is newer than the `.ts`.
+        use std::time::{Duration, SystemTime};
+
         let dir = temp_mod_root("scan_shallow");
-        fs::write(dir.join("start-script.ts"), "export {};\n").unwrap();
+        let ts_path = dir.join("start-script.ts");
+        let js_path = dir.join("start-script.js");
+        fs::write(&ts_path, "export {};\n").unwrap();
+
+        // Plant a sibling `.js` with a mtime 60 seconds in the future so any
+        // residual `js_mtime <= ts_mtime` gate would skip the rebuild.
+        let stale_marker = "// stale bundle — should be overwritten\n";
+        fs::write(&js_path, stale_marker).unwrap();
+        let future = SystemTime::now() + Duration::from_secs(60);
+        let mtime_bump_supported = std::fs::File::options()
+            .write(true)
+            .open(&js_path)
+            .and_then(|f| f.set_modified(future))
+            .is_ok();
+
         let nested = dir.join("scripts");
         fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("nested.ts"), "export {};\n").unwrap();
@@ -2008,13 +2057,202 @@ mod tests {
         assert_eq!(failed, 0);
         assert_eq!(
             compiled, 1,
-            "only top-level start-script.ts should compile; nested/nested.ts must be left for the recursive walk"
+            "top-level start-script.ts must be rebuilt unconditionally; nested/nested.ts \
+             is left for the recursive walk",
         );
-        assert!(dir.join("start-script.js").is_file());
+        assert!(js_path.is_file());
         assert!(
             !nested.join("nested.js").is_file(),
-            "shallow walk must not descend into subdirectories"
+            "shallow walk must not descend into subdirectories",
         );
+
+        // The newer-than-the-ts `.js` must have been overwritten. We verify
+        // through content (the stale marker comment is gone) rather than mtime
+        // alone, since the rebuild output mtime depends on filesystem
+        // granularity. Only enforce when we could actually bump the mtime —
+        // otherwise the original `<=` gate wouldn't have skipped anyway.
+        if mtime_bump_supported {
+            let rebuilt = fs::read_to_string(&js_path).unwrap();
+            assert!(
+                !rebuilt.contains("stale bundle"),
+                "shallow walk left a fresh-looking `.js` in place — mtime gate regression",
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn run_mod_init_rebuilds_bundle_when_import_changes() {
+        // Regression: editing a helper imported by `start-script.ts` left a
+        // stale `start-script.js` running (import freshness). The mtime gate
+        // compared only the entry `.ts` vs the `.js`, so a newer helper was
+        // invisible. `run_mod_init` must rebuild the bundle on every call.
+        //
+        // Skipped (test passes trivially) when the test process cannot make
+        // `scripts-build` discoverable via `TsCompilerPath::detect()` —
+        // detection reads `current_exe`'s parent and `PATH`, neither of which
+        // is hermetically controllable from inside a Rust test. We place a
+        // copy of the binary next to `current_exe` to satisfy the
+        // next-to-engine arm of the cascade.
+        use std::time::{Duration, SystemTime};
+
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("import_changes_rebuild");
+
+        // `start-script.ts` imports a helper. `scripts-build` (swc_bundler)
+        // inlines the import at compile time, so the bundled `.js` ends up
+        // containing the helper's literal value.
+        fs::write(
+            dir.join("helper.ts"),
+            "export const NAME: string = 'ImportFreshV1';\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("start-script.ts"),
+            "import { NAME } from './helper.ts';\n\
+             // @ts-ignore\n\
+             globalThis.setupMod = function() { return { name: NAME }; };\n",
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).expect("first run_mod_init");
+        let js_path = dir.join("start-script.js");
+        assert!(js_path.is_file(), "first run must produce start-script.js");
+        let first_content = fs::read_to_string(&js_path).unwrap();
+        assert!(
+            first_content.contains("ImportFreshV1"),
+            "bundled JS must reflect the initial helper value; got: {first_content}",
+        );
+        let manifest = rt.mod_manifest().expect("manifest after first run");
+        assert_eq!(manifest.name, "ImportFreshV1");
+
+        // Change only the helper and force its mtime to *not* exceed the
+        // existing `start-script.ts` mtime (it normally would; the point is
+        // that even when only the helper changes, the bundle must rebuild).
+        // We additionally bump the `.js` mtime well into the future so any
+        // residual mtime gate against `start-script.ts` would skip the
+        // rebuild — that would fail this regression test.
+        fs::write(
+            dir.join("helper.ts"),
+            "export const NAME: string = 'ImportFreshV2';\n",
+        )
+        .unwrap();
+        let future = SystemTime::now() + Duration::from_secs(60);
+        let bumped = std::fs::File::options()
+            .write(true)
+            .open(&js_path)
+            .and_then(|f| f.set_modified(future))
+            .is_ok();
+
+        rt.run_mod_init(&dir).expect("second run_mod_init");
+        let second_content = fs::read_to_string(&js_path).unwrap();
+        assert!(
+            second_content.contains("ImportFreshV2"),
+            "bundle must reflect the changed helper after second run_mod_init; got: {second_content}",
+        );
+        assert!(
+            !second_content.contains("ImportFreshV1"),
+            "stale bundle content must be gone after rebuild; got: {second_content}",
+        );
+        let manifest = rt.mod_manifest().expect("manifest after second run");
+        assert_eq!(manifest.name, "ImportFreshV2");
+
+        // Only enforce the mtime-moved-backwards check when we could prove the
+        // setup bumped the `.js` mtime forward. Otherwise the assertion is
+        // vacuous (the rebuild could legitimately produce the same mtime on
+        // coarse-granularity filesystems).
+        if bumped {
+            let new_mtime = fs::metadata(&js_path)
+                .and_then(|m| m.modified())
+                .expect("mtime");
+            assert!(
+                new_mtime < future,
+                "rebuild must overwrite the future-dated `.js` mtime",
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "TsCompilerPath::detect cannot be hermetically defeated from inside a \
+                test process — `current_exe`'s parent dir and the inherited `PATH` \
+                are both shared with sibling tests (e.g. \
+                `run_mod_init_rebuilds_bundle_when_import_changes`) that need \
+                scripts-build *present*. The same code path is exercised end-to-end \
+                when the engine is launched without a `scripts-build` on PATH or \
+                next to the binary."]
+    #[cfg(debug_assertions)]
+    fn run_mod_init_errors_when_scripts_build_missing_with_ts_present() {
+        // Acceptance criterion: when `start-script.ts` is present and
+        // `scripts-build` is not discoverable, `run_mod_init` must surface a
+        // `ScriptError::InvalidArgument` — not silently use a stale `.js`.
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("missing_scripts_build");
+        fs::write(
+            dir.join("start-script.ts"),
+            "globalThis.setupMod = function() { return { name: 'TS' }; };\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("start-script.js"),
+            "globalThis.setupMod = function() { return { name: 'StaleJS' }; };\n",
+        )
+        .unwrap();
+
+        let err = rt.run_mod_init(&dir).expect_err("scripts-build missing");
+        assert!(
+            matches!(err, ScriptError::InvalidArgument { .. }),
+            "expected InvalidArgument; got {err:?}",
+        );
+    }
+
+    /// Copy `scripts-build` next to the current test executable so
+    /// `TsCompilerPath::detect()` finds it via the next-to-engine arm of the
+    /// cascade. Returns `false` only when the source binary genuinely cannot be
+    /// found — callers should skip the test gracefully in that case. Panics if
+    /// the source is found but the copy itself fails, because that indicates an
+    /// environment problem (bad permissions, full disk) that masks real failures.
+    #[cfg(debug_assertions)]
+    fn install_scripts_build_next_to_current_exe() -> bool {
+        let Ok(current_exe) = std::env::current_exe() else {
+            return false;
+        };
+        let Some(target_dir) = current_exe.parent() else {
+            return false;
+        };
+        let name = if cfg!(windows) {
+            "scripts-build.exe"
+        } else {
+            "scripts-build"
+        };
+        let dest = target_dir.join(name);
+        if dest.is_file() {
+            return true;
+        }
+        let source = ensure_scripts_build();
+        // Guard against copy-onto-self: on Linux `fs::copy` of a file onto
+        // itself truncates it. Canonicalize both paths before comparing so
+        // symlinks and relative segments don't produce false mismatches.
+        if let (Ok(cs), Ok(cd)) = (source.canonicalize(), dest.canonicalize()) {
+            if cs == cd {
+                return true;
+            }
+        }
+        // Concurrent tests may race; if another test already dropped the file
+        // in place between our `is_file` check and `copy`, the copy still
+        // succeeds (overwrites). Any other failure is a real environment bug.
+        std::fs::copy(&source, &dest).unwrap_or_else(|e| {
+            panic!(
+                "scripts-build found at {} but copy to {} failed: {e}",
+                source.display(),
+                dest.display()
+            )
+        });
+        true
     }
 
     /// Locate the freshly-built `scripts-build` binary. Mirrors the same

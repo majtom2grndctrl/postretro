@@ -396,21 +396,19 @@ fn handle_path(
             let _ = reload_tx.send(ReloadRequest { kind });
         }
         "js" => {
-            // A `.js` change at the mod root (typically `start-script.js`,
-            // possibly hand-shipped or freshly emitted by `compile_start_script_if_stale`)
-            // should still trigger mod-init re-run. Definition `.js` artifacts
-            // under `scripts/` are emitted next to their `.ts` source by the
-            // TS compile path below; observing them in isolation would
-            // double-fire, so we only react to mod-root `.js` files.
+            // A mod-root `start-script.js` write triggers a mod-init re-run
+            // *only* when no `start-script.ts` source sits beside it.
             //
-            // Self-trigger note: when the `.ts` arm below compiles
-            // `start-script.ts` and writes `start-script.js`, that write fires
-            // a second FS event which arrives here as another `ModInit`. The
-            // two requests are collapsed by `drain_reload_requests` into a
-            // single `summary.mod_init = true`. On the re-run,
-            // `compile_start_script_if_stale` sees the `.js` is already fresh
-            // and skips compilation. The double-event is benign.
-            if kind == ReloadKind::ModInit {
+            // When a `.ts` source exists, `start-script.js` is a build
+            // artifact: both the startup scan and every `run_mod_init` invoke
+            // `compile_start_script`, which rewrites it unconditionally (see
+            // runtime.rs). Reacting to that write would loop —
+            // rebuild → write → FS event → rebuild — re-running mod-init on
+            // repeat until the engine is killed. The `.ts` arm below is the
+            // authoritative ModInit trigger for source edits; the artifact
+            // write must be ignored. With no `.ts` present the `.js` is
+            // hand-shipped or pre-compiled source and stays a valid trigger.
+            if kind == ReloadKind::ModInit && !path.with_extension("ts").is_file() {
                 let _ = reload_tx.send(ReloadRequest { kind });
             }
         }
@@ -553,6 +551,45 @@ mod tests {
         assert_eq!(classify_reload(&p, &mod_root), ReloadKind::Scripts);
         let p = mod_root.join("scripts").join("nested").join("a.luau");
         assert_eq!(classify_reload(&p, &mod_root), ReloadKind::Scripts);
+    }
+
+    // Regression: dropping the start-script mtime gate made `run_mod_init`
+    // rewrite `start-script.js` on every call; the watcher then re-fired
+    // ModInit on its own build artifact, looping mod-init until the engine
+    // was killed.
+    #[test]
+    fn start_script_js_write_does_not_retrigger_when_ts_source_present() {
+        let mod_root = temp_dir("js_artifact_no_retrigger");
+        // A `.ts` source marks `start-script.js` as a build artifact.
+        fs::write(mod_root.join("start-script.ts"), "export {};\n").unwrap();
+        let js = mod_root.join("start-script.js");
+        fs::write(&js, "/* built */\n").unwrap();
+
+        let (tx, rx) = mpsc::channel::<ReloadRequest>();
+        handle_path(&js, &tx, None, &mod_root);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "start-script.js write must NOT enqueue a reload when start-script.ts \
+             exists — it is the engine's own build artifact and reacting loops",
+        );
+    }
+
+    #[test]
+    fn start_script_js_write_triggers_mod_init_without_ts_source() {
+        let mod_root = temp_dir("js_handshipped_triggers");
+        // No `.ts` — `start-script.js` is hand-shipped / pre-compiled source.
+        let js = mod_root.join("start-script.js");
+        fs::write(&js, "/* hand-shipped */\n").unwrap();
+
+        let (tx, rx) = mpsc::channel::<ReloadRequest>();
+        handle_path(&js, &tx, None, &mod_root);
+
+        assert_eq!(
+            rx.try_recv().map(|r| r.kind).ok(),
+            Some(ReloadKind::ModInit),
+            "hand-shipped start-script.js (no .ts source) must still trigger ModInit",
+        );
     }
 
     #[test]

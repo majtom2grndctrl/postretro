@@ -3,8 +3,8 @@
 // One 32-byte key per entry in `TextureNames`, in the same order. Each key is
 // the blake3 of the raw PNG source bytes for that texture. The runtime uses
 // these keys to find the matching baked `.prm` mip sidecar (see the `prm`
-// module) without rehashing PNGs at load time. The compiler (Task 2) writes
-// the section; the runtime (Task 3) reads it.
+// module) without rehashing PNGs at load time. prl-build (texture_mips.rs)
+// writes the section; the runtime (render/loaded_texture.rs) reads it.
 //
 // See: context/lib/build_pipeline.md §PRL section IDs
 

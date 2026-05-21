@@ -279,6 +279,7 @@ fn upload_texture_data(
         wgpu::TextureFormat::R8Unorm => 1,
         other => panic!("upload_texture_data: unsupported format {other:?}"),
     };
+    let mip_level_count = mip_level_count_for(width, height);
     let size = wgpu::Extent3d {
         width,
         height,
@@ -288,7 +289,7 @@ fn upload_texture_data(
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size,
-        mip_level_count: 1,
+        mip_level_count,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
@@ -296,23 +297,80 @@ fn upload_texture_data(
         view_formats: &[],
     });
 
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        data,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(bytes_per_pixel * width),
-            rows_per_image: Some(height),
-        },
-        size,
-    );
+    // Mip 0 = caller-supplied data; each subsequent level is a 2×2 box filter
+    // of the previous level. CPU-side because wgpu has no auto-mip generation.
+    let upload_level = |level: u32, level_w: u32, level_h: u32, bytes: &[u8]| {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_pixel * level_w),
+                rows_per_image: Some(level_h),
+            },
+            wgpu::Extent3d {
+                width: level_w,
+                height: level_h,
+                depth_or_array_layers: 1,
+            },
+        );
+    };
+    upload_level(0, width, height, data);
+    let mut prev: Vec<u8> = Vec::new();
+    let mut prev_w = width;
+    let mut prev_h = height;
+    for level in 1..mip_level_count {
+        let src: &[u8] = if level == 1 { data } else { &prev };
+        let next = downsample_2x(src, prev_w, prev_h, bytes_per_pixel as usize);
+        let level_w = (width >> level).max(1);
+        let level_h = (height >> level).max(1);
+        upload_level(level, level_w, level_h, &next);
+        prev = next;
+        prev_w = level_w;
+        prev_h = level_h;
+    }
 
     texture
+}
+
+fn mip_level_count_for(width: u32, height: u32) -> u32 {
+    (width.max(height) as f32).log2().floor() as u32 + 1
+}
+
+// Box-filter downsample to half dimensions. Channel-agnostic; averages each
+// channel independently across the 2×2 source block. Odd dimensions clamp the
+// trailing row/column to a 1× block (still arithmetically correct as an average).
+fn downsample_2x(src: &[u8], src_w: u32, src_h: u32, channels: usize) -> Vec<u8> {
+    let dst_w = (src_w / 2).max(1);
+    let dst_h = (src_h / 2).max(1);
+    let mut dst = vec![0u8; (dst_w * dst_h) as usize * channels];
+    let src_stride = src_w as usize * channels;
+    for y in 0..dst_h {
+        for x in 0..dst_w {
+            let sx0 = (x * 2) as usize;
+            let sy0 = (y * 2) as usize;
+            let sx1 = (sx0 + 1).min(src_w as usize - 1);
+            let sy1 = (sy0 + 1).min(src_h as usize - 1);
+            let p00 = sy0 * src_stride + sx0 * channels;
+            let p10 = sy0 * src_stride + sx1 * channels;
+            let p01 = sy1 * src_stride + sx0 * channels;
+            let p11 = sy1 * src_stride + sx1 * channels;
+            let dst_off = (y as usize * dst_w as usize + x as usize) * channels;
+            for c in 0..channels {
+                let sum = src[p00 + c] as u32
+                    + src[p10 + c] as u32
+                    + src[p01 + c] as u32
+                    + src[p11 + c] as u32;
+                dst[dst_off + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    dst
 }
 
 // The diffuse loader expands grayscale PNGs to RGBA8; only R carries specular
@@ -1059,7 +1117,6 @@ impl Renderer {
             ],
         });
 
-        // Nearest + repeat — retro pixel aesthetic.
         let base_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Base Texture Sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -1067,7 +1124,8 @@ impl Renderer {
             address_mode_w: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            lod_max_clamp: 8.0,
             ..Default::default()
         });
 

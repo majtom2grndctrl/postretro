@@ -106,7 +106,10 @@ pub(super) fn emit(
     );
 
     if state.show_base_aabb {
-        lines.push_aabb(origin, origin + extent, COLOR_BASE_AABB);
+        // Bounding AABBs render x-ray so the shape stays visible from inside
+        // the world — its faces sit at the geometry hull and would otherwise
+        // be fully occluded by opaque world depth.
+        lines.push_aabb_overlay(origin, origin + extent, COLOR_BASE_AABB);
     }
 
     if state.show_cells && state.cell_radius > 0.0 {
@@ -136,7 +139,7 @@ pub(super) fn emit(
             meta.cell_size[1] * meta.grid_dimensions[1] as f32,
             meta.cell_size[2] * meta.grid_dimensions[2] as f32,
         );
-        lines.push_aabb(d_origin, d_origin + d_extent, COLOR_DELTA_AABB);
+        lines.push_aabb_overlay(d_origin, d_origin + d_extent, COLOR_DELTA_AABB);
     }
 }
 

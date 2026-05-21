@@ -7,6 +7,9 @@ use glam::Vec3;
 const DEBUG_LINES_SHADER_SOURCE: &str = include_str!("../shaders/debug_lines.wgsl");
 
 const MAX_DEBUG_SEGMENTS: usize = 256 * 1024;
+/// Overlay (always-on-top) segments are only used for bounding-shape AABBs,
+/// which carry 12 segments each. A fraction of the depth-tested cap is plenty.
+const MAX_DEBUG_OVERLAY_SEGMENTS: usize = MAX_DEBUG_SEGMENTS / 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -17,9 +20,13 @@ struct DebugLineVertex {
 
 pub struct DebugLineRenderer {
     pipeline: wgpu::RenderPipeline,
+    overlay_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    overlay_vertex_buffer: wgpu::Buffer,
     cpu_vertices: Vec<DebugLineVertex>,
+    overlay_cpu_vertices: Vec<DebugLineVertex>,
     overflowed_this_frame: bool,
+    overlay_overflowed_this_frame: bool,
 }
 
 /// The 12 edges of an axis-aligned box, as `(start, end)` segment pairs.
@@ -95,61 +102,71 @@ impl DebugLineRenderer {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Debug Lines Pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<DebugLineVertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Unorm8x4,
-                        },
-                    ],
-                }],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: depth_format,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: sample_count,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let make_pipeline = |label: &str, depth_compare: wgpu::CompareFunction| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<DebugLineVertex>() as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                offset: 0,
+                                shader_location: 0,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 12,
+                                shader_location: 1,
+                                format: wgpu::VertexFormat::Unorm8x4,
+                            },
+                        ],
+                    }],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::LineList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: depth_format,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(depth_compare),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: sample_count,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+
+        // Depth-tested pipeline for shapes that should respect world occlusion
+        // (probe markers, per-cell wires). Always-on-top pipeline for shapes
+        // whose value is x-ray visibility from anywhere in the world (bounding
+        // AABBs that sit at or beyond the opaque world hull).
+        let pipeline = make_pipeline("Debug Lines Pipeline", wgpu::CompareFunction::LessEqual);
+        let overlay_pipeline =
+            make_pipeline("Debug Lines Overlay Pipeline", wgpu::CompareFunction::Always);
 
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Debug Lines Vertex Buffer"),
@@ -158,17 +175,30 @@ impl DebugLineRenderer {
             mapped_at_creation: false,
         });
 
+        let overlay_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Debug Lines Overlay Vertex Buffer"),
+            size: (MAX_DEBUG_OVERLAY_SEGMENTS * 2 * std::mem::size_of::<DebugLineVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             pipeline,
+            overlay_pipeline,
             vertex_buffer,
+            overlay_vertex_buffer,
             cpu_vertices: Vec::with_capacity(MAX_DEBUG_SEGMENTS * 2),
+            overlay_cpu_vertices: Vec::with_capacity(MAX_DEBUG_OVERLAY_SEGMENTS * 2),
             overflowed_this_frame: false,
+            overlay_overflowed_this_frame: false,
         }
     }
 
     pub fn clear(&mut self) {
         self.cpu_vertices.clear();
+        self.overlay_cpu_vertices.clear();
         self.overflowed_this_frame = false;
+        self.overlay_overflowed_this_frame = false;
     }
 
     pub fn push_line(&mut self, start: Vec3, end: Vec3, color_rgba: [u8; 4]) {
@@ -204,6 +234,33 @@ impl DebugLineRenderer {
         }
     }
 
+    pub fn push_line_overlay(&mut self, start: Vec3, end: Vec3, color_rgba: [u8; 4]) {
+        if self.overlay_cpu_vertices.len() + 2 > MAX_DEBUG_OVERLAY_SEGMENTS * 2 {
+            if !self.overlay_overflowed_this_frame {
+                log::warn!(
+                    "DebugLineRenderer: overlay segment cap {} reached; truncating",
+                    MAX_DEBUG_OVERLAY_SEGMENTS
+                );
+                self.overlay_overflowed_this_frame = true;
+            }
+            return;
+        }
+        self.overlay_cpu_vertices.push(DebugLineVertex {
+            position: start.to_array(),
+            color: color_rgba,
+        });
+        self.overlay_cpu_vertices.push(DebugLineVertex {
+            position: end.to_array(),
+            color: color_rgba,
+        });
+    }
+
+    pub fn push_aabb_overlay(&mut self, min: Vec3, max: Vec3, color_rgba: [u8; 4]) {
+        for (a, b) in aabb_edges(min, max) {
+            self.push_line_overlay(a, b, color_rgba);
+        }
+    }
+
     pub fn render(
         &self,
         queue: &wgpu::Queue,
@@ -212,15 +269,24 @@ impl DebugLineRenderer {
         depth_view: &wgpu::TextureView,
         uniform_bind_group: &wgpu::BindGroup,
     ) {
-        if self.cpu_vertices.is_empty() {
+        if self.cpu_vertices.is_empty() && self.overlay_cpu_vertices.is_empty() {
             return;
         }
 
-        queue.write_buffer(
-            &self.vertex_buffer,
-            0,
-            bytemuck::cast_slice(&self.cpu_vertices),
-        );
+        if !self.cpu_vertices.is_empty() {
+            queue.write_buffer(
+                &self.vertex_buffer,
+                0,
+                bytemuck::cast_slice(&self.cpu_vertices),
+            );
+        }
+        if !self.overlay_cpu_vertices.is_empty() {
+            queue.write_buffer(
+                &self.overlay_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&self.overlay_cpu_vertices),
+            );
+        }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Debug Lines Pass"),
@@ -244,12 +310,26 @@ impl DebugLineRenderer {
             ..Default::default()
         });
 
-        pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, uniform_bind_group, &[]);
-        let vertex_bytes =
-            (self.cpu_vertices.len() * std::mem::size_of::<DebugLineVertex>()) as u64;
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(0..vertex_bytes));
-        pass.draw(0..self.cpu_vertices.len() as u32, 0..1);
+
+        // Depth-tested first so overlay lines (drawn second) win at any pixel
+        // both pipelines touch — bounding AABBs should never be visually
+        // clipped by a depth-tested wire at the same pixel.
+        if !self.cpu_vertices.is_empty() {
+            pass.set_pipeline(&self.pipeline);
+            let vertex_bytes =
+                (self.cpu_vertices.len() * std::mem::size_of::<DebugLineVertex>()) as u64;
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(0..vertex_bytes));
+            pass.draw(0..self.cpu_vertices.len() as u32, 0..1);
+        }
+
+        if !self.overlay_cpu_vertices.is_empty() {
+            pass.set_pipeline(&self.overlay_pipeline);
+            let vertex_bytes =
+                (self.overlay_cpu_vertices.len() * std::mem::size_of::<DebugLineVertex>()) as u64;
+            pass.set_vertex_buffer(0, self.overlay_vertex_buffer.slice(0..vertex_bytes));
+            pass.draw(0..self.overlay_cpu_vertices.len() as u32, 0..1);
+        }
     }
 }
 

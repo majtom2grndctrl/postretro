@@ -18,7 +18,9 @@ pub mod lightmap;
 pub mod map_entity;
 pub mod octahedral;
 pub mod portals;
+pub mod prm;
 pub mod sh_volume;
+pub mod texture_cache_keys;
 pub mod texture_names;
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -26,7 +28,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use thiserror::Error;
 
 pub const MAGIC: [u8; 4] = *b"PRL\0";
-pub const CURRENT_VERSION: u16 = 3;
+pub const CURRENT_VERSION: u16 = 4;
 
 const HEADER_SIZE: usize = 8;
 const SECTION_ENTRY_SIZE: usize = 22;
@@ -163,6 +165,14 @@ pub enum SectionId {
     /// only when at least one `fog_volume` brush entity is present.
     /// See `fog_cell_masks::FogCellMasksSection`.
     FogCellMasks = 31,
+
+    /// Flat array of 32-byte blake3 cache keys, one per entry in
+    /// `TextureNames` (same index order). Each key is the blake3 of the raw
+    /// PNG source bytes for that texture; the runtime uses it to locate the
+    /// matching baked `.prm` mip sidecar without rehashing PNGs at load time.
+    /// See `texture_cache_keys::TextureCacheKeysSection` and the `prm` module
+    /// for the sidecar wire format.
+    TextureCacheKeys = 32,
 }
 
 impl SectionId {
@@ -187,6 +197,7 @@ impl SectionId {
             29 => Some(Self::MapEntity),
             30 => Some(Self::FogVolumes),
             31 => Some(Self::FogCellMasks),
+            32 => Some(Self::TextureCacheKeys),
             _ => None,
         }
     }
@@ -456,6 +467,28 @@ mod tests {
         let err = read_container(&mut cursor).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("99"), "error should include version: {msg}");
+    }
+
+    /// Pinned regression guard for the v3 → v4 bump made by the baked-texture-mips
+    /// plan (Task 1). Once `CURRENT_VERSION` was bumped, every previously-shipped
+    /// v3 PRL must be rejected with a specific `UnsupportedVersion { version: 3 }`
+    /// error. The generic `rejects_unsupported_version` test above uses `99` and
+    /// derives the expected version from `CURRENT_VERSION`, so it does not pin
+    /// the v3-specific rejection. This test pins `3` literally so a future
+    /// accidental rollback of `CURRENT_VERSION` to `3` would surface here.
+    #[test]
+    fn rejects_v3_after_bump() {
+        let mut buf = vec![0u8; HEADER_SIZE];
+        buf[0..4].copy_from_slice(&MAGIC);
+        buf[4..6].copy_from_slice(&3u16.to_le_bytes());
+        buf[6..8].copy_from_slice(&0u16.to_le_bytes());
+
+        let mut cursor = Cursor::new(&buf);
+        let err = read_container(&mut cursor).unwrap_err();
+        assert!(
+            matches!(err, FormatError::UnsupportedVersion { version: 3 }),
+            "expected UnsupportedVersion {{ version: 3 }}, got {err:?}"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 // run on the main thread from baked `.prm` sidecars (which only the renderer
 // can address). The worker emits the cache-root path so the main thread can
 // locate the sidecars without re-deriving the layout.
-// See: context/lib/boot_sequence.md · context/lib/build_pipeline.md §PRL section IDs · §Build Cache
+// See: context/lib/boot_sequence.md · context/lib/build_pipeline.md §PRL section IDs · §Baked texture mips
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

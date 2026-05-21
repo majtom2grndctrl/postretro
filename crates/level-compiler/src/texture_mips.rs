@@ -1,31 +1,5 @@
-// Compile-time mip-chain baker for material textures.
-//
-// Source PNGs (diffuse, `_s.png` specular, `_n.png` normal) are read once per
-// build, downsampled to a full mip pyramid using a separable
-// Mitchell-Netravali (B=1/3, C=1/3) filter, and packed into a per-texture
-// `.prm` sidecar under `<workspace>/.build-caches/prm-cache/`. The runtime
-// uploads `.prm` payloads directly without rehashing or re-filtering.
-//
-// Why bake offline:
-// - Mitchell-Netravali is too expensive to run at load time across every
-//   texture and every level (3+ slots × Σ widths × heights at all mip levels).
-// - The renderer cannot do gamma-correct sRGB filtering with wgpu's built-in
-//   mip generation, which assumes linear data.
-// - Per-texel normal renormalisation is not expressible inside a hardware
-//   filter; baking lets us renormalise per output texel.
-//
-// Filename keying vs bundle hashing:
-//
-//   The on-disk filename uses a *cheap* key (`blake3(diffuse_png_bytes)` with
-//   slot-specific prefixes when diffuse is absent) so that two textures with
-//   identical diffuse content collide on the same `.prm`. The *bundle hash*
-//   stored inside the file (and used for cache-validity comparison) covers
-//   the full present-slot set: when only the specular sibling changes,
-//   bundle_hash differs and we rebake even though the filename key would have
-//   matched.
-//
-// Wire types come from `postretro_level_format::prm` — this module never
-// reinvents the format.
+// Bakes per-texture mip pyramids into `.prm` sidecar files.
+// See: context/lib/build_pipeline.md §Baked texture mips
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -91,10 +65,14 @@ fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
 /// present slot in diffuse→specular→normal order, a `(0x00 | 0x01 | 0x02)`
 /// disambiguator byte followed by the raw PNG file bytes.
 ///
+/// Hash input starts with the `slot_mask` byte so slot deletion is an
+/// unambiguous fingerprint change, followed by `(bit_index_byte, png_bytes)`
+/// for every present slot in canonical order.
+///
 /// The `.prm` filename key (computed separately) intentionally uses a cheaper
 /// recipe so files with identical diffuse content collide; this bundle hash
 /// changes whenever any sibling changes, forcing a rebake even on a filename
-/// hit. See module-level docs.
+/// hit.
 fn bundle_hash_for(
     diffuse: Option<&[u8]>,
     specular: Option<&[u8]>,
@@ -475,11 +453,14 @@ fn encode_normal_into(linear: &[f32], out: &mut Vec<u8>) {
 
 // -- File I/O -------------------------------------------------------------
 
-/// Decode a PNG into a `(rgba8, w, h)` triple. The `image` crate handles all
-/// supported PNG colour types and converts them to RGBA8.
-fn decode_png_rgba(path: &Path) -> anyhow::Result<(Vec<u8>, u32, u32)> {
-    let img = image::open(path)
-        .map_err(|e| anyhow::anyhow!("failed to open PNG {}: {e}", path.display()))?;
+/// Decode PNG bytes into a `(rgba8, w, h)` triple. The `image` crate handles
+/// all supported PNG colour types and converts them to RGBA8. Accepts an
+/// already-read byte slice so callers that hash the bytes first can reuse them
+/// without a second read.
+fn decode_png_rgba(bytes: &[u8], path: &Path) -> anyhow::Result<(Vec<u8>, u32, u32)> {
+    use anyhow::Context as _;
+    let img = image::load_from_memory(bytes)
+        .with_context(|| format!("decoding PNG {}", path.display()))?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     Ok((rgba.into_raw(), w, h))
@@ -592,8 +573,8 @@ pub fn bake_texture_mips(
         let mut slots_arr: [Option<PrmSlot>; 3] = [None, None, None];
         let mut slot_mask = PrmSlots::empty();
 
-        if let Some(p) = diff_path.as_ref() {
-            let (rgba, w, h) = decode_png_rgba(p)?;
+        if let (Some(b), Some(p)) = (diff_bytes.as_deref(), diff_path.as_ref()) {
+            let (rgba, w, h) = decode_png_rgba(b, p)?;
             let payload = build_diffuse_chain(&rgba, w, h, &lut);
             slots_arr[0] = Some(PrmSlot {
                 format: PrmFormat::Rgba8UnormSrgb,
@@ -604,10 +585,10 @@ pub fn bake_texture_mips(
             });
             slot_mask |= PrmSlots::DIFFUSE;
         }
-        if let Some(p) = spec_path.as_ref() {
+        if let (Some(b), Some(p)) = (spec_bytes.as_deref(), spec_path.as_ref()) {
             // Decode as RGBA; flatten to R8 (PNG authoring is typically L8 or
             // RGBA8 with the spec data in R). We accept either.
-            let (rgba, w, h) = decode_png_rgba(p)?;
+            let (rgba, w, h) = decode_png_rgba(b, p)?;
             let r8: Vec<u8> = rgba.chunks_exact(4).map(|c| c[0]).collect();
             let payload = build_specular_chain(&r8, w, h);
             slots_arr[1] = Some(PrmSlot {
@@ -619,8 +600,8 @@ pub fn bake_texture_mips(
             });
             slot_mask |= PrmSlots::SPECULAR;
         }
-        if let Some(p) = norm_path.as_ref() {
-            let (rgba, w, h) = decode_png_rgba(p)?;
+        if let (Some(b), Some(p)) = (norm_bytes.as_deref(), norm_path.as_ref()) {
+            let (rgba, w, h) = decode_png_rgba(b, p)?;
             let payload = build_normal_chain(&rgba, w, h);
             slots_arr[2] = Some(PrmSlot {
                 format: PrmFormat::Rgba8Unorm,
@@ -787,5 +768,24 @@ mod tests {
     #[test]
     fn all_absent_key_is_zero() {
         assert_eq!(filename_key_for(None, None, None), [0u8; 32]);
+    }
+
+    /// Pins the bundle-hash wire format to a known byte sequence. A diffuse-only
+    /// bundle with `mask = PrmSlots::DIFFUSE.bits()` (0x01) and PNG bytes `[0xAA, 0xBB]`
+    /// must hash the byte stream `[0x01, 0x00, 0xAA, 0xBB]` (slot_mask byte, then
+    /// bit_index_byte 0x00 for diffuse, then the two PNG bytes). Any refactor that
+    /// reorders those prefix bytes or drops the slot_mask byte would silently
+    /// invalidate every existing `.prm` cache — this test catches that.
+    #[test]
+    fn bundle_hash_for_pins_wire_format() {
+        // Computed offline: blake3([0x01, 0x00, 0xAA, 0xBB])
+        let expected: [u8; 32] = [
+            0x73, 0x7e, 0xb8, 0x89, 0x4d, 0xa5, 0x47, 0x24,
+            0x8d, 0xb5, 0xd4, 0x9e, 0xdb, 0xd5, 0xd0, 0x01,
+            0x49, 0xe8, 0x68, 0xc3, 0x89, 0xd5, 0xa9, 0xcb,
+            0x57, 0xc8, 0xb2, 0x04, 0x7c, 0xc1, 0x7b, 0xbe,
+        ];
+        let got = bundle_hash_for(Some(&[0xAAu8, 0xBB]), None, None);
+        assert_eq!(got, expected);
     }
 }

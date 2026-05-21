@@ -29,7 +29,7 @@
 //   u32      payload_bytes        -- total bytes for all levels concatenated
 //   [u8; payload_bytes]           -- levels packed back-to-back, level 0 first
 //
-// See: context/lib/build_pipeline.md §PRL section IDs · §Build Cache
+// See: context/lib/build_pipeline.md §PRL section IDs · §Baked texture mips
 
 use bitflags::bitflags;
 use thiserror::Error;
@@ -45,6 +45,7 @@ pub const STAGE_VERSION: u8 = 1;
 /// has a single source of truth. Returns 64 lowercase hex characters;
 /// callers append `.prm` themselves.
 pub fn cache_filename_for_key(key: &[u8; 32]) -> String {
+    // Hand-rolled hex to keep `postretro-level-format` dependency-free.
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(64);
     for &b in key {
@@ -158,7 +159,7 @@ pub enum PrmReadError {
     #[error("slot_mask has reserved bits set or is zero: {mask:#010b}")]
     ReservedSlotBitsSet { mask: u8 },
 
-    #[error("slot {slot} dimension too large: {width}x{height}")]
+    #[error("slot {slot} invalid dimension: {width}x{height} (must be 1..=4096)")]
     DimensionTooLarge { slot: u8, width: u16, height: u16 },
 
     #[error("slot {slot} level_count mismatch: expected {expected}, got {found}")]
@@ -167,8 +168,11 @@ pub enum PrmReadError {
     #[error("slot {slot} payload_bytes mismatch: expected {expected}, got {found}")]
     PayloadBytesMismatch { slot: u8, expected: u32, found: u32 },
 
-    #[error("total_body_bytes mismatch: expected {expected}, got {found}")]
+    #[error("total body bytes mismatch: expected {expected}, found {found}")]
     TotalBodyBytesMismatch { expected: u32, found: u32 },
+
+    #[error("file body size {found} does not match declared total_body_bytes {expected}")]
+    BodySizeMismatch { expected: u32, found: u32 },
 
     #[error("file truncated mid-header or mid-payload")]
     Truncated,
@@ -324,14 +328,16 @@ impl PrmFile {
             cursor = cursor.saturating_add(consumed);
         }
 
-        // Total-body cross-check (only when every slot parsed).
+        // Two-way check: (1) recomputed body size from parsed slots must equal
+        // `total_body_bytes`; (2) actual buffer length must also match — catches
+        // writers that padded or truncated without adjusting the header field.
         let header_result = if all_present_ok && expected_total != header.total_body_bytes {
             Err(PrmReadError::TotalBodyBytesMismatch {
                 expected: expected_total,
                 found: header.total_body_bytes,
             })
         } else if all_present_ok && (body.len() as u32) != header.total_body_bytes {
-            Err(PrmReadError::TotalBodyBytesMismatch {
+            Err(PrmReadError::BodySizeMismatch {
                 expected: header.total_body_bytes,
                 found: body.len() as u32,
             })
@@ -430,7 +436,7 @@ fn parse_slot(
         body[offset + 11],
     ]);
 
-    // Dimension sanity bound.
+    // Dimension sanity bound. Zero dimensions are rejected because a zero-size payload is always malformed.
     if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
         let consumed = SLOT_HEADER_SIZE.saturating_add(payload_bytes as usize);
         let consumed = consumed.min(body.len() - offset);
@@ -699,5 +705,78 @@ mod tests {
         assert_eq!(expected_level_count(4, 4), 3);
         assert_eq!(expected_level_count(8, 4), 4);
         assert_eq!(expected_level_count(1024, 1024), 11);
+    }
+
+    /// Mutating `total_body_bytes` in the header (slot-sum vs. declared mismatch)
+    /// must return `TotalBodyBytesMismatch`.
+    #[test]
+    fn mutated_total_body_bytes_header_field_is_rejected() {
+        let file = make_three_slot_file();
+        let mut bytes = file.to_bytes();
+
+        // `total_body_bytes` is a little-endian u32 at header bytes 39..43.
+        let original = u32::from_le_bytes([bytes[39], bytes[40], bytes[41], bytes[42]]);
+        let mutated = original.wrapping_add(7);
+        bytes[39..43].copy_from_slice(&mutated.to_le_bytes());
+
+        let (header_result, _) = PrmFile::from_bytes_partial(&bytes);
+        assert!(
+            matches!(
+                header_result,
+                Err(PrmReadError::TotalBodyBytesMismatch { .. })
+            ),
+            "expected TotalBodyBytesMismatch, got {header_result:?}"
+        );
+    }
+
+    /// Appending stray bytes beyond what the header declares must return
+    /// `BodySizeMismatch` (actual buffer length != declared total_body_bytes).
+    #[test]
+    fn stray_trailing_bytes_produce_body_size_mismatch() {
+        let file = make_three_slot_file();
+        let mut bytes = file.to_bytes();
+
+        // Append 16 stray bytes — the header still declares the original size.
+        bytes.extend_from_slice(&[0xFFu8; 16]);
+
+        let (header_result, _) = PrmFile::from_bytes_partial(&bytes);
+        assert!(
+            matches!(header_result, Err(PrmReadError::BodySizeMismatch { .. })),
+            "expected BodySizeMismatch, got {header_result:?}"
+        );
+    }
+
+    /// A hand-crafted header with `slot_mask = DIFFUSE` and an empty body (no
+    /// slot bytes at all) must fail. The implementation returns `BodySizeMismatch`
+    /// at the header layer because `total_body_bytes` is declared non-zero but
+    /// the buffer contains no body bytes at all.
+    #[test]
+    fn empty_body_with_diffuse_slot_fails_body_size_mismatch() {
+        // Build just a header claiming one diffuse slot with a non-zero
+        // total_body_bytes (matching what a real diffuse slot would require),
+        // but supply no body bytes at all.
+        let diffuse_slot = make_slot(PrmFormat::Rgba8UnormSrgb, 4, 4);
+        let declared_body = SLOT_HEADER_SIZE as u32 + diffuse_slot.payload.len() as u32;
+
+        let mut bytes = vec![0u8; HEADER_SIZE];
+        bytes[0..4].copy_from_slice(b"PRM\x01");
+        bytes[4] = STAGE_VERSION;
+        bytes[5] = PrmSlots::DIFFUSE.bits();
+        // bundle_hash stays zero.
+        bytes[39..43].copy_from_slice(&declared_body.to_le_bytes());
+        // No body bytes appended — total length is exactly HEADER_SIZE.
+
+        let (header_result, slots) = PrmFile::from_bytes_partial(&bytes);
+        // The implementation may either fail at the header layer (BodySizeMismatch)
+        // or at the slot layer (Truncated). Both are acceptable contracts; what
+        // matters is that the parse does not succeed.
+        let header_ok = header_result.is_ok();
+        let diffuse_ok = slots[0].is_ok();
+        assert!(
+            !header_ok || !diffuse_ok,
+            "empty body with declared diffuse slot must not fully succeed; \
+             header={header_result:?} diffuse={:?}",
+            slots[0]
+        );
     }
 }

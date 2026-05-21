@@ -97,8 +97,9 @@ fn resolve_texture_root(map_path: &Path) -> PathBuf {
 /// Resolve the `.prm` mip-cache root from a map input path.
 ///
 /// Lives next to the stage cache under `<workspace>/.build-caches/prm-cache/`.
-/// Falls back to the map's parent directory when no Cargo manifest ancestor is
-/// found, matching `find_workspace_root`'s pre-stable contract.
+/// Falls back to the map's parent directory when no `Cargo.toml` ancestor
+/// is found — covers shipping or standalone layouts that omit the
+/// workspace manifest.
 fn resolve_prm_cache_root(map_path: &Path) -> PathBuf {
     cache::find_workspace_root(map_path)
         .unwrap_or_else(|| {

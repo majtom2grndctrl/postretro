@@ -43,7 +43,7 @@ Move texture mip-chain generation out of the renderer and into `prl-build`. Mip 
 - [ ] Sampler `lod_max_clamp` for each texture equals `mip_count - 1`, not 24.0.
 - [ ] A `TextureNames` entry whose `TextureCacheKeys` slot is `[0u8; 32]` renders with placeholders and logs no warning.
 - [ ] A corrupt `.prm` file (truncated, bad magic, wrong stage_version) yields a `warn!` log entry and falls back to placeholders; the affected level still loads successfully.
-- [ ] Unit test: `PrmFile::from_bytes_partial` on a fixture whose specular slot is truncated returns `Ok(PrmHeader)`, `Ok(PrmSlot)` for diffuse, `Err(PrmReadError::Truncated)` for specular, and `Ok(PrmSlot)` for normal — per-slot fallback isolation regression guard.
+- [ ] Unit test: `PrmFile::from_bytes_partial` on a fixture whose specular slot is truncated returns `Ok(PrmHeader)`, `Ok(PrmSlot)` for diffuse, and `Err(PrmReadError::Truncated)` for specular — per-slot fallback isolation regression guard. Tail slots after a truncated payload may also fail (the wire format has no per-slot offset table to skip past a truncated slot), which is acceptable; a true per-slot offset isolation is out of scope.
 
 ## Tasks
 

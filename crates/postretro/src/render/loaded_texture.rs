@@ -33,8 +33,9 @@ pub struct LoadedTexture {
     #[allow(dead_code)]
     pub normal_texture: wgpu::Texture,
     pub normal_view: wgpu::TextureView,
-    /// Mip levels present on `diffuse_texture`. The renderer keys its sampler
-    /// pool off this value so `lod_max_clamp` matches the uploaded chain.
+    /// Max mip levels across all uploaded slots. The sampler's `lod_max_clamp`
+    /// is keyed by this value so no slot is over-clamped when sibling slots
+    /// have different chain depths (e.g. corrupted diffuse with intact normal).
     pub mip_count: u32,
 }
 
@@ -110,6 +111,23 @@ fn slot_levels(slot: &PrmSlot) -> Vec<(u32, u32, &[u8])> {
         PrmFormat::Rgba8Unorm | PrmFormat::Rgba8UnormSrgb => 4,
         PrmFormat::R8Unorm => 1,
     };
+    debug_assert_eq!(
+        slot.payload.len(),
+        (0..slot.level_count)
+            .map(|n| {
+                let w = ((slot.width as u32) >> n).max(1);
+                let h = ((slot.height as u32) >> n).max(1);
+                (bpp * w * h) as usize
+            })
+            .sum::<usize>(),
+        "slot payload length must equal the sum of bpp*w*h across all {} mip levels \
+         (width={}, height={}, format={:?}); in-process-constructed slots must match \
+         the pyramid implied by width/height/level_count",
+        slot.level_count,
+        slot.width,
+        slot.height,
+        format,
+    );
     let mut out = Vec::with_capacity(slot.level_count as usize);
     let mut offset = 0usize;
     for n in 0..slot.level_count {

@@ -207,7 +207,7 @@ pub fn draw_diagnostics_panel(
                     0.05_f32..=2.0,
                 ));
 
-                ui.label("Cell-draw radius (world units)");
+                ui.label("Overlay radius (world units)");
                 ui.add(egui::Slider::new(&mut sh_state.cell_radius, 0.0_f32..=64.0));
 
                 ui.separator();

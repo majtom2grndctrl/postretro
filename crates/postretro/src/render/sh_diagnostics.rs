@@ -122,8 +122,8 @@ pub(super) fn emit(
         );
     }
 
-    if state.show_markers {
-        emit_markers(state, sh, dims, origin, cell, lines);
+    if state.show_markers && state.cell_radius > 0.0 {
+        emit_markers(state, sh, dims, origin, cell, camera_pos, lines);
     }
 
     for (i, meta) in delta_vols.iter().enumerate() {
@@ -192,8 +192,12 @@ fn emit_markers(
     dims: [u32; 3],
     origin: Vec3,
     cell: Vec3,
+    camera_pos: Vec3,
     lines: &mut DebugLineRenderer,
 ) {
+    // Radius gate mirrors `emit_cells`: without it, dense probe grids blow past
+    // the debug-line segment cap and whole rooms vanish from the overlay.
+    let r2 = state.cell_radius * state.cell_radius;
     for z in 0..dims[2] {
         for y in 0..dims[1] {
             for x in 0..dims[0] {
@@ -203,6 +207,9 @@ fn emit_markers(
                         (y as f32 + 0.5) * cell.y,
                         (z as f32 + 0.5) * cell.z,
                     );
+                if (pos - camera_pos).length_squared() > r2 {
+                    continue;
+                }
                 let color = match state.marker_mode {
                     MarkerMode::Uniform => COLOR_PROBE_UNIFORM,
                     MarkerMode::Validity => {

@@ -40,6 +40,20 @@ use thiserror::Error;
 /// `StageVersionMismatch`.
 pub const STAGE_VERSION: u8 = 1;
 
+/// Cache filename stem for a `.prm` sidecar keyed by `key`. The compile-time
+/// writer and runtime-side reader both call this so the addressing contract
+/// has a single source of truth. Returns 64 lowercase hex characters;
+/// callers append `.prm` themselves.
+pub fn cache_filename_for_key(key: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for &b in key {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
 /// Size of the fixed file header in bytes.
 const HEADER_SIZE: usize = 43;
 
@@ -657,6 +671,24 @@ mod tests {
                 Err(PrmReadError::StageVersionMismatch { .. })
             ),
             "expected StageVersionMismatch, got {header_result:?}"
+        );
+    }
+
+    #[test]
+    fn cache_filename_for_key_is_lowercase_hex_64_chars() {
+        let mut key = [0u8; 32];
+        key[0] = 0xAB;
+        key[1] = 0xCD;
+        key[30] = 0xEF;
+        key[31] = 0x0F;
+        let s = cache_filename_for_key(&key);
+        assert_eq!(s.len(), 64);
+        assert!(s.starts_with("abcd"));
+        assert!(s.ends_with("ef0f"));
+        assert!(
+            s.chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "expected lowercase hex only, got {s}"
         );
     }
 

@@ -5,7 +5,9 @@
 
 use std::path::Path;
 
-use postretro_level_format::prm::{PrmFile, PrmFormat, PrmReadError, PrmSlot};
+use postretro_level_format::prm::{
+    PrmFile, PrmFormat, PrmReadError, PrmSlot, cache_filename_for_key,
+};
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
 const PLACEHOLDER_SIZE: u32 = 64;
@@ -34,11 +36,6 @@ pub struct LoadedTexture {
     /// Mip levels present on `diffuse_texture`. The renderer keys its sampler
     /// pool off this value so `lod_max_clamp` matches the uploaded chain.
     pub mip_count: u32,
-    /// `true` when every slot fell back to a placeholder (zero key, header
-    /// error, or missing file). Keeps probe-skip parity with the prior PNG
-    /// loader: a placeholder diffuse must not pair with sibling slot data.
-    #[allow(dead_code)]
-    pub is_placeholder: bool,
 }
 
 /// Upload a pre-baked mip chain to a 2D texture. Each `(width, height, bytes)`
@@ -135,7 +132,7 @@ fn prm_format_to_wgpu(format: PrmFormat) -> wgpu::TextureFormat {
 
 /// Build a 64×64 RGBA8 magenta/black checkerboard for the diffuse placeholder.
 /// Single mip level — the placeholder doesn't need filtering at distance.
-fn generate_checkerboard_pixels() -> Vec<u8> {
+pub(super) fn generate_checkerboard_pixels() -> Vec<u8> {
     let pixel_count = (PLACEHOLDER_SIZE * PLACEHOLDER_SIZE) as usize;
     let mut data = Vec::with_capacity(pixel_count * 4);
     for y in 0..PLACEHOLDER_SIZE {
@@ -211,7 +208,13 @@ fn header_mip_count(slots: &[Result<PrmSlot, PrmReadError>; 3]) -> u32 {
         .unwrap_or(1)
 }
 
-fn placeholder_loaded_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> LoadedTexture {
+/// All-slot placeholder texture: 64×64 checkerboard diffuse, 1×1 black specular,
+/// 1×1 neutral normal. Shared between `load_textures`' per-texture fallback path
+/// and the renderer's no-level-loaded bootstrap slot.
+pub(super) fn placeholder_loaded_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> LoadedTexture {
     let (diffuse_texture, diffuse_view) = make_diffuse_placeholder(device, queue);
     let (specular_texture, specular_view) = make_specular_placeholder(device, queue);
     let (normal_texture, normal_view) = make_normal_placeholder(device, queue);
@@ -223,18 +226,7 @@ fn placeholder_loaded_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> Loa
         normal_texture,
         normal_view,
         mip_count: 1,
-        is_placeholder: true,
     }
-}
-
-fn hex_lower(key: &[u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(64);
-    for &b in key {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0F) as usize] as char);
-    }
-    out
 }
 
 /// Load every world-material texture referenced by the PRL. `texture_names[i]`
@@ -271,7 +263,7 @@ pub fn load_textures(
             continue;
         }
 
-        let prm_path = prm_cache_root.join(format!("{}.prm", hex_lower(&key)));
+        let prm_path = prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
         let bytes = match std::fs::read(&prm_path) {
             Ok(b) => b,
             Err(err) => {
@@ -313,7 +305,6 @@ pub fn load_textures(
             normal_texture,
             normal_view,
             mip_count,
-            is_placeholder: false,
         });
     }
 
@@ -481,20 +472,10 @@ mod tests {
         // so a future refactor doesn't accidentally drop the zero-key fast path.
         let zero = [0u8; 32];
         assert_eq!(zero, [0u8; 32]);
-        // hex_lower of zero is 64 zero chars — a non-empty filename, so a
-        // mistaken disk lookup would clash against a real cache entry.
-        assert_eq!(hex_lower(&zero), "0".repeat(64));
-    }
-
-    #[test]
-    fn hex_lower_is_lowercase_and_padded() {
-        let mut key = [0u8; 32];
-        key[0] = 0xAB;
-        key[31] = 0x0F;
-        let s = hex_lower(&key);
-        assert_eq!(s.len(), 64);
-        assert!(s.starts_with("ab"));
-        assert!(s.ends_with("0f"));
+        // cache_filename_for_key of zero is 64 zero chars — a non-empty
+        // filename, so a mistaken disk lookup would clash against a real cache
+        // entry.
+        assert_eq!(cache_filename_for_key(&zero), "0".repeat(64));
     }
 
     #[test]

@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use postretro_level_format::prm::{
-    PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION,
+    PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION, cache_filename_for_key,
 };
 
 /// Build a case-insensitive lookup from texture stem to PNG path, scanning
@@ -85,18 +85,6 @@ fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
     }
 
     map
-}
-
-/// Hex-encode a 32-byte blake3 digest into a 64-character lowercase string for
-/// use as a filename stem.
-fn hex_encode(bytes: &[u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
 }
 
 /// Build the per-texture bundle hash: covers the slot-mask byte plus, for each
@@ -583,7 +571,7 @@ pub fn bake_texture_mips(
             norm_bytes.as_deref(),
         );
 
-        let prm_path = cache_root.join(format!("{}.prm", hex_encode(&filename_key)));
+        let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
         // Cache hit: header parses and bundle_hash matches.
         if prm_path.exists() {

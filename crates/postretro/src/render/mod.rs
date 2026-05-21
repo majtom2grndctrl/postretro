@@ -39,7 +39,7 @@ use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots_into};
 use crate::material::Material;
 use crate::prl::MapLight;
-use crate::render::loaded_texture::{LoadedTexture, load_textures};
+use crate::render::loaded_texture::{LoadedTexture, load_textures, placeholder_loaded_texture};
 use crate::render::splash::SplashPipeline;
 use crate::visibility::VisibleCells;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
@@ -286,59 +286,6 @@ fn create_mip_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
         lod_max_clamp: (mip_count.saturating_sub(1)) as f32,
         ..Default::default()
     })
-}
-
-/// All-placeholder `LoadedTexture` for the no-level boot state. Reuses the
-/// same generator that `load_textures` falls back to per-texture.
-fn build_placeholder_loaded_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> LoadedTexture {
-    let checker = build_placeholder_checkerboard();
-    let (diffuse_texture, diffuse_view) = loaded_texture::upload_texture_data(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-        &[(64, 64, &checker)],
-        "Placeholder Diffuse (Checkerboard)",
-    );
-    let (specular_texture, specular_view) = loaded_texture::upload_texture_data(
-        device,
-        queue,
-        wgpu::TextureFormat::R8Unorm,
-        &[(1, 1, &[0u8])],
-        "Placeholder Specular (Black 1x1)",
-    );
-    let (normal_texture, normal_view) = loaded_texture::upload_texture_data(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-        &[(1, 1, &[127u8, 127, 255, 255])],
-        "Placeholder Normal (Neutral 1x1)",
-    );
-    LoadedTexture {
-        diffuse_texture,
-        diffuse_view,
-        specular_texture,
-        specular_view,
-        normal_texture,
-        normal_view,
-        mip_count: 1,
-        is_placeholder: true,
-    }
-}
-
-fn build_placeholder_checkerboard() -> Vec<u8> {
-    const SIZE: u32 = 64;
-    const SQUARE: u32 = 8;
-    const MAGENTA: [u8; 4] = [255, 0, 0xFF, 255];
-    const BLACK: [u8; 4] = [0, 0, 0, 255];
-    let mut data = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let cx = x / SQUARE;
-            let cy = y / SQUARE;
-            data.extend_from_slice(if (cx + cy) % 2 == 0 { &MAGENTA } else { &BLACK });
-        }
-    }
-    data
 }
 
 fn build_material_bind_group(
@@ -1139,7 +1086,7 @@ impl Renderer {
         let mut loaded_textures: Vec<LoadedTexture> = Vec::new();
         let mut gpu_textures: Vec<GpuTexture> = Vec::new();
         {
-            let placeholder = build_placeholder_loaded_texture(&device, &queue);
+            let placeholder = placeholder_loaded_texture(&device, &queue);
             let sampler = mip_count_samplers
                 .get(&1)
                 .expect("mip_count 1 seeded above");
@@ -1996,7 +1943,7 @@ impl Renderer {
         if gpu_textures.is_empty() {
             // No textures referenced by the level — keep the placeholder slot
             // so the world pipeline still has a bind group bound.
-            let placeholder = build_placeholder_loaded_texture(&self.device, &self.queue);
+            let placeholder = placeholder_loaded_texture(&self.device, &self.queue);
             let sampler = self
                 .mip_count_samplers
                 .get(&1)

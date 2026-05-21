@@ -349,12 +349,7 @@ pub fn pack_and_write_portals(
             .texture_names
             .names
             .iter()
-            .map(|name| {
-                texture_cache_keys
-                    .get(name)
-                    .copied()
-                    .unwrap_or([0u8; 32])
-            })
+            .map(|name| texture_cache_keys.get(name).copied().unwrap_or([0u8; 32]))
             .collect(),
     };
     let texture_cache_keys_bytes = texture_cache_keys_section.to_bytes();

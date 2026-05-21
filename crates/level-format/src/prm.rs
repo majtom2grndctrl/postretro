@@ -376,7 +376,11 @@ fn parse_header(data: &[u8]) -> Result<PrmHeader, PrmReadError> {
 /// per-slot error) and the number of bytes consumed; consumed bytes advance
 /// the cursor even on error when the header was valid, so subsequent slots
 /// remain addressable.
-fn parse_slot(body: &[u8], offset: usize, slot_index: u8) -> (Result<PrmSlot, PrmReadError>, usize) {
+fn parse_slot(
+    body: &[u8],
+    offset: usize,
+    slot_index: u8,
+) -> (Result<PrmSlot, PrmReadError>, usize) {
     if offset + SLOT_HEADER_SIZE > body.len() {
         return (Err(PrmReadError::Truncated), body.len() - offset);
     }
@@ -563,7 +567,10 @@ mod tests {
         );
         // The normal slot follows the (now-truncated) specular slot, so it
         // can't be located either; that's expected.
-        assert!(slots[2].is_err(), "normal cannot be located after corruption");
+        assert!(
+            slots[2].is_err(),
+            "normal cannot be located after corruption"
+        );
     }
 
     #[test]
@@ -621,7 +628,10 @@ mod tests {
         bytes[3] = 0x02; // wrong version byte
         let (header_result, _) = PrmFile::from_bytes_partial(&bytes);
         assert!(
-            matches!(header_result, Err(PrmReadError::UnsupportedVersion { version: 0x02 })),
+            matches!(
+                header_result,
+                Err(PrmReadError::UnsupportedVersion { version: 0x02 })
+            ),
             "expected UnsupportedVersion {{ version: 0x02 }}, got {header_result:?}"
         );
     }
@@ -634,7 +644,10 @@ mod tests {
         bytes[5] = PrmSlots::DIFFUSE.bits();
         let (header_result, _) = PrmFile::from_bytes_partial(&bytes);
         assert!(
-            matches!(header_result, Err(PrmReadError::StageVersionMismatch { .. })),
+            matches!(
+                header_result,
+                Err(PrmReadError::StageVersionMismatch { .. })
+            ),
             "expected StageVersionMismatch, got {header_result:?}"
         );
     }

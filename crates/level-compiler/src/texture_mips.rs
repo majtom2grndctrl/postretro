@@ -30,7 +30,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use postretro_level_format::prm::{PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION};
+use postretro_level_format::prm::{
+    PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION,
+};
 
 /// Resolve a texture name (case-insensitive) to PNG files for each of the
 /// three material slots. Layout: `<texture_root>/<collection>/<name>.png`.
@@ -357,12 +359,7 @@ fn downsample_2x_f32(src: &[f32], src_w: u32, src_h: u32, channels: usize) -> (V
 /// Build a diffuse mip chain (RGBA8, sRGB-tagged). Filtering happens in linear
 /// space via the supplied sRGB → linear LUT; alpha is filtered linearly
 /// without LUT application.
-fn build_diffuse_chain(
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-    lut: &[f32; 256],
-) -> Vec<u8> {
+fn build_diffuse_chain(rgba: &[u8], width: u32, height: u32, lut: &[f32; 256]) -> Vec<u8> {
     let channels = 4;
     let level_count = mip_level_count_for(width, height) as u32;
 
@@ -504,18 +501,14 @@ fn decode_png_rgba(path: &Path) -> anyhow::Result<(Vec<u8>, u32, u32)> {
 
 /// Atomic write: write to `<target>.tmp.<pid>`, then `rename` to `target`.
 fn atomic_write(target: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let parent = target.parent().ok_or_else(|| {
-        anyhow::anyhow!("target {} has no parent directory", target.display())
-    })?;
-    std::fs::create_dir_all(parent).map_err(|e| {
-        anyhow::anyhow!("failed to create cache dir {}: {e}", parent.display())
-    })?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("target {} has no parent directory", target.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| anyhow::anyhow!("failed to create cache dir {}: {e}", parent.display()))?;
     let tmp_name = format!(
         "{}.tmp.{}",
-        target
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("prm"),
+        target.file_name().and_then(|s| s.to_str()).unwrap_or("prm"),
         std::process::id()
     );
     let tmp_path = parent.join(tmp_name);
@@ -685,9 +678,7 @@ mod tests {
     fn gamma_correct_constant_input_is_invariant() {
         let lut = build_srgb_to_linear_lut();
         // 4×4 uniform mid-grey sRGB.
-        let src: Vec<u8> = (0..16)
-            .flat_map(|_| [128u8, 128, 128, 255])
-            .collect();
+        let src: Vec<u8> = (0..16).flat_map(|_| [128u8, 128, 128, 255]).collect();
         let payload = build_diffuse_chain(&src, 4, 4, &lut);
 
         // mip 0 is first 4*4*4 = 64 bytes; mip 1 (2x2) follows; mip 2 (1x1)

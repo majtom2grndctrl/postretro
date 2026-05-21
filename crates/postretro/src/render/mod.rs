@@ -42,9 +42,9 @@ use crate::prl::MapLight;
 use crate::render::loaded_texture::{LoadedTexture, load_textures};
 use crate::render::splash::SplashPipeline;
 use crate::visibility::VisibleCells;
-use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::fog_cell_masks::union_active_mask;
+use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
@@ -290,10 +290,7 @@ fn create_mip_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
 
 /// All-placeholder `LoadedTexture` for the no-level boot state. Reuses the
 /// same generator that `load_textures` falls back to per-texture.
-fn build_placeholder_loaded_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> LoadedTexture {
+fn build_placeholder_loaded_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> LoadedTexture {
     // Borrow the same placeholder builders as load_textures by going through
     // its public API with an empty key set + empty name list, then patching
     // in one placeholder. Simpler: replicate the placeholder construction
@@ -1147,7 +1144,9 @@ impl Renderer {
         let mut gpu_textures: Vec<GpuTexture> = Vec::new();
         {
             let placeholder = build_placeholder_loaded_texture(&device, &queue);
-            let sampler = mip_count_samplers.get(&1).expect("mip_count 1 seeded above");
+            let sampler = mip_count_samplers
+                .get(&1)
+                .expect("mip_count 1 seeded above");
             let bind_group = build_material_bind_group(
                 &device,
                 &texture_bind_group_layout,
@@ -1959,8 +1958,13 @@ impl Renderer {
         // pre-refactor flow where geometry install populated this field.)
         self.stored_texture_materials = texture_materials.to_vec();
 
-        let loaded =
-            load_textures(&self.device, &self.queue, texture_names, texture_cache_keys, prm_cache_root);
+        let loaded = load_textures(
+            &self.device,
+            &self.queue,
+            texture_names,
+            texture_cache_keys,
+            prm_cache_root,
+        );
 
         // Sampler pool grows monotonically: every distinct `mip_count` seen in
         // this batch needs a sampler with matching `lod_max_clamp`. The `1`

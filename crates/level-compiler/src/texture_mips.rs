@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use postretro_level_format::prm::{
     PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION, cache_filename_for_key,
+    expected_level_count,
 };
 
 /// Build a case-insensitive lookup from texture stem to PNG path, scanning
@@ -128,13 +129,6 @@ fn filename_key_for(
         }
         (None, None, None) => [0u8; 32],
     }
-}
-
-/// `floor(log2(max_dim)) + 1`. Mirrors `expected_level_count` in
-/// `postretro_level_format::prm` (kept private there).
-pub fn mip_level_count_for(width: u32, height: u32) -> u8 {
-    let max_dim = width.max(height).max(1);
-    (32 - max_dim.leading_zeros()) as u8
 }
 
 // -- Gamma helpers --------------------------------------------------------
@@ -325,7 +319,7 @@ fn downsample_2x_f32(src: &[f32], src_w: u32, src_h: u32, channels: usize) -> (V
 /// without LUT application.
 fn build_diffuse_chain(rgba: &[u8], width: u32, height: u32, lut: &[f32; 256]) -> Vec<u8> {
     let channels = 4;
-    let level_count = mip_level_count_for(width, height) as u32;
+    let level_count = expected_level_count(width as u16, height as u16) as u32;
 
     // Decode source PNG into linear-f32 buffer (RGB through LUT, A direct).
     let mut linear: Vec<f32> = Vec::with_capacity((width * height) as usize * channels);
@@ -373,7 +367,7 @@ fn encode_diffuse_into(linear: &[f32], out: &mut Vec<u8>) {
 /// RGBA8 — the caller flattens before calling this).
 fn build_specular_chain(r8: &[u8], width: u32, height: u32) -> Vec<u8> {
     let channels = 1;
-    let level_count = mip_level_count_for(width, height) as u32;
+    let level_count = expected_level_count(width as u16, height as u16) as u32;
 
     let mut linear: Vec<f32> = r8.iter().map(|b| (*b as f32) / 255.0).collect();
     let mut payload: Vec<u8> = Vec::with_capacity(r8.len() * 2);
@@ -401,7 +395,7 @@ fn build_specular_chain(r8: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// texel and re-encoded.
 fn build_normal_chain(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     let channels = 4;
-    let level_count = mip_level_count_for(width, height) as u32;
+    let level_count = expected_level_count(width as u16, height as u16) as u32;
 
     let mut linear: Vec<f32> = Vec::with_capacity((width * height) as usize * channels);
     for chunk in rgba.chunks_exact(4) {
@@ -580,7 +574,7 @@ pub fn bake_texture_mips(
                 format: PrmFormat::Rgba8UnormSrgb,
                 width: w as u16,
                 height: h as u16,
-                level_count: mip_level_count_for(w, h),
+                level_count: expected_level_count(w as u16, h as u16),
                 payload,
             });
             slot_mask |= PrmSlots::DIFFUSE;
@@ -595,7 +589,7 @@ pub fn bake_texture_mips(
                 format: PrmFormat::R8Unorm,
                 width: w as u16,
                 height: h as u16,
-                level_count: mip_level_count_for(w, h),
+                level_count: expected_level_count(w as u16, h as u16),
                 payload,
             });
             slot_mask |= PrmSlots::SPECULAR;
@@ -607,7 +601,7 @@ pub fn bake_texture_mips(
                 format: PrmFormat::Rgba8Unorm,
                 width: w as u16,
                 height: h as u16,
-                level_count: mip_level_count_for(w, h),
+                level_count: expected_level_count(w as u16, h as u16),
                 payload,
             });
             slot_mask |= PrmSlots::NORMAL;
@@ -736,11 +730,11 @@ mod tests {
 
     #[test]
     fn mip_level_count_matches_floor_log2_plus_one() {
-        assert_eq!(mip_level_count_for(1, 1), 1);
-        assert_eq!(mip_level_count_for(2, 1), 2);
-        assert_eq!(mip_level_count_for(4, 4), 3);
-        assert_eq!(mip_level_count_for(8, 4), 4);
-        assert_eq!(mip_level_count_for(1024, 1024), 11);
+        assert_eq!(expected_level_count(1, 1), 1);
+        assert_eq!(expected_level_count(2, 1), 2);
+        assert_eq!(expected_level_count(4, 4), 3);
+        assert_eq!(expected_level_count(8, 4), 4);
+        assert_eq!(expected_level_count(1024, 1024), 11);
     }
 
     /// Bundle hash includes only present slots, in canonical order. Changing

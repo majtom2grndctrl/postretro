@@ -100,7 +100,7 @@ fn resolve_texture_root(map_path: &Path) -> PathBuf {
 /// Falls back to the map's parent directory when no `Cargo.toml` ancestor
 /// is found — covers shipping or standalone layouts that omit the
 /// workspace manifest.
-fn resolve_prm_cache_root(map_path: &Path) -> PathBuf {
+fn resolve_prm_cache_root_via_cargo(map_path: &Path) -> PathBuf {
     cache::find_workspace_root(map_path)
         .unwrap_or_else(|| {
             map_path
@@ -530,7 +530,7 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("Texture mip bake...");
     let stage_start = Instant::now();
-    let prm_cache_root = resolve_prm_cache_root(&args.input);
+    let prm_cache_root = resolve_prm_cache_root_via_cargo(&args.input);
     let name_to_key = texture_mips::bake_texture_mips(
         &geo_result.texture_names.names,
         &texture_root,

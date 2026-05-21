@@ -49,7 +49,7 @@ fn run_worker(map_path: &Path, content_root: &Path) -> LoadOutcome {
     let mut timings: Vec<(&'static str, Duration)> = Vec::with_capacity(2);
     let cursor = Instant::now();
 
-    let prm_cache_root = derive_prm_cache_root(content_root);
+    let prm_cache_root = derive_prm_cache_root_dev_layout(content_root);
 
     let path_str = map_path.to_string_lossy().into_owned();
     let level = match prl::load_prl(&path_str) {
@@ -95,12 +95,12 @@ fn run_worker(map_path: &Path, content_root: &Path) -> LoadOutcome {
 /// rather than a startup panic. Shipping layouts are out of scope for now, so
 /// the fallback is deliberately conservative.
 ///
-/// Note: the level compiler locates the workspace via `cache::find_workspace_root`
-/// (a Cargo.toml ancestor walk), while this function uses a fixed two-parent
-/// walk. They coincide in the dev layout; the divergence is intentional —
-/// collapsing them to share an implementation would break shipping layouts
-/// where no `Cargo.toml` exists at all.
-fn derive_prm_cache_root(content_root: &Path) -> PathBuf {
+/// Note: the level compiler's `resolve_prm_cache_root_via_cargo` locates the
+/// workspace via a `Cargo.toml` ancestor walk, while this function uses a
+/// fixed two-parent walk. They coincide in the dev layout; the divergence is
+/// intentional — collapsing them to share an implementation would break
+/// shipping layouts where no `Cargo.toml` exists at all.
+fn derive_prm_cache_root_dev_layout(content_root: &Path) -> PathBuf {
     let workspace = content_root
         .parent()
         .and_then(|c| c.parent())

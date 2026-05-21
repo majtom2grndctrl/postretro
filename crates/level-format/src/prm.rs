@@ -187,8 +187,8 @@ pub enum PrmReadError {
     Io(#[from] std::io::Error),
 }
 
-/// Expected level count for an `(w, h)` mip-0 pair: `floor(log2(max(w, h))) + 1`.
-fn expected_level_count(width: u16, height: u16) -> u8 {
+/// Number of mip levels for a `(width, height)` chain: `floor(log2(max(w, h))) + 1`.
+pub fn expected_level_count(width: u16, height: u16) -> u8 {
     let m = width.max(height).max(1) as u32;
     // `ilog2` is defined for non-zero u32 and returns `floor(log2(x))`.
     (m.ilog2() + 1) as u8

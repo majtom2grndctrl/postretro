@@ -77,32 +77,32 @@ The baker is invoked from `main.rs` after `texture_validation::validate_sibling_
 
 ### Task 3: `.prm` reader and runtime upload path
 
-Touches `crates/postretro/src/texture.rs` and `crates/postretro/src/render/mod.rs`.
+Renames `crates/postretro/src/texture.rs` to `ui_texture.rs` (UI-only after the refactor), adds `crates/postretro/src/render/loaded_texture.rs` (new, hosts `LoadedTexture` + world-material placeholders + the `.prm` upload path so wgpu handles stay inside the renderer module), and touches `crates/postretro/src/render/mod.rs`.
 
 Type split:
 
 | Type | Filter | Mips | Source | Use |
 |---|---|---|---|---|
-| `UiTexture` (new in `crates/postretro/src/texture.rs`) | Nearest min/mag | none (1 level) | PNG direct | splash, HUD, any 2D blit |
-| `LoadedTexture` (refactored) | Nearest min/mag, Linear mipmap | full chain | `.prm` sidecar | world materials |
+| `UiTexture` (new, `crates/postretro/src/ui_texture.rs`) | Nearest min/mag | none (1 level) | PNG direct | splash, HUD, any 2D blit |
+| `LoadedTexture` (refactored, `crates/postretro/src/render/loaded_texture.rs`) | Nearest min/mag, Linear mipmap | full chain | `.prm` sidecar | world materials |
 
 `UiTexture` carries `{ data, width, height }`. `splash::load_splash` (`render/splash.rs:22`), `splash::upload_splash_texture` (`render/splash.rs:51`), and `install_splash_from_loaded` all return / accept `UiTexture`. The two `install_splash_from_loaded` call sites in `crates/postretro/src/main.rs` (lines 1220 and 1289) thread `UiTexture` through. `LoadedTexture` becomes a thin wrapper over the parsed `.prm` slot data + GPU handles (per the bullet below). The magenta-checker placeholder remains in the `LoadedTexture` family (it's a world-material fallback, not UI) with `mip_count = 1`.
 
 - Import the reader from `postretro-level-format::prm`. Decoded result is per-slot `(format_tag, width, height, level_count, payload)`.
 - Change `upload_texture_data` to accept `levels: &[(u32, u32, &[u8])]` in place of the current `(width, height, data)` parameters; the existing `format: wgpu::TextureFormat` parameter stays. Caller supplies one tuple per mip level (level width, level height, byte payload) plus the slot's format tag mapped to `wgpu::TextureFormat`. Delete `downsample_2x`, the `mitchell_netravali` weight code, and `mip_level_count_for`; the caller supplies levels.
 - wgpu's `Queue::write_texture` accepts tightly-packed source rows; the `.prm` payload layout (no row alignment padding) uploads directly without staging.
-- `LoadedTexture` becomes a thin wrapper over the parsed `.prm` slot data plus GPU handles. The current `is_placeholder` field is preserved (load-bearing for sibling-probe skipping at `texture.rs:184,224`).
+- `LoadedTexture` becomes a thin wrapper over the parsed `.prm` slot data plus GPU handles, living in `crates/postretro/src/render/loaded_texture.rs`. The move puts wgpu types fully inside the renderer module, restoring `context/lib/index.md` §2's "Renderer owns GPU" invariant which the prior CPU-side `LoadedTexture` straddled. The `is_placeholder` field is preserved (load-bearing for sibling-probe skipping in the pre-rename `texture.rs:184,224`; the probe logic follows `LoadedTexture` into the new file).
 - `load_textures` rewrites: for each entry in `TextureNamesSection`, look up the blake3 from `TextureCacheKeysSection`, open `<mod>/.prl-cache/tex/<hex>.prm`, decode, upload each level per slot. The texture-root PNG scan disappears from the runtime. (`texture_names` is `Vec<String>`; the runtime's current `Vec<Option<String>>` wrap at `startup/worker.rs:80-84` drops away.)
 - Update placeholders (`black_specular_texture`, `neutral_normal_texture`, `generate_placeholder` checkerboard, `Placeholder Texture Diffuse`) to use `mip_count = 1` (`lod_max_clamp = 0.0`). The 64×64 checkerboard will look blockier at distance than the current mipped placeholder — intended, makes missing-texture cases more obvious in modder workflows.
-- Replace the single global `base_sampler` with a `HashMap<u32, wgpu::Sampler>` (`mip_count_samplers`) on the renderer. Each material bind group selects the sampler whose key matches its `LoadedTexture.mip_count`. Sampler descriptor is unchanged except `lod_max_clamp = (mip_count - 1) as f32`. Existing call sites at `render/mod.rs:1289`, `1337`, `2213`, `2263` switch from `&base_sampler` to a lookup.
+- Replace the single global `base_sampler` with a `HashMap<u32, wgpu::Sampler>` (`mip_count_samplers`) on the renderer. Each material bind group selects the sampler whose key matches its `LoadedTexture.mip_count`. Sampler descriptor is unchanged except `lod_max_clamp = (mip_count - 1) as f32`. Existing call sites at `render/mod.rs:1289`, `1337`, `2213`, `2263` switch from `&base_sampler` to a lookup. Population is eager: after `load_textures` returns, the renderer collects the distinct `mip_count` set across the loaded textures and materializes one sampler per value before any material bind group is built. Lifetime is engine-lifetime — the pool persists across level reloads, accumulating only new `mip_count` entries; the set is bounded by the largest texture ever observed.
 - Placeholders use the same sampler descriptor as world materials (Nearest min/mag, Linear mipmap_filter) and pick up the `mip_count_samplers[&1]` entry. No separate placeholder-only sampler.
-- Delete the PNG-fixture-driven tests in `crates/postretro/src/texture.rs`: the `build_name_map_*` tests (which follow `build_name_to_path_map` into the compiler), `load_textures_loads_matching_pngs`, `load_textures_case_insensitive_match`, `load_textures_missing_produces_checkerboard`, `load_textures_none_entry_produces_checkerboard`, the `None` slot in `load_textures_preserves_index_order`, and the seven sibling-probe tests at lines 528–718. Roughly 22 of 27 tests in the file go. The five `checkerboard_*` tests at lines 290–328 remain. Replacement: `.prm`-fixture tests built via a `#[cfg(test)]` helper module in `postretro-level-format::prm` that emits in-memory `.prm` byte blobs.
+- Delete the PNG-fixture-driven tests from the pre-rename `crates/postretro/src/texture.rs`: the `build_name_map_*` tests (which follow `build_name_to_path_map` into the compiler), `load_textures_loads_matching_pngs`, `load_textures_case_insensitive_match`, `load_textures_missing_produces_checkerboard`, `load_textures_none_entry_produces_checkerboard`, the `None` slot in `load_textures_preserves_index_order`, and the seven sibling-probe tests at lines 528–718. Roughly 22 of 27 tests in the file go. The five `checkerboard_*` tests at lines 290–328 move with the placeholder logic to `crates/postretro/src/render/loaded_texture.rs`. Replacement: `.prm`-fixture tests built via a `#[cfg(test)]` helper module in `postretro-level-format::prm` that emits in-memory `.prm` byte blobs.
 
 Task 3 can be unit-tested against a hand-crafted `.prm` fixture + v4 PRL fixture, but the campaign-test acceptance check requires Task 2 done.
 
 ### Task 4: Plumbing and cleanup
 
-- Lift PNG name-lookup helper (`build_name_to_path_map`) from `crates/postretro/src/texture.rs` into `postretro-level-compiler`. The runtime no longer scans the textures directory.
+- Lift PNG name-lookup helper (`build_name_to_path_map`) from the renamed `crates/postretro/src/ui_texture.rs` into `postretro-level-compiler`. The runtime no longer scans the textures directory.
 - Thread the texture root and cache root into `pack.rs`. The CLI in `main.rs` already knows both.
 - Wire Task 2's `(name → key)` output into Task 1's section in `pack.rs`.
 - Remove any now-dead PNG-scanning and downsample code paths from the renderer crate.
@@ -131,7 +131,7 @@ Task 3 can be unit-tested against a hand-crafted `.prm` fixture + v4 PRL fixture
 | Sidecar file | `PrmFile` (compiler + runtime) | `.prm` body (see below) | n/a | n/a | n/a |
 | Slot bitmask | `PrmSlots::{Diffuse, Specular, Normal}` | `u8` bits 0/1/2 (bit 3 reserved at byte level for future emissive) | n/a | n/a | n/a |
 | Format tag | `PrmFormat::{Rgba8UnormSrgb, Rgba8Unorm, R8Unorm}` | `u8` 0/1/2 (3 reserved BC5) | n/a | n/a | n/a |
-| UI texture | `UiTexture` (`crates/postretro/src/texture.rs`) | n/a (runtime only) | n/a | n/a | n/a |
+| UI texture | `UiTexture` (`crates/postretro/src/ui_texture.rs`) | n/a (runtime only) | n/a | n/a | n/a |
 
 ## Wire format
 
@@ -194,12 +194,12 @@ Ordering invariant: `keys[i]` corresponds to `names[i]`. A texture with no PNG a
 
 ## Plumbing
 
-- PNG name-lookup helper currently in `crates/postretro/src/texture.rs::build_name_to_path_map` moves to `postretro-level-compiler` (shared module). Runtime drops its copy.
+- PNG name-lookup helper currently in `crates/postretro/src/texture.rs::build_name_to_path_map` moves to `postretro-level-compiler` (shared module). Runtime drops its copy. The now-UI-only file is renamed to `ui_texture.rs`; `LoadedTexture` and the world-material placeholder logic relocate to the new `crates/postretro/src/render/loaded_texture.rs`.
 - A new helper `resolve_cache_root(map_path: &Path) -> PathBuf` returns `resolve_texture_root(map_path).parent().unwrap().join(".prl-cache").join("tex")`; it lives next to `resolve_texture_root` in `main.rs`. `pack.rs` gains a `texture_root` and `cache_root` argument; the compiler threads `resolve_cache_root`'s return value in. The existing `--cache-dir` / `--no-cache` CLI flags govern only the workspace-rooted `cache.rs` directory; they do NOT affect `.prm` output, which always lives next to the textures it caches.
 - The compiler's `cache.rs` mechanism is unused here — the on-disk `.prm` file (content-addressed filename) IS the cache. Existence + parse-success at `<cache>/<hex>.prm` is the cache hit signal; the `bundle_hash` field in the header is the input-fingerprint check for the all-slots-unchanged path.
 - Crate split for the `.prm` wire format: `postretro-level-format::prm::{PrmFile, PrmSlot, PrmFormat, PrmReadError}` is the surface area shared by writer (level-compiler) and reader (postretro runtime). `postretro-level-compiler` is binary-only (no `[lib]` target), so the level-format crate is the only viable shared home. `postretro-level-format::prm::STAGE_VERSION` (`u8`) is the canonical constant; `texture_mips` imports it directly. No re-export.
 - The global `base_sampler` field at `render/mod.rs:521` is removed; the `mip_count_samplers` pool replaces it.
-- Runtime loader (`crates/postretro/src/startup/worker.rs::run_worker`): replace `texture_root = content_root.join("textures")` at lines 73–88 with `mod_cache_root = content_root.join(".prl-cache").join("tex")`. Pass `&world.texture_names` (`Vec<String>`) and `mod_cache_root` to the new `load_textures` signature. Drop the `Vec<Option<String>>` wrap at lines 80–84; the new `TextureNamesSection` makes it unnecessary.
+- Runtime loader (`crates/postretro/src/startup/worker.rs::run_worker`): replace `texture_root = content_root.join("textures")` at lines 73–88 with `mod_cache_root = content_root.join(".prl-cache").join("tex")`. Pass `&world.texture_names` (`Vec<String>`) and `mod_cache_root` to the new `load_textures` signature (now `crates/postretro/src/render/loaded_texture.rs::load_textures`). Drop the `Vec<Option<String>>` wrap at lines 80–84; the new `TextureNamesSection` makes it unnecessary.
 - `.gitignore`: already covers `.prl-cache/` (matches at any depth); no change needed. Confirm at promotion.
 
 ## Open questions

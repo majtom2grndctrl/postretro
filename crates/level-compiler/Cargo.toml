@@ -23,6 +23,7 @@ indicatif = "0.17"
 bvh = { version = "0.11", default-features = false }
 nalgebra = { version = "0.33", default-features = false, features = ["std"] }
 png.workspace = true
+image.workspace = true
 blake3 = "1"
 postcard = { version = "1", features = ["alloc"] }
 serde.workspace = true

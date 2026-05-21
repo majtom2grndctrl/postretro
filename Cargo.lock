@@ -3300,6 +3300,7 @@ dependencies = [
  "bvh",
  "env_logger",
  "glam",
+ "image",
  "indicatif",
  "log",
  "nalgebra 0.33.3",

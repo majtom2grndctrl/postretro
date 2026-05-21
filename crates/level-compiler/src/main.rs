@@ -21,6 +21,7 @@ pub mod parse;
 pub mod partition;
 pub mod portals;
 pub mod sh_bake;
+pub mod texture_mips;
 pub mod texture_validation;
 pub mod visibility;
 

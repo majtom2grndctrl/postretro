@@ -1411,6 +1411,7 @@ mod tests {
                 version: 1,
                 data: alpha_lights.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
 
@@ -1464,6 +1465,7 @@ mod tests {
                 version: 1,
                 data: alpha_lights.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
 

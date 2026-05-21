@@ -32,8 +32,12 @@ pub struct ShDiagnosticsState {
 
 impl Default for ShDiagnosticsState {
     fn default() -> Self {
+        // All toggles default off so overlay geometry only appears in response
+        // to an explicit user action in the panel. Without this, opening a map
+        // for the first time would render the base AABB before the user has
+        // touched the inspector.
         Self {
-            show_base_aabb: true,
+            show_base_aabb: false,
             show_cells: false,
             show_markers: false,
             marker_mode: MarkerMode::Validity,
@@ -72,12 +76,10 @@ const COLOR_PROBE_VALID: [u8; 4] = [60, 230, 80, 255];
 const COLOR_PROBE_INVALID: [u8; 4] = [230, 60, 60, 255];
 const COLOR_PROBE_UNIFORM: [u8; 4] = [230, 230, 230, 255];
 
-/// Emit one frame of SH diagnostic line segments. No-op when the debug panel
-/// is hidden (`panel_visible == false`) — the caller is expected to gate the
-/// `panel_visible` flag on the egui panel's own visibility so all emission
-/// work is skipped when the panel is closed.
+/// Emit one frame of SH diagnostic line segments. Driven entirely by the
+/// toggles in `state` — enabled overlays continue rendering after the debug
+/// panel is dismissed, and only un-checking a toggle hides its geometry.
 pub(super) fn emit(
-    panel_visible: bool,
     state: &ShDiagnosticsState,
     sh: &ShVolumeResources,
     delta_vols: &[DeltaVolumeMeta],
@@ -90,7 +92,7 @@ pub(super) fn emit(
     // calling `emit`, so this function is purely additive — it never owns
     // the buffer lifecycle and never clobbers segments produced by other
     // debug-line producers in the same frame.
-    if !panel_visible || !sh.present {
+    if !sh.present {
         return;
     }
 
@@ -233,7 +235,7 @@ mod tests {
         assert_eq!(s.marker_mode, MarkerMode::Validity);
         assert_eq!(s.marker_scale, 0.25);
         assert_eq!(s.cell_radius, 12.0);
-        assert!(s.show_base_aabb);
+        assert!(!s.show_base_aabb);
         assert!(!s.show_cells);
         assert!(!s.show_markers);
         assert!(!s.seeded);

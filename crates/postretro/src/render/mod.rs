@@ -2256,14 +2256,12 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn emit_sh_diagnostics(
         &mut self,
-        panel_visible: bool,
         state: &sh_diagnostics::ShDiagnosticsState,
         camera_pos: Vec3,
         world: &crate::prl::LevelWorld,
         visible_leaf_mask: &[bool],
     ) {
         sh_diagnostics::emit(
-            panel_visible,
             state,
             &self.sh_volume_resources,
             &self.sh_delta_volumes_meta,

@@ -973,11 +973,6 @@ impl ApplicationHandler for App {
                             Vec<egui::epaint::ClippedPrimitive>,
                             f32,
                         )> = {
-                            let panel_visible = self
-                                .debug_ui
-                                .as_ref()
-                                .map(|d| d.is_visible())
-                                .unwrap_or(false);
                             let mut out = None;
                             if let (Some(debug_ui), Some(ws)) =
                                 (self.debug_ui.as_mut(), self.window_state.as_ref())
@@ -1027,7 +1022,6 @@ impl ApplicationHandler for App {
                             if let Some(world) = self.level.as_ref() {
                                 if let Some(debug_ui) = self.debug_ui.as_ref() {
                                     renderer.emit_sh_diagnostics(
-                                        panel_visible,
                                         &debug_ui.sh_diagnostics_state,
                                         interp.position,
                                         world,

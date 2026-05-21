@@ -128,49 +128,52 @@ pub fn draw_diagnostics_panel(
     }
 
     egui::Window::new("Diagnostics").show(ctx, |ui| {
-        ui.label("Ambient Floor");
-        if ui
-            .add(egui::Slider::new(&mut state.ambient_floor, 0.0_f32..=1.0))
-            .changed()
-        {
-            renderer.set_ambient_floor(state.ambient_floor);
-        }
+        egui::CollapsingHeader::new("Lighting systems")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.label("Ambient Floor");
+                if ui
+                    .add(egui::Slider::new(&mut state.ambient_floor, 0.0_f32..=1.0))
+                    .changed()
+                {
+                    renderer.set_ambient_floor(state.ambient_floor);
+                }
 
-        ui.label("Indirect Scale");
-        if ui
-            .add(egui::Slider::new(&mut state.indirect_scale, 0.0_f32..=1.0))
-            .changed()
-        {
-            renderer.set_indirect_scale(state.indirect_scale);
-        }
+                ui.label("Indirect Scale");
+                if ui
+                    .add(egui::Slider::new(&mut state.indirect_scale, 0.0_f32..=1.0))
+                    .changed()
+                {
+                    renderer.set_indirect_scale(state.indirect_scale);
+                }
 
-        let mut mode = renderer.lighting_isolation();
-        let prev_mode = mode;
-        egui::ComboBox::from_label("Lighting Isolation")
-            .selected_text(mode.label())
-            .show_ui(ui, |ui| {
-                for variant in LightingIsolation::ALL_VARIANTS {
-                    ui.selectable_value(&mut mode, variant, variant.label());
+                let mut mode = renderer.lighting_isolation();
+                let prev_mode = mode;
+                egui::ComboBox::from_label("Lighting Isolation")
+                    .selected_text(mode.label())
+                    .show_ui(ui, |ui| {
+                        for variant in LightingIsolation::ALL_VARIANTS {
+                            ui.selectable_value(&mut mode, variant, variant.label());
+                        }
+                    });
+                if mode != prev_mode {
+                    renderer.set_lighting_isolation(mode);
                 }
             });
-        if mode != prev_mode {
-            renderer.set_lighting_isolation(mode);
-        }
 
-        ui.separator();
-        ui.label("GPU Timing");
-        match frame_timing {
-            Some(snapshot) if !snapshot.passes.is_empty() => {
-                for (label, avg_ms, _skip) in &snapshot.passes {
-                    ui.label(format!("{label}: {avg_ms:.2} ms"));
+        egui::CollapsingHeader::new("GPU Timing")
+            .default_open(false)
+            .show(ui, |ui| match frame_timing {
+                Some(snapshot) if !snapshot.passes.is_empty() => {
+                    for (label, avg_ms, _skip) in &snapshot.passes {
+                        ui.label(format!("{label}: {avg_ms:.2} ms"));
+                    }
                 }
-            }
-            _ => {
-                ui.label("GPU timing unavailable");
-            }
-        }
+                _ => {
+                    ui.label("GPU timing unavailable");
+                }
+            });
 
-        ui.separator();
         let has_sh = renderer.has_sh_volume();
         let delta_count = renderer.sh_delta_volumes().len();
         if !sh_state.seeded {

@@ -193,14 +193,22 @@ fn make_normal_placeholder(
     )
 }
 
-/// Total mip levels carried by the diffuse slot, defaulting to 1 when the
-/// header parsed but no diffuse data was present. The sampler pool keys off
-/// this so the sampler's `lod_max_clamp` matches the uploaded mip chain.
-fn header_mip_count(diffuse: &Result<PrmSlot, PrmReadError>) -> u32 {
-    match diffuse {
-        Ok(slot) => slot.level_count as u32,
-        Err(_) => 1,
-    }
+/// Maximum mip levels across all three slots, defaulting to 1 when none parse
+/// cleanly. The sampler pool is keyed by this value — a wrong count here
+/// selects the wrong `lod_max_clamp` from `mip_count_samplers`, producing GPU
+/// sampling artifacts at distance with no compile-time error. Taking the
+/// maximum (rather than diffuse-only) handles `.prm` files where diffuse is
+/// absent or corrupted but sibling slots carry full mip chains; those siblings
+/// would be clamped to LOD 0 otherwise. Defaulting to 1 on error is
+/// conservative: it disables mip filtering rather than clamping to a wrong
+/// level count.
+fn header_mip_count(slots: &[Result<PrmSlot, PrmReadError>; 3]) -> u32 {
+    slots
+        .iter()
+        .filter_map(|r| r.as_ref().ok())
+        .map(|s| s.level_count as u32)
+        .max()
+        .unwrap_or(1)
 }
 
 fn placeholder_loaded_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> LoadedTexture {
@@ -288,7 +296,7 @@ pub fn load_textures(
             }
         }
 
-        let mip_count = header_mip_count(&slot_results[0]);
+        let mip_count = header_mip_count(&slot_results);
 
         let (diffuse_texture, diffuse_view) =
             upload_slot_or_placeholder(device, queue, &slot_results[0], 0, name, Slot::Diffuse);
@@ -360,10 +368,7 @@ fn upload_slot_or_placeholder(
 mod tests {
     use super::*;
 
-    // The 4 checkerboard tests verify the placeholder pixel pattern: a magenta
-    // diffuse with 64×64 dimensions, alternating in 8-pixel squares. Moved from
-    // the old `texture.rs` and adapted to call `generate_checkerboard_pixels`
-    // directly — placeholder construction lives here now.
+    // Checkerboard placeholder pixel pattern: 64×64 magenta/black, 8-pixel squares.
 
     #[test]
     fn checkerboard_has_correct_dimensions() {
@@ -455,7 +460,7 @@ mod tests {
             matches!(&slots[2], Err(PrmReadError::NotPresent)),
             "normal absent",
         );
-        assert_eq!(header_mip_count(&slots[0]), 3, "4x4 → 3 mips");
+        assert_eq!(header_mip_count(&slots), 3, "4x4 → 3 mips");
     }
 
     #[test]

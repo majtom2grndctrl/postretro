@@ -291,10 +291,6 @@ fn create_mip_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
 /// All-placeholder `LoadedTexture` for the no-level boot state. Reuses the
 /// same generator that `load_textures` falls back to per-texture.
 fn build_placeholder_loaded_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> LoadedTexture {
-    // Borrow the same placeholder builders as load_textures by going through
-    // its public API with an empty key set + empty name list, then patching
-    // in one placeholder. Simpler: replicate the placeholder construction
-    // inline using upload_texture_data.
     let checker = build_placeholder_checkerboard();
     let (diffuse_texture, diffuse_view) = loaded_texture::upload_texture_data(
         device,

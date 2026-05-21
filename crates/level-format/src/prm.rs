@@ -29,7 +29,7 @@
 //   u32      payload_bytes        -- total bytes for all levels concatenated
 //   [u8; payload_bytes]           -- levels packed back-to-back, level 0 first
 //
-// See: context/lib/build_pipeline.md §Baked texture mips
+// See: context/lib/build_pipeline.md §PRL section IDs · §Build Cache
 
 use bitflags::bitflags;
 use thiserror::Error;
@@ -69,10 +69,10 @@ bitflags! {
 pub enum PrmFormat {
     /// 4 bytes per pixel, sRGB-encoded RGBA. Used for albedo (diffuse).
     Rgba8UnormSrgb = 0,
-    /// 4 bytes per pixel, linear RGBA. Used for specular and emissive bundles.
+    /// 4 bytes per pixel, linear RGBA. Used for normal maps; each texel stores
+    /// a filtered, renormalised direction (`n = sample.rgb * 2 - 1`).
     Rgba8Unorm = 1,
-    /// 1 byte per pixel, linear single channel. Used for normal-map ancillary
-    /// data when a packed normal needs an extra channel.
+    /// 1 byte per pixel, linear single channel. Used for specular intensity.
     R8Unorm = 2,
 }
 
@@ -158,6 +158,9 @@ pub enum PrmReadError {
 
     #[error("file truncated mid-header or mid-payload")]
     Truncated,
+
+    #[error("slot {slot}: unsupported format tag {tag}")]
+    UnsupportedFormatTag { slot: u8, tag: u8 },
 
     #[error("slot is not present in the bundle")]
     NotPresent,
@@ -389,11 +392,16 @@ fn parse_slot(
     let format = match PrmFormat::from_tag(tag) {
         Some(f) => f,
         None => {
-            // Unknown format tag is treated as a per-slot truncation in
-            // effect: we can't advance past this slot safely, so consume the
-            // remainder of the body to prevent cascading parse errors on the
-            // next slot. Use Truncated as the closest existing variant.
-            return (Err(PrmReadError::Truncated), body.len() - offset);
+            // Unknown format tag: we can't compute payload_bytes without a
+            // known bytes-per-pixel, so consume the rest of the body to
+            // prevent cascading parse errors on subsequent slots.
+            return (
+                Err(PrmReadError::UnsupportedFormatTag {
+                    slot: slot_index,
+                    tag,
+                }),
+                body.len() - offset,
+            );
         }
     };
     // body[offset+1] reserved
@@ -477,8 +485,8 @@ mod tests {
     fn make_three_slot_file() -> PrmFile {
         // Pick dimensions whose mip math is easy to reason about.
         let diffuse = make_slot(PrmFormat::Rgba8UnormSrgb, 4, 4);
-        let specular = make_slot(PrmFormat::Rgba8Unorm, 2, 2);
-        let normal = make_slot(PrmFormat::R8Unorm, 8, 8);
+        let specular = make_slot(PrmFormat::R8Unorm, 2, 2);
+        let normal = make_slot(PrmFormat::Rgba8Unorm, 8, 8);
         PrmFile {
             header: PrmHeader {
                 stage_version: STAGE_VERSION,

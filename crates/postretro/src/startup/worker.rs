@@ -2,7 +2,7 @@
 // run on the main thread from baked `.prm` sidecars (which only the renderer
 // can address). The worker emits the cache-root path so the main thread can
 // locate the sidecars without re-deriving the layout.
-// See: context/lib/boot_sequence.md · context/lib/build_pipeline.md §Baked texture mips
+// See: context/lib/boot_sequence.md · context/lib/build_pipeline.md §PRL section IDs · §Build Cache
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -88,6 +88,18 @@ fn run_worker(map_path: &Path, content_root: &Path) -> LoadOutcome {
 /// workspace root. Unusual layouts that don't have two ancestors fall back to
 /// the content root itself; `load_textures` then surfaces per-texture warnings
 /// when the directory turns out not to hold any `.prm` files.
+///
+/// The fallback to `content_root` keeps the engine runnable in
+/// shipping/standalone layouts where the two-parent dev-layout assumption
+/// doesn't hold; unusual layouts surface as per-texture placeholder warnings
+/// rather than a startup panic. Shipping layouts are out of scope for now, so
+/// the fallback is deliberately conservative.
+///
+/// Note: the level compiler locates the workspace via `cache::find_workspace_root`
+/// (a Cargo.toml ancestor walk), while this function uses a fixed two-parent
+/// walk. They coincide in the dev layout; the divergence is intentional —
+/// collapsing them to share an implementation would break shipping layouts
+/// where no `Cargo.toml` exists at all.
 fn derive_prm_cache_root(content_root: &Path) -> PathBuf {
     let workspace = content_root
         .parent()

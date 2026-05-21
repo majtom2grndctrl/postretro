@@ -34,11 +34,9 @@ use postretro_level_format::prm::{
     PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION,
 };
 
-/// Resolve a texture name (case-insensitive) to PNG files for each of the
-/// three material slots. Layout: `<texture_root>/<collection>/<name>.png`.
-///
-/// Lifted from `crates/postretro/src/texture.rs` so the compiler does not
-/// depend on the runtime crate. Task 4 will remove the now-dead runtime copy.
+/// Build a case-insensitive lookup from texture stem to PNG path, scanning
+/// every collection directory under `texture_root`. The compiler owns this
+/// helper so it does not depend on the runtime crate.
 fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
     let mut map: HashMap<String, PathBuf> = HashMap::new();
 
@@ -527,8 +525,10 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 /// Bake per-texture mip pyramids into `.prm` sidecars under `cache_root`.
 /// Returns a map from texture name → 32-byte cache key (the `.prm` filename
 /// stem in hex). Names whose slots are all missing get a `[0u8; 32]` key and
-/// no `.prm` is written; callers (Task 4) flag the all-zero key in
-/// `TextureCacheKeysSection`.
+/// no `.prm` is written; callers flag the all-zero key in
+/// `TextureCacheKeysSection`. The runtime treats zero keys as 'no source PNG'
+/// and substitutes placeholders silently by design — missing PNGs are not an
+/// error in maps that don't use every named texture slot.
 pub fn bake_texture_mips(
     texture_names: &[String],
     texture_root: &Path,

@@ -49,6 +49,10 @@ pub enum PrlLoadError {
         "PRL file is missing the worldspawn `initialGravity` value (carried in the FogVolumes section, required since M7); recompile with `prl-build`"
     )]
     NoWorldspawnGravity,
+    #[error(
+        "PRL file has no TextureCacheKeys section (section 32) — file is corrupt or was produced by a writer that omits the section; recompile with `prl-build`"
+    )]
+    NoTextureCacheKeys,
 }
 
 /// Face → index-range mapping lives on BVH leaves; `FaceMeta` carries only
@@ -149,8 +153,7 @@ pub struct LevelWorld {
     pub has_portals: bool,
     pub texture_names: Vec<String>,
     /// Per-texture blake3 cache keys (PRL section 32), parallel to `texture_names`.
-    /// Empty when the section is absent (pre-Task-2 PRLs); the texture loader
-    /// degrades to placeholders for entries with no key.
+    /// Required — loader rejects files where the section is absent.
     pub texture_cache_keys: TextureCacheKeysSection,
     /// Always present — loader rejects files without a BVH section.
     pub bvh: BvhTree,
@@ -341,15 +344,13 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     };
     let texture_names: Vec<String> = texture_names_section.map(|s| s.names).unwrap_or_default();
 
+    // Required. Absence means the file is corrupt or was produced by a writer
+    // that omitted section 32; reject so the texture cache never silently
+    // degrades every surface to a placeholder on a bad file.
     let texture_cache_keys_data =
-        prl_format::read_section_data(&mut cursor, &meta, SectionId::TextureCacheKeys as u32)?;
-    let texture_cache_keys = match texture_cache_keys_data {
-        Some(data) => TextureCacheKeysSection::from_bytes(&data)?,
-        // Pre-Task-2 PRLs predate section 32. Carry an empty section so the
-        // texture loader observes the fixed presence model and degrades each
-        // texture to a placeholder.
-        None => TextureCacheKeysSection { keys: Vec::new() },
-    };
+        prl_format::read_section_data(&mut cursor, &meta, SectionId::TextureCacheKeys as u32)?
+            .ok_or(PrlLoadError::NoTextureCacheKeys)?;
+    let texture_cache_keys = TextureCacheKeysSection::from_bytes(&texture_cache_keys_data)?;
 
     let mut warned_prefixes = HashSet::new();
     let vertices: Vec<WorldVertex> = geom
@@ -1234,6 +1235,14 @@ mod tests {
         }
     }
 
+    fn default_texture_cache_keys_blob() -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::TextureCacheKeys as u32,
+            version: 1,
+            data: TextureCacheKeysSection::default().to_bytes(),
+        }
+    }
+
     #[test]
     fn load_prl_round_trip_with_bsp_sections() {
         let geom = sample_geometry();
@@ -1288,6 +1297,7 @@ mod tests {
                 version: 1,
                 data: leaves.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
 
@@ -1311,11 +1321,14 @@ mod tests {
     #[test]
     fn load_prl_rejects_missing_bvh_section() {
         let geom = sample_geometry();
-        let sections = vec![prl_format::SectionBlob {
-            section_id: SectionId::Geometry as u32,
-            version: 1,
-            data: geom.to_bytes(),
-        }];
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+        ];
         let tmp = write_prl_fixture(sections, "postretro_test_missing_bvh.prl");
         let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
         assert!(matches!(err, PrlLoadError::NoBvh), "got {err:?}");
@@ -1524,6 +1537,7 @@ mod tests {
                 version: 1,
                 data: influence.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_influence_mismatch.prl");
@@ -1572,6 +1586,7 @@ mod tests {
                 version: 1,
                 data: me.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
 
@@ -1615,6 +1630,7 @@ mod tests {
                 version: 1,
                 data: bvh.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
         let tmp = write_prl_fixture(sections, "postretro_test_no_map_entity.prl");
@@ -1639,6 +1655,7 @@ mod tests {
                 version: 1,
                 data: bvh.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
 
@@ -1698,6 +1715,7 @@ mod tests {
                 version: 1,
                 data: masks.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
 
@@ -1763,6 +1781,7 @@ mod tests {
                 version: 1,
                 data: masks.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
 
@@ -1819,6 +1838,7 @@ mod tests {
                 version: 1,
                 data: masks.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
 
@@ -1849,6 +1869,7 @@ mod tests {
                 version: 1,
                 data: bvh.to_bytes(),
             },
+            default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
 

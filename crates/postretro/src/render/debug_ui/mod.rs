@@ -7,6 +7,7 @@ use winit::window::Window;
 use super::LightingIsolation;
 use super::Renderer;
 use super::frame_timing::FrameTimingSnapshot;
+use super::sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 
 /// GPU-side egui state. Lives on `Renderer` (the GPU boundary), constructed
 /// lazily on first panel open via `Renderer::ensure_debug_ui_gpu`. The CPU
@@ -62,6 +63,7 @@ pub struct DebugUi {
     pub winit_state: egui_winit::State,
     visible: bool,
     pub panel_state: DiagnosticsState,
+    pub sh_diagnostics_state: ShDiagnosticsState,
 }
 
 impl DebugUi {
@@ -80,6 +82,7 @@ impl DebugUi {
             winit_state,
             visible: false,
             panel_state: DiagnosticsState::default(),
+            sh_diagnostics_state: ShDiagnosticsState::default(),
         }
     }
 
@@ -111,6 +114,7 @@ impl DebugUi {
 pub fn draw_diagnostics_panel(
     ctx: &egui::Context,
     state: &mut DiagnosticsState,
+    sh_state: &mut ShDiagnosticsState,
     renderer: &mut Renderer,
     frame_timing: Option<&FrameTimingSnapshot>,
 ) {
@@ -165,5 +169,64 @@ pub fn draw_diagnostics_panel(
                 ui.label("GPU timing unavailable");
             }
         }
+
+        ui.separator();
+        let has_sh = renderer.has_sh_volume();
+        let delta_count = renderer.sh_delta_volumes().len();
+        if !sh_state.seeded {
+            if sh_state.per_light_visible.len() != delta_count {
+                sh_state.per_light_visible.clear();
+                sh_state.per_light_visible.resize(delta_count, false);
+            }
+            sh_state.seeded = true;
+        }
+        egui::CollapsingHeader::new("SH Volumes")
+            .default_open(false)
+            .show(ui, |ui| {
+                if !has_sh {
+                    ui.label("No SH volume baked");
+                    return;
+                }
+
+                ui.checkbox(&mut sh_state.show_base_aabb, "Show base volume AABB");
+                ui.checkbox(&mut sh_state.show_cells, "Show base-grid cells");
+                ui.checkbox(&mut sh_state.show_markers, "Show per-probe markers");
+
+                ui.horizontal(|ui| {
+                    ui.label("Marker mode");
+                    ui.radio_value(&mut sh_state.marker_mode, MarkerMode::Validity, "Validity");
+                    ui.radio_value(&mut sh_state.marker_mode, MarkerMode::Uniform, "Uniform");
+                });
+
+                ui.label("Marker scale");
+                ui.add(egui::Slider::new(
+                    &mut sh_state.marker_scale,
+                    0.05_f32..=2.0,
+                ));
+
+                ui.label("Cell-draw radius (world units)");
+                ui.add(egui::Slider::new(&mut sh_state.cell_radius, 0.0_f32..=64.0));
+
+                ui.separator();
+                ui.label("Animated light delta volumes");
+                if delta_count == 0 {
+                    ui.label("(no animated lights)");
+                } else {
+                    if sh_state.per_light_visible.len() != delta_count {
+                        sh_state.per_light_visible.resize(delta_count, false);
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("All on").clicked() {
+                            sh_state.per_light_visible.fill(true);
+                        }
+                        if ui.button("All off").clicked() {
+                            sh_state.per_light_visible.fill(false);
+                        }
+                    });
+                    for (i, visible) in sh_state.per_light_visible.iter_mut().enumerate() {
+                        ui.checkbox(visible, format!("Delta light #{i}"));
+                    }
+                }
+            });
     });
 }

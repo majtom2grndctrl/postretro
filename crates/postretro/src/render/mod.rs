@@ -3,10 +3,14 @@
 
 pub mod animated_lightmap;
 #[cfg(feature = "dev-tools")]
+pub mod debug_lines;
+#[cfg(feature = "dev-tools")]
 pub mod debug_ui;
 pub mod fog_pass;
 pub mod frame_timing;
 pub mod sh_compose;
+#[cfg(feature = "dev-tools")]
+pub mod sh_diagnostics;
 pub mod sh_volume;
 pub mod smoke;
 pub mod splash;
@@ -435,6 +439,13 @@ pub struct Renderer {
     /// Absent SH section → dummy 1×1×1 textures; `has_sh_volume == 0` skips sampling.
     sh_volume_resources: ShVolumeResources,
 
+    /// CPU mirror of animated-light delta volume placements, one entry per
+    /// animated light. Empty when the map has no delta SH volumes. Sourced
+    /// at level load from the same `DeltaShVolumesSection` `sh_compose` consumes;
+    /// surfaced via `Renderer::sh_delta_volumes` for the SH diagnostic overlay.
+    #[cfg(feature = "dev-tools")]
+    sh_delta_volumes_meta: Vec<sh_volume::DeltaVolumeMeta>,
+
     /// Composes base SH bands into the total bands consumers sample. Must run
     /// before the depth pre-pass so the storage→sampled barrier resolves first.
     sh_compose: ShComposeResources,
@@ -484,6 +495,9 @@ pub struct Renderer {
     wireframe_index_count: u32,
     wireframe_cull_status_bgl: wgpu::BindGroupLayout,
     wireframe_enabled: bool,
+
+    #[cfg(feature = "dev-tools")]
+    debug_lines: debug_lines::DebugLineRenderer,
 
     lighting_isolation: LightingIsolation,
 
@@ -1253,6 +1267,10 @@ impl Renderer {
             &uniform_bind_group_layout,
         );
 
+        #[cfg(feature = "dev-tools")]
+        let sh_delta_volumes_meta =
+            collect_delta_volume_meta(geometry.and_then(|g| g.delta_sh_volumes));
+
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
             &device,
@@ -1669,6 +1687,15 @@ impl Renderer {
             log::info!("[Renderer] Pipeline ready (no geometry loaded)");
         }
 
+        #[cfg(feature = "dev-tools")]
+        let debug_lines = debug_lines::DebugLineRenderer::new(
+            &device,
+            surface_format,
+            DEPTH_FORMAT,
+            1,
+            &uniform_bind_group_layout,
+        );
+
         Ok(Self {
             device,
             queue,
@@ -1688,6 +1715,8 @@ impl Renderer {
             ambient_floor,
             indirect_scale: DEFAULT_INDIRECT_SCALE,
             sh_volume_resources,
+            #[cfg(feature = "dev-tools")]
+            sh_delta_volumes_meta,
             sh_compose,
             lightmap_resources,
             animated_lightmap,
@@ -1712,6 +1741,8 @@ impl Renderer {
             wireframe_index_count,
             wireframe_cull_status_bgl: wireframe_cull_status_layout,
             wireframe_enabled: false,
+            #[cfg(feature = "dev-tools")]
+            debug_lines,
             lighting_isolation: LightingIsolation::Normal,
             vsync_enabled: true,
             has_geometry,
@@ -1931,6 +1962,10 @@ impl Renderer {
             geometry.delta_sh_volumes,
             &self.uniform_bind_group_layout,
         );
+        #[cfg(feature = "dev-tools")]
+        {
+            self.sh_delta_volumes_meta = collect_delta_volume_meta(geometry.delta_sh_volumes);
+        }
 
         let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(&self.device);
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
@@ -2190,6 +2225,53 @@ impl Renderer {
     /// Pipeline survives; `install_splash_from_loaded` can re-bind.
     pub fn clear_splash(&mut self) {
         self.splash_pipeline.clear();
+    }
+
+    /// `true` when the loaded map carries a baked SH volume. The diagnostic
+    /// panel queries this to render either live controls or a disabled-state label.
+    #[cfg(feature = "dev-tools")]
+    pub fn has_sh_volume(&self) -> bool {
+        self.sh_volume_resources.present
+    }
+
+    /// Per-animated-light delta-volume metadata for the SH diagnostic overlay.
+    /// Empty when the map has no delta SH volumes.
+    #[cfg(feature = "dev-tools")]
+    pub fn sh_delta_volumes(&self) -> &[sh_volume::DeltaVolumeMeta] {
+        &self.sh_delta_volumes_meta
+    }
+
+    /// Emits SH diagnostic line segments into the renderer's per-frame debug-line
+    /// buffer. Called from the frame loop between egui UI build and
+    /// `render_frame_indirect`. The caller is responsible for clearing the
+    /// debug-line buffer before this call (via `clear_debug_lines`) so the
+    /// emit path stays purely additive and other debug-line producers can
+    /// coexist; this also keeps the buffer bounded across early-return frames
+    /// (Timeout/Occluded/Outdated) where `render_frame_indirect` skips its
+    /// debug-line render pass.
+    ///
+    /// `visible_leaf_mask` is the same portal-reachable leaf mask passed to
+    /// `render_frame_indirect`; the cells overlay colors each cell by the
+    /// frame-visibility of the leaf its center sits in.
+    #[cfg(feature = "dev-tools")]
+    pub fn emit_sh_diagnostics(
+        &mut self,
+        panel_visible: bool,
+        state: &sh_diagnostics::ShDiagnosticsState,
+        camera_pos: Vec3,
+        world: &crate::prl::LevelWorld,
+        visible_leaf_mask: &[bool],
+    ) {
+        sh_diagnostics::emit(
+            panel_visible,
+            state,
+            &self.sh_volume_resources,
+            &self.sh_delta_volumes_meta,
+            camera_pos,
+            world,
+            visible_leaf_mask,
+            &mut self.debug_lines,
+        );
     }
 
     pub fn toggle_wireframe(&mut self) -> bool {
@@ -3034,6 +3116,21 @@ impl Renderer {
             }
         }
 
+        #[cfg(feature = "dev-tools")]
+        {
+            self.debug_lines.render(
+                &self.queue,
+                &mut encoder,
+                &view,
+                &self.depth_view,
+                &self.uniform_bind_group,
+            );
+            // Buffer is cleared by the frame loop (via `clear_debug_lines`)
+            // before the next frame's emit call — that single owner handles
+            // surface Timeout/Occluded/Outdated early-returns above without
+            // leaking segments across frames.
+        }
+
         if let Some(timing) = &self.frame_timing {
             timing.encode_resolve(&mut encoder);
         }
@@ -3047,6 +3144,11 @@ impl Renderer {
         // Caller (`App`) presents after optionally appending the egui overlay
         // pass via `render_debug_ui`.
         Ok(Some(output))
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn clear_debug_lines(&mut self) {
+        self.debug_lines.clear();
     }
 }
 
@@ -3108,6 +3210,24 @@ fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
         bytes.extend_from_slice(&val.to_ne_bytes());
     }
     bytes
+}
+
+#[cfg(feature = "dev-tools")]
+fn collect_delta_volume_meta(
+    section: Option<&postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
+) -> Vec<sh_volume::DeltaVolumeMeta> {
+    let Some(sec) = section else {
+        return Vec::new();
+    };
+    sec.grids
+        .iter()
+        .map(|g| sh_volume::DeltaVolumeMeta {
+            origin: g.aabb_origin,
+            // Delta grids store a single scalar cell size; broadcast to per-axis.
+            cell_size: [g.cell_size; 3],
+            grid_dimensions: g.grid_dimensions,
+        })
+        .collect()
 }
 
 // Static lights are baked — including them would double-apply their contribution.

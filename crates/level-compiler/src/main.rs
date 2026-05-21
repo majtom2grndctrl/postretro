@@ -1386,7 +1386,8 @@ mod tests {
         let mut geo = minimal_geometry();
         let (bvh, prims, _) = bvh_build::build_bvh(&geo).expect("bvh build must succeed");
         let light = baseline_point_light();
-        let static_lights = light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+        let static_lights =
+            light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
 
         let inputs = LightmapInputs {
             lights: vec![baseline_point_light()],
@@ -1429,7 +1430,8 @@ mod tests {
         let geo = minimal_geometry();
         let (bvh, prims, _) = bvh_build::build_bvh(&geo).expect("bvh build must succeed");
         let light = baseline_point_light();
-        let static_lights = light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+        let static_lights =
+            light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
         let animated_lights = light_namespaces::AnimatedBakedLights::from_lights(&[]);
 
         let tree = BspTree {
@@ -1471,8 +1473,9 @@ mod tests {
         cache.put(&key, &baked_bytes);
 
         let loaded_bytes = cache.get(&key).expect("cache must hit after put");
-        let section2 = postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&loaded_bytes)
-            .expect("deserialization must succeed");
+        let section2 =
+            postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&loaded_bytes)
+                .expect("deserialization must succeed");
         let round_tripped = section2.to_bytes();
         assert_eq!(
             baked_bytes, round_tripped,

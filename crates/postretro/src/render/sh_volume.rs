@@ -99,6 +99,28 @@ pub struct ShVolumeResources {
     /// per-light sample data starting here; `upload_bridge_samples` passes this
     /// to `queue.write_buffer` as the destination offset.
     pub scripted_sample_byte_offset: usize,
+    /// CPU mirror of section-20 per-probe validity bytes, z-major
+    /// (`x + y*Nx + z*Nx*Ny`). One byte per probe: `0 = invalid` (probe inside
+    /// solid or off-grid), non-zero = valid. Empty when no SH section is present.
+    /// Consumed by `sh_diagnostics::emit` for probe-marker coloring.
+    #[cfg(feature = "dev-tools")]
+    pub validity: Vec<u8>,
+    /// CPU copies of grid origin and cell size for `sh_diagnostics` (CPU-side probe-marker emission);
+    /// `grid_info_buffer` is the canonical GPU-side source for the shader.
+    #[cfg(feature = "dev-tools")]
+    pub grid_origin: [f32; 3],
+    #[cfg(feature = "dev-tools")]
+    pub cell_size: [f32; 3],
+}
+
+/// Per-animated-light delta volume placement, mirrored on CPU for diagnostics.
+/// Sourced from the same `DeltaShVolumesSection` `sh_compose` consumes.
+#[cfg(feature = "dev-tools")]
+#[derive(Debug, Clone)]
+pub struct DeltaVolumeMeta {
+    pub origin: [f32; 3],
+    pub cell_size: [f32; 3],
+    pub grid_dimensions: [u32; 3],
 }
 
 /// Animated-light descriptor and sample buffers shared between group 3 and the compose pass.
@@ -211,6 +233,11 @@ impl ShVolumeResources {
         // Total SH bands: storage-writeable parallel set the compose pass writes each frame;
         // consumer bind group samples from these. STORAGE_BINDING | TEXTURE_BINDING so one texture serves both roles.
         let total_textures: Vec<wgpu::Texture>;
+
+        #[cfg(feature = "dev-tools")]
+        let validity: Vec<u8> = usable
+            .map(|s| s.probes.iter().map(|p| p.validity).collect())
+            .unwrap_or_default();
 
         if let Some(sec) = usable {
             let packed = pack_probes_to_band_slices(&sec.probes, sec.grid_dimensions);
@@ -361,6 +388,12 @@ impl ShVolumeResources {
             scripted_light_descriptors: scripted_light_descriptors_buffer,
             scripted_light_count: map_light_count as u32,
             scripted_sample_byte_offset,
+            #[cfg(feature = "dev-tools")]
+            validity,
+            #[cfg(feature = "dev-tools")]
+            grid_origin,
+            #[cfg(feature = "dev-tools")]
+            cell_size,
         }
     }
 }

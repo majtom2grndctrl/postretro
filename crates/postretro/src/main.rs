@@ -961,6 +961,83 @@ impl ApplicationHandler for App {
                         }
                         let particle_collections: Vec<(&str, &[u8])> =
                             self.particle_render.iter_collections().collect();
+
+                        // Build the egui UI before `render_frame_indirect` so
+                        // the SH diagnostic overlay can push debug lines that
+                        // the frame's debug-line pass will pick up. Tessellated
+                        // paint jobs are stashed and consumed after the frame
+                        // by `render_debug_ui`.
+                        #[cfg(feature = "dev-tools")]
+                        let debug_ui_frame: Option<(
+                            egui::TexturesDelta,
+                            Vec<egui::epaint::ClippedPrimitive>,
+                            f32,
+                        )> = {
+                            let panel_visible = self
+                                .debug_ui
+                                .as_ref()
+                                .map(|d| d.is_visible())
+                                .unwrap_or(false);
+                            let mut out = None;
+                            if let (Some(debug_ui), Some(ws)) =
+                                (self.debug_ui.as_mut(), self.window_state.as_ref())
+                            {
+                                if debug_ui.is_visible() {
+                                    let window = &ws.window;
+                                    let raw_input = debug_ui.winit_state.take_egui_input(window);
+                                    let timing_snapshot = renderer.frame_timing_snapshot().cloned();
+                                    let panel_state = &mut debug_ui.panel_state;
+                                    let sh_state = &mut debug_ui.sh_diagnostics_state;
+                                    let ctx_clone = debug_ui.ctx.clone();
+                                    let full_output = ctx_clone.run_ui(raw_input, |ui| {
+                                        render::debug_ui::draw_diagnostics_panel(
+                                            ui.ctx(),
+                                            panel_state,
+                                            sh_state,
+                                            renderer,
+                                            timing_snapshot.as_ref(),
+                                        );
+                                    });
+                                    debug_ui.winit_state.handle_platform_output(
+                                        window,
+                                        full_output.platform_output,
+                                    );
+                                    let paint_jobs = debug_ui.ctx.tessellate(
+                                        full_output.shapes,
+                                        full_output.pixels_per_point,
+                                    );
+                                    out = Some((
+                                        full_output.textures_delta,
+                                        paint_jobs,
+                                        window.scale_factor() as f32,
+                                    ));
+                                }
+                            }
+                            // Clear the debug-line buffer unconditionally each
+                            // frame so any producer starts fresh. This is the
+                            // single lifecycle owner of the buffer: it handles
+                            // early-returns in `render_frame_indirect`
+                            // (Timeout/Occluded/Outdated) and level unloads
+                            // cleanly, and keeps any future debug-line producer
+                            // from colliding with the SH diagnostic pass.
+                            renderer.clear_debug_lines();
+                            // Emit SH diagnostic debug lines now — after UI
+                            // mutated state, before `render_frame_indirect`
+                            // draws the debug-line pass.
+                            if let Some(world) = self.level.as_ref() {
+                                if let Some(debug_ui) = self.debug_ui.as_ref() {
+                                    renderer.emit_sh_diagnostics(
+                                        panel_visible,
+                                        &debug_ui.sh_diagnostics_state,
+                                        interp.position,
+                                        world,
+                                        &light_reachable_leaf_mask,
+                                    );
+                                }
+                            }
+                            out
+                        };
+
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
                             &light_reachable_leaf_mask,
@@ -980,47 +1057,16 @@ impl ApplicationHandler for App {
                         if let Some(surface_texture) = surface_texture {
                             #[cfg(feature = "dev-tools")]
                             {
-                                if let Some(debug_ui) = self.debug_ui.as_mut() {
-                                    if debug_ui.is_visible() {
-                                        if let Some(ws) = self.window_state.as_ref() {
-                                            let window = &ws.window;
-                                            let raw_input =
-                                                debug_ui.winit_state.take_egui_input(window);
-                                            // Snapshot is `Option<&FrameTimingSnapshot>`
-                                            // borrowed from `renderer`; clone the inner
-                                            // value so the closure can take `&mut renderer`
-                                            // without aliasing.
-                                            let timing_snapshot =
-                                                renderer.frame_timing_snapshot().cloned();
-                                            let panel_state = &mut debug_ui.panel_state;
-                                            let ctx_clone = debug_ui.ctx.clone();
-                                            let full_output = ctx_clone.run_ui(raw_input, |ui| {
-                                                render::debug_ui::draw_diagnostics_panel(
-                                                    ui.ctx(),
-                                                    panel_state,
-                                                    renderer,
-                                                    timing_snapshot.as_ref(),
-                                                );
-                                            });
-                                            debug_ui.winit_state.handle_platform_output(
-                                                window,
-                                                full_output.platform_output,
-                                            );
-                                            let paint_jobs = debug_ui.ctx.tessellate(
-                                                full_output.shapes,
-                                                full_output.pixels_per_point,
-                                            );
-                                            if let Err(err) = renderer.render_debug_ui(
-                                                &surface_texture,
-                                                full_output.textures_delta,
-                                                paint_jobs,
-                                                window.scale_factor() as f32,
-                                            ) {
-                                                self.exit_result = Err(err);
-                                                event_loop.exit();
-                                                return;
-                                            }
-                                        }
+                                if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame {
+                                    if let Err(err) = renderer.render_debug_ui(
+                                        &surface_texture,
+                                        textures_delta,
+                                        paint_jobs,
+                                        scale,
+                                    ) {
+                                        self.exit_result = Err(err);
+                                        event_loop.exit();
+                                        return;
                                     }
                                 }
                             }
@@ -1430,6 +1476,20 @@ impl App {
             renderer.install_level_geometry(&geometry);
         }
         self.level_timings.record("geometry_upload");
+
+        // Reseed the SH diagnostic per-light visibility bitmap to match the
+        // freshly-installed level's animated-light count. Reset `seeded` so the
+        // panel re-pulls defaults on the next open.
+        #[cfg(feature = "dev-tools")]
+        if let Some(debug_ui) = self.debug_ui.as_mut() {
+            let delta_count = renderer.sh_delta_volumes().len();
+            debug_ui.sh_diagnostics_state.per_light_visible.clear();
+            debug_ui
+                .sh_diagnostics_state
+                .per_light_visible
+                .resize(delta_count, false);
+            debug_ui.sh_diagnostics_state.seeded = false;
+        }
 
         if let Some(textures) = self.texture_set.as_ref() {
             renderer.install_textures(textures);

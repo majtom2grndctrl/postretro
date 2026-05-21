@@ -34,7 +34,7 @@ Add an in-engine visual diagnostic for baked SH irradiance volumes: wireframe AA
 ## Acceptance criteria
 
 - [ ] With the debug panel open and "Show base volume AABB" enabled, a wireframe box bounding the entire SH grid is visible, depth-tested against the opaque depth buffer; lines behind opaque geometry are hidden; transparent geometry (billboards, fog) does not occlude lines.
-- [ ] With "Show base-grid cells" enabled, cells within the configured camera radius are drawn as wireframe boxes; cells outside the radius are not drawn. Visible cells render green; cells fully outside the camera frustum or occluded by portal culling render cyan. Toggling off restores the bare AABB or hides geometry entirely depending on the other toggles.
+- [ ] With "Show base-grid cells" enabled, cells within the configured camera radius are drawn as wireframe boxes; cells outside the radius are not drawn. Cells portal-reachable from the camera's current leaf render green; cells not reachable via portals render cyan. (No frustum check — coloring reflects portal connectivity only, using the same `fog_reachable` leaf mask as dynamic-light gating.) An empty mask (no portals, exterior camera, fallback paths) treats all cells as visible. Toggling off restores the bare AABB or hides geometry entirely depending on the other toggles.
 - [ ] Cell-draw radius slider changes which cells are drawn in real time; reducing the radius reduces the number of cells visible.
 - [ ] With "Show probe markers" enabled, every probe position has a small 3-axis cross marker; in validity mode, markers in solid leaves render red and markers in playable leaves render green.
 - [ ] Marker scale slider visibly changes marker size in the viewport in real time.

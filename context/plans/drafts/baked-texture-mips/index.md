@@ -27,7 +27,7 @@ Move texture mip-chain generation out of the renderer and into `prl-build`. Mip 
 - Manual `prl-bake-textures` step. Conversion is implicit during `prl-build`.
 - PRL v3 backwards compatibility. Pre-release; version bump is hard.
 - Shader-side anisotropic filtering for grazing-angle surfaces. Separate plan; depends on this one.
-- Emissive-mask (`_e.png`) baking. `slot_mask` bit 3 is reserved; the writer and reader leave it unset until a follow-up plan implements emissive.
+- Emissive-mask (`_e.png`) baking. `slot_mask` bit 3 is reserved at the byte level; the writer never sets it and the reader rejects it (`ReservedSlotBitsSet`) until a follow-up plan implements emissive.
 
 ## Acceptance criteria
 
@@ -49,9 +49,9 @@ Sized to land as separate commits.
 
 ### Task 1: `TextureCacheKeys` section + `.prm` wire format in `postretro-level-format`
 
-Add `SectionId::TextureCacheKeys = 32`, a `TextureCacheKeysSection` type with `to_bytes` / `from_bytes` and a round-trip test. Layout: `u32 count` + `[u8; 32] * count`. `count` equals `TextureNamesSection.names.len()`; entry `i` is the blake3 of the PNG content for texture `i`. Bump `CURRENT_VERSION` to 4 and update every test that constructs the header or asserts on `CURRENT_VERSION`, and add a v3 reject test that asserts `UnsupportedVersion { version: 3 }`. Extend the hand-written `SectionId::from_u32` match arm to cover the new variant.
+Add `SectionId::TextureCacheKeys = 32`, a `TextureCacheKeysSection` type with `to_bytes` / `from_bytes` and a round-trip test. Layout: `u32 count` + `[u8; 32] * count`. `count` equals `TextureNamesSection.names.len()`; entry `i` is the blake3 of the PNG content for texture `i`. Bump `CURRENT_VERSION` to 4. Existing `CURRENT_VERSION` assertions in level-format tests derive from the constant and bump transparently; the only hand-written test is a new v3-reject test asserting `UnsupportedVersion { version: 3 }`. Extend the hand-written `SectionId::from_u32` match arm to cover the new variant.
 
-Add a `prm` module to `postretro-level-format` owning the `.prm` wire format: `PrmFile`, `PrmSlot`, `PrmFormat`, `PrmReadError`, and a `STAGE_VERSION` constant. Both the compiler-side writer (Task 2) and runtime-side reader (Task 3) import these types from level-format — the parser is not reinvented in the runtime crate.
+Add a `prm` module to `postretro-level-format` owning the `.prm` wire format: `PrmFile`, `PrmSlot`, `PrmFormat`, `PrmReadError`, and a `STAGE_VERSION` constant. Both the compiler-side writer (Task 2) and runtime-side reader (Task 3) import these types from level-format — the parser is not reinvented in the runtime crate. `PrmFile::to_bytes` / `from_bytes` follow the hand-rolled `Vec<u8>` / byte-slice convention used by other level-format sections (see `texture_names.rs`). No `postcard` dependency added.
 
 Update `context/lib/build_pipeline.md`'s section table at plan promotion time, not during the task.
 
@@ -60,20 +60,20 @@ Update `context/lib/build_pipeline.md`'s section table at plan promotion time, n
 Add `texture_mips.rs` next to `texture_validation.rs`. The wire-format types live in `postretro-level-format::prm` (Task 1); the writer imports them. Entry point takes the deduplicated texture-name list, the texture root path, and the cache root (`<mod>/.prl-cache/tex/`). For each name:
 
 1. Resolve `<name>.png`, `<name>_s.png`, `<name>_n.png` via case-insensitive lookup (factor `build_name_to_path_map` out of the runtime into a shared helper — see *Plumbing*).
-2. Compute `key = blake3(diffuse_png_bytes)` if diffuse exists; otherwise hash the first present slot's PNG; slot probe order is fixed at diffuse → specular → normal. Key identifies the bundle.
-3. If `<cache>/<hex>.prm` already exists and parses, skip rebake.
-4. Otherwise build mip chains per slot in linear `f32`, encode per *Wire format* below, write atomically (tempfile + rename).
+2. Compute `key = blake3(diffuse_png_bytes)` if diffuse exists. Otherwise `key = blake3([bit_index_byte] || first_present_png_bytes)`, where `bit_index_byte` is `0x01` for specular-only or `0x02` for normal-only. The tag byte prevents collisions between specular-only and normal-only textures that share PNG bytes. Slot probe order: diffuse → specular → normal. Hash inputs are raw on-disk PNG file bytes — no decode/re-encode normalization. The blake3 reflects the file, not the decoded pixels.
+3. If `<cache>/<hex>.prm` exists, parses successfully, and its `bundle_hash` field matches the recomputed bundle hash for the current source PNGs, skip rebake. Otherwise overwrite.
+4. Otherwise build mip chains per slot in linear `f32`, encode per *Wire format* below, write atomically — tempfile in the same `.prl-cache/tex/` directory as the final file, then `std::fs::rename` for cross-platform atomic replacement.
 5. Return `(name → key)` from the baker — do NOT touch `pack.rs` directly. Task 4 wires this into `TextureCacheKeysSection`.
 
 Gamma handling per slot:
 
-- **Diffuse (`Rgba8UnormSrgb`, tag 0):** decode each byte to linear `f32` via 256-entry sRGB→linear LUT, run separable Mitchell-Netravali in linear `f32`, encode back to sRGB on output. Alpha treated as linear throughout (premultiplied alpha not used). After filtering, clamp each linear sample to `[0.0, 1.0]` before sRGB encode. Specular clamp likewise to `[0.0, 1.0]` before R8 quantization.
+- **Diffuse (`Rgba8UnormSrgb`, tag 0):** decode each byte to linear `f32` via 256-entry sRGB→linear LUT, run separable Mitchell-Netravali in linear `f32`, encode back to sRGB on output. RGB: filter in linear f32, clamp to [0, 1], sRGB-encode to bytes. Alpha: filter in linear f32, clamp to [0, 1], then `((x * 255.0).round() as u8)` — alpha is never sRGB-encoded. Premultiplied alpha not used. Specular clamps to [0, 1] before R8 quantization the same way.
 - **Specular (`R8Unorm`, tag 2):** filter directly in linear `f32`. Already linear on disk.
-- **Normal (`Rgba8Unorm`, tag 1):** filter linearly in `f32`, then per output texel decode `n = sample.rgb * 2 - 1`, normalise, re-encode. Fall back to byte `(127, 127, 255)` (the engine's neutral-normal placeholder encoding) if `||n|| < 1e-4` after filtering.
+- **Normal (`Rgba8Unorm`, tag 1):** filter each RGB component linearly in `f32` (no input clamp). Per output texel: `n = sample.rgb * 2 - 1`. If `||n|| < 1e-4`, substitute `(0, 0, 1)`; otherwise normalize to unit length. Re-encode as `((n * 0.5 + 0.5) * 255.0).round() as u8` per component. Alpha (if present) is filtered linearly and quantized like specular.
 
-Edge condition: clamp-to-edge sampling. Precompute 1D Mitchell weights once per `(src_len, dst_len)` pair; horizontal pass into a scratch `f32` buffer, then vertical.
+Kernel evaluated in destination texel space with scale = 2.0 (each mip is a 2× downsample of the prior). Per-destination-texel weights renormalize to sum exactly 1.0. Clamp-to-edge: out-of-bounds taps replicate the nearest source sample. Precompute 1D Mitchell weights once per `(src_len, dst_len)` pair; horizontal pass into a scratch `f32` buffer, then vertical.
 
-The baker is invoked from `main.rs` between `texture_validation::validate_sibling_color_spaces` (main.rs:163) and `pack_and_write_portals` (main.rs:515). The returned `(name → key)` map is threaded to the pack call.
+The baker is invoked from `main.rs` after `texture_validation::validate_sibling_color_spaces` (main.rs:163) and before `pack_and_write_portals` (main.rs:515), at the point the deduplicated texture-name list is materialized for the pack call. The returned `(name → key)` map is threaded to the pack call.
 
 ### Task 3: `.prm` reader and runtime upload path
 
@@ -86,16 +86,17 @@ Type split:
 | `UiTexture` (new in `crates/postretro/src/texture.rs`) | Nearest min/mag | none (1 level) | PNG direct | splash, HUD, any 2D blit |
 | `LoadedTexture` (refactored) | Nearest min/mag, Linear mipmap | full chain | `.prm` sidecar | world materials |
 
-`UiTexture` carries `{ data, width, height }`. `install_splash_from_loaded` and `splash::upload_splash_texture` (`render/splash.rs:51`) switch to `UiTexture`. `LoadedTexture` becomes a thin wrapper over the parsed `.prm` slot data + GPU handles (per the bullet below). The magenta-checker placeholder remains in the `LoadedTexture` family (it's a world-material fallback, not UI) with `mip_count = 1`.
+`UiTexture` carries `{ data, width, height }`. `splash::load_splash` (`render/splash.rs:22`), `splash::upload_splash_texture` (`render/splash.rs:51`), and `install_splash_from_loaded` all return / accept `UiTexture`. The two `install_splash_from_loaded` call sites in `crates/postretro/src/main.rs` (lines 1220 and 1289) thread `UiTexture` through. `LoadedTexture` becomes a thin wrapper over the parsed `.prm` slot data + GPU handles (per the bullet below). The magenta-checker placeholder remains in the `LoadedTexture` family (it's a world-material fallback, not UI) with `mip_count = 1`.
 
 - Import the reader from `postretro-level-format::prm`. Decoded result is per-slot `(format_tag, width, height, level_count, payload)`.
-- Change `upload_texture_data` to accept `levels: &[(u32, u32, &[u8])]` and `format: wgpu::TextureFormat`. Caller supplies one tuple per mip level (level width, level height, byte payload) plus the slot's format tag mapped to `wgpu::TextureFormat`. Delete `downsample_2x`, the `mitchell_netravali` weight code, and `mip_level_count_for`; the caller supplies levels.
+- Change `upload_texture_data` to accept `levels: &[(u32, u32, &[u8])]` in place of the current `(width, height, data)` parameters; the existing `format: wgpu::TextureFormat` parameter stays. Caller supplies one tuple per mip level (level width, level height, byte payload) plus the slot's format tag mapped to `wgpu::TextureFormat`. Delete `downsample_2x`, the `mitchell_netravali` weight code, and `mip_level_count_for`; the caller supplies levels.
 - wgpu's `Queue::write_texture` accepts tightly-packed source rows; the `.prm` payload layout (no row alignment padding) uploads directly without staging.
 - `LoadedTexture` becomes a thin wrapper over the parsed `.prm` slot data plus GPU handles. The current `is_placeholder` field is preserved (load-bearing for sibling-probe skipping at `texture.rs:184,224`).
 - `load_textures` rewrites: for each entry in `TextureNamesSection`, look up the blake3 from `TextureCacheKeysSection`, open `<mod>/.prl-cache/tex/<hex>.prm`, decode, upload each level per slot. The texture-root PNG scan disappears from the runtime. (`texture_names` is `Vec<String>`; the runtime's current `Vec<Option<String>>` wrap at `startup/worker.rs:80-84` drops away.)
 - Update placeholders (`black_specular_texture`, `neutral_normal_texture`, `generate_placeholder` checkerboard, `Placeholder Texture Diffuse`) to use `mip_count = 1` (`lod_max_clamp = 0.0`). The 64×64 checkerboard will look blockier at distance than the current mipped placeholder — intended, makes missing-texture cases more obvious in modder workflows.
 - Replace the single global `base_sampler` with a `HashMap<u32, wgpu::Sampler>` (`mip_count_samplers`) on the renderer. Each material bind group selects the sampler whose key matches its `LoadedTexture.mip_count`. Sampler descriptor is unchanged except `lod_max_clamp = (mip_count - 1) as f32`. Existing call sites at `render/mod.rs:1289`, `1337`, `2213`, `2263` switch from `&base_sampler` to a lookup.
-- Existing `texture.rs` test suite (~19 tests against PNG fixtures) is replaced with `.prm`-fixture tests. A small `prm-test-fixtures` helper builds in-memory `.prm` byte blobs.
+- Placeholders use the same sampler descriptor as world materials (Nearest min/mag, Linear mipmap_filter) and pick up the `mip_count_samplers[&1]` entry. No separate placeholder-only sampler.
+- Delete the PNG-fixture-driven tests in `crates/postretro/src/texture.rs`: the `build_name_map_*` tests (which follow `build_name_to_path_map` into the compiler), `load_textures_loads_matching_pngs`, `load_textures_case_insensitive_match`, `load_textures_missing_produces_checkerboard`, `load_textures_none_entry_produces_checkerboard`, the `None` slot in `load_textures_preserves_index_order`, and the seven sibling-probe tests at lines 528–718. Roughly 22 of 27 tests in the file go. The five `checkerboard_*` tests at lines 290–328 remain. Replacement: `.prm`-fixture tests built via a `#[cfg(test)]` helper module in `postretro-level-format::prm` that emits in-memory `.prm` byte blobs.
 
 Task 3 can be unit-tested against a hand-crafted `.prm` fixture + v4 PRL fixture, but the campaign-test acceptance check requires Task 2 done.
 
@@ -119,7 +120,7 @@ Task 3 can be unit-tested against a hand-crafted `.prm` fixture + v4 PRL fixture
 - Cache key choice: hashing PNG content (not `(PNG content, STAGE_VERSION)`) keeps the filename stable across stage-version bumps but lets stale `.prm` files survive a filter change. `STAGE_VERSION` lives inside the `.prm` header (see *Wire format*) so the reader can detect a mismatch and the writer can overwrite. On `STAGE_VERSION` bump, builds rewrite every `.prm`; mismatched files are overwritten in place.
 - `.prm` files are content-addressed by the **diffuse** PNG when present (or the first available slot otherwise). A texture name with the same diffuse PNG but a different normal map produces the same filename — that is intended. If any source PNG changes, the writer detects it on the next build by re-hashing source PNGs and overwriting the existing `.prm` when the recomputed `bundle_hash` diverges from what the `.prm` header records. The on-disk filename does not need to be unique per (diffuse, specular, normal) tuple — it just needs to be unique per **texture name** for any given build state. Document this clearly in the writer.
 - Per-mod cache layout (`content/<mod>/.prl-cache/tex/`) avoids cross-mod collisions when two mods ship different PNGs under the same texture name.
-- sRGB encode: IEC 61966-2-1 piecewise curve (linear `< 0.0031308` segment, gamma branch above). Polynomial approximation acceptable if the regression test passes.
+- sRGB encode: the golden reference uses the exact IEC 61966-2-1 piecewise curve (linear `< 0.0031308` segment, gamma branch above). The encoder may use a polynomial approximation provided every output stays within ±1 LSB of the exact formula (validated by the gamma-correctness regression test).
 
 ## Boundary inventory
 
@@ -128,26 +129,28 @@ Task 3 can be unit-tested against a hand-crafted `.prm` fixture + v4 PRL fixture
 | PRL section enum | `SectionId::TextureCacheKeys` | `u32 = 32` | n/a | n/a | n/a |
 | PRL section struct | `TextureCacheKeysSection` | `u32 count` + `[u8; 32] * count` | n/a | n/a | n/a |
 | Sidecar file | `PrmFile` (compiler + runtime) | `.prm` body (see below) | n/a | n/a | n/a |
-| Slot bitmask | `PrmSlots::{Diffuse, Specular, Normal, Emissive}` (Emissive reserved) | `u8` bits 0/1/2/3 | n/a | n/a | n/a |
+| Slot bitmask | `PrmSlots::{Diffuse, Specular, Normal}` | `u8` bits 0/1/2 (bit 3 reserved at byte level for future emissive) | n/a | n/a | n/a |
 | Format tag | `PrmFormat::{Rgba8UnormSrgb, Rgba8Unorm, R8Unorm}` | `u8` 0/1/2 (3 reserved BC5) | n/a | n/a | n/a |
 | UI texture | `UiTexture` (`crates/postretro/src/texture.rs`) | n/a (runtime only) | n/a | n/a | n/a |
 
 ## Wire format
 
-Little-endian throughout. All integers unsigned.
+Little-endian throughout. All integers unsigned. Byte arrays (`[u8; N]`) are stored verbatim; endianness applies only to integer fields.
 
 ### `.prm` file body
 
 ```
 -- header (43 bytes)
 [u8; 4]  magic                = b"PRM\x01"     -- ASCII "PRM" + version byte; version lives only here
-u8       stage_version                         -- u8 truncation of PrmFile STAGE_VERSION at write time
+u8       stage_version                         -- equals postretro-level-format::prm::STAGE_VERSION (u8) at write time
 u8       slot_mask                             -- bit 0 diffuse, bit 1 specular, bit 2 normal, bit 3 emissive (reserved)
 u8       reserved             = 0
-[u8; 32] bundle_hash                           -- blake3 over concat of (slot_bit_index_u8, source_png_bytes)
-                                               -- for every present slot in fixed order diffuse → specular → normal.
-                                               -- Writer compares to detect input changes when the diffuse-only
-                                               -- filename hash hasn't moved.
+[u8; 32] bundle_hash                           -- blake3 over `slot_mask` byte followed by `(bit_index_byte, source_png_file_bytes)`
+                                               -- for every present slot in order diffuse (bit 0) → specular (bit 1) → normal (bit 2).
+                                               -- `bit_index_byte` is one of `0x00`, `0x01`, `0x02`. Including `slot_mask`
+                                               -- makes slot deletion an unambiguous fingerprint change. Writer compares this
+                                               -- against the recomputed bundle hash to detect input changes when the
+                                               -- diffuse-only filename hash hasn't moved.
 u32      total_body_bytes                     -- sum across all present slots of (12-byte per-slot header
                                                -- + that slot's payload_bytes). Excludes this file header.
 
@@ -167,15 +170,18 @@ u32      payload_bytes                         -- total bytes for all levels con
 
 Reader validation:
 
-- Reject if `magic[0..3] != "PRM"`. Version lives in `magic[3]` only — no separate version byte to cross-check.
-- Reject if `stage_version` doesn't match `postretro-level-format::prm::STAGE_VERSION` truncated to `u8` (the canonical home; `texture_mips::STAGE_VERSION` is a re-export `u32` for consistency with other cache stages). Bump beyond 255 requires a `.prm` `version` bump (i.e. a new magic byte). Writer overwrites on mismatch.
-- Reject if `slot_mask` has bits 4–7 set. Bit 3 (emissive) parses but the corresponding slot block is ignored by the current reader.
+- Reject if `magic[0..3] != b"PRM"` with `PrmReadError::BadMagic { found: magic }`. The version byte `magic[3]` must be exactly `0x01`; any other value yields `PrmReadError::UnsupportedVersion { version: magic[3] }`.
+- Reject if `stage_version != postretro-level-format::prm::STAGE_VERSION` with `PrmReadError::StageVersionMismatch { expected, found }`. `STAGE_VERSION` is a `u8`; a future bump beyond 255 requires a `.prm` magic-byte version bump. Writer overwrites on mismatch.
+- Reject if `slot_mask` has bits 3–7 set, or if `slot_mask == 0`, with `PrmReadError::ReservedSlotBitsSet { mask }`. Bit 3 (emissive) is reserved at the byte level only — the writer never sets it and the reader rejects it until a follow-up plan implements emissive.
 - For each present slot: `level_count == floor(log2(max(width, height))) + 1`, `payload_bytes` equals the sum of `bytes_per_pixel(format_tag) * w_n * h_n` across levels with `w_n = max(1, width >> n)`, `h_n = max(1, height >> n)`.
+- Reject if `total_body_bytes` != Σ `(12 + payload_bytes_i)` across present slots, or if the remaining file size after the 43-byte header doesn't equal `total_body_bytes`, with `PrmReadError::TotalBodyBytesMismatch { expected, found }`.
 - `bytes_per_pixel`: tag 0 → 4, tag 1 → 4, tag 2 → 1.
+
+`PrmReadError` variants: `BadMagic { found: [u8; 4] }`, `UnsupportedVersion { version: u8 }`, `StageVersionMismatch { expected: u8, found: u8 }`, `ReservedSlotBitsSet { mask: u8 }`, `LevelCountMismatch { slot: u8, expected: u8, found: u8 }`, `PayloadBytesMismatch { slot: u8, expected: u32, found: u32 }`, `TotalBodyBytesMismatch { expected: u32, found: u32 }`, `Truncated`, `Io(std::io::Error)`.
 
 On any reject (bad magic, `stage_version` mismatch, `slot_mask` invalid, level/payload arithmetic mismatch), the runtime logs a `warn!` naming the texture and the failure reason, substitutes per-slot placeholders (`black_specular_texture`, `neutral_normal_texture`, magenta checker for diffuse), and continues level load. Level load never fails on a `.prm` parse error.
 
-Empty file (no slots) encoding: `slot_mask = 0`, `total_body_bytes = 0`, no per-slot blocks. Permitted but never written by Task 2 (a texture with no source PNGs in any slot doesn't produce a `.prm` — the loader treats it the same as a missing texture today).
+File-level errors (bad magic, version mismatch, stage_version mismatch, total_body_bytes mismatch, truncated header) fail the entire `.prm`; the runtime substitutes per-slot placeholders for all three slots and continues. Per-slot errors (level_count or payload_bytes arithmetic mismatch on one slot) fall back to that slot's placeholder; other slots that parsed cleanly are used.
 
 ### `TextureCacheKeysSection` body
 
@@ -184,17 +190,16 @@ u32      count                                -- equals TextureNamesSection.name
 [u8; 32] keys[count]                          -- blake3 of the PNG bundle for each name
 ```
 
-Ordering invariant: `keys[i]` corresponds to `names[i]`. A texture with no PNG at all (placeholder-only) writes a zero key (32 zero bytes); the runtime treats that as "no sidecar, use placeholder."
+Ordering invariant: `keys[i]` corresponds to `names[i]`. A texture with no PNG at all (placeholder-only) writes a zero key (32 zero bytes). On `keys[i] == [0u8; 32]`, the runtime skips the `.prm` lookup entirely and substitutes per-slot placeholders without logging a warning.
 
 ## Plumbing
 
 - PNG name-lookup helper currently in `crates/postretro/src/texture.rs::build_name_to_path_map` moves to `postretro-level-compiler` (shared module). Runtime drops its copy.
-- `pack.rs` gains a `texture_root` and `cache_root` argument. Compiler computes `cache_root = resolve_texture_root(map_path).parent().join('.prl-cache/tex/')`. The existing `--cache-dir` / `--no-cache` CLI flags govern only the workspace-rooted `cache.rs` directory; they do NOT affect `.prm` output, which always lives next to the textures it caches.
+- A new helper `resolve_cache_root(map_path: &Path) -> PathBuf` returns `resolve_texture_root(map_path).parent().unwrap().join(".prl-cache").join("tex")`; it lives next to `resolve_texture_root` in `main.rs`. `pack.rs` gains a `texture_root` and `cache_root` argument; the compiler threads `resolve_cache_root`'s return value in. The existing `--cache-dir` / `--no-cache` CLI flags govern only the workspace-rooted `cache.rs` directory; they do NOT affect `.prm` output, which always lives next to the textures it caches.
 - The compiler's `cache.rs` mechanism is unused here — the on-disk `.prm` file (content-addressed filename) IS the cache. Existence + parse-success at `<cache>/<hex>.prm` is the cache hit signal; the `bundle_hash` field in the header is the input-fingerprint check for the all-slots-unchanged path.
-- Crate split for the `.prm` wire format: `postretro-level-format::prm::{PrmFile, PrmSlot, PrmFormat, PrmReadError}` is the surface area shared by writer (level-compiler) and reader (postretro runtime). `postretro-level-compiler` is binary-only (no `[lib]` target), so the level-format crate is the only viable shared home. `postretro-level-format::prm::STAGE_VERSION` is the canonical constant; `texture_mips::STAGE_VERSION` re-exports it (compiler depends on level-format, so the constant flows one-way).
-- The mod-overlay resolver that locates `<name>.png` returns the same `<mod>` directory for the `.prm` lookup at `<mod>/.prl-cache/tex/<hex>.prm`. No new resolver code; runtime calls the existing resolver with the texture name and asks for the parent `<mod>` directory.
+- Crate split for the `.prm` wire format: `postretro-level-format::prm::{PrmFile, PrmSlot, PrmFormat, PrmReadError}` is the surface area shared by writer (level-compiler) and reader (postretro runtime). `postretro-level-compiler` is binary-only (no `[lib]` target), so the level-format crate is the only viable shared home. `postretro-level-format::prm::STAGE_VERSION` (`u8`) is the canonical constant; `texture_mips` imports it directly. No re-export.
 - The global `base_sampler` field at `render/mod.rs:521` is removed; the `mip_count_samplers` pool replaces it.
-- Runtime loader (`crates/postretro/src/startup/worker.rs::run_worker`) replaces the post-PRL `load_textures(texture_root, …)` call with a `load_textures(prl, mod_cache_root)` call that reads `.prm` files. The texture-root path argument can be removed from that call site.
+- Runtime loader (`crates/postretro/src/startup/worker.rs::run_worker`): replace `texture_root = content_root.join("textures")` at lines 73–88 with `mod_cache_root = content_root.join(".prl-cache").join("tex")`. Pass `&world.texture_names` (`Vec<String>`) and `mod_cache_root` to the new `load_textures` signature. Drop the `Vec<Option<String>>` wrap at lines 80–84; the new `TextureNamesSection` makes it unnecessary.
 - `.gitignore`: already covers `.prl-cache/` (matches at any depth); no change needed. Confirm at promotion.
 
 ## Open questions

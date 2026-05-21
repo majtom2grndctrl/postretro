@@ -8,6 +8,7 @@ pub mod debug_lines;
 pub mod debug_ui;
 pub mod fog_pass;
 pub mod frame_timing;
+pub mod loaded_texture;
 pub mod sh_compose;
 #[cfg(feature = "dev-tools")]
 pub mod sh_diagnostics;
@@ -18,6 +19,8 @@ pub mod splash;
 #[cfg(test)]
 mod curve_eval_test;
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -36,9 +39,10 @@ use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots_into};
 use crate::material::Material;
 use crate::prl::MapLight;
+use crate::render::loaded_texture::{LoadedTexture, load_textures};
 use crate::render::splash::SplashPipeline;
-use crate::texture::{LoadedTexture, TextureSet};
 use crate::visibility::VisibleCells;
+use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::fog_cell_masks::union_active_mask;
 
@@ -265,170 +269,125 @@ struct GpuTexture {
     bind_group: wgpu::BindGroup,
 }
 
-fn upload_texture_data(
+/// Create a Nearest min/mag, Linear mipmap sampler clamped to `mip_count - 1`
+/// LOD. One sampler per distinct mip count is kept in
+/// `Renderer::mip_count_samplers` so each material binds the clamp that
+/// matches its uploaded mip chain.
+fn create_mip_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("Mip Texture Sampler"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        address_mode_w: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        lod_min_clamp: 0.0,
+        lod_max_clamp: (mip_count.saturating_sub(1)) as f32,
+        ..Default::default()
+    })
+}
+
+/// All-placeholder `LoadedTexture` for the no-level boot state. Reuses the
+/// same generator that `load_textures` falls back to per-texture.
+fn build_placeholder_loaded_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    width: u32,
-    height: u32,
-    data: &[u8],
-    format: wgpu::TextureFormat,
-    label: &str,
-) -> wgpu::Texture {
-    let bytes_per_pixel: u32 = match format {
-        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => 4,
-        wgpu::TextureFormat::R8Unorm => 1,
-        other => panic!("upload_texture_data: unsupported format {other:?}"),
-    };
-    let mip_level_count = mip_level_count_for(width, height);
-    let size = wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-    };
+) -> LoadedTexture {
+    // Borrow the same placeholder builders as load_textures by going through
+    // its public API with an empty key set + empty name list, then patching
+    // in one placeholder. Simpler: replicate the placeholder construction
+    // inline using upload_texture_data.
+    let checker = build_placeholder_checkerboard();
+    let (diffuse_texture, diffuse_view) = loaded_texture::upload_texture_data(
+        device,
+        queue,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        &[(64, 64, &checker)],
+        "Placeholder Diffuse (Checkerboard)",
+    );
+    let (specular_texture, specular_view) = loaded_texture::upload_texture_data(
+        device,
+        queue,
+        wgpu::TextureFormat::R8Unorm,
+        &[(1, 1, &[0u8])],
+        "Placeholder Specular (Black 1x1)",
+    );
+    let (normal_texture, normal_view) = loaded_texture::upload_texture_data(
+        device,
+        queue,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &[(1, 1, &[127u8, 127, 255, 255])],
+        "Placeholder Normal (Neutral 1x1)",
+    );
+    LoadedTexture {
+        diffuse_texture,
+        diffuse_view,
+        specular_texture,
+        specular_view,
+        normal_texture,
+        normal_view,
+        mip_count: 1,
+        is_placeholder: true,
+    }
+}
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size,
-        mip_level_count,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
+fn build_placeholder_checkerboard() -> Vec<u8> {
+    const SIZE: u32 = 64;
+    const SQUARE: u32 = 8;
+    const MAGENTA: [u8; 4] = [255, 0, 0xFF, 255];
+    const BLACK: [u8; 4] = [0, 0, 0, 255];
+    let mut data = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let cx = x / SQUARE;
+            let cy = y / SQUARE;
+            data.extend_from_slice(if (cx + cy) % 2 == 0 { &MAGENTA } else { &BLACK });
+        }
+    }
+    data
+}
+
+fn build_material_bind_group(
+    device: &wgpu::Device,
+    texture_bind_group_layout: &wgpu::BindGroupLayout,
+    loaded: &LoadedTexture,
+    sampler: &wgpu::Sampler,
+    material: Material,
+    label_prefix: &str,
+) -> wgpu::BindGroup {
+    let uniform_bytes = build_material_uniform(material.shininess());
+    let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(&format!("{label_prefix} Uniform")),
+        contents: &uniform_bytes,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-
-    // Mip 0 = caller-supplied data; each subsequent level is Lanczos-3 downsampled
-    // from the previous. CPU-side because wgpu has no auto-mip generation.
-    let upload_level = |level: u32, level_w: u32, level_h: u32, bytes: &[u8]| {
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: level,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(&format!("{label_prefix} Bind Group")),
+        layout: texture_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&loaded.diffuse_view),
             },
-            bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_pixel * level_w),
-                rows_per_image: Some(level_h),
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
             },
-            wgpu::Extent3d {
-                width: level_w,
-                height: level_h,
-                depth_or_array_layers: 1,
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&loaded.specular_view),
             },
-        );
-    };
-    upload_level(0, width, height, data);
-    let mut prev: Vec<u8> = Vec::new();
-    let mut prev_w = width;
-    let mut prev_h = height;
-    for level in 1..mip_level_count {
-        let src: &[u8] = if level == 1 { data } else { &prev };
-        let next = downsample_2x(src, prev_w, prev_h, bytes_per_pixel as usize);
-        let level_w = (width >> level).max(1);
-        let level_h = (height >> level).max(1);
-        upload_level(level, level_w, level_h, &next);
-        prev = next;
-        prev_w = level_w;
-        prev_h = level_h;
-    }
-
-    texture
-}
-
-fn mip_level_count_for(width: u32, height: u32) -> u32 {
-    (width.max(height) as f32).log2().floor() as u32 + 1
-}
-
-// Mitchell-Netravali with canonical B=1/3, C=1/3. Support radius 2.
-fn mitchell_netravali(x: f32) -> f32 {
-    const B: f32 = 1.0 / 3.0;
-    const C: f32 = 1.0 / 3.0;
-    let x = x.abs();
-    if x < 1.0 {
-        ((12.0 - 9.0 * B - 6.0 * C) * x * x * x
-            + (-18.0 + 12.0 * B + 6.0 * C) * x * x
-            + (6.0 - 2.0 * B))
-            / 6.0
-    } else if x < 2.0 {
-        ((-B - 6.0 * C) * x * x * x
-            + (6.0 * B + 30.0 * C) * x * x
-            + (-12.0 * B - 48.0 * C) * x
-            + (8.0 * B + 24.0 * C))
-            / 6.0
-    } else {
-        0.0
-    }
-}
-
-// Mitchell-Netravali downsample to half dimensions. Channel-agnostic; separable
-// 1-D horizontal then vertical pass. Clamps source coords to edge (no wrap).
-fn downsample_2x(src: &[u8], src_w: u32, src_h: u32, channels: usize) -> Vec<u8> {
-    let dst_w = (src_w / 2).max(1);
-    let dst_h = (src_h / 2).max(1);
-    let src_stride = src_w as usize * channels;
-
-    // Horizontal pass: src_w × src_h → dst_w × src_h (f32 intermediate)
-    let mut horiz = vec![0.0f32; dst_w as usize * src_h as usize * channels];
-    for y in 0..src_h as usize {
-        for x in 0..dst_w as usize {
-            let src_x = (x as f32 + 0.5) * (src_w as f32 / dst_w as f32) - 0.5;
-            let lo = (src_x - 2.0).ceil() as i32;
-            let hi = (src_x + 2.0).floor() as i32;
-            let mut weights = [0.0f32; 4];
-            let mut weight_sum = 0.0f32;
-            for (i, sx) in (lo..=hi).enumerate() {
-                let w = mitchell_netravali(src_x - sx as f32);
-                weights[i] = w;
-                weight_sum += w;
-            }
-            let dst_off = (y * dst_w as usize + x) * channels;
-            for c in 0..channels {
-                let mut acc = 0.0f32;
-                for (i, sx) in (lo..=hi).enumerate() {
-                    let clamped = sx.clamp(0, src_w as i32 - 1) as usize;
-                    acc += src[y * src_stride + clamped * channels + c] as f32 * weights[i];
-                }
-                horiz[dst_off + c] = acc / weight_sum;
-            }
-        }
-    }
-
-    // Vertical pass: dst_w × src_h → dst_w × dst_h (f32 → u8)
-    let horiz_stride = dst_w as usize * channels;
-    let mut dst = vec![0u8; dst_w as usize * dst_h as usize * channels];
-    for y in 0..dst_h as usize {
-        let src_y = (y as f32 + 0.5) * (src_h as f32 / dst_h as f32) - 0.5;
-        let lo = (src_y - 2.0).ceil() as i32;
-        let hi = (src_y + 2.0).floor() as i32;
-        let mut weights = [0.0f32; 4];
-        let mut weight_sum = 0.0f32;
-        for (i, sy) in (lo..=hi).enumerate() {
-            let w = mitchell_netravali(src_y - sy as f32);
-            weights[i] = w;
-            weight_sum += w;
-        }
-        for x in 0..dst_w as usize {
-            let dst_off = (y * dst_w as usize + x) * channels;
-            for c in 0..channels {
-                let mut acc = 0.0f32;
-                for (i, sy) in (lo..=hi).enumerate() {
-                    let clamped = sy.clamp(0, src_h as i32 - 1) as usize;
-                    acc += horiz[clamped * horiz_stride + x * channels + c] as f32 * weights[i];
-                }
-                dst[dst_off + c] = (acc / weight_sum).clamp(0.0, 255.0).round() as u8;
-            }
-        }
-    }
-    dst
-}
-
-// The diffuse loader expands grayscale PNGs to RGBA8; only R carries specular
-// data so G/B/A are dropped to save 4× VRAM before upload as R8Unorm.
-fn extract_r_channel(rgba: &[u8]) -> Vec<u8> {
-    rgba.iter().step_by(4).copied().collect()
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: uniform_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(&loaded.normal_view),
+            },
+        ],
+    })
 }
 
 // std140: trailing _pad forces size to 32 bytes to match WGSL `MaterialUniform`.
@@ -517,12 +476,18 @@ pub struct Renderer {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     /// Retained so `install_level_geometry` can rebuild the lighting bind group.
     lighting_bind_group_layout: wgpu::BindGroupLayout,
-    /// Shared linear+repeat sampler for diffuse + normal textures.
-    base_sampler: wgpu::Sampler,
-    /// 1×1 black placeholder view for textures missing a specular sibling.
-    black_specular_view: wgpu::TextureView,
-    /// 1×1 flat-normal placeholder view for textures missing a normal-map sibling.
-    neutral_normal_view: wgpu::TextureView,
+    /// One sampler per distinct uploaded `mip_count`. Sampler descriptors are
+    /// identical except for `lod_max_clamp = (mip_count - 1) as f32`. Keyed by
+    /// `LoadedTexture::mip_count`. Engine-lifetime — persists across level
+    /// reloads so re-installing the same mip chain reuses the existing sampler.
+    /// Placeholders pick up the `1` entry seeded at construction.
+    mip_count_samplers: HashMap<u32, wgpu::Sampler>,
+    /// Engine-lifetime owners of the loaded textures and views referenced by
+    /// material bind groups. Replaced wholesale on every `install_textures`.
+    /// Bind groups borrow these handles; dropping the vec invalidates them,
+    /// so keep them resident for the level's lifetime.
+    #[allow(dead_code)]
+    loaded_textures: Vec<LoadedTexture>,
     /// `has_multi_draw_indirect` flag cached for `install_level_geometry`.
     has_multi_draw_indirect: bool,
     /// Per-texture material properties derived from texture names. Set by
@@ -765,7 +730,6 @@ impl Renderer {
     pub fn new(window: &Arc<Window>) -> Result<Self> {
         // Dummy buffers until `install_level_geometry` replaces them.
         let geometry: Option<&LevelGeometry> = None;
-        let texture_set: Option<&TextureSet> = None;
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -1169,187 +1133,30 @@ impl Renderer {
             ],
         });
 
-        let base_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Base Texture Sampler"),
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            address_mode_w: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            lod_max_clamp: 24.0,
-            ..Default::default()
-        });
+        // Sampler pool seeded with the placeholder's mip count of `1`. The
+        // pool grows in `install_textures` once `LoadedTexture::mip_count`
+        // values arrive from the .prm sidecars. Placeholders always pick up
+        // the `1` entry; never miss this lookup.
+        let mut mip_count_samplers: HashMap<u32, wgpu::Sampler> = HashMap::new();
+        mip_count_samplers.insert(1, create_mip_sampler(&device, 1));
 
-        // Absent specular → zero R → no highlight, no shader branch.
-        let black_specular_texture = upload_texture_data(
-            &device,
-            &queue,
-            1,
-            1,
-            &[0u8],
-            wgpu::TextureFormat::R8Unorm,
-            "Specular Black 1x1",
-        );
-        let black_specular_view =
-            black_specular_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Tangent-space +Z: (0,0,1) → (127,127,255) in Rgba8Unorm.
-        // Shader decode: n = sample.rgb * 2.0 - 1.0 → (≈0, ≈0, ≈1).
-        let neutral_normal_texture = upload_texture_data(
-            &device,
-            &queue,
-            1,
-            1,
-            &[127u8, 127, 255, 255],
-            wgpu::TextureFormat::Rgba8Unorm,
-            "Normal Neutral 1x1",
-        );
-        let neutral_normal_view =
-            neutral_normal_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let texture_materials: &[Material] = geometry.map(|g| g.texture_materials).unwrap_or(&[]);
-        let specular_set: Option<&[Option<LoadedTexture>]> =
-            texture_set.map(|s| s.specular.as_slice());
-        let normal_set: Option<&[Option<LoadedTexture>]> = texture_set.map(|s| s.normal.as_slice());
-
+        // Construct an initial placeholder bind group so the world pipeline
+        // has a bind group bound even before a level loads. Replaced wholesale
+        // by `install_textures` when a `.prl` payload arrives.
+        let mut loaded_textures: Vec<LoadedTexture> = Vec::new();
         let mut gpu_textures: Vec<GpuTexture> = Vec::new();
-        if let Some(tex_set) = texture_set {
-            for (idx, loaded) in tex_set.textures.iter().enumerate() {
-                let diffuse_tex = upload_texture_data(
-                    &device,
-                    &queue,
-                    loaded.width,
-                    loaded.height,
-                    &loaded.data,
-                    wgpu::TextureFormat::Rgba8UnormSrgb,
-                    &format!("Texture {idx} Diffuse"),
-                );
-                let diffuse_view = diffuse_tex.create_view(&wgpu::TextureViewDescriptor::default());
-
-                let spec_view = match specular_set
-                    .and_then(|s| s.get(idx))
-                    .and_then(|o| o.as_ref())
-                {
-                    Some(spec_loaded) => {
-                        let r_only = extract_r_channel(&spec_loaded.data);
-                        let tex = upload_texture_data(
-                            &device,
-                            &queue,
-                            spec_loaded.width,
-                            spec_loaded.height,
-                            &r_only,
-                            wgpu::TextureFormat::R8Unorm,
-                            &format!("Texture {idx} Specular"),
-                        );
-                        tex.create_view(&wgpu::TextureViewDescriptor::default())
-                    }
-                    None => black_specular_view.clone(),
-                };
-
-                // Rgba8Unorm, NOT sRGB — tangent vectors must not gamma-correct.
-                let normal_view = match normal_set.and_then(|s| s.get(idx)).and_then(|o| o.as_ref())
-                {
-                    Some(normal_loaded) => {
-                        let tex = upload_texture_data(
-                            &device,
-                            &queue,
-                            normal_loaded.width,
-                            normal_loaded.height,
-                            &normal_loaded.data,
-                            wgpu::TextureFormat::Rgba8Unorm,
-                            &format!("Texture {idx} Normal"),
-                        );
-                        tex.create_view(&wgpu::TextureViewDescriptor::default())
-                    }
-                    None => neutral_normal_view.clone(),
-                };
-
-                let material = texture_materials
-                    .get(idx)
-                    .copied()
-                    .unwrap_or(Material::Default);
-                let uniform_bytes = build_material_uniform(material.shininess());
-                let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("Material Uniform {idx}")),
-                    contents: &uniform_bytes,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
-
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some(&format!("Material Bind Group {idx}")),
-                    layout: &texture_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&diffuse_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&base_sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(&spec_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: uniform_buf.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::TextureView(&normal_view),
-                        },
-                    ],
-                });
-                gpu_textures.push(GpuTexture { bind_group });
-            }
-        }
-
-        if gpu_textures.is_empty() {
-            let placeholder = crate::texture::generate_placeholder();
-            let diffuse_tex = upload_texture_data(
+        {
+            let placeholder = build_placeholder_loaded_texture(&device, &queue);
+            let sampler = mip_count_samplers.get(&1).expect("mip_count 1 seeded above");
+            let bind_group = build_material_bind_group(
                 &device,
-                &queue,
-                placeholder.width,
-                placeholder.height,
-                &placeholder.data,
-                wgpu::TextureFormat::Rgba8UnormSrgb,
-                "Placeholder Texture Diffuse",
+                &texture_bind_group_layout,
+                &placeholder,
+                sampler,
+                Material::Default,
+                "Placeholder Material",
             );
-            let diffuse_view = diffuse_tex.create_view(&wgpu::TextureViewDescriptor::default());
-            let uniform_bytes = build_material_uniform(Material::Default.shininess());
-            let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Material Uniform Placeholder"),
-                contents: &uniform_bytes,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Placeholder Material Bind Group"),
-                layout: &texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&diffuse_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&base_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&black_specular_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: uniform_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&neutral_normal_view),
-                    },
-                ],
-            });
+            loaded_textures.push(placeholder);
             gpu_textures.push(GpuTexture { bind_group });
         }
 
@@ -1868,9 +1675,8 @@ impl Renderer {
             active_fog_aabbs: Vec::new(),
             texture_bind_group_layout,
             lighting_bind_group_layout,
-            base_sampler,
-            black_specular_view,
-            neutral_normal_view,
+            mip_count_samplers,
+            loaded_textures,
             has_multi_draw_indirect,
             stored_texture_materials: Vec::new(),
             uniform_bind_group_layout,
@@ -2135,156 +1941,126 @@ impl Renderer {
         }
     }
 
-    /// Rebuilds all material bind groups. See: context/lib/boot_sequence.md §8
-    pub fn install_textures(&mut self, texture_set: &TextureSet) {
-        let mut gpu_textures: Vec<GpuTexture> = Vec::new();
-        let specular_set = texture_set.specular.as_slice();
-        let normal_set = texture_set.normal.as_slice();
+    /// Rebuilds all material bind groups from baked `.prm` mip sidecars.
+    /// `texture_materials` must be parallel to `texture_names`; entries beyond
+    /// its length fall back to `Material::Default`. Caller drives the order:
+    /// `install_textures` runs before `install_level_geometry` because the
+    /// uploaded diffuse dimensions feed `normalize_world_uvs`.
+    /// See: context/lib/boot_sequence.md §8 · context/lib/build_pipeline.md
+    pub fn install_textures(
+        &mut self,
+        texture_names: &[String],
+        texture_cache_keys: &TextureCacheKeysSection,
+        prm_cache_root: &Path,
+        texture_materials: &[Material],
+    ) {
+        // Cache materials so `install_level_geometry` can also recompute the
+        // per-leaf material lookup without re-deriving them. (Mirrors the
+        // pre-refactor flow where geometry install populated this field.)
+        self.stored_texture_materials = texture_materials.to_vec();
 
-        for (idx, loaded) in texture_set.textures.iter().enumerate() {
-            let diffuse_tex = upload_texture_data(
-                &self.device,
-                &self.queue,
-                loaded.width,
-                loaded.height,
-                &loaded.data,
-                wgpu::TextureFormat::Rgba8UnormSrgb,
-                &format!("Texture {idx} Diffuse"),
-            );
-            let diffuse_view = diffuse_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let loaded =
+            load_textures(&self.device, &self.queue, texture_names, texture_cache_keys, prm_cache_root);
 
-            let spec_view = match specular_set.get(idx).and_then(|o| o.as_ref()) {
-                Some(spec_loaded) => {
-                    let r_only = extract_r_channel(&spec_loaded.data);
-                    let tex = upload_texture_data(
-                        &self.device,
-                        &self.queue,
-                        spec_loaded.width,
-                        spec_loaded.height,
-                        &r_only,
-                        wgpu::TextureFormat::R8Unorm,
-                        &format!("Texture {idx} Specular"),
-                    );
-                    tex.create_view(&wgpu::TextureViewDescriptor::default())
-                }
-                None => self.black_specular_view.clone(),
-            };
+        // Sampler pool grows monotonically: every distinct `mip_count` seen in
+        // this batch needs a sampler with matching `lod_max_clamp`. The `1`
+        // entry seeded in `Renderer::new` covers placeholders; new mip counts
+        // beyond `1` arrive here when real textures load.
+        for tex in &loaded {
+            self.mip_count_samplers
+                .entry(tex.mip_count)
+                .or_insert_with(|| create_mip_sampler(&self.device, tex.mip_count));
+        }
 
-            let normal_view = match normal_set.get(idx).and_then(|o| o.as_ref()) {
-                Some(normal_loaded) => {
-                    let tex = upload_texture_data(
-                        &self.device,
-                        &self.queue,
-                        normal_loaded.width,
-                        normal_loaded.height,
-                        &normal_loaded.data,
-                        wgpu::TextureFormat::Rgba8Unorm,
-                        &format!("Texture {idx} Normal"),
-                    );
-                    tex.create_view(&wgpu::TextureViewDescriptor::default())
-                }
-                None => self.neutral_normal_view.clone(),
-            };
-
-            let material = self
-                .stored_texture_materials
+        let mut gpu_textures: Vec<GpuTexture> = Vec::with_capacity(loaded.len());
+        for (idx, tex) in loaded.iter().enumerate() {
+            let sampler = self
+                .mip_count_samplers
+                .get(&tex.mip_count)
+                .expect("mip sampler must have been eagerly populated");
+            let material = texture_materials
                 .get(idx)
                 .copied()
                 .unwrap_or(crate::material::Material::Default);
-            let uniform_bytes = build_material_uniform(material.shininess());
-            let uniform_buf = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("Material Uniform {idx}")),
-                    contents: &uniform_bytes,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
-
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(&format!("Material Bind Group {idx}")),
-                layout: &self.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&diffuse_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.base_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&spec_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: uniform_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&normal_view),
-                    },
-                ],
-            });
+            let bind_group = build_material_bind_group(
+                &self.device,
+                &self.texture_bind_group_layout,
+                tex,
+                sampler,
+                material,
+                &format!("Material {idx}"),
+            );
             gpu_textures.push(GpuTexture { bind_group });
         }
 
         if gpu_textures.is_empty() {
-            let placeholder = crate::texture::generate_placeholder();
-            let diffuse_tex = upload_texture_data(
+            // No textures referenced by the level — keep the placeholder slot
+            // so the world pipeline still has a bind group bound.
+            let placeholder = build_placeholder_loaded_texture(&self.device, &self.queue);
+            let sampler = self
+                .mip_count_samplers
+                .get(&1)
+                .expect("mip_count 1 sampler is seeded at Renderer::new");
+            let bind_group = build_material_bind_group(
                 &self.device,
-                &self.queue,
-                placeholder.width,
-                placeholder.height,
-                &placeholder.data,
-                wgpu::TextureFormat::Rgba8UnormSrgb,
-                "Placeholder Texture Diffuse",
+                &self.texture_bind_group_layout,
+                &placeholder,
+                sampler,
+                crate::material::Material::Default,
+                "Placeholder Material",
             );
-            let diffuse_view = diffuse_tex.create_view(&wgpu::TextureViewDescriptor::default());
-            let uniform_bytes =
-                build_material_uniform(crate::material::Material::Default.shininess());
-            let uniform_buf = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Material Uniform Placeholder"),
-                    contents: &uniform_bytes,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Placeholder Material Bind Group"),
-                layout: &self.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&diffuse_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.base_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&self.black_specular_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: uniform_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&self.neutral_normal_view),
-                    },
-                ],
-            });
-            gpu_textures.push(GpuTexture { bind_group });
+            self.loaded_textures = vec![placeholder];
+            self.gpu_textures = vec![GpuTexture { bind_group }];
+            log::info!("[Renderer] Textures installed: 1 (placeholder fallback)");
+            return;
         }
 
+        self.loaded_textures = loaded;
         self.gpu_textures = gpu_textures;
-        log::info!("[Renderer] Textures installed: {}", self.gpu_textures.len(),);
+        log::info!("[Renderer] Textures installed: {}", self.gpu_textures.len());
+    }
+
+    /// Normalize texel-space UVs on every BVH-leaf-bound vertex to `[0,1]`
+    /// using the diffuse-texture dimensions just installed by
+    /// `install_textures`. Runs on the main thread between `install_textures`
+    /// and `install_level_geometry`. Reads `texture.width()`/`height()` off
+    /// the wgpu textures owned by `self.loaded_textures` so the dimensions
+    /// always match the actual upload.
+    pub fn normalize_world_uvs(&self, world: &mut crate::prl::LevelWorld) {
+        let mut normalized = vec![false; world.vertices.len()];
+        for leaf in &world.bvh.leaves {
+            let tex_idx = leaf.material_bucket_id as usize;
+            let tex = match self.loaded_textures.get(tex_idx) {
+                Some(t) => t,
+                None => continue,
+            };
+            let w = tex.diffuse_texture.width();
+            let h = tex.diffuse_texture.height();
+            if w == 0 || h == 0 {
+                continue;
+            }
+            let start = leaf.index_offset as usize;
+            let count = leaf.index_count as usize;
+            for i in start..start + count {
+                if let Some(&idx) = world.indices.get(i) {
+                    let vi = idx as usize;
+                    if vi < normalized.len() && !normalized[vi] {
+                        if let Some(vert) = world.vertices.get_mut(vi) {
+                            vert.base_uv[0] /= w as f32;
+                            vert.base_uv[1] /= h as f32;
+                            normalized[vi] = true;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// May be called more than once (mod-override swap in splash frame 1).
-    pub fn install_splash_from_loaded(&mut self, loaded: &LoadedTexture) -> [u32; 2] {
+    pub fn install_splash_from_loaded(
+        &mut self,
+        loaded: &crate::ui_texture::UiTexture,
+    ) -> [u32; 2] {
         let (texture, dims) = splash::upload_splash_texture(&self.device, &self.queue, loaded);
         let screen_size = [self.surface_config.width, self.surface_config.height];
         self.splash_pipeline

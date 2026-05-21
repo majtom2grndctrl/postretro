@@ -785,6 +785,7 @@ mod tests {
             ],
             has_portals: true,
             texture_names: vec![],
+            texture_cache_keys: postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
             bvh: crate::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],
@@ -874,6 +875,7 @@ mod tests {
             leaf_portals: vec![],
             has_portals: false,
             texture_names: vec![],
+            texture_cache_keys: postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
             bvh: crate::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],
@@ -962,6 +964,7 @@ mod tests {
             leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
             has_portals: true,
             texture_names: vec![],
+            texture_cache_keys: postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
             bvh: crate::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],
@@ -1291,6 +1294,7 @@ mod tests {
             ],
             has_portals: true,
             texture_names: vec![],
+            texture_cache_keys: postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
             bvh: crate::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],
@@ -1704,6 +1708,7 @@ mod tests {
             leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
             has_portals: true,
             texture_names: vec![],
+            texture_cache_keys: postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
             bvh: crate::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],
@@ -1881,6 +1886,7 @@ mod tests {
             ],
             has_portals: true,
             texture_names: vec![],
+            texture_cache_keys: postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
             bvh: crate::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],
@@ -1989,6 +1995,7 @@ mod tests {
             leaf_portals: vec![vec![0], vec![0]],
             has_portals: true,
             texture_names: vec![],
+            texture_cache_keys: postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
             bvh: crate::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],
@@ -2128,6 +2135,7 @@ mod tests {
             leaf_portals: vec![vec![0], vec![0]],
             has_portals: true,
             texture_names: vec![],
+            texture_cache_keys: postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
             bvh: crate::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],

@@ -17,7 +17,7 @@ mod prl;
 mod render;
 mod scripting;
 mod startup;
-mod texture;
+mod ui_texture;
 mod visibility;
 
 // Rooted here (not under `scripting/`) so `gen_script_types.rs` can reuse the
@@ -64,7 +64,6 @@ use crate::scripting::reactions::registry::{
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::startup::{BootState, LoadOutcome, SplashSource, StartupTimings, spawn_level_worker};
-use crate::texture::TextureSet;
 use crate::visibility::{VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells};
 
 const DEFAULT_MAP_PATH: &str = "content/dev/maps/campaign-test.prl";
@@ -155,7 +154,6 @@ fn main() -> Result<()> {
         renderer: None,
         window_state: None,
         level: None,
-        texture_set: None,
         map_path,
         content_root,
         exit_result: Ok(()),
@@ -217,7 +215,6 @@ struct App {
     renderer: Option<Renderer>,
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
-    texture_set: Option<TextureSet>,
 
     /// Map path resolved from CLI args. Handed to the level-load worker
     /// when it is spawned during the second splash frame.
@@ -1356,9 +1353,9 @@ impl App {
                         self.level_rx = None;
                         self.level_worker = None;
 
-                        match (payload.level, payload.textures) {
-                            (Some(world), Some(textures)) => {
-                                self.install_level_payload(world, textures);
+                        match payload.level {
+                            Some(world) => {
+                                self.install_level_payload(world, payload.prm_cache_root);
                                 if let Some(renderer) = self.renderer.as_mut() {
                                     renderer.clear_splash();
                                 }
@@ -1371,7 +1368,7 @@ impl App {
                                 // real level frame this redraw.
                                 true
                             }
-                            (None, _) | (_, None) => {
+                            None => {
                                 log::warn!(
                                     "[Loader] worker delivered no level payload — staying in splash",
                                 );
@@ -1422,53 +1419,64 @@ impl App {
         }
     }
 
-    /// Install a delivered level payload on the main thread: GPU geometry +
-    /// texture upload, bridge / fog / collision populate, classname dispatch,
-    /// data script, archetype sweep, and `levelLoad` fire. Each stage is
-    /// recorded into `self.level_timings` for log line C.
+    /// Install a delivered level payload on the main thread: GPU texture
+    /// upload (from baked `.prm` mip sidecars), UV normalization, GPU geometry
+    /// upload, bridge / fog / collision populate, classname dispatch, data
+    /// script, archetype sweep, and `levelLoad` fire. Each stage is recorded
+    /// into `self.level_timings` for log line C.
+    ///
+    /// Texture upload now runs before geometry upload: `.prm` slot dimensions
+    /// drive UV normalization, so the renderer must have produced
+    /// `LoadedTexture`s before the per-leaf texel-space UVs can be converted
+    /// to `[0,1]`.
     ///
     /// Called from the `Splash` state machine on worker delivery; assumes
-    /// `self.renderer` is `Some` and the world + textures are populated.
-    fn install_level_payload(&mut self, world: prl::LevelWorld, textures: TextureSet) {
-        // Stash the world/textures so downstream code paths that already read
-        // from `self.level` / `self.texture_set` keep working unchanged.
-        self.level = Some(world);
-        self.texture_set = Some(textures);
-
+    /// `self.renderer` is `Some` and `world` is populated.
+    fn install_level_payload(&mut self, mut world: prl::LevelWorld, prm_cache_root: PathBuf) {
         // Reset world gravity to the freshly-loaded level's authored value
         // before the data script runs, so any `world.getGravity()` call
         // inside `setupLevel` / `levelLoad` reactions sees the new value.
-        if let Some(world) = &self.level {
-            self.script_ctx.gravity.set(world.initial_gravity);
-        }
+        self.script_ctx.gravity.set(world.initial_gravity);
 
         // Derive material properties from texture names so the renderer can
         // populate per-material uniforms (shininess) without re-parsing.
-        let texture_materials: Vec<crate::material::Material> = self
-            .level
-            .as_ref()
-            .map(|world| {
-                let mut warned = std::collections::HashSet::new();
-                world
-                    .texture_names
-                    .iter()
-                    .map(|n| crate::material::derive_material(n, &mut warned))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let texture_materials: Vec<crate::material::Material> = {
+            let mut warned = std::collections::HashSet::new();
+            world
+                .texture_names
+                .iter()
+                .map(|n| crate::material::derive_material(n, &mut warned))
+                .collect()
+        };
 
         let renderer = match self.renderer.as_mut() {
             Some(r) => r,
             None => {
                 log::error!("[Engine] install_level_payload called with no renderer");
+                self.level = Some(world);
                 return;
             }
         };
 
-        if let Some(world) = self.level.as_ref() {
-            let geometry = render::level_world_to_geometry(world, &texture_materials);
-            renderer.install_level_geometry(&geometry);
-        }
+        // 1. Textures first — uploaded from the .prm sidecars; their slot
+        //    dimensions feed the UV normalize pass.
+        renderer.install_textures(
+            &world.texture_names,
+            &world.texture_cache_keys,
+            &prm_cache_root,
+            &texture_materials,
+        );
+        self.level_timings.record("texture_upload");
+
+        // 2. UV normalize using freshly-uploaded diffuse-texture dimensions.
+        //    Texel-space UVs on the worker side; converted to `[0,1]` here so
+        //    install_level_geometry uploads the final values.
+        renderer.normalize_world_uvs(&mut world);
+        self.level_timings.record("uv_normalize");
+
+        // 3. Now geometry: vertex_buffer + index_buffer upload to GPU.
+        let geometry = render::level_world_to_geometry(&world, &texture_materials);
+        renderer.install_level_geometry(&geometry);
         self.level_timings.record("geometry_upload");
 
         // Reseed the SH diagnostic per-light visibility bitmap to match the
@@ -1485,10 +1493,9 @@ impl App {
             debug_ui.sh_diagnostics_state.seeded = false;
         }
 
-        if let Some(textures) = self.texture_set.as_ref() {
-            renderer.install_textures(textures);
-        }
-        self.level_timings.record("texture_upload");
+        // Stash the world after the mutations so downstream code paths that
+        // read from `self.level` see the normalized vertices.
+        self.level = Some(world);
 
         // One `LightComponent` entity per map-authored light; stable
         // `EntityId`s the bridge's dirty tracker keys off for the level's

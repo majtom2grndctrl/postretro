@@ -158,9 +158,12 @@ const TIMING_PAIR_COUNT: usize = 4;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
-//   0..64   view_proj  64..76  camera_position  76..80  ambient_floor
-//   80..84  light_count  84..88  time  88..92  lighting_isolation  92..96  indirect_scale
-const UNIFORM_SIZE: usize = 96;
+//   0..64    view_proj  64..76   camera_position  76..80   ambient_floor
+//   80..84   light_count  84..88  time  88..92   lighting_isolation  92..96  indirect_scale
+//   96..100  graphics_mode  100..112  padding
+// graphics_mode lands at offset 96; 12 bytes of trailing padding restore the
+// struct's 16-byte alignment (WGSL rounds the struct size up to 112).
+const UNIFORM_SIZE: usize = 112;
 
 /// Lighting-term isolation mode for leak/bleed debugging.
 /// The ambient floor always contributes so interior geometry is never pitch black.
@@ -231,6 +234,36 @@ impl LightingIsolation {
     }
 }
 
+/// Runtime texture-filtering mode. `PostRetro` (the default) pairs a
+/// hardware-anisotropic sampler with in-shader texel-grid reconstruction;
+/// `TrueRetro` is the hard-edged nearest-sampler look. Encoded into the frame
+/// uniform as `u32` (`TrueRetro = 0`, `PostRetro = 1`) for the forward shader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+#[repr(u32)]
+pub enum GraphicsMode {
+    TrueRetro = 0,
+    PostRetro = 1,
+}
+
+impl GraphicsMode {
+    /// Default filtering mode at renderer init.
+    pub const DEFAULT: GraphicsMode = GraphicsMode::PostRetro;
+
+    /// All variants in display order. Consumed by the Diagnostics panel
+    /// dropdown in a follow-up task; unused until then.
+    #[allow(dead_code)]
+    pub const ALL_VARIANTS: [GraphicsMode; 2] = [GraphicsMode::TrueRetro, GraphicsMode::PostRetro];
+
+    #[allow(dead_code)]
+    pub fn label(self) -> &'static str {
+        match self {
+            GraphicsMode::TrueRetro => "True Retro",
+            GraphicsMode::PostRetro => "Post Retro",
+        }
+    }
+}
+
 struct FrameUniforms {
     view_proj: Mat4,
     camera_position: Vec3,
@@ -239,6 +272,7 @@ struct FrameUniforms {
     time: f32,
     lighting_isolation: LightingIsolation,
     indirect_scale: f32,
+    graphics_mode: GraphicsMode,
 }
 
 fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -257,6 +291,9 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     let isolation: u32 = u.lighting_isolation as u32;
     bytes[88..92].copy_from_slice(&isolation.to_ne_bytes());
     bytes[92..96].copy_from_slice(&u.indirect_scale.to_ne_bytes());
+    let graphics_mode: u32 = u.graphics_mode as u32;
+    bytes[96..100].copy_from_slice(&graphics_mode.to_ne_bytes());
+    // bytes[100..112] left zero — trailing padding for 16-byte struct alignment.
     bytes
 }
 
@@ -520,6 +557,8 @@ pub struct Renderer {
     debug_lines: debug_lines::DebugLineRenderer,
 
     lighting_isolation: LightingIsolation,
+
+    graphics_mode: GraphicsMode,
 
     /// Toggled by Alt+Shift+V; `true` = AutoVsync, `false` = AutoNoVsync.
     vsync_enabled: bool,
@@ -831,6 +870,7 @@ impl Renderer {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale: DEFAULT_INDIRECT_SCALE,
+            graphics_mode: GraphicsMode::DEFAULT,
         });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1614,6 +1654,7 @@ impl Renderer {
             #[cfg(feature = "dev-tools")]
             debug_lines,
             lighting_isolation: LightingIsolation::Normal,
+            graphics_mode: GraphicsMode::DEFAULT,
             vsync_enabled: true,
             has_geometry,
             debug_frame: 0,
@@ -2152,6 +2193,25 @@ impl Renderer {
         self.lighting_isolation
     }
 
+    /// Sets the active texture-filtering mode. Logs only on an actual
+    /// transition so spam-clicks on the current mode stay quiet. The new mode
+    /// reaches the GPU on the next `update_per_frame_uniforms` call. Called
+    /// from the mod boot / hot-reload path (manifest default) and the dev-tools
+    /// A/B dropdown.
+    #[allow(dead_code)]
+    pub fn set_graphics_mode(&mut self, mode: GraphicsMode) {
+        if self.graphics_mode != mode {
+            self.graphics_mode = mode;
+            log::info!("[Renderer] Graphics mode: {}", mode.label());
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[allow(dead_code)]
+    pub fn graphics_mode(&self) -> GraphicsMode {
+        self.graphics_mode
+    }
+
     /// Most recent averaged GPU-timing window, or `None` when GPU timing is
     /// disabled / no window has elapsed yet. The debug panel reads this each
     /// frame; the underlying snapshot is overwritten every
@@ -2206,6 +2266,7 @@ impl Renderer {
             time,
             lighting_isolation: self.lighting_isolation,
             indirect_scale: self.indirect_scale,
+            graphics_mode: self.graphics_mode,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
@@ -3310,6 +3371,15 @@ mod tests {
     }
 
     #[test]
+    fn graphics_mode_uniform_encoding() {
+        // The forward shader keys filtering off these exact values; the
+        // default must stay Post Retro.
+        assert_eq!(GraphicsMode::TrueRetro as u32, 0);
+        assert_eq!(GraphicsMode::PostRetro as u32, 1);
+        assert_eq!(GraphicsMode::DEFAULT, GraphicsMode::PostRetro);
+    }
+
+    #[test]
     fn uniform_data_has_correct_size() {
         let data = build_uniform_data(&FrameUniforms {
             view_proj: Mat4::IDENTITY,
@@ -3319,6 +3389,7 @@ mod tests {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale: 1.0,
+            graphics_mode: GraphicsMode::DEFAULT,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -3616,6 +3687,7 @@ mod tests {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale,
+            graphics_mode: GraphicsMode::PostRetro,
         });
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
@@ -3661,6 +3733,10 @@ mod tests {
         // indirect_scale at bytes 92..96.
         let scale = f32::from_ne_bytes(data[92..96].try_into().unwrap());
         assert!((scale - indirect_scale).abs() < 1e-6);
+
+        // graphics_mode at bytes 96..100 (passed PostRetro = 1).
+        let mode = u32::from_ne_bytes(data[96..100].try_into().unwrap());
+        assert_eq!(mode, 1);
     }
 
     /// Static lights are baked into the lightmap; including them in the

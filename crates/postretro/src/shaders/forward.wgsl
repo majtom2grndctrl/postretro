@@ -38,6 +38,17 @@ struct Uniforms {
     // lightmap shadow contrast. Forced to 1.0 in indirect-only isolation
     // modes so debug views aren't affected by runtime suppression.
     indirect_scale: f32,
+    // Texture-filtering mode. 0 = True Retro (nearest sampler + manual
+    // shader-aniso, hard pixel edges), 1 = Post Retro (hardware-anisotropic
+    // sampler + in-shader texel-grid reconstruction). Default is Post Retro.
+    graphics_mode: u32,
+    // Pad to 112 bytes so the struct stays 16-byte aligned (graphics_mode
+    // lands at offset 96). Three scalar u32s, not a vec3<u32> — a vec3 has
+    // 16-byte alignment in the uniform address space and would push the
+    // struct to 128. Mirrors UNIFORM_SIZE in render/mod.rs.
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.

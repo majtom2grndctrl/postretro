@@ -239,7 +239,6 @@ impl LightingIsolation {
 /// `TrueRetro` is the hard-edged nearest-sampler look. Encoded into the frame
 /// uniform as `u32` (`TrueRetro = 0`, `PostRetro = 1`) for the forward shader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 #[repr(u32)]
 pub enum GraphicsMode {
     TrueRetro = 0,
@@ -250,12 +249,10 @@ impl GraphicsMode {
     /// Default filtering mode at renderer init.
     pub const DEFAULT: GraphicsMode = GraphicsMode::PostRetro;
 
-    /// All variants in display order. Consumed by the Diagnostics panel
-    /// dropdown in a follow-up task; unused until then.
-    #[allow(dead_code)]
+    /// All variants in display order. Used by the Diagnostics panel dropdown.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub const ALL_VARIANTS: [GraphicsMode; 2] = [GraphicsMode::TrueRetro, GraphicsMode::PostRetro];
 
-    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             GraphicsMode::TrueRetro => "True Retro",
@@ -959,8 +956,7 @@ impl Renderer {
         //          2=specular(R8), 3=shininess,
         //          4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
         //          5=aniso_sampler (linear+anisotropic, Post Retro).
-        // Binding 5 has no shader consumer until Task 3; a BGL may be a superset
-        // of what the shader uses, so declaring it now is valid.
+        // Both samplers stay resident; forward.wgsl picks per uniforms.graphics_mode.
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Material Bind Group Layout"),
@@ -2276,7 +2272,6 @@ impl Renderer {
     /// reaches the GPU on the next `update_per_frame_uniforms` call. Called
     /// from the mod boot / hot-reload path (manifest default) and the dev-tools
     /// A/B dropdown.
-    #[allow(dead_code)]
     pub fn set_graphics_mode(&mut self, mode: GraphicsMode) {
         if self.graphics_mode != mode {
             self.graphics_mode = mode;
@@ -2285,7 +2280,6 @@ impl Renderer {
     }
 
     #[cfg(feature = "dev-tools")]
-    #[allow(dead_code)]
     pub fn graphics_mode(&self) -> GraphicsMode {
         self.graphics_mode
     }

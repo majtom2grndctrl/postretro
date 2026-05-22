@@ -34,6 +34,7 @@ Depends on the baked-texture-mips plan, which has already landed. This plan also
 - [ ] Round-trip test: synthetic tangent-space normal map encoded to BC5, decoded, Z-reconstructed. Every output normal is unit-length within 1/127 and within 2° of the input direction.
 - [ ] Disk: normal `.prm` payloads for the campaign-test scene are ≤ 30% of the pre-BC5 baseline (BC5 is 4 bpp vs 32 bpp for Rgba8Unorm; the tail-out truncation removes the sub-4×4 levels entirely, so the BC5 portion is ~25% and the small header overhead keeps the aggregate under 30%).
 - [ ] VRAM: normal texture footprint on the same scene is ≤ 30% of the pre-BC5 baseline by the same reasoning.
+- [ ] The normal slot's written `level_count` equals the number of source mip levels whose width and height are both ≥ 4 px (sub-4×4 levels absent); a distant normal-mapped surface sampling the smallest BC5 mip renders with no sampler error under the shared `lod_max_clamp`.
 - [ ] `cargo run -p postretro -- content/dev/maps/campaign-test.prl` renders with no rendering errors. Specular highlights on normal-mapped surfaces at grazing angles show no visible quantisation banding compared to the pre-BC5 build (A/B screenshot pair in the PR).
 - [ ] Engine started on an adapter without `TEXTURE_COMPRESSION_BC` exits with a clear error naming the missing feature. Verified by temporarily masking the feature from the requested set.
 - [ ] `.prm` cache stage `STAGE_VERSION` is incremented from `1` to `2`. A second `cargo run -p postretro-level-compiler` with no source changes touches no files (cache hit on the new version).
@@ -49,11 +50,11 @@ Expose a single helper in `postretro-level-compiler` that takes a `&[u8]` Rgba8U
 
 ### Task 2: `.prm` format-tag extension
 
-Add `Bc5RgUnorm = 3` to the `.prm` per-slot format enum `PrmFormat` (in the shared `postretro-level-format` crate, `crates/level-format/src/prm.rs`; existing variants are `Rgba8UnormSrgb = 0` diffuse, `Rgba8Unorm = 1` normal, `R8Unorm = 2` specular), and extend `PrmFormat::from_tag` to map `3`. The enum change lands in the shared crate, consumed by both compiler and runtime. Update the `.prm` writer to permit `format_tag = 3` only on the normal slot — diffuse and specular writes fail with an error naming the offending slot and the source/`.prm` file. Update the reader to map `3` to `wgpu::TextureFormat::Bc5RgUnorm`. Bump the `.prm` texture-baker `STAGE_VERSION` (`u8`, `crates/level-format/src/prm.rs`) from `1` to `2`. See baked-texture-mips for the `.prm` byte layout and slot ordering; no new sections.
+Add `Bc5RgUnorm = 3` to the `.prm` per-slot format enum `PrmFormat` (in the shared `postretro-level-format` crate, `crates/level-format/src/prm.rs`; existing variants are `Rgba8UnormSrgb = 0` diffuse, `Rgba8Unorm = 1` normal, `R8Unorm = 2` specular), and extend `PrmFormat::from_tag` to map `3`. The enum change lands in the shared crate, consumed by both compiler and runtime. Update the `.prm` writer to permit `format_tag = 3` only on the normal slot — diffuse and specular writes fail with an error naming the offending slot and the source/`.prm` file. The wgpu mapping stays in the renderer: `prm_format_to_wgpu` (`crates/postretro/src/render/loaded_texture.rs`) gains the `PrmFormat::Bc5RgUnorm => wgpu::TextureFormat::Bc5RgUnorm` arm (added in Task 4). `level-format` stays wgpu-free. Bump the `.prm` texture-baker `STAGE_VERSION` (`u8`, `crates/level-format/src/prm.rs`) from `1` to `2`. See baked-texture-mips for the `.prm` byte layout and slot ordering; no new sections.
 
 ### Task 3: Mip tail-out at the BC5 block-size floor
 
-BC5 requires 4×4 block alignment. The encoder stops the normal slot's BC5 chain at the last level whose width and height are both ≥ 4 px. Smaller levels are not written. The `.prm` normal slot's `level_count` reflects the truncated chain. The runtime's existing per-texture `lod_max_clamp` (set to `level_count - 1`) clamps sampling to the shortest chain present — no new sampler machinery required.
+BC5 requires 4×4 block alignment. The encoder stops the normal slot's BC5 chain at the last level whose width and height are both ≥ 4 px. Smaller levels are not written. The `.prm` normal slot's `level_count` reflects the truncated chain. Levels ≥ 4 px but not a multiple of 4 (possible for non-power-of-two sources, since the chain halves to 1×1) are padded up to the next multiple of 4 by replicating edge texels into the trailing partial block, matching the mip downsampler's clamp-to-edge. Only levels with width or height < 4 are dropped. The runtime's existing per-texture `lod_max_clamp` (set to `level_count - 1`) clamps sampling to the shortest chain present — no new sampler machinery required.
 
 Option A (per-level format byte) was rejected: wgpu/WebGPU textures carry one `TextureFormat` for the entire mip chain, so mixed BC5/Rgba8 levels in a single texture are not a valid GPU primitive.
 
@@ -71,11 +72,11 @@ let z  = sqrt(max(0.0, 1.0 - dot(rg, rg)));
 let n  = normalize(vec3<f32>(rg, z));
 ```
 
-(`// Proposed design` — remove once landed.) Renormalise unconditionally: BC5 endpoint quantisation plus bilinear filtering leaves sampled normals off unit length, and acceptance criterion #1 requires unit length within 1/127. Confirm against acceptance criterion #3. This plan assumes the `retire-true-retro` plan has already landed, collapsing the two current arms of `sample_normal` (which today dispatches to `sample_post_retro` and the True Retro `sample_aniso_normal`) into the single surviving `sample_post_retro` decode; the RG decode edits that one function. Also update the existing `forward.wgsl` comment declaring BC5 out of scope for the 3-channel path.
+(`// Proposed design` — remove once landed.) Renormalise unconditionally: BC5 endpoint quantisation plus bilinear filtering leaves sampled normals off unit length, and acceptance criterion #1 requires unit length within 1/127. Confirm against acceptance criterion #3. This plan assumes the `retire-true-retro` plan has already landed, collapsing the two current arms of `sample_normal` (which today dispatches to `sample_post_retro` and the True Retro `sample_aniso_normal`) into a single surviving normal-decode function; the RG decode edits that one function. Confirm its name against the post-retirement shader (expected `sample_post_retro`) before editing. Also update the existing `forward.wgsl` comment declaring BC5 out of scope for the 3-channel path.
 
 ## Sequencing
 
-**Phase 1 (sequential):** Task 1 — encoder availability decides whether Task 3 needs an in-tree implementation.
+**Phase 1 (sequential):** Task 1 — encoder availability is resolved here, including the in-tree-encoder fallback; Tasks 3–4 only consume the resulting helper.
 **Phase 2 (concurrent):** Task 2, Task 3 — `.prm` format and per-level fall-back are independent of encoder internals.
 **Phase 3 (concurrent):** Task 4, Task 5 — runtime upload and shader Z-reconstruction land together; either alone produces broken visuals.
 
@@ -101,5 +102,5 @@ No new PRL sections. No FGD or scripting surface changes. No wire-format change 
 
 - **Per-level format vs. tail-out (Task 3).** Resolved: tail-out (option B).
 - **Encoder crate choice.** `intel_tex_2` is the likely pick if it currently exposes BC5 RG and its ISPC binary distribution is acceptable for the build pipeline. Confirm during Task 1; fall back to in-tree encoder if not.
-- **Specular shading sensitivity.** BC5's per-block endpoint quantisation can produce banding when the normal varies smoothly across a block boundary and a specular highlight grazes that band. Worst case is mirror-smooth specular on a gently curved surface; pixel-art content rarely hits this, but flag for follow-up if the campaign-test A/B reveals visible bands.
+- **Specular shading sensitivity.** BC5's per-block endpoint quantisation can produce banding when the normal varies smoothly across a block boundary and a specular highlight grazes that band. Worst case is mirror-smooth specular on a gently curved surface; pixel-art content rarely hits this. Visible bands in the campaign-test A/B fail acceptance criterion #4; the fix is encoder refinement (cluster-fit endpoints), not a softened gate.
 - **Snorm vs. unorm.** This plan picks `Bc5RgUnorm` with `* 2 - 1` shader decode to match the existing Rgba8Unorm normal-map convention. `Bc5RgSnorm` would skip the decode but breaks symmetry with future non-BC5 normal slots. Revisit only if shader decode shows in a profile.

@@ -7,7 +7,7 @@ Two named texture-filtering modes, switchable at runtime. **True Retro** keeps t
 ## Prerequisites
 
 - `baked-texture-mips` (landed). Both modes read the baked mip pyramid; hardware aniso requires a mip chain.
-- `shader-anisotropic-filtering` (in `ready/`) — **must land first.** It is the entire True Retro branch. This plan replaces its compile-time `ENABLE_MANUAL_ANISO` const with the runtime mode test; without it the True Retro acceptance criterion is untestable and the const would be touched twice. This plan does not define manual aniso itself.
+- `shader-anisotropic-filtering` (already landed, in `done/`). It is the entire True Retro branch. This plan replaces its compile-time `ENABLE_MANUAL_ANISO` const in `forward.wgsl` with the runtime mode test. This plan does not define manual aniso itself.
 
 ## Scope
 
@@ -18,7 +18,7 @@ Two named texture-filtering modes, switchable at runtime. **True Retro** keeps t
 - Post Retro sampling path in `forward.wgsl`: per-slot (diffuse, specular, normal) texel-grid reconstruction feeding `textureSampleGrad` through a linear+anisotropic sampler.
 - A second sampler: linear min/mag/mip + `anisotropy_clamp` (const, start 16), per-mip-count LOD clamp, parallel to the existing nearest pool. Bound at group 1 binding 5 alongside the nearest sampler at binding 1, so both are resident and the shader chooses per mode. BGL extended.
 - Mod-manifest default: optional `defaultGraphicsMode` on `setupMod()`'s return value, applied to the renderer after mod-init; absent → the renderer's Post Retro construction default. SDK typedef + parity-guard test updated.
-- egui diagnostics combo box to switch modes live (dev-tools), matching the Lighting Isolation control.
+- egui diagnostics combo box to switch modes live (dev-tools A/B toggle), in its own "Rendering" panel section, separate from the lighting-diagnostics controls.
 
 ### Out of scope
 
@@ -44,32 +44,32 @@ Two named texture-filtering modes, switchable at runtime. **True Retro** keeps t
 
 ### Task 1: GraphicsMode enum + uniform plumbing
 
-Define `GraphicsMode { TrueRetro, PostRetro }` in the render module beside `LightingIsolation`, with `ALL_VARIANTS`, `label()`, a `u32` uniform encoding (`TrueRetro = 0`, `PostRetro = 1`), and a `DEFAULT = PostRetro` constant. Add a `graphics_mode: u32` field to the Rust `FrameUniforms` and the matching WGSL `Uniforms` struct (preserve 16-byte alignment — state the constraint, let the implementer place the field). Add a `graphics_mode` field on `Renderer` initialized to `GraphicsMode::DEFAULT`, write it into the per-frame uniform, and add `Renderer::set_graphics_mode` / `Renderer::graphics_mode`. End-to-end mirror of the `lighting_isolation` path.
+Define `GraphicsMode { TrueRetro, PostRetro }` in the render module beside `LightingIsolation`, with `ALL_VARIANTS`, `label()`, a `u32` uniform encoding (`TrueRetro = 0`, `PostRetro = 1`), and a `DEFAULT = PostRetro` constant. Add a `graphics_mode: u32` field to the Rust `FrameUniforms` and the matching WGSL `Uniforms` struct. The current packed size is 96 bytes; `graphics_mode` at offset 96 grows it to 100, which violates the 16-byte alignment rule. `UNIFORM_SIZE` must become 112 — add 12 bytes of padding after `graphics_mode`. Add a `graphics_mode` field on `Renderer` initialized to `GraphicsMode::DEFAULT`, write it into the per-frame uniform, and add `Renderer::set_graphics_mode` / `Renderer::graphics_mode`. End-to-end mirror of the `lighting_isolation` path.
 
 ### Task 2: Linear+anisotropic sampler binding
 
-Add a linear min/mag/mip sampler with `anisotropy_clamp` (const `POST_RETRO_ANISO_CLAMP`, start 16) and the same per-mip-count LOD clamp as the nearest pool — a parallel `HashMap<u32, Sampler>`. Extend the group-1 BGL with binding 5 (`Filtering` sampler, `FRAGMENT` visibility) and bind the matching-mip-count aniso sampler there in every material bind group, alongside the nearest sampler at binding 1. Both samplers stay resident so the shader selects per mode at no rebind cost.
+Add a linear min/mag/mip sampler with `anisotropy_clamp` (const `POST_RETRO_ANISO_CLAMP`, start 16) and the same per-mip-count LOD clamp as the nearest pool — a parallel `HashMap<u32, Sampler>`. Extend the group-1 BGL with group 1, binding 5 (`Filtering` sampler, `FRAGMENT` visibility) and bind the matching-mip-count aniso sampler there in every material bind group, alongside the nearest sampler at binding 1. Both samplers stay resident so the shader selects per mode at no rebind cost.
 
 ### Task 3: Post Retro sampling path in forward.wgsl
 
-Add `@group(1) @binding(5) var aniso_sampler: sampler;`. Compute `ddx = dpdx(in.uv)`, `ddy = dpdy(in.uv)` once in `fs_main`. Branch on `uniforms.graphics_mode`:
+Add `@group(1) @binding(5) var aniso_sampler: sampler;`. Compute `ddx = dpdx(in.uv)`, `ddy = dpdy(in.uv)` once in `fs_main`. Declare WGSL constants `const TRUE_RETRO: u32 = 0u;` and `const POST_RETRO: u32 = 1u;` (or inline the literals); branch on `uniforms.graphics_mode`:
 
-- **Post Retro:** per slot, texel-grid reconstruction (warp UV toward the nearest texel center, antialias the seam over one screen pixel via `fwidth`) then `textureSampleGrad(tex, aniso_sampler, uv_recon, ddx, ddy)`. Pass the *original* UV derivatives — they drive mip selection and the hardware aniso footprint; the warp only shifts the sample point. Normal slot decodes (`*2 - 1`) and renormalizes after its single reconstructed aniso sample.
-- **True Retro:** the manual-aniso path from `shader-anisotropic-filtering`, gated by `graphics_mode == TrueRetro` in place of that plan's compile-time `ENABLE_MANUAL_ANISO` const.
+- **Post Retro:** per slot, texel-grid reconstruction (warp UV toward the nearest texel center, antialias the seam over one screen pixel via `fwidth`) then `textureSampleGrad(tex, aniso_sampler, uv_recon, ddx, ddy)`. Pass the *original* UV derivatives — they drive mip selection and the hardware aniso footprint; the warp only shifts the sample point. Normal slot (current 3-channel encoding) decodes (`*2 - 1`) and renormalizes after its single reconstructed aniso sample; BC5 decode is out of scope here.
+- **True Retro:** the manual-aniso path already in `forward.wgsl` (`compute_aniso_footprint` / `sample_aniso` / `sample_aniso_normal`), gated by `uniforms.graphics_mode == TRUE_RETRO` (0u) in place of the compile-time `ENABLE_MANUAL_ANISO` const.
 
 Both branches use `textureSampleGrad` (explicit derivatives), keeping sampling in uniform control flow (the branch is on a uniform-buffer value).
 
 ### Task 4: Mod-manifest defaultGraphicsMode
 
-Add `default_graphics_mode: Option<GraphicsMode>` to `ModManifestResult`. In both `run_mod_init_quickjs` and `run_mod_init_luau`, extract the optional `defaultGraphicsMode` string and map `"trueRetro"` / `"postRetro"` → enum; unknown value returns the same `ScriptError` shape as the missing-`name` path. Register the `GraphicsMode` type and the `defaultGraphicsMode?` field in the typedef registry (`scripting/primitives/mod.rs`) and update the ModManifest parity-guard test. After `run_mod_init` succeeds — both the boot path and the start-script hot-reload path — call `renderer.set_graphics_mode` when the manifest carries a mode; otherwise leave the Post Retro construction default.
+Add `default_graphics_mode: Option<GraphicsMode>` to `ModManifestResult`. In both `run_mod_init_quickjs` and `run_mod_init_luau`, extract the optional `defaultGraphicsMode` string and map `"trueRetro"` / `"postRetro"` → enum; unknown value returns `ScriptError::InvalidArgument` (same as the missing-`name` path). Register the `GraphicsMode` type and the `defaultGraphicsMode?` field in the typedef registry (`scripting/primitives/mod.rs`) and update the ModManifest parity-guard test. After `run_mod_init` succeeds, the caller — the boot path in `App::boot` (`main.rs`) and the hot-reload handler (`main.rs`) — reads `mod_manifest().default_graphics_mode` and calls `renderer.set_graphics_mode`; absent → leave the Post Retro construction default. The scripting runtime does not hold a renderer reference.
 
 ### Task 5: egui mode toggle
 
-Add a `graphics_mode` field to `DiagnosticsState`, seeded from `renderer.graphics_mode()`. Add a Graphics Mode combo box to `draw_diagnostics_panel` over `GraphicsMode::ALL_VARIANTS`, calling `renderer.set_graphics_mode` on change — same shape as the Lighting Isolation combo.
+Developer A/B shortcut — not the player-facing graphics surface (see open questions). No `graphics_mode` field on `DiagnosticsState`; no seeding. Read `renderer.graphics_mode()` freshly each frame into a local, keeping the renderer as the single source of truth — the combo reflects the live mode even when the manifest default or a hot-reload changes it. Add a Graphics Mode combo box over `GraphicsMode::ALL_VARIANTS` under its own "Rendering" collapsing header, calling `renderer.set_graphics_mode` only on change. Separate from the "Lighting systems" diagnostic controls — `GraphicsMode` is a player-facing aesthetic choice; `LightingIsolation` is a developer diagnostic. Same read-fresh shape as the existing Lighting Isolation combo.
 
 ### Task 6: Perf measurement + aniso-clamp decision
 
-With `POSTRETRO_GPU_TIMING=1`, record forward-pass cost on the target GPU at 1080p for both modes on campaign-test at grazing angles. Drop `POST_RETRO_ANISO_CLAMP` (16 → 8) if the aniso unit cost is unacceptable. Record numbers in the PR.
+With `POSTRETRO_GPU_TIMING=1`, record forward-pass cost on the target GPU at 1080p for both modes on campaign-test at grazing angles. Drop `POST_RETRO_ANISO_CLAMP` (16 → 8) if Post Retro forward-pass cost exceeds True Retro by more than 15% at 1080p. Record numbers in the PR and update the open question with the outcome.
 
 ## Sequencing
 
@@ -101,7 +101,7 @@ Reconstruction is per-slot because slots may differ in resolution (`dims` from e
 |---|---|---|---|---|---|
 | Mode enum | `GraphicsMode { TrueRetro, PostRetro }` (render module) | manual extract (not serde) | `type GraphicsMode = "trueRetro" \| "postRetro"` | same | n/a |
 | Mode string values | `TrueRetro` / `PostRetro` | `"trueRetro"` / `"postRetro"` | same | same | n/a |
-| Manifest default | `ModManifestResult.default_graphics_mode: Option<GraphicsMode>` | optional `defaultGraphicsMode` key | `defaultGraphicsMode?: GraphicsMode` | `defaultGraphicsMode: GraphicsMode?` | n/a |
+| Manifest default | `ModManifestResult.default_graphics_mode: Option<GraphicsMode>` | optional `defaultGraphicsMode` key | `defaultGraphicsMode?: GraphicsMode` | `defaultGraphicsMode: GraphicsMode?` (optional field; typedef registry emits exactly this string) | n/a |
 | Shader uniform | `FrameUniforms.graphics_mode: u32` (`TrueRetro=0`, `PostRetro=1`) | uniform buffer | n/a | n/a | n/a |
 
 ## Open questions
@@ -110,3 +110,5 @@ Reconstruction is per-slot because slots may differ in resolution (`dims` from e
 - **Reconstruction edge feel.** The one-pixel antialiased seam is the deliberate Post Retro difference from True Retro's hard edges. If it reads as too soft, narrow the `fwidth` window (sub-pixel) — costs nothing, sharpens the seam. Decide by eye in the A/B.
 - **Aniso clamp value.** 16 is the wgpu ceiling and the quality default. Task 6 may set it to 8 if the target GPU's aniso cost is too high; "much smaller than Crysis" arenas top out around 16:1 aspect, so 16 is unlikely to be wasted.
 - **GraphicsMode string casing.** Values pinned camelCase (`"trueRetro"`/`"postRetro"`) to match the script-facing key idiom. Switch to a `#[serde(rename_all)]`-style scheme only if manifest parsing moves to serde.
+- **Diagnostic vs. player-facing settings; future `GraphicsSettings` struct.** `GraphicsMode` is a player-facing aesthetic choice; `LightingIsolation` is a developer diagnostic — keep them conceptually distinct. This plan's egui toggle is a dev A/B shortcut; the real player surface is future work (no UI framework yet). The durable home for `GraphicsMode` is a future `GraphicsSettings { texture_filtering, aniso_clamp, ... }` struct, introduced once a second independent knob exists — `POST_RETRO_ANISO_CLAMP` as a user-facing anisotropic quality slider is the obvious first candidate. When that struct lands, `TrueRetro`/`PostRetro` become named preset constants on it; preset names are player-facing while mechanism-level names (e.g. `texture_filtering: Nearest | Aniso`) live on struct fields. The renderer's setter + dirty-flag pattern and the manifest default generalize to the struct unchanged. Do not introduce the struct in this plan — the enum is correct for one dimension.
+- **TAA as a future orthogonal axis.** If temporal AA is added, it slots into `GraphicsSettings` as a separate axis (e.g. `temporal_aa`), not a `GraphicsMode` variant. It arrives additively: camera jitter, motion-vector output, history buffer, resolve pass. One interaction to flag for that future plan: Post Retro's texel-grid reconstruction and TAA both anti-alias edges and can fight each other; that plan decides whether they coexist or TAA relaxes reconstruction.

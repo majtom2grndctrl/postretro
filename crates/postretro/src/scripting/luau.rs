@@ -699,6 +699,25 @@ mod tests {
     use crate::scripting::primitives::register_all;
     use crate::scripting::primitives_registry::ContextScope;
 
+    // 15 `type(...)` strings returned by `sdk_prelude_installs_globals`.
+    type PreludeTypeNames = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    );
+
     fn setup() -> (LuauSubsystem, ScriptCtx) {
         let ctx = ScriptCtx::new();
         let mut registry = PrimitiveRegistry::new();
@@ -886,7 +905,8 @@ mod tests {
         // - the temporary bridges (`wrapLightEntity`, `wrapFogVolumeEntity`)
         //   are nil by the time author scripts run.
         let (subsys, _ctx) = setup();
-        for which in [Which::Definition] {
+        {
+            let which = Which::Definition;
             let (
                 world_ty,
                 flicker_ty,
@@ -903,23 +923,7 @@ mod tests {
                 dust_ty,
                 wrap_light_ty,
                 wrap_fog_ty,
-            ): (
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-            ) = subsys
+            ): PreludeTypeNames = subsys
                 .run_source(
                     which,
                     r#"

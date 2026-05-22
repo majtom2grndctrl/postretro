@@ -503,11 +503,10 @@ mod keyframe_resample_tests {
         // Midpoint should be roughly halfway (Catmull-Rom with reflected
         // endpoints on a linear ramp reproduces the linear midpoint).
         let mid = out[out.len() / 2];
-        for c in 0..3 {
+        for (c, value) in mid.iter().enumerate() {
             assert!(
-                (mid[c] - 0.5).abs() < 0.1,
-                "midpoint channel {c} = {}, expected ~0.5",
-                mid[c]
+                (value - 0.5).abs() < 0.1,
+                "midpoint channel {c} = {value}, expected ~0.5"
             );
         }
     }

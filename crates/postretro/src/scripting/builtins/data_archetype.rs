@@ -532,7 +532,7 @@ mod tests {
         };
         let entity = placement("torch", &[("initial_is_dynamic", "yes")]);
         apply_light_kvp_overrides(&mut desc, &entity);
-        assert_eq!(desc.is_dynamic, true);
+        assert!(desc.is_dynamic);
     }
 
     #[test]

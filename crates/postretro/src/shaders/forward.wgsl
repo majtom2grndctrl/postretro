@@ -441,11 +441,14 @@ fn sample_color(tex: texture_2d<f32>, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f
     return sample_post_retro(tex, aniso_sampler, uv, ddx, ddy);
 }
 
-// Normal-map dispatch: decode (`* 2 - 1`) and renormalize after the
-// reconstructed aniso sample. (3-channel encoding only — BC5 is out of scope.)
+// Normal-map dispatch: BC5 stores only tangent-space (x, y) in RG, so decode
+// those (`* 2 - 1`) and reconstruct z = sqrt(1 - x² - y²). Renormalize
+// unconditionally — BC5 endpoint quantisation plus bilinear filtering leaves
+// the sampled vector slightly off unit length.
 fn sample_normal(tex: texture_2d<f32>, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec3<f32> {
-    let n = sample_post_retro(tex, aniso_sampler, uv, ddx, ddy).rgb;
-    return normalize(n * 2.0 - 1.0);
+    let rg = sample_post_retro(tex, aniso_sampler, uv, ddx, ddy).rg * 2.0 - 1.0;
+    let z  = sqrt(max(0.0, 1.0 - dot(rg, rg)));
+    return normalize(vec3<f32>(rg, z));
 }
 
 @fragment

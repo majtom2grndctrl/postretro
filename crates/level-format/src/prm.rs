@@ -210,9 +210,7 @@ pub enum PrmReadError {
 /// BC5 normal-map format is confined to the normal slot.
 #[derive(Debug, Error)]
 pub enum PrmWriteError {
-    #[error(
-        "format tag Bc5RgUnorm is only valid on the normal slot, found on slot {slot}"
-    )]
+    #[error("format tag Bc5RgUnorm is only valid on the normal slot, found on slot {slot}")]
     Bc5OnNonNormalSlot { slot: u8 },
 }
 
@@ -261,8 +259,7 @@ fn expected_payload_bytes(format: PrmFormat, width: u16, height: u16, level_coun
                 let h_n = ((height as u32) >> n).max(1);
                 let blocks_w = w_n.div_ceil(4);
                 let blocks_h = h_n.div_ceil(4);
-                total = total
-                    .saturating_add(blocks_w.saturating_mul(blocks_h).saturating_mul(16));
+                total = total.saturating_add(blocks_w.saturating_mul(blocks_h).saturating_mul(16));
             }
         }
         _ => {
@@ -831,10 +828,7 @@ mod tests {
     fn expected_payload_bytes_bc5_is_block_based() {
         // 8×8, level_count 2: l0 ceil(8/4)*ceil(8/4)=4 blocks, l1
         // ceil(4/4)^2=1 block → 5 blocks * 16 = 80 bytes.
-        assert_eq!(
-            expected_payload_bytes(PrmFormat::Bc5RgUnorm, 8, 8, 2),
-            80
-        );
+        assert_eq!(expected_payload_bytes(PrmFormat::Bc5RgUnorm, 8, 8, 2), 80);
         // 16×16, level_count 3: l0 4*4=16, l1 2*2=4, l2 1*1=1 → 21 blocks * 16
         // = 336 bytes.
         assert_eq!(
@@ -842,10 +836,7 @@ mod tests {
             336
         );
         // 4×4, level_count 1: 1 block * 16 = 16 bytes.
-        assert_eq!(
-            expected_payload_bytes(PrmFormat::Bc5RgUnorm, 4, 4, 1),
-            16
-        );
+        assert_eq!(expected_payload_bytes(PrmFormat::Bc5RgUnorm, 4, 4, 1), 16);
     }
 
     /// A BC5 normal slot with a truncated chain and block-sized payload must

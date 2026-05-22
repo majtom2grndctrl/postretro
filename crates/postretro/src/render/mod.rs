@@ -750,7 +750,9 @@ impl Renderer {
             std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1");
         let gpu_timing_supported = adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
         let enable_gpu_timing = gpu_timing_requested && gpu_timing_supported;
-        let mut required_features = wgpu::Features::empty();
+        // BC5-compressed normal maps are a hard requirement (not optional like
+        // GPU timing): the .prm baker emits BC5 normal slots unconditionally.
+        let mut required_features = wgpu::Features::TEXTURE_COMPRESSION_BC;
         if enable_gpu_timing {
             required_features |= wgpu::Features::TIMESTAMP_QUERY;
         } else if gpu_timing_requested && !gpu_timing_supported {
@@ -770,6 +772,16 @@ impl Renderer {
             max_storage_textures_per_shader_stage: 9,
             ..wgpu::Limits::default()
         };
+
+        // Explicit pre-check so an adapter without BC support fails with a
+        // feature-naming error rather than the generic request_device failure.
+        if !adapter_features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
+            anyhow::bail!(
+                "GPU adapter lacks required feature TEXTURE_COMPRESSION_BC \
+                 (needed for BC5-compressed normal maps); this engine requires \
+                 a desktop GPU with BC texture support"
+            );
+        }
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Postretro Device"),

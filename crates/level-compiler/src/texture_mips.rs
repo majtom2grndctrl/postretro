@@ -805,8 +805,7 @@ mod tests {
         let payload = build_normal_bc5_chain(&rgba, w, h);
 
         // The baked payload must be exactly the size the reader expects.
-        let expected_bytes =
-            expected_payload_bytes_pub(PrmFormat::Bc5RgUnorm, w as u16, h as u16);
+        let expected_bytes = expected_payload_bytes_pub(PrmFormat::Bc5RgUnorm, w as u16, h as u16);
         assert_eq!(
             payload.len() as u32,
             expected_bytes,
@@ -856,8 +855,7 @@ mod tests {
         let rgba = synthetic_normal_rgba(w, h);
         let payload = build_normal_bc5_chain(&rgba, w, h);
 
-        let expected_bytes =
-            expected_payload_bytes_pub(PrmFormat::Bc5RgUnorm, w as u16, h as u16);
+        let expected_bytes = expected_payload_bytes_pub(PrmFormat::Bc5RgUnorm, w as u16, h as u16);
         assert_eq!(
             payload.len() as u32,
             expected_bytes,
@@ -865,7 +863,10 @@ mod tests {
         );
 
         let level_count = bc5_level_count(w as u16, h as u16);
-        assert_eq!(level_count, 2, "12×12 BC5 truncates to 2 levels (12×12, 6×6)");
+        assert_eq!(
+            level_count, 2,
+            "12×12 BC5 truncates to 2 levels (12×12, 6×6)"
+        );
 
         let slot = PrmSlot {
             format: PrmFormat::Bc5RgUnorm,
@@ -884,7 +885,9 @@ mod tests {
             slots: [None, None, Some(slot)],
         };
 
-        let bytes = file.to_bytes().expect("padded BC5 normal slot should serialize");
+        let bytes = file
+            .to_bytes()
+            .expect("padded BC5 normal slot should serialize");
         let (header, slots) = PrmFile::from_bytes_partial(&bytes);
         header.expect("header should parse");
         let parsed = slots[2]
@@ -955,10 +958,9 @@ mod tests {
     fn bundle_hash_for_pins_wire_format() {
         // Computed offline: blake3([0x01, 0x00, 0xAA, 0xBB])
         let expected: [u8; 32] = [
-            0x73, 0x7e, 0xb8, 0x89, 0x4d, 0xa5, 0x47, 0x24,
-            0x8d, 0xb5, 0xd4, 0x9e, 0xdb, 0xd5, 0xd0, 0x01,
-            0x49, 0xe8, 0x68, 0xc3, 0x89, 0xd5, 0xa9, 0xcb,
-            0x57, 0xc8, 0xb2, 0x04, 0x7c, 0xc1, 0x7b, 0xbe,
+            0x73, 0x7e, 0xb8, 0x89, 0x4d, 0xa5, 0x47, 0x24, 0x8d, 0xb5, 0xd4, 0x9e, 0xdb, 0xd5,
+            0xd0, 0x01, 0x49, 0xe8, 0x68, 0xc3, 0x89, 0xd5, 0xa9, 0xcb, 0x57, 0xc8, 0xb2, 0x04,
+            0x7c, 0xc1, 0x7b, 0xbe,
         ];
         let got = bundle_hash_for(Some(&[0xAAu8, 0xBB]), None, None);
         assert_eq!(got, expected);

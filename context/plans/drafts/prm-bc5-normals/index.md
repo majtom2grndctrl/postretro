@@ -73,7 +73,7 @@ let z  = sqrt(max(0.0, 1.0 - dot(rg, rg)));
 let n  = vec3<f32>(rg, z);
 ```
 
-(`// Proposed design` — remove once landed.) Renormalise only if filtering tolerance demands it (BC5 hardware sampling already produces near-unit-length results after the sqrt). Confirm against acceptance criterion #3. The shader-aniso plan's `sample_aniso` helper, when applied to the normal slot, must use the same RG-then-reconstruct path; coordinate at integration time.
+(`// Proposed design` — remove once landed.) Renormalise only if filtering tolerance demands it (BC5 hardware sampling already produces near-unit-length results after the sqrt). Confirm against acceptance criterion #3. The shader-aniso plan's True Retro normal path (`sample_aniso_normal`) is deleted rather than ported to RG-reconstruct — True Retro retires when this plan lands (see roadmap M8 "Retire True Retro mode"). Only the Post Retro path (`sample_normal` / `sample_post_retro`) needs the RG decode.
 
 ## Sequencing
 

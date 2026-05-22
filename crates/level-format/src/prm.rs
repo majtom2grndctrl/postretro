@@ -20,7 +20,8 @@
 //                                    (12-byte per-slot header + payload_bytes)
 //
 //   -- per present slot, in wire order diffuse → specular → normal
-//   u8       format_tag           -- 0 Rgba8UnormSrgb, 1 Rgba8Unorm, 2 R8Unorm
+//   u8       format_tag           -- 0 Rgba8UnormSrgb, 1 Rgba8Unorm, 2 R8Unorm,
+//                                    3 Bc5RgUnorm (normal slot only)
 //   u8       reserved             = 0
 //   u16      width                -- mip 0, >= 1
 //   u16      height               -- mip 0, >= 1
@@ -38,7 +39,7 @@ use thiserror::Error;
 /// (`b"PRM\x01"`) and this constant are bumped in lockstep when the layout
 /// changes; the reader rejects mismatches with `UnsupportedVersion` /
 /// `StageVersionMismatch`.
-pub const STAGE_VERSION: u8 = 1;
+pub const STAGE_VERSION: u8 = 2;
 
 /// Cache filename stem for a `.prm` sidecar keyed by `key`. The compile-time
 /// writer and runtime-side reader both call this so the addressing contract
@@ -89,6 +90,13 @@ pub enum PrmFormat {
     Rgba8Unorm = 1,
     /// 1 byte per pixel, linear single channel. Used for specular intensity.
     R8Unorm = 2,
+    /// BC5 block-compressed two-channel (R, G), 16 bytes per 4×4 texel block.
+    /// Permitted only on the normal slot: it stores tangent-space (n.x, n.y)
+    /// in the BC5 R/G channels with shader-side reconstruction of n.z. Has no
+    /// fixed bytes-per-pixel — payload size is computed block-by-block (see
+    /// `expected_payload_bytes`) — and its mip chain is truncated to levels
+    /// whose width and height are both ≥ 4 (see `bc5_level_count`).
+    Bc5RgUnorm = 3,
 }
 
 impl PrmFormat {
@@ -97,14 +105,24 @@ impl PrmFormat {
             0 => Some(Self::Rgba8UnormSrgb),
             1 => Some(Self::Rgba8Unorm),
             2 => Some(Self::R8Unorm),
+            3 => Some(Self::Bc5RgUnorm),
             _ => None,
         }
     }
 
+    /// Bytes per pixel for linear (non-block-compressed) formats. Not defined
+    /// for `Bc5RgUnorm`, which is sized block-by-block; the BC5 branch of
+    /// `expected_payload_bytes` never calls this.
     fn bytes_per_pixel(self) -> u32 {
         match self {
             Self::Rgba8UnormSrgb | Self::Rgba8Unorm => 4,
             Self::R8Unorm => 1,
+            // BC5 has no per-pixel size; callers route it through the
+            // block-based payload-size path instead. Reaching here is a bug.
+            Self::Bc5RgUnorm => {
+                debug_assert!(false, "bytes_per_pixel called for Bc5RgUnorm");
+                0
+            }
         }
     }
 }
@@ -187,6 +205,15 @@ pub enum PrmReadError {
     Io(#[from] std::io::Error),
 }
 
+/// Errors returned by the `.prm` writer (`PrmFile::to_bytes`). These guard
+/// invariants the wire format cannot express structurally — chiefly that the
+/// BC5 normal-map format is confined to the normal slot.
+#[derive(Debug, Error)]
+pub enum PrmWriteError {
+    #[error("format tag Bc5RgUnorm is only valid on the normal slot, found on slot {slot}")]
+    Bc5OnNonNormalSlot { slot: u8 },
+}
+
 /// Number of mip levels for a `(width, height)` chain: `floor(log2(max(w, h))) + 1`.
 pub fn expected_level_count(width: u16, height: u16) -> u8 {
     let m = width.max(height).max(1) as u32;
@@ -194,14 +221,55 @@ pub fn expected_level_count(width: u16, height: u16) -> u8 {
     (m.ilog2() + 1) as u8
 }
 
-/// Expected payload size in bytes for a mip chain.
+/// Number of leading mip levels (level 0 = full dims, halving each level)
+/// whose width AND height are both ≥ 4. BC5 requires 4×4 block alignment, so
+/// its mip chain is truncated to this prefix; smaller levels are absent.
+///
+/// Because dimensions only shrink as the level index grows, qualifying levels
+/// always form a prefix of the full chain. The single source of truth for the
+/// truncated BC5 chain length — both the writer/baker and the reader rely on
+/// it agreeing.
+pub fn bc5_level_count(width: u16, height: u16) -> u8 {
+    let full = expected_level_count(width, height);
+    let mut count: u8 = 0;
+    for n in 0..full {
+        let w_n = (width as u32) >> n;
+        let h_n = (height as u32) >> n;
+        if w_n >= 4 && h_n >= 4 {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    count
+}
+
+/// Expected payload size in bytes for a mip chain. BC5 is block-compressed
+/// (16 bytes per 4×4 texel block, two back-to-back BC4 blocks for R and G), so
+/// it is sized block-by-block; every other format uses a fixed bytes-per-pixel.
 fn expected_payload_bytes(format: PrmFormat, width: u16, height: u16, level_count: u8) -> u32 {
-    let bpp = format.bytes_per_pixel();
     let mut total: u32 = 0;
-    for n in 0..level_count {
-        let w_n = ((width as u32) >> n).max(1);
-        let h_n = ((height as u32) >> n).max(1);
-        total = total.saturating_add(bpp.saturating_mul(w_n).saturating_mul(h_n));
+    match format {
+        PrmFormat::Bc5RgUnorm => {
+            // Each level: ceil(w/4) * ceil(h/4) blocks, 16 bytes per block.
+            // Within the truncated BC5 chain both dims are ≥ 4, but ceil still
+            // handles any non-multiple-of-4 level via block padding.
+            for n in 0..level_count {
+                let w_n = ((width as u32) >> n).max(1);
+                let h_n = ((height as u32) >> n).max(1);
+                let blocks_w = w_n.div_ceil(4);
+                let blocks_h = h_n.div_ceil(4);
+                total = total.saturating_add(blocks_w.saturating_mul(blocks_h).saturating_mul(16));
+            }
+        }
+        _ => {
+            let bpp = format.bytes_per_pixel();
+            for n in 0..level_count {
+                let w_n = ((width as u32) >> n).max(1);
+                let h_n = ((height as u32) >> n).max(1);
+                total = total.saturating_add(bpp.saturating_mul(w_n).saturating_mul(h_n));
+            }
+        }
     }
     total
 }
@@ -211,7 +279,27 @@ impl PrmFile {
     /// (diffuse, specular, normal); only those marked present in
     /// `header.slot_mask` are emitted. `header.total_body_bytes` is recomputed
     /// from the actual slot payloads, so callers may leave it as `0`.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    ///
+    /// Fails with `Bc5OnNonNormalSlot` if a diffuse or specular slot carries
+    /// `Bc5RgUnorm`: BC5 normal-map encoding is confined to the normal slot
+    /// (wire index 2).
+    pub fn to_bytes(&self) -> Result<Vec<u8>, PrmWriteError> {
+        // Guard the BC5-on-normal-slot-only invariant before emitting anything.
+        // The normal slot is wire index 2 (`[0 diffuse, 1 specular, 2 normal]`).
+        for (i, bit) in [PrmSlots::DIFFUSE, PrmSlots::SPECULAR, PrmSlots::NORMAL]
+            .iter()
+            .enumerate()
+        {
+            if !self.header.slot_mask.contains(*bit) {
+                continue;
+            }
+            if let Some(slot) = &self.slots[i] {
+                if slot.format == PrmFormat::Bc5RgUnorm && i != 2 {
+                    return Err(PrmWriteError::Bc5OnNonNormalSlot { slot: i as u8 });
+                }
+            }
+        }
+
         // Recompute total_body_bytes from present slots so writers don't have
         // to keep it in sync manually.
         let mut total_body: u32 = 0;
@@ -259,7 +347,7 @@ impl PrmFile {
             buf.extend_from_slice(&slot.payload);
         }
 
-        buf
+        Ok(buf)
     }
 
     /// Parse a `.prm` byte slice. The header is validated first; if it fails,
@@ -450,7 +538,12 @@ fn parse_slot(
         );
     }
 
-    let expected_levels = expected_level_count(width, height);
+    // BC5 chains are truncated to levels with both dims ≥ 4; every other
+    // format uses the full floor(log2(max))+1 chain.
+    let expected_levels = match format {
+        PrmFormat::Bc5RgUnorm => bc5_level_count(width, height),
+        _ => expected_level_count(width, height),
+    };
     if level_count != expected_levels {
         let consumed = SLOT_HEADER_SIZE.saturating_add(payload_bytes as usize);
         let consumed = consumed.min(body.len() - offset);
@@ -520,6 +613,17 @@ mod tests {
 
     fn make_slot(format: PrmFormat, width: u16, height: u16) -> PrmSlot {
         let level_count = expected_level_count(width, height);
+        fill_slot(format, width, height, level_count)
+    }
+
+    /// BC5-aware fixture: uses the truncated `bc5_level_count` chain and sizes
+    /// the payload to match the block-based `expected_payload_bytes`.
+    fn make_bc5_slot(width: u16, height: u16) -> PrmSlot {
+        let level_count = bc5_level_count(width, height);
+        fill_slot(PrmFormat::Bc5RgUnorm, width, height, level_count)
+    }
+
+    fn fill_slot(format: PrmFormat, width: u16, height: u16, level_count: u8) -> PrmSlot {
         let payload_bytes = expected_payload_bytes(format, width, height, level_count) as usize;
         let mut payload = Vec::with_capacity(payload_bytes);
         // Fill with a recognisable pattern keyed on the byte index so
@@ -539,7 +643,7 @@ mod tests {
     #[test]
     fn round_trip_three_slots() {
         let file = make_three_slot_file();
-        let bytes = file.to_bytes();
+        let bytes = file.to_bytes().expect("valid fixture should serialize");
         let (header, slots) = PrmFile::from_bytes_partial(&bytes);
         let header = header.expect("header parse should succeed");
 
@@ -565,7 +669,7 @@ mod tests {
     #[test]
     fn specular_truncation_isolated() {
         let file = make_three_slot_file();
-        let mut bytes = file.to_bytes();
+        let mut bytes = file.to_bytes().expect("valid fixture should serialize");
 
         // Locate the specular slot in the body. After the header, slot order
         // is diffuse → specular → normal. Diffuse is the first slot, so its
@@ -707,12 +811,122 @@ mod tests {
         assert_eq!(expected_level_count(1024, 1024), 11);
     }
 
+    /// `bc5_level_count` truncates the chain at the last level whose width AND
+    /// height are both ≥ 4 (BC5 needs 4×4 block alignment). Sub-4 levels drop.
+    #[test]
+    fn bc5_level_count_drops_sub_four_levels() {
+        assert_eq!(bc5_level_count(8, 8), 2); // 8×8, 4×4
+        assert_eq!(bc5_level_count(4, 4), 1); // 4×4 only; 2×2 drops
+        assert_eq!(bc5_level_count(16, 16), 3); // 16×16, 8×8, 4×4
+        assert_eq!(bc5_level_count(8, 4), 1); // next level 4×2 has h < 4
+        assert_eq!(bc5_level_count(256, 256), 7); // down to 4×4
+    }
+
+    /// `expected_payload_bytes` for BC5 sums ceil(w/4)*ceil(h/4) blocks * 16 per
+    /// level over the truncated chain.
+    #[test]
+    fn expected_payload_bytes_bc5_is_block_based() {
+        // 8×8, level_count 2: l0 ceil(8/4)*ceil(8/4)=4 blocks, l1
+        // ceil(4/4)^2=1 block → 5 blocks * 16 = 80 bytes.
+        assert_eq!(expected_payload_bytes(PrmFormat::Bc5RgUnorm, 8, 8, 2), 80);
+        // 16×16, level_count 3: l0 4*4=16, l1 2*2=4, l2 1*1=1 → 21 blocks * 16
+        // = 336 bytes.
+        assert_eq!(
+            expected_payload_bytes(PrmFormat::Bc5RgUnorm, 16, 16, 3),
+            336
+        );
+        // 4×4, level_count 1: 1 block * 16 = 16 bytes.
+        assert_eq!(expected_payload_bytes(PrmFormat::Bc5RgUnorm, 4, 4, 1), 16);
+    }
+
+    /// A BC5 normal slot with a truncated chain and block-sized payload must
+    /// round-trip through `to_bytes` / `from_bytes_partial` unchanged.
+    #[test]
+    fn bc5_normal_slot_round_trips() {
+        let normal = make_bc5_slot(8, 8);
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::NORMAL,
+                bundle_hash: [0x5C; 32],
+                total_body_bytes: 0, // recomputed by to_bytes
+            },
+            slots: [None, None, Some(normal.clone())],
+        };
+
+        let bytes = file.to_bytes().expect("valid BC5 fixture should serialize");
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("header parse should succeed");
+
+        assert_eq!(header.slot_mask, PrmSlots::NORMAL);
+        let got = slots[2].as_ref().expect("normal slot should parse");
+        assert_eq!(got, &normal, "BC5 normal slot should round-trip equal");
+        assert_eq!(got.format, PrmFormat::Bc5RgUnorm);
+        assert_eq!(got.level_count, 2, "8×8 BC5 truncates to 2 levels");
+    }
+
+    /// `Bc5RgUnorm` is confined to the normal slot (wire index 2). Placing it on
+    /// diffuse or specular must fail at write time; the normal slot accepts it.
+    #[test]
+    fn writer_rejects_bc5_on_non_normal_slots() {
+        // BC5 on diffuse (slot 0) → rejected.
+        let diffuse_bc5 = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE,
+                bundle_hash: [0; 32],
+                total_body_bytes: 0,
+            },
+            slots: [Some(make_bc5_slot(8, 8)), None, None],
+        };
+        assert!(
+            matches!(
+                diffuse_bc5.to_bytes(),
+                Err(PrmWriteError::Bc5OnNonNormalSlot { slot: 0 })
+            ),
+            "BC5 on diffuse must be rejected"
+        );
+
+        // BC5 on specular (slot 1) → rejected.
+        let specular_bc5 = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::SPECULAR,
+                bundle_hash: [0; 32],
+                total_body_bytes: 0,
+            },
+            slots: [None, Some(make_bc5_slot(8, 8)), None],
+        };
+        assert!(
+            matches!(
+                specular_bc5.to_bytes(),
+                Err(PrmWriteError::Bc5OnNonNormalSlot { slot: 1 })
+            ),
+            "BC5 on specular must be rejected"
+        );
+
+        // BC5 on normal (slot 2) → accepted.
+        let normal_bc5 = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::NORMAL,
+                bundle_hash: [0; 32],
+                total_body_bytes: 0,
+            },
+            slots: [None, None, Some(make_bc5_slot(8, 8))],
+        };
+        assert!(
+            normal_bc5.to_bytes().is_ok(),
+            "BC5 on normal slot must be accepted"
+        );
+    }
+
     /// Mutating `total_body_bytes` in the header (slot-sum vs. declared mismatch)
     /// must return `TotalBodyBytesMismatch`.
     #[test]
     fn mutated_total_body_bytes_header_field_is_rejected() {
         let file = make_three_slot_file();
-        let mut bytes = file.to_bytes();
+        let mut bytes = file.to_bytes().expect("valid fixture should serialize");
 
         // `total_body_bytes` is a little-endian u32 at header bytes 39..43.
         let original = u32::from_le_bytes([bytes[39], bytes[40], bytes[41], bytes[42]]);
@@ -734,7 +948,7 @@ mod tests {
     #[test]
     fn stray_trailing_bytes_produce_body_size_mismatch() {
         let file = make_three_slot_file();
-        let mut bytes = file.to_bytes();
+        let mut bytes = file.to_bytes().expect("valid fixture should serialize");
 
         // Append 16 stray bytes — the header still declares the original size.
         bytes.extend_from_slice(&[0xFFu8; 16]);

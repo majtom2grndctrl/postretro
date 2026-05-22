@@ -40,8 +40,19 @@ pub struct LoadedTexture {
 }
 
 /// Upload a pre-baked mip chain to a 2D texture. Each `(width, height, bytes)`
-/// entry in `levels` is a single mip level, in level order (mip 0 first). Caller
-/// guarantees the byte count matches `bytes_per_pixel(format) * width * height`.
+/// entry in `levels` is a single mip level, in level order (mip 0 first), with
+/// `width`/`height` the LOGICAL mip dimensions.
+///
+/// For uncompressed formats (Rgba8*, R8) the byte count must equal
+/// `bytes_per_pixel(format) * width * height`, uploaded with
+/// `bytes_per_row = bytes_per_pixel * width` and `rows_per_image = height`.
+///
+/// For BC5 (block-compressed, 16 bytes per 4×4 texel block) the byte count is
+/// the block-aligned `ceil(width/4) * ceil(height/4) * 16`, uploaded with
+/// `bytes_per_row = ceil(width/4) * 16` (one block row) and
+/// `rows_per_image = ceil(height/4)` (block rows). The copy extent stays the
+/// logical `width × height`; wgpu permits a block-compressed copy whose extent
+/// equals the mip level size even when not a multiple of the 4×4 block.
 pub fn upload_texture_data(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -49,9 +60,12 @@ pub fn upload_texture_data(
     levels: &[(u32, u32, &[u8])],
     label: &str,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let bytes_per_pixel: u32 = match format {
-        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => 4,
-        wgpu::TextureFormat::R8Unorm => 1,
+    // `None` = block-compressed (BC5); `Some(bpp)` = uncompressed with that
+    // bytes-per-pixel. Drives the per-level `bytes_per_row`/`rows_per_image`.
+    let bytes_per_pixel: Option<u32> = match format {
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Some(4),
+        wgpu::TextureFormat::R8Unorm => Some(1),
+        wgpu::TextureFormat::Bc5RgUnorm => None,
         other => panic!("upload_texture_data: unsupported format {other:?}"),
     };
     let (mip0_w, mip0_h, _) = levels
@@ -76,6 +90,12 @@ pub fn upload_texture_data(
     });
 
     for (level, (level_w, level_h, bytes)) in levels.iter().enumerate() {
+        // Uncompressed: one row = bpp*w bytes, height rows.
+        // BC5: one block row = ceil(w/4) blocks × 16 bytes; ceil(h/4) block rows.
+        let (bytes_per_row, rows_per_image) = match bytes_per_pixel {
+            Some(bpp) => (bpp * level_w, *level_h),
+            None => (level_w.div_ceil(4) * 16, level_h.div_ceil(4)),
+        };
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -86,9 +106,11 @@ pub fn upload_texture_data(
             bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(bytes_per_pixel * level_w),
-                rows_per_image: Some(*level_h),
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(rows_per_image),
             },
+            // Copy extent stays the LOGICAL mip size; wgpu allows a block-
+            // compressed copy extent that isn't a multiple of the block dims.
             wgpu::Extent3d {
                 width: *level_w,
                 height: *level_h,
@@ -101,28 +123,42 @@ pub fn upload_texture_data(
     (texture, view)
 }
 
+/// Byte size of a single mip level for `format` at logical dims `w`×`h`.
+/// Uncompressed formats use `bpp * w * h`; BC5 is block-compressed and sizes
+/// each level as `ceil(w/4) * ceil(h/4)` blocks × 16 bytes per block (the baker
+/// pads non-multiple-of-4 levels up to block alignment). This must agree with
+/// `postretro_level_format`'s `expected_payload_bytes` so the on-disk layout and
+/// the runtime split never disagree.
+fn level_byte_size(format: PrmFormat, w: u32, h: u32) -> usize {
+    match format {
+        PrmFormat::Rgba8Unorm | PrmFormat::Rgba8UnormSrgb => (4 * w * h) as usize,
+        PrmFormat::R8Unorm => (w * h) as usize,
+        PrmFormat::Bc5RgUnorm => (w.div_ceil(4) * h.div_ceil(4) * 16) as usize,
+    }
+}
+
 /// Split a slot's flat payload into per-level (width, height, bytes) slices.
-/// The on-disk layout packs levels back-to-back with no padding: level 0
-/// occupies `bpp * w * h` bytes, level 1 occupies `bpp * (w/2) * (h/2)`, etc.,
-/// dimensions clamped to a minimum of 1.
+/// Levels are packed back-to-back with no inter-level padding. Returned dims
+/// are always the LOGICAL mip dimensions (`width>>n`, `height>>n`, clamped to a
+/// minimum of 1); the texture extent uses these. For uncompressed formats the
+/// slice is `bpp * w * h` bytes; for BC5 it is the block-aligned size
+/// (`ceil(w/4) * ceil(h/4) * 16`), so the slice can cover dims padded up to the
+/// next 4×4 block boundary while the reported extent stays logical.
 fn slot_levels(slot: &PrmSlot) -> Vec<(u32, u32, &[u8])> {
     let format = slot.format;
-    let bpp = match format {
-        PrmFormat::Rgba8Unorm | PrmFormat::Rgba8UnormSrgb => 4,
-        PrmFormat::R8Unorm => 1,
-    };
     debug_assert_eq!(
         slot.payload.len(),
         (0..slot.level_count)
             .map(|n| {
                 let w = ((slot.width as u32) >> n).max(1);
                 let h = ((slot.height as u32) >> n).max(1);
-                (bpp * w * h) as usize
+                level_byte_size(format, w, h)
             })
             .sum::<usize>(),
-        "slot payload length must equal the sum of bpp*w*h across all {} mip levels \
-         (width={}, height={}, format={:?}); in-process-constructed slots must match \
-         the pyramid implied by width/height/level_count",
+        "slot payload length must equal the sum of per-level byte sizes across all {} mip \
+         levels (width={}, height={}, format={:?}); uncompressed levels are bpp*w*h, BC5 \
+         levels are ceil(w/4)*ceil(h/4)*16 — in-process-constructed slots must match the \
+         pyramid implied by width/height/level_count",
         slot.level_count,
         slot.width,
         slot.height,
@@ -133,7 +169,7 @@ fn slot_levels(slot: &PrmSlot) -> Vec<(u32, u32, &[u8])> {
     for n in 0..slot.level_count {
         let w = ((slot.width as u32) >> n).max(1);
         let h = ((slot.height as u32) >> n).max(1);
-        let size = (bpp * w * h) as usize;
+        let size = level_byte_size(format, w, h);
         out.push((w, h, &slot.payload[offset..offset + size]));
         offset += size;
     }
@@ -145,6 +181,10 @@ fn prm_format_to_wgpu(format: PrmFormat) -> wgpu::TextureFormat {
         PrmFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
         PrmFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
         PrmFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
+        // BC5 two-channel (R,G) block-compressed normal map. Requires the
+        // adapter's TEXTURE_COMPRESSION_BC feature (checked at device creation
+        // in render/mod.rs).
+        PrmFormat::Bc5RgUnorm => wgpu::TextureFormat::Bc5RgUnorm,
     }
 }
 
@@ -451,7 +491,7 @@ mod tests {
             },
             slots: [Some(slot), None, None],
         };
-        file.to_bytes()
+        file.to_bytes().expect("diffuse-only .prm serializes")
     }
 
     #[test]
@@ -513,5 +553,38 @@ mod tests {
         assert_eq!(levels[2].0, 1);
         assert_eq!(levels[2].1, 1);
         assert_eq!(levels[2].2.len(), 4);
+    }
+
+    #[test]
+    fn slot_levels_splits_bc5_into_block_aligned_levels() {
+        use postretro_level_format::prm::bc5_level_count;
+
+        // 8×8 normal slot. bc5_level_count truncates to levels whose dims are
+        // both ≥ 4: level 0 = 8×8, level 1 = 4×4 (level 2 would be 2×2 → dropped).
+        let width: u16 = 8;
+        let height: u16 = 8;
+        let level_count = bc5_level_count(width, height);
+        assert_eq!(level_count, 2, "8×8 BC5 chain truncates to 2 levels");
+
+        // level 0: ceil(8/4)*ceil(8/4) = 2*2 = 4 blocks × 16 = 64 bytes.
+        // level 1: ceil(4/4)*ceil(4/4) = 1*1 = 1 block × 16 = 16 bytes.
+        let payload = vec![0u8; 64 + 16];
+        let slot = PrmSlot {
+            format: PrmFormat::Bc5RgUnorm,
+            width,
+            height,
+            level_count,
+            payload,
+        };
+
+        let levels = slot_levels(&slot);
+        assert_eq!(levels.len(), 2);
+        // Logical dims reported, block-aligned byte slices.
+        assert_eq!(levels[0].0, 8);
+        assert_eq!(levels[0].1, 8);
+        assert_eq!(levels[0].2.len(), 64);
+        assert_eq!(levels[1].0, 4);
+        assert_eq!(levels[1].1, 4);
+        assert_eq!(levels[1].2.len(), 16);
     }
 }

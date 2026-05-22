@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use postretro_level_format::prm::{
-    PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION, cache_filename_for_key,
-    expected_level_count,
+    PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION, bc5_level_count,
+    cache_filename_for_key, expected_level_count,
 };
 
 /// Build a case-insensitive lookup from texture stem to PNG path, scanning
@@ -390,13 +390,21 @@ fn build_specular_chain(r8: &[u8], width: u32, height: u32) -> Vec<u8> {
     payload
 }
 
-/// Build a normal mip chain (Rgba8Unorm). Each RGB octet is decoded into the
-/// `[-1, 1]` interval before filtering; output normals are renormalised per
-/// texel and re-encoded.
-fn build_normal_chain(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+/// Build a BC5 normal mip chain (`PrmFormat::Bc5RgUnorm`). Each RGB octet is
+/// decoded into the `[-1, 1]` interval before filtering; per level the normals
+/// are renormalised, re-encoded to Rgba8, padded up to 4×4 block alignment
+/// (clamp-to-edge), and BC5-compressed. Only R and G survive the BC5 encode;
+/// the shader reconstructs n.z at runtime.
+///
+/// The chain is truncated at `bc5_level_count(w, h)` — BC5 needs both dims ≥ 4
+/// per level, so sub-4 mips are dropped. The concatenated output exactly
+/// matches the reader's `expected_payload_bytes(Bc5RgUnorm, w, h, level_count)`
+/// contract: `ceil(w_n/4) * ceil(h_n/4) * 16` bytes per level.
+fn build_normal_bc5_chain(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     let channels = 4;
-    let level_count = expected_level_count(width as u16, height as u16) as u32;
+    let level_count = bc5_level_count(width as u16, height as u16) as u32;
 
+    // Decode source RGB into the [-1, 1] interval (alpha kept in [0, 1]).
     let mut linear: Vec<f32> = Vec::with_capacity((width * height) as usize * channels);
     for chunk in rgba.chunks_exact(4) {
         linear.push((chunk[0] as f32) / 255.0 * 2.0 - 1.0);
@@ -405,27 +413,48 @@ fn build_normal_chain(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
         linear.push((chunk[3] as f32) / 255.0);
     }
 
-    let mut payload: Vec<u8> = Vec::with_capacity(rgba.len() * 2);
-    encode_normal_into(&linear, &mut payload);
+    let mut payload: Vec<u8> = Vec::new();
 
     let mut cur = linear;
     let mut cw = width;
     let mut ch = height;
-    for _ in 1..level_count {
-        let (next, nw, nh) = downsample_2x_f32(&cur, cw, ch, channels);
-        encode_normal_into(&next, &mut payload);
-        cur = next;
-        cw = nw;
-        ch = nh;
+    for level in 0..level_count {
+        if level > 0 {
+            let (next, nw, nh) = downsample_2x_f32(&cur, cw, ch, channels);
+            cur = next;
+            cw = nw;
+            ch = nh;
+        }
+
+        // Renormalised Rgba8 for this level — exactly the bytes the old
+        // Rgba8Unorm path emitted, but now fed into BC5.
+        let rgba8 = renormalize_to_rgba8(&cur);
+
+        // BC5 needs 4×4 block alignment. Power-of-two levels are already
+        // aligned (the common case); non-power-of-two sources can yield a
+        // level that is ≥ 4 yet not a multiple of 4, so pad up to the next
+        // multiple of 4 by replicating edge texels (clamp-to-edge, matching
+        // the downsampler's edge behaviour).
+        let padded_w = cw.div_ceil(4) * 4;
+        let padded_h = ch.div_ceil(4) * 4;
+        let block_rgba = if padded_w == cw && padded_h == ch {
+            rgba8
+        } else {
+            pad_rgba8_clamp_edge(&rgba8, cw, ch, padded_w, padded_h)
+        };
+
+        payload.extend_from_slice(&crate::bc5::encode_bc5_rg(&block_rgba, padded_w, padded_h));
     }
 
     payload
 }
 
-/// Encode a normal RGBA buffer (XYZ in `[-1, 1]`, A in `[0, 1]`) into Rgba8
-/// bytes. Each output normal is renormalised; near-zero magnitudes fall back
-/// to `(0, 0, 1)` (tangent-space up).
-fn encode_normal_into(linear: &[f32], out: &mut Vec<u8>) {
+/// Renormalise a normal RGBA buffer (XYZ in `[-1, 1]`, A in `[0, 1]`) into
+/// Rgba8 bytes. Each output normal is renormalised; near-zero magnitudes fall
+/// back to `(0, 0, 1)` (tangent-space up). The BC5 encoder reads only R and G,
+/// but B and A are still written so the buffer is a valid Rgba8 level.
+fn renormalize_to_rgba8(linear: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(linear.len());
     for chunk in linear.chunks_exact(4) {
         let mut n = [chunk[0], chunk[1], chunk[2]];
         let len_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
@@ -443,6 +472,28 @@ fn encode_normal_into(linear: &[f32], out: &mut Vec<u8>) {
         out.push(((n[2] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8);
         out.push(linear_to_unorm_u8(chunk[3]));
     }
+    out
+}
+
+/// Pad a tightly-packed `src_w × src_h` Rgba8 level up to `dst_w × dst_h` by
+/// replicating edge texels (clamp-to-edge). `dst_w >= src_w` and
+/// `dst_h >= src_h` are required; the source occupies the top-left corner and
+/// padded rows/columns repeat the nearest in-bounds texel.
+fn pad_rgba8_clamp_edge(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    debug_assert!(dst_w >= src_w && dst_h >= src_h);
+    let mut out = vec![0u8; (dst_w * dst_h * 4) as usize];
+    let src_max_x = src_w - 1;
+    let src_max_y = src_h - 1;
+    for y in 0..dst_h {
+        let sy = y.min(src_max_y);
+        for x in 0..dst_w {
+            let sx = x.min(src_max_x);
+            let s = ((sy * src_w + sx) * 4) as usize;
+            let d = ((y * dst_w + x) * 4) as usize;
+            out[d..d + 4].copy_from_slice(&src[s..s + 4]);
+        }
+    }
+    out
 }
 
 // -- File I/O -------------------------------------------------------------
@@ -596,12 +647,12 @@ pub fn bake_texture_mips(
         }
         if let (Some(b), Some(p)) = (norm_bytes.as_deref(), norm_path.as_ref()) {
             let (rgba, w, h) = decode_png_rgba(b, p)?;
-            let payload = build_normal_chain(&rgba, w, h);
+            let payload = build_normal_bc5_chain(&rgba, w, h);
             slots_arr[2] = Some(PrmSlot {
-                format: PrmFormat::Rgba8Unorm,
+                format: PrmFormat::Bc5RgUnorm,
                 width: w as u16,
                 height: h as u16,
-                level_count: expected_level_count(w as u16, h as u16),
+                level_count: bc5_level_count(w as u16, h as u16),
                 payload,
             });
             slot_mask |= PrmSlots::NORMAL;
@@ -617,7 +668,9 @@ pub fn bake_texture_mips(
             slots: slots_arr,
         };
 
-        let encoded = prm.to_bytes();
+        let encoded = prm
+            .to_bytes()
+            .map_err(|e| anyhow::anyhow!("encoding .prm for texture {name:?}: {e}"))?;
         atomic_write(&prm_path, &encoded)?;
 
         out.insert(name.clone(), filename_key);
@@ -687,45 +740,176 @@ mod tests {
         assert_eq!(last[3], 255);
     }
 
-    /// Normal-map outputs are unit-length within 1/127 of 1.0 after baking
-    /// at every mip level. Build a 4×4 normal map of varied directions and
-    /// verify both the 2×2 and 1×1 mips.
+    /// The renormalisation helper produces unit-length normals (within 1/127
+    /// of 1.0). This pins the per-level renormalise step the BC5 chain feeds
+    /// into the encoder. Build a 4×4 normal map of varied directions, decode
+    /// to the `[-1, 1]` linear buffer, renormalise to Rgba8, and verify length.
     #[test]
-    fn normal_map_outputs_unit_length() {
+    fn renormalize_to_rgba8_outputs_unit_length() {
         // Build 4×4 unit-length normals in directions clustered around
         // (0, 0, 1) with small tilt — typical surface-normal authoring.
-        let mut rgba = Vec::with_capacity(4 * 4 * 4);
+        let mut linear = Vec::with_capacity(4 * 4 * 4);
         for y in 0..4 {
             for x in 0..4 {
                 let dx = (x as f32 - 1.5) * 0.2;
                 let dy = (y as f32 - 1.5) * 0.2;
                 let dz = (1.0f32 - dx * dx - dy * dy).max(0.0).sqrt();
-                let r = ((dx * 0.5 + 0.5) * 255.0).round() as u8;
-                let g = ((dy * 0.5 + 0.5) * 255.0).round() as u8;
-                let b = ((dz * 0.5 + 0.5) * 255.0).round() as u8;
+                linear.extend_from_slice(&[dx, dy, dz, 1.0]);
+            }
+        }
+
+        let rgba8 = renormalize_to_rgba8(&linear);
+        assert_eq!(rgba8.len(), 4 * 4 * 4);
+
+        for chunk in rgba8.chunks_exact(4) {
+            let nx = (chunk[0] as f32) / 255.0 * 2.0 - 1.0;
+            let ny = (chunk[1] as f32) / 255.0 * 2.0 - 1.0;
+            let nz = (chunk[2] as f32) / 255.0 * 2.0 - 1.0;
+            let len = (nx * nx + ny * ny + nz * nz).sqrt();
+            assert!(
+                (len - 1.0).abs() <= 1.0 / 127.0,
+                "non-unit normal: len = {len}"
+            );
+        }
+    }
+
+    /// Helper: build a synthetic tangent-space normal map of `w × h` texels
+    /// tilting gently away from (0, 0, 1), encoded as Rgba8 (typical authoring).
+    fn synthetic_normal_rgba(w: u32, h: u32) -> Vec<u8> {
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let nx = (x as f32 / (w.max(2) - 1) as f32 - 0.5) * 0.8;
+                let ny = (y as f32 / (h.max(2) - 1) as f32 - 0.5) * 0.8;
+                let nz = (1.0 - nx * nx - ny * ny).max(0.0).sqrt();
+                let len = (nx * nx + ny * ny + nz * nz).sqrt();
+                let r = ((nx / len * 0.5 + 0.5) * 255.0).round() as u8;
+                let g = ((ny / len * 0.5 + 0.5) * 255.0).round() as u8;
+                let b = ((nz / len * 0.5 + 0.5) * 255.0).round() as u8;
                 rgba.extend_from_slice(&[r, g, b, 255]);
             }
         }
+        rgba
+    }
 
-        let payload = build_normal_chain(&rgba, 4, 4);
-        // Levels: 4×4 = 64, 2×2 = 16, 1×1 = 4. Total = 84.
-        assert_eq!(payload.len(), 84);
+    /// SEAM-CROSSING: the baker's BC5 normal output must satisfy the format
+    /// reader's contract. Bake a synthetic 8×8 normal level into a BC5 normal
+    /// `PrmSlot`, wrap it in a `PrmFile`, serialize with `to_bytes`, and parse
+    /// back with `from_bytes_partial`. The normal slot must parse WITHOUT error
+    /// (no `LevelCountMismatch` / `PayloadBytesMismatch`), with the truncated
+    /// `level_count` and `Bc5RgUnorm` format. 8×8 → bc5_level_count == 2.
+    #[test]
+    fn baked_bc5_normal_slot_round_trips_through_reader() {
+        let (w, h) = (8u32, 8u32);
+        let rgba = synthetic_normal_rgba(w, h);
+        let payload = build_normal_bc5_chain(&rgba, w, h);
 
-        fn check_unit_length(level: &[u8]) {
-            for chunk in level.chunks_exact(4) {
-                let nx = (chunk[0] as f32) / 255.0 * 2.0 - 1.0;
-                let ny = (chunk[1] as f32) / 255.0 * 2.0 - 1.0;
-                let nz = (chunk[2] as f32) / 255.0 * 2.0 - 1.0;
-                let len = (nx * nx + ny * ny + nz * nz).sqrt();
-                assert!(
-                    (len - 1.0).abs() <= 1.0 / 127.0,
-                    "non-unit normal: len = {len}"
-                );
-            }
+        // The baked payload must be exactly the size the reader expects.
+        let expected_bytes = expected_payload_bytes_pub(PrmFormat::Bc5RgUnorm, w as u16, h as u16);
+        assert_eq!(
+            payload.len() as u32,
+            expected_bytes,
+            "BC5 payload size must match the reader's expected_payload_bytes"
+        );
+
+        let level_count = bc5_level_count(w as u16, h as u16);
+        assert_eq!(level_count, 2, "8×8 BC5 truncates to 2 levels (8×8, 4×4)");
+
+        let slot = PrmSlot {
+            format: PrmFormat::Bc5RgUnorm,
+            width: w as u16,
+            height: h as u16,
+            level_count,
+            payload,
+        };
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::NORMAL,
+                bundle_hash: [0x42; 32],
+                total_body_bytes: 0,
+            },
+            slots: [None, None, Some(slot)],
+        };
+
+        let bytes = file.to_bytes().expect("BC5 normal slot should serialize");
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        header.expect("header should parse");
+        let parsed = slots[2]
+            .as_ref()
+            .expect("normal slot must parse without LevelCountMismatch/PayloadBytesMismatch");
+        assert_eq!(parsed.format, PrmFormat::Bc5RgUnorm);
+        assert_eq!(parsed.level_count, level_count);
+        assert_eq!(parsed.width, w as u16);
+        assert_eq!(parsed.height, h as u16);
+    }
+
+    /// SEAM-CROSSING (padding case): a non-power-of-two source (12×12) exercises
+    /// the edge-replication padding path — level 1 is 6×6, which is ≥ 4 but not
+    /// a multiple of 4, so the baker pads it to 8×8 before BC5 encoding. The
+    /// reader sizes that level with ceil(6/4)*ceil(6/4)=4 blocks, so the baked
+    /// payload must still match. 12×12 → levels 12×12 and 6×6 (bc5_level_count 2).
+    #[test]
+    fn baked_bc5_normal_slot_with_padding_round_trips() {
+        let (w, h) = (12u32, 12u32);
+        let rgba = synthetic_normal_rgba(w, h);
+        let payload = build_normal_bc5_chain(&rgba, w, h);
+
+        let expected_bytes = expected_payload_bytes_pub(PrmFormat::Bc5RgUnorm, w as u16, h as u16);
+        assert_eq!(
+            payload.len() as u32,
+            expected_bytes,
+            "padded BC5 payload size must match the reader's expected_payload_bytes"
+        );
+
+        let level_count = bc5_level_count(w as u16, h as u16);
+        assert_eq!(
+            level_count, 2,
+            "12×12 BC5 truncates to 2 levels (12×12, 6×6)"
+        );
+
+        let slot = PrmSlot {
+            format: PrmFormat::Bc5RgUnorm,
+            width: w as u16,
+            height: h as u16,
+            level_count,
+            payload,
+        };
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::NORMAL,
+                bundle_hash: [0x7; 32],
+                total_body_bytes: 0,
+            },
+            slots: [None, None, Some(slot)],
+        };
+
+        let bytes = file
+            .to_bytes()
+            .expect("padded BC5 normal slot should serialize");
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        header.expect("header should parse");
+        let parsed = slots[2]
+            .as_ref()
+            .expect("padded normal slot must parse without payload-size errors");
+        assert_eq!(parsed.format, PrmFormat::Bc5RgUnorm);
+        assert_eq!(parsed.level_count, level_count);
+    }
+
+    /// Recompute the reader's BC5 expected payload size from the public
+    /// `bc5_level_count` and the block-size contract, so the test does not
+    /// depend on the format crate's private `expected_payload_bytes`.
+    fn expected_payload_bytes_pub(format: PrmFormat, width: u16, height: u16) -> u32 {
+        assert_eq!(format, PrmFormat::Bc5RgUnorm);
+        let level_count = bc5_level_count(width, height);
+        let mut total = 0u32;
+        for n in 0..level_count {
+            let w_n = ((width as u32) >> n).max(1);
+            let h_n = ((height as u32) >> n).max(1);
+            total += w_n.div_ceil(4) * h_n.div_ceil(4) * 16;
         }
-        check_unit_length(&payload[0..64]); // 4×4
-        check_unit_length(&payload[64..80]); // 2×2
-        check_unit_length(&payload[80..84]); // 1×1
+        total
     }
 
     #[test]
@@ -774,10 +958,9 @@ mod tests {
     fn bundle_hash_for_pins_wire_format() {
         // Computed offline: blake3([0x01, 0x00, 0xAA, 0xBB])
         let expected: [u8; 32] = [
-            0x73, 0x7e, 0xb8, 0x89, 0x4d, 0xa5, 0x47, 0x24,
-            0x8d, 0xb5, 0xd4, 0x9e, 0xdb, 0xd5, 0xd0, 0x01,
-            0x49, 0xe8, 0x68, 0xc3, 0x89, 0xd5, 0xa9, 0xcb,
-            0x57, 0xc8, 0xb2, 0x04, 0x7c, 0xc1, 0x7b, 0xbe,
+            0x73, 0x7e, 0xb8, 0x89, 0x4d, 0xa5, 0x47, 0x24, 0x8d, 0xb5, 0xd4, 0x9e, 0xdb, 0xd5,
+            0xd0, 0x01, 0x49, 0xe8, 0x68, 0xc3, 0x89, 0xd5, 0xa9, 0xcb, 0x57, 0xc8, 0xb2, 0x04,
+            0x7c, 0xc1, 0x7b, 0xbe,
         ];
         let got = bundle_hash_for(Some(&[0xAAu8, 0xBB]), None, None);
         assert_eq!(got, expected);

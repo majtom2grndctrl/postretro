@@ -3,6 +3,7 @@
 
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
+pub mod bc5;
 pub mod bvh_build;
 pub mod cache;
 pub mod chart_raster;

@@ -48,7 +48,7 @@ Expose a single helper in `postretro-level-compiler` that takes a `&[u8]` Rgba8U
 
 ### Task 2: `.prm` format-tag extension
 
-Add `Bc5RgUnorm = 3` to the `.prm` per-slot format enum `PrmFormat` (in the shared `postretro-level-format` crate, `crates/level-format/src/prm.rs`), and extend `PrmFormat::from_tag` to map `3`. The enum change lands in the shared crate, consumed by both compiler and runtime. Update the `.prm` writer to permit `format_tag = 3` only on the normal slot — diffuse and specular writes fail with an error naming the offending slot and the source/`.prm` file. Update the reader to map `3` to `wgpu::TextureFormat::Bc5RgUnorm`. Bump the `.prm` texture-baker `STAGE_VERSION` (`u8`, `crates/level-format/src/prm.rs`) from `1` to `2`. See baked-texture-mips for the `.prm` byte layout and slot ordering; no new sections.
+Add `Bc5RgUnorm = 3` to the `.prm` per-slot format enum `PrmFormat` (in the shared `postretro-level-format` crate, `crates/level-format/src/prm.rs`; existing variants are `Rgba8UnormSrgb = 0` diffuse, `Rgba8Unorm = 1` normal, `R8Unorm = 2` specular), and extend `PrmFormat::from_tag` to map `3`. The enum change lands in the shared crate, consumed by both compiler and runtime. Update the `.prm` writer to permit `format_tag = 3` only on the normal slot — diffuse and specular writes fail with an error naming the offending slot and the source/`.prm` file. Update the reader to map `3` to `wgpu::TextureFormat::Bc5RgUnorm`. Bump the `.prm` texture-baker `STAGE_VERSION` (`u8`, `crates/level-format/src/prm.rs`) from `1` to `2`. See baked-texture-mips for the `.prm` byte layout and slot ordering; no new sections.
 
 ### Task 3: Per-level format and mip fall-back
 
@@ -73,7 +73,7 @@ let z  = sqrt(max(0.0, 1.0 - dot(rg, rg)));
 let n  = normalize(vec3<f32>(rg, z));
 ```
 
-(`// Proposed design` — remove once landed.) Renormalise unconditionally: BC5 endpoint quantisation plus bilinear filtering leaves sampled normals off unit length, and acceptance criterion #1 requires unit length within 1/127. Confirm against acceptance criterion #3. This plan assumes the `retire-true-retro` plan has already landed, so there is one normal-sampling path (`sample_normal` / `sample_post_retro`), and the RG decode edits that single path.
+(`// Proposed design` — remove once landed.) Renormalise unconditionally: BC5 endpoint quantisation plus bilinear filtering leaves sampled normals off unit length, and acceptance criterion #1 requires unit length within 1/127. Confirm against acceptance criterion #3. This plan assumes the `retire-true-retro` plan has already landed, collapsing the two current arms of `sample_normal` (which today dispatches to `sample_post_retro` and the True Retro `sample_aniso_normal`) into the single surviving `sample_post_retro` decode; the RG decode edits that one function. Also update the existing `forward.wgsl` comment declaring BC5 out of scope for the 3-channel path.
 
 ## Sequencing
 

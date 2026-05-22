@@ -4,7 +4,7 @@
 
 Encode normal-map slots in `.prm` files as BC5 (two-channel block compression) instead of Rgba8Unorm. Halves VRAM and disk for normals with no visible aesthetic cost: normal maps are low-frequency relative to pixel-art diffuse, and BC5's per-block RG quantisation stays well below the threshold where specular shading shows banding. Diffuse stays uncompressed — BC1/BC7 visibly degrade hard-edged pixel art and are out of scope.
 
-Depends on the baked-texture-mips plan, which has already landed. This plan extends the `.prm` (PostRetro Material) sidecar format defined there with a new per-slot `format_tag` value. See `context/plans/done/baked-texture-mips/index.md` for `.prm` location and layout, and confirm the existing `format_tag` set against `crates/level-format/src/prm.rs` (the done plan is frozen and may be stale).
+Depends on the baked-texture-mips plan, which has already landed. This plan also depends on the `retire-true-retro` plan landing first (`context/plans/drafts/retire-true-retro/`): the RG-decode shader change targets the single post-retirement normal path, so True Retro must be gone before this plan applies. This plan extends the `.prm` (PostRetro Material) sidecar format defined there with a new per-slot `format_tag` value. See `context/plans/done/baked-texture-mips/index.md` for `.prm` location and layout, and confirm the existing `format_tag` set against `crates/level-format/src/prm.rs` (the done plan is frozen and may be stale).
 
 ## Scope
 
@@ -73,7 +73,7 @@ let z  = sqrt(max(0.0, 1.0 - dot(rg, rg)));
 let n  = normalize(vec3<f32>(rg, z));
 ```
 
-(`// Proposed design` — remove once landed.) Renormalise unconditionally: BC5 endpoint quantisation plus bilinear filtering leaves sampled normals off unit length, and acceptance criterion #1 requires unit length within 1/127. Confirm against acceptance criterion #3. The shader-aniso plan's True Retro normal path (`sample_aniso_normal`) is deleted rather than ported to RG-reconstruct — True Retro retires when this plan lands (see roadmap M8 "Retire True Retro mode"). Only the Post Retro path (`sample_normal` / `sample_post_retro`) needs the RG decode.
+(`// Proposed design` — remove once landed.) Renormalise unconditionally: BC5 endpoint quantisation plus bilinear filtering leaves sampled normals off unit length, and acceptance criterion #1 requires unit length within 1/127. Confirm against acceptance criterion #3. This plan assumes the `retire-true-retro` plan has already landed, so there is one normal-sampling path (`sample_normal` / `sample_post_retro`), and the RG decode edits that single path.
 
 ## Sequencing
 
@@ -87,6 +87,7 @@ let n  = normalize(vec3<f32>(rg, z));
 - Encoder strategy: per block, find min/max of the channel's 16 texels; build the 8-entry endpoint palette (interpolated between min and max); for each texel pick the closest palette entry. Standard reference: Microsoft BC4/BC5 spec. No need for cluster fit or refinement passes — normal maps are smooth enough that the trivial endpoint search produces results within the acceptance tolerance.
 - BC5's two-channel storage maps cleanly to tangent-space `(n.x, n.y)`: both channels are normalised independently, which is what BC5 does naturally.
 - Cache key for the texture-baker stage: PNG content blake3 + `STAGE_VERSION`. Bumping the stage version is the only migration mechanism — existing `.prm` files outside the cache are not touched, and the cache regenerates them on next build.
+- The `.prm` `STAGE_VERSION` bump (1 → 2) only forces `.prm` sidecar cache regeneration; it is distinct from and does not change the PRL container `version`, which is unchanged. BC5 remains additive at the PRL level — only the `.prm` sidecar cache regenerates.
 
 ## Boundary inventory
 

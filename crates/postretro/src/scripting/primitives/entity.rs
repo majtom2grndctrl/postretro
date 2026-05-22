@@ -6,7 +6,6 @@
 // from `mod.rs::register_all` — not added here.
 
 use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::data_descriptors::EntityTypeDescriptor;
 use crate::scripting::error::ScriptError;
 use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
 use crate::scripting::registry::EntityId;
@@ -40,6 +39,9 @@ impl IntoLua for NullableString {
 
 /// Register the entity-domain primitives (everything except `worldQuery`,
 /// which lives in `mod.rs` because it spans multiple component domains).
+/// Entity-type registration is not a primitive — it flows through the
+/// `entities` field on `setupMod()`'s return value and is drained into
+/// `DataRegistry` by the boot path.
 pub(crate) fn register_entity_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     // entityExists ---------------------------------------------------------
     registry
@@ -70,26 +72,6 @@ pub(crate) fn register_entity_primitives(registry: &mut PrimitiveRegistry, ctx: 
         .doc("Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in definition and data contexts.")
         .param("id", "EntityId")
         .param("key", "String")
-        .finish();
-
-    // registerEntity (data-context only) ----------------------------------
-    // Writes into the engine-global `DataRegistry.entities`. Identical
-    // re-inserts under the same classname are silent no-ops; differing
-    // re-inserts overwrite and log at `debug!`. Definition-only so behavior
-    // scripts never grow the registry mid-level.
-    registry
-        .register("registerEntity", {
-            let ctx = ctx.clone();
-            move |descriptor: EntityTypeDescriptor| -> Result<(), ScriptError> {
-                ctx.data_registry
-                    .borrow_mut()
-                    .upsert_entity_type(descriptor);
-                Ok(())
-            }
-        })
-        .scope(ContextScope::DefinitionOnly)
-        .doc("Register an entity type with optional component presets. Definition context only. Survives level unload.")
-        .param("descriptor", "EntityTypeDescriptor")
         .finish();
 
     let _ = ctx;

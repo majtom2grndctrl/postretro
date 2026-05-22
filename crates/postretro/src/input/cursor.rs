@@ -23,12 +23,3 @@ pub fn release_cursor(window: &Window) {
     let _ = window.set_cursor_grab(CursorGrabMode::None);
     window.set_cursor_visible(true);
 }
-
-/// Handle a window focus change. Captures on focus, releases on blur.
-pub fn handle_focus_change(focused: bool, window: &Window) {
-    if focused {
-        capture_cursor(window)
-    } else {
-        release_cursor(window)
-    }
-}

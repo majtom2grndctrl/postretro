@@ -135,12 +135,14 @@ mod tests {
             max,
             density: 0.5,
             edge_softness: 1.0,
-            scatter: 0.6,
+            glow: 0.6,
             radial_falloff: 0.0,
             planes: Vec::new(),
             tags: Vec::new(),
             tint: [1.0, 1.0, 1.0],
             saturation: 1.0,
+            min_brightness: 0.0,
+            light_range: 1.0,
             is_ellipsoid: false,
         }
     }

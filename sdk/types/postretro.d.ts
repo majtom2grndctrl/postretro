@@ -24,10 +24,10 @@ declare module "postretro" {
     is_dynamic: boolean;
   };
 
-  /** Argument shape for `registerEntity`. `components` is an optional sub-object carrying typed component presets. */
+  /** Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets. */
   export type EntityTypeDescriptor = {
-    /** FGD classname this descriptor binds to. */
-    classname: string;
+    /** FGD canonical map classname this descriptor binds to. Absence means the descriptor is not directly placeable from a map and is only reachable via indirect routing (e.g. `entity_class` on a `player_spawn` marker). */
+    canonicalName?: string;
     /** Optional component presets attached at level-load spawn. */
     components?: EntityTypeComponents;
   };
@@ -53,7 +53,7 @@ declare module "postretro" {
   /** Spin tween shape consumed by `setSpinRate`. */
   export type SpinAnimation = { duration: number; rate_curve: ReadonlyArray<number> };
 
-  /** Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Two independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density and `saturation` modulates SH-irradiance saturation. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state. */
+  /** Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Four independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density, `saturation` modulates SH-irradiance saturation, `minBrightness` modulates the scatter brightness floor, and `lightRange` scales how far lights reach inside the fog. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state. */
   export type FogAnimation = {
     /** Total period of the loop, in milliseconds. */
     periodMs: number;
@@ -65,14 +65,18 @@ declare module "postretro" {
     density: ReadonlyArray<number> | null;
     /** Per-sample saturation curve. null leaves the static saturation unchanged. */
     saturation: ReadonlyArray<number> | null;
+    /** Per-sample animation curve for the `min_brightness` channel (scatter brightness floor). null leaves the static min_brightness unchanged. Each sample clamped to `[0, +∞)`; empty curve is rejected. */
+    minBrightness: ReadonlyArray<number> | null;
+    /** Per-sample animation curve for the `light_range` channel (scales how far lights reach inside this fog). null leaves the static light_range unchanged. Each sample must be strictly positive and finite; non-positive or non-finite samples clamp to `0.001`; empty curve is rejected. */
+    lightRange: ReadonlyArray<number> | null;
   };
 
   /** Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable. */
   export type FogVolumeComponent = {
     /** Volumetric fog density inside the AABB. */
     density: number;
-    /** Fraction of in-scattering toward the camera. */
-    scatter: number;
+    /** How much the fog lights up near light sources. 0 = stays dark even under bright lights, 1 = picks up full light color. Raise for misty glow, lower for thick opaque smoke. */
+    glow: number;
     /** Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face. */
     edgeSoftness: number;
     /** Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (axis-aligned `fog_volume`) shader paths; stored but ignored by the plane-sweep (non-axis-aligned `fog_volume`) path. */
@@ -81,7 +85,11 @@ declare module "postretro" {
     tint: readonly [number, number, number];
     /** Saturation of transmitted SH irradiance: 0 = greyscale, 1 = natural, >1 = boosted. Default 1.0. */
     saturation: number;
-    /** Density and/or saturation animation curves. null holds the static state. */
+    /** Floor on per-volume scatter brightness. Clamped to `[0, +∞)`. Default 0.0. */
+    minBrightness: number;
+    /** Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range. Strictly positive; clamps to 0.001. Default 1.0. */
+    lightRange: number;
+    /** Optional animation carrying any combination of density, saturation, minBrightness, and lightRange curves. null holds the static state. */
     animation: FogAnimation | null;
   };
 
@@ -97,12 +105,81 @@ declare module "postretro" {
   };
 
   /** Optional bag of component presets carried by `EntityTypeDescriptor.components`. */
-  export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null };
+  export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null; movement?: PlayerMovementDescriptor | null };
+
+  /** Authored player-movement component preset. All four sub-objects are required when `movement` is present; the data-archetype spawn path materializes the runtime movement component from this. */
+  export type PlayerMovementDescriptor = {
+    /** Collision capsule shape. */
+    capsule: CapsuleParams;
+    /** On-ground locomotion parameters. */
+    ground: GroundParams;
+    /** Mid-air control parameters. */
+    air: AirParams;
+    /** Falling parameters. */
+    fall: FallParams;
+    /** Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true. */
+    stuckStopEnabled?: boolean;
+    /** Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3. */
+    stuckStopThreshold?: number;
+  };
+
+  /** Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`. `eyeHeight` is the camera attachment point measured upward from the capsule center. */
+  export type CapsuleParams = {
+    /** Capsule radius in world units. Must be > 0. */
+    radius: number;
+    /** Cylinder half-height in world units. Must be > 0. */
+    halfHeight: number;
+    /** Camera attachment point measured upward from the capsule center in world units. Must lie in (0, halfHeight + radius]. */
+    eyeHeight: number;
+  };
+
+  /** On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization. */
+  export type GroundParams = {
+    /** Target ground speed in world units/sec. */
+    speed: number;
+    /** Ground acceleration in world units/sec². */
+    accel: number;
+    /** Vertical launch velocity applied on jump. */
+    jumpVelocity: number;
+    /** Maximum step-up height in world units. */
+    stepHeight: number;
+    /** Maximum walkable slope in degrees; must lie in [0, 90]. */
+    maxSlope: number;
+  };
+
+  /** Mid-air control parameters. `forwardSteer` blends forward steering authority between 0 (pure strafe-only Quake air control) and 1 (full forward authority). `jumpCeiling` is required when `jumps > 0`. */
+  export type AirParams = {
+    /** Forward steering authority in [0, 1]. */
+    forwardSteer: number;
+    /** Air acceleration in world units/sec². */
+    accel: number;
+    /** Speed cap that air-accel can push toward. */
+    maxControlSpeed: number;
+    /** Permit chained jumps on landing without releasing the jump input. */
+    bunnyHop: boolean;
+    /** Additional jumps allowed in air after the initial ground jump. 0 disables air jumps. */
+    jumps: number;
+    /** Maximum upward velocity an air jump can reach; required when `jumps > 0`. */
+    jumpCeiling: number;
+  };
+
+  /** Falling parameters. */
+  export type FallParams = {
+    /** Terminal downward fall speed in world units/sec. Must be > 0. */
+    terminalVelocity: number;
+  };
+
+  /** Texture-filtering mode. `trueRetro` is nearest-neighbor point sampling; `postRetro` adds modern filtering. */
+  export type GraphicsMode = "trueRetro" | "postRetro";
 
   /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */
   export type ModManifest = {
     /** Human-readable mod name. Required. */
     name: string;
+    /** Engine-global entity-type registrations. Survive level unload. */
+    entities?: ReadonlyArray<EntityTypeDescriptor>;
+    /** Startup texture-filtering mode. Omit to use the engine default (Post Retro). */
+    defaultGraphicsMode?: GraphicsMode;
   };
 
   export type LightKind = "Point" | "Spot" | "Directional";
@@ -185,31 +262,57 @@ declare module "postretro" {
   /** Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in definition and data contexts. */
   export function getEntityProperty(id: EntityId, key: string): string | null;
 
-  /** Register an entity type with optional component presets. Definition context only. Survives level unload. */
-  export function registerEntity(descriptor: EntityTypeDescriptor): void;
-
   /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Definition context. */
   export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
+
+  /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`. */
+  export function worldGetGravity(): number;
 
   /** Return an array of entity handles matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`. */
   export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<EntityForComponent<T>>;
 
+  /** Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.setGravity`. */
+  export function worldSetGravity(value: number): void;
+
   // -------------------------------------------------------------------------
   // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.
 
-  /** Typed light handle returned by `world.query({ component: "light" })`. */
-  export interface LightEntityHandle extends LightEntity {
-    setAnimation(anim: LightAnimation | null): void;
+  /** Capability for entities with a scalar animation channel (brightness, density, etc.). `Channel` is type-level documentation — the handle's implementation closure knows which descriptor channel to drive. */
+  export interface AnimatableScalar<Channel extends string> {
+    /** Sine pulse oscillating between `min` and `max` over `periodMs`. Loops forever. */
+    pulse(opts: { min: number; max: number; periodMs: number }): SequenceStep[];
+    /** One-shot linear ramp from `from` to `to` over `periodMs`. Plays exactly once. */
+    fade(opts: { from: number; to: number; periodMs: number }): SequenceStep[];
+    /** Irregular flicker between `min` and `max` at `rate` Hz. Loops forever. */
+    flicker(opts: { min: number; max: number; rate: number }): SequenceStep[];
+    readonly __channel?: Channel;
   }
 
-  /** Typed fog-volume handle returned by `world.query({ component: "fog_volume" })`.
-   * Currently a pass-through alias for the snapshot — fog has no engine-side
-   * animation primitive and the tick-callback helpers were removed alongside
-   * the Live VM API. */
-  export type FogVolumeHandle = FogVolumeEntity;
+  /** Capability for entities with a vec3 animation channel. */
+  export interface AnimatableVec3<Channel extends string> {
+    /** Uniform cycle through the given vectors over `periodMs`. */
+    cycle(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+    readonly __channel?: Channel;
+  }
+
+  /** Typed light handle returned by `world.query({ component: "light" })`. Composes the brightness scalar capability with vec3 channels declared directly (TypeScript collapses duplicate method names, so secondary vec3 channels are not pulled in via `AnimatableVec3` extension). */
+  export interface LightEntityHandle extends LightEntity, AnimatableScalar<"brightness"> {
+    /** Cycle through RGB colors over `periodMs`. Dynamic lights only. */
+    colorShift(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+    /** Sweep the `direction` channel through unit vectors over `periodMs`. */
+    sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+  }
+
+  /** Typed fog-volume handle returned by `world.query({ component: "fog_volume" })`. Composes the density scalar capability with secondary saturation methods declared directly. */
+  export interface FogVolumeHandle extends FogVolumeEntity, AnimatableScalar<"density"> {
+    /** Looping sine pulse on the `saturation` channel. */
+    pulseSaturation(opts: { min: number; max: number; periodMs: number }): SequenceStep[];
+    /** One-shot linear ramp on the `saturation` channel. */
+    fadeSaturation(opts: { from: number; to: number; periodMs: number }): SequenceStep[];
+  }
 
   /** Maps a component-name literal to the rich entity handle type. `"light"`
-   * yields `LightEntityHandle` (with `setAnimation`); `"emitter"` yields
+   * yields `LightEntityHandle` (capability methods); `"emitter"` yields
    * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
    * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle`.
    * Other component names fall back to the bare `Entity` shape (`id`,
@@ -226,6 +329,10 @@ declare module "postretro" {
       component: T;
       tag?: string | null;
     }): EntityForComponent<T>[];
+    /** Current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or `setGravity` call. */
+    getGravity(): number;
+    /** Set world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored with a warning logged. Effect is immediate and persists until the next level load or another `setGravity` call. */
+    setGravity(value: number): void;
   }
 
   /** `world` vocabulary global. Wraps `worldQuery` with a typed handle. */
@@ -233,32 +340,6 @@ declare module "postretro" {
 
   /** Per-channel keyframe accepted by `timeline` / `sequence`. */
   export type Keyframe<T extends number[]> = [number, ...T];
-
-  /** Returns an 8-sample irregular flicker brightness curve. */
-  export function flicker(
-    minBrightness: number,
-    maxBrightness: number,
-    rate: number,
-  ): LightAnimation;
-
-  /** Returns a 16-sample sine pulse brightness curve. */
-  export function pulse(
-    minBrightness: number,
-    maxBrightness: number,
-    periodMs: number,
-  ): LightAnimation;
-
-  /** Cycles uniformly through the given RGB colors. Dynamic lights only. */
-  export function colorShift(
-    colors: [number, number, number][],
-    periodMs: number,
-  ): LightAnimation;
-
-  /** Sweeps the light's `direction` through the given normalized vectors. */
-  export function sweep(
-    directions: [number, number, number][],
-    periodMs: number,
-  ): LightAnimation;
 
   /** Validate `[absolute_ms, ...value]` keyframes; pass-through on success. */
   export function timeline<T extends number[]>(
@@ -272,7 +353,7 @@ declare module "postretro" {
 
   // -------------------------------------------------------------------------
   // Data script vocabulary — pure descriptor builders consumed by the engine
-  // when `registerLevelManifest` returns. See: context/lib/scripting.md §2.
+  // when `setupLevel` returns. See: context/lib/scripting.md §2.
 
   /** Progress-subscription reaction body: fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
   export type ProgressReactionDescriptor = {
@@ -301,11 +382,11 @@ declare module "postretro" {
     args: { density: number };
   };
 
-  /** Sequence step targeting a single fog volume's `scatter`. */
-  export type SetFogScatterStep = {
+  /** Sequence step targeting a single fog volume's `glow`. */
+  export type SetFogGlowStep = {
     id: EntityId;
-    primitive: "setFogScatter";
-    args: { scatter: number };
+    primitive: "setFogGlow";
+    args: { glow: number };
   };
 
   /** Sequence step targeting a single fog volume's `edgeSoftness`. */
@@ -322,19 +403,23 @@ declare module "postretro" {
     args: { falloff: number };
   };
 
-  /** Sequence step that updates any subset of `{density, scatter, edgeSoftness, falloff, tint, saturation}` on a single fog volume in one component write. */
+  /** Sequence step that updates any subset of `{density, glow, edgeSoftness, falloff, tint, saturation, minBrightness, lightRange}` on a single fog volume in one component write. */
   export type SetFogParamsStep = {
     id: EntityId;
     primitive: "setFogParams";
     args: {
       density?: number;
-      scatter?: number;
+      glow?: number;
       edgeSoftness?: number;
       falloff?: number;
+      tint?: readonly [number, number, number];
+      saturation?: number;
+      minBrightness?: number;
+      lightRange?: number;
     };
   };
 
-  /** Sequence step that installs (or clears, when `args` is `null`) a dual-channel animation (density and/or saturation) on a single fog volume. Emitted by the SDK `fogPulse` / `fogFade` constructors. */
+  /** Sequence step that installs (or clears, when `args` is `null`) a dual-channel animation (density and/or saturation) on a single fog volume. Emitted by the `FogVolumeHandle` capability methods (`pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation`). */
   export type SetFogAnimationStep = {
     id: EntityId;
     primitive: "setFogAnimation";
@@ -345,7 +430,7 @@ declare module "postretro" {
   export type SequenceStep =
     | SetLightAnimationStep
     | SetFogDensityStep
-    | SetFogScatterStep
+    | SetFogGlowStep
     | SetFogEdgeSoftnessStep
     | SetFogFalloffStep
     | SetFogParamsStep
@@ -356,24 +441,27 @@ declare module "postretro" {
     sequence: SequenceStep[];
   };
 
-  /** Descriptor produced by `registerReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
+  /** Descriptor produced by `defineReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
   export type NamedReactionDescriptor = { name: string } & (
     | ProgressReactionDescriptor
     | PrimitiveReactionDescriptor
     | SequenceReactionDescriptor
   );
 
-  /** Bundle returned from `registerLevelManifest`. The engine deserializes this shape in one pass at level load. */
+  /** Bundle returned from `setupLevel`. The engine deserializes this shape in one pass at level load. */
   export type LevelManifest = {
     reactions: NamedReactionDescriptor[];
   };
 
   /** Build a named reaction descriptor. Pure: returns a plain object, no FFI. */
-  export function registerReaction(
+  export function defineReaction(
     name: string,
     descriptor:
       | ProgressReactionDescriptor
       | PrimitiveReactionDescriptor
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
+
+  /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
+  export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
 }

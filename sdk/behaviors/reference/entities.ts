@@ -1,12 +1,10 @@
-// Reference data-context registrations for the rotator and damage-source
-// reference behaviors. `registerEntity` is `DefinitionOnly`, so these
-// calls must run inside `registerLevelManifest` (the only data-script
-// entry point); they will throw `WrongContext` if invoked from a behavior
-// script.
+// Reference data-context entity descriptors for the rotator and damage-source
+// reference behaviors. Spread `referenceEntities` into the `entities` array
+// returned from `setupMod()` to register the archetypes.
 //
 // See: context/lib/scripting.md §2
 
-import { registerEntity } from "postretro";
+import { defineEntity } from "postretro";
 import type { EntityTypeDescriptor } from "postretro";
 
 /** Classname for entities driven by `rotator_driver.{ts,luau}`. */
@@ -16,22 +14,20 @@ export const ROTATOR_DRIVER_CLASSNAME = "game_rotator_driver";
 export const DAMAGE_SOURCE_CLASSNAME = "game_damage_source";
 
 /**
- * Register the data-archetype entries used by the reference behaviors.
- * Components are intentionally empty — both archetypes are pure tag/
- * transform carriers; the behaviors locate their work via `worldQuery`
- * filters on tags authored on the placement.
+ * Data-archetype entries used by the reference behaviors. Components are
+ * intentionally empty — both archetypes are pure tag/transform carriers; the
+ * behaviors locate their work via `worldQuery` filters on tags authored on
+ * the placement.
  *
- * Call this from a data script's `registerLevelManifest(ctx)` body.
+ * Spread into the `entities` array returned from `setupMod()`.
  */
-export function registerReferenceEntities(): void {
-  const rotatorDriver: EntityTypeDescriptor = {
-    classname: ROTATOR_DRIVER_CLASSNAME,
+export const referenceEntities: EntityTypeDescriptor[] = [
+  defineEntity({
+    canonicalName: ROTATOR_DRIVER_CLASSNAME,
     components: { light: null, emitter: null },
-  };
-  const damageSource: EntityTypeDescriptor = {
-    classname: DAMAGE_SOURCE_CLASSNAME,
+  }),
+  defineEntity({
+    canonicalName: DAMAGE_SOURCE_CLASSNAME,
     components: { light: null, emitter: null },
-  };
-  registerEntity(rotatorDriver);
-  registerEntity(damageSource);
-}
+  }),
+];

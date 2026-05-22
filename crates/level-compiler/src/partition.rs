@@ -325,11 +325,11 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root")
-            .join("content/tests/maps/test.map");
+            .join("content/dev/maps/campaign-test.map");
 
         let map_data =
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
-                .expect("test.map should parse");
+                .expect("campaign-test.map should parse without error");
 
         let result =
             partition(&map_data.brush_volumes).expect("partition should succeed on test map");
@@ -337,10 +337,10 @@ mod tests {
         assert!(!result.tree.leaves.is_empty(), "should produce leaves");
         assert!(!result.faces.is_empty(), "should have faces");
 
-        // Reasonable leaf count for a 10-brush map.
+        // Generous upper bound to accommodate large maps like campaign-test.map.
         assert!(
             result.tree.leaves.len() <= 1000,
-            "too many leaves ({}) for a small map",
+            "too many leaves ({}) — BSP may be exploding",
             result.tree.leaves.len()
         );
 

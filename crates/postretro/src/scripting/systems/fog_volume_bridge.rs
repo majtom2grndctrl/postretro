@@ -40,7 +40,7 @@ pub struct FogVolumeAabb {
 /// round-trip through the script-visible `FogVolumeComponent` where each
 /// `setFogAnimation` would clobber the moment a curve was installed.
 struct FogAnimSlot {
-    animation_start_time_ms: f32,
+    animation_start_time_ms: f64,
     cached_animation: FogAnimation,
 }
 
@@ -69,8 +69,9 @@ pub(crate) struct FogVolumeBridge {
     /// Per-entity start times for `FogVolumeComponent.animation`. Populated
     /// lazily by `tick` the first frame an animation is observed; cleared
     /// when an animation goes away (script clears it, or `play_count`
-    /// settles). Start time is also reset when the animation payload changes
-    /// mid-flight (detected by value comparison in `tick`).
+    /// settles). Start time resets whenever any field of `FogAnimation`
+    /// changes (detected by full-struct equality in `tick`) — including
+    /// `period_ms` changes with an otherwise-identical curve.
     anim_slots: HashMap<EntityId, FogAnimSlot>,
     /// Set to `true` the first time the point-light cap warning fires; suppresses
     /// per-frame log spam when the scene consistently exceeds `MAX_FOG_POINT_LIGHTS`.
@@ -93,7 +94,7 @@ impl FogVolumeBridge {
 
     /// Populate the entity registry with one entity per fog-volume record.
     /// Called once at level load. Stores the AABB and shape parameters in the
-    /// side-table; the four runtime-settable parameters (`density`, `scatter`,
+    /// side-table; the four runtime-settable parameters (`density`, `glow`,
     /// `edge_softness`, `falloff`) become a `FogVolumeComponent` on the spawned
     /// entity.
     pub(crate) fn populate_from_level(
@@ -124,11 +125,13 @@ impl FogVolumeBridge {
             };
             let component = FogVolumeComponent {
                 density: entry.density,
-                scatter: entry.scatter,
+                glow: entry.glow,
                 edge_softness: entry.edge_softness,
                 falloff: entry.radial_falloff,
                 tint: entry.tint,
                 saturation: entry.saturation,
+                min_brightness: entry.min_brightness,
+                light_range: entry.light_range,
                 animation: None,
             };
             // `set_component` only fails on stale id — the id was just returned.
@@ -171,7 +174,12 @@ impl FogVolumeBridge {
     ///
     /// `time_seconds` is engine wall-clock time; sampling is done in
     /// milliseconds because `FogAnimation.period_ms` is millisecond-keyed.
-    pub(crate) fn tick(&mut self, registry: &mut EntityRegistry, time_seconds: f32) {
+    ///
+    /// Taken as `f64` so `(now_ms - start_ms)` retains sub-second precision
+    /// after long uptimes — at ~30 minutes an `f32` ms count loses enough
+    /// mantissa bits that density steps become visible. Narrowing to `f32`
+    /// happens at the curve-sample leaf, after the difference is computed.
+    pub(crate) fn tick(&mut self, registry: &mut EntityRegistry, time_seconds: f64) {
         let now_ms = time_seconds * 1000.0;
         let mut updates: Vec<(EntityId, FogVolumeComponent)> = Vec::new();
         let mut clear_slots: Vec<EntityId> = Vec::new();
@@ -209,6 +217,12 @@ impl FogVolumeBridge {
                 if let Some(s) = settled.saturation {
                     next.saturation = s;
                 }
+                if let Some(m) = settled.min_brightness {
+                    next.min_brightness = m;
+                }
+                if let Some(l) = settled.light_range {
+                    next.light_range = l;
+                }
                 next.animation = None;
                 updates.push((id, next));
                 clear_slots.push(id);
@@ -217,7 +231,14 @@ impl FogVolumeBridge {
 
             let sampled_density = sample_density_curve_at(animation, start_ms, now_ms);
             let sampled_saturation = sample_saturation_curve_at(animation, start_ms, now_ms);
-            if sampled_density.is_none() && sampled_saturation.is_none() {
+            let sampled_min_brightness =
+                sample_min_brightness_curve_at(animation, start_ms, now_ms);
+            let sampled_light_range = sample_light_range_curve_at(animation, start_ms, now_ms);
+            if sampled_density.is_none()
+                && sampled_saturation.is_none()
+                && sampled_min_brightness.is_none()
+                && sampled_light_range.is_none()
+            {
                 continue;
             }
             let mut next = component.clone();
@@ -226,6 +247,12 @@ impl FogVolumeBridge {
             }
             if let Some(s) = sampled_saturation {
                 next.saturation = s;
+            }
+            if let Some(m) = sampled_min_brightness {
+                next.min_brightness = m;
+            }
+            if let Some(l) = sampled_light_range {
+                next.light_range = l;
             }
             updates.push((id, next));
         }
@@ -306,9 +333,12 @@ impl FogVolumeBridge {
                     tint: component.tint,
                     saturation: component.saturation,
                     radial_falloff: component.falloff,
-                    scatter: component.scatter,
+                    glow: component.glow,
                     plane_offset: 0,
                     plane_count,
+                    min_brightness: component.min_brightness,
+                    light_range: component.light_range,
+                    _pad6: [0.0; 2],
                 },
                 _ => FogVolume {
                     min: [0.0; 3],
@@ -322,9 +352,12 @@ impl FogVolumeBridge {
                     tint: [1.0, 1.0, 1.0],
                     saturation: 1.0,
                     radial_falloff: 0.0,
-                    scatter: 0.0,
+                    glow: 0.0,
                     plane_offset: 0,
                     plane_count: 0,
+                    min_brightness: 0.0,
+                    light_range: 1.0,
+                    _pad6: [0.0; 2],
                 },
             };
             self.volumes_bytes
@@ -443,10 +476,9 @@ fn sphere_intersects_any_aabb<'a>(
 /// Sample `animation.density` at the current wall-clock time. Returns `None`
 /// when the animation carries no density curve — the component's static
 /// density is left untouched in that case.
-fn sample_density_curve_at(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Option<f32> {
+fn sample_density_curve_at(animation: &FogAnimation, start_ms: f64, now_ms: f64) -> Option<f32> {
     let curve = animation.density.as_ref()?;
-    let phase_offset = animation.phase.unwrap_or(0.0);
-    let t = ((now_ms - start_ms) / animation.period_ms + phase_offset).rem_euclid(1.0);
+    let t = normalized_phase(animation, start_ms, now_ms);
     Some(sample_density_curve(curve, t))
 }
 
@@ -454,11 +486,49 @@ fn sample_density_curve_at(animation: &FogAnimation, start_ms: f32, now_ms: f32)
 /// when the animation carries no saturation curve — the component's static
 /// saturation is left untouched in that case. Shares the same phase math as
 /// the density channel so both channels move in lockstep on the same timeline.
-fn sample_saturation_curve_at(animation: &FogAnimation, start_ms: f32, now_ms: f32) -> Option<f32> {
+fn sample_saturation_curve_at(animation: &FogAnimation, start_ms: f64, now_ms: f64) -> Option<f32> {
     let curve = animation.saturation.as_ref()?;
-    let phase_offset = animation.phase.unwrap_or(0.0);
-    let t = ((now_ms - start_ms) / animation.period_ms + phase_offset).rem_euclid(1.0);
+    let t = normalized_phase(animation, start_ms, now_ms);
     Some(sample_density_curve(curve, t))
+}
+
+/// Sample `animation.min_brightness` at the current wall-clock time. Returns `None`
+/// when the animation carries no min_brightness curve — the component's static
+/// min_brightness is left untouched in that case. Shares the same phase math as
+/// the density channel so both channels move in lockstep on the same timeline.
+fn sample_min_brightness_curve_at(
+    animation: &FogAnimation,
+    start_ms: f64,
+    now_ms: f64,
+) -> Option<f32> {
+    let curve = animation.min_brightness.as_ref()?;
+    let t = normalized_phase(animation, start_ms, now_ms);
+    Some(sample_density_curve(curve, t))
+}
+
+/// Sample `animation.light_range` at the current wall-clock time. Returns `None`
+/// when the animation carries no light_range curve — the component's static
+/// light_range is left untouched in that case. Shares the same phase math as
+/// the density channel so both channels move in lockstep on the same timeline.
+fn sample_light_range_curve_at(
+    animation: &FogAnimation,
+    start_ms: f64,
+    now_ms: f64,
+) -> Option<f32> {
+    let curve = animation.light_range.as_ref()?;
+    let t = normalized_phase(animation, start_ms, now_ms);
+    Some(sample_density_curve(curve, t))
+}
+
+/// Compute the normalised `[0.0, 1.0)` phase for the current frame. Difference
+/// and modulo run in `f64` so a `now_ms` past ~30 minutes still resolves
+/// sub-second timing; narrowing to `f32` happens once, here, after the
+/// difference is reduced into `[0.0, 1.0)`.
+fn normalized_phase(animation: &FogAnimation, start_ms: f64, now_ms: f64) -> f32 {
+    let period_ms = animation.period_ms as f64;
+    let phase_offset = animation.phase.unwrap_or(0.0) as f64;
+    let t = ((now_ms - start_ms) / period_ms + phase_offset).rem_euclid(1.0);
+    t as f32
 }
 
 /// Linear interpolation across an N-sample density curve, where samples are
@@ -491,6 +561,8 @@ fn sample_density_curve(curve: &[f32], t: f32) -> f32 {
 struct SettledValues {
     density: Option<f32>,
     saturation: Option<f32>,
+    min_brightness: Option<f32>,
+    light_range: Option<f32>,
 }
 
 /// Returns `Some(SettledValues)` when `animation` is `play_count`-bounded and
@@ -501,22 +573,33 @@ struct SettledValues {
 /// `set_fog_animation::validate` and never reaches here.
 fn settle_play_count(
     animation: &FogAnimation,
-    start_ms: f32,
-    now_ms: f32,
+    start_ms: f64,
+    now_ms: f64,
 ) -> Option<SettledValues> {
     let play_count = animation.play_count?;
     debug_assert!(play_count > 0, "play_count coerced to >= 1 at install time");
     if animation.period_ms <= 0.0 {
         return None;
     }
-    let elapsed_periods = (now_ms - start_ms) / animation.period_ms;
-    if elapsed_periods < play_count as f32 {
+    // Comparison in f64: at long uptimes an f32 `now_ms - start_ms` loses
+    // mantissa bits faster than the period denominator, so the quotient could
+    // round past `play_count` a frame early. f64 keeps the boundary precise.
+    let elapsed_periods = (now_ms - start_ms) / animation.period_ms as f64;
+    if elapsed_periods < play_count as f64 {
         return None;
     }
     Some(SettledValues {
         density: animation.density.as_ref().and_then(|c| c.last().copied()),
         saturation: animation
             .saturation
+            .as_ref()
+            .and_then(|c| c.last().copied()),
+        min_brightness: animation
+            .min_brightness
+            .as_ref()
+            .and_then(|c| c.last().copied()),
+        light_range: animation
+            .light_range
             .as_ref()
             .and_then(|c| c.last().copied()),
     })
@@ -533,10 +616,12 @@ mod tests {
             density: 0.5,
             max: [2.0, 3.0, 2.0],
             edge_softness: 1.0,
-            scatter: 0.4,
+            glow: 0.4,
             radial_falloff: 2.0,
             tint: [1.0, 1.0, 1.0],
             saturation: 1.0,
+            min_brightness: 0.0,
+            light_range: 1.0,
             center: [0.0, 1.5, 0.0],
             inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
             half_diag: 2.5,
@@ -575,7 +660,7 @@ mod tests {
         let id = bridge.entity_ids[0];
         let comp = registry.get_component::<FogVolumeComponent>(id).unwrap();
         assert_eq!(comp.density, 0.5);
-        assert_eq!(comp.scatter, 0.4);
+        assert_eq!(comp.glow, 0.4);
         assert_eq!(comp.edge_softness, 1.0);
         assert_eq!(comp.falloff, 2.0);
         let aabb = bridge.aabbs.get(&id).unwrap();
@@ -607,11 +692,13 @@ mod tests {
                 id,
                 FogVolumeComponent {
                     density: 1.25,
-                    scatter: 0.9,
+                    glow: 0.9,
                     edge_softness: 0.5,
                     falloff: 3.5,
                     tint: [1.0, 1.0, 1.0],
                     saturation: 1.0,
+                    min_brightness: 0.0,
+                    light_range: 1.0,
                     animation: None,
                 },
             )
@@ -621,7 +708,7 @@ mod tests {
         assert_eq!(bytes.len(), std::mem::size_of::<FogVolume>());
         // FogVolume: Pod (see fx/fog_volume.rs) — read fields by name rather
         // than chasing byte offsets, which silently drift if the struct grows.
-        let volume: &FogVolume = bytemuck::from_bytes(&bytes);
+        let volume: &FogVolume = bytemuck::from_bytes(bytes);
         assert_eq!(volume.density, 1.25);
         assert_eq!(volume.edge_softness, 0.5);
         assert_eq!(volume.radial_falloff, 3.5);
@@ -646,11 +733,13 @@ mod tests {
                 id1,
                 FogVolumeComponent {
                     density: 0.0,
-                    scatter: 0.0,
+                    glow: 0.0,
                     edge_softness: 0.0,
                     falloff: 1.0,
                     tint: [1.0, 1.0, 1.0],
                     saturation: 1.0,
+                    min_brightness: 0.0,
+                    light_range: 1.0,
                     animation: None,
                 },
             )
@@ -735,11 +824,13 @@ mod tests {
                 id1,
                 FogVolumeComponent {
                     density: 0.0,
-                    scatter: 0.0,
+                    glow: 0.0,
                     edge_softness: 0.0,
                     falloff: 1.0,
                     tint: [1.0, 1.0, 1.0],
                     saturation: 1.0,
+                    min_brightness: 0.0,
+                    light_range: 1.0,
                     animation: None,
                 },
             )
@@ -767,11 +858,13 @@ mod tests {
                 id0,
                 FogVolumeComponent {
                     density: 0.0,
-                    scatter: 0.0,
+                    glow: 0.0,
                     edge_softness: 0.0,
                     falloff: 1.0,
                     tint: [1.0, 1.0, 1.0],
                     saturation: 1.0,
+                    min_brightness: 0.0,
+                    light_range: 1.0,
                     animation: None,
                 },
             )
@@ -896,6 +989,8 @@ mod tests {
                 play_count: None,
                 density: Some(curve),
                 saturation: None,
+                min_brightness: None,
+                light_range: None,
             },
         );
 
@@ -941,6 +1036,8 @@ mod tests {
                 play_count: Some(1),
                 density: Some(curve.clone()),
                 saturation: None,
+                min_brightness: None,
+                light_range: None,
             },
         );
 
@@ -1005,6 +1102,8 @@ mod tests {
                 play_count: None,
                 density: Some(original_curve),
                 saturation: None,
+                min_brightness: None,
+                light_range: None,
             },
         );
 
@@ -1021,6 +1120,8 @@ mod tests {
                 play_count: None,
                 density: Some(new_curve.clone()),
                 saturation: None,
+                min_brightness: None,
+                light_range: None,
             },
         );
         // Second tick at the same wall-clock as the install — the new
@@ -1062,6 +1163,8 @@ mod tests {
                 play_count: None,
                 density: Some(curve.clone()),
                 saturation: None,
+                min_brightness: None,
+                light_range: None,
             },
         );
 
@@ -1078,6 +1181,8 @@ mod tests {
                 play_count: None,
                 density: Some(curve.clone()),
                 saturation: None,
+                min_brightness: None,
+                light_range: None,
             },
         );
         bridge.tick(&mut registry, 0.4);
@@ -1090,6 +1195,145 @@ mod tests {
         assert!(
             (density - expected_first).abs() < 1e-4,
             "period-only change must reset start anchor and sample at t=0 (~{expected_first}); got {density}"
+        );
+    }
+
+    #[test]
+    fn evaluator_writes_curve_sample_into_component_min_brightness() {
+        // A FogAnimation with only a min_brightness curve (no density/saturation)
+        // must write the sampled value to FogVolumeComponent.min_brightness each
+        // frame without touching other fields.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let id = bridge.entity_ids[0];
+
+        // Two-sample ramp: [0.0, 1.0]. At t=0.5 the linear interpolation
+        // returns exactly 0.5 — hand-checkable without transcendental math.
+        let curve = vec![0.0_f32, 1.0_f32];
+        let expected_at_half = sample_density_curve(&curve, 0.5);
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 1000.0,
+                phase: None,
+                play_count: None,
+                density: None,
+                saturation: None,
+                min_brightness: Some(curve),
+                light_range: None,
+            },
+        );
+
+        // First tick at t=0 anchors the start time; second tick at half-period
+        // samples the curve at t=0.5.
+        bridge.tick(&mut registry, 0.0);
+        bridge.tick(&mut registry, 0.5);
+
+        let comp = registry.get_component::<FogVolumeComponent>(id).unwrap();
+        assert!(
+            (comp.min_brightness - expected_at_half).abs() < 1e-4,
+            "min_brightness at t=0.5 expected ~{expected_at_half}, got {}",
+            comp.min_brightness
+        );
+        // Static density must be untouched (sample_record initialises it to 0.5).
+        assert!(
+            (comp.density - 0.5).abs() < 1e-6,
+            "density must not be modified by a min_brightness-only animation; got {}",
+            comp.density
+        );
+    }
+
+    #[test]
+    fn evaluator_settles_play_count_bounded_min_brightness_and_clears_field() {
+        // After play_count periods expire, FogVolumeComponent.min_brightness
+        // must hold the final keyframe value and `animation` must be None.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let id = bridge.entity_ids[0];
+
+        let curve = vec![0.1_f32, 0.5, 0.8];
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 1000.0,
+                phase: None,
+                play_count: Some(1),
+                density: None,
+                saturation: None,
+                min_brightness: Some(curve.clone()),
+                light_range: None,
+            },
+        );
+
+        bridge.tick(&mut registry, 0.0);
+        // 1.5 seconds elapsed — past one 1000 ms period; must settle.
+        bridge.tick(&mut registry, 1.5);
+
+        let comp = registry.get_component::<FogVolumeComponent>(id).unwrap();
+        assert!(
+            comp.animation.is_none(),
+            "animation field must be cleared after settle"
+        );
+        assert!(
+            (comp.min_brightness - *curve.last().unwrap()).abs() < 1e-6,
+            "settled min_brightness must equal the final keyframe; got {}",
+            comp.min_brightness
+        );
+        assert!(
+            !bridge.anim_slots.contains_key(&id),
+            "side-table entry must be removed once settled"
+        );
+    }
+
+    #[test]
+    fn evaluator_writes_curve_sample_into_component_light_range() {
+        // A FogAnimation with only a light_range curve (no other
+        // channels) must write the sampled value to
+        // FogVolumeComponent.light_range each frame without touching
+        // other fields.
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let id = bridge.entity_ids[0];
+
+        // Two-sample ramp: [0.5, 1.5]. At t=0.25 → pos = 0.25, lo = 0.5,
+        // hi = 1.5, result = 0.5 + 0.25 * 1.0 = 0.75.
+        let curve = vec![0.5_f32, 1.5_f32];
+        let expected_at_quarter = sample_density_curve(&curve, 0.25);
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 1000.0,
+                phase: None,
+                play_count: None,
+                density: None,
+                saturation: None,
+                min_brightness: None,
+                light_range: Some(curve),
+            },
+        );
+
+        // First tick at t=0 anchors the start time; second tick at t=0.25 s
+        // (a quarter period) samples the curve at normalised t=0.25.
+        bridge.tick(&mut registry, 0.0);
+        bridge.tick(&mut registry, 0.25);
+
+        let comp = registry.get_component::<FogVolumeComponent>(id).unwrap();
+        assert!(
+            (comp.light_range - expected_at_quarter).abs() < 1e-4,
+            "light_range at t=0.25 expected ~{expected_at_quarter}, got {}",
+            comp.light_range
+        );
+        // Static density must be untouched (sample_record initialises it to 0.5).
+        assert!(
+            (comp.density - 0.5).abs() < 1e-6,
+            "density must not be modified by a light_range-only animation; got {}",
+            comp.density
         );
     }
 }

@@ -1,6 +1,6 @@
 // Postretro FGD: entity definitions for TrenchBroom authoring.
 // Parsed by postretro-level-compiler.
-// See: context/lib/build_pipeline.md §Custom FGD
+// See: context/lib/build_pipeline.md §Built-in Classname Routing
 
 @SolidClass = worldspawn : "World"
 [
@@ -15,6 +15,16 @@
     // target; 8 = coarsest. Coarser is faster but blockier near edges.
     // See context/lib/build_pipeline.md for full semantics.
     fog_pixel_scale(integer) : "Fog low-resolution downscale factor (1=full-res, 8=coarsest)" : 4
+    // Starting gravity in m/s². Negative = downward (Earth = -9.81), positive
+    // = upward acceleration. Required: prl-build halts when this KVP is
+    // absent so authors face an explicit choice. May be changed at runtime
+    // via world.setGravity().
+    initialGravity(float) : "REQUIRED. Starting gravity (m/s²); negative = downward, positive = upward (−9.81 = Earth). May be changed at runtime via world.setGravity()."
+]
+
+@BaseClass = EntitySpawn
+[
+    _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
 @BaseClass = Light
@@ -81,7 +91,7 @@
     _cone(integer) : "Inner Cone Angle (degrees)" : 30
     _cone2(integer) : "Outer Cone Angle (degrees)" : 45
     angles(angles) : "Direction (pitch yaw roll, degrees)" : "0 0 0"
-    // target entity direction is deferred to Milestone 6 (requires entity system)
+    // Named-entity target direction is not yet implemented; use 'angles' for spotlight direction.
 ]
 
 @PointClass base(Light)
@@ -114,6 +124,18 @@
     spin_rate(float) : "Spin rate (radians/sec)" : "0.0"
 ]
 
+// Player spawn point. At level load the engine spawns one entity per
+// `player_spawn` placement, using `entity_class` to pick the registered
+// classname (defaults to `"player"`).
+@PointClass base(EntitySpawn)
+    color(0 220 0)
+    size(-16 -16 -24, 16 16 32)
+    = player_spawn : "Player Spawn Point"
+[
+    angles(angles) : "Facing (pitch yaw roll, degrees)" : "0 0 0"
+    entity_class(string) : "Registered classname to spawn" : "player"
+]
+
 // Per-region volumetric fog brush.
 //
 // Geometry behaviour is auto-detected from the brush faces:
@@ -132,16 +154,18 @@
 // defaults.
 //
 // Ambient fog color is derived from the scene's SH irradiance volume; per-entity
-// scatter tint and saturation are also available via `fog_tint` / `fog_saturation`.
+// scatter tint and saturation are also available via `tint` / `saturation`.
 // See context/lib/build_pipeline.md §Custom FGD.
 @SolidClass = fog_volume : "Per-region volumetric fog (brush)"
 [
     density(float) : "Fog density" : "0.5"
-    scatter(float) : "Scatter fraction toward camera" : "0.6"
+    glow(float) : "How much the fog lights up near light sources. 0 = stays dark even under bright lights, 1 = picks up full light color. Raise for misty glow, lower for thick opaque smoke." : "0.6"
     edge_softness(float) : "Edge softness in map units (plane-bounded brushes only; 0=hard cutoff at brush face, larger=wider fade inward)" : "1.0"
     falloff(float) : "Radial falloff exponent (axis-aligned brushes only; higher = sharper edge)" : "2.0"
-    fog_tint(color255) : "Scatter tint color (white = no tint; multiplies the scattered SH/light color)" : "255 255 255"
-    fog_saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
+    tint(color255) : "Scatter tint color (white = no tint; multiplies the scattered SH/light color)" : "255 255 255"
+    saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
+    min_brightness(float) : "Minimum scatter brightness floor — fog stays at least this bright even in unlit areas (0=no floor)" : "0.0"
+    light_range(float) : "Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range." : "1.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
@@ -170,10 +194,12 @@
     origin(origin)
     radius(float) : "Sphere radius (map units)" : "64"
     density(float) : "Fog density" : "0.5"
-    scatter(float) : "Scatter fraction toward camera" : "0.6"
+    glow(float) : "How much the fog lights up near light sources. 0 = stays dark even under bright lights, 1 = picks up full light color. Raise for misty glow, lower for thick opaque smoke." : "0.6"
     radial_falloff(float) : "Radial falloff exponent (0=uniform sphere, higher=more centre-concentrated)" : "2.0"
-    fog_tint(color255) : "Scatter tint color (white = no tint; multiplies the scattered SH/light color)" : "255 255 255"
-    fog_saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
+    tint(color255) : "Scatter tint color (white = no tint; multiplies the scattered SH/light color)" : "255 255 255"
+    saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
+    min_brightness(float) : "Minimum scatter brightness floor — fog stays at least this bright even in unlit areas (0=no floor)" : "0.0"
+    light_range(float) : "Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range." : "1.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
@@ -182,7 +208,7 @@
 // same convention to compute the runtime AABB — both must stay in sync so the
 // editor display model and the culling box rotate identically.
 // Ambient fog color is derived from the scene's SH irradiance volume; per-entity
-// scatter tint and saturation are also available via `fog_tint` / `fog_saturation`.
+// scatter tint and saturation are also available via `tint` / `saturation`.
 @PointClass
     color(150 220 255)
     size(-8 -8 -8, 8 8 8)
@@ -195,10 +221,12 @@
     pitch(float) : "Pitch (degrees, around +X after yaw)" : "0"
     yaw(float) : "Yaw (degrees, around +Y first)" : "0"
     density(float) : "Fog density" : "0.3"
-    scatter(float) : "Scatter fraction toward camera" : "0.6"
+    glow(float) : "How much the fog lights up near light sources. 0 = stays dark even under bright lights, 1 = picks up full light color. Raise for misty glow, lower for thick opaque smoke." : "0.6"
     radial_falloff(float) : "Radial falloff exponent — approximate capsule shaping (0=uniform)" : "1.5"
-    fog_tint(color255) : "Scatter tint color (white = no tint; multiplies the scattered SH/light color)" : "255 255 255"
-    fog_saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
+    tint(color255) : "Scatter tint color (white = no tint; multiplies the scattered SH/light color)" : "255 255 255"
+    saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
+    min_brightness(float) : "Minimum scatter brightness floor — fog stays at least this bright even in unlit areas (0=no floor)" : "0.0"
+    light_range(float) : "Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range." : "1.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 

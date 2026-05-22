@@ -25,10 +25,11 @@ const COLLECT_FN_NAME: &str = "__collect_definitions";
 /// engine rebuild.
 const WORLD_LUAU_SRC: &str = include_str!("../../../../sdk/lib/world.luau");
 
-/// SDK library prelude — `entities/lights.luau` returns a table whose fields
-/// (`flicker`, `pulse`, `colorShift`, `sweep`, `wrapLightEntity`) are used
-/// during prelude evaluation. `wrapLightEntity` is installed as a temporary
-/// global for `world.luau` to capture, then nil'd out before the sandbox freezes.
+/// SDK library prelude — `entities/lights.luau` returns a table whose only
+/// promoted field is `wrapLightEntity`, installed as a temporary global for
+/// `world.luau` to capture and then nil'd out before the sandbox freezes.
+/// Capability methods (`pulse`, `fade`, `flicker`, `colorShift`, `sweep`)
+/// live on the handle returned from `wrapLightEntity`; no bare globals.
 const LIGHTS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/lights.luau");
 
 /// SDK library prelude — `util/keyframes.luau` returns a table whose fields
@@ -40,22 +41,25 @@ const KEYFRAMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/util/keyframe
 const EMITTERS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/emitters.luau");
 
 /// SDK library prelude — `entities/fog_volumes.luau` returns a table whose
-/// fields (`fogPulse`, `fogFade`, `wrapFogVolumeEntity`) are used during
-/// prelude evaluation. `wrapFogVolumeEntity` is installed as a temporary global
-/// for `world.luau` to capture, then nil'd out before the sandbox freezes.
+/// only promoted field is `wrapFogVolumeEntity`, installed as a temporary
+/// global for `world.luau` to capture and then nil'd out before the sandbox
+/// freezes. Capability methods (`pulse`, `fade`, `flicker`,
+/// `pulseSaturation`, `fadeSaturation`) live on the handle returned from
+/// `wrapFogVolumeEntity`; no bare globals.
 const FOG_VOLUMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/fog_volumes.luau");
 
 /// SDK library prelude — `data_script.luau` returns a table whose fields
-/// (`registerReaction`, `registerEntities`) are destructured into globals so
+/// (`defineReaction`, `defineEntity`) are destructured into globals so
 /// data-script authors call them by bare name. Pure descriptor builders;
-/// no FFI happens until `registerLevelManifest` returns.
+/// no FFI happens until `setupMod` or `setupLevel` returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
 
 /// Lights SDK fields lifted to globals after evaluating
-/// `entities/lights.luau`. `wrapLightEntity` is NOT a bare global — it is
-/// installed as a temporary bridge before `world.luau` evaluates, and nil'd
-/// out afterward.
-const LIGHTS_LUAU_FIELDS: &[&str] = &["flicker", "pulse", "colorShift", "sweep"];
+/// `entities/lights.luau`. Empty: the public vocabulary lives on the handle
+/// returned from `wrapLightEntity`, which is itself installed as a
+/// temporary bridge (not a bare global) before `world.luau` evaluates and
+/// nil'd out afterward.
+const LIGHTS_LUAU_FIELDS: &[&str] = &[];
 
 /// Keyframe-utility SDK fields lifted to globals after evaluating
 /// `util/keyframes.luau`.
@@ -66,26 +70,32 @@ const KEYFRAMES_LUAU_FIELDS: &[&str] = &["timeline", "sequence"];
 const EMITTERS_LUAU_FIELDS: &[&str] = &["emitter", "smokeEmitter", "sparkEmitter", "dustEmitter"];
 
 /// Fog-volume SDK fields lifted to globals after evaluating
-/// `entities/fog_volumes.luau`. The public animation builders
-/// (`fogPulse`, `fogFade`) are bare globals; `wrapFogVolumeEntity` is
-/// installed as a temporary bridge before `world.luau` evaluates and nil'd
-/// out afterward (not a bare global).
-const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &["fogPulse", "fogFade"];
+/// `entities/fog_volumes.luau`. Empty: the public vocabulary lives on the
+/// handle returned from `wrapFogVolumeEntity`, which is itself installed
+/// as a temporary bridge (not a bare global) before `world.luau`
+/// evaluates and nil'd out afterward.
+const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
-const DATA_SCRIPT_FIELDS: &[&str] = &["registerReaction", "registerEntities"];
+const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity"];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
-/// globals. Must be called after primitives are installed (the prelude
-/// references `worldQuery`, `setLightAnimation`) and
-/// before `sandbox(true)` (which freezes `_G`).
+/// globals. Must be called after primitives are installed and before
+/// `sandbox(true)` (which freezes `_G`). The primitive dependency applies
+/// to `entities/lights.luau`, `world.luau`, and `fog_volumes.luau` — they
+/// reference primitives like `worldQuery` and `setLightAnimation`.
+/// `data_script.luau` is also evaluated as a prelude step but has no
+/// primitive dependencies; it's pure data builders (`defineReaction`,
+/// `defineEntity`).
 /// The prelude source uses type annotations declared in postretro.d.luau (luau-lsp only); the runtime evaluates the .luau source without loading the declaration file.
 pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
-    // Step 1: evaluate `entities/lights.luau`. It returns a table containing
-    // both the public animation builders (`flicker`, `pulse`, ...) and the
-    // private `wrapLightEntity` bridge that `world.luau` needs as a bare
-    // global during its closure setup.
+    // Step 1: evaluate `entities/lights.luau`. The only exported field is
+    // the `wrapLightEntity` bridge — capability methods (`pulse`, `fade`,
+    // `flicker`, `colorShift`, `sweep`) live on the handle it produces,
+    // not as bare globals. `wrapLightEntity` itself is installed below as
+    // a temporary global so `world.luau` can capture it as an upvalue,
+    // then nil'd out in step 4.
     let lights_sdk: Table = lua
         .load(LIGHTS_LUAU_SRC)
         .set_name("postretro/sdk/entities/lights.luau")
@@ -108,6 +118,9 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
         })?;
 
     // Step 2: install the public lights fields as globals.
+    // `LIGHTS_LUAU_FIELDS` is empty in the capability-handle world; the
+    // loop is retained so adding a future bare global is a one-line
+    // change in the slice declaration.
     for field in LIGHTS_LUAU_FIELDS {
         let value: mlua::Value =
             lights_sdk
@@ -122,10 +135,10 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             })?;
     }
 
-    // Step 2b: evaluate `entities/fog_volumes.luau`. The public fields
-    // (`fogPulse`, `fogFade`) are promoted to globals in the loop below;
-    // `wrapFogVolumeEntity` is the private bridge installed here for
-    // `world.luau` to capture, then nil'd out in step 4.
+    // Step 2b: evaluate `entities/fog_volumes.luau`. Mirrors lights.luau:
+    // the only exported field is `wrapFogVolumeEntity`. Capability
+    // methods (`pulse`, `fade`, `flicker`, `pulseSaturation`,
+    // `fadeSaturation`) live on the handle, not as bare globals.
     let fog_volumes_sdk: Table = lua
         .load(FOG_VOLUMES_LUAU_SRC)
         .set_name("postretro/sdk/entities/fog_volumes.luau")
@@ -449,7 +462,10 @@ pub(crate) fn build_lua_state(
         install_require_resolver(&lua, root)?;
     }
 
-    // 6. SDK prelude — installs `world`, `flicker`, `pulse`, etc. as globals.
+    // 6. SDK prelude — installs `world`, `timeline`, `sequence`,
+    //    `defineReaction`, and emitter constructors as bare globals.
+    //    Capability methods (pulse, fade, flicker, etc.) live on handles
+    //    returned by `world:query`; they are not bare globals.
     //    Must run before `sandbox(true)` because the prelude writes to `_G`,
     //    and after primitive install because the prelude calls them.
     evaluate_prelude(&lua)?;
@@ -683,6 +699,25 @@ mod tests {
     use crate::scripting::primitives::register_all;
     use crate::scripting::primitives_registry::ContextScope;
 
+    // 15 `type(...)` strings returned by `sdk_prelude_installs_globals`.
+    type PreludeTypeNames = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    );
+
     fn setup() -> (LuauSubsystem, ScriptCtx) {
         let ctx = ScriptCtx::new();
         let mut registry = PrimitiveRegistry::new();
@@ -862,39 +897,33 @@ mod tests {
 
     #[test]
     fn sdk_prelude_installs_globals() {
-        // Verifies that each SDK prelude (`lights`, `fog_volumes`, `keyframes`,
-        // `emitters`) promotes its public fields to bare globals and that
-        // temporary bridges (`wrapLightEntity`, `wrapFogVolumeEntity`) are nil
-        // by the time author scripts run.
+        // Verifies the SDK prelude shape after the capability-handle refactor:
+        // - `world`, `timeline`, `sequence`, and the emitter constructors stay
+        //   as bare globals;
+        // - `flicker`, `pulse`, `colorShift`, `sweep`, `fogPulse`, `fogFade`
+        //   are NO LONGER bare globals — they are handle methods now;
+        // - the temporary bridges (`wrapLightEntity`, `wrapFogVolumeEntity`)
+        //   are nil by the time author scripts run.
         let (subsys, _ctx) = setup();
-        for which in [Which::Definition] {
+        {
+            let which = Which::Definition;
             let (
                 world_ty,
                 flicker_ty,
                 pulse_ty,
                 color_ty,
                 sweep_ty,
+                fog_pulse_ty,
+                fog_fade_ty,
                 timeline_ty,
                 sequence_ty,
                 emitter_ty,
                 smoke_ty,
                 spark_ty,
                 dust_ty,
-                wrap_ty,
-            ): (
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-            ) = subsys
+                wrap_light_ty,
+                wrap_fog_ty,
+            ): PreludeTypeNames = subsys
                 .run_source(
                     which,
                     r#"
@@ -904,68 +933,111 @@ mod tests {
                       type(pulse),
                       type(colorShift),
                       type(sweep),
+                      type(fogPulse),
+                      type(fogFade),
                       type(timeline),
                       type(sequence),
                       type(emitter),
                       type(smokeEmitter),
                       type(sparkEmitter),
                       type(dustEmitter),
-                      type(wrapLightEntity)
+                      type(wrapLightEntity),
+                      type(wrapFogVolumeEntity)
                     "#,
                     "prelude.luau",
                 )
                 .unwrap();
             assert_eq!(world_ty, "table", "{which:?}: world");
-            assert_eq!(flicker_ty, "function", "{which:?}: flicker");
-            assert_eq!(pulse_ty, "function", "{which:?}: pulse");
-            assert_eq!(color_ty, "function", "{which:?}: colorShift");
-            assert_eq!(sweep_ty, "function", "{which:?}: sweep");
+            // Capability methods — not bare globals anymore.
+            assert_eq!(flicker_ty, "nil", "{which:?}: flicker");
+            assert_eq!(pulse_ty, "nil", "{which:?}: pulse");
+            assert_eq!(color_ty, "nil", "{which:?}: colorShift");
+            assert_eq!(sweep_ty, "nil", "{which:?}: sweep");
+            assert_eq!(fog_pulse_ty, "nil", "{which:?}: fogPulse");
+            assert_eq!(fog_fade_ty, "nil", "{which:?}: fogFade");
             assert_eq!(timeline_ty, "function", "{which:?}: timeline");
             assert_eq!(sequence_ty, "function", "{which:?}: sequence");
             assert_eq!(emitter_ty, "function", "{which:?}: emitter");
             assert_eq!(smoke_ty, "function", "{which:?}: smokeEmitter");
             assert_eq!(spark_ty, "function", "{which:?}: sparkEmitter");
             assert_eq!(dust_ty, "function", "{which:?}: dustEmitter");
-            // `wrapLightEntity` is a temporary bridge during prelude eval; it
-            // must not be visible to author scripts.
-            assert_eq!(wrap_ty, "nil", "{which:?}: wrapLightEntity");
+            // Temporary bridges nil'd out before author scripts run.
+            assert_eq!(wrap_light_ty, "nil", "{which:?}: wrapLightEntity");
+            assert_eq!(wrap_fog_ty, "nil", "{which:?}: wrapFogVolumeEntity");
         }
     }
 
-    #[test]
-    fn fog_pulse_returns_single_step_set_fog_animation() {
-        // fogPulse produces a single-element step array of
-        // `{ id, primitive = "setFogAnimation", args = FogAnimation }` with a
-        // 16-sample sine `density` curve and `playCount = nil` (loop forever).
-        // The previous 16-step `setFogDensity` shape was wrong: the sequence
-        // dispatcher fires every step on the same frame, so the array
-        // collapsed to its last value. The animation channel evaluates
-        // per-frame on the bridge instead.
-        let (subsys, _ctx) = setup();
-        let densities: Vec<f64> = subsys
-            .run_source(
-                Which::Definition,
-                r#"
-                local steps = fogPulse(7, 0.2, 1.0, 1500)
-                assert(#steps == 1, "expected 1 step, got " .. tostring(#steps))
-                local s = steps[1]
-                assert(s.id == 7, "expected id == 7")
-                assert(s.primitive == "setFogAnimation",
-                    "expected primitive == setFogAnimation, got " .. tostring(s.primitive))
-                assert(s.args ~= nil, "expected args ~= nil")
-                assert(s.args.periodMs == 1500, "expected periodMs == 1500")
-                assert(s.args.phase == nil, "expected phase == nil")
-                assert(s.args.playCount == nil, "expected playCount == nil (loop forever)")
-                local out = {}
-                for i, d in ipairs(s.args.density) do
-                    out[i] = d
-                end
-                return out
-                "#,
-                "fog_pulse_unit.luau",
-            )
+    /// Re-evaluate `entities/fog_volumes.luau` against the live definition
+    /// state and install its `wrapFogVolumeEntity` function as a test-only
+    /// global named `__test_wrapFogVolume`. The prelude pass nil'd out the
+    /// authoritative `wrapFogVolumeEntity` before sandbox; re-evaluating here
+    /// is a host-side ergonomic for unit tests that need to construct a
+    /// `FogVolumeHandle` without a real fog entity in the registry.
+    fn install_test_fog_wrapper(subsys: &LuauSubsystem) {
+        let lua = subsys.definition_lua();
+        let fog_sdk: Table = lua
+            .load(FOG_VOLUMES_LUAU_SRC)
+            .set_name("test/fog_volumes.luau")
+            .eval()
             .unwrap();
-        assert_eq!(densities.len(), 16);
+        let wrap: mlua::Function = fog_sdk.get("wrapFogVolumeEntity").unwrap();
+        lua.globals().set("__test_wrapFogVolume", wrap).unwrap();
+    }
+
+    /// Build a synthetic FogVolumeHandle inline. Lua snippet shared by the
+    /// pulse / fade tests; assumes `__test_wrapFogVolume` has been installed.
+    const FOG_HANDLE_FIXTURE: &str = r#"
+        local snapshot = {
+            id = ID,
+            position = { x = 0, y = 0, z = 0 },
+            tags = {},
+            component = {
+                density = 1.0, glow = 0.5, edgeSoftness = 0,
+                falloff = 1.0, tint = {1, 1, 1},
+                saturation = 1.0, minBrightness = 0.0, lightRange = 1.0,
+                animation = nil,
+            },
+        }
+        local fog = __test_wrapFogVolume(snapshot)
+    "#;
+
+    #[test]
+    fn fog_handle_pulse_returns_single_step_set_fog_animation() {
+        // `fog:pulse({ ... })` produces a single-element step array of
+        // `{ id, primitive = "setFogAnimation", args = FogAnimation }` with a
+        // 17-sample sine `density` curve (16 intervals + wrap sample) and
+        // `playCount = nil` (loop forever). The 17th sample equals the 1st so
+        // the linear sampler interpolates cleanly at the period boundary.
+        // Replaces the previous test against the old free `fogPulse` global —
+        // capability methods now own the curve construction.
+        let (subsys, _ctx) = setup();
+        install_test_fog_wrapper(&subsys);
+        let src = format!(
+            r#"
+            local ID = 7
+            {fixture}
+            local steps = fog:pulse({{ min = 0.2, max = 1.0, periodMs = 1500 }})
+            assert(#steps == 1, "expected 1 step, got " .. tostring(#steps))
+            local s = steps[1]
+            assert(s.id == 7, "expected id == 7")
+            assert(s.primitive == "setFogAnimation",
+                "expected primitive == setFogAnimation, got " .. tostring(s.primitive))
+            assert(s.args ~= nil, "expected args ~= nil")
+            assert(s.args.periodMs == 1500, "expected periodMs == 1500")
+            assert(s.args.phase == nil, "expected phase == nil")
+            assert(s.args.playCount == nil, "expected playCount == nil (loop forever)")
+            local out = {{}}
+            for i, d in ipairs(s.args.density) do
+                out[i] = d
+            end
+            return out
+            "#,
+            fixture = FOG_HANDLE_FIXTURE,
+        );
+        let densities: Vec<f64> = subsys
+            .run_source(Which::Definition, &src, "fog_pulse_unit.luau")
+            .unwrap();
+        assert_eq!(densities.len(), 17);
         let lo = 0.2_f64;
         let hi = 1.0_f64;
         let mid = (lo + hi) * 0.5;
@@ -978,37 +1050,47 @@ mod tests {
                 "sample {i}: expected {expected}, got {got}"
             );
         }
+        // Wrap sample: sample[16] must equal sample[0].
+        assert!(
+            (densities[16] - densities[0]).abs() < 1e-5,
+            "wrap sample[16] must equal sample[0]; got {} vs {}",
+            densities[16],
+            densities[0]
+        );
     }
 
     #[test]
-    fn fog_fade_returns_single_step_one_shot_set_fog_animation() {
-        // fogFade emits one `setFogAnimation` step whose `density` curve is a
-        // 16-sample linear ramp from `from` to `to`, with `playCount = 1`
-        // (one-shot). See the matching note on
-        // `fog_pulse_returns_single_step_set_fog_animation`.
+    fn fog_handle_fade_returns_single_step_one_shot_set_fog_animation() {
+        // `fog:fade({ ... })` emits one `setFogAnimation` step whose `density`
+        // curve is a 16-sample linear ramp from `from` to `to`, with
+        // `playCount = 1` (one-shot). See `fog_handle_pulse_...` for the
+        // shape rationale.
         let (subsys, _ctx) = setup();
+        install_test_fog_wrapper(&subsys);
+        let src = format!(
+            r#"
+            local ID = 11
+            {fixture}
+            local steps = fog:fade({{ from = 0.0, to = 4.0, periodMs = 750 }})
+            assert(#steps == 1, "expected 1 step, got " .. tostring(#steps))
+            local s = steps[1]
+            assert(s.id == 11, "expected id == 11")
+            assert(s.primitive == "setFogAnimation",
+                "expected primitive == setFogAnimation, got " .. tostring(s.primitive))
+            assert(s.args ~= nil, "expected args ~= nil")
+            assert(s.args.periodMs == 750, "expected periodMs == 750")
+            assert(s.args.phase == nil, "expected phase == nil")
+            assert(s.args.playCount == 1, "expected playCount == 1 (one-shot)")
+            local out = {{}}
+            for i, d in ipairs(s.args.density) do
+                out[i] = d
+            end
+            return out
+            "#,
+            fixture = FOG_HANDLE_FIXTURE,
+        );
         let densities: Vec<f64> = subsys
-            .run_source(
-                Which::Definition,
-                r#"
-                local steps = fogFade(11, 0.0, 4.0, 750)
-                assert(#steps == 1, "expected 1 step, got " .. tostring(#steps))
-                local s = steps[1]
-                assert(s.id == 11, "expected id == 11")
-                assert(s.primitive == "setFogAnimation",
-                    "expected primitive == setFogAnimation, got " .. tostring(s.primitive))
-                assert(s.args ~= nil, "expected args ~= nil")
-                assert(s.args.periodMs == 750, "expected periodMs == 750")
-                assert(s.args.phase == nil, "expected phase == nil")
-                assert(s.args.playCount == 1, "expected playCount == 1 (one-shot)")
-                local out = {}
-                for i, d in ipairs(s.args.density) do
-                    out[i] = d
-                end
-                return out
-                "#,
-                "fog_fade_unit.luau",
-            )
+            .run_source(Which::Definition, &src, "fog_fade_unit.luau")
             .unwrap();
         assert_eq!(densities.len(), 16);
         let from = 0.0_f64;

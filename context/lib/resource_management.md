@@ -1,30 +1,36 @@
 # Resource Management
 
 > **Read this when:** loading textures, working with materials, adding billboard sprites, or changing how the engine consumes visual assets.
-> **Key invariant:** all visual assets are PNGs loaded at runtime. PRL stores texture names only, never pixel data. The resource subsystem owns all textures and GPU resources; the renderer borrows handles.
+> **Key invariant:** authored visual assets are PNGs. World-material textures are baked into per-texture `.prm` mip sidecars at compile time; UI textures load PNGs directly at runtime. PRL stores texture names plus a `blake3` cache key per name — never pixel data. The resource subsystem owns all textures and GPU resources; the renderer borrows handles.
 > **Related:** [Architecture Index](./index.md) · [Build Pipeline](./build_pipeline.md) · [Rendering Pipeline](./rendering_pipeline.md) · [Entity Model](./entity_model.md)
 
 ---
 
 ## 1. Texture Pipeline
 
-All visual assets — world textures, billboard sprites, UI elements — are authored as PNG files and loaded at runtime. No WAD files. No embedded texture data in PRL.
+Visual assets are authored as PNG files. World-material textures bake into `.prm` mip sidecars at compile time; UI textures (splash, HUD) load PNGs directly at runtime. No WAD files. No embedded pixel data in PRL.
 
 ### 1.1 Authoring Layout
 
-Textures live under `content/<mod>/textures/` (where `<mod>` is `base` for first-party content or `tests` for engine test fixtures) with one required subdirectory level:
+Textures live under `content/<mod>/textures/` (where `<mod>` is `base` for first-party content or `dev` for engine test fixtures) with one required subdirectory level:
 
 ```
 content/<mod>/textures/<collection>/<name>.png
 ```
 
-Example paths: `content/base/textures/concrete/wall.png`, `content/tests/textures/metal/panel.png`.
+Example paths: `content/base/textures/concrete/wall.png`, `content/dev/textures/metal/panel.png`.
 
-TrenchBroom requires the collection subdirectory structure for texture browsing. Collections group related textures (e.g., `concrete/`, `metal/`, `trim/`). At runtime, the engine derives the texture root from the loaded map's path: given a map at `content/<mod>/maps/level.prl`, the content root is `content/<mod>/`, and textures resolve from `content/<mod>/textures/`.
+TrenchBroom requires the collection subdirectory structure for texture browsing. Collections group related textures (e.g., `concrete/`, `metal/`, `trim/`). The texture root is not accessed at runtime for world materials — source PNGs are consumed by `prl-build` only.
 
 ### 1.2 PRL Texture References
 
-PRL files store a deduplicated texture name list (TextureNames section). No pixel data. At load time, the engine matches texture name strings from PRL face data against PNG filenames in the `textures/` tree. For each loaded diffuse, the loader also probes for `{name}_s.png` (specular), `{name}_n.png` (normal-map), and `{name}_e.png` (emissive mask) siblings in the same collection directory; missing or invalid siblings fall back to shared 1×1 placeholders (see §4). Missing diffuse at runtime falls back to a checkerboard placeholder and logs a warning; sibling probes are skipped when the diffuse itself is a placeholder.
+PRL stores a deduplicated texture name list (`TextureNames` section) plus a parallel `TextureCacheKeys` section — one 32-byte `blake3` hash per name entry, same ordering. No pixel data.
+
+**Compile time.** `prl-build` resolves each `TextureNames` entry to its PNG bundle: `{name}.png` (diffuse), `{name}_s.png` (specular), and `{name}_n.png` (normal-map) discovered by suffix via case-insensitive lookup. All three are optional — a bundle is baked whenever at least one is found; when none are found, a zero key signals the runtime to substitute placeholders without warning. The Mitchell-Netravali baker (B = C = 1/3) produces full mip chains in linear space — sRGB diffuse decoded to linear before filtering and re-encoded on output; R8 specular filtered linearly; Rgba8 normal filtered linearly with per-output-texel renormalization. Output is one `.prm` sidecar per content-addressed bundle under `<workspace>/.build-caches/prm-cache/<blake3-hex>.prm`. If no PNG is found for a name, the compiler writes a zero key (`[0u8; 32]`) and emits no `.prm`.
+
+**Level load.** For each `TextureCacheKeys[i]`, the engine opens `<workspace>/.build-caches/prm-cache/<hex>.prm`, parses it with `PrmFile::from_bytes_partial`, and uploads each present slot's mip chain directly. A zero key produces a silent placeholder. A corrupt or missing sidecar logs a `warn!` and substitutes per-slot placeholders; cleanly-parsed slots from a partially-corrupt file are used. The runtime never opens a PNG for world materials.
+
+**UI textures.** `UiTexture` (`crates/postretro/src/ui_texture.rs`) loads PNGs directly at runtime via the splash and HUD paths. CPU-side only; no wgpu handles.
 
 ### 1.3 Sprite Animations
 
@@ -90,7 +96,7 @@ Unknown prefix maps to a default material. Engine logs a warning at load time id
 
 ## 4. Surface Map Convention
 
-Optional sibling textures provide per-texel surface properties. Suffixes are appended to the diffuse texture name (e.g., `wall.png` → `wall_s.png`).
+Optional sibling textures provide per-texel surface properties. Suffixes are appended to the diffuse texture name (e.g., `wall.png` → `wall_s.png`). Siblings are discovered by `prl-build` at compile time, not by the runtime.
 
 ### 4.1 Specular Maps (Milestone 5)
 
@@ -100,7 +106,7 @@ Per-texel specular intensity modulates the direct lighting highlight.
 - **Format:** R8Unorm (sampled as `.r` in shader).
 - **Color Space:** Linear.
 - **Dimensions:** Must match the diffuse texture.
-- **Fallback:** If `{name}_s.png` is absent or dimensions mismatch, the engine uses a shared 1x1 black texture (zero specular response). Mismatch logs a warning at load time.
+- **Fallback:** Absent or missing sibling bakes to `NotPresent` in the `.prm`; the runtime substitutes a shared 1×1 black texture (zero specular response).
 
 ### 4.2 Generation Tool
 
@@ -119,8 +125,9 @@ Optional per-texture normal maps for fine surface detail.
 - **Naming:** `{name}_n.png` suffix alongside the diffuse texture.
 - **Format:** `Rgba8Unorm` (linear). Must not be sRGB-tagged — prl-build rejects sRGB-tagged siblings at compile time.
 - **Encoding:** Tangent-space RGB. Decode: `n = sample.rgb * 2.0 - 1.0`. Dimensions must match the diffuse texture.
-- **Placeholder:** Shared 1×1 neutral-normal texture encoding `(127, 127, 255)` — decodes to approximately `(0, 0, 1)` (tangent-space +Z; exact value `(-0.004, -0.004, 1.0)`). Engine-lifetime; survives level unload. Used when `_n.png` is absent, dimensions mismatch (logs a warning), or decode fails (logs an error).
-- **Fallback:** Missing or invalid sibling falls back to the placeholder silently except for the log entry. Flat mesh-normal shading is preserved — the placeholder is a true no-op through the TBN path.
+- **Baking:** Filtered linearly in `f32`; per output texel the result is renormalized to unit length (degenerate normals below `1e-4` substitute `(0, 0, 1)`).
+- **Placeholder:** Shared 1×1 neutral-normal texture encoding `(127, 127, 255)` — decodes to approximately `(0, 0, 1)` (tangent-space +Z). Engine-lifetime; survives level unload. Used when `_n.png` is absent or baking fails.
+- **Fallback:** Missing sibling bakes to `NotPresent`; the runtime substitutes the placeholder silently. Flat mesh-normal shading is preserved — the placeholder is a true no-op through the TBN path.
 
 ### 4.4 Normal Map Generation Tool
 
@@ -170,11 +177,11 @@ Reflective surfaces (wet floors, chrome, glass) sample from the nearest `env_cub
 
 ## 6. Billboard Sprites
 
-Camera-facing textured quads used for characters, pickups, projectiles, and decorative elements.
+Camera-facing textured quads used for pickups, projectiles, and decorative elements. Characters (enemies, player, NPCs) may use either billboard sprites or 3D models.
 
 ### 6.1 Asset Format
 
-Loaded from PNG through the same texture pipeline as world textures. Sprite sheets are not used — each frame is an individual PNG. Animated sprites follow the sequential naming convention described in section 1.3.
+Loaded from PNG at runtime. Sprite sheets are not used — each frame is an individual PNG. Animated sprites follow the sequential naming convention described in section 1.3.
 
 ### 6.2 Lighting
 
@@ -184,19 +191,30 @@ Sprite lighting is per-sprite, not per-pixel. Lighting behavior and fallback pat
 
 ## 7. Resource Ownership
 
-The resource subsystem owns logical assets: loaded PNGs, atlas layouts, metadata. The renderer owns GPU-side resources: wgpu buffers, textures, samplers. At level load, the resource subsystem prepares CPU-side data and hands it to the renderer, which uploads to the GPU and returns opaque handles. Other subsystems borrow these handles — they never call wgpu directly.
+The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-side decoded data (UI textures) lives outside the renderer. At level load, baked `.prm` bytes are parsed and uploaded to the GPU; the renderer returns opaque handles. Other subsystems borrow these handles — they never call wgpu directly.
 
-### 7.1 Lifecycle
+### 7.1 Texture Types
+
+| Type | Location | Description |
+|------|----------|-------------|
+| `UiTexture` | `crates/postretro/src/ui_texture.rs` | CPU-side `{ data, width, height }`. RGBA8 decoded from PNG. Used for splash and HUD blits. No wgpu handles. |
+| `LoadedTexture` | `crates/postretro/src/render/loaded_texture.rs` | World-material GPU textures: wgpu handles for diffuse, specular, and normal slots plus `mip_count`. Lives inside the renderer module to preserve the "Renderer owns GPU" invariant. |
+
+### 7.2 Lifecycle
 
 | Phase | Action |
 |-------|--------|
-| Level load | Parse PRL texture names. Load all referenced PNGs. Upload to GPU. Distribute handles. |
+| Level load | Parse PRL `TextureNames` and `TextureCacheKeys`. Open each `.prm` sidecar, upload mip chains to GPU. Build sampler pool. Distribute handles. |
 | Gameplay | Handles are stable. No allocation or deallocation during gameplay. |
 | Level unload | Release all GPU resources. Drop all texture data. Handles become invalid. |
 
 Resources are loaded once at level load and released on level unload. No incremental loading during gameplay. No reference counting — the level owns everything, and everything dies with the level.
 
-### 7.2 Renderer Contract
+### 7.3 Sampler Pool
+
+The renderer maintains a `mip_count_samplers: HashMap<u32, wgpu::Sampler>` pool — one sampler per distinct `mip_count` observed across loaded textures. Each sampler is identical except `lod_max_clamp = (mip_count - 1) as f32`. The pool is eagerly populated after `load_textures` returns, unconditionally including `{1}` for placeholders. Sampler lifetime is engine-lifetime; the pool accumulates new entries across level reloads but never shrinks. Material bind groups select the sampler whose key matches the texture's `mip_count`. A lookup miss is a logic error — eager population guarantees coverage.
+
+### 7.4 Renderer Contract
 
 Renderer receives opaque resource handles at level load. It uses these handles to bind textures and buffers during draw calls. Renderer never interprets raw texture data or manages GPU memory directly. If a handle is invalid (stale reference after level unload), the engine must prevent use — this is a logic error, not a recoverable condition.
 

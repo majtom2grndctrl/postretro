@@ -12,20 +12,21 @@ use crate::scripting::registry::{
 
 use super::eval_curve;
 
-/// World gravity in m/s². Negative is "down" by convention. Combined with
-/// `BillboardEmitterComponent::buoyancy` per the plan's sign convention:
-/// `vertical_accel = WORLD_GRAVITY * -buoyancy`. So `buoyancy = -1` falls at
-/// `-9.81 m/s²`, `buoyancy = 0` floats, `buoyancy > 0` rises.
-pub(crate) const WORLD_GRAVITY: f32 = -9.81;
-
-/// Advance every `ParticleState` entity by `delta` seconds. Two-pass: collect
-/// snapshots, mutate, then despawn expired particles after the iteration so
-/// the registry is never mutated mid-walk.
+/// Advance every `ParticleState` entity by `delta` seconds. `gravity` is the
+/// current world gravity in m/s² (negative = downward); the caller reads it
+/// from `ScriptCtx::gravity` so the script-mutable register flows through one
+/// path. Combined with `BillboardEmitterComponent::buoyancy` per the plan's
+/// sign convention: `vertical_accel = gravity * -buoyancy`. So
+/// `buoyancy = -1` falls at gravity, `buoyancy = 0` floats, `buoyancy > 0`
+/// rises.
+///
+/// Two-pass: collect snapshots, mutate, then despawn expired particles after
+/// the iteration so the registry is never mutated mid-walk.
 ///
 /// Frame ordering: runs after the emitter bridge and before the light bridge —
 /// ensures newly-spawned particles are integrated at least once before the
 /// render stage reads their state.
-pub(crate) fn tick(registry: &mut EntityRegistry, delta: f32) {
+pub(crate) fn tick(registry: &mut EntityRegistry, delta: f32, gravity: f32) {
     // Pass 1: gather (id, snapshot) so we drop the immutable iterator borrow
     // before issuing the mutating writes below. ParticleState clones are
     // cheap at particle scale (curves are short Vec<f32>).
@@ -57,7 +58,7 @@ pub(crate) fn tick(registry: &mut EntityRegistry, delta: f32) {
 
         // Velocity integration: gravity + buoyancy on Y, then drag damping.
         let mut velocity = velocity_vec;
-        velocity.y += WORLD_GRAVITY * -state.buoyancy * delta;
+        velocity.y += gravity * -state.buoyancy * delta;
         let damping = (1.0 - state.drag * delta).max(0.0);
         velocity *= damping;
         state.velocity = velocity.to_array();
@@ -118,6 +119,11 @@ mod tests {
     use super::*;
     use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 
+    /// Test-only Earth-default gravity. Production callers read from
+    /// `ScriptCtx::gravity` (seeded from worldspawn `initialGravity` at level
+    /// load); the sim itself is gravity-agnostic.
+    const TEST_GRAVITY: f32 = -9.81;
+
     fn default_emitter_component() -> BillboardEmitterComponent {
         BillboardEmitterComponent {
             rate: 0.0,
@@ -136,6 +142,9 @@ mod tests {
         }
     }
 
+    // Each argument maps to a distinct ParticleState field; flattening would
+    // require a new test-only struct with no benefit.
+    #[allow(clippy::too_many_arguments)]
     fn spawn_particle(
         registry: &mut EntityRegistry,
         velocity: [f32; 3],
@@ -190,8 +199,8 @@ mod tests {
 
     #[test]
     fn parabolic_trajectory_under_normal_gravity() {
-        // velocity = (0, 5, 0), buoyancy = -1 → vertical_accel = WORLD_GRAVITY.
-        // y(t) = 5t + 0.5 * WORLD_GRAVITY * t^2. The sim uses explicit Euler
+        // velocity = (0, 5, 0), buoyancy = -1 → vertical_accel = TEST_GRAVITY.
+        // y(t) = 5t + 0.5 * TEST_GRAVITY * t^2. The sim uses explicit Euler
         // (see `tick`); to keep the analytic comparison meaningful we run at
         // 1/240 dt (4× game rate) and tolerate ~0.05 m. At game-rate 1/60 dt
         // the drift over 3 s is ~0.25 m — fine for the visual target but too
@@ -212,11 +221,11 @@ mod tests {
         let samples = [0.25_f32, 0.5, 1.0];
         let mut next_sample = 0;
         while next_sample < samples.len() {
-            tick(&mut reg, dt);
+            tick(&mut reg, dt, TEST_GRAVITY);
             elapsed += dt;
             if elapsed + 0.5 * dt >= samples[next_sample] {
                 let t = elapsed;
-                let analytic_y = 5.0 * t + 0.5 * WORLD_GRAVITY * t * t;
+                let analytic_y = 5.0 * t + 0.5 * TEST_GRAVITY * t * t;
                 let pos_y = reg.get_component::<Transform>(id).unwrap().position.y;
                 assert!(
                     (pos_y - analytic_y).abs() < 0.05,
@@ -247,7 +256,7 @@ mod tests {
         // ≈ 0.18 — small relative to the initial 10 m/s.
         let dt = 1.0_f32 / 2000.0;
         for _ in 0..8000 {
-            tick(&mut reg, dt);
+            tick(&mut reg, dt, TEST_GRAVITY);
         }
         let vx = reg.get_component::<ParticleState>(id).unwrap().velocity[0];
         // 5% of initial magnitude; matches the analytic bound above with
@@ -272,13 +281,13 @@ mod tests {
         );
 
         // After a tiny tick, age ≈ 0 → size ≈ 0.5.
-        tick(&mut reg, 1e-4);
+        tick(&mut reg, 1e-4, TEST_GRAVITY);
         let v = reg.get_component::<SpriteVisual>(id).unwrap();
         assert!((v.size - 0.5).abs() < 1e-3, "size at t=0: {}", v.size);
 
         // Advance to t = 0.5 (lifetime = 1.0).
         for _ in 0..4999 {
-            tick(&mut reg, 1e-4);
+            tick(&mut reg, 1e-4, TEST_GRAVITY);
         }
         let v = reg.get_component::<SpriteVisual>(id).unwrap();
         assert!((v.size - 1.0).abs() < 1e-2, "size at t=0.5: {}", v.size);
@@ -297,7 +306,7 @@ mod tests {
             vec![1.0],
             None,
         );
-        tick(&mut reg, 0.1);
+        tick(&mut reg, 0.1, TEST_GRAVITY);
         assert!(!reg.exists(id), "particle past lifetime must be despawned");
     }
 
@@ -322,7 +331,7 @@ mod tests {
         let dt = 1.0_f32 / 240.0;
         // 0.5 seconds → 120 steps.
         for _ in 0..120 {
-            tick(&mut reg, dt);
+            tick(&mut reg, dt, TEST_GRAVITY);
         }
         let rotation = reg.get_component::<SpriteVisual>(id).unwrap().rotation;
         assert!(
@@ -350,7 +359,7 @@ mod tests {
         );
 
         // Tick once with the emitter live so rotation accumulates.
-        tick(&mut reg, 0.1);
+        tick(&mut reg, 0.1, TEST_GRAVITY);
         let rotation_before = reg.get_component::<SpriteVisual>(id).unwrap().rotation;
         assert!(rotation_before > 0.0, "rotation must have advanced");
 
@@ -358,8 +367,8 @@ mod tests {
         reg.despawn(emitter_id).unwrap();
 
         // Further ticks must not panic and rotation must not advance.
-        tick(&mut reg, 0.1);
-        tick(&mut reg, 0.1);
+        tick(&mut reg, 0.1, TEST_GRAVITY);
+        tick(&mut reg, 0.1, TEST_GRAVITY);
         let rotation_after = reg.get_component::<SpriteVisual>(id).unwrap().rotation;
         assert!(
             (rotation_after - rotation_before).abs() < 1e-6,
@@ -388,7 +397,7 @@ mod tests {
         }
         let dt = 1.0_f32 / 60.0;
         let start = std::time::Instant::now();
-        tick(&mut reg, dt);
+        tick(&mut reg, dt, TEST_GRAVITY);
         let elapsed = start.elapsed();
         assert!(
             elapsed.as_micros() < 500,

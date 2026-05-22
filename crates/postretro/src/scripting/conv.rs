@@ -288,6 +288,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::ParticleState => "particle_state",
         ComponentKind::SpriteVisual => "sprite_visual",
         ComponentKind::FogVolume => "fog_volume",
+        ComponentKind::PlayerMovement => "player_movement",
     }
 }
 
@@ -352,12 +353,13 @@ impl<'js> FromJs<'js> for ComponentValue {
             }
             "light" => {
                 // setComponent("light",...) is intentionally blocked — scripts
-                // use the LightEntity handle's setAnimation method instead.
+                // use LightEntityHandle capability methods to animate lights.
                 let _ = o;
                 Err(rquickjs::Exception::throw_type(
                     ctx,
                     "LightComponent is read-only via setComponent; \
-                     use a LightEntity handle's setAnimation method instead",
+                     use a LightEntityHandle capability method (pulse, fade, flicker, colorShift, or sweep) \
+                     to build a setLightAnimation reaction step",
                 ))
             }
             "billboard_emitter" | "particle_state" | "sprite_visual" => {
@@ -382,8 +384,8 @@ impl<'js> FromJs<'js> for ComponentValue {
                 let density: f32 = o.get("density").map_err(|e| {
                     rquickjs::Exception::throw_type(ctx, &format!("FogVolume.density: {e}"))
                 })?;
-                let scatter: f32 = o.get("scatter").map_err(|e| {
-                    rquickjs::Exception::throw_type(ctx, &format!("FogVolume.scatter: {e}"))
+                let glow: f32 = o.get("glow").map_err(|e| {
+                    rquickjs::Exception::throw_type(ctx, &format!("FogVolume.glow: {e}"))
                 })?;
                 let edge_softness: f32 = o.get("edgeSoftness").map_err(|e| {
                     rquickjs::Exception::throw_type(ctx, &format!("FogVolume.edgeSoftness: {e}"))
@@ -412,6 +414,30 @@ impl<'js> FromJs<'js> for ComponentValue {
                     }
                     _ => 1.0,
                 };
+                let min_brightness: f32 = match o.get::<_, JsValue>("minBrightness") {
+                    Ok(v) if !v.is_null() && !v.is_undefined() => {
+                        let json = js_to_json(ctx, v)?;
+                        serde_json::from_value(json).map_err(|e| {
+                            rquickjs::Exception::throw_type(
+                                ctx,
+                                &format!("FogVolume.minBrightness: {e}"),
+                            )
+                        })?
+                    }
+                    _ => 0.0,
+                };
+                let light_range: f32 = match o.get::<_, JsValue>("lightRange") {
+                    Ok(v) if !v.is_null() && !v.is_undefined() => {
+                        let json = js_to_json(ctx, v)?;
+                        serde_json::from_value(json).map_err(|e| {
+                            rquickjs::Exception::throw_type(
+                                ctx,
+                                &format!("FogVolume.lightRange: {e}"),
+                            )
+                        })?
+                    }
+                    _ => 1.0,
+                };
                 let animation: Option<FogAnimation> = match o.get::<_, JsValue>("animation") {
                     Ok(v) if !v.is_null() && !v.is_undefined() => {
                         let json = js_to_json(ctx, v)?;
@@ -426,11 +452,13 @@ impl<'js> FromJs<'js> for ComponentValue {
                 };
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
-                    scatter,
+                    glow,
                     edge_softness,
                     falloff,
                     tint,
                     saturation,
+                    min_brightness,
+                    light_range,
                     animation,
                 }))
             }
@@ -505,6 +533,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 })?;
                 json_to_js(ctx, &json)
             }
+            ComponentValue::PlayerMovement(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "PlayerMovement component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -531,7 +563,8 @@ impl FromLua for ComponentValue {
                 let _ = t;
                 Err(mlua::Error::RuntimeError(
                     "LightComponent is read-only via setComponent; \
-                     use a LightEntity handle's setAnimation method instead"
+                     use a LightEntityHandle capability method (pulse, fade, flicker, colorShift, or sweep) \
+                     to build a setLightAnimation reaction step"
                         .to_string(),
                 ))
             }
@@ -549,9 +582,9 @@ impl FromLua for ComponentValue {
                 let density: f32 = t
                     .get("density")
                     .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.density: {e}")))?;
-                let scatter: f32 = t
-                    .get("scatter")
-                    .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.scatter: {e}")))?;
+                let glow: f32 = t
+                    .get("glow")
+                    .map_err(|e| mlua::Error::RuntimeError(format!("FogVolume.glow: {e}")))?;
                 let edge_softness: f32 = t.get("edgeSoftness").map_err(|e| {
                     mlua::Error::RuntimeError(format!("FogVolume.edgeSoftness: {e}"))
                 })?;
@@ -568,6 +601,8 @@ impl FromLua for ComponentValue {
                     }
                 };
                 let saturation: f32 = t.get::<Option<f32>>("saturation")?.unwrap_or(1.0);
+                let min_brightness: f32 = t.get::<Option<f32>>("minBrightness")?.unwrap_or(0.0);
+                let light_range: f32 = t.get::<Option<f32>>("lightRange")?.unwrap_or(1.0);
                 let animation: Option<FogAnimation> = match t.get::<LuaValue>("animation")? {
                     LuaValue::Nil => None,
                     other => {
@@ -579,11 +614,13 @@ impl FromLua for ComponentValue {
                 };
                 Ok(ComponentValue::FogVolume(FogVolumeComponent {
                     density,
-                    scatter,
+                    glow,
                     edge_softness,
                     falloff,
                     tint,
                     saturation,
+                    min_brightness,
+                    light_range,
                     animation,
                 }))
             }
@@ -646,6 +683,9 @@ impl IntoLua for ComponentValue {
                 })?;
                 json_to_lua(lua, &json)
             }
+            ComponentValue::PlayerMovement(_) => Err(mlua::Error::RuntimeError(
+                "PlayerMovement component is engine-managed and not exposed to scripts".to_string(),
+            )),
         }
     }
 }
@@ -925,7 +965,7 @@ mod tests {
     #[test]
     fn fog_volume_component_round_trips_through_quickjs() {
         // The script-facing FogVolume component carries
-        // {density, scatter, edgeSoftness, falloff} — all four are read on
+        // {density, glow, edgeSoftness, falloff} — all four are read on
         // `from_js` and emitted on `into_js` under `kind: "fog_volume"`. AABB
         // fields on the input are silently ignored.
         let rt = rquickjs::Runtime::new().unwrap();
@@ -936,7 +976,7 @@ mod tests {
                     r#"({
                         kind: "fog_volume",
                         density: 0.4,
-                        scatter: 0.5,
+                        glow: 0.5,
                         edgeSoftness: 0.75,
                         falloff: 2.5,
                         // AABB fields silently ignored
@@ -950,7 +990,7 @@ mod tests {
                 panic!("expected FogVolume variant, got {cv:?}");
             };
             assert!((f.density - 0.4).abs() < 1e-6);
-            assert!((f.scatter - 0.5).abs() < 1e-6);
+            assert!((f.glow - 0.5).abs() < 1e-6);
             assert!((f.edge_softness - 0.75).abs() < 1e-6);
             assert!((f.falloff - 2.5).abs() < 1e-6);
 
@@ -961,8 +1001,8 @@ mod tests {
             assert_eq!(kind, "fog_volume");
             let density: f32 = o.get("density").unwrap();
             assert!((density - 0.4).abs() < 1e-6);
-            let scatter: f32 = o.get("scatter").unwrap();
-            assert!((scatter - 0.5).abs() < 1e-6);
+            let glow: f32 = o.get("glow").unwrap();
+            assert!((glow - 0.5).abs() < 1e-6);
             let edge_softness: f32 = o.get("edgeSoftness").unwrap();
             assert!((edge_softness - 0.75).abs() < 1e-6);
             let falloff: f32 = o.get("falloff").unwrap();
@@ -978,7 +1018,7 @@ mod tests {
                 r#"return {
                     kind = "fog_volume",
                     density = 0.4,
-                    scatter = 0.5,
+                    glow = 0.5,
                     edgeSoftness = 0.75,
                     falloff = 2.5,
                     -- AABB fields silently ignored
@@ -993,7 +1033,7 @@ mod tests {
             panic!("expected FogVolume variant, got {cv:?}");
         };
         assert!((f.density - 0.4).abs() < 1e-6);
-        assert!((f.scatter - 0.5).abs() < 1e-6);
+        assert!((f.glow - 0.5).abs() < 1e-6);
         assert!((f.edge_softness - 0.75).abs() < 1e-6);
         assert!((f.falloff - 2.5).abs() < 1e-6);
 
@@ -1006,8 +1046,8 @@ mod tests {
         assert_eq!(kind, "fog_volume");
         let density: f32 = tbl.get("density").unwrap();
         assert!((density - 0.4).abs() < 1e-6);
-        let scatter: f32 = tbl.get("scatter").unwrap();
-        assert!((scatter - 0.5).abs() < 1e-6);
+        let glow: f32 = tbl.get("glow").unwrap();
+        assert!((glow - 0.5).abs() < 1e-6);
         let edge_softness: f32 = tbl.get("edgeSoftness").unwrap();
         assert!((edge_softness - 0.75).abs() < 1e-6);
         let falloff: f32 = tbl.get("falloff").unwrap();

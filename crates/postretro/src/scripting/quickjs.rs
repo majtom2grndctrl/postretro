@@ -373,21 +373,50 @@ mod tests {
         });
     }
 
+    /// JS snippet shared by the fog-handle curve tests. Monkey-patches the
+    /// `worldQuery` primitive to return one synthetic fog snapshot, then runs
+    /// `world.query({ component: "fog_volume" })` so the SDK's bundled
+    /// `wrapFogVolumeEntity` builds the handle. The capability-handle refactor
+    /// folded curve construction into handle methods (`fog.pulse({ ... })`)
+    /// that are no longer reachable as bare globals — the only public entry
+    /// point is `world.query`. Override pattern keeps the test self-contained
+    /// without exposing wrapper internals to author scripts.
+    const FOG_HANDLE_FIXTURE: &str = r#"
+        const fakeSnapshot = {
+            id: ID,
+            position: { x: 0, y: 0, z: 0 },
+            tags: [],
+            component: {
+                density: 1.0, glow: 0.5, edgeSoftness: 0,
+                falloff: 1.0, tint: [1, 1, 1],
+                saturation: 1.0, minBrightness: 0.0, lightRange: 1.0,
+                animation: null,
+            },
+        };
+        const realWorldQuery = globalThis.worldQuery;
+        globalThis.worldQuery = (filter) => {
+            if (filter.component === "fog_volume") return [fakeSnapshot];
+            return realWorldQuery(filter);
+        };
+        const fogs = world.query({ component: "fog_volume" });
+        globalThis.worldQuery = realWorldQuery;
+        if (fogs.length !== 1) throw new Error("expected 1 fog, got " + fogs.length);
+        const fog = fogs[0];
+    "#;
+
     #[test]
-    fn fog_pulse_returns_single_step_set_fog_animation() {
-        // fogPulse must emit exactly one `setFogAnimation` step whose
-        // `args.density` is a 16-sample sine curve, with `playCount = null`
-        // (loop forever). The previous contract (16 `setFogDensity` steps)
-        // was wrong: the sequence dispatcher fires every step on the same
-        // frame, so the 16-step array collapsed to its last value with no
-        // time-varying playback. The animation channel evaluates per-frame
-        // on the bridge side instead.
+    fn fog_handle_pulse_returns_single_step_set_fog_animation() {
+        // `fog.pulse({ ... })` must emit exactly one `setFogAnimation` step
+        // whose `args.density` is a 17-sample sine curve (16 intervals + wrap
+        // sample), with `playCount = null` (loop forever). The 17th sample
+        // equals the 1st so the linear sampler interpolates cleanly at the
+        // period boundary. Replaces the old free-`fogPulse` test — curve
+        // generation is now a handle method.
         let (subsys, _ctx) = setup();
         subsys.definition_ctx().with(|ctx| {
-            let json: String = ctx
-                .eval(
-                    r#"
-                    const steps = fogPulse(7, 0.2, 1.0, 1500);
+            let src = FOG_HANDLE_FIXTURE.replace("ID", "7")
+                + r#"
+                    const steps = fog.pulse({ min: 0.2, max: 1.0, periodMs: 1500 });
                     if (steps.length !== 1) throw new Error("expected 1 step, got " + steps.length);
                     const s = steps[0];
                     if (s.id !== 7) throw new Error("expected id == 7");
@@ -398,11 +427,10 @@ mod tests {
                     if (s.args.phase !== null) throw new Error("expected phase === null");
                     if (s.args.playCount !== null) throw new Error("expected playCount === null (loop forever)");
                     JSON.stringify(s.args.density)
-                    "#,
-                )
-                .unwrap();
+                "#;
+            let json: String = ctx.eval(src).unwrap();
             let densities: Vec<f64> = serde_json::from_str(&json).unwrap();
-            assert_eq!(densities.len(), 16);
+            assert_eq!(densities.len(), 17);
             let lo = 0.2_f64;
             let hi = 1.0_f64;
             let mid = (lo + hi) * 0.5;
@@ -415,22 +443,27 @@ mod tests {
                     "sample {i}: expected {expected}, got {got}"
                 );
             }
+            // Wrap sample: sample[16] must equal sample[0].
+            assert!(
+                (densities[16] - densities[0]).abs() < 1e-5,
+                "wrap sample[16] must equal sample[0]; got {} vs {}",
+                densities[16],
+                densities[0]
+            );
         });
     }
 
     #[test]
-    fn fog_fade_returns_single_step_one_shot_set_fog_animation() {
-        // fogFade must emit exactly one `setFogAnimation` step whose
-        // `args.density` is a 16-sample linear ramp from `from` to `to`,
-        // with `playCount = 1` (one-shot). See the matching note on
-        // `fog_pulse_returns_single_step_set_fog_animation` for the shape
-        // rewrite.
+    fn fog_handle_fade_returns_single_step_one_shot_set_fog_animation() {
+        // `fog.fade({ ... })` must emit exactly one `setFogAnimation` step
+        // whose `args.density` is a 16-sample linear ramp from `from` to
+        // `to`, with `playCount = 1` (one-shot). See
+        // `fog_handle_pulse_...` for the shape rationale.
         let (subsys, _ctx) = setup();
         subsys.definition_ctx().with(|ctx| {
-            let json: String = ctx
-                .eval(
-                    r#"
-                    const steps = fogFade(11, 0.0, 4.0, 750);
+            let src = FOG_HANDLE_FIXTURE.replace("ID", "11")
+                + r#"
+                    const steps = fog.fade({ from: 0.0, to: 4.0, periodMs: 750 });
                     if (steps.length !== 1) throw new Error("expected 1 step, got " + steps.length);
                     const s = steps[0];
                     if (s.id !== 11) throw new Error("expected id == 11");
@@ -441,9 +474,8 @@ mod tests {
                     if (s.args.phase !== null) throw new Error("expected phase === null");
                     if (s.args.playCount !== 1) throw new Error("expected playCount === 1 (one-shot)");
                     JSON.stringify(s.args.density)
-                    "#,
-                )
-                .unwrap();
+                "#;
+            let json: String = ctx.eval(src).unwrap();
             let densities: Vec<f64> = serde_json::from_str(&json).unwrap();
             assert_eq!(densities.len(), 16);
             let from = 0.0_f64;
@@ -464,24 +496,37 @@ mod tests {
     #[test]
     fn sdk_prelude_installs_globals() {
         // The prelude rewrites `export const world = ...` and friends as
-        // `globalThis.x = ...` assignments. Verify each surfaces in the
-        // definition context.
+        // `globalThis.x = ...` assignments. After the capability-handle
+        // refactor, `flicker` / `pulse` / `colorShift` / `sweep` /
+        // `fogPulse` / `fogFade` are no longer exported from `index.ts` —
+        // they live as methods on `LightEntityHandle` / `FogVolumeHandle`.
+        // Verify the still-global surface (`world`, `timeline`, `sequence`)
+        // and that the dropped names are absent.
         let (subsys, _ctx) = setup();
         subsys.definition_ctx().with(|ctx| {
             let typeof_world: String = ctx.eval("typeof world").unwrap();
             assert_eq!(typeof_world, "object", "world missing");
-            for fn_name in [
-                "flicker",
-                "pulse",
-                "colorShift",
-                "sweep",
-                "timeline",
-                "sequence",
-            ] {
+            for fn_name in ["timeline", "sequence"] {
                 let kind: String = ctx
                     .eval(format!("typeof {fn_name}").as_str())
                     .unwrap_or_else(|e| panic!("{fn_name}: {e}"));
                 assert_eq!(kind, "function", "{fn_name}");
+            }
+            for absent in [
+                "flicker",
+                "pulse",
+                "colorShift",
+                "sweep",
+                "fogPulse",
+                "fogFade",
+            ] {
+                let kind: String = ctx
+                    .eval(format!("typeof {absent}").as_str())
+                    .unwrap_or_else(|e| panic!("{absent}: {e}"));
+                assert_eq!(
+                    kind, "undefined",
+                    "{absent} must NOT be a bare global after the capability-handle refactor"
+                );
             }
         });
     }

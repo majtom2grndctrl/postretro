@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use glam::DVec3;
+use serde::{Deserialize, Serialize};
 
 impl Default for TextureProjection {
     fn default() -> Self {
@@ -129,7 +130,7 @@ pub struct MapEntityRecord {
 }
 
 /// Light shape. Governs which fields of `MapLight` are meaningful.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LightType {
     /// Omnidirectional point light.
     Point,
@@ -144,7 +145,7 @@ pub enum LightType {
 ///
 /// `falloff_range` is the zero-intensity distance (Linear) or the clamp
 /// distance (InverseDistance / InverseSquared).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FalloffModel {
     /// `brightness = 1 - (distance / falloff_range)`, clamped at 0.
     Linear,
@@ -162,7 +163,7 @@ pub enum FalloffModel {
 /// Format-agnostic: Quake light styles, Doom sector effects, UDMF curves,
 /// and hand-authored data all translate to this shape. Translators own their
 /// format's preset vocabulary and expand presets into sample curves.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LightAnimation {
     pub period: f32,
     /// 0-1 offset within the cycle — desync otherwise-identical presets.
@@ -185,7 +186,7 @@ pub struct LightAnimation {
 /// consume `Vec<MapLight>`; neither sees source-format vocabulary.
 ///
 /// See `context/lib/build_pipeline.md` §Custom FGD and §PRL Compilation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapLight {
     /// Position in engine space (Y-up), meters. Directional lights still
     /// carry a position for probe/debug purposes but it is not used for
@@ -394,6 +395,10 @@ pub struct MapData {
     /// Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest); clamped to 1..=8.
     /// Default 4 when the worldspawn entity does not author the key.
     pub fog_pixel_scale: u32,
+    /// Worldspawn `initialGravity` (m/s², negative = downward). Required KVP
+    /// — `parse_map_file` errors when absent so authors face an explicit
+    /// choice rather than inheriting an undocumented engine default.
+    pub initial_gravity: f32,
 }
 
 /// One fog volume entity, resolved to an AABB (and optionally a convex plane
@@ -412,7 +417,7 @@ pub struct MapFogVolume {
     /// then to the GPU `FogVolume.edge_softness` slot. Semantic / zero-plane
     /// volumes (`fog_lamp`, `fog_tube`) ignore this and use `radial_falloff`.
     pub edge_softness: f32,
-    pub scatter: f32,
+    pub glow: f32,
     pub radial_falloff: f32,
     /// Convex bounding planes (engine space). A point `p` is inside the volume
     /// iff `dot(p, n) <= d` for every `(nx, ny, nz, d)` plane. Empty means the
@@ -424,6 +429,10 @@ pub struct MapFogVolume {
     pub tint: [f32; 3],
     /// Scatter saturation. 0 = greyscale, 1 = natural (default), >1 = boosted.
     pub saturation: f32,
+    /// Minimum scatter brightness floor. `0.0` = no floor (default).
+    pub min_brightness: f32,
+    /// Per-volume light range multiplier. `1.0` = same reach as open air (default).
+    pub light_range: f32,
     /// When `true`, the level compiler bakes `shape_mode = 1.0` into the
     /// `FogVolumeRecord` so the raymarch shader fades against an ellipsoid
     /// derived from `inv_half_ext`. When `false` (default for every existing
@@ -494,11 +503,10 @@ mod keyframe_resample_tests {
         // Midpoint should be roughly halfway (Catmull-Rom with reflected
         // endpoints on a linear ramp reproduces the linear midpoint).
         let mid = out[out.len() / 2];
-        for c in 0..3 {
+        for (c, value) in mid.iter().enumerate() {
             assert!(
-                (mid[c] - 0.5).abs() < 0.1,
-                "midpoint channel {c} = {}, expected ~0.5",
-                mid[c]
+                (value - 0.5).abs() < 0.1,
+                "midpoint channel {c} = {value}, expected ~0.5"
             );
         }
     }

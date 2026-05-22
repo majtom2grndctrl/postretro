@@ -95,12 +95,12 @@ pub(crate) fn register_fog_reaction_primitives(registry: &mut ReactionPrimitiveR
             })?;
         super::set_fog_density::dispatch(reg, targets, &parsed)
     });
-    registry.register("setFogScatter", |reg, targets, args| {
-        let parsed: super::set_fog_scatter::SetFogScatterArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
-                reason: format!("setFogScatter: failed to deserialize args: {e}"),
+    registry.register("setFogGlow", |reg, targets, args| {
+        let parsed: super::set_fog_glow::SetFogGlowArgs = serde_json::from_value(args.clone())
+            .map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("setFogGlow: failed to deserialize args: {e}"),
             })?;
-        super::set_fog_scatter::dispatch(reg, targets, &parsed)
+        super::set_fog_glow::dispatch(reg, targets, &parsed)
     });
     registry.register("setFogEdgeSoftness", |reg, targets, args| {
         let parsed: super::set_fog_edge_softness::SetFogEdgeSoftnessArgs =
@@ -159,15 +159,14 @@ pub(crate) fn register_sequenced_fog_primitives(
             .map_err(reaction_to_sequence_error)
     });
 
-    let ctx_scatter = ctx.clone();
-    registry.register("setFogScatter", move |id, args| {
-        let parsed: super::set_fog_scatter::SetFogScatterArgs =
-            serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
-                reason: format!("setFogScatter: failed to deserialize args: {e}"),
+    let ctx_glow = ctx.clone();
+    registry.register("setFogGlow", move |id, args| {
+        let parsed: super::set_fog_glow::SetFogGlowArgs = serde_json::from_value(args.clone())
+            .map_err(|e| SequenceError::InvalidArgument {
+                reason: format!("setFogGlow: failed to deserialize args: {e}"),
             })?;
-        let mut reg = ctx_scatter.registry.borrow_mut();
-        super::set_fog_scatter::dispatch(&mut reg, &[id], &parsed)
-            .map_err(reaction_to_sequence_error)
+        let mut reg = ctx_glow.registry.borrow_mut();
+        super::set_fog_glow::dispatch(&mut reg, &[id], &parsed).map_err(reaction_to_sequence_error)
     });
 
     let ctx_edge = ctx.clone();
@@ -233,7 +232,7 @@ mod tests {
         let mut r = ReactionPrimitiveRegistry::new();
         register_fog_reaction_primitives(&mut r);
         assert!(r.contains("setFogDensity"));
-        assert!(r.contains("setFogScatter"));
+        assert!(r.contains("setFogGlow"));
         assert!(r.contains("setFogEdgeSoftness"));
         assert!(r.contains("setFogFalloff"));
         assert!(r.contains("setFogParams"));
@@ -249,7 +248,7 @@ mod tests {
         let mut r = SequencedPrimitiveRegistry::new();
         register_sequenced_fog_primitives(&mut r, ScriptCtx::new());
         assert!(r.contains("setFogDensity"));
-        assert!(r.contains("setFogScatter"));
+        assert!(r.contains("setFogGlow"));
         assert!(r.contains("setFogEdgeSoftness"));
         assert!(r.contains("setFogFalloff"));
         assert!(r.contains("setFogParams"));
@@ -281,11 +280,13 @@ mod tests {
                 id,
                 FogVolumeComponent {
                     density: 0.5,
-                    scatter: 0.6,
+                    glow: 0.6,
                     edge_softness: 0.25,
                     falloff: 2.0,
                     tint: [1.0, 1.0, 1.0],
                     saturation: 1.0,
+                    min_brightness: 0.0,
+                    light_range: 1.0,
                     animation: None,
                 },
             )
@@ -309,7 +310,7 @@ mod tests {
                     id,
                     primitive: "setFogParams".to_string(),
                     args: serde_json::json!({
-                        "scatter": 0.4,
+                        "glow": 0.4,
                         "edgeSoftness": 0.5,
                     }),
                 },
@@ -335,7 +336,7 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(after.density, 0.9, "setFogDensity step applied");
-        assert_eq!(after.scatter, 0.4, "setFogParams.scatter applied");
+        assert_eq!(after.glow, 0.4, "setFogParams.glow applied");
         assert_eq!(
             after.edge_softness, 0.5,
             "setFogParams.edgeSoftness applied"
@@ -354,11 +355,13 @@ mod tests {
             id,
             FogVolumeComponent {
                 density: 0.5,
-                scatter: 0.6,
+                glow: 0.6,
                 edge_softness: 0.25,
                 falloff: 2.0,
                 tint: [1.0, 1.0, 1.0],
                 saturation: 1.0,
+                min_brightness: 0.0,
+                light_range: 1.0,
                 animation: None,
             },
         )
@@ -379,7 +382,7 @@ mod tests {
 
         let after = reg.get_component::<FogVolumeComponent>(id).unwrap();
         assert_eq!(after.density, 1.25);
-        assert_eq!(after.scatter, 0.6);
+        assert_eq!(after.glow, 0.6);
         assert_eq!(after.edge_softness, 0.5);
         assert_eq!(after.falloff, 3.0);
     }

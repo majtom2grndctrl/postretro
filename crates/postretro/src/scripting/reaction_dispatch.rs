@@ -234,7 +234,7 @@ fn dispatch_sequence(
     }
 }
 
-/// Called at `registerLevelManifest()` time, before reactions land in [`DataRegistry`].
+/// Called at `setupLevel()` time, before reactions land in [`DataRegistry`].
 /// Drops any `Sequence` reaction whose steps name an unknown primitive; logs an error per rejection.
 pub(crate) fn validate_sequence_primitives(
     reactions: Vec<NamedReaction>,
@@ -249,7 +249,7 @@ pub(crate) fn validate_sequence_primitives(
             for (i, step) in steps.iter().enumerate() {
                 if !sequence_registry.contains(&step.primitive) {
                     log::error!(
-                        "[Scripting] registerLevelManifest: sequence step {i} names unknown primitive \"{}\"",
+                        "[Scripting] setupLevel: sequence step {i} names unknown primitive \"{}\"",
                         step.primitive
                     );
                     return false;
@@ -268,7 +268,7 @@ pub(crate) fn resolve_entity_type<'a>(
     data_registry
         .entities
         .iter()
-        .find(|e| e.classname == classname)
+        .find(|e| e.canonical_name.as_deref() == Some(classname))
 }
 
 #[cfg(test)]
@@ -464,18 +464,20 @@ mod tests {
     fn resolve_entity_type_finds_registered_classname() {
         let mut data = DataRegistry::new();
         data.upsert_entity_type(EntityTypeDescriptor {
-            classname: "grunt".to_string(),
+            canonical_name: Some("grunt".to_string()),
             light: None,
             emitter: None,
+            movement: None,
         });
 
         let resolved = resolve_entity_type("grunt", &data);
         assert_eq!(
             resolved,
             Some(&EntityTypeDescriptor {
-                classname: "grunt".to_string(),
+                canonical_name: Some("grunt".to_string()),
                 light: None,
                 emitter: None,
+                movement: None,
             })
         );
     }

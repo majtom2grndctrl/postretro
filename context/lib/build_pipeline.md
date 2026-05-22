@@ -11,9 +11,9 @@
 Maps are authored in TrenchBroom, compiled to PRL with prl-build:
 
 ```
-TrenchBroom (.map) ──► prl-build (postretro-level-compiler) ──► PRL file (.prl)
+TrenchBroom (.map) ──► prl-build (postretro-level-compiler) ──► PRL file (.prl) + .prm sidecars
 
-Engine loads PRL + PNGs at runtime
+Engine loads PRL + .prm sidecars at runtime (PNGs for UI only)
 ```
 
 prl-build builds a BSP tree as a compiler intermediate, generates portal geometry, builds a global BVH over all static triangles, and packs runtime data into a custom binary format. BSP drives spatial partitioning and portal generation at compile time; the runtime consumes cells, portals, and BVH arrays. Engine loads via the `postretro-level-format` crate.
@@ -38,9 +38,9 @@ No WAD files. Textures are authored as PNGs.
 |-------|-------------|
 | Author | Create PNGs in `content/<mod>/textures/<collection>/<name>.png` (where `<mod>` is `base` for first-party content or `tests` for fixtures). TrenchBroom requires one subdirectory level. |
 | TrenchBroom | Browses the textures directory via the Postretro game config. |
-| prl-build | Reads PNGs for dimensions during compilation. |
-| PRL output | TextureNames section stores a deduplicated texture name list. No pixel data. |
-| Engine | Loads PNGs at runtime, matched to PRL texture entries by name string. |
+| prl-build | Reads PNGs, decodes them, runs Mitchell-Netravali downsampling in linear color space, and writes per-texture `.prm` mip sidecars to `<workspace>/.build-caches/prm-cache/<blake3-hex>.prm`. Stores a content-addressed blake3 key per texture in the `TextureCacheKeys` PRL section. Authored PNGs are not shipped or read at runtime for world materials. |
+| PRL output | `TextureNames` section stores a deduplicated texture name list. `TextureCacheKeys` section stores one 32-byte blake3 per name entry. No pixel data. |
+| Engine | Loads `.prm` sidecars at level load via the blake3 keys in `TextureCacheKeys`. Never opens a PNG for world materials. UI textures (splash, HUD) still load directly from PNGs. |
 
 ---
 
@@ -59,7 +59,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | `billboard_emitter` | point | Billboard particle emitter | `rate` (particles/sec; default 6), `lifetime` (seconds; default 3), `spread` (cone half-angle radians; default 0.4), `buoyancy` (-1=falls, 0=floats, >0=rises; default 0.2), `drag` (velocity damping/sec; default 0.8), `sprite` (collection name; default "smoke"), `initial_velocity_x/y/z` (default 0/0.8/0), `color_r/g/b` (linear; default 1/1/1), `spin_rate` (radians/sec; default 0) |
 | `env_cubemap` | point | Reflection probe position | `size` (resolution per face; default 256) |
 | `env_reverb_zone` | brush | Acoustic zone | `reverb_type`, `decay_time`, `occlusion_factor` |
-| `worldspawn` | special | Scene-wide render settings | `script` (path to entry `.ts` script, relative to `.map` file; compiled by `prl-build`), `data_script` (path to data script file; TS compiled to JS via scripts-build, Luau passed through; absent = no data script), `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8) |
+| `worldspawn` | special | Scene-wide render settings | `script` (path to entry `.ts` script, relative to `.map` file; compiled by `prl-build`), `data_script` (path to data script file; TS compiled to JS via scripts-build, Luau passed through; absent = no data script), `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8), `initialGravity` (world gravity in m/s²; negative = downward; required; standard Earth = -9.81) |
 
 ### Entity resolution
 
@@ -84,7 +84,7 @@ Invalid KVP values log a warning naming the key and entity origin, fall back to 
 
 **Current built-in types:** `billboard_emitter`.
 
-**Two-sweep dispatch.** After the built-in pass, the loader runs a second sweep against script-registered entity types declared via `registerEntity` in the data script. The built-in pass returns the set of classnames it attempted to handle; the second sweep skips any classname in that set. Built-ins win on collision even when the built-in handler failed to spawn (e.g. registry exhausted) — a classname is owned by exactly one of the two paths for the lifetime of the level. Collisions log a `warn!` once per classname. See `context/lib/scripting.md §2` for the data context lifecycle that populates the descriptor table consumed by the second sweep.
+**Two-sweep dispatch.** After the built-in pass, the loader runs a second sweep against script-registered entity types declared on `setupMod()`'s `entities` return field. The built-in pass returns the set of classnames it attempted to handle; the second sweep skips any classname in that set. Built-ins win on collision even when the built-in handler failed to spawn (e.g. registry exhausted) — a classname is owned by exactly one of the two paths for the lifetime of the level. Collisions log a `warn!` once per classname. The second sweep matches placements against each descriptor's `canonicalName`; descriptors with no `canonicalName` are skipped (marker-only archetypes — see `scripting.md §2`). Any placement whose classname is not matched by either sweep and is not in the engine-special exclusion set (`worldspawn`, `player_spawn`) logs a `warn!` once per classname per sweep, naming the placement origin. See `context/lib/scripting.md §2` for the data context lifecycle that populates the descriptor table consumed by the second sweep.
 
 ---
 
@@ -118,6 +118,8 @@ parse .map → BSP construction → brush-side projection → portal generation 
 
 ### PRL section IDs
 
+PRL header `version` is 4. Loading a file with any other version fails.
+
 | Section | ID | When present |
 |---------|-----|-------------|
 | BspNodes | 12 | Always |
@@ -137,12 +139,62 @@ parse .map → BSP construction → brush-side projection → portal generation 
 | DeltaShVolumes | 27 | When the map has at least one animated light; per-light delta SH probe grids |
 | DataScript | 28 | When `data_script` KVP present on `worldspawn`; compiled script bytes + original source path |
 | MapEntity | 29 | When the map has at least one non-light, non-worldspawn entity; per-entity classname, origin, angles, tags, and KVP bag for runtime classname dispatch |
-| FogVolumes | 30 | Always (8-byte overhead when no fog_volume brushes present; carries fog_pixel_scale) |
+| FogVolumes | 30 | Always (12-byte overhead when no fog_volume brushes present; carries fog_pixel_scale and initial_gravity) |
 | FogCellMasks | 31 | When at least one fog volume entity is present (fog_volume brush, fog_lamp, or fog_tube) |
+| TextureCacheKeys | 32 | Always; one 32-byte blake3 per TextureNames entry pointing at a `.prm` sidecar under `.build-caches/prm-cache/` |
 
 ### Runtime visibility
 
 Portal traversal is the sole visibility path: per-frame flood-fill from the camera leaf with frustum narrowing at each portal. The runtime falls back to per-leaf AABB frustum culling for solid-leaf, exterior-camera, and no-portals cases. See `rendering_pipeline.md` §2.
+
+---
+
+## Build Cache
+
+Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake stages when their inputs are unchanged.
+
+**Location.** `.build-caches/prl-cache/` at the workspace root (the parent directory containing `Cargo.toml`). Created automatically on first build. Safe to delete at any time — the next build recreates it. The cache root `.build-caches/` also contains `prm-cache/` (texture mip sidecars; see §Baked texture mips).
+
+**Participating stages.** Lightmap bake and SH volume bake. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
+
+**Key composition.** `blake3(stage_id || stage_version_le_bytes || input_hash)`.
+
+| Component | Form |
+|-----------|------|
+| `stage_id` | string literal — `"lightmap"` or `"sh_volume"` |
+| `stage_version` | `u32` constant (`STAGE_VERSION`) in each stage's module; bumped manually when the baking algorithm changes |
+| `input_hash` | `blake3(postcard(StageInputs) || postcard(StageConfig))` — covers the serialized data the stage reads |
+
+**Stage version bump rule.** Bump a stage's `STAGE_VERSION` when its output computation changes (algorithm, sampling, formula). The substrate invalidates every entry for that stage on the next build. Do not bump for unrelated changes.
+
+**Determinism invariant.** Both cached stages produce byte-identical output for identical inputs. Any new code in `lightmap_bake.rs` or `sh_bake.rs` must preserve this. Common non-determinism sources to avoid: `HashMap` iteration feeding output ordering, non-order-preserving parallel reductions.
+
+**CLI flags.**
+
+| Flag | Effect |
+|------|--------|
+| `--cache-dir <PATH>` | Use a custom cache directory instead of `.build-caches/prl-cache/` at the workspace root |
+| `--no-cache` | Disable the cache entirely — neither read nor write, no directory created |
+
+**Entry format.** One file per entry, named by the hex key. Layout: `[u32 le length | 32-byte blake3 hash | payload]`. `get()` validates length and hash before returning payload; mismatch is a soft failure (warning, cache miss).
+
+**Eviction.** No policy-driven eviction. Delete `.build-caches/prl-cache/` manually when it grows too large. A corrupted entry is discarded as a cache miss without touching other entries.
+
+---
+
+## Baked texture mips
+
+Per-texture mip-chain sidecars live alongside the stage-output cache. prl-build writes them; the engine reads them at level load.
+
+**`.prm` files.** Each sidecar bundles up to three material slots — diffuse, specular, and normal — each optional. Content-addressed by `blake3(diffuse PNG content)` when a diffuse slot is present; otherwise `blake3(tag_byte || first_present_PNG)`. The `tag_byte` prevents hash collisions between specular-only and normal-only single-slot textures. Stored at `<workspace>/.build-caches/prm-cache/<hex>.prm`. Cross-mod dedupe is intended: identical PNG bytes produce the same `.prm` regardless of which mod authored them.
+
+**Wire format.** 43-byte header + per-slot 12-byte block + tight payload. Header carries magic `b"PRM\x01"`, `stage_version` (`u8`), `slot_mask` (`u8`; bits 0/1/2 = diffuse/specular/normal), `bundle_hash` (`[u8; 32]`), and `total_body_bytes`. Per-slot block carries `format_tag` (0 = sRGB diffuse Rgba8, 1 = linear normal Rgba8, 2 = R8 specular), `width`, `height`, `level_count` (`floor(log2(max(w, h))) + 1`), and `payload_bytes`; payload is levels packed back-to-back from level 0, no row padding. `STAGE_VERSION` for `.prm` is a `u8` (in `postretro-level-format::prm`) — the header packs tightly and owns its own version semantics, diverging from the stage-cache `u32` `STAGE_VERSION` convention.
+
+**Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear space throughout. sRGB diffuse decoded via 256-entry LUT before filtering, re-encoded via IEC 61966-2-1. Specular filtered as linear R8. Normal filtered linearly then renormalised per output texel; `(0, 0, 1)` substituted when magnitude < 1e-4.
+
+**Cache invalidation.** Filename keys on diffuse content only (stable addressing). `bundle_hash` in the header covers `slot_mask` + every present slot's raw PNG bytes. On rebuild, prl-build re-hashes source PNGs and compares against the stored `bundle_hash`; mismatch triggers a full rebake and atomic overwrite (tempfile `<hex>.prm.tmp.<pid>` → `std::fs::rename`). A `stage_version` mismatch in the header also triggers rebake. To force a full retexture rebuild, delete `.build-caches/prm-cache/`.
+
+**Runtime.** Level load resolves each `TextureNamesSection` entry's blake3 key from `TextureCacheKeysSection`, opens the corresponding `.prm`, and uploads each slot's mip chain directly. A zero key (`[0u8; 32]`) substitutes per-slot placeholders silently. A corrupt or missing `.prm` substitutes per-slot placeholders and logs a `warn!`; load continues. Sampler `lod_max_clamp` is set to `mip_count - 1` per texture.
 
 ---
 

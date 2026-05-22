@@ -45,7 +45,7 @@ fn quake_to_engine(v: DVec3) -> DVec3 {
     DVec3::new(-v.y, v.z, -v.x)
 }
 
-/// Parse a `fog_tint` color255 string like "255 128 64" into a linear [0,1] float triple.
+/// Parse a `tint` color255 string like "255 128 64" into a linear [0,1] float triple.
 /// Values outside 0-255 are rejected; missing or malformed values return `None`.
 fn parse_fog_tint(s: &str) -> Option<[f32; 3]> {
     let parts: Vec<&str> = s.split_whitespace().collect();
@@ -167,6 +167,25 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         .and_then(|s| s.trim().parse::<i64>().ok())
         .map(|v| v.clamp(0, 8) as u32)
         .unwrap_or(0);
+
+    // Worldspawn `initialGravity` (m/s², negative = downward). Required —
+    // absence halts compilation so authors face an explicit choice rather
+    // than inheriting an undocumented engine default.
+    let initial_gravity: f32 = {
+        let raw = get_property(&geo_map, &worldspawn_id, "initialGravity").ok_or_else(|| {
+            anyhow::anyhow!(
+                "worldspawn missing required `initialGravity` KVP — author a value (m/s², \
+                 negative = downward; standard Earth gravity is -9.81)"
+            )
+        })?;
+        let parsed: f32 = raw.trim().parse().map_err(|e| {
+            anyhow::anyhow!("worldspawn `initialGravity` value `{raw}` is not a valid float: {e}")
+        })?;
+        if !parsed.is_finite() {
+            anyhow::bail!("worldspawn `initialGravity` value `{raw}` is not a finite number");
+        }
+        parsed
+    };
 
     for entity_id in geo_map.entities.iter() {
         let classname =
@@ -514,6 +533,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         map_entities,
         fog_volumes,
         fog_pixel_scale,
+        initial_gravity,
     })
 }
 
@@ -558,6 +578,23 @@ fn is_axis_aligned_brush_set(geo_map: &GeoMap, brush_ids: &[shambler::brush::Bru
         }
     }
     saw_face
+}
+
+/// Clamp `light_range` to a strictly-positive minimum.
+///
+/// `light_range = 0` is degenerate: the fog shader's
+/// `clamp(1.0 - dist / (range * vs_light_range), 0.0, 1.0)` would divide by
+/// zero when the range is 0. Authors almost certainly don't intend this.
+/// Negative and non-finite values are equally nonsensical here.
+fn clamp_light_range(value: f32, classname: &str) -> f32 {
+    const MIN: f32 = 0.001;
+    if !value.is_finite() || value <= 0.0 {
+        log::warn!(
+            "[Compiler] {classname}: light_range {value} is non-positive or non-finite; clamping to {MIN}"
+        );
+        return MIN;
+    }
+    MIN.max(value)
 }
 
 /// Compute a fog_volume brush entity's world-space AABB and bounding planes from its brush faces and
@@ -640,18 +677,27 @@ fn resolve_fog_volume(
         .get("edge_softness")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
-    let scatter = props
-        .get("scatter")
+    let glow = props
+        .get("glow")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
     let tint = props
-        .get("fog_tint")
+        .get("tint")
         .and_then(|s| parse_fog_tint(s))
         .unwrap_or([1.0, 1.0, 1.0]);
     let saturation = props
-        .get("fog_saturation")
+        .get("saturation")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
+    let min_brightness = props
+        .get("min_brightness")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0_f32);
+    let light_range = props
+        .get("light_range")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_light_range(v, classname))
+        .unwrap_or(1.0_f32);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -673,10 +719,12 @@ fn resolve_fog_volume(
         max: [max.x as f32, max.y as f32, max.z as f32],
         density,
         edge_softness,
-        scatter,
+        glow,
         radial_falloff: 0.0,
         tint,
         saturation,
+        min_brightness,
+        light_range,
         planes,
         tags,
         is_ellipsoid: false,
@@ -738,8 +786,8 @@ fn resolve_fog_ellipsoid(
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.5);
-    let scatter = props
-        .get("scatter")
+    let glow = props
+        .get("glow")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
     let radial_falloff = props
@@ -747,13 +795,22 @@ fn resolve_fog_ellipsoid(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(2.0);
     let tint = props
-        .get("fog_tint")
+        .get("tint")
         .and_then(|s| parse_fog_tint(s))
         .unwrap_or([1.0, 1.0, 1.0]);
     let saturation = props
-        .get("fog_saturation")
+        .get("saturation")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
+    let min_brightness = props
+        .get("min_brightness")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0_f32);
+    let light_range = props
+        .get("light_range")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_light_range(v, classname))
+        .unwrap_or(1.0_f32);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -774,10 +831,12 @@ fn resolve_fog_ellipsoid(
         max: [max.x as f32, max.y as f32, max.z as f32],
         density,
         edge_softness: 0.0,
-        scatter,
+        glow,
         radial_falloff,
         tint,
         saturation,
+        min_brightness,
+        light_range,
         planes: Vec::new(),
         tags,
         is_ellipsoid: true,
@@ -809,8 +868,8 @@ fn resolve_fog_lamp(
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.5);
-    let scatter = props
-        .get("scatter")
+    let glow = props
+        .get("glow")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
     let radial_falloff = props
@@ -818,13 +877,22 @@ fn resolve_fog_lamp(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(2.0);
     let tint = props
-        .get("fog_tint")
+        .get("tint")
         .and_then(|s| parse_fog_tint(s))
         .unwrap_or([1.0, 1.0, 1.0]);
     let saturation = props
-        .get("fog_saturation")
+        .get("saturation")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
+    let min_brightness = props
+        .get("min_brightness")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0_f32);
+    let light_range = props
+        .get("light_range")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_light_range(v, classname))
+        .unwrap_or(1.0_f32);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -847,10 +915,12 @@ fn resolve_fog_lamp(
         // Semantic point entities use `radial_falloff`; the primitive-only
         // edge softness slot is unused.
         edge_softness: 0.0,
-        scatter,
+        glow,
         radial_falloff,
         tint,
         saturation,
+        min_brightness,
+        light_range,
         planes: Vec::new(),
         tags,
         is_ellipsoid: false,
@@ -923,8 +993,8 @@ fn resolve_fog_tube(
         .get("density")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.3);
-    let scatter = props
-        .get("scatter")
+    let glow = props
+        .get("glow")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(0.6);
     let radial_falloff = props
@@ -932,13 +1002,22 @@ fn resolve_fog_tube(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.5);
     let tint = props
-        .get("fog_tint")
+        .get("tint")
         .and_then(|s| parse_fog_tint(s))
         .unwrap_or([1.0, 1.0, 1.0]);
     let saturation = props
-        .get("fog_saturation")
+        .get("saturation")
         .and_then(|s| s.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
+    let min_brightness = props
+        .get("min_brightness")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0_f32);
+    let light_range = props
+        .get("light_range")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_light_range(v, classname))
+        .unwrap_or(1.0_f32);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -969,10 +1048,12 @@ fn resolve_fog_tube(
         // Semantic point entities use `radial_falloff`; the primitive-only
         // edge softness slot is unused.
         edge_softness: 0.0,
-        scatter,
+        glow,
         radial_falloff,
         tint,
         saturation,
+        min_brightness,
+        light_range,
         planes: Vec::new(),
         tags,
         is_ellipsoid: false,
@@ -1052,13 +1133,13 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("workspace root")
-            .join("content/tests/maps/test.map")
+            .join("content/dev/maps/campaign-test.map")
     }
 
     #[test]
     fn parses_test_map() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         assert!(
             !map_data.brush_volumes.is_empty(),
@@ -1071,44 +1152,59 @@ mod tests {
     #[test]
     fn classifies_brushes_correctly() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
-        // info_player_start has 0 brushes
-        assert!(
-            map_data.entity_brushes.iter().all(|(_, count)| *count == 0),
-            "info_player_start should have 0 brushes"
-        );
-
-        // Should have worldspawn + info_player_start
         let classnames: Vec<&str> = map_data
             .entities
             .iter()
             .map(|e| e.classname.as_str())
             .collect();
         assert!(classnames.contains(&"worldspawn"));
-        assert!(classnames.contains(&"info_player_start"));
+        assert!(classnames.contains(&"player_spawn"));
+
+        // Point entities must have 0 brushes.
+        for point_classname in &["player_spawn", "player", "light", "light_spot", "fog_lamp"] {
+            let brush_count = map_data
+                .entity_brushes
+                .iter()
+                .find(|(cls, _)| cls == point_classname)
+                .map(|(_, count)| *count)
+                .unwrap_or(0);
+            assert_eq!(
+                brush_count, 0,
+                "{point_classname} is a point entity and should have 0 brushes"
+            );
+        }
+
+        // Brush entities must have > 0 brushes.
+        let fog_volume_brush_count = map_data
+            .entity_brushes
+            .iter()
+            .find(|(cls, _)| cls == "fog_volume")
+            .map(|(_, count)| *count)
+            .unwrap_or(0);
+        assert!(
+            fog_volume_brush_count > 0,
+            "fog_volume is a brush entity and should have > 0 brushes"
+        );
     }
 
     #[test]
     fn map_entities_collected_strip_reserved_keys_and_lights() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
-        // info_player_start is the only non-light, non-worldspawn point entity
-        // in test.map.
-        assert_eq!(
-            map_data.map_entities.len(),
-            1,
-            "expected exactly one collected map entity, got {:?}",
-            map_data
-                .map_entities
-                .iter()
-                .map(|e| e.classname.as_str())
-                .collect::<Vec<_>>()
+        assert!(
+            !map_data.map_entities.is_empty(),
+            "should have at least one collected map entity"
         );
 
-        let me = &map_data.map_entities[0];
-        assert_eq!(me.classname, "info_player_start");
+        // player_spawn must be present; check its reserved keys are stripped.
+        let me = map_data
+            .map_entities
+            .iter()
+            .find(|e| e.classname == "player_spawn")
+            .expect("player_spawn should be in map_entities");
         // Reserved keys (`classname`, `origin`, `angle`/`angles`/`mangle`,
         // `_tags`) must not appear in the residual KVP bag.
         for (k, _) in &me.key_values {
@@ -1126,12 +1222,19 @@ mod tests {
                 .all(|e| !crate::format::quake_map::is_light_classname(&e.classname)),
             "light classname leaked into map_entities"
         );
+        assert!(
+            map_data
+                .map_entities
+                .iter()
+                .all(|e| e.classname != "worldspawn"),
+            "worldspawn must not appear in map_entities",
+        );
     }
 
     #[test]
     fn brush_sides_have_valid_vertices() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         for (bi, brush) in map_data.brush_volumes.iter().enumerate() {
             for (si, side) in brush.sides.iter().enumerate() {
@@ -1147,7 +1250,7 @@ mod tests {
     #[test]
     fn brush_sides_have_unit_normals() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         for (bi, brush) in map_data.brush_volumes.iter().enumerate() {
             for (si, side) in brush.sides.iter().enumerate() {
@@ -1163,17 +1266,17 @@ mod tests {
     #[test]
     fn extracts_player_start_origin() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         let player_start = map_data
             .entities
             .iter()
-            .find(|e| e.classname == "info_player_start")
-            .expect("should have info_player_start");
+            .find(|e| e.classname == "player_spawn")
+            .expect("should have player_spawn");
 
         let origin = player_start
             .origin
-            .expect("info_player_start should have origin");
+            .expect("player_spawn should have origin");
         assert!(origin.x.is_finite(), "origin x should be finite");
         assert!(origin.y.is_finite(), "origin y should be finite");
         assert!(origin.z.is_finite(), "origin z should be finite");
@@ -1197,7 +1300,7 @@ mod tests {
     #[test]
     fn brush_side_winding_aligns_with_side_normal() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         let mut checked = 0usize;
         for (bi, brush) in map_data.brush_volumes.iter().enumerate() {
@@ -1231,11 +1334,11 @@ mod tests {
     #[test]
     fn every_brush_volume_has_brush_sides() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
-            .expect("test.map should parse without error");
+            .expect("campaign-test.map should parse without error");
 
         assert!(
             !map_data.brush_volumes.is_empty(),
-            "test.map should produce brush volumes"
+            "campaign-test.map should produce brush volumes"
         );
 
         for (i, brush) in map_data.brush_volumes.iter().enumerate() {
@@ -1435,6 +1538,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1488,6 +1592,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1567,13 +1672,14 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
 "classname" "fog_volume"
 "falloff" "3.0"
 "density" "0.25"
-"scatter" "0.7"
+"glow" "0.7"
 {
 ( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
 ( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
@@ -1588,7 +1694,7 @@ mod tests {
         let mut props = HashMap::new();
         props.insert("falloff".to_string(), "3.0".to_string());
         props.insert("density".to_string(), "0.25".to_string());
-        props.insert("scatter".to_string(), "0.7".to_string());
+        props.insert("glow".to_string(), "0.7".to_string());
         let scale = MapFormat::IdTech2.units_to_meters();
         let v = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_volume")
             .expect("box brush must resolve");
@@ -1605,7 +1711,7 @@ mod tests {
         assert_eq!(v.edge_softness, 0.0);
         assert!((v.radial_falloff - 3.0).abs() < 1e-6);
         assert!((v.density - 0.25).abs() < 1e-6);
-        assert!((v.scatter - 0.7).abs() < 1e-6);
+        assert!((v.glow - 0.7).abs() < 1e-6);
         for i in 0..3 {
             assert!(
                 v.max[i] > v.min[i],
@@ -1629,6 +1735,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1669,6 +1776,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1711,7 +1819,7 @@ mod tests {
         // Compose with pack.rs to confirm `inv_half_ext` lands at
         // `1 / ((max - min) * 0.5)`. This locks the end-to-end contract that
         // the ellipsoid shader path depends on.
-        let section = crate::pack::encode_fog_volumes(std::slice::from_ref(&v), 1);
+        let section = crate::pack::encode_fog_volumes(std::slice::from_ref(&v), 1, -9.81);
         assert_eq!(section.volumes.len(), 1);
         let rec = &section.volumes[0];
         for i in 0..3 {
@@ -1731,6 +1839,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1765,6 +1874,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1793,6 +1903,7 @@ mod tests {
 // entity 0
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 // entity 1
 {
@@ -1815,12 +1926,81 @@ mod tests {
     }
 
     #[test]
+    fn parse_map_file_reads_initial_gravity_from_worldspawn() {
+        let map_text = "\
+// entity 0
+{
+\"classname\" \"worldspawn\"
+\"initialGravity\" \"-15.0\"
+{
+( -16 -16 -16 ) ( -16 -16 16 ) ( -16 16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( -16 16 -16 ) ( 16 -16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( 16 -16 -16 ) ( -16 -16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 -16 16 ) ( 16 16 -16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 16 -16 ) ( -16 16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( -16 16 16 ) ( 16 -16 16 ) tex 0 0 0 1 1
+}
+}
+";
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let tmp = std::env::temp_dir().join(format!("postretro_initial_gravity_{unique}.map"));
+        std::fs::write(&tmp, map_text).unwrap();
+        let map_data = parse_map_file(&tmp, MapFormat::IdTech2)
+            .expect("inline gravity fixture should parse without error");
+        let _ = std::fs::remove_file(&tmp);
+        assert!(
+            (map_data.initial_gravity - -15.0).abs() < 1e-5,
+            "expected -15.0, got {}",
+            map_data.initial_gravity,
+        );
+    }
+
+    #[test]
+    fn parse_map_file_rejects_missing_initial_gravity() {
+        // Write a minimal .map file whose worldspawn omits `initialGravity` and
+        // confirm the parser surfaces a hard error referencing the key. Uses a
+        // single-brush worldspawn so brush extraction does not bail first.
+        let map_text = "\
+// entity 0
+{
+\"classname\" \"worldspawn\"
+{
+( -16 -16 -16 ) ( -16 -16 16 ) ( -16 16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( -16 16 -16 ) ( 16 -16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( 16 -16 -16 ) ( -16 -16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 -16 16 ) ( 16 16 -16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 16 -16 ) ( -16 16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( -16 16 16 ) ( 16 -16 16 ) tex 0 0 0 1 1
+}
+}
+";
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let tmp =
+            std::env::temp_dir().join(format!("postretro_missing_initial_gravity_{unique}.map"));
+        std::fs::write(&tmp, map_text).unwrap();
+        let err = parse_map_file(&tmp, MapFormat::IdTech2).unwrap_err();
+        let _ = std::fs::remove_file(&tmp);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("initialGravity"),
+            "error should reference `initialGravity`, got: {msg}",
+        );
+    }
+
+    #[test]
     fn empty_brush_set_not_detected_as_axis_aligned() {
         // No brushes → fall through to the plane-bounded path so the resolver
         // surfaces the empty-brush error instead of producing a silent ellipsoid.
         let map_text = r#"
 {
 "classname" "worldspawn"
+"initialGravity" "-9.81"
 }
 "#;
         let shalrath_map: shambler::shalrath::repr::Map = map_text

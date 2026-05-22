@@ -114,7 +114,7 @@ Establish the entity model and scripting layer together. Scripting and entities 
 - [x] **Entity API bindings** — spawn / query / move / destroy; event subscribe/emit. All bindings use IDs/handles rather than Rust references; no lifetimes in the surface.
 - [x] **Map entity parsing** — `.map` entity lump → typed entities at compile time, classname-keyed. Entities spawn from map data at level load.
 - [x] **Hot reload** — file watcher monitors script directory; changed scripts reload on next frame drain. Debug builds only.
-- [x] **Reference behaviors (script)** — `RotatorDriver` and `DamageSource` written as scripts. See `content/tests/scripts/`.
+- [x] **Reference behaviors (script)** — `RotatorDriver` and `DamageSource` written as scripts. See `content/dev/scripts/`.
 - [x] **Modder-facing API reference** — covers all bound APIs. See `docs/scripting-reference.md`.
 
 **Testable outcome:** spawn a scripted entity from a `.map` file; confirm it ticks and emits events at the fixed tick rate. Hot-reload the script during gameplay. The `DamageSource` debug entity is available for future destruction testing. ✓
@@ -133,10 +133,27 @@ Plans ship in this sequence:
 - [ ] **Mod script layer** — mod-level script execution layer that runs before any level loads. Player entity types declared here; prerequisite for player spawn. `context/plans/ready/M7--mod-script-layer/`
 - [ ] **Collision foundation** — parry3d dependency; `CollisionWorld` backed by PRL static geometry trimesh; Rust-owned, not script-visible. `context/plans/ready/M7--collision-foundation/`
 - [ ] **Gravity primitives** — `initialGravity` worldspawn KVP; `world.getGravity()` / `world.setGravity()` behavior-scope primitives; SDK and docs updated. Depends on scripting primitives folder. `context/plans/drafts/M7--gravity-primitives/`
-- [ ] **Player spawn** — `info_player_start` FGD entry with `entity_class` KVP; level load spawns player entities from it. Depends on mod script layer. `context/plans/drafts/M7--player-spawn/`
+- [x] **Player spawn** — `player_spawn` FGD entry with `entity_class` KVP; level load spawns player entities from it. Depends on mod script layer.
 - [ ] **Movement scripts** — TypeScript and Luau reference movement scripts with full feature parity (gravity, wall slide, step-up, jump, strafe, air control); contract test asserts matching output. Depends on collision foundation, gravity primitives, player spawn. `context/plans/drafts/M7--movement-scripts/`
 
 **Testable outcome:** player walks through a PRL level with full collision response — no clipping, wall slide, step-up, jump. Modder can edit and hot-reload the movement script in either TypeScript or Luau.
+
+---
+
+## Milestone 8: Material Optimization
+
+Texture and material pipeline polish. Move mip generation offline, establish Post Retro (hardware aniso + in-shader texel-grid reconstruction) as the foundational default look, and shrink normals on disk and in VRAM. True Retro (nearest sampler + manual per-pixel shader aniso) is the opt-in alternate; it retires when BC5 lands. Independent of Milestone 7 — ships in either order.
+
+Plans ship in this sequence:
+
+- [x] **Baked texture mips** — move mip generation from runtime renderer into prl-build. Gamma-correct linear-space Mitchell-Netravali filtering. Output as `.prm` sidecar files in per-mod `.prl-cache/tex/<blake3>.prm`, not embedded in PRL. `.prm` is a material bundle: per-slot (diffuse / specular / normal) with format tag, mip chain, payload bytes. Source PNGs remain the authoring source of truth; conversion is implicit during prl-build. `context/plans/drafts/baked-texture-mips/`
+- [ ] **Shader anisotropic filtering** — per-pixel manual aniso in `forward.wgsl`, derivative-gated, N taps of `textureSampleGrad` along the major axis. Preserves nearest-filter chunky look in-plane while killing grazing-angle shimmer. Depends on baked texture mips. `context/plans/drafts/shader-anisotropic-filtering/`
+- [x] **Graphics mode toggle** — two runtime filtering modes: Post Retro (hardware aniso + texel-grid reconstruction, default) and True Retro (nearest sampler + manual shader aniso, opt-in). `GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key, egui combo. Depends on baked texture mips and shader anisotropic filtering. `context/plans/done/graphics-mode-toggle/`
+- [ ] **BC5 normal compression** — BC5 encoder in prl-build, BC5 `format_tag` value in `.prm`, GPU upload path. Normals only — BC1/BC7 fight the pixel-art aesthetic on diffuse. Additive: `format_tag` is extensible from day one, no version bump. Also retires the Post Retro normal-averaging bias under hardware aniso. `context/plans/drafts/prm-bc5-normals/`
+- [ ] **Retire True Retro mode** — delete manual-aniso shader code (`compute_aniso_footprint` / `sample_aniso` / `sample_aniso_normal`) and True Retro branches in `forward.wgsl`; unwind graphics-mode-toggle scaffolding (`GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key and SDK typedef, egui mode combo). Depends on BC5 normal compression — the normal-encoding change is the forcing function; the True Retro normal path must be deleted rather than ported. Open decision: strip the `GraphicsMode` seam entirely, or preserve a minimal hook for a future `GraphicsSettings` struct. `context/plans/drafts/retire-true-retro/`
+- [ ] **Texture pack format (optional)** — shipping consolidation of `.prl-cache/tex/` into a single pack file. Deferred unless iteration-vs-ship tension actually appears.
+
+**Testable outcome:** Post Retro mode renders with no grazing-angle shimmer and crisp hardware-aniso filtering; True Retro opt-in is removed; normals are ~50% smaller on disk and in VRAM; level load does zero CPU mip work.
 
 ---
 
@@ -170,7 +187,11 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 - **Chunk Primitive** — unify static world geometry, kinematic clusters, and dynamic debris into one record type (mesh + collider + transform + sector membership). Deferred until two or more of those consumers exist and the duplication cost is clear.
 - **Audio foundation** — kira integration, spatial audio, reverb zones.
 - **HUD and UI** — health, ammo, crosshair, menus.
-- **Multi-format map support** — UDMF and others via `format/<name>.rs` sibling modules.
+- **`canonicalName` rename** — rename `classname` to `canonicalName` in scripting API and PRL. Source formats translate their identifier (Quake `.map` `classname`, UDMF thing-type, Blender prop) to this canonical name at compile time. Absence on an archetype means not directly placeable from source — script-spawned or marker-indirected only. Subsumes the `spawn_only` / `map_entity_classname` patterns into one field's presence.
+- **FGD generated from script registry** — scripts are the single source of truth for entity archetypes. FGD emitted at script compile time, not hand-edited. Removes the divergence class of bug where registry and FGD describe different archetypes.
+- **Composable archetypes via `@BaseClass` mixins** — `@BaseClass` declarations map to component lists; property bags drive behavior instead of proliferating archetype names. Reference patterns from `bevy_trenchbroom`: `Default::default()` as the property-fallback source, recursive depth-first base spawn with TypeId dedup, two-phase spawn (component insertion at load, subsystem registration at lifecycle hook).
+- **Property-driven editor previews** — TrenchBroom expression-language helpers (`model({{ ... }})`, `iconsprite({{ ... }})`) drive per-instance preview variation. One canonical name can display different models or icons based on property values, reducing pressure to multiply archetype names.
+- **Multi-format map support** — UDMF and others via `format/<name>.rs` sibling modules. All formats normalize to the canonical-name vocabulary at compile time, so runtime sees one identifier shape regardless of source.
 
 ### Dropped
 

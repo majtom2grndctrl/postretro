@@ -54,7 +54,7 @@ The domain folder structure, the fixed `start-script` entry, and the `mods/` dir
 | Level script | Definition (one-shot) | Runs once at level load | Auto-discovered: `levels/<name>/<name>.{ts,luau}` |
 | UI definition script | Declarative (no VM at runtime) | Parsed once; rendered from data | **Open** — format and load point unspecified |
 
-Start scripts and domain scripts call `registerEntity` (writes to engine-global `DataRegistry`). Level scripts call `registerLevelManifest` (per-level reactions). See `scripting.md` §2.
+Start scripts and domain scripts declare entity types as `entities` on the `setupMod()` return value; the engine boot caller drains them into the engine-global `DataRegistry` after `run_mod_init` returns. Level scripts export `setupLevel(ctx)`, which returns per-level reactions; those land in the per-level reaction registry. See `scripting.md` §2.
 
 ---
 
@@ -71,7 +71,7 @@ Start scripts and domain scripts call `registerEntity` (writes to engine-global 
 | 6 | Level load (see §4) | Engine | partial today |
 | 7 | First game tick: Input → Game logic → Audio → Render → Present | Engine | today |
 
-**Open (D2):** how scripts declare tick order across mods. Leading candidate: `updatePriority` field on `registerEntity`.
+**Open (D2):** how scripts declare tick order across mods.
 **Open (D3):** whether `data/` is a single entry file or a lexicographic multi-file scan.
 **Open:** mod manifest format (name, version, dependencies, UI contributions). Required by phase 1.
 **Open:** UI system — declarative format, where definitions live (per-mod `ui/` folder?), and how the renderer consumes them.
@@ -80,23 +80,19 @@ Start scripts and domain scripts call `registerEntity` (writes to engine-global 
 
 ## 4. Level Load Sequence
 
-Today (per `postretro/src/level_loader` and the scripting runtime):
+Today:
 
-| Order | Step |
-|-------|------|
-| 1 | PRL file read from disk |
-| 2 | Built-in classname dispatch (hardcoded engine entities — player_start, billboard_emitter, lights, etc.) |
-| 3 | Data script (bundled in PRL at build time) runs in short-lived `ContextScope::DefinitionOnly` VM; calls `registerEntity` → engine-global `DataRegistry`; calls `registerLevelManifest` → per-level reaction registry |
-| 4 | Entity spawn sweep: walk map entity list, match classnames against `DataRegistry`, spawn |
+| Order | Stage |
+|-------|-------|
+| 1 | PRL parse, texture decode, UV normalize |
+| 2 | Geometry and texture upload to GPU |
+| 3 | Spatial subsystems initialized from level data (fog volumes, collision regions resolved against BSP leaves) |
+| 4 | Built-in classname dispatch (hardcoded engine entities — player_start, billboard_emitter, lights, etc.) |
+| 5 | Level script runs in a short-lived VM; `setupLevel(ctx)` returns `{reactions}` → per-level reaction registry. Entity types are engine-global and arrive via `setupMod`, not here. |
+| 6 | Entity spawn sweep: match map entity list against `DataRegistry`, spawn |
+| 7 | `levelLoad` event fired |
 
-Planned changes:
-
-| Order | Step | Delta |
-|-------|------|-------|
-| 1 | PRL load | unchanged |
-| 2 | Built-in classname dispatch | unchanged |
-| 3 | Level script runs | sourced from `levels/<name>/<name>.{ts,luau}` (auto-discovered by name convention) instead of bundled in PRL |
-| 4 | Entity spawn sweep | unchanged |
+Planned change: stage 5 level script sourced from `levels/<name>/<name>.{ts,luau}` (auto-discovered by name convention) instead of bundled in PRL.
 
 **Open (D3):** if data scripts move out of PRL, level launch parameters (chosen by the mod's menu in phase 5) need a delivery channel into the data context.
 
@@ -108,7 +104,7 @@ Planned changes:
 |-------|-----------|
 | Engine init (preludes, primitive registry) | Process exit |
 | Mod init state (start-script effects) | Mod unload / engine restart (planned) |
-| `DataRegistry` (entity-type descriptors from `registerEntity`) | Engine-global; survives level unload. Cleared on full reload of mod set. |
+| `DataRegistry` (entity-type descriptors from `setupMod` return) | Engine-global; survives level unload. Cleared on full reload of mod set. |
 | Per-level reaction registry | Level unload |
 
 Hot reload (debug only) triggers recompilation of changed script files; definition-context changes require an engine restart.
@@ -134,3 +130,13 @@ Reachable from main menu (phase 5) for re-selection; triggers a full mod unload 
 - Networked mod sync
 - Runtime mod hot-swap mid-level
 - Sandboxing mods from each other (mods share the same VM contexts and `DataRegistry` by design)
+
+---
+
+## 8. Boot-Phase Concurrency Model
+
+- **Main thread owns** the winit event loop, wgpu (device, queue, all GPU work), the audio mixer, and all script-VM execution. `ScriptRuntime` and `Renderer` are not `Send`; enforced by the types, not by convention.
+- **Worker threads own** file I/O, parsing, and decoding. Outputs must be plain `Send` data — no engine handles, no GPU resources.
+- **Handoff** is `mpsc` channels carrying POD. One worker per kicked-off task; no thread pool until measurement demands one.
+- **Phases are sequential; intra-phase work is parallel.** Phase N does not advance until its worker outputs are consumed and main-thread follow-up (GPU upload, script run, registry populate) completes.
+- **No async runtime.** `std::thread` + `mpsc`.

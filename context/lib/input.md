@@ -91,7 +91,27 @@ Raw mouse motion is essential for consistent aiming. OS pointer acceleration var
 
 ---
 
-## 5. Gamepad Handling
+## 5. Input Focus
+
+`InputFocus` is the single source of truth for pointer-lock state and event gating. Defined in `input/focus.rs`.
+
+| Variant | Cursor | Owner |
+|---------|--------|-------|
+| `Gameplay` | Locked and hidden | Player input / action system |
+| `DevTools` | Released | Debug overlay (egui) |
+| `Menu` | Released | Menu system (wired; no consumer yet) |
+
+Only `Gameplay` captures the cursor (`captures_cursor()` returns true for `Gameplay` only).
+
+**Transitions.** `App::set_input_focus()` changes the stored variant, acquires or releases the cursor, and clears all input state in both directions — returning to `Gameplay` must not see keys held by a UI consumer; entering UI must not leak gameplay chords. `App::reapply_focus()` re-applies the current variant's cursor state without changing it; called on window-focus restoration so cursor mode survives transient OS focus loss.
+
+**Event gating.** Mouse delta (`device_event`) is only processed when focus is `Gameplay`. Keyboard and mouse-button events honor egui's `consumed` flag when focus is `DevTools` or `Menu`; in `Gameplay` the flag is ignored. `ToggleDebugPanel` punches through the `consumed` gate regardless of focus — it is the chord that opens and closes the panel.
+
+**Adding a new focus mode.** Add the variant to `input/focus.rs`, update the `captures_cursor` match and its exhaustive-match test, wire `set_input_focus` and `reapply_focus` in `main.rs`.
+
+---
+
+## 6. Gamepad Handling
 
 gilrs provides a unified gamepad API across platforms.
 
@@ -105,7 +125,7 @@ Gamepad and keyboard/mouse bindings coexist. If both are active in the same fram
 
 ---
 
-## 6. Subsystem Boundary
+## 7. Subsystem Boundary
 
 The input subsystem produces one thing: an action-state snapshot per frame. Game logic is its only consumer.
 
@@ -118,7 +138,7 @@ The input subsystem produces one thing: an action-state snapshot per frame. Game
 
 ---
 
-## 7. Diagnostic Inputs
+## 8. Diagnostic Inputs
 
 Diagnostics use a parallel input channel, separate from action mapping. The consumer is the engine itself — overlay toggles, per-frame trace dumps — never game logic. Gameplay actions and diagnostic chords share no namespace and never collide.
 
@@ -150,7 +170,7 @@ The input layer emits "user invoked this diagnostic action" and stops there. Tog
 
 ---
 
-## 8. Non-Goals
+## 9. Non-Goals
 
 - Motion controls (accelerometer, gyroscope)
 - Touch input

@@ -173,6 +173,34 @@ end
 
 ---
 
+## world.getGravity / world.setGravity
+
+Read and write the world gravity at runtime. The starting value is set per-map via the `initialGravity` worldspawn KVP in TrenchBroom.
+
+**Sign convention:** negative = downward, positive = upward. Standard Earth gravity is `-9.81` m/s².
+
+```typescript
+// TypeScript
+import { world } from "postretro";
+
+const g = world.getGravity();   // → -9.81 at level load (from initialGravity KVP)
+world.setGravity(-4.9);         // half gravity — effect is immediate
+```
+
+```lua
+-- Luau
+local g = world:getGravity()   -- → -9.81 at level load
+world:setGravity(-4.9)
+```
+
+`setGravity` rejects `NaN` and non-finite values silently (a warning is logged) so a misbehaving script cannot break particle physics. The value persists until the next level load or another `setGravity` call.
+
+**TrenchBroom KVP:** set `initialGravity` (float, m/s²) on the `worldspawn` entity. The KVP is required — prl-build errors if absent. Example: `"initialGravity" "-9.81"`.
+
+**Particle effect:** `world.setGravity` directly affects particle buoyancy. Particles with `buoyancy < 0` (heavier-than-air) fall faster under stronger gravity; particles with `buoyancy > 0` (lighter-than-air) float less.
+
+---
+
 ## LightAnimation
 
 A `LightAnimation` describes one looping (or finite) animation cycle. All fields except `periodMs` are optional — omit a field to leave that channel unchanged.

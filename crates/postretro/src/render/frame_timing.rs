@@ -8,6 +8,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// How many frames to accumulate before logging an averaged line.
 const AVG_WINDOW_FRAMES: u32 = 120;
 
+/// Snapshot of one averaged 120-frame window, retained for the debug UI to
+/// display. Overwritten each window. `(label, avg_ms, skip_count)`.
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub struct FrameTimingSnapshot {
+    pub passes: Vec<(&'static str, f32, u32)>,
+}
+
 const QUERY_SIZE: wgpu::BufferAddress = 8;
 
 const QUERIES_PER_PASS: u32 = 2;
@@ -49,6 +57,9 @@ pub struct FrameTiming {
     /// (`resolve_query_set` snapshots whatever the query set holds,
     /// including values written several frames ago.)
     pairs_written_in_flight: AtomicU64,
+    /// Most recent averaged-window snapshot. The debug UI reads this to show
+    /// per-pass timing; overwritten each averaging boundary.
+    last_window: Option<FrameTimingSnapshot>,
 }
 
 impl FrameTiming {
@@ -108,7 +119,15 @@ impl FrameTiming {
             accum_skipped: vec![0; pair_usize],
             pairs_written: AtomicU64::new(0),
             pairs_written_in_flight: AtomicU64::new(0),
+            last_window: None,
         }
+    }
+
+    /// Most recent averaged 120-frame snapshot. `None` until the first
+    /// averaging boundary has elapsed.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn last_window(&self) -> Option<&FrameTimingSnapshot> {
+        self.last_window.as_ref()
     }
 
     /// Render-pass timestamp writes for pair `pair_idx`. The returned
@@ -239,10 +258,16 @@ impl FrameTiming {
 
         if self.accum_frames >= AVG_WINDOW_FRAMES {
             let mut parts: Vec<String> = Vec::with_capacity(self.pass_labels.len());
+            let mut snapshot_passes: Vec<(&'static str, f32, u32)> =
+                Vec::with_capacity(self.pass_labels.len());
             for (i, label) in self.pass_labels.iter().enumerate() {
                 let avg_ms = self.accum_ns[i] / (self.accum_frames as f64) / 1.0e6;
                 parts.push(format!("{label} {avg_ms:.2}ms"));
+                snapshot_passes.push((*label, avg_ms as f32, self.accum_skipped[i]));
             }
+            self.last_window = Some(FrameTimingSnapshot {
+                passes: snapshot_passes,
+            });
             let skip_parts: Vec<String> = self
                 .pass_labels
                 .iter()

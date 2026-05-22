@@ -129,15 +129,15 @@ Billboard instances come from `BillboardEmitterComponent` particles packed by `P
 
 Low-resolution raymarched pass over `fog_volume` brush regions. Resolution governed by `fog_pixel_scale` worldspawn property (default 4 — quarter resolution). Per sample: shape membership test (AABB as conservative bound), then optional half-space clip plane; accumulates ambient scatter, dynamic spot beam scatter (with shadow map occlusion for visible shafts and shadow wedges), and dynamic point-light scatter. Composited over the scene additively via nearest-neighbor upscale. The pixelated blocks are intentional, not a compromise.
 
-**Ambient scatter.** Fog samples full L2 SH irradiance from the same composed SH volume (group 3) used by the forward and billboard passes. The evaluation normal is fixed to `vec3(0, 1, 0)` (world up) — fog is directionally isotropic; a fixed asymmetric normal captures overhead/ceiling ambient without view-direction dependence. When no SH volume is present (`has_sh_volume == 0`) the ambient contribution is zero. Per-volume scatter tint and saturation are available via the `fog_tint` and `fog_saturation` KVPs on fog entities.
+**Ambient scatter.** Fog samples full L2 SH irradiance from the same composed SH volume (group 3) used by the forward and billboard passes. The evaluation normal is fixed to `vec3(0, 1, 0)` (world up) — fog is directionally isotropic; a fixed asymmetric normal captures overhead/ceiling ambient without view-direction dependence. When no SH volume is present (`has_sh_volume == 0`) the ambient contribution is zero. Per-volume scatter tint and saturation are available via the `tint` and `saturation` KVPs on fog entities.
 
 **Portal-driven volume culling.** Each frame, before dispatching the raymarch, the renderer reduces the per-sample AABB-test loop to only volumes reachable from the camera cell. Per-leaf `u32` bitmasks are baked at compile time into PRL section 31 (`FogCellMasks`); bit `i` set in leaf `L`'s mask means volume `i` overlaps leaf `L`'s bounds (conservative AABB-vs-AABB, no boundary pop). At runtime:
 
-- `VisibleCells::Culled(leaves)` + masks present: OR every visible leaf's mask, AND with `all_slots_mask = (1 << canonical_volume_count) - 1` to neutralize reserved bits 16..31.
+- `VisibleCells::Culled(leaves)` + masks present: OR every *fog-reachable* leaf's mask (portal-traversal reachability — empty leaves included, solid leaves excluded), then unconditionally OR the camera's current leaf's mask, then AND with `all_slots_mask = (1 << canonical_volume_count) - 1`.
 - `VisibleCells::Culled(leaves)` + masks absent: legacy-PRL fallback — keep all canonical slots active (`active_mask = all_slots_mask`). Section 30 can ship without section 31, so absence does **not** imply zero volumes.
-- `VisibleCells::DrawAll` (solid-leaf camera, exterior, no-portals): every canonical volume stays active.
+- `VisibleCells::Culled(leaves)` + empty `fog_reachable` (solid-leaf camera, exterior, or no-portals map): OR produces zero; unconditional camera-leaf OR still runs, then AND with `all_slots_mask` — net result is all canonical slots active. `DrawAll` is never returned for these cases; the empty-world arm is the only source of `DrawAll`, and fog volumes cannot exist in an empty world, so `DrawAll` is unreachable in practice.
 
-The active set is repacked densely into the GPU fog buffer in ascending source-index order; volume indices in the GPU buffer are not stable across frames. `FogParams.active_count = active_mask.count_ones()` controls the WGSL raymarch loop bound. The shader respects `active_count`, so trailing slots past it are stale-but-safe. A separate `live_mask` suppresses density-zero slots inside that loop. When `active_count == 0` the pass is skipped via `FogPass::active()`. See `context/plans/in-progress/perf-portal-fog-culling/index.md`.
+The active set is repacked densely into the GPU fog buffer in ascending source-index order; volume indices in the GPU buffer are not stable across frames. `FogParams.active_count = active_mask.count_ones()` controls the WGSL raymarch loop bound. The shader respects `active_count`, so trailing slots past it are stale-but-safe. A separate `live_mask` suppresses density-zero slots inside that loop. When `active_count == 0` the pass is skipped via `FogPass::active()`. Volumes that recently left the reachable set are held active for a brief time-based hysteresis window (framerate-independent) to absorb single-frame portal-narrowing transients. See `context/plans/done/perf-portal-fog-culling/index.md`.
 
 ---
 
@@ -196,7 +196,11 @@ Camera position and orientation produce a view matrix each frame, feeding:
 
 ### GPU Pass Timing
 
-Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter support for `TIMESTAMP_QUERY`; silently disabled if the feature is absent. Passes measured: `cull`, `depth_prepass`, `forward`. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. Use with `RUST_LOG=info` to see output.
+Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter support for `TIMESTAMP_QUERY`; silently disabled if the feature is absent. Passes measured: `cull`, `animated_lm_compose`, `depth_prepass`, `forward`. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. Use with `RUST_LOG=info` to see output.
+
+### Debug-Line Renderer
+
+`dev-tools` only. Immediate-mode API: per-frame CPU buffer of `(start, end, color_rgba)` line segments uploaded to a `LineList` vertex buffer and drawn after the fog composite pass and before egui. Depth test on (matching world render target sample count), depth write off — lines occlude against opaque geometry only. Buffer cleared at the top of the diagnostic emit call each frame, before new segments are pushed — not inside the render path — so it stays bounded even when `render_frame_indirect` early-returns (surface Timeout/Occluded/Outdated). Capped at a fixed segment limit (overflow: log + truncate). First consumer: SH volume diagnostic overlay.
 
 ---
 

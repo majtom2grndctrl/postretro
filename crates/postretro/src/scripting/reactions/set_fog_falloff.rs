@@ -75,11 +75,13 @@ mod tests {
     fn sample_fog() -> FogVolumeComponent {
         FogVolumeComponent {
             density: 0.5,
-            scatter: 0.6,
+            glow: 0.6,
             edge_softness: 0.25,
             falloff: 2.0,
             tint: [1.0, 1.0, 1.0],
             saturation: 1.0,
+            min_brightness: 0.0,
+            light_range: 1.0,
             animation: None,
         }
     }

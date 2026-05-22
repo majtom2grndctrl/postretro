@@ -73,14 +73,16 @@ struct LightSpaceMatrices {
 // Must match MAX_FOG_VOLUMES in the Rust fog_volume module.
 const MAX_FOG_VOLUMES: u32 = 16u;
 
-// Upper bound for the runtime-derived SH resample stride. The dynamic
-// expression in `cs_main` divides `SH_COVERAGE_METERS / fog.step_size`; if a
-// map ships with a pathologically small `fog_step_size` the quotient could
-// climb high enough to violate the band-limit assumption (one sample per ~4
-// SH cells). 32 keeps the worst case bounded at ~16m of coverage per sample
-// — still defensible visually, and far below the runaway values a tiny step
-// could otherwise produce.
+// Upper bound on `sh_coverage_dist` expressed in steps: the clamp ceiling
+// is `MAX_SH_RESAMPLE_STRIDE * step`, so a pathologically small `fog_step_size`
+// cannot push the coverage window beyond ~16m (default: 32 × 0.5m).
+// Preserves the historical stride-[1, 32] band while expressing the bound
+// in distance rather than step count.
 const MAX_SH_RESAMPLE_STRIDE: u32 = 32u;
+
+// Upper bound on the depth-tap block size. Matches the FGD `fog_pixel_scale`
+// range [1, 8]; runtime `pixel_scale` values truncate via the inner `break`s.
+const MAX_PIXEL_SCALE: u32 = 8u;
 
 // World-space coverage budget per cached SH sample, expressed as a multiple of
 // the SH grid cell size. SH irradiance is band-limited and the historical
@@ -94,10 +96,11 @@ const SH_COVERAGE_CELLS: f32 = 4.0;
 
 // --- Group 6: Fog resources ---
 
-// 96 bytes; layout must match `FogVolume` in fx/fog_volume.rs. Each `vec3<f32>`
+// 112 bytes; layout must match `FogVolume` in fx/fog_volume.rs. Each `vec3<f32>`
 // is paired with a trailing scalar so WGSL's 16-byte vec3 alignment slots fill
-// without internal padding holes. The trailing `plane_offset / plane_count`
-// pair indexes into the `fog_planes` storage buffer (group 6 binding 6).
+// without internal padding holes. `plane_offset / plane_count` indexes into
+// the `fog_planes` storage buffer (group 6 binding 6); `min_brightness`,
+// `light_range`, and two pad floats follow as the final 16-byte block.
 //
 // `center` and `half_diag` are shader-active precomputed fields. `inv_half_ext`
 // stores the reciprocal per-axis half-extent and is live on the ellipsoid path
@@ -109,6 +112,8 @@ const SH_COVERAGE_CELLS: f32 = 4.0;
 // `tint` multiplies the per-step scatter color after saturation. Default [1,1,1].
 // `saturation` controls color vividness via luma-mix: 0=greyscale, 1=natural,
 // >1=boosted. Default 1.0.
+// `min_brightness` sets a scatter floor applied *before* tint, so the glow
+// takes on the fog's color. Default 0.0.
 struct FogVolume {
     min: vec3<f32>,
     density: f32,
@@ -124,9 +129,17 @@ struct FogVolume {
     tint: vec3<f32>,              // scatter color multiplier; [1,1,1] = no effect
     saturation: f32,              // luma-mix weight; 1.0 = natural; >1 = boosted
     radial_falloff: f32,
-    scatter: f32,
+    glow: f32,
     plane_offset: u32,
     plane_count: u32,
+    // pre-tint scatter floor; `max(step_scatter, min_brightness)` applied before saturation
+    // and tint. Default 0.0 (no floor).
+    min_brightness: f32,
+    // per-volume light range multiplier; higher = lights reach farther inside fog.
+    // Default 1.0 (same reach as open air).
+    light_range: f32,
+    _pad6_a: f32,
+    _pad6_b: f32,
 }
 
 struct FogPointLight {
@@ -185,8 +198,9 @@ struct FogSpotLight {
 //
 // Copy-pasted from forward.wgsl (sh_irradiance + sample_sh_indirect_fast).
 // WGSL has no include mechanism — this is a source-level copy, not string-concat
-// composition. rendering_pipeline.md §8 is the extraction pattern when a third
-// consumer appears; two callers don't justify the indirection.
+// composition. Current consumers: fog_volume.wgsl + forward.wgsl +
+// billboard.wgsl. Extraction is deferred; see rendering_pipeline.md §8 for
+// the extraction pattern.
 
 fn sh_irradiance(
     b0: vec3<f32>, b1: vec3<f32>, b2: vec3<f32>, b3: vec3<f32>,
@@ -333,16 +347,36 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let depth_dims = textureDimensions(depth_texture);
     let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / vec2<f32>(out_dims);
 
-    // Nearest full-res depth texel for this low-res fragment.
-    let depth_xy = vec2<u32>(
-        min(u32(uv.x * f32(depth_dims.x)), depth_dims.x - 1u),
-        min(u32(uv.y * f32(depth_dims.y)), depth_dims.y - 1u),
-    );
-    let depth_ndc = textureLoad(depth_texture, vec2<i32>(depth_xy), 0);
+    // Min-over-block depth tap: take the closest hit across every full-res
+    // depth texel covered by this low-res scatter texel. A single nearest
+    // sample lets fog bleed through thin silhouettes when the sub-pixel that
+    // actually contained the foreground geometry isn't the one we picked;
+    // min-reducing the block selects the nearest surface, which is the right
+    // upper bound for the ray's `max_t`. The loop is bounded by the compile-
+    // time constant `MAX_PIXEL_SCALE` so WGSL can unroll/bound it; runtime
+    // `pixel_scale` values truncate via the inner `break`s. The
+    // `min(..., depth_dims - 1)` clamp handles window sizes that aren't an
+    // exact multiple of `pixel_scale`.
+    let ps_x = depth_dims.x / out_dims.x;
+    let ps_y = depth_dims.y / out_dims.y;
+    let base = vec2<u32>(gid.x * ps_x, gid.y * ps_y);
+    // depth_dims is always > 0 (the surface depth texture is never zero-sized), so this subtraction never wraps.
+    let depth_max = depth_dims - vec2<u32>(1u);
+    var depth_ndc: f32 = 1.0;
+    for (var dy: u32 = 0u; dy < MAX_PIXEL_SCALE; dy = dy + 1u) {
+        if dy >= ps_y { break; }
+        for (var dx: u32 = 0u; dx < MAX_PIXEL_SCALE; dx = dx + 1u) {
+            if dx >= ps_x { break; }
+            let sx = min(base.x + dx, depth_max.x);
+            let sy = min(base.y + dy, depth_max.y);
+            let sample = textureLoad(depth_texture, vec2<i32>(vec2<u32>(sx, sy)), 0);
+            depth_ndc = min(depth_ndc, sample);
+        }
+    }
     let ray = reconstruct_ray(uv, depth_ndc);
 
     let step = max(fog.step_size, 1.0e-3);
-    let start_t = max(fog.near_clip, step * 0.5);
+    let start_t = fog.near_clip;
     var transmittance: f32 = 1.0;
     var accum: vec3<f32> = vec3<f32>(0.0);
 
@@ -450,31 +484,49 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // SH irradiance is band-limited and the SH grid is much coarser than the
     // march step size. Sampling 9 trilinear 3D fetches per step is wasted
-    // bandwidth — we cache one sample and refresh every `sh_stride` steps
+    // bandwidth — we cache one sample and refresh whenever the march has
+    // advanced more than `sh_coverage_dist` world units since the last sample
     // (reset at each sub-interval boundary) to bound drift without per-step cost.
     // The cache lives in scalar locals (no array, no callee pointer) so it stays
     // in registers and never hits the Metal private-memory trap.
     //
-    // `sh_stride` is derived once per ray from the SH grid cell size and the
-    // fog march step size, so the meters-per-cache-sample budget stays
-    // proportional to the baked SH resolution regardless of `--probe-spacing`
-    // or `fog_step_size`. `cell_size` is a per-axis world-space length
-    // (matches `probe_spacing_meters` on the host); taking the minimum
-    // component is the conservative choice for anisotropic grids. Floored at
-    // 1 (a stride of 0 would loop) and capped at `MAX_SH_RESAMPLE_STRIDE` to
-    // keep pathological inputs (very small `step_size`) bounded.
+    // Why distance-based, not step-count-based: an animated fog_lamp density
+    // shifts the `transmittance < 0.01` early-out break point by ±1 step
+    // frame-to-frame. With a step-count schedule, that ±1 step shift changes
+    // which `cached_sh` value governs the final step (up to stride-1 steps
+    // stale) for radial volumes, where per-step `fade` varies sharply with
+    // position — producing a frame-to-frame radiance discontinuity (flicker).
+    // A distance-based schedule is frame-stable: the t-sequence is
+    // deterministic per ray, so `cached_sh` at step k holds the same value
+    // every frame regardless of where the early-out fires. The animated
+    // early-out only controls whether a smooth additional contribution lands
+    // — it does not alter which cached value governed prior steps.
+    //
+    // `sh_coverage_dist` is derived once per ray from the SH grid cell size,
+    // so the meters-per-cache-sample budget stays proportional to the baked
+    // SH resolution regardless of `--probe-spacing` or `fog_step_size`.
+    // `cell_size` is a per-axis world-space length (matches
+    // `probe_spacing_meters` on the host); taking the minimum component is
+    // the conservative choice for anisotropic grids. Floored at `step` (one
+    // sample per step minimum) and capped at `MAX_SH_RESAMPLE_STRIDE * step`
+    // to keep pathological inputs (very small `step_size`) bounded — these
+    // bounds preserve the historical stride [1, MAX_SH_RESAMPLE_STRIDE]
+    // semantics, just expressed in distance.
     //
     // Default-case sanity: cell_size = 1.0m, step = 0.5m →
-    //   stride = clamp(4.0 * 1.0 / 0.5, 1, 32) = 8 — matches the previous
-    //   hardcoded value, so default visual output is unchanged.
+    //   sh_coverage_dist = clamp(4.0, 0.5, 16.0) = 4.0m, i.e. ~one sample
+    //   every 8 steps — matches the previous hardcoded stride 8, so default
+    //   visual output is unchanged.
     let cell_min = min(min(sh_grid.cell_size.x, sh_grid.cell_size.y), sh_grid.cell_size.z);
-    let sh_stride = clamp(
-        u32(SH_COVERAGE_CELLS * cell_min / step),
-        1u,
-        MAX_SH_RESAMPLE_STRIDE,
+    let sh_coverage_dist = clamp(
+        SH_COVERAGE_CELLS * cell_min,
+        step,
+        f32(MAX_SH_RESAMPLE_STRIDE) * step,
     );
     var cached_sh: vec3<f32> = vec3<f32>(0.0);
-    var sh_steps_since_sample: u32 = 0u;
+    // Sentinel triggering a fresh sample on the first eligible step. Any value
+    // <= -sh_coverage_dist works; -1e30 is safely beyond any plausible `t`.
+    var t_last_sh_sample: f32 = -1.0e30;
 
     for (var ui: u32 = 0u; ui < union_count; ui = ui + 1u) {
         if transmittance < 0.01 { break; }
@@ -487,7 +539,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var t = sub_enter + step * 0.5;
         // Force a fresh SH sample at the first eligible step in each new
         // sub-interval (gaps between sub-intervals can be large).
-        sh_steps_since_sample = sh_stride;
+        t_last_sh_sample = -1.0e30;
 
         loop {
             if t >= sub_exit { break; }
@@ -509,11 +561,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // `fog.active_count`), reading each volume from the storage buffer
             // with the same coalesced loads as before — just fewer of them per step.
             var vs_density: f32 = 0.0;
-            var vs_scatter: f32 = 0.0;
+            var vs_glow: f32 = 0.0;
             // Density-weighted tint and saturation accumulated over overlapping volumes.
             // Divided by vs_density after the loop to get the blended value.
             var vs_tint_accum: vec3<f32> = vec3<f32>(0.0);
             var vs_sat_accum: f32 = 0.0;
+            // min_brightness and light_range use the same density-weighted blend
+            // as tint/saturation: accumulated proportionally to each volume's density
+            // contribution, then divided by total density after the loop.
+            var vs_min_brightness_accum: f32 = 0.0;
+            var vs_light_range_accum: f32 = 0.0;
             for (var rk: u32 = 0u; rk < raw_count; rk = rk + 1u) {
                 let v = fog_volumes[raw_idx[rk]];
                 // AABB still gates entry — the slab-clip prologue narrowed the
@@ -580,9 +637,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
                 let contrib = v.density * fade;
                 vs_density = vs_density + contrib;
-                vs_scatter = max(vs_scatter, v.scatter);
+                vs_glow = max(vs_glow, v.glow);
                 vs_tint_accum = vs_tint_accum + contrib * v.tint;
                 vs_sat_accum = vs_sat_accum + contrib * v.saturation;
+                vs_min_brightness_accum = vs_min_brightness_accum + contrib * v.min_brightness;
+                vs_light_range_accum = vs_light_range_accum + contrib * v.light_range;
             }
 
             if vs_density > 0.0 {
@@ -590,19 +649,26 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let inv_density = 1.0 / vs_density;
                 let vs_tint = vs_tint_accum * inv_density;
                 let vs_saturation = vs_sat_accum * inv_density;
+                let vs_min_brightness = vs_min_brightness_accum * inv_density;
+                let vs_light_range = vs_light_range_accum * inv_density;
 
-                // Scatter weight for this step.
-                let weight = vs_density * vs_scatter * step;
+                // Glow weight for this step.
+                let weight = vs_density * vs_glow * step;
 
                 // Accumulate all light contributions for this step into a local
                 // color, then apply saturation and tint before folding into accum.
                 var step_scatter: vec3<f32> = vec3<f32>(0.0);
 
-                if sh_steps_since_sample >= sh_stride {
+                // Distance-based refresh: resample when the march has advanced
+                // at least `sh_coverage_dist` world units past the last sample.
+                // This keeps the cache schedule a function of world position
+                // (not step index), so animated-density-induced ±1 step shifts
+                // at the early-out don't change which cached value governs the
+                // boundary step.
+                if t - t_last_sh_sample >= sh_coverage_dist {
                     cached_sh = sample_sh_fog(pos);
-                    sh_steps_since_sample = 0u;
+                    t_last_sh_sample = t;
                 }
-                sh_steps_since_sample = sh_steps_since_sample + 1u;
                 step_scatter = step_scatter + cached_sh;
 
                 // Dynamic spot beams.
@@ -623,7 +689,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     // Distance falloff (linear — matches FalloffModel::Linear baseline;
                     // beams are aesthetic, subtle differences between falloff models
                     // aren't worth an extra branch here).
-                    let atten = clamp(1.0 - dist / spot.range, 0.0, 1.0);
+                    let atten = clamp(1.0 - dist / (spot.range * vs_light_range), 0.0, 1.0);
 
                     // Shadow map occlusion.
                     let lit = sample_spot_shadow_pt(
@@ -645,9 +711,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     let to_light = pt.position - pos;
                     let dist = length(to_light);
                     if dist > pt.range || dist < 1.0e-4 { continue; }
-                    let atten = clamp(1.0 - dist / pt.range, 0.0, 1.0);
+                    let atten = clamp(1.0 - dist / (pt.range * vs_light_range), 0.0, 1.0);
                     step_scatter = step_scatter + pt.color * atten;
                 }
+
+                step_scatter = max(step_scatter, vec3<f32>(vs_min_brightness));
 
                 // Apply saturation: mix luma toward full color.
                 // vs_saturation > 1 extrapolates beyond natural color (boosted saturation).
@@ -668,8 +736,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(scatter_output, vec2<i32>(gid.xy), vec4<f32>(accum, 1.0 - transmittance));
 }
 
-// Silence "unused binding" warnings for the animated buffers and the
-// comparison sampler. The fog pass shares group 3 with the forward pipeline
+// Keeps bindings reflected so wgpu does not reject the pipeline. wgpu
+// rejects a pipeline when the BindGroupLayout declares a binding that shader
+// reflection omits. The fog pass shares group 3 with the forward pipeline
 // and group 5's sampler_comparison with forward's shadow pass — both
 // layouts must be satisfied even though fog reads depth via textureLoad.
 fn _keep_bindings_live() -> f32 {

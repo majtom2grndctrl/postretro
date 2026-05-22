@@ -2,6 +2,29 @@
 // plus a scalar ambient floor, with baked SH irradiance indirect.
 // See: context/lib/rendering_pipeline.md §4
 
+// Texture-filtering mode selectors. Branched at runtime on
+// `uniforms.graphics_mode` (a uniform-buffer value, uniform across the
+// workgroup) at each texture sample site — so `textureSampleGrad` inside the
+// branches stays in uniform control flow and passes naga's uniformity analysis.
+const TRUE_RETRO: u32 = 0u;
+const POST_RETRO: u32 = 1u;
+
+// Manual per-pixel anisotropic sampling (True Retro path) — these three consts
+// are the frame-budget dials for the lit pass. True Retro is retained for its
+// hard-pixel aesthetic, not as a perf escape hatch: it runs the multi-tap
+// footprint below, while the Post Retro arm does a single textureSampleGrad
+// after a UV warp. Lower `ANISO_THRESHOLD` routes more fragments through the
+// costly multi-tap branch; higher `ANISO_TAP_COUNT` spends more texture fetches
+// per grazing fragment. Shipped default is 2 taps; 4 is the higher-quality
+// option to enable only when the target GPU has headroom against a realistic
+// combat frame.
+// ANISO_TINY_EPS floors degenerate derivative lengths so footprint math stays
+// finite. Two helpers exist because normal maps must be decoded to tangent space
+// before averaging — averaging encoded normals biases toward flat.
+const ANISO_TAP_COUNT: u32 = 2u;
+const ANISO_THRESHOLD: f32 = 2.0;
+const ANISO_TINY_EPS: f32 = 1.0e-6;
+
 struct Uniforms {
     view_proj: mat4x4<f32>,
     camera_position: vec3<f32>,
@@ -10,8 +33,8 @@ struct Uniforms {
     // Elapsed seconds since renderer start. Consumed by SH animated-layer
     // evaluation; wrapping is handled per-light via fract().
     time: f32,
-    // Lighting-term isolation for leak/bleed debugging. Cycled by the
-    // Alt+Shift+4 diagnostic chord. Values 0..=9 — see fs_main for the full
+    // Lighting-term isolation for leak/bleed debugging. Set via the
+    // Diagnostics panel dropdown (dev-tools). Values 0..=9 — see fs_main for the full
     // table; in summary 0 = Normal, 1 = NoLightmap, 2 = DirectOnly,
     // 3 = IndirectOnly, 4 = AmbientOnly, 5 = LightmapOnly,
     // 6 = StaticSHOnly, 7 = AnimatedDeltaOnly, 8 = DynamicOnly,
@@ -22,6 +45,17 @@ struct Uniforms {
     // lightmap shadow contrast. Forced to 1.0 in indirect-only isolation
     // modes so debug views aren't affected by runtime suppression.
     indirect_scale: f32,
+    // Texture-filtering mode. 0 = True Retro (nearest sampler + manual
+    // shader-aniso, hard pixel edges), 1 = Post Retro (hardware-anisotropic
+    // sampler + in-shader texel-grid reconstruction). Default is Post Retro.
+    graphics_mode: u32,
+    // Pad to 112 bytes so the struct stays 16-byte aligned (graphics_mode
+    // lands at offset 96). Three scalar u32s, not a vec3<u32> — a vec3 has
+    // 16-byte alignment in the uniform address space and would push the
+    // struct to 128. Mirrors UNIFORM_SIZE in render/mod.rs.
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
@@ -53,6 +87,13 @@ struct MaterialUniform {
 // in tangent space, so surfaces with no `_n.png` sibling render identically
 // to the mesh-normal path. See context/lib/resource_management.md §4.3.
 @group(1) @binding(4) var t_normal: texture_2d<f32>;
+// Linear + hardware-anisotropic sampler. Parallel to `base_sampler` (nearest);
+// the Post Retro path samples through this so hardware aniso kills
+// grazing-angle shimmer while in-shader texel-grid reconstruction keeps texels
+// crisp up close. Wired by the BGL and every material bind group on the Rust
+// side — see `Renderer::mip_count_aniso_samplers` and the group-1 BGL comment
+// in render/mod.rs.
+@group(1) @binding(5) var aniso_sampler: sampler;
 
 @group(2) @binding(0) var<storage, read> lights: array<GpuLight>;
 // Per-light influence volume: xyz = sphere center, w = radius.
@@ -84,7 +125,7 @@ struct ChunkGridInfo {
 // Group 3 — SH irradiance volume. 9 3D textures (one per SH L2 band) carry
 // RGB coefficients in their .rgb channels (.a unused). When `grid.has_sh_volume`
 // is 0 the bindings point at dummy 1×1×1 textures and the shader skips SH
-// sampling. See sub-plan 6 and postretro/src/render/sh_volume.rs.
+// sampling. See postretro/src/render/sh_volume.rs.
 struct ShGridInfo {
     grid_origin: vec3<f32>,
     has_sh_volume: u32,
@@ -143,7 +184,7 @@ struct AnimationDescriptor {
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
 
 // Group 4 — baked directional lightmap (static direct lighting).
-// See context/plans/ready/lighting-lightmaps/index.md.
+// See context/lib/rendering_pipeline.md §4.
 @group(4) @binding(0) var lightmap_irradiance: texture_2d<f32>;
 @group(4) @binding(1) var lightmap_direction: texture_2d<f32>;
 @group(4) @binding(2) var lightmap_sampler: sampler;
@@ -156,7 +197,7 @@ struct AnimationDescriptor {
 @group(4) @binding(3) var animated_lm_atlas: texture_2d<f32>;
 
 // Group 5 — dynamic spot light shadow maps.
-// See context/plans/in-progress/lighting-spot-shadows/index.md § Task B.
+// See context/lib/rendering_pipeline.md §4.
 @group(5) @binding(0) var spot_shadow_depth: texture_depth_2d_array;
 @group(5) @binding(1) var spot_shadow_compare: sampler_comparison;
 // Uniform (not storage) so we stay under `max_storage_buffers_per_shader_stage`
@@ -401,9 +442,174 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     return sample_sh_indirect_fast(normal, gi, gfrac);
 }
 
+// Per-pixel anisotropic sampling, gated by screen-space derivative aspect
+// ratio. Below ANISO_THRESHOLD the footprint is near-isotropic — one tap, the
+// stock single-sample behaviour. Grazing footprints take ANISO_TAP_COUNT taps
+// spread along the major axis, each handed a shrunken minor-axis derivative pair
+// so the hardware picks a sharper mip per tap. Suppresses grazing shimmer
+// without forcing in-plane linear filtering (which would blur the pixel grid).
+//
+// The footprint is identical across the three texture slots (all share in.uv
+// and the same derivatives), so it is computed once per fragment by
+// compute_aniso_footprint and threaded into each helper. The helpers always
+// use textureSampleGrad — never implicit derivatives — so they are safe to call
+// from any control flow; here they run from the graphics-mode branch in fs_main.
+
+// Precomputed anisotropic footprint shared by all three texture slots. `min_len`
+// is floored to ANISO_TINY_EPS to keep `major_dir` normalization and the
+// `aniso_ratio = max_len / min_len` division finite — guarding divide-by-zero,
+// not NaN (zero-length explicit gradients are well-defined: they select LOD 0).
+struct AnisoFootprint {
+    is_aniso: bool,
+    major_dir: vec2<f32>,
+    extension: f32,
+    ddx_tap: vec2<f32>,
+    ddy_tap: vec2<f32>,
+    ddx: vec2<f32>,
+    ddy: vec2<f32>,
+}
+
+fn compute_aniso_footprint(ddx: vec2<f32>, ddy: vec2<f32>) -> AnisoFootprint {
+    let len_x = length(ddx);
+    let len_y = length(ddy);
+    let x_is_major = len_x >= len_y;
+    let max_len = select(len_y, len_x, x_is_major);
+    let min_len = max(select(len_x, len_y, x_is_major), ANISO_TINY_EPS);
+    let aniso_ratio = max_len / min_len;
+
+    let major = select(ddy, ddx, x_is_major);
+    let major_dir = major / max(max_len, ANISO_TINY_EPS);
+    let minor_perp = vec2<f32>(-major_dir.y, major_dir.x);
+
+    var fp: AnisoFootprint;
+    fp.is_aniso = aniso_ratio >= ANISO_THRESHOLD;
+    fp.major_dir = major_dir;
+    // Only the anisotropic extension is distributed across taps — the isotropic
+    // minor-sized core is covered by per-tap mip selection.
+    fp.extension = max_len - min_len;
+    // Each tap selects the sharpest mip the minor axis allows, so spreading the
+    // taps along the major axis reconstructs major-axis detail instead of
+    // blurring it into the over-large isotropic-major mip a single tap would pick.
+    fp.ddx_tap = major_dir * min_len;
+    fp.ddy_tap = minor_perp * min_len;
+    fp.ddx = ddx;
+    fp.ddy = ddy;
+    return fp;
+}
+
+fn sample_aniso(
+    texture: texture_2d<f32>,
+    samp: sampler,
+    uv: vec2<f32>,
+    fp: AnisoFootprint,
+) -> vec4<f32> {
+    if !fp.is_aniso {
+        return textureSampleGrad(texture, samp, uv, fp.ddx, fp.ddy);
+    }
+
+    let n = f32(ANISO_TAP_COUNT);
+    var sum = vec4<f32>(0.0);
+    for (var i: u32 = 0u; i < ANISO_TAP_COUNT; i = i + 1u) {
+        let offset = ((f32(i) + 0.5) / n - 0.5) * fp.extension;
+        sum = sum + textureSampleGrad(texture, samp, uv + fp.major_dir * offset, fp.ddx_tap, fp.ddy_tap);
+    }
+    return sum / n;
+}
+
+// As sample_aniso, but for tangent-space normal maps: each tap is decoded
+// (`* 2 - 1`) before summing, then the average is renormalized. Averaging
+// encoded normals and decoding afterward cancels micro-normal variation —
+// losing exactly the surface detail aniso is meant to preserve at grazing angles.
+fn sample_aniso_normal(
+    texture: texture_2d<f32>,
+    samp: sampler,
+    uv: vec2<f32>,
+    fp: AnisoFootprint,
+) -> vec3<f32> {
+    if !fp.is_aniso {
+        return normalize(textureSampleGrad(texture, samp, uv, fp.ddx, fp.ddy).rgb * 2.0 - 1.0);
+    }
+
+    let n = f32(ANISO_TAP_COUNT);
+    var sum = vec3<f32>(0.0);
+    for (var i: u32 = 0u; i < ANISO_TAP_COUNT; i = i + 1u) {
+        let offset = ((f32(i) + 0.5) / n - 0.5) * fp.extension;
+        let tap = textureSampleGrad(texture, samp, uv + fp.major_dir * offset, fp.ddx_tap, fp.ddy_tap).rgb;
+        sum = sum + (tap * 2.0 - 1.0);
+    }
+    // Zero-sum (opposing grazing taps) yields NaN from normalize; benign because
+    // the downstream TBN-magnitude guard rejects NaN and N_bump falls back to mesh_n.
+    return normalize(sum);
+}
+
+// Post Retro sample. Reconstructs the texel grid in UV space — warping the
+// sample point toward the nearest texel center and antialiasing only the seam
+// between texels (the `fwidth(uv_tex)`-wide transition band) — then samples
+// through the hardware-anisotropic sampler. Keeps texels crisp up close while
+// the linear+aniso sampler antialiases seams and kills grazing-angle shimmer.
+//
+// Reconstruction is per-slot because slots (diffuse / normal / specular) can
+// differ in resolution, so `dims` must come from the texture being sampled.
+//
+// CRITICAL: the warped `uv_recon` only shifts the sample point; the ORIGINAL
+// `ddx`/`ddy` are passed to textureSampleGrad so mip selection and the
+// hardware-aniso footprint track the true screen-space pixel footprint. Taking
+// derivatives of the warped UV instead would collapse the footprint at seams
+// and break mip/aniso selection.
+fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
+                     ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(tex, 0));
+    let uv_tex = uv * dims;
+    let seam = floor(uv_tex + 0.5);
+    // Floor the seam-width divisor: a constant-UV fragment (edge-on face,
+    // degenerate UV chart, vanishing derivatives) gives fwidth == 0, and
+    // clamp() does not reliably sanitize the resulting NaN/Inf in WGSL. Same
+    // ANISO_TINY_EPS guard the True Retro footprint math uses.
+    let seam_width = max(fwidth(uv_tex), vec2<f32>(ANISO_TINY_EPS));
+    let aa = clamp((uv_tex - seam) / seam_width, vec2(-0.5), vec2(0.5));
+    let uv_recon = (seam + aa) / dims;
+    return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
+}
+
+// Per-slot diffuse/specular dispatch. Branch is on a uniform-buffer value, so
+// both arms run in uniform control flow — textureSampleGrad in either arm is
+// valid. `mode` is u32 (not bool) because WGSL's uniform address space does not
+// allow bool members. True Retro keeps the existing manual-aniso math bit-for-bit.
+fn sample_color(tex: texture_2d<f32>, mode: u32, uv: vec2<f32>, fp: AnisoFootprint) -> vec4<f32> {
+    if mode == POST_RETRO {
+        return sample_post_retro(tex, aniso_sampler, uv, fp.ddx, fp.ddy);
+    }
+    return sample_aniso(tex, base_sampler, uv, fp);
+}
+
+// Normal-map dispatch: decode (`* 2 - 1`) and renormalize after sampling.
+// Post Retro takes the single reconstructed aniso sample; True Retro keeps the
+// existing per-tap-decode manual-aniso path. (3-channel encoding only — BC5 is
+// out of scope.)
+fn sample_normal(tex: texture_2d<f32>, mode: u32, uv: vec2<f32>, fp: AnisoFootprint) -> vec3<f32> {
+    if mode == POST_RETRO {
+        let n = sample_post_retro(tex, aniso_sampler, uv, fp.ddx, fp.ddy).rgb;
+        return normalize(n * 2.0 - 1.0);
+    }
+    return sample_aniso_normal(tex, base_sampler, uv, fp);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let base_color = textureSample(base_texture, base_sampler, in.uv);
+    // UV footprint derivatives — computed once here in uniform control flow.
+    // WGSL requires dpdx/dpdy to be called from uniform control flow, so they
+    // are hoisted out of the per-slot sampling helpers. They feed both paths:
+    // the True Retro footprint, and the explicit gradients the Post Retro path
+    // hands to textureSampleGrad. Shared by all three texture slots.
+    let ddx = dpdx(in.uv);
+    let ddy = dpdy(in.uv);
+    let aniso_fp = compute_aniso_footprint(ddx, ddy);
+
+    // Texture-filtering mode (uniform across the workgroup; see TRUE_RETRO /
+    // POST_RETRO). Threaded into each per-slot sampling helper.
+    let gfx_mode = uniforms.graphics_mode;
+
+    let base_color = sample_color(base_texture, gfx_mode, in.uv, aniso_fp);
 
     let mesh_n = normalize(in.world_normal);
 
@@ -415,7 +621,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let iso = uniforms.lighting_isolation;
     var N_bump: vec3<f32> = mesh_n;
     if iso != 4u {
-        let n_ts = textureSample(t_normal, base_sampler, in.uv).rgb * 2.0 - 1.0;
+        let n_ts = sample_normal(t_normal, gfx_mode, in.uv, aniso_fp);
         // Degenerate-tangent guard: meshes with collapsed UVs produce zero-length
         // tangents. Skip TBN in that case to avoid NaN propagation.
         const TBN_EPS: f32 = 1.0e-4;
@@ -494,7 +700,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var specular_sum = vec3<f32>(0.0);
     if use_specular {
         let V = normalize(uniforms.camera_position - in.world_position);
-        let spec_int = textureSample(spec_texture, base_sampler, in.uv).r;
+        let spec_int = sample_color(spec_texture, gfx_mode, in.uv, aniso_fp).r;
         let spec_exp = max(material.shininess, 1.0);
 
         // Chunk lookup when the offline index is populated; otherwise walk
@@ -572,18 +778,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if scripted_desc.is_active != 0u {
             let cycle_t = fract(uniforms.time / max(scripted_desc.period, 0.0001) + scripted_desc.phase);
             // Color channel wins when present; otherwise apply brightness to base_color.
+            // Clamp non-negative: Catmull-Rom overshoot between keyframes can go
+            // below zero, which would make an animated light emit negative,
+            // sign-flipped (wrong-colored) light.
             if scripted_desc.color_count > 0u {
-                effective_color = sample_color_catmull_rom(
-                    scripted_desc.color_offset,
-                    scripted_desc.color_count,
-                    cycle_t,
-                    scripted_desc.base_color,
+                effective_color = max(
+                    sample_color_catmull_rom(
+                        scripted_desc.color_offset,
+                        scripted_desc.color_count,
+                        cycle_t,
+                        scripted_desc.base_color,
+                    ),
+                    vec3<f32>(0.0),
                 );
             } else if scripted_desc.brightness_count > 0u {
-                let brightness = sample_curve_catmull_rom(
-                    scripted_desc.brightness_offset,
-                    scripted_desc.brightness_count,
-                    cycle_t,
+                let brightness = max(
+                    sample_curve_catmull_rom(
+                        scripted_desc.brightness_offset,
+                        scripted_desc.brightness_count,
+                        cycle_t,
+                    ),
+                    0.0,
                 );
                 effective_color = scripted_desc.base_color * brightness;
             }

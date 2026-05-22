@@ -2,283 +2,15 @@
 // See: context/lib/scripting.md
 //
 // Per-domain primitive registration lives in sibling modules (`entity`,
-// `light`); this file owns the shared types, the cross-domain `worldQuery`
-// primitive, and the `register_all` entry point that the engine and tests
-// converge on.
+// `light`, `world`); this file owns shared types and the `register_all`
+// entry point that the engine and tests converge on.
 
 pub(crate) mod entity;
 pub(crate) mod light;
+pub(crate) mod world;
 
-use crate::scripting::conv::{json_to_js, json_to_lua};
 use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::error::ScriptError;
-use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
-use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
-use mlua::{FromLua, IntoLua, Lua, Value as LuaValue};
-use rquickjs::{Ctx, FromJs, IntoJs, Value as JsValue};
-
-// --- worldQuery -------------------------------------------------------------
-//
-// `worldQuery` is a generic ECS query primitive. It lives here at the
-// composition root because it spans multiple component domains (light,
-// transform, emitter, fog volume); per-domain helpers live in the sibling
-// `entity` and `light` modules.
-
-/// Opaque newtype implementing `IntoJs` and `IntoLua` so we can return a
-/// serde_json-shaped value from a primitive closure without the caller having
-/// to write the `for<'js>` lifetime on the closure by hand — rquickjs'
-/// `IntoJsFunc` derives the HRTB from the impl.
-struct JsonValue(serde_json::Value);
-
-impl<'js> IntoJs<'js> for JsonValue {
-    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        json_to_js(ctx, &self.0)
-    }
-}
-
-impl IntoLua for JsonValue {
-    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
-        json_to_lua(lua, &self.0)
-    }
-}
-
-/// Filter object adapter with FromJs / FromLua impls so the primitive
-/// declares a typed parameter instead of manually walking an `Object`.
-struct WorldQueryFilterInput {
-    component: String,
-    tag: Option<String>,
-}
-
-impl<'js> FromJs<'js> for WorldQueryFilterInput {
-    fn from_js(_ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
-        let obj = rquickjs::Object::from_value(value)
-            .map_err(|_| rquickjs::Error::new_from_js("value", "WorldQueryFilter object"))?;
-        let component: String = obj.get("component")?;
-        let tag: Option<String> = obj.get("tag")?;
-        Ok(Self { component, tag })
-    }
-}
-
-impl FromLua for WorldQueryFilterInput {
-    fn from_lua(value: LuaValue, _lua: &Lua) -> mlua::Result<Self> {
-        let t = match value {
-            LuaValue::Table(t) => t,
-            other => {
-                return Err(mlua::Error::FromLuaConversionError {
-                    from: other.type_name(),
-                    to: "WorldQueryFilter".to_string(),
-                    message: Some("expected a table".to_string()),
-                });
-            }
-        };
-        let component: String = t.get("component")?;
-        let tag: Option<String> = t.get("tag")?;
-        Ok(Self { component, tag })
-    }
-}
-
-/// Parsed and validated form of the filter passed to `worldQuery`.
-enum QueryFilter {
-    Light {
-        tag: Option<String>,
-    },
-    Transform {
-        tag: Option<String>,
-    },
-    Emitter {
-        tag: Option<String>,
-    },
-    FogVolume {
-        tag: Option<String>,
-    },
-    /// Always returns an empty array. Particles and sprite-visuals are
-    /// engine-managed; scripts have no business iterating individual ones.
-    AlwaysEmpty,
-}
-
-/// Parse the filter object passed to `worldQuery`. Unknown component names
-/// surface as `InvalidArgument`.
-fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilter, ScriptError> {
-    match component {
-        "light" => Ok(QueryFilter::Light { tag }),
-        "transform" => Ok(QueryFilter::Transform { tag }),
-        "emitter" => Ok(QueryFilter::Emitter { tag }),
-        "fog_volume" => Ok(QueryFilter::FogVolume { tag }),
-        "particle" | "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
-        other => Err(ScriptError::InvalidArgument {
-            reason: format!(
-                "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"particle\" | \"sprite_visual\""
-            ),
-        }),
-    }
-}
-
-const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Available in definition and data contexts. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"particle\" | \"sprite_visual\", tag?: string }. \
-     `\"particle\"` and `\"sprite_visual\"` always return `[]` (engine-managed; scripts never iterate individual particles). \
-     Unknown component values raise InvalidArgument. \
-     The `world.ts` vocabulary module wraps this as `world.query`.";
-
-/// Collect transform handles as JSON. Every live entity carries `Transform`,
-/// so this is effectively an entity query filtered only by tag.
-fn collect_transform_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
-    use serde_json::{Map, Value};
-    let reg = ctx.registry.borrow();
-    let mut arr: Vec<Value> = Vec::new();
-    for (id, value) in reg.query_by_component_and_tag(ComponentKind::Transform, tag) {
-        let ComponentValue::Transform(t) = value else {
-            continue;
-        };
-        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
-        let mut obj = Map::with_capacity(3);
-        obj.insert("id".to_string(), Value::from(id.to_raw()));
-        let mut position = Map::with_capacity(3);
-        position.insert("x".to_string(), Value::from(t.position.x as f64));
-        position.insert("y".to_string(), Value::from(t.position.y as f64));
-        position.insert("z".to_string(), Value::from(t.position.z as f64));
-        obj.insert("position".to_string(), Value::Object(position));
-        obj.insert(
-            "tags".to_string(),
-            Value::Array(tags.into_iter().map(Value::String).collect()),
-        );
-        arr.push(Value::Object(obj));
-    }
-    Value::Array(arr)
-}
-
-/// Collect billboard-emitter handles as JSON. `BillboardEmitterComponent` has
-/// `#[serde(rename_all = "snake_case")]` so direct serialization gives the wire
-/// field names without a manual mapping.
-fn collect_emitter_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
-    use serde_json::{Map, Value};
-    let reg = ctx.registry.borrow();
-    let mut arr: Vec<Value> = Vec::new();
-    for (id, value) in reg.query_by_component_and_tag(ComponentKind::BillboardEmitter, tag) {
-        let ComponentValue::BillboardEmitter(e) = value else {
-            continue;
-        };
-        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
-        // Position lives on the entity's Transform component, not on the
-        // emitter — read it separately.
-        let position = match reg.get_component::<Transform>(id) {
-            Ok(t) => {
-                let mut p = Map::with_capacity(3);
-                p.insert("x".to_string(), Value::from(t.position.x as f64));
-                p.insert("y".to_string(), Value::from(t.position.y as f64));
-                p.insert("z".to_string(), Value::from(t.position.z as f64));
-                Value::Object(p)
-            }
-            Err(_) => Value::Null,
-        };
-        let comp = serde_json::to_value(e).expect("BillboardEmitterComponent always serializes");
-        let mut obj = Map::with_capacity(4);
-        obj.insert("id".to_string(), Value::from(id.to_raw()));
-        obj.insert("position".to_string(), position);
-        obj.insert(
-            "tags".to_string(),
-            Value::Array(tags.into_iter().map(Value::String).collect()),
-        );
-        obj.insert("component".to_string(), comp);
-        arr.push(Value::Object(obj));
-    }
-    Value::Array(arr)
-}
-
-/// Collect fog-volume handles as JSON. The component object is hand-rolled via
-/// `camel_fields()` rather than serde so the script-facing camelCase keys don't
-/// require a wire-affecting `#[serde(rename)]` on the struct.
-fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
-    use serde_json::{Map, Value};
-    let reg = ctx.registry.borrow();
-    let mut arr: Vec<Value> = Vec::new();
-    for (id, value) in reg.query_by_component_and_tag(ComponentKind::FogVolume, tag) {
-        let ComponentValue::FogVolume(f) = value else {
-            continue;
-        };
-        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
-        let position = match reg.get_component::<Transform>(id) {
-            Ok(t) => {
-                let mut p = Map::with_capacity(3);
-                p.insert("x".to_string(), Value::from(t.position.x as f64));
-                p.insert("y".to_string(), Value::from(t.position.y as f64));
-                p.insert("z".to_string(), Value::from(t.position.z as f64));
-                Value::Object(p)
-            }
-            Err(_) => Value::Null,
-        };
-        let comp = {
-            let mut c = Map::with_capacity(7);
-            for (key, value) in f.camel_fields() {
-                c.insert(key.to_string(), Value::from(value as f64));
-            }
-            c.insert(
-                "tint".to_string(),
-                Value::Array(
-                    f.tint
-                        .iter()
-                        .map(|x| Value::from(*x as f64))
-                        .collect::<Vec<_>>(),
-                ),
-            );
-            // `animation` crosses through serde so its camelCase wire shape
-            // (periodMs, playCount) lands without manual mapping; absent
-            // becomes JSON `null` (script-side `null` / Luau `nil`).
-            let anim_json = match f.animation.as_ref() {
-                Some(anim) => serde_json::to_value(anim).expect("FogAnimation always serializes"),
-                None => Value::Null,
-            };
-            c.insert("animation".to_string(), anim_json);
-            Value::Object(c)
-        };
-        let mut obj = Map::with_capacity(4);
-        obj.insert("id".to_string(), Value::from(id.to_raw()));
-        obj.insert("position".to_string(), position);
-        obj.insert(
-            "tags".to_string(),
-            Value::Array(tags.into_iter().map(Value::String).collect()),
-        );
-        obj.insert("component".to_string(), comp);
-        arr.push(Value::Object(obj));
-    }
-    Value::Array(arr)
-}
-
-pub(crate) fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
-    // Generic registration path: because `WorldQueryFilterInput: FromJs + FromLua`
-    // and the returned `JsonValue: IntoJs + IntoLua`, rquickjs / mlua both
-    // derive the HRTB lifetime bounds from their respective conversion traits.
-    // That side-steps the `'_`-inside-closure lifetime problem writing a raw
-    // `rquickjs::Ctx<'_> -> Value<'_>` closure would hit.
-    registry
-        .register("worldQuery", {
-            let ctx = ctx.clone();
-            move |filter: WorldQueryFilterInput| -> Result<JsonValue, ScriptError> {
-                let filter = parse_query_filter(&filter.component, filter.tag)?;
-                match filter {
-                    QueryFilter::Light { tag } => {
-                        let handles = light::collect_light_handles(&ctx, tag.as_deref());
-                        Ok(JsonValue(light::handles_to_json(handles)))
-                    }
-                    QueryFilter::Transform { tag } => Ok(JsonValue(
-                        collect_transform_handles_json(&ctx, tag.as_deref()),
-                    )),
-                    QueryFilter::Emitter { tag } => Ok(JsonValue(collect_emitter_handles_json(
-                        &ctx,
-                        tag.as_deref(),
-                    ))),
-                    QueryFilter::FogVolume { tag } => Ok(JsonValue(
-                        collect_fog_volume_handles_json(&ctx, tag.as_deref()),
-                    )),
-                    QueryFilter::AlwaysEmpty => Ok(JsonValue(serde_json::Value::Array(Vec::new()))),
-                }
-            }
-        })
-        .scope(ContextScope::Both)
-        .doc(WORLD_QUERY_DOC)
-        .param("filter", "WorldQueryFilter")
-        .finish();
-}
+use crate::scripting::primitives_registry::PrimitiveRegistry;
 
 /// Register the shared types referenced by day-one primitive signatures. These
 /// feed the typedef generator (see: context/lib/scripting.md §7).
@@ -339,8 +71,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("EntityTypeDescriptor")
-        .doc("Argument shape for `registerEntity`. `components` is an optional sub-object carrying typed component presets.")
-        .field("classname", "String", "FGD classname this descriptor binds to.")
+        .doc("Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.")
+        .field("canonicalName?", "String", "FGD canonical map classname this descriptor binds to. Absence means the descriptor is not directly placeable from a map and is only reachable via indirect routing (e.g. `entity_class` on a `player_spawn` marker).")
         .field(
             "components?",
             "EntityTypeComponents",
@@ -372,7 +104,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("FogAnimation")
-        .doc("Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Two independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density and `saturation` modulates SH-irradiance saturation. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.")
+        .doc("Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Four independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density, `saturation` modulates SH-irradiance saturation, `minBrightness` modulates the scatter brightness floor, and `lightRange` scales how far lights reach inside the fog. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.")
         .field("periodMs", "f32", "Total period of the loop, in milliseconds.")
         .field(
             "phase",
@@ -394,17 +126,29 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Option<Vec<f32>>",
             "Per-sample saturation curve. null leaves the static saturation unchanged.",
         )
+        .field(
+            "minBrightness",
+            "Option<Vec<f32>>",
+            "Per-sample animation curve for the `min_brightness` channel (scatter brightness floor). null leaves the static min_brightness unchanged. Each sample clamped to `[0, +∞)`; empty curve is rejected.",
+        )
+        .field(
+            "lightRange",
+            "Option<Vec<f32>>",
+            "Per-sample animation curve for the `light_range` channel (scales how far lights reach inside this fog). null leaves the static light_range unchanged. Each sample must be strictly positive and finite; non-positive or non-finite samples clamp to `0.001`; empty curve is rejected.",
+        )
         .finish();
     registry
         .register_type("FogVolumeComponent")
         .doc("Script-facing fog-volume component shape. Carried by `FogVolume` ECS entities; the AABB is baked at level load and lives in the FogVolumeBridge side-table — it is not exposed here because it is not runtime-settable.")
         .field("density", "f32", "Volumetric fog density inside the AABB.")
-        .field("scatter", "f32", "Fraction of in-scattering toward the camera.")
+        .field("glow", "f32", "How much the fog lights up near light sources. 0 = stays dark even under bright lights, 1 = picks up full light color. Raise for misty glow, lower for thick opaque smoke.")
         .field("edgeSoftness", "f32", "Edge softness in world units: 0 = hard cutoff at the brush face, larger = wider linear ramp inward from each face.")
         .field("falloff", "f32", "Radial falloff exponent. Consulted by the radial (`fog_lamp`, `fog_tube`) and ellipsoid (axis-aligned `fog_volume`) shader paths; stored but ignored by the plane-sweep (non-axis-aligned `fog_volume`) path.")
         .field("tint", "[f32; 3]", "Per-volume RGB scatter multiplier. Default `[1.0, 1.0, 1.0]`.")
         .field("saturation", "f32", "Saturation of transmitted SH irradiance: 0 = greyscale, 1 = natural, >1 = boosted. Default 1.0.")
-        .field("animation", "Option<FogAnimation>", "Density and/or saturation animation curves. null holds the static state.")
+        .field("minBrightness", "f32", "Floor on per-volume scatter brightness. Clamped to `[0, +∞)`. Default 0.0.")
+        .field("lightRange", "f32", "Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range. Strictly positive; clamps to 0.001. Default 1.0.")
+        .field("animation", "Option<FogAnimation>", "Optional animation carrying any combination of density, saturation, minBrightness, and lightRange curves. null holds the static state.")
         .finish();
     registry
         .register_type("FogVolumeEntity")
@@ -431,11 +175,81 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Optional bag of component presets carried by `EntityTypeDescriptor.components`.")
         .field("light?", "Option<LightDescriptor>", "")
         .field("emitter?", "Option<BillboardEmitterComponent>", "")
+        .field("movement?", "Option<PlayerMovementDescriptor>", "")
+        .finish();
+    registry
+        .register_type("PlayerMovementDescriptor")
+        .doc("Authored player-movement component preset. All four sub-objects are required when `movement` is present; the data-archetype spawn path materializes the runtime movement component from this.")
+        .field("capsule", "CapsuleParams", "Collision capsule shape.")
+        .field("ground", "GroundParams", "On-ground locomotion parameters.")
+        .field("air", "AirParams", "Mid-air control parameters.")
+        .field("fall", "FallParams", "Falling parameters.")
+        .field(
+            "stuckStopEnabled?",
+            "bool",
+            "Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true.",
+        )
+        .field(
+            "stuckStopThreshold?",
+            "f32",
+            "Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3.",
+        )
+        .finish();
+    registry
+        .register_type("CapsuleParams")
+        .doc("Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`. `eyeHeight` is the camera attachment point measured upward from the capsule center.")
+        .field("radius", "f32", "Capsule radius in world units. Must be > 0.")
+        .field("halfHeight", "f32", "Cylinder half-height in world units. Must be > 0.")
+        .field("eyeHeight", "f32", "Camera attachment point measured upward from the capsule center in world units. Must lie in (0, halfHeight + radius].")
+        .finish();
+    registry
+        .register_type("GroundParams")
+        .doc("On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization.")
+        .field("speed", "f32", "Target ground speed in world units/sec.")
+        .field("accel", "f32", "Ground acceleration in world units/sec².")
+        .field("jumpVelocity", "f32", "Vertical launch velocity applied on jump.")
+        .field("stepHeight", "f32", "Maximum step-up height in world units.")
+        .field("maxSlope", "f32", "Maximum walkable slope in degrees; must lie in [0, 90].")
+        .finish();
+    registry
+        .register_type("AirParams")
+        .doc("Mid-air control parameters. `forwardSteer` blends forward steering authority between 0 (pure strafe-only Quake air control) and 1 (full forward authority). `jumpCeiling` is required when `jumps > 0`.")
+        .field("forwardSteer", "f32", "Forward steering authority in [0, 1].")
+        .field("accel", "f32", "Air acceleration in world units/sec².")
+        .field("maxControlSpeed", "f32", "Speed cap that air-accel can push toward.")
+        .field("bunnyHop", "bool", "Permit chained jumps on landing without releasing the jump input.")
+        .field("jumps", "u32", "Additional jumps allowed in air after the initial ground jump. 0 disables air jumps.")
+        .field("jumpCeiling", "f32", "Maximum upward velocity an air jump can reach; required when `jumps > 0`.")
+        .finish();
+    registry
+        .register_type("FallParams")
+        .doc("Falling parameters.")
+        .field(
+            "terminalVelocity",
+            "f32",
+            "Terminal downward fall speed in world units/sec. Must be > 0.",
+        )
+        .finish();
+    registry
+        .register_enum("GraphicsMode")
+        .doc("Texture-filtering mode. `trueRetro` is nearest-neighbor point sampling; `postRetro` adds modern filtering.")
+        .variant("trueRetro", "")
+        .variant("postRetro", "")
         .finish();
     registry
         .register_type("ModManifest")
         .doc("Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.")
         .field("name", "String", "Human-readable mod name. Required.")
+        .field(
+            "entities?",
+            "Vec<EntityTypeDescriptor>",
+            "Engine-global entity-type registrations. Survive level unload.",
+        )
+        .field(
+            "defaultGraphicsMode?",
+            "GraphicsMode",
+            "Startup texture-filtering mode. Omit to use the engine default (Post Retro).",
+        )
         .finish();
 }
 
@@ -445,7 +259,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_shared_types(registry);
     light::register_shared_types(registry);
     light::register_light_entity_primitives(registry, ctx.clone());
-    register_world_query(registry, ctx.clone());
+    world::register_world_primitives(registry, ctx.clone());
     entity::register_entity_primitives(registry, ctx);
 }
 
@@ -453,6 +267,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
 mod tests {
     use super::*;
     use crate::scripting::ctx::ScriptCtx;
+    use crate::scripting::registry::Transform;
 
     fn registry_with_day_one() -> (PrimitiveRegistry, ScriptCtx) {
         let ctx = ScriptCtx::new();
@@ -468,12 +283,19 @@ mod tests {
         for expected in [
             "entityExists",
             "worldQuery",
+            "worldGetGravity",
+            "worldSetGravity",
             "setLightAnimation",
             "getEntityProperty",
-            "registerEntity",
         ] {
             assert!(names.contains(&expected), "missing primitive {expected}");
         }
+        // `registerEntity` was removed; entity-type registration now flows
+        // through `setupMod()`'s `entities` return field.
+        assert!(
+            !names.contains(&"registerEntity"),
+            "registerEntity primitive must be removed",
+        );
         // The Live VM primitives are gone — they must NOT appear.
         for forbidden in [
             "spawnEntity",
@@ -487,6 +309,61 @@ mod tests {
             assert!(
                 !names.contains(&forbidden),
                 "primitive {forbidden} must be removed",
+            );
+        }
+    }
+
+    #[test]
+    fn mod_manifest_registered_type_matches_mod_manifest_result() {
+        // Parity guard: the `ModManifest` shape emitted to the SDK
+        // (`gen-script-types`) must mirror `ModManifestResult` in
+        // `runtime.rs`. If the canonical struct grows a field, this test
+        // forces the registered type to follow.
+        //
+        // The expected field list is derived from `ModManifestResult`'s
+        // definition. Field-presence assertions below construct a value of
+        // that struct so any rename or removal in `runtime.rs` is a compile
+        // error here.
+        use crate::scripting::primitives_registry::TypeShape;
+        use crate::scripting::runtime::ModManifestResult;
+
+        // Compile-time anchor: ensure the struct still has `name`, `entities`,
+        // and `default_graphics_mode` fields (and nothing else load-bearing).
+        // Adding a field here would fail to compile; removing one likewise.
+        let _shape_anchor = ModManifestResult {
+            name: String::new(),
+            entities: Vec::new(),
+            default_graphics_mode: None,
+        };
+        // The registered `defaultGraphicsMode` field name is camelCase to match
+        // the wire/script surface; its Rust counterpart is `default_graphics_mode`.
+        let expected_fields: &[&str] = &["name", "entities", "defaultGraphicsMode"];
+
+        let mut r = PrimitiveRegistry::new();
+        register_shared_types(&mut r);
+        let registered = r
+            .iter_types()
+            .find(|t| t.name == "ModManifest")
+            .expect("ModManifest must be registered");
+        let fields = match &registered.shape {
+            TypeShape::Struct { fields } => fields,
+            other => panic!("ModManifest must be a Struct, got {other:?}"),
+        };
+        // Strip the optional-marker suffix so `entities?` matches `entities`.
+        let got_names: Vec<&str> = fields
+            .iter()
+            .map(|f| f.name.trim_end_matches('?'))
+            .collect();
+        for expected in expected_fields {
+            assert!(
+                got_names.contains(expected),
+                "ModManifest registered type missing field `{expected}`; has {got_names:?}",
+            );
+        }
+        for got in &got_names {
+            assert!(
+                expected_fields.contains(got),
+                "ModManifest registered type has extra field `{got}` not in ModManifestResult; expected {expected_fields:?}",
             );
         }
     }
@@ -520,8 +397,6 @@ mod tests {
         use std::collections::HashMap;
         let (r, ctx) = registry_with_day_one();
 
-        // Spawn a fresh entity from Rust and seed its KVP bag the way a
-        // built-in classname handler would after a level-load dispatch.
         let id = ctx.registry.borrow_mut().spawn(Transform::default());
         let mut kv = HashMap::new();
         kv.insert("wave".to_string(), "3".to_string());
@@ -571,7 +446,6 @@ mod tests {
         let (r, ctx) = registry_with_day_one();
 
         let id = ctx.registry.borrow_mut().spawn(Transform::default());
-        // Install an empty KVP bag — simulates a map entity with no authored properties.
         ctx.registry
             .borrow_mut()
             .set_map_kvps(id, HashMap::new())

@@ -6,12 +6,16 @@ use std::path::Path;
 
 use postretro_level_format::data_script::DataScriptSection;
 use rquickjs::{
-    CatchResultExt, Context as JsContext, Function as JsFunction, Object as JsObject,
-    Value as JsValue,
+    Array as JsArray, CatchResultExt, Context as JsContext, Function as JsFunction,
+    Object as JsObject, Value as JsValue,
 };
 
+use crate::render::GraphicsMode;
+
 use super::ctx::ScriptCtx;
-use super::data_descriptors::LevelManifest;
+use super::data_descriptors::{
+    EntityTypeDescriptor, LevelManifest, entity_descriptor_from_js, entity_descriptor_from_lua,
+};
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use super::primitives_registry::{PrimitiveRegistry, ScriptPrimitive};
@@ -21,9 +25,17 @@ use super::typedef;
 
 /// Validated `setupMod()` return value. Construct via
 /// [`ScriptRuntime::run_mod_init`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ModManifestResult {
     pub(crate) name: String,
+    /// Entity-type descriptors returned by `setupMod()`. Empty when the
+    /// returned object omits the `entities` field. Drained into `DataRegistry`
+    /// by the boot caller after `run_mod_init` returns.
+    pub(crate) entities: Vec<EntityTypeDescriptor>,
+    /// Startup graphics-filtering mode chosen by the mod. `None` when the
+    /// manifest omits `defaultGraphicsMode` — the boot caller then leaves the
+    /// renderer's construction default (Post Retro) untouched.
+    pub(crate) default_graphics_mode: Option<GraphicsMode>,
 }
 
 /// Aggregated reload signal returned by
@@ -139,6 +151,34 @@ impl ScriptRuntime {
         Ok(ReloadSummary::default())
     }
 
+    /// In debug builds: walk `script_root` recursively and `mod_root`
+    /// non-recursively, recompiling any `.ts` file whose sibling `.js` is
+    /// missing or older. No-op in release builds.
+    ///
+    /// Call this before [`ScriptRuntime::run_mod_init`] so domain scripts
+    /// edited between sessions are compiled before the engine loads them.
+    /// The two scopes mirror [`ScriptWatcher::spawn`]: nested helpers under
+    /// `scripts/` are walked recursively; top-level mod-root files
+    /// (`start-script.ts` and any siblings imported by it) are walked one
+    /// level. The scan mirrors the per-file freshness check in
+    /// `compile_start_script` for top-level mod-root entries (unconditional
+    /// rebuild — they are bundle components) and `compile_one_if_stale` for
+    /// nested `script_root` files (per-file mtime check — they compile to
+    /// individual `.js` outputs). Same compiler detection cascade, same
+    /// error-logging strategy (warn and continue rather than hard-fail). A
+    /// missing `scripts-build` is logged once and the scan returns without
+    /// compiling.
+    pub(crate) fn compile_stale_scripts(&self, script_root: &Path, mod_root: &Path) {
+        #[cfg(debug_assertions)]
+        {
+            scan_and_compile_stale_ts(script_root, mod_root);
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (script_root, mod_root);
+        }
+    }
+
     pub(crate) fn quickjs(&self) -> &QuickJsSubsystem {
         &self.quickjs
     }
@@ -149,8 +189,10 @@ impl ScriptRuntime {
 
     /// Evaluate a level's data script in a short-lived VM context and return
     /// the resulting `LevelManifest`. Errors are logged and converted to an
-    /// empty manifest — the level loads with empty registries rather than
-    /// failing.
+    /// empty manifest — the level loads with an empty reaction registry
+    /// (per-level reactions are absent) rather than failing. The engine-global
+    /// entity-type registry, populated at mod-init from `setupMod()`'s
+    /// `entities` return field, is unaffected.
     ///
     /// `mod_root` is forwarded to the Luau VM so `require("./shared/loot")`
     /// inside data scripts resolves against the mod root, matching the
@@ -265,7 +307,7 @@ impl ScriptRuntime {
         #[cfg(debug_assertions)]
         {
             if ts_path.is_file() {
-                if let Err(e) = compile_start_script_if_stale(&ts_path, &js_path) {
+                if let Err(e) = compile_start_script(&ts_path, &js_path) {
                     return Err(ScriptError::InvalidArgument {
                         reason: format!("mod-init: failed to compile `{}`: {e}", ts_path.display()),
                     });
@@ -330,6 +372,14 @@ impl ScriptRuntime {
     /// remain `None` in debug builds when no start-script was found.
     pub(crate) fn mod_manifest(&self) -> Option<&ModManifestResult> {
         self.mod_manifest.as_ref()
+    }
+
+    /// Mutable accessor for the stored manifest. Used by the boot caller to
+    /// drain `entities` into `DataRegistry` after a successful
+    /// [`ScriptRuntime::run_mod_init`] — the runtime parses and returns; the
+    /// caller owns registry lifecycle. See: context/lib/boot_sequence.md §3.
+    pub(crate) fn mod_manifest_mut(&mut self) -> Option<&mut ModManifestResult> {
+        self.mod_manifest.as_mut()
     }
 
     /// Read `path` from disk and run it in the appropriate subsystem, chosen
@@ -419,13 +469,11 @@ fn run_data_script_quickjs(
         }
 
         let globals = ctx.globals();
-        let func: JsFunction = match globals.get("registerLevelManifest") {
+        let func: JsFunction = match globals.get("setupLevel") {
             Ok(f) => f,
             Err(e) => {
                 manifest_out = Err(ScriptError::InvalidArgument {
-                    reason: format!(
-                        "data script `{source_path}` did not export `registerLevelManifest`: {e}"
-                    ),
+                    reason: format!("data script `{source_path}` did not export `setupLevel`: {e}"),
                 });
                 return;
             }
@@ -450,7 +498,7 @@ fn run_data_script_quickjs(
                 let msg = caught.to_string();
                 log::error!(
                     target: "script/quickjs",
-                    "data script `{source_path}` registerLevelManifest threw: {msg}",
+                    "data script `{source_path}` setupLevel threw: {msg}",
                 );
                 manifest_out = Err(ScriptError::ScriptThrew {
                     msg,
@@ -509,11 +557,9 @@ fn run_data_script_luau(
 
     let func: mlua::Function =
         lua.globals()
-            .get("registerLevelManifest")
+            .get("setupLevel")
             .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!(
-                    "data script `{source_path}` did not export `registerLevelManifest`: {e}"
-                ),
+                reason: format!("data script `{source_path}` did not export `setupLevel`: {e}"),
             })?;
 
     let arg = lua
@@ -535,28 +581,227 @@ fn run_data_script_luau(
 // ---------------------------------------------------------------------------
 // Mod-init helpers.
 
-/// In debug builds: compile `ts_path` to `js_path` if `js_path` is missing or
-/// older than `ts_path`. Reuses the `scripts-build` sidecar detection cascade
-/// from the watcher.
+/// Always rebuild `start-script.js` from `start-script.ts` in debug builds.
+///
+/// The mtime gate was removed because `start-script.ts` is a bundle entry, not
+/// a single-file compile: `swc_bundler` traces its imports and re-bundles every
+/// invocation. A `js_mtime > ts_mtime` check missed the case where an imported
+/// helper changed without touching `start-script.ts`, leaving a stale bundle on
+/// disk. Correctness over rebuild-skip — acceptable at current mod scale.
+/// Per-file mtime gating still applies to nested scripts under `script_root`
+/// (see `compile_one_if_stale`).
 #[cfg(debug_assertions)]
-fn compile_start_script_if_stale(ts_path: &Path, js_path: &Path) -> Result<(), String> {
-    let ts_mtime = fs::metadata(ts_path)
-        .and_then(|m| m.modified())
-        .map_err(|e| format!("stat `{}`: {e}", ts_path.display()))?;
-    let needs_build = match fs::metadata(js_path).and_then(|m| m.modified()) {
-        // `<=` catches same-second saves (e.g. `git checkout` followed by
-        // immediate launch) where mtimes are equal but the JS is stale.
-        Ok(js_mtime) => js_mtime <= ts_mtime,
-        Err(_) => true,
-    };
-    if !needs_build {
-        return Ok(());
-    }
+fn compile_start_script(ts_path: &Path, js_path: &Path) -> Result<(), String> {
     let compiler = super::watcher::TsCompilerPath::detect().ok_or_else(|| {
         "scripts-build not found — install it on PATH or ship it next to the engine binary"
             .to_string()
     })?;
     super::watcher::run_ts_compiler(&compiler, ts_path, js_path)
+}
+
+/// In debug builds: walk `script_root` recursively and recompile any `.ts`
+/// file whose sibling `.js` is missing or older than the `.ts`. Detects the
+/// compiler once up front; logs a warning and returns early if not found.
+/// Per-file compile failures are logged as warnings; the scan continues so one
+/// broken file does not block the rest.
+#[cfg(debug_assertions)]
+fn scan_and_compile_stale_ts(script_root: &Path, mod_root: &Path) {
+    let script_root_present = script_root.is_dir();
+    let mod_root_present = mod_root.is_dir() && mod_root != script_root;
+    if !script_root_present && !mod_root_present {
+        return;
+    }
+
+    let compiler = match super::watcher::TsCompilerPath::detect() {
+        Some(c) => c,
+        None => {
+            log::warn!(
+                "[Scripting] startup TS scan: `scripts-build` not found — \
+                 stale `.ts` files will not be recompiled. \
+                 Install `scripts-build` on PATH or next to the engine binary.",
+            );
+            return;
+        }
+    };
+
+    let mut compiled = 0u32;
+    let mut failed = 0u32;
+    if script_root_present {
+        visit_ts_files(script_root, &compiler, &mut compiled, &mut failed);
+    }
+    // mod_root walked one level only — nested helpers belong under scripts/.
+    if mod_root_present {
+        visit_ts_files_shallow(mod_root, &compiler, &mut compiled, &mut failed);
+    }
+
+    if compiled > 0 || failed > 0 {
+        log::info!("[Scripting] startup TS scan: {compiled} recompiled, {failed} failed");
+    }
+}
+
+/// Non-recursive variant of `visit_ts_files` for the mod-root scope.
+/// Subdirectories are not descended — they are the watcher's `script_root`
+/// territory and are handled by the recursive walk.
+#[cfg(debug_assertions)]
+fn visit_ts_files_shallow(
+    dir: &Path,
+    compiler: &super::watcher::TsCompilerPath,
+    compiled: &mut u32,
+    failed: &mut u32,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(err) => {
+            log::warn!(
+                "[Scripting] startup TS scan: cannot read directory `{}`: {err}",
+                dir.display(),
+            );
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("ts") {
+            continue;
+        }
+        // Top-level mod-root `.ts` files are bundle components — `swc_bundler`
+        // re-bundles them from scratch on every invocation, so an mtime gate
+        // here would only mask import-graph changes. Always rebuild; see
+        // `compile_start_script` for the matching rationale on the entry path.
+        compile_one_unconditional(&path, compiler, compiled, failed);
+    }
+}
+
+/// Recursively walk `dir`, compiling stale `.ts` files. Subdirectory traversal
+/// errors (e.g. permission denied) are logged and skipped.
+#[cfg(debug_assertions)]
+fn visit_ts_files(
+    dir: &Path,
+    compiler: &super::watcher::TsCompilerPath,
+    compiled: &mut u32,
+    failed: &mut u32,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(err) => {
+            log::warn!(
+                "[Scripting] startup TS scan: cannot read directory `{}`: {err}",
+                dir.display(),
+            );
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+
+        if file_type.is_dir() {
+            visit_ts_files(&path, compiler, compiled, failed);
+            continue;
+        }
+
+        if path.extension().and_then(|s| s.to_str()) != Some("ts") {
+            continue;
+        }
+        compile_one_if_stale(&path, compiler, compiled, failed);
+    }
+}
+
+/// Compile a single `.ts` file unconditionally — used for top-level mod-root
+/// bundle components. The bundler re-runs from scratch every time, so any
+/// per-file mtime gate would only hide import-graph changes.
+#[cfg(debug_assertions)]
+fn compile_one_unconditional(
+    path: &Path,
+    compiler: &super::watcher::TsCompilerPath,
+    compiled: &mut u32,
+    failed: &mut u32,
+) {
+    let js_path = super::watcher::compiled_output_for(path);
+    match super::watcher::run_ts_compiler(compiler, path, &js_path) {
+        Ok(()) => {
+            log::debug!("[Scripting] startup TS scan: compiled `{}`", path.display(),);
+            *compiled += 1;
+        }
+        Err(msg) => {
+            log::warn!(
+                "[Scripting] startup TS scan: compile failed for `{}`: {msg}",
+                path.display(),
+            );
+            *failed += 1;
+        }
+    }
+}
+
+/// Compile a single `.ts` file when its sibling `.js` is missing or older.
+/// Used by the recursive `script_root` walk where each `.ts` is an individual
+/// compilation target (not a bundle component), so mtime gating is meaningful.
+#[cfg(debug_assertions)]
+fn compile_one_if_stale(
+    path: &Path,
+    compiler: &super::watcher::TsCompilerPath,
+    compiled: &mut u32,
+    failed: &mut u32,
+) {
+    let js_path = super::watcher::compiled_output_for(path);
+    let ts_mtime = match fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(err) => {
+            log::warn!(
+                "[Scripting] startup TS scan: stat `{}`: {err}",
+                path.display(),
+            );
+            return;
+        }
+    };
+    let needs_build = match fs::metadata(&js_path).and_then(|m| m.modified()) {
+        Ok(js_mtime) => js_mtime <= ts_mtime,
+        Err(_) => true,
+    };
+    if !needs_build {
+        return;
+    }
+    match super::watcher::run_ts_compiler(compiler, path, &js_path) {
+        Ok(()) => {
+            log::debug!("[Scripting] startup TS scan: compiled `{}`", path.display(),);
+            *compiled += 1;
+        }
+        Err(msg) => {
+            log::warn!(
+                "[Scripting] startup TS scan: compile failed for `{}`: {msg}",
+                path.display(),
+            );
+            *failed += 1;
+        }
+    }
+}
+
+/// Map the wire `defaultGraphicsMode` string to a [`GraphicsMode`]. The wire
+/// spelling is the camelCase variant name (`"trueRetro"` / `"postRetro"`); an
+/// unrecognized value is rejected with `InvalidArgument`, mirroring how the
+/// missing-`name` validation reports a malformed manifest.
+fn parse_graphics_mode(raw: &str, source_path: &str) -> Result<GraphicsMode, ScriptError> {
+    match raw {
+        "trueRetro" => Ok(GraphicsMode::TrueRetro),
+        "postRetro" => Ok(GraphicsMode::PostRetro),
+        other => Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` must be \"trueRetro\" or \"postRetro\", got `{other}`"
+            ),
+        }),
+    }
 }
 
 fn run_mod_init_quickjs(
@@ -642,7 +887,101 @@ fn run_mod_init_quickjs(
             }
         };
 
-        out = Ok(ModManifestResult { name });
+        // Optional `entities` array. Missing key → empty Vec. Present-but-not-
+        // array → InvalidArgument. Each element parses via the shared
+        // descriptor reader (`entity_descriptor_from_js`).
+        let entities: Vec<EntityTypeDescriptor> = match obj.contains_key("entities") {
+            Ok(false) => Vec::new(),
+            Ok(true) => match obj.get::<_, JsArray>("entities") {
+                Ok(arr) => {
+                    let mut parsed = Vec::with_capacity(arr.len());
+                    let mut err: Option<ScriptError> = None;
+                    for i in 0..arr.len() {
+                        let v: JsValue = match arr.get(i) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                err = Some(ScriptError::InvalidArgument {
+                                    reason: format!(
+                                        "mod-init: `{source_path}` setupMod `entities[{i}]` could not be read: {e}"
+                                    ),
+                                });
+                                break;
+                            }
+                        };
+                        match entity_descriptor_from_js(&ctx, v) {
+                            Ok(d) => parsed.push(d),
+                            Err(e) => {
+                                err = Some(ScriptError::InvalidArgument {
+                                    reason: format!(
+                                        "mod-init: `{source_path}` setupMod `entities[{i}]` invalid: {e}"
+                                    ),
+                                });
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(e) = err {
+                        out = Err(e);
+                        return;
+                    }
+                    parsed
+                }
+                Err(e) => {
+                    out = Err(ScriptError::InvalidArgument {
+                        reason: format!(
+                            "mod-init: `{source_path}` setupMod `entities` field must be an array: {e}"
+                        ),
+                    });
+                    return;
+                }
+            },
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` setupMod return value `entities` lookup failed: {e}"
+                    ),
+                });
+                return;
+            }
+        };
+
+        // Optional `defaultGraphicsMode` string. Missing key → None. Present
+        // string maps via `parse_graphics_mode`; an unknown value is rejected
+        // with InvalidArgument, mirroring the missing-`name` path.
+        let default_graphics_mode: Option<GraphicsMode> = match obj.contains_key("defaultGraphicsMode") {
+            Ok(false) => None,
+            Ok(true) => match obj.get::<_, String>("defaultGraphicsMode") {
+                Ok(s) => match parse_graphics_mode(&s, source_path) {
+                    Ok(mode) => Some(mode),
+                    Err(e) => {
+                        out = Err(e);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    out = Err(ScriptError::InvalidArgument {
+                        reason: format!(
+                            "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` must be a string: {e}"
+                        ),
+                    });
+                    return;
+                }
+            },
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` lookup failed: {e}"
+                    ),
+                });
+                return;
+            }
+        };
+
+        out = Ok(ModManifestResult {
+            name,
+            entities,
+            default_graphics_mode,
+        });
     });
 
     out
@@ -703,7 +1042,95 @@ fn run_mod_init_luau(
             reason: format!("mod-init: `{source_path}` setupMod return value missing `name`: {e}"),
         })?;
 
-    Ok(ModManifestResult { name })
+    // Optional `entities` array. Missing key → empty Vec. Present-but-not-table
+    // → InvalidArgument. Each element parses via the shared descriptor reader
+    // (`entity_descriptor_from_lua`).
+    let entities: Vec<EntityTypeDescriptor> = if table.contains_key("entities").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` setupMod return value `entities` lookup failed: {e}"
+            ),
+        }
+    })? {
+        let raw: mlua::Value = table
+            .get("entities")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` setupMod `entities` field could not be read: {e}"
+                ),
+            })?;
+        match raw {
+            mlua::Value::Nil => Vec::new(),
+            mlua::Value::Table(arr) => {
+                let len = arr.raw_len();
+                let mut out = Vec::with_capacity(len);
+                for i in 1..=(len as i64) {
+                    let item: mlua::Value =
+                        arr.get(i).map_err(|e| ScriptError::InvalidArgument {
+                            reason: format!(
+                                "mod-init: `{source_path}` setupMod `entities[{i}]` could not be read: {e}"
+                            ),
+                        })?;
+                    let descriptor = entity_descriptor_from_lua(item).map_err(|e| {
+                        ScriptError::InvalidArgument {
+                            reason: format!(
+                                "mod-init: `{source_path}` setupMod `entities[{i}]` invalid: {e}"
+                            ),
+                        }
+                    })?;
+                    out.push(descriptor);
+                }
+                out
+            }
+            other => {
+                return Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` setupMod `entities` field must be an array, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Optional `defaultGraphicsMode` string. Missing/nil → None. Present string
+    // maps via `parse_graphics_mode`; an unknown value is rejected with
+    // InvalidArgument, mirroring the missing-`name` path.
+    let raw_mode: mlua::Value =
+        table
+            .get("defaultGraphicsMode")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` could not be read: {e}"
+                ),
+            })?;
+    let default_graphics_mode: Option<GraphicsMode> = match raw_mode {
+        mlua::Value::Nil => None,
+        mlua::Value::String(s) => {
+            let text = s.to_str().map_err(|e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` is not valid UTF-8: {e}"
+                ),
+            })?;
+            Some(parse_graphics_mode(&text, source_path)?)
+        }
+        other => {
+            return Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` must be a string, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+
+    Ok(ModManifestResult {
+        name,
+        entities,
+        default_graphics_mode,
+    })
 }
 
 #[cfg(test)]
@@ -802,7 +1229,7 @@ mod tests {
         let section = data_section(
             "/maps/data.js",
             r#"
-            globalThis.registerLevelManifest = function(ctx) {
+            globalThis.setupLevel = function(ctx) {
                 return {
                     reactions: [
                         { name: "wave1Complete", primitive: "moveGeometry", tag: "reactor" },
@@ -822,7 +1249,7 @@ mod tests {
         let section = data_section(
             "/maps/data.luau",
             r#"
-            function registerLevelManifest(ctx)
+            function setupLevel(ctx)
                 return {
                     reactions = {
                         { name = "wave1Complete", primitive = "moveGeometry", tag = "reactor" },
@@ -856,7 +1283,7 @@ mod tests {
             &dir.join("data.luau").to_string_lossy(),
             r#"
             local m = require("./shared")
-            function registerLevelManifest(ctx)
+            function setupLevel(ctx)
                 return { reactions = { m.reaction } }
             end
             "#,
@@ -881,7 +1308,7 @@ mod tests {
             assert(io == nil, "io must be denied in data context")
             assert(os.execute == nil, "os.execute must be denied in data context")
             assert(dofile == nil, "dofile must be denied in data context")
-            function registerLevelManifest(ctx)
+            function setupLevel(ctx)
                 return { reactions = {} }
             end
             "#,
@@ -901,7 +1328,7 @@ mod tests {
             "/maps/denylist_ok.luau",
             r#"
             assert(io == nil)
-            function registerLevelManifest(ctx)
+            function setupLevel(ctx)
                 return {
                     reactions = {
                         { name = "ok", primitive = "moveGeometry", tag = "t" },
@@ -923,7 +1350,7 @@ mod tests {
         let (rt, _ctx) = runtime();
         let section = data_section(
             "/maps/no_export.js",
-            "// script with no registerLevelManifest export\nlet x = 1;",
+            "// script with no setupLevel export\nlet x = 1;",
         );
         let manifest = rt.run_data_script(&section, &std::env::temp_dir());
         assert!(manifest.reactions.is_empty());
@@ -1031,15 +1458,21 @@ mod tests {
     }
 
     #[test]
-    fn mod_init_quickjs_registers_entity_type() {
-        let (mut rt, ctx) = runtime();
+    fn mod_init_quickjs_manifest_carries_entity_descriptor() {
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("js_register");
-        // start-script.js: registers a player type, then exports `setupMod`.
+        // start-script.js: `setupMod` returns a player entity descriptor on
+        // the manifest's `entities` field. Boot-side ingestion drains
+        // the field into `DataRegistry`; this test asserts the manifest shape.
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            registerEntity({ classname: "info_player_start" });
-            globalThis.setupMod = function() { return { name: "TestMod" }; };
+            globalThis.setupMod = function() {
+                return {
+                    name: "TestMod",
+                    entities: [{ canonicalName: "smoke_pillar" }],
+                };
+            };
             "#,
         )
         .unwrap();
@@ -1047,32 +1480,35 @@ mod tests {
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "TestMod");
-        let dr = ctx.data_registry.borrow();
         assert!(
-            dr.entities
+            manifest
+                .entities
                 .iter()
-                .any(|e| e.classname == "info_player_start"),
-            "registerEntity from start-script must populate the data registry"
+                .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
+            "setupMod's `entities` field must carry the descriptor on the manifest"
         );
     }
 
     #[test]
-    fn mod_init_quickjs_imported_domain_script_registers_entity_type() {
+    fn mod_init_quickjs_imported_domain_script_manifest_carries_entity_descriptor() {
         // Acceptance criterion: an entity type defined in a domain script that
         // was bundled into start-script.js by `scripts-build` (not defined
-        // directly in start-script itself) is present in the engine-global
-        // type registry after mod-init. `scripts-build` inlines all imports
-        // at build time, so the fixture is a single JS file whose registration
-        // code is structured to make the inlined-import intent clear.
-        let (mut rt, ctx) = runtime();
+        // directly in start-script itself) is carried on the mod manifest
+        // after mod-init. `scripts-build` inlines all imports at build time,
+        // so the fixture is a single JS file whose intent — a descriptor
+        // exported from a bundled domain script and aggregated into the
+        // `setupMod` return — is made explicit by the inlined-comment markers.
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("js_imported_domain");
         std::fs::write(
             dir.join("start-script.js"),
             r#"
             /* inlined from actors/player.ts */
-            registerEntity({ classname: "info_player_start" });
+            const playerEntity = { canonicalName: "smoke_pillar" };
             /* end inlined actors/player.ts */
-            globalThis.setupMod = function() { return { name: "ImportedDomainMod" }; };
+            globalThis.setupMod = function() {
+                return { name: "ImportedDomainMod", entities: [playerEntity] };
+            };
             "#,
         )
         .unwrap();
@@ -1080,25 +1516,27 @@ mod tests {
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "ImportedDomainMod");
-        let dr = ctx.data_registry.borrow();
         assert!(
-            dr.entities
+            manifest
+                .entities
                 .iter()
-                .any(|e| e.classname == "info_player_start"),
-            "entity type from bundled domain script must appear in the engine-global registry"
+                .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
+            "entity type from bundled domain script must appear on the mod manifest"
         );
     }
 
     #[test]
-    fn mod_init_luau_registers_entity_type() {
-        let (mut rt, ctx) = runtime();
+    fn mod_init_luau_manifest_carries_entity_descriptor() {
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("luau_register");
         std::fs::write(
             dir.join("start-script.luau"),
             r#"
-            registerEntity({ classname = "info_player_start" })
             function setupMod()
-                return { name = "TestMod" }
+                return {
+                    name = "TestMod",
+                    entities = { { canonicalName = "smoke_pillar" } },
+                }
             end
             "#,
         )
@@ -1107,12 +1545,12 @@ mod tests {
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "TestMod");
-        let dr = ctx.data_registry.borrow();
         assert!(
-            dr.entities
+            manifest
+                .entities
                 .iter()
-                .any(|e| e.classname == "info_player_start"),
-            "registerEntity from start-script.luau must populate the data registry"
+                .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
+            "setupMod's `entities` field must carry the descriptor on the manifest"
         );
     }
 
@@ -1318,15 +1756,302 @@ mod tests {
         );
     }
 
+    // --- defaultGraphicsMode boundary parsing -----------------------------
+    //
+    // The manifest's `defaultGraphicsMode` is the wire→enum boundary for the
+    // graphics-mode toggle: each valid string must map to its enum variant,
+    // absence must yield `None` (boot leaves the renderer default), and an
+    // unknown string must fail mod-init with `InvalidArgument`, mirroring the
+    // missing-`name` validation.
+
+    #[test]
+    fn mod_init_quickjs_default_graphics_mode_absent_is_none() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_gm_absent");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"globalThis.setupMod = function() { return { name: "M" }; };"#,
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(rt.mod_manifest().unwrap().default_graphics_mode, None);
+    }
+
+    #[test]
+    fn mod_init_quickjs_default_graphics_mode_true_retro() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_gm_true");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"globalThis.setupMod = function() { return { name: "M", defaultGraphicsMode: "trueRetro" }; };"#,
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(
+            rt.mod_manifest().unwrap().default_graphics_mode,
+            Some(GraphicsMode::TrueRetro)
+        );
+    }
+
+    #[test]
+    fn mod_init_quickjs_default_graphics_mode_post_retro() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_gm_post");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"globalThis.setupMod = function() { return { name: "M", defaultGraphicsMode: "postRetro" }; };"#,
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(
+            rt.mod_manifest().unwrap().default_graphics_mode,
+            Some(GraphicsMode::PostRetro)
+        );
+    }
+
+    #[test]
+    fn mod_init_quickjs_default_graphics_mode_invalid_errors() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_gm_invalid");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"globalThis.setupMod = function() { return { name: "M", defaultGraphicsMode: "ultraRetro" }; };"#,
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("invalid graphics mode");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("defaultGraphicsMode") && reason.contains("ultraRetro"),
+                    "expected a clear defaultGraphicsMode error, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        assert!(rt.mod_manifest().is_none());
+    }
+
+    #[test]
+    fn mod_init_luau_default_graphics_mode_absent_is_none() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_gm_absent");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return { name = \"M\" } end\n",
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(rt.mod_manifest().unwrap().default_graphics_mode, None);
+    }
+
+    #[test]
+    fn mod_init_luau_default_graphics_mode_true_retro() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_gm_true");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return { name = \"M\", defaultGraphicsMode = \"trueRetro\" } end\n",
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(
+            rt.mod_manifest().unwrap().default_graphics_mode,
+            Some(GraphicsMode::TrueRetro)
+        );
+    }
+
+    #[test]
+    fn mod_init_luau_default_graphics_mode_post_retro() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_gm_post");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return { name = \"M\", defaultGraphicsMode = \"postRetro\" } end\n",
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(
+            rt.mod_manifest().unwrap().default_graphics_mode,
+            Some(GraphicsMode::PostRetro)
+        );
+    }
+
+    #[test]
+    fn mod_init_luau_default_graphics_mode_invalid_errors() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_gm_invalid");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return { name = \"M\", defaultGraphicsMode = \"ultraRetro\" } end\n",
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("invalid graphics mode");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("defaultGraphicsMode") && reason.contains("ultraRetro"),
+                    "expected a clear defaultGraphicsMode error, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        assert!(rt.mod_manifest().is_none());
+    }
+
+    #[test]
+    fn mod_init_quickjs_entities_field_parses_descriptor() {
+        // `setupMod()` returns an `entities` array; each element should parse
+        // into an `EntityTypeDescriptor` and be carried on the manifest. The
+        // Ingestion into `DataRegistry` is handled by the boot caller; this
+        // test covers only the parse path.
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_entities_field");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "EntitiesMod",
+                    entities: [{ canonicalName: "smoke_pillar" }],
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.name, "EntitiesMod");
+        assert_eq!(manifest.entities.len(), 1);
+        assert_eq!(
+            manifest.entities[0].canonical_name.as_deref(),
+            Some("smoke_pillar"),
+        );
+    }
+
+    #[test]
+    fn mod_init_quickjs_entities_missing_key_gives_empty_vec() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_entities_missing");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() { return { name: "NoEntitiesMod" }; };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert!(manifest.entities.is_empty());
+    }
+
+    #[test]
+    fn mod_init_quickjs_entities_not_array_gives_error() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_entities_bad");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return { name: "Bad", entities: "bad" };
+            };
+            "#,
+        )
+        .unwrap();
+
+        let err = rt.run_mod_init(&dir).expect_err("entities must be array");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("entities"),
+                    "expected 'entities' in reason, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mod_init_luau_entities_field_parses_descriptor() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_entities_field");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            function setupMod()
+                return {
+                    name = "EntitiesMod",
+                    entities = { { canonicalName = "smoke_pillar" } },
+                }
+            end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.name, "EntitiesMod");
+        assert_eq!(manifest.entities.len(), 1);
+        assert_eq!(
+            manifest.entities[0].canonical_name.as_deref(),
+            Some("smoke_pillar"),
+        );
+    }
+
+    #[test]
+    fn mod_init_luau_entities_missing_key_gives_empty_vec() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_entities_missing");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            function setupMod() return { name = "NoEntitiesMod" } end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert!(manifest.entities.is_empty());
+    }
+
+    #[test]
+    fn mod_init_luau_entities_not_array_gives_error() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_entities_bad");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            function setupMod()
+                return { name = "Bad", entities = "bad" }
+            end
+            "#,
+        )
+        .unwrap();
+
+        let err = rt.run_mod_init(&dir).expect_err("entities must be array");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("entities"),
+                    "expected 'entities' in reason, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
     #[test]
     fn mod_init_luau_require_resolves_from_mod_root() {
-        let (mut rt, ctx) = runtime();
+        let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("luau_require");
-        // Sub-module returns a descriptor; start-script imports it and registers.
+        // Sub-module returns a descriptor; start-script imports it and folds
+        // it into the manifest's `entities` field.
         std::fs::write(
             dir.join("sub.luau"),
             r#"
-            return { descriptor = { classname = "info_player_start" } }
+            return { descriptor = { canonicalName = "smoke_pillar" } }
             "#,
         )
         .unwrap();
@@ -1334,9 +2059,8 @@ mod tests {
             dir.join("start-script.luau"),
             r#"
             local m = require("./sub")
-            registerEntity(m.descriptor)
             function setupMod()
-                return { name = "Imported" }
+                return { name = "Imported", entities = { m.descriptor } }
             end
             "#,
         )
@@ -1345,12 +2069,12 @@ mod tests {
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "Imported");
-        let dr = ctx.data_registry.borrow();
         assert!(
-            dr.entities
+            manifest
+                .entities
                 .iter()
-                .any(|e| e.classname == "info_player_start"),
-            "domain script imported via require must register its entity type"
+                .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
+            "domain script imported via require must contribute its entity type to the manifest"
         );
     }
 
@@ -1372,5 +2096,398 @@ mod tests {
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
         assert_eq!(manifest.name, "GuardedMod");
+    }
+
+    // --- compile_stale_scripts tests -----------------------------------------
+
+    #[test]
+    fn compile_stale_scripts_is_noop_for_nonexistent_directory() {
+        // Passing a directory that does not exist must not panic or error.
+        // No compiler is invoked because `scan_and_compile_stale_ts` returns
+        // early when the path is not a directory.
+        let (rt, _ctx) = runtime();
+        let absent = std::env::temp_dir().join("postretro_scan_absent_dir_test");
+        assert!(!absent.exists(), "test setup: dir must not pre-exist");
+        // Should silently no-op.
+        rt.compile_stale_scripts(&absent, &absent);
+    }
+
+    #[test]
+    fn compile_stale_scripts_is_noop_when_no_ts_files_present() {
+        // `scripts/` directory exists but contains only `.luau` files. The
+        // scan walks the directory and finds nothing to compile.
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("scan_no_ts");
+        std::fs::write(dir.join("archetypes.luau"), "-- luau only\n").unwrap();
+        // Must complete without panic; no compiler binary needed.
+        rt.compile_stale_scripts(&dir, &dir);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn compile_stale_scripts_recompiles_ts_with_stale_js_sibling() {
+        // Acceptance criterion: a `.ts` file whose sibling `.js` is older than
+        // the `.ts` (or absent) gets recompiled by the startup scan.
+        use std::time::{Duration, SystemTime};
+
+        let compiler_path = ensure_scripts_build();
+        let (_rt, _ctx) = runtime();
+        let dir = temp_mod_root("scan_stale_ts");
+
+        let ts_path = dir.join("archetypes.ts");
+        let js_path = dir.join("archetypes.js");
+
+        fs::write(&ts_path, "export const x: number = 1;\n").unwrap();
+
+        // Write a JS sibling backdated by 5 seconds so it is definitely older
+        // than the TS. Use `set_modified` (std 1.75+) if available; fall back
+        // to simply not writing the JS at all (trigger the "missing sibling"
+        // code path instead).
+        fs::write(&js_path, "// stale\n").unwrap();
+        let stale_time = SystemTime::now()
+            .checked_sub(Duration::from_secs(5))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        if let Ok(file) = std::fs::File::options().write(true).open(&js_path) {
+            // `set_modified` is gated on the platform supporting it; ignore
+            // failures gracefully — the missing-sibling path is exercised
+            // instead if the mtime cannot be set.
+            let _ = file.set_modified(stale_time);
+            drop(file);
+        }
+
+        // Override PATH so `TsCompilerPath::detect()` finds our binary.
+        // `set_var` is only safe in single-threaded contexts; cargo test runs
+        // each `#[test]` on its own thread but a cargo test binary runs all
+        // threads in the same process, so we use the direct-call variant of
+        // the private helper instead of mutating the process environment.
+        // Instead, we invoke `scan_and_compile_stale_ts` with a synthesized
+        // compiler path via the `watcher` module's public API directly.
+        let _ = compiler_path; // compiler path used below via watcher API
+        // Since `compile_stale_scripts` relies on `TsCompilerPath::detect()`,
+        // which reads `current_exe`, we cannot inject an arbitrary path. But
+        // we can test the helper `visit_ts_files` directly, which is what
+        // `scan_and_compile_stale_ts` delegates to.
+        let mut compiled = 0u32;
+        let mut failed = 0u32;
+        let compiler =
+            super::super::watcher::TsCompilerPath::ScriptsBuildOnPath(ensure_scripts_build());
+        super::visit_ts_files(&dir, &compiler, &mut compiled, &mut failed);
+
+        assert_eq!(failed, 0, "no compile failures expected; failed={failed}",);
+        assert_eq!(
+            compiled, 1,
+            "exactly one stale .ts file should have been compiled",
+        );
+        assert!(
+            js_path.is_file(),
+            "compiled output `{}` must exist after scan",
+            js_path.display(),
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn compile_stale_scripts_skips_fresh_ts_files() {
+        // A `.ts` whose `.js` sibling is newer is skipped.
+        let dir = temp_mod_root("scan_fresh_ts");
+        let ts_path = dir.join("archetypes.ts");
+        let js_path = dir.join("archetypes.js");
+
+        // Write the JS first so it has an older mtime, then write the TS so
+        // it ends up newer. Because filesystem mtime granularity may be 1s on
+        // some platforms, we forcibly set the JS mtime to the future.
+        fs::write(&js_path, "// fresh\n").unwrap();
+        fs::write(&ts_path, "export const x: number = 1;\n").unwrap();
+
+        // Backdate the TS by 5 seconds to make the JS appear newer.
+        let old_time = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(5))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if let Ok(f) = std::fs::File::options().write(true).open(&ts_path) {
+            let _ = f.set_modified(old_time);
+        }
+
+        let mut compiled = 0u32;
+        let mut failed = 0u32;
+        // `ensure_scripts_build` not needed — the TS is fresh so no compile runs.
+        // We still need a valid `TsCompilerPath` to pass to `visit_ts_files`.
+        // Use a dummy path — it will never be invoked.
+        let compiler = super::super::watcher::TsCompilerPath::ScriptsBuildOnPath(
+            std::path::PathBuf::from("/dev/null/scripts-build-dummy"),
+        );
+        super::visit_ts_files(&dir, &compiler, &mut compiled, &mut failed);
+
+        assert_eq!(compiled, 0, "fresh .ts must not be recompiled");
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn compile_stale_scripts_walks_subdirectories() {
+        // A stale `.ts` nested inside a subdirectory must be found and
+        // compiled.
+        let dir = temp_mod_root("scan_nested_ts");
+        let sub = dir.join("actors");
+        fs::create_dir_all(&sub).unwrap();
+
+        let ts_path = sub.join("player.ts");
+        let js_path = sub.join("player.js");
+        fs::write(&ts_path, "export const role: string = 'player';\n").unwrap();
+        // No JS sibling → needs build.
+
+        let mut compiled = 0u32;
+        let mut failed = 0u32;
+        let compiler =
+            super::super::watcher::TsCompilerPath::ScriptsBuildOnPath(ensure_scripts_build());
+        super::visit_ts_files(&dir, &compiler, &mut compiled, &mut failed);
+
+        assert_eq!(failed, 0);
+        assert_eq!(compiled, 1, "nested stale .ts should be compiled");
+        assert!(
+            js_path.is_file(),
+            "compiled output `{}` must exist",
+            js_path.display(),
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn visit_ts_files_shallow_skips_nested_directories() {
+        // Mod-root scope is one level only — nested `.ts` files are the
+        // recursive `script_root` walk's territory.
+        //
+        // Regression: the shallow walk previously gated compilation on
+        // `js_mtime <= ts_mtime`, so a fresh-looking `start-script.js`
+        // (e.g. a stale bundle whose imports changed) would be left untouched
+        // (import freshness). The shallow walk now always rebuilds top-level
+        // bundle components, even when the sibling `.js` is newer than the `.ts`.
+        use std::time::{Duration, SystemTime};
+
+        let dir = temp_mod_root("scan_shallow");
+        let ts_path = dir.join("start-script.ts");
+        let js_path = dir.join("start-script.js");
+        fs::write(&ts_path, "export {};\n").unwrap();
+
+        // Plant a sibling `.js` with a mtime 60 seconds in the future so any
+        // residual `js_mtime <= ts_mtime` gate would skip the rebuild.
+        let stale_marker = "// stale bundle — should be overwritten\n";
+        fs::write(&js_path, stale_marker).unwrap();
+        let future = SystemTime::now() + Duration::from_secs(60);
+        let mtime_bump_supported = std::fs::File::options()
+            .write(true)
+            .open(&js_path)
+            .and_then(|f| f.set_modified(future))
+            .is_ok();
+
+        let nested = dir.join("scripts");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("nested.ts"), "export {};\n").unwrap();
+
+        let mut compiled = 0u32;
+        let mut failed = 0u32;
+        let compiler =
+            super::super::watcher::TsCompilerPath::ScriptsBuildOnPath(ensure_scripts_build());
+        super::visit_ts_files_shallow(&dir, &compiler, &mut compiled, &mut failed);
+
+        assert_eq!(failed, 0);
+        assert_eq!(
+            compiled, 1,
+            "top-level start-script.ts must be rebuilt unconditionally; nested/nested.ts \
+             is left for the recursive walk",
+        );
+        assert!(js_path.is_file());
+        assert!(
+            !nested.join("nested.js").is_file(),
+            "shallow walk must not descend into subdirectories",
+        );
+
+        // The newer-than-the-ts `.js` must have been overwritten. We verify
+        // through content (the stale marker comment is gone) rather than mtime
+        // alone, since the rebuild output mtime depends on filesystem
+        // granularity. Only enforce when we could actually bump the mtime —
+        // otherwise the original `<=` gate wouldn't have skipped anyway.
+        if mtime_bump_supported {
+            let rebuilt = fs::read_to_string(&js_path).unwrap();
+            assert!(
+                !rebuilt.contains("stale bundle"),
+                "shallow walk left a fresh-looking `.js` in place — mtime gate regression",
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn run_mod_init_rebuilds_bundle_when_import_changes() {
+        // Regression: editing a helper imported by `start-script.ts` left a
+        // stale `start-script.js` running (import freshness). The mtime gate
+        // compared only the entry `.ts` vs the `.js`, so a newer helper was
+        // invisible. `run_mod_init` must rebuild the bundle on every call.
+        //
+        // Skipped (test passes trivially) when the test process cannot make
+        // `scripts-build` discoverable via `TsCompilerPath::detect()` —
+        // detection reads `current_exe`'s parent and `PATH`, neither of which
+        // is hermetically controllable from inside a Rust test. We place a
+        // copy of the binary next to `current_exe` to satisfy the
+        // next-to-engine arm of the cascade.
+        use std::time::{Duration, SystemTime};
+
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("import_changes_rebuild");
+
+        // `start-script.ts` imports a helper. `scripts-build` (swc_bundler)
+        // inlines the import at compile time, so the bundled `.js` ends up
+        // containing the helper's literal value.
+        fs::write(
+            dir.join("helper.ts"),
+            "export const NAME: string = 'ImportFreshV1';\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("start-script.ts"),
+            "import { NAME } from './helper.ts';\n\
+             // @ts-ignore\n\
+             globalThis.setupMod = function() { return { name: NAME }; };\n",
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).expect("first run_mod_init");
+        let js_path = dir.join("start-script.js");
+        assert!(js_path.is_file(), "first run must produce start-script.js");
+        let first_content = fs::read_to_string(&js_path).unwrap();
+        assert!(
+            first_content.contains("ImportFreshV1"),
+            "bundled JS must reflect the initial helper value; got: {first_content}",
+        );
+        let manifest = rt.mod_manifest().expect("manifest after first run");
+        assert_eq!(manifest.name, "ImportFreshV1");
+
+        // Change only the helper and force its mtime to *not* exceed the
+        // existing `start-script.ts` mtime (it normally would; the point is
+        // that even when only the helper changes, the bundle must rebuild).
+        // We additionally bump the `.js` mtime well into the future so any
+        // residual mtime gate against `start-script.ts` would skip the
+        // rebuild — that would fail this regression test.
+        fs::write(
+            dir.join("helper.ts"),
+            "export const NAME: string = 'ImportFreshV2';\n",
+        )
+        .unwrap();
+        let future = SystemTime::now() + Duration::from_secs(60);
+        let bumped = std::fs::File::options()
+            .write(true)
+            .open(&js_path)
+            .and_then(|f| f.set_modified(future))
+            .is_ok();
+
+        rt.run_mod_init(&dir).expect("second run_mod_init");
+        let second_content = fs::read_to_string(&js_path).unwrap();
+        assert!(
+            second_content.contains("ImportFreshV2"),
+            "bundle must reflect the changed helper after second run_mod_init; got: {second_content}",
+        );
+        assert!(
+            !second_content.contains("ImportFreshV1"),
+            "stale bundle content must be gone after rebuild; got: {second_content}",
+        );
+        let manifest = rt.mod_manifest().expect("manifest after second run");
+        assert_eq!(manifest.name, "ImportFreshV2");
+
+        // Only enforce the mtime-moved-backwards check when we could prove the
+        // setup bumped the `.js` mtime forward. Otherwise the assertion is
+        // vacuous (the rebuild could legitimately produce the same mtime on
+        // coarse-granularity filesystems).
+        if bumped {
+            let new_mtime = fs::metadata(&js_path)
+                .and_then(|m| m.modified())
+                .expect("mtime");
+            assert!(
+                new_mtime < future,
+                "rebuild must overwrite the future-dated `.js` mtime",
+            );
+        }
+    }
+
+    /// Copy `scripts-build` next to the current test executable so
+    /// `TsCompilerPath::detect()` finds it via the next-to-engine arm of the
+    /// cascade. Returns `false` only when the source binary genuinely cannot be
+    /// found — callers should skip the test gracefully in that case. Panics if
+    /// the source is found but the copy itself fails, because that indicates an
+    /// environment problem (bad permissions, full disk) that masks real failures.
+    #[cfg(debug_assertions)]
+    fn install_scripts_build_next_to_current_exe() -> bool {
+        let Ok(current_exe) = std::env::current_exe() else {
+            return false;
+        };
+        let Some(target_dir) = current_exe.parent() else {
+            return false;
+        };
+        let name = if cfg!(windows) {
+            "scripts-build.exe"
+        } else {
+            "scripts-build"
+        };
+        let dest = target_dir.join(name);
+        if dest.is_file() {
+            return true;
+        }
+        let source = ensure_scripts_build();
+        // Guard against copy-onto-self: on Linux `fs::copy` of a file onto
+        // itself truncates it. Canonicalize both paths before comparing so
+        // symlinks and relative segments don't produce false mismatches.
+        if let (Ok(cs), Ok(cd)) = (source.canonicalize(), dest.canonicalize()) {
+            if cs == cd {
+                return true;
+            }
+        }
+        // Concurrent tests may race; if another test already dropped the file
+        // in place between our `is_file` check and `copy`, the copy still
+        // succeeds (overwrites). Any other failure is a real environment bug.
+        std::fs::copy(&source, &dest).unwrap_or_else(|e| {
+            panic!(
+                "scripts-build found at {} but copy to {} failed: {e}",
+                source.display(),
+                dest.display()
+            )
+        });
+        true
+    }
+
+    /// Locate the freshly-built `scripts-build` binary. Mirrors the same
+    /// helper in `watcher.rs` tests. CARGO_MANIFEST_DIR is always set by cargo.
+    fn ensure_scripts_build() -> std::path::PathBuf {
+        fn scripts_build_binary() -> Option<std::path::PathBuf> {
+            let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let name = if cfg!(windows) {
+                "scripts-build.exe"
+            } else {
+                "scripts-build"
+            };
+            let mut dir: Option<&std::path::Path> = Some(manifest.as_path());
+            while let Some(d) = dir {
+                for profile in ["debug", "release"] {
+                    let candidate = d.join("target").join(profile).join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+                dir = d.parent();
+            }
+            None
+        }
+
+        if let Some(p) = scripts_build_binary() {
+            return p;
+        }
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "-p", "postretro-script-compiler"])
+            .status()
+            .expect("cargo build scripts-build");
+        assert!(status.success(), "failed to build scripts-build");
+        scripts_build_binary().expect("scripts-build should exist after build")
     }
 }

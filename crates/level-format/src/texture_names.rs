@@ -11,6 +11,7 @@ use crate::FormatError;
 ///     u32         length -- byte length of name string (no null terminator)
 ///     [u8; length] data  -- UTF-8 bytes
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TextureNamesSection {
     pub names: Vec<String>,
 }

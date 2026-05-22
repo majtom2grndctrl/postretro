@@ -1,7 +1,7 @@
 // World-query vocabulary: typed wrapper around `worldQuery`. Light handle
 // construction delegates to `./entities/lights`.
 
-import { worldQuery } from "postretro";
+import { worldQuery, worldGetGravity, worldSetGravity } from "postretro";
 import type {
   EmitterEntity,
   Entity,
@@ -10,7 +10,7 @@ import type {
   WorldQueryFilter,
 } from "postretro";
 import { wrapLightEntity } from "./entities/lights";
-import type { LightEntity } from "./entities/lights";
+import type { LightEntityHandle } from "./entities/lights";
 import { wrapFogVolumeEntity } from "./entities/fog_volumes";
 import type { FogVolumeHandle } from "./entities/fog_volumes";
 
@@ -20,7 +20,7 @@ import type { FogVolumeHandle } from "./entities/fog_volumes";
  * carrying the full `BillboardEmitterComponent` snapshot under `component`.
  */
 export type EntityForComponent<T extends string> =
-  T extends "light" ? LightEntity :
+  T extends "light" ? LightEntityHandle :
   T extends "emitter" ? EmitterEntity :
   T extends "fog_volume" ? FogVolumeHandle :
   Entity;
@@ -29,13 +29,16 @@ export type EntityForComponent<T extends string> =
 export interface World {
   /**
    * Query entities matching the filter. The return type is selected by
-   * the literal `component` string: `"light"` yields `LightEntity[]`
-   * (with convenience method `setAnimation`); `"emitter"` yields handles
-   * carrying the full `BillboardEmitterComponent` snapshot under `component`;
-   * any other component name yields base `Entity[]` (id, position, tags).
+   * the literal `component` string: `"light"` yields `LightEntityHandle[]`
+   * (carrying `pulse` / `fade` / `flicker` / `colorShift` / `sweep`
+   * capability methods); `"fog_volume"` yields `FogVolumeHandle[]` (carrying
+   * `pulse` / `fade` / `flicker` / `pulseSaturation` / `fadeSaturation`
+   * capability methods); `"emitter"` yields handles carrying the full
+   * `BillboardEmitterComponent` snapshot under `component`; any other
+   * component name yields base `Entity[]` (id, position, tags).
    *
-   * Supported component strings: `"light"`, `"transform"`, `"emitter"`,
-   * `"particle"`, `"sprite_visual"`. Note that `"particle"` and
+   * Supported component strings: `"light"`, `"fog_volume"`, `"transform"`,
+   * `"emitter"`, `"particle"`, `"sprite_visual"`. Note that `"particle"` and
    * `"sprite_visual"` always return `[]` (engine-managed; scripts never
    * iterate individual particles or sprite visuals). Unknown component
    * strings throw `InvalidArgument` at runtime.
@@ -43,6 +46,21 @@ export interface World {
   query<T extends string>(
     filter: { component: T; tag?: string | null },
   ): EntityForComponent<T>[];
+
+  /**
+   * Current world gravity in m/s². Negative = downward (Earth = -9.81),
+   * positive = upward. Seeded from the worldspawn `initialGravity` KVP at
+   * level load and persists until the next level load or `setGravity` call.
+   */
+  getGravity(): number;
+
+  /**
+   * Set the world gravity in m/s². Negative = downward, positive = upward.
+   * NaN and non-finite values are silently ignored (a warning is logged).
+   * Effect is immediate and persists until the next level load or another
+   * `setGravity` call.
+   */
+  setGravity(value: number): void;
 }
 
 export const world: World = {
@@ -82,5 +100,11 @@ export const world: World = {
       return projected;
     });
     return entities as EntityForComponent<T>[];
+  },
+  getGravity(): number {
+    return worldGetGravity();
+  },
+  setGravity(value: number): void {
+    worldSetGravity(value);
   },
 };

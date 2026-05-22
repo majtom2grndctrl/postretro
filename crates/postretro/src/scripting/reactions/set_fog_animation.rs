@@ -59,6 +59,81 @@ pub(crate) fn dispatch(
     Ok(())
 }
 
+/// Validate a non-negative curve channel in place.
+///
+/// - `None` → no-op, `Ok(())`
+/// - `Some` and non-empty → clamp any negative or non-finite samples to `0.0`,
+///   logging a one-time warning, `Ok(())`
+/// - `Some` and empty → log a warning, `Err(ReactionError::InvalidArgument)`
+fn validate_nonneg_curve(curve: &mut Option<Vec<f32>>, channel: &str) -> Result<(), ReactionError> {
+    let Some(samples) = curve.as_mut() else {
+        return Ok(());
+    };
+    if samples.is_empty() {
+        log::warn!(
+            "[Scripting] setFogAnimation: {channel} curve is empty (use null to omit); skipping install"
+        );
+        return Err(ReactionError::InvalidArgument {
+            reason: format!("setFogAnimation: {channel} curve must not be empty"),
+        });
+    }
+    let mut clamped_any = false;
+    for sample in samples.iter_mut() {
+        if !sample.is_finite() || *sample < 0.0 {
+            if !clamped_any {
+                log::warn!(
+                    "[Scripting] setFogAnimation: {channel} sample {sample} is negative or non-finite; clamping to 0.0"
+                );
+                clamped_any = true;
+            }
+            *sample = 0.0;
+        }
+    }
+    Ok(())
+}
+
+/// Validate a strictly-positive curve channel in place.
+///
+/// Used for channels where `0.0` is a degenerate state — for example,
+/// `light_range = 0` would cause a divide-by-zero in the shader's
+/// in the fog shader, so every light contributes at full brightness regardless
+/// of distance.
+///
+/// - `None` → no-op, `Ok(())`
+/// - `Some` and non-empty → clamp any sample that is `<= 0.0` or non-finite to
+///   `minimum`, logging a one-time warning, `Ok(())`
+/// - `Some` and empty → log a warning, `Err(ReactionError::InvalidArgument)`
+fn validate_pos_curve(
+    curve: &mut Option<Vec<f32>>,
+    channel: &str,
+    minimum: f32,
+) -> Result<(), ReactionError> {
+    let Some(samples) = curve.as_mut() else {
+        return Ok(());
+    };
+    if samples.is_empty() {
+        log::warn!(
+            "[Scripting] setFogAnimation: {channel} curve is empty (use null to omit); skipping install"
+        );
+        return Err(ReactionError::InvalidArgument {
+            reason: format!("setFogAnimation: {channel} curve must not be empty"),
+        });
+    }
+    let mut clamped_any = false;
+    for sample in samples.iter_mut() {
+        if !sample.is_finite() || *sample <= 0.0 {
+            if !clamped_any {
+                log::warn!(
+                    "[Scripting] setFogAnimation: {channel} sample {sample} is non-positive or non-finite; clamping to {minimum}"
+                );
+                clamped_any = true;
+            }
+            *sample = minimum;
+        }
+    }
+    Ok(())
+}
+
 /// Validate `anim` and return a normalized clone, or `None` to reject the
 /// payload (caller skips install).
 fn validate(anim: &FogAnimation) -> Option<FogAnimation> {
@@ -72,53 +147,10 @@ fn validate(anim: &FogAnimation) -> Option<FogAnimation> {
 
     let mut next = anim.clone();
 
-    match next.saturation.as_mut() {
-        Some(curve) if curve.is_empty() => {
-            log::warn!(
-                "[Scripting] setFogAnimation: saturation curve is empty (use null to omit); skipping install"
-            );
-            return None;
-        }
-        Some(curve) => {
-            let mut clamped_any = false;
-            for sample in curve.iter_mut() {
-                if !sample.is_finite() || *sample < 0.0 {
-                    if !clamped_any {
-                        log::warn!(
-                            "[Scripting] setFogAnimation: saturation sample {sample} is negative or non-finite; clamping to 0.0"
-                        );
-                        clamped_any = true;
-                    }
-                    *sample = 0.0;
-                }
-            }
-        }
-        None => {}
-    }
-
-    match next.density.as_mut() {
-        Some(curve) if curve.is_empty() => {
-            log::warn!(
-                "[Scripting] setFogAnimation: density curve is empty (use null to omit); skipping install"
-            );
-            return None;
-        }
-        Some(curve) => {
-            let mut clamped_any = false;
-            for sample in curve.iter_mut() {
-                if !sample.is_finite() || *sample < 0.0 {
-                    if !clamped_any {
-                        log::warn!(
-                            "[Scripting] setFogAnimation: density sample {sample} is negative or non-finite; clamping to 0.0"
-                        );
-                        clamped_any = true;
-                    }
-                    *sample = 0.0;
-                }
-            }
-        }
-        None => {}
-    }
+    validate_nonneg_curve(&mut next.saturation, "saturation").ok()?;
+    validate_nonneg_curve(&mut next.density, "density").ok()?;
+    validate_nonneg_curve(&mut next.min_brightness, "min_brightness").ok()?;
+    validate_pos_curve(&mut next.light_range, "light_range", 0.001).ok()?;
 
     next.phase = match next.phase {
         Some(p) if p.is_finite() => Some(p.rem_euclid(1.0)),
@@ -136,9 +168,14 @@ fn validate(anim: &FogAnimation) -> Option<FogAnimation> {
         next.play_count = Some(1);
     }
 
-    if next.density.is_none() && next.saturation.is_none() && next.play_count.is_some() {
+    if next.density.is_none()
+        && next.saturation.is_none()
+        && next.min_brightness.is_none()
+        && next.light_range.is_none()
+        && next.play_count.is_some()
+    {
         log::warn!(
-            "[Scripting] setFogAnimation: playCount is set but neither density nor saturation curve is provided; the animation would never settle. Skipping install"
+            "[Scripting] setFogAnimation: playCount is set but no animated curve (density, saturation, min_brightness, or light_range) is provided; the animation would never settle. Skipping install"
         );
         return None;
     }
@@ -154,11 +191,13 @@ mod tests {
     fn sample_fog() -> FogVolumeComponent {
         FogVolumeComponent {
             density: 0.5,
-            scatter: 0.6,
+            glow: 0.6,
             edge_softness: 0.25,
             falloff: 2.0,
             tint: [1.0, 1.0, 1.0],
             saturation: 1.0,
+            min_brightness: 0.0,
+            light_range: 1.0,
             animation: None,
         }
     }
@@ -176,6 +215,8 @@ mod tests {
             play_count: None,
             density: Some(vec![0.1, 0.5, 1.0]),
             saturation: None,
+            min_brightness: None,
+            light_range: None,
         }
     }
 
@@ -227,6 +268,8 @@ mod tests {
             play_count: None,
             density: Some(vec![0.0, 1.0]),
             saturation: None,
+            min_brightness: None,
+            light_range: None,
         };
         reg.set_component(
             id,
@@ -372,6 +415,8 @@ mod tests {
             play_count: Some(1),
             density: None,
             saturation: None,
+            min_brightness: None,
+            light_range: None,
         };
         let captured = crate::scripting::reactions::log_capture::capture(|| {
             dispatch(&mut reg, &[id], &SetFogAnimationArgs(Some(bad))).unwrap();
@@ -386,7 +431,7 @@ mod tests {
         );
         assert!(
             captured.iter().any(|(lvl, msg)| *lvl == log::Level::Warn
-                && msg.contains("playCount is set but neither density nor saturation")),
+                && msg.contains("playCount is set but no animated curve")),
             "expected a warn-level log about missing curves, got: {captured:?}"
         );
     }
@@ -405,6 +450,8 @@ mod tests {
             play_count: None,
             density: None,
             saturation: Some(vec![0.5, f32::INFINITY, 0.75]),
+            min_brightness: None,
+            light_range: None,
         };
         let captured = crate::scripting::reactions::log_capture::capture(|| {
             dispatch(&mut reg, &[id], &SetFogAnimationArgs(Some(anim))).unwrap();
@@ -429,9 +476,10 @@ mod tests {
 
     #[test]
     fn play_count_with_saturation_only_curve_is_valid() {
-        // The dual-channel validation rejects only when *both* curves are
-        // None — a saturation-only animation with playCount must install
-        // and settle on completion to its final saturation keyframe.
+        // The play_count validation rejects only when all four curves
+        // (density, saturation, min_brightness, light_range) are None —
+        // a saturation-only animation with playCount must install and settle on
+        // completion to its final saturation keyframe.
         let mut reg = EntityRegistry::new();
         let id = spawn_fog(&mut reg);
         let anim = FogAnimation {
@@ -440,6 +488,8 @@ mod tests {
             play_count: Some(2),
             density: None,
             saturation: Some(vec![0.5, 1.0, 1.5]),
+            min_brightness: None,
+            light_range: None,
         };
         dispatch(&mut reg, &[id], &SetFogAnimationArgs(Some(anim.clone()))).unwrap();
         let stored = reg
@@ -454,6 +504,139 @@ mod tests {
             Some([0.5_f32, 1.0, 1.5].as_ref())
         );
         assert_eq!(stored.play_count, Some(2));
+    }
+
+    #[test]
+    fn rejects_empty_min_brightness_curve() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_fog(&mut reg);
+        let prior = valid_anim();
+        reg.set_component(
+            id,
+            FogVolumeComponent {
+                animation: Some(prior.clone()),
+                ..sample_fog()
+            },
+        )
+        .unwrap();
+
+        let bad = FogAnimation {
+            min_brightness: Some(vec![]),
+            ..valid_anim()
+        };
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            dispatch(&mut reg, &[id], &SetFogAnimationArgs(Some(bad))).unwrap();
+        });
+
+        assert_eq!(
+            reg.get_component::<FogVolumeComponent>(id)
+                .unwrap()
+                .animation,
+            Some(prior)
+        );
+        assert!(
+            captured.iter().any(|(lvl, msg)| *lvl == log::Level::Warn
+                && msg.contains("min_brightness curve is empty")),
+            "expected a warn-level log about empty min_brightness curve, got: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn clamps_negative_min_brightness_sample() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_fog(&mut reg);
+        let anim = FogAnimation {
+            min_brightness: Some(vec![0.1, -0.5, 0.25]),
+            ..valid_anim()
+        };
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            dispatch(&mut reg, &[id], &SetFogAnimationArgs(Some(anim))).unwrap();
+        });
+        let stored = reg
+            .get_component::<FogVolumeComponent>(id)
+            .unwrap()
+            .animation
+            .clone()
+            .unwrap();
+        assert_eq!(
+            stored.min_brightness.as_deref(),
+            Some([0.1_f32, 0.0, 0.25].as_ref())
+        );
+        assert!(
+            captured.iter().any(|(lvl, msg)| *lvl == log::Level::Warn
+                && msg.contains("min_brightness sample")
+                && msg.contains("clamping to 0.0")),
+            "expected a warn-level log about clamping min_brightness, got: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_light_range_curve() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_fog(&mut reg);
+        let prior = valid_anim();
+        reg.set_component(
+            id,
+            FogVolumeComponent {
+                animation: Some(prior.clone()),
+                ..sample_fog()
+            },
+        )
+        .unwrap();
+
+        let bad = FogAnimation {
+            light_range: Some(vec![]),
+            ..valid_anim()
+        };
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            dispatch(&mut reg, &[id], &SetFogAnimationArgs(Some(bad))).unwrap();
+        });
+
+        assert_eq!(
+            reg.get_component::<FogVolumeComponent>(id)
+                .unwrap()
+                .animation,
+            Some(prior)
+        );
+        assert!(
+            captured
+                .iter()
+                .any(|(lvl, msg)| *lvl == log::Level::Warn
+                    && msg.contains("light_range curve is empty")),
+            "expected a warn-level log about empty light_range curve, got: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn clamps_nonpositive_light_range_sample() {
+        // `light_range = 0` would cause a divide-by-zero in the fog shader.
+        // The validator must clamp non-positive (and non-finite) samples up to a
+        // small positive minimum (0.001) rather than down to 0.0.
+        let mut reg = EntityRegistry::new();
+        let id = spawn_fog(&mut reg);
+        let anim = FogAnimation {
+            light_range: Some(vec![1.0, -3.0, 0.0, 2.0]),
+            ..valid_anim()
+        };
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            dispatch(&mut reg, &[id], &SetFogAnimationArgs(Some(anim))).unwrap();
+        });
+        let stored = reg
+            .get_component::<FogVolumeComponent>(id)
+            .unwrap()
+            .animation
+            .clone()
+            .unwrap();
+        assert_eq!(
+            stored.light_range.as_deref(),
+            Some([1.0_f32, 0.001, 0.001, 2.0].as_ref())
+        );
+        assert!(
+            captured.iter().any(|(lvl, msg)| *lvl == log::Level::Warn
+                && msg.contains("light_range sample")
+                && msg.contains("clamping to 0.001")),
+            "expected a warn-level log about clamping light_range, got: {captured:?}"
+        );
     }
 
     #[test]
@@ -486,6 +669,8 @@ mod tests {
             period_ms: 500.0,
             play_count: None,
             saturation: None,
+            min_brightness: None,
+            light_range: None,
         };
         let captured = crate::scripting::reactions::log_capture::capture(|| {
             dispatch(&mut reg, &[id], &SetFogAnimationArgs(Some(anim))).unwrap();
@@ -519,6 +704,8 @@ mod tests {
             period_ms: 500.0,
             play_count: None,
             saturation: None,
+            min_brightness: None,
+            light_range: None,
         };
         let captured = crate::scripting::reactions::log_capture::capture(|| {
             dispatch(&mut reg, &[id], &SetFogAnimationArgs(Some(anim))).unwrap();

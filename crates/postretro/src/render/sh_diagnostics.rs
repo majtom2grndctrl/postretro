@@ -239,12 +239,8 @@ fn emit_markers(
                 // the runtime samples them there (see sh_compose.wgsl world_pos
                 // and forward.wgsl sample_sh_indirect). Draw the marker exactly
                 // on the probe it colors, not at the cell center.
-                let pos = origin
-                    + Vec3::new(
-                        x as f32 * cell.x,
-                        y as f32 * cell.y,
-                        z as f32 * cell.z,
-                    );
+                let pos =
+                    origin + Vec3::new(x as f32 * cell.x, y as f32 * cell.y, z as f32 * cell.z);
                 if (pos - camera_pos).length_squared() > r2 {
                     continue;
                 }
@@ -396,9 +392,9 @@ impl ShProbeReadback {
             let size = self.buffer_size;
             let dims = self.grid_dimensions;
             let stride = self.padded_bytes_per_row;
-            self.buffer.slice(0..size).map_async(
-                wgpu::MapMode::Read,
-                move |res| match res {
+            self.buffer
+                .slice(0..size)
+                .map_async(wgpu::MapMode::Read, move |res| match res {
                     Ok(()) => {
                         let view = buf.slice(0..size).get_mapped_range();
                         let decoded = decode_l0(&view, dims, stride);
@@ -411,8 +407,7 @@ impl ShProbeReadback {
                         log::warn!("[sh-readback] band-0 map failed: {err:?}");
                         pending.store(false, Ordering::Release);
                     }
-                },
-            );
+                });
         }
 
         out
@@ -468,7 +463,10 @@ mod tests {
         // A red-dominant probe stays red-dominant after tonemapping, even when
         // the HDR magnitude is well above 1.
         let c = irradiance_marker_color([40.0, 4.0, 4.0]);
-        assert!(c[0] > c[1] && c[0] > c[2], "expected red-dominant, got {c:?}");
+        assert!(
+            c[0] > c[1] && c[0] > c[2],
+            "expected red-dominant, got {c:?}"
+        );
         assert_eq!(c[1], c[2], "equal G/B input should stay equal");
         assert_eq!(c[3], 255);
     }
@@ -486,7 +484,8 @@ mod tests {
         // Layout: row r covers z=r (since ny=1); within a row, x advances by 8 bytes.
         let write = |bytes: &mut [u8], off: usize, rgb: [f32; 3]| {
             for (i, &c) in rgb.iter().enumerate() {
-                bytes[off + i * 2..off + i * 2 + 2].copy_from_slice(&f32_to_f16_bits(c).to_le_bytes());
+                bytes[off + i * 2..off + i * 2 + 2]
+                    .copy_from_slice(&f32_to_f16_bits(c).to_le_bytes());
             }
         };
         write(&mut bytes, 0, [1.0, 0.0, 0.0]); // z=0,x=0 → idx 0

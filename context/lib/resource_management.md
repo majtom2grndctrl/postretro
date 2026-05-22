@@ -210,9 +210,9 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 
 Resources are loaded once at level load and released on level unload. No incremental loading during gameplay. No reference counting — the level owns everything, and everything dies with the level.
 
-### 7.3 Sampler Pool
+### 7.3 Anisotropic Sampler Pool
 
-The renderer maintains a `mip_count_samplers: HashMap<u32, wgpu::Sampler>` pool — one sampler per distinct `mip_count` observed across loaded textures. Each sampler is identical except `lod_max_clamp = (mip_count - 1) as f32`. The pool is eagerly populated after `load_textures` returns, unconditionally including `{1}` for placeholders. Sampler lifetime is engine-lifetime; the pool accumulates new entries across level reloads but never shrinks. Material bind groups select the sampler whose key matches the texture's `mip_count`. A lookup miss is a logic error — eager population guarantees coverage.
+The renderer maintains a single anisotropic sampler pool: `mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler>` — one sampler per distinct `mip_count` observed across loaded textures. Each sampler is identical except `lod_max_clamp = (mip_count - 1) as f32`. The pool is eagerly populated after `load_textures` returns, unconditionally including `{1}` for placeholders. Sampler lifetime is engine-lifetime; the pool accumulates new entries across level reloads but never shrinks. Material bind groups select the sampler whose key matches the texture's `mip_count`. A lookup miss is a logic error — eager population guarantees coverage.
 
 ### 7.4 Renderer Contract
 

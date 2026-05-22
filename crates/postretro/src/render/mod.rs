@@ -275,8 +275,8 @@ struct GpuTexture {
 /// and the visual point of diminishing returns for grazing-angle sharpness.
 pub const POST_RETRO_ANISO_CLAMP: u16 = 16;
 
-/// Highest valid LOD index for a chain of `mip_count` mips. Both sampler pools
-/// clamp `lod_max` to this so no sampler reads past the uploaded chain.
+/// Highest valid LOD index for a chain of `mip_count` mips. The anisotropic
+/// sampler pool clamps `lod_max` to this so no sampler reads past the uploaded chain.
 fn mip_lod_max_clamp(mip_count: u32) -> f32 {
     mip_count.saturating_sub(1) as f32
 }
@@ -3280,8 +3280,7 @@ mod tests {
 
     #[test]
     fn mip_lod_max_clamp_derivation() {
-        // Both sampler pools (nearest and aniso) share this clamp so neither
-        // reads past the uploaded mip chain.
+        // The aniso sampler pool uses this clamp so no sampler reads past the uploaded mip chain.
         assert_eq!(mip_lod_max_clamp(1), 0.0);
         assert_eq!(mip_lod_max_clamp(8), 7.0);
         // mip_count 0 is degenerate; saturating_sub keeps it at the base level.

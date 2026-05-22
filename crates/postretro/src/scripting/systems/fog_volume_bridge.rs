@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(bytes.len(), std::mem::size_of::<FogVolume>());
         // FogVolume: Pod (see fx/fog_volume.rs) — read fields by name rather
         // than chasing byte offsets, which silently drift if the struct grows.
-        let volume: &FogVolume = bytemuck::from_bytes(&bytes);
+        let volume: &FogVolume = bytemuck::from_bytes(bytes);
         assert_eq!(volume.density, 1.25);
         assert_eq!(volume.edge_softness, 0.5);
         assert_eq!(volume.radial_falloff, 3.5);

@@ -761,7 +761,7 @@ mod tests {
         assert!(!section.light_indices.is_empty());
         for &idx in &section.light_indices {
             assert!(
-                matches!(idx, 0 | 1 | 2),
+                matches!(idx, 0..=2),
                 "emitted index {idx} outside envelope slot positions {{0, 1, 2}}"
             );
         }

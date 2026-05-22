@@ -142,16 +142,18 @@ Plans ship in this sequence:
 
 ## Milestone 8: Material Optimization
 
-Texture and material pipeline polish. Move mip generation offline, kill grazing-angle shimmer without losing the chunky in-plane aesthetic, and shrink normals on disk and in VRAM. Independent of Milestone 7 — ships in either order.
+Texture and material pipeline polish. Move mip generation offline, establish Post Retro (hardware aniso + in-shader texel-grid reconstruction) as the foundational default look, and shrink normals on disk and in VRAM. True Retro (nearest sampler + manual per-pixel shader aniso) is the opt-in alternate; it retires when BC5 lands. Independent of Milestone 7 — ships in either order.
 
 Plans ship in this sequence:
 
 - [x] **Baked texture mips** — move mip generation from runtime renderer into prl-build. Gamma-correct linear-space Mitchell-Netravali filtering. Output as `.prm` sidecar files in per-mod `.prl-cache/tex/<blake3>.prm`, not embedded in PRL. `.prm` is a material bundle: per-slot (diffuse / specular / normal) with format tag, mip chain, payload bytes. Source PNGs remain the authoring source of truth; conversion is implicit during prl-build. `context/plans/drafts/baked-texture-mips/`
 - [ ] **Shader anisotropic filtering** — per-pixel manual aniso in `forward.wgsl`, derivative-gated, N taps of `textureSampleGrad` along the major axis. Preserves nearest-filter chunky look in-plane while killing grazing-angle shimmer. Depends on baked texture mips. `context/plans/drafts/shader-anisotropic-filtering/`
-- [ ] **BC5 normal compression** — BC5 encoder in prl-build, BC5 `format_tag` value in `.prm`, GPU upload path. Normals only — BC1/BC7 fight the pixel-art aesthetic on diffuse. Additive: `format_tag` is extensible from day one, no version bump.
+- [x] **Graphics mode toggle** — two runtime filtering modes: Post Retro (hardware aniso + texel-grid reconstruction, default) and True Retro (nearest sampler + manual shader aniso, opt-in). `GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key, egui combo. Depends on baked texture mips and shader anisotropic filtering. `context/plans/done/graphics-mode-toggle/`
+- [ ] **BC5 normal compression** — BC5 encoder in prl-build, BC5 `format_tag` value in `.prm`, GPU upload path. Normals only — BC1/BC7 fight the pixel-art aesthetic on diffuse. Additive: `format_tag` is extensible from day one, no version bump. Also retires the Post Retro normal-averaging bias under hardware aniso. `context/plans/drafts/prm-bc5-normals/`
+- [ ] **Retire True Retro mode** — delete manual-aniso shader code (`compute_aniso_footprint` / `sample_aniso` / `sample_aniso_normal`) and True Retro branches in `forward.wgsl`; unwind graphics-mode-toggle scaffolding (`GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key and SDK typedef, egui mode combo). Depends on BC5 normal compression — the normal-encoding change is the forcing function; the True Retro normal path must be deleted rather than ported. Open decision: strip the `GraphicsMode` seam entirely, or preserve a minimal hook for a future `GraphicsSettings` struct. `context/plans/drafts/retire-true-retro/`
 - [ ] **Texture pack format (optional)** — shipping consolidation of `.prl-cache/tex/` into a single pack file. Deferred unless iteration-vs-ship tension actually appears.
 
-**Testable outcome:** textures stay chunky at close range, no shimmer at grazing angles, normals are ~50% smaller on disk and in VRAM, level load does zero CPU mip work.
+**Testable outcome:** Post Retro mode renders with no grazing-angle shimmer and crisp hardware-aniso filtering; True Retro opt-in is removed; normals are ~50% smaller on disk and in VRAM; level load does zero CPU mip work.
 
 ---
 

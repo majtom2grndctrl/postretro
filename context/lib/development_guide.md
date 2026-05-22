@@ -303,3 +303,9 @@ When you find a misleading, stale, or code-restating comment in a file you're al
 - **`unwrap()` and `expect()` are allowed** only when the invariant is structurally guaranteed — e.g., a mutex lock in single-threaded code, an index into a vec you just checked the length of.
 - **`expect()` over `unwrap()`** when the invariant isn't obvious from immediate context. The message documents what went wrong.
 - **Panics in initialization are acceptable.** If the GPU adapter can't be acquired or a required asset is missing at startup, crashing with a clear message is better than limping along.
+
+### 6.3 Root-causing & verification
+
+- **Trace the whole data path before concluding.** Enumerate every pipeline stage; assign each a clean/suspect verdict before ranking causes. The first plausible cause is rarely the real one.
+- **Confirm with a cheap experiment before fixing.** Devise a discriminating test that pins or bypasses the suspect stage and predicts outcomes under each hypothesis. Implement the fix only once the experiment has narrowed it down.
+- **Prefer live, reusable debug toggles** (debug-UI checkboxes, env flags) over throwaway instrumentation.

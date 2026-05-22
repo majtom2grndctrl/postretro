@@ -169,12 +169,17 @@ declare module "postretro" {
     terminalVelocity: number;
   };
 
+  /** Texture-filtering mode. `trueRetro` is nearest-neighbor point sampling; `postRetro` adds modern filtering. */
+  export type GraphicsMode = "trueRetro" | "postRetro";
+
   /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */
   export type ModManifest = {
     /** Human-readable mod name. Required. */
     name: string;
     /** Engine-global entity-type registrations. Survive level unload. */
     entities?: ReadonlyArray<EntityTypeDescriptor>;
+    /** Startup texture-filtering mode. Omit to use the engine default (Post Retro). */
+    defaultGraphicsMode?: GraphicsMode;
   };
 
   export type LightKind = "Point" | "Spot" | "Directional";

@@ -10,6 +10,8 @@ use rquickjs::{
     Object as JsObject, Value as JsValue,
 };
 
+use crate::render::GraphicsMode;
+
 use super::ctx::ScriptCtx;
 use super::data_descriptors::{
     EntityTypeDescriptor, LevelManifest, entity_descriptor_from_js, entity_descriptor_from_lua,
@@ -30,6 +32,10 @@ pub(crate) struct ModManifestResult {
     /// returned object omits the `entities` field. Drained into `DataRegistry`
     /// by the boot caller after `run_mod_init` returns.
     pub(crate) entities: Vec<EntityTypeDescriptor>,
+    /// Startup graphics-filtering mode chosen by the mod. `None` when the
+    /// manifest omits `defaultGraphicsMode` — the boot caller then leaves the
+    /// renderer's construction default (Post Retro) untouched.
+    pub(crate) default_graphics_mode: Option<GraphicsMode>,
 }
 
 /// Aggregated reload signal returned by
@@ -782,6 +788,22 @@ fn compile_one_if_stale(
     }
 }
 
+/// Map the wire `defaultGraphicsMode` string to a [`GraphicsMode`]. The wire
+/// spelling is the camelCase variant name (`"trueRetro"` / `"postRetro"`); an
+/// unrecognized value is rejected with `InvalidArgument`, mirroring how the
+/// missing-`name` validation reports a malformed manifest.
+fn parse_graphics_mode(raw: &str, source_path: &str) -> Result<GraphicsMode, ScriptError> {
+    match raw {
+        "trueRetro" => Ok(GraphicsMode::TrueRetro),
+        "postRetro" => Ok(GraphicsMode::PostRetro),
+        other => Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` must be \"trueRetro\" or \"postRetro\", got `{other}`"
+            ),
+        }),
+    }
+}
+
 fn run_mod_init_quickjs(
     subsys: &QuickJsSubsystem,
     source: &str,
@@ -923,7 +945,43 @@ fn run_mod_init_quickjs(
             }
         };
 
-        out = Ok(ModManifestResult { name, entities });
+        // Optional `defaultGraphicsMode` string. Missing key → None. Present
+        // string maps via `parse_graphics_mode`; an unknown value is rejected
+        // with InvalidArgument, mirroring the missing-`name` path.
+        let default_graphics_mode: Option<GraphicsMode> = match obj.contains_key("defaultGraphicsMode") {
+            Ok(false) => None,
+            Ok(true) => match obj.get::<_, String>("defaultGraphicsMode") {
+                Ok(s) => match parse_graphics_mode(&s, source_path) {
+                    Ok(mode) => Some(mode),
+                    Err(e) => {
+                        out = Err(e);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    out = Err(ScriptError::InvalidArgument {
+                        reason: format!(
+                            "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` must be a string: {e}"
+                        ),
+                    });
+                    return;
+                }
+            },
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` lookup failed: {e}"
+                    ),
+                });
+                return;
+            }
+        };
+
+        out = Ok(ModManifestResult {
+            name,
+            entities,
+            default_graphics_mode,
+        });
     });
 
     out
@@ -1037,7 +1095,42 @@ fn run_mod_init_luau(
         Vec::new()
     };
 
-    Ok(ModManifestResult { name, entities })
+    // Optional `defaultGraphicsMode` string. Missing/nil → None. Present string
+    // maps via `parse_graphics_mode`; an unknown value is rejected with
+    // InvalidArgument, mirroring the missing-`name` path.
+    let raw_mode: mlua::Value =
+        table
+            .get("defaultGraphicsMode")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` could not be read: {e}"
+                ),
+            })?;
+    let default_graphics_mode: Option<GraphicsMode> = match raw_mode {
+        mlua::Value::Nil => None,
+        mlua::Value::String(s) => {
+            let text = s.to_str().map_err(|e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` is not valid UTF-8: {e}"
+                ),
+            })?;
+            Some(parse_graphics_mode(&text, source_path)?)
+        }
+        other => {
+            return Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` setupMod return value `defaultGraphicsMode` must be a string, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+
+    Ok(ModManifestResult {
+        name,
+        entities,
+        default_graphics_mode,
+    })
 }
 
 #[cfg(test)]
@@ -1661,6 +1754,148 @@ mod tests {
             !dir.join("start-script.js").exists(),
             "both-present error must short-circuit before TS->JS compile writes start-script.js",
         );
+    }
+
+    // --- defaultGraphicsMode boundary parsing -----------------------------
+    //
+    // The manifest's `defaultGraphicsMode` is the wire→enum boundary for the
+    // graphics-mode toggle: each valid string must map to its enum variant,
+    // absence must yield `None` (boot leaves the renderer default), and an
+    // unknown string must fail mod-init with `InvalidArgument`, mirroring the
+    // missing-`name` validation.
+
+    #[test]
+    fn mod_init_quickjs_default_graphics_mode_absent_is_none() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_gm_absent");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"globalThis.setupMod = function() { return { name: "M" }; };"#,
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(rt.mod_manifest().unwrap().default_graphics_mode, None);
+    }
+
+    #[test]
+    fn mod_init_quickjs_default_graphics_mode_true_retro() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_gm_true");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"globalThis.setupMod = function() { return { name: "M", defaultGraphicsMode: "trueRetro" }; };"#,
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(
+            rt.mod_manifest().unwrap().default_graphics_mode,
+            Some(GraphicsMode::TrueRetro)
+        );
+    }
+
+    #[test]
+    fn mod_init_quickjs_default_graphics_mode_post_retro() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_gm_post");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"globalThis.setupMod = function() { return { name: "M", defaultGraphicsMode: "postRetro" }; };"#,
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(
+            rt.mod_manifest().unwrap().default_graphics_mode,
+            Some(GraphicsMode::PostRetro)
+        );
+    }
+
+    #[test]
+    fn mod_init_quickjs_default_graphics_mode_invalid_errors() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_gm_invalid");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"globalThis.setupMod = function() { return { name: "M", defaultGraphicsMode: "ultraRetro" }; };"#,
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("invalid graphics mode");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("defaultGraphicsMode") && reason.contains("ultraRetro"),
+                    "expected a clear defaultGraphicsMode error, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        assert!(rt.mod_manifest().is_none());
+    }
+
+    #[test]
+    fn mod_init_luau_default_graphics_mode_absent_is_none() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_gm_absent");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return { name = \"M\" } end\n",
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(rt.mod_manifest().unwrap().default_graphics_mode, None);
+    }
+
+    #[test]
+    fn mod_init_luau_default_graphics_mode_true_retro() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_gm_true");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return { name = \"M\", defaultGraphicsMode = \"trueRetro\" } end\n",
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(
+            rt.mod_manifest().unwrap().default_graphics_mode,
+            Some(GraphicsMode::TrueRetro)
+        );
+    }
+
+    #[test]
+    fn mod_init_luau_default_graphics_mode_post_retro() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_gm_post");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return { name = \"M\", defaultGraphicsMode = \"postRetro\" } end\n",
+        )
+        .unwrap();
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(
+            rt.mod_manifest().unwrap().default_graphics_mode,
+            Some(GraphicsMode::PostRetro)
+        );
+    }
+
+    #[test]
+    fn mod_init_luau_default_graphics_mode_invalid_errors() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_gm_invalid");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            "function setupMod() return { name = \"M\", defaultGraphicsMode = \"ultraRetro\" } end\n",
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("invalid graphics mode");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(
+                    reason.contains("defaultGraphicsMode") && reason.contains("ultraRetro"),
+                    "expected a clear defaultGraphicsMode error, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        assert!(rt.mod_manifest().is_none());
     }
 
     #[test]

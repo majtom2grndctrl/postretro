@@ -142,6 +142,9 @@ mod tests {
         }
     }
 
+    // Each argument maps to a distinct ParticleState field; flattening would
+    // require a new test-only struct with no benefit.
+    #[allow(clippy::too_many_arguments)]
     fn spawn_particle(
         registry: &mut EntityRegistry,
         velocity: [f32; 3],

@@ -232,33 +232,6 @@ impl LightingIsolation {
     }
 }
 
-/// Runtime texture-filtering mode. `PostRetro` (the default) pairs a
-/// hardware-anisotropic sampler with in-shader texel-grid reconstruction;
-/// `TrueRetro` is the hard-edged nearest-sampler look. Encoded into the frame
-/// uniform as `u32` (`TrueRetro = 0`, `PostRetro = 1`) for the forward shader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum GraphicsMode {
-    TrueRetro = 0,
-    PostRetro = 1,
-}
-
-impl GraphicsMode {
-    /// Default filtering mode at renderer init.
-    pub const DEFAULT: GraphicsMode = GraphicsMode::PostRetro;
-
-    /// All variants in display order. Used by the Diagnostics panel dropdown.
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [GraphicsMode; 2] = [GraphicsMode::TrueRetro, GraphicsMode::PostRetro];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            GraphicsMode::TrueRetro => "True Retro",
-            GraphicsMode::PostRetro => "Post Retro",
-        }
-    }
-}
-
 struct FrameUniforms {
     view_proj: Mat4,
     camera_position: Vec3,
@@ -311,7 +284,7 @@ fn mip_lod_max_clamp(mip_count: u32) -> f32 {
 /// Create a Nearest min/mag, Linear mipmap sampler clamped to `mip_count - 1`
 /// LOD. One sampler per distinct mip count is kept in
 /// `Renderer::mip_count_samplers` so each material binds the clamp that
-/// matches its uploaded mip chain. This is the True Retro filtering pool.
+/// matches its uploaded mip chain.
 fn create_mip_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("Mip Texture Sampler"),
@@ -332,8 +305,7 @@ fn create_mip_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
 /// sharing the same per-mip-count LOD clamp. wgpu 29 validates that aniso > 1
 /// requires all three filters to be Linear, so this descriptor cannot share the
 /// nearest pool's filter modes. Kept resident alongside the nearest sampler in
-/// every material bind group (binding 5) so the shader picks per graphics mode
-/// with no rebind.
+/// every material bind group (binding 5).
 fn create_mip_aniso_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("Mip Texture Aniso Sampler"),
@@ -389,8 +361,8 @@ fn build_material_bind_group(
                 binding: 4,
                 resource: wgpu::BindingResource::TextureView(&loaded.normal_view),
             },
-            // Post Retro filtering pool. Both samplers stay resident; the shader
-            // selects per `graphics_mode` so the mode switch costs no rebind.
+            // Post Retro filtering: the anisotropic sampler paired with
+            // in-shader texel-grid reconstruction in forward.wgsl.
             wgpu::BindGroupEntry {
                 binding: 5,
                 resource: wgpu::BindingResource::Sampler(aniso_sampler),
@@ -494,8 +466,7 @@ pub struct Renderer {
     /// Post Retro counterpart of `mip_count_samplers`: linear+anisotropic
     /// samplers keyed by the same `mip_count`, sharing the per-mip LOD clamp.
     /// Populated in lockstep with the nearest pool so every material can bind
-    /// both samplers (binding 1 nearest, binding 5 aniso) and let the shader
-    /// pick per graphics mode with no rebind cost.
+    /// both samplers (binding 1 nearest, binding 5 aniso).
     mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler>,
     /// Engine-lifetime owners of the loaded textures and views referenced by
     /// material bind groups. Replaced wholesale on every `install_textures`.
@@ -595,8 +566,6 @@ pub struct Renderer {
     debug_lines: debug_lines::DebugLineRenderer,
 
     lighting_isolation: LightingIsolation,
-
-    graphics_mode: GraphicsMode,
 
     /// Toggled by Alt+Shift+V; `true` = AutoVsync, `false` = AutoNoVsync.
     vsync_enabled: bool,
@@ -945,11 +914,10 @@ impl Renderer {
             }],
         });
 
-        // Group 1: 0=diffuse(sRGB), 1=base_sampler (nearest, True Retro),
+        // Group 1: 0=diffuse(sRGB), 1=base_sampler (nearest),
         //          2=specular(R8), 3=shininess,
         //          4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
         //          5=aniso_sampler (linear+anisotropic, Post Retro).
-        // Both samplers stay resident; forward.wgsl picks per uniforms.graphics_mode.
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Material Bind Group Layout"),
@@ -1707,7 +1675,6 @@ impl Renderer {
             #[cfg(feature = "dev-tools")]
             debug_lines,
             lighting_isolation: LightingIsolation::Normal,
-            graphics_mode: GraphicsMode::DEFAULT,
             vsync_enabled: true,
             has_geometry,
             debug_frame: 0,
@@ -2258,23 +2225,6 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn lighting_isolation(&self) -> LightingIsolation {
         self.lighting_isolation
-    }
-
-    /// Sets the active texture-filtering mode. Logs only on an actual
-    /// transition so spam-clicks on the current mode stay quiet. The new mode
-    /// reaches the GPU on the next `update_per_frame_uniforms` call. Called
-    /// from the mod boot / hot-reload path (manifest default) and the dev-tools
-    /// A/B dropdown.
-    pub fn set_graphics_mode(&mut self, mode: GraphicsMode) {
-        if self.graphics_mode != mode {
-            self.graphics_mode = mode;
-            log::info!("[Renderer] Graphics mode: {}", mode.label());
-        }
-    }
-
-    #[cfg(feature = "dev-tools")]
-    pub fn graphics_mode(&self) -> GraphicsMode {
-        self.graphics_mode
     }
 
     /// Most recent averaged GPU-timing window, or `None` when GPU timing is
@@ -3442,15 +3392,6 @@ mod tests {
             output.push(u32::from_ne_bytes(chunk.try_into().unwrap()));
         }
         assert_eq!(output, vec![100, 200, 300]);
-    }
-
-    #[test]
-    fn graphics_mode_uniform_encoding() {
-        // The forward shader keys filtering off these exact values; the
-        // default must stay Post Retro.
-        assert_eq!(GraphicsMode::TrueRetro as u32, 0);
-        assert_eq!(GraphicsMode::PostRetro as u32, 1);
-        assert_eq!(GraphicsMode::DEFAULT, GraphicsMode::PostRetro);
     }
 
     #[test]

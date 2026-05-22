@@ -160,10 +160,8 @@ const TIMING_PAIR_COUNT: usize = 4;
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
 //   0..64    view_proj  64..76   camera_position  76..80   ambient_floor
 //   80..84   light_count  84..88  time  88..92   lighting_isolation  92..96  indirect_scale
-//   96..100  graphics_mode  100..112  padding
-// graphics_mode lands at offset 96; 12 bytes of trailing padding restore the
-// struct's 16-byte alignment (WGSL rounds the struct size up to 112).
-const UNIFORM_SIZE: usize = 112;
+// The layout ends at 96, already 16-byte aligned — no trailing padding needed.
+const UNIFORM_SIZE: usize = 96;
 
 /// Lighting-term isolation mode for leak/bleed debugging.
 /// The ambient floor always contributes so interior geometry is never pitch black.
@@ -234,33 +232,6 @@ impl LightingIsolation {
     }
 }
 
-/// Runtime texture-filtering mode. `PostRetro` (the default) pairs a
-/// hardware-anisotropic sampler with in-shader texel-grid reconstruction;
-/// `TrueRetro` is the hard-edged nearest-sampler look. Encoded into the frame
-/// uniform as `u32` (`TrueRetro = 0`, `PostRetro = 1`) for the forward shader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum GraphicsMode {
-    TrueRetro = 0,
-    PostRetro = 1,
-}
-
-impl GraphicsMode {
-    /// Default filtering mode at renderer init.
-    pub const DEFAULT: GraphicsMode = GraphicsMode::PostRetro;
-
-    /// All variants in display order. Used by the Diagnostics panel dropdown.
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [GraphicsMode; 2] = [GraphicsMode::TrueRetro, GraphicsMode::PostRetro];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            GraphicsMode::TrueRetro => "True Retro",
-            GraphicsMode::PostRetro => "Post Retro",
-        }
-    }
-}
-
 struct FrameUniforms {
     view_proj: Mat4,
     camera_position: Vec3,
@@ -269,7 +240,6 @@ struct FrameUniforms {
     time: f32,
     lighting_isolation: LightingIsolation,
     indirect_scale: f32,
-    graphics_mode: GraphicsMode,
 }
 
 fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -288,9 +258,6 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     let isolation: u32 = u.lighting_isolation as u32;
     bytes[88..92].copy_from_slice(&isolation.to_ne_bytes());
     bytes[92..96].copy_from_slice(&u.indirect_scale.to_ne_bytes());
-    let graphics_mode: u32 = u.graphics_mode as u32;
-    bytes[96..100].copy_from_slice(&graphics_mode.to_ne_bytes());
-    // bytes[100..112] left zero — trailing padding for 16-byte struct alignment.
     bytes
 }
 
@@ -314,32 +281,13 @@ fn mip_lod_max_clamp(mip_count: u32) -> f32 {
     mip_count.saturating_sub(1) as f32
 }
 
-/// Create a Nearest min/mag, Linear mipmap sampler clamped to `mip_count - 1`
-/// LOD. One sampler per distinct mip count is kept in
-/// `Renderer::mip_count_samplers` so each material binds the clamp that
-/// matches its uploaded mip chain. This is the True Retro filtering pool.
-fn create_mip_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
-    device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("Mip Texture Sampler"),
-        address_mode_u: wgpu::AddressMode::Repeat,
-        address_mode_v: wgpu::AddressMode::Repeat,
-        address_mode_w: wgpu::AddressMode::Repeat,
-        mag_filter: wgpu::FilterMode::Nearest,
-        min_filter: wgpu::FilterMode::Nearest,
-        mipmap_filter: wgpu::MipmapFilterMode::Linear,
-        lod_min_clamp: 0.0,
-        lod_max_clamp: mip_lod_max_clamp(mip_count),
-        ..Default::default()
-    })
-}
-
-/// Create the Post Retro filtering pool's sibling of `create_mip_sampler`:
-/// fully Linear min/mag/mip with `anisotropy_clamp = POST_RETRO_ANISO_CLAMP`,
-/// sharing the same per-mip-count LOD clamp. wgpu 29 validates that aniso > 1
-/// requires all three filters to be Linear, so this descriptor cannot share the
-/// nearest pool's filter modes. Kept resident alongside the nearest sampler in
-/// every material bind group (binding 5) so the shader picks per graphics mode
-/// with no rebind.
+/// Create the Post Retro filtering pool's sampler: fully Linear min/mag/mip
+/// with `anisotropy_clamp = POST_RETRO_ANISO_CLAMP`, with a per-mip-count LOD
+/// clamp. wgpu 29 validates that aniso > 1 requires all three filters to be
+/// Linear. One sampler per distinct mip count is kept in
+/// `Renderer::mip_count_aniso_samplers` so each material binds the clamp that
+/// matches its uploaded mip chain. Bound in every material bind group
+/// (binding 5).
 fn create_mip_aniso_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("Mip Texture Aniso Sampler"),
@@ -360,7 +308,6 @@ fn build_material_bind_group(
     device: &wgpu::Device,
     texture_bind_group_layout: &wgpu::BindGroupLayout,
     loaded: &LoadedTexture,
-    sampler: &wgpu::Sampler,
     aniso_sampler: &wgpu::Sampler,
     material: Material,
     label_prefix: &str,
@@ -380,10 +327,6 @@ fn build_material_bind_group(
                 resource: wgpu::BindingResource::TextureView(&loaded.diffuse_view),
             },
             wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-            wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::TextureView(&loaded.specular_view),
             },
@@ -395,8 +338,8 @@ fn build_material_bind_group(
                 binding: 4,
                 resource: wgpu::BindingResource::TextureView(&loaded.normal_view),
             },
-            // Post Retro filtering pool. Both samplers stay resident; the shader
-            // selects per `graphics_mode` so the mode switch costs no rebind.
+            // Post Retro filtering: the anisotropic sampler paired with
+            // in-shader texel-grid reconstruction in forward.wgsl.
             wgpu::BindGroupEntry {
                 binding: 5,
                 resource: wgpu::BindingResource::Sampler(aniso_sampler),
@@ -491,17 +434,13 @@ pub struct Renderer {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     /// Retained so `install_level_geometry` can rebuild the lighting bind group.
     lighting_bind_group_layout: wgpu::BindGroupLayout,
-    /// One sampler per distinct uploaded `mip_count`. Sampler descriptors are
-    /// identical except for `lod_max_clamp = (mip_count - 1) as f32`. Keyed by
+    /// Post Retro linear+anisotropic samplers, one per distinct uploaded
+    /// `mip_count`. Sampler descriptors are identical except for
+    /// `lod_max_clamp = (mip_count - 1) as f32`. Keyed by
     /// `LoadedTexture::mip_count`. Engine-lifetime — persists across level
     /// reloads so re-installing the same mip chain reuses the existing sampler.
-    /// Placeholders pick up the `1` entry seeded at construction.
-    mip_count_samplers: HashMap<u32, wgpu::Sampler>,
-    /// Post Retro counterpart of `mip_count_samplers`: linear+anisotropic
-    /// samplers keyed by the same `mip_count`, sharing the per-mip LOD clamp.
-    /// Populated in lockstep with the nearest pool so every material can bind
-    /// both samplers (binding 1 nearest, binding 5 aniso) and let the shader
-    /// pick per graphics mode with no rebind cost.
+    /// Placeholders pick up the `1` entry seeded at construction. Every material
+    /// binds its matching sampler at group-1 binding 5.
     mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler>,
     /// Engine-lifetime owners of the loaded textures and views referenced by
     /// material bind groups. Replaced wholesale on every `install_textures`.
@@ -618,8 +557,6 @@ pub struct Renderer {
     debug_lines: debug_lines::DebugLineRenderer,
 
     lighting_isolation: LightingIsolation,
-
-    graphics_mode: GraphicsMode,
 
     /// Toggled by Alt+Shift+V; `true` = AutoVsync, `false` = AutoNoVsync.
     vsync_enabled: bool,
@@ -931,7 +868,6 @@ impl Renderer {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale: DEFAULT_INDIRECT_SCALE,
-            graphics_mode: GraphicsMode::DEFAULT,
         });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -969,11 +905,11 @@ impl Renderer {
             }],
         });
 
-        // Group 1: 0=diffuse(sRGB), 1=base_sampler (nearest, True Retro),
-        //          2=specular(R8), 3=shininess,
+        // Group 1: 0=diffuse(sRGB), 2=specular(R8), 3=shininess,
         //          4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
         //          5=aniso_sampler (linear+anisotropic, Post Retro).
-        // Both samplers stay resident; forward.wgsl picks per uniforms.graphics_mode.
+        // Binding 1 is intentionally vacated (former nearest sampler); the
+        // aniso sampler stays at 5 — non-contiguous bindings are valid.
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Material Bind Group Layout"),
@@ -986,12 +922,6 @@ impl Renderer {
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
@@ -1192,9 +1122,6 @@ impl Renderer {
         // pool grows in `install_textures` once `LoadedTexture::mip_count`
         // values arrive from the .prm sidecars. Placeholders always pick up
         // the `1` entry; never miss this lookup.
-        let mut mip_count_samplers: HashMap<u32, wgpu::Sampler> = HashMap::new();
-        mip_count_samplers.insert(1, create_mip_sampler(&device, 1));
-        // Post Retro pool seeded in lockstep with the nearest pool above.
         let mut mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler> = HashMap::new();
         mip_count_aniso_samplers.insert(1, create_mip_aniso_sampler(&device, 1));
 
@@ -1205,9 +1132,6 @@ impl Renderer {
         let mut gpu_textures: Vec<GpuTexture> = Vec::new();
         {
             let placeholder = placeholder_loaded_texture(&device, &queue);
-            let sampler = mip_count_samplers
-                .get(&1)
-                .expect("mip_count 1 seeded above");
             let aniso_sampler = mip_count_aniso_samplers
                 .get(&1)
                 .expect("mip_count 1 aniso seeded above");
@@ -1215,7 +1139,6 @@ impl Renderer {
                 &device,
                 &texture_bind_group_layout,
                 &placeholder,
-                sampler,
                 aniso_sampler,
                 Material::Default,
                 "Placeholder Material",
@@ -1737,7 +1660,6 @@ impl Renderer {
             #[cfg(feature = "dev-tools")]
             debug_lines,
             lighting_isolation: LightingIsolation::Normal,
-            graphics_mode: GraphicsMode::DEFAULT,
             vsync_enabled: true,
             has_geometry,
             debug_frame: 0,
@@ -1752,7 +1674,6 @@ impl Renderer {
             active_fog_aabbs: Vec::new(),
             texture_bind_group_layout,
             lighting_bind_group_layout,
-            mip_count_samplers,
             mip_count_aniso_samplers,
             loaded_textures,
             has_multi_draw_indirect,
@@ -2055,9 +1976,6 @@ impl Renderer {
         // entry seeded in `Renderer::new` covers placeholders; new mip counts
         // beyond `1` arrive here when real textures load.
         for tex in &loaded {
-            self.mip_count_samplers
-                .entry(tex.mip_count)
-                .or_insert_with(|| create_mip_sampler(&self.device, tex.mip_count));
             self.mip_count_aniso_samplers
                 .entry(tex.mip_count)
                 .or_insert_with(|| create_mip_aniso_sampler(&self.device, tex.mip_count));
@@ -2065,10 +1983,6 @@ impl Renderer {
 
         let mut gpu_textures: Vec<GpuTexture> = Vec::with_capacity(loaded.len());
         for (idx, tex) in loaded.iter().enumerate() {
-            let sampler = self
-                .mip_count_samplers
-                .get(&tex.mip_count)
-                .expect("mip sampler must have been eagerly populated");
             let aniso_sampler = self
                 .mip_count_aniso_samplers
                 .get(&tex.mip_count)
@@ -2081,7 +1995,6 @@ impl Renderer {
                 &self.device,
                 &self.texture_bind_group_layout,
                 tex,
-                sampler,
                 aniso_sampler,
                 material,
                 &format!("Material {idx}"),
@@ -2093,10 +2006,6 @@ impl Renderer {
             // No textures referenced by the level — keep the placeholder slot
             // so the world pipeline still has a bind group bound.
             let placeholder = placeholder_loaded_texture(&self.device, &self.queue);
-            let sampler = self
-                .mip_count_samplers
-                .get(&1)
-                .expect("mip_count 1 sampler is seeded at Renderer::new");
             let aniso_sampler = self
                 .mip_count_aniso_samplers
                 .get(&1)
@@ -2105,7 +2014,6 @@ impl Renderer {
                 &self.device,
                 &self.texture_bind_group_layout,
                 &placeholder,
-                sampler,
                 aniso_sampler,
                 crate::material::Material::Default,
                 "Placeholder Material",
@@ -2314,23 +2222,6 @@ impl Renderer {
         self.sh_compose_base_only = base_only;
     }
 
-    /// Sets the active texture-filtering mode. Logs only on an actual
-    /// transition so spam-clicks on the current mode stay quiet. The new mode
-    /// reaches the GPU on the next `update_per_frame_uniforms` call. Called
-    /// from the mod boot / hot-reload path (manifest default) and the dev-tools
-    /// A/B dropdown.
-    pub fn set_graphics_mode(&mut self, mode: GraphicsMode) {
-        if self.graphics_mode != mode {
-            self.graphics_mode = mode;
-            log::info!("[Renderer] Graphics mode: {}", mode.label());
-        }
-    }
-
-    #[cfg(feature = "dev-tools")]
-    pub fn graphics_mode(&self) -> GraphicsMode {
-        self.graphics_mode
-    }
-
     /// Most recent averaged GPU-timing window, or `None` when GPU timing is
     /// disabled / no window has elapsed yet. The debug panel reads this each
     /// frame; the underlying snapshot is overwritten every
@@ -2395,7 +2286,6 @@ impl Renderer {
             time,
             lighting_isolation: self.lighting_isolation,
             indirect_scale: self.indirect_scale,
-            graphics_mode: self.graphics_mode,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
@@ -3545,15 +3435,6 @@ mod tests {
     }
 
     #[test]
-    fn graphics_mode_uniform_encoding() {
-        // The forward shader keys filtering off these exact values; the
-        // default must stay Post Retro.
-        assert_eq!(GraphicsMode::TrueRetro as u32, 0);
-        assert_eq!(GraphicsMode::PostRetro as u32, 1);
-        assert_eq!(GraphicsMode::DEFAULT, GraphicsMode::PostRetro);
-    }
-
-    #[test]
     fn uniform_data_has_correct_size() {
         let data = build_uniform_data(&FrameUniforms {
             view_proj: Mat4::IDENTITY,
@@ -3563,7 +3444,6 @@ mod tests {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale: 1.0,
-            graphics_mode: GraphicsMode::DEFAULT,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -3861,7 +3741,6 @@ mod tests {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale,
-            graphics_mode: GraphicsMode::PostRetro,
         });
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
@@ -3907,10 +3786,6 @@ mod tests {
         // indirect_scale at bytes 92..96.
         let scale = f32::from_ne_bytes(data[92..96].try_into().unwrap());
         assert!((scale - indirect_scale).abs() < 1e-6);
-
-        // graphics_mode at bytes 96..100 (passed PostRetro = 1).
-        let mode = u32::from_ne_bytes(data[96..100].try_into().unwrap());
-        assert_eq!(mode, 1);
     }
 
     /// Static lights are baked into the lightmap; including them in the

@@ -231,12 +231,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
-        .register_enum("GraphicsMode")
-        .doc("Texture-filtering mode. `trueRetro` is nearest-neighbor point sampling; `postRetro` adds modern filtering.")
-        .variant("trueRetro", "")
-        .variant("postRetro", "")
-        .finish();
-    registry
         .register_type("ModManifest")
         .doc("Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.")
         .field("name", "String", "Human-readable mod name. Required.")
@@ -244,11 +238,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "entities?",
             "Vec<EntityTypeDescriptor>",
             "Engine-global entity-type registrations. Survive level unload.",
-        )
-        .field(
-            "defaultGraphicsMode?",
-            "GraphicsMode",
-            "Startup texture-filtering mode. Omit to use the engine default (Post Retro).",
         )
         .finish();
 }
@@ -327,17 +316,14 @@ mod tests {
         use crate::scripting::primitives_registry::TypeShape;
         use crate::scripting::runtime::ModManifestResult;
 
-        // Compile-time anchor: ensure the struct still has `name`, `entities`,
-        // and `default_graphics_mode` fields (and nothing else load-bearing).
-        // Adding a field here would fail to compile; removing one likewise.
+        // Compile-time anchor: ensure the struct still has `name` and
+        // `entities` fields (and nothing else load-bearing). Adding a field
+        // here would fail to compile; removing one likewise.
         let _shape_anchor = ModManifestResult {
             name: String::new(),
             entities: Vec::new(),
-            default_graphics_mode: None,
         };
-        // The registered `defaultGraphicsMode` field name is camelCase to match
-        // the wire/script surface; its Rust counterpart is `default_graphics_mode`.
-        let expected_fields: &[&str] = &["name", "entities", "defaultGraphicsMode"];
+        let expected_fields: &[&str] = &["name", "entities"];
 
         let mut r = PrimitiveRegistry::new();
         register_shared_types(&mut r);

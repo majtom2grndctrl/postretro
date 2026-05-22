@@ -121,6 +121,7 @@ fn rust_to_ts(ty_name: &str) -> String {
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
         "ModManifest" => "ModManifest".to_string(),
+        "GraphicsMode" => "GraphicsMode".to_string(),
         other => {
             if warned_once(&format!("ts:{other}")) {
                 log::warn!(
@@ -209,6 +210,7 @@ fn rust_to_luau(ty_name: &str) -> String {
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
         "ModManifest" => "ModManifest".to_string(),
+        "GraphicsMode" => "GraphicsMode".to_string(),
         other => {
             if warned_once(&format!("luau:{other}")) {
                 log::warn!(
@@ -1273,12 +1275,17 @@ declare module \"postretro\" {
     terminalVelocity: number;
   };
 
+  /** Texture-filtering mode. `trueRetro` is nearest-neighbor point sampling; `postRetro` adds modern filtering. */
+  export type GraphicsMode = \"trueRetro\" | \"postRetro\";
+
   /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */
   export type ModManifest = {
     /** Human-readable mod name. Required. */
     name: string;
     /** Engine-global entity-type registrations. Survive level unload. */
     entities?: ReadonlyArray<EntityTypeDescriptor>;
+    /** Startup texture-filtering mode. Omit to use the engine default (Post Retro). */
+    defaultGraphicsMode?: GraphicsMode;
   };
 
   /** Returns true if the entity id refers to a live entity. */
@@ -1457,12 +1464,17 @@ export type FallParams = {
   terminalVelocity: number,
 }
 
+--- Texture-filtering mode. `trueRetro` is nearest-neighbor point sampling; `postRetro` adds modern filtering.
+export type GraphicsMode = \"trueRetro\" | \"postRetro\"
+
 --- Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.
 export type ModManifest = {
   --- Human-readable mod name. Required.
   name: string,
   --- Engine-global entity-type registrations. Survive level unload.
   entities: {EntityTypeDescriptor}?,
+  --- Startup texture-filtering mode. Omit to use the engine default (Post Retro).
+  defaultGraphicsMode: GraphicsMode?,
 }
 
 --- Returns true if the entity id refers to a live entity.

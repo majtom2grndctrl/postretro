@@ -171,6 +171,17 @@ pub fn draw_diagnostics_panel(
                 {
                     renderer.set_freeze_time(frozen);
                 }
+
+                // Composes the static base SH only, dropping animated deltas.
+                // Diagnostic aid: bisects whether irradiance-marker flicker
+                // comes from delta application or base sampling / compose init.
+                let mut base_only = renderer.sh_compose_base_only();
+                if ui
+                    .checkbox(&mut base_only, "SH compose: base only (no animated deltas)")
+                    .changed()
+                {
+                    renderer.set_sh_compose_base_only(base_only);
+                }
             });
 
         // Player-facing aesthetic, kept distinct from the developer lighting

@@ -3,6 +3,7 @@
 //
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Vec3;
 
@@ -273,61 +274,32 @@ fn emit_markers(
     }
 }
 
-/// Round-robin depth of the readback buffer ring. With ~2-frame map latency a
-/// depth of 3 lets a fresh band-0 copy be issued *every* frame without ever
-/// targeting a buffer whose previous map is still resolving. A single buffer
-/// could only update every 2-3 frames at a jittering cadence, which temporally
-/// aliases fast-cycling animated lights into a "rainbow flicker" on the markers.
-const READBACK_RING_LEN: usize = 3;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SlotState {
-    /// Free to copy into.
-    Idle,
-    /// Copy submitted this frame; `post_submit` will kick off the map.
-    AwaitingMap,
-    /// `map_async` in flight; the buffer must not be touched until it resolves.
-    Mapping,
-}
-
-/// Decoded per-probe L0 RGB (z-major) on success, or `Err(())` if the async map
-/// failed. Shared from the map callback to the main thread via `Arc<Mutex<…>>`.
-type DecodedL0Result = Result<Vec<[f32; 3]>, ()>;
-
-/// One readback buffer plus its async-map state.
-struct ReadbackSlot {
-    buffer: wgpu::Buffer,
-    state: SlotState,
-    /// Frame stamp of this slot's in-flight copy, so `post_submit` can pick the
-    /// newest result when several resolve in the same poll.
-    seq: u64,
-    /// Written by the map callback, drained on the main thread.
-    result: Arc<Mutex<Option<DecodedL0Result>>>,
-}
-
 /// Async GPU readback of the SH "total" band-0 (L0) 3D texture, so the
 /// irradiance probe markers reflect the live composed lighting (baked base plus
 /// animated-light deltas) instead of only the static bake.
 ///
 /// One band suffices: L0 is the constant ambient term whose color the markers
-/// display. A round-robin ring of buffers lets a fresh copy be issued every
-/// frame at a fixed ~2-frame latency, so the markers track the lighting as
-/// smoothly as the scene does (rather than strobing an irregularly-sampled
-/// signal). All work is gated on `wanted` so non-irradiance frames pay nothing.
+/// display. The state machine guarantees each map reads a freshly-copied frame
+/// — a copy is encoded into the frame's command buffer, then mapped on a later
+/// frame once the GPU has finished. The result lands ~2 frames late, invisible
+/// on a debug crosshair. All work is gated on `wanted` so non-irradiance frames
+/// pay nothing.
 pub struct ShProbeReadback {
-    slots: Vec<ReadbackSlot>,
+    buffer: wgpu::Buffer,
     buffer_size: u64,
     grid_dimensions: [u32; 3],
-    /// Row stride in each readback buffer: `grid_x * 8` rounded up to
+    /// Row stride in the readback buffer: `grid_x * 8` rounded up to
     /// `COPY_BYTES_PER_ROW_ALIGNMENT`. The decode skips the per-row padding.
     padded_bytes_per_row: u32,
     /// Set by the renderer each frame: true only while the irradiance marker
     /// overlay is actually being drawn. Stops all copies/maps otherwise.
     wanted: bool,
-    /// Next ring slot to copy into.
-    next_write: usize,
-    /// Monotonic frame stamp assigned to copies.
-    seq: u64,
+    /// A copy was encoded and submitted; awaiting its map kickoff in `post_submit`.
+    copied_pending: bool,
+    /// A `map_async` is in flight — the buffer is busy, so no copy may target it.
+    map_pending: Arc<AtomicBool>,
+    /// Decoded per-probe L0 RGB (z-major), populated by the map callback.
+    map_result: Arc<Mutex<Option<Vec<[f32; 3]>>>>,
 }
 
 impl ShProbeReadback {
@@ -343,31 +315,22 @@ impl ShProbeReadback {
         let padded_bytes_per_row = unpadded.div_ceil(align) * align;
         let buffer_size = padded_bytes_per_row as u64 * ny as u64 * nz as u64;
 
-        let slots = (0..READBACK_RING_LEN)
-            .map(|i| {
-                let label = format!("SH Probe L0 Readback {i}");
-                ReadbackSlot {
-                    buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some(&label),
-                        size: buffer_size,
-                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                        mapped_at_creation: false,
-                    }),
-                    state: SlotState::Idle,
-                    seq: 0,
-                    result: Arc::new(Mutex::new(None)),
-                }
-            })
-            .collect();
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SH Probe L0 Readback"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
 
         Self {
-            slots,
+            buffer,
             buffer_size,
             grid_dimensions,
             padded_bytes_per_row,
             wanted: false,
-            next_write: 0,
-            seq: 0,
+            copied_pending: false,
+            map_pending: Arc::new(AtomicBool::new(false)),
+            map_result: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -377,17 +340,18 @@ impl ShProbeReadback {
         self.wanted = wanted;
     }
 
-    /// Copy band 0 of the "total" SH volume into the next free ring buffer.
-    /// No-op unless the overlay is wanted; also skips when the target slot's
-    /// previous map is still resolving (ring momentarily saturated). Must be
-    /// encoded after the compose dispatch so it captures this frame's result.
+    /// Whether `encode_copy` would actually encode a copy this frame. Lets the
+    /// caller skip creating and submitting an otherwise-empty command buffer.
+    pub fn wants_copy(&self) -> bool {
+        self.wanted && !self.copied_pending && !self.map_pending.load(Ordering::Acquire)
+    }
+
+    /// Copy band 0 of the "total" SH volume into the readback buffer. No-op
+    /// unless the overlay is wanted, no map is in flight, and no copy is already
+    /// awaiting its map. Must be encoded after the compose dispatch so it
+    /// captures this frame's composed result.
     pub fn encode_copy(&mut self, encoder: &mut wgpu::CommandEncoder, total_band0: &wgpu::Texture) {
-        if !self.wanted {
-            return;
-        }
-        let i = self.next_write;
-        self.next_write = (self.next_write + 1) % self.slots.len();
-        if self.slots[i].state != SlotState::Idle {
+        if !self.wants_copy() {
             return;
         }
         encoder.copy_texture_to_buffer(
@@ -398,7 +362,7 @@ impl ShProbeReadback {
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &self.slots[i].buffer,
+                buffer: &self.buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(self.padded_bytes_per_row),
@@ -411,52 +375,33 @@ impl ShProbeReadback {
                 depth_or_array_layers: self.grid_dimensions[2].max(1),
             },
         );
-        self.slots[i].state = SlotState::AwaitingMap;
-        self.slots[i].seq = self.seq;
-        self.seq += 1;
+        self.copied_pending = true;
     }
 
     /// Drive the async map state machine. Call once per frame after
-    /// `queue.submit`. Consumes resolved maps (returning the newest decoded L0
-    /// for the caller to swap into the probe-marker source) and kicks off a map
-    /// for this frame's freshly-copied slot.
+    /// `queue.submit`. Returns the decoded per-probe L0 RGB (z-major) when a
+    /// readback has completed this frame, for the caller to swap into the
+    /// probe-marker source.
     pub fn post_submit(&mut self, device: &wgpu::Device) -> Option<Vec<[f32; 3]>> {
         let _ = device.poll(wgpu::PollType::Poll);
 
-        // Drain resolved maps. Several can land in one poll during latency
-        // ramp-up; unmap them all and keep the newest by seq.
-        let mut newest: Option<(u64, Vec<[f32; 3]>)> = None;
-        for slot in &mut self.slots {
-            if slot.state != SlotState::Mapping {
-                continue;
-            }
-            let resolved = slot.result.lock().unwrap().take();
-            match resolved {
-                Some(Ok(decoded)) => {
-                    slot.buffer.unmap();
-                    slot.state = SlotState::Idle;
-                    if newest.as_ref().is_none_or(|(s, _)| slot.seq > *s) {
-                        newest = Some((slot.seq, decoded));
-                    }
-                }
-                // Map failed: the buffer was never mapped, so don't unmap it.
-                Some(Err(())) => slot.state = SlotState::Idle,
-                None => {}
-            }
+        let out = self.map_result.lock().unwrap().take();
+        if out.is_some() {
+            self.buffer.unmap();
+            self.map_pending.store(false, Ordering::Release);
         }
 
-        // Kick off maps for slots copied into this frame.
-        let size = self.buffer_size;
-        let dims = self.grid_dimensions;
-        let stride = self.padded_bytes_per_row;
-        for slot in &mut self.slots {
-            if slot.state != SlotState::AwaitingMap {
-                continue;
-            }
-            slot.state = SlotState::Mapping;
-            let result_slot = Arc::clone(&slot.result);
-            let buf = slot.buffer.clone();
-            slot.buffer.slice(0..size).map_async(
+        // Kick off a map only for a buffer we actually copied into this cycle.
+        if self.copied_pending && !self.map_pending.load(Ordering::Acquire) {
+            self.copied_pending = false;
+            self.map_pending.store(true, Ordering::Release);
+            let result_slot = Arc::clone(&self.map_result);
+            let pending = Arc::clone(&self.map_pending);
+            let buf = self.buffer.clone();
+            let size = self.buffer_size;
+            let dims = self.grid_dimensions;
+            let stride = self.padded_bytes_per_row;
+            self.buffer.slice(0..size).map_async(
                 wgpu::MapMode::Read,
                 move |res| match res {
                     Ok(()) => {
@@ -465,16 +410,17 @@ impl ShProbeReadback {
                         drop(view);
                         // Buffer stays mapped; the main thread unmaps it in the
                         // next `post_submit` after consuming the result.
-                        *result_slot.lock().unwrap() = Some(Ok(decoded));
+                        *result_slot.lock().unwrap() = Some(decoded);
                     }
                     Err(err) => {
                         log::warn!("[sh-readback] band-0 map failed: {err:?}");
-                        *result_slot.lock().unwrap() = Some(Err(()));
+                        pending.store(false, Ordering::Release);
                     }
-                });
+                },
+            );
         }
 
-        newest.map(|(_, decoded)| decoded)
+        out
     }
 }
 

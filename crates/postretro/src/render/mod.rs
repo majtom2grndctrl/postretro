@@ -557,6 +557,13 @@ pub struct Renderer {
     #[cfg(feature = "dev-tools")]
     frozen_time: f32,
 
+    /// Dev-tools toggle: when set, the SH compose skips animated-delta
+    /// contributions and emits the static base bake only. Bisects whether the
+    /// irradiance-marker flicker originates in delta application vs. base
+    /// sampling / compose-target init. See `ShComposeResources::dispatch`.
+    #[cfg(feature = "dev-tools")]
+    sh_compose_base_only: bool,
+
     /// Composes base SH bands into the total bands consumers sample. Must run
     /// before the depth pre-pass so the storage→sampled barrier resolves first.
     sh_compose: ShComposeResources,
@@ -1701,6 +1708,8 @@ impl Renderer {
             freeze_time: false,
             #[cfg(feature = "dev-tools")]
             frozen_time: 0.0,
+            #[cfg(feature = "dev-tools")]
+            sh_compose_base_only: false,
             sh_compose,
             lightmap_resources,
             animated_lightmap,
@@ -2293,6 +2302,18 @@ impl Renderer {
         self.freeze_time = freeze;
     }
 
+    #[cfg(feature = "dev-tools")]
+    pub fn sh_compose_base_only(&self) -> bool {
+        self.sh_compose_base_only
+    }
+
+    /// Drop animated-delta SH contributions, composing the static base only.
+    /// Debug aid for bisecting irradiance-marker flicker — see the field doc.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_sh_compose_base_only(&mut self, base_only: bool) {
+        self.sh_compose_base_only = base_only;
+    }
+
     /// Sets the active texture-filtering mode. Logs only on an actual
     /// transition so spam-clicks on the current mode stay quiet. The new mode
     /// reaches the GPU on the next `update_per_frame_uniforms` call. Called
@@ -2843,14 +2864,22 @@ impl Renderer {
         }
 
         // Before depth pre-pass: storage-write → sampled-read barrier for SH.
+        #[cfg(feature = "dev-tools")]
+        self.sh_compose.dispatch(
+            &self.queue,
+            &mut encoder,
+            &self.uniform_bind_group,
+            self.sh_compose_base_only,
+        );
+        #[cfg(not(feature = "dev-tools"))]
         self.sh_compose
             .dispatch(&mut encoder, &self.uniform_bind_group);
 
-        // Capture the just-composed band-0 SH for the live irradiance overlay.
-        // No-op unless the overlay is active; reads this frame's compose output.
-        #[cfg(feature = "dev-tools")]
-        self.sh_probe_readback
-            .encode_copy(&mut encoder, &self.sh_volume_resources.total_band0_texture);
+        // The readback copy is deliberately not encoded here. A
+        // `copy_texture_to_buffer` in the same command buffer as the compose
+        // dispatch reads the `total` band-0 texture before its storage writes
+        // are visible, flickering garbage into the markers. It runs after a
+        // blocking `poll(Wait)` below, once the compose submit has retired.
 
         // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
         // Both eff_brightness and influences use this pattern for the same reason.
@@ -3165,6 +3194,33 @@ impl Renderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Capture the just-composed band-0 SH for the live irradiance overlay.
+        // Separate submission so the boundary orders this copy after the compose
+        // storage writes (see the note at the compose dispatch above). Skipped
+        // unless the overlay is active.
+        #[cfg(feature = "dev-tools")]
+        if self.sh_probe_readback.wants_copy() {
+            // Block until the compose submit above has fully retired before the
+            // copy reads `total`. A submission boundary alone does not hard-sync
+            // the compute storage writes against the copy on the Metal backend:
+            // when the in-room compose runs longer (active delta lights), the
+            // copy catches the last-written (high-z) texels mid-flight and reads
+            // foreign/zero garbage. Only reached while the overlay is active, so
+            // the per-readback stall is confined to debug sessions.
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+            let mut readback_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("SH Readback Encoder"),
+                    });
+            self.sh_probe_readback.encode_copy(
+                &mut readback_encoder,
+                &self.sh_volume_resources.total_band0_texture,
+            );
+            self.queue
+                .submit(std::iter::once(readback_encoder.finish()));
+        }
 
         if let Some(timing) = self.frame_timing.as_mut() {
             timing.post_submit(&self.device);

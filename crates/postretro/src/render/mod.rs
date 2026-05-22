@@ -466,6 +466,16 @@ pub struct Renderer {
     #[cfg(feature = "dev-tools")]
     sh_probe_readback: sh_diagnostics::ShProbeReadback,
 
+    /// Dev-tools toggle: when set, `uniforms.time` is pinned to `frozen_time`,
+    /// so all curve-driven animation (SH compose, animated lightmap, scripted
+    /// lights) holds still — a debugging aid for isolating time-driven artifacts.
+    #[cfg(feature = "dev-tools")]
+    freeze_time: bool,
+    /// Time held while `freeze_time` is set; tracks live time otherwise, so
+    /// enabling the freeze holds whatever animation phase is currently showing.
+    #[cfg(feature = "dev-tools")]
+    frozen_time: f32,
+
     /// Composes base SH bands into the total bands consumers sample. Must run
     /// before the depth pre-pass so the storage→sampled barrier resolves first.
     sh_compose: ShComposeResources,
@@ -1587,6 +1597,10 @@ impl Renderer {
             sh_delta_volumes_meta,
             #[cfg(feature = "dev-tools")]
             sh_probe_readback,
+            #[cfg(feature = "dev-tools")]
+            freeze_time: false,
+            #[cfg(feature = "dev-tools")]
+            frozen_time: 0.0,
             sh_compose,
             lightmap_resources,
             animated_lightmap,
@@ -2152,6 +2166,18 @@ impl Renderer {
         self.lighting_isolation
     }
 
+    #[cfg(feature = "dev-tools")]
+    pub fn freeze_time(&self) -> bool {
+        self.freeze_time
+    }
+
+    /// Pin/unpin `uniforms.time`. Used by the debug panel to freeze all
+    /// curve-driven animation while diagnosing time-dependent artifacts.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_freeze_time(&mut self, freeze: bool) {
+        self.freeze_time = freeze;
+    }
+
     /// Most recent averaged GPU-timing window, or `None` when GPU timing is
     /// disabled / no window has elapsed yet. The debug panel reads this each
     /// frame; the underlying snapshot is overwritten every
@@ -2197,7 +2223,17 @@ impl Renderer {
     }
 
     pub fn update_per_frame_uniforms(&mut self, view_proj: Mat4, camera_position: Vec3) {
+        #[cfg(not(feature = "dev-tools"))]
         let time = self.app_start.elapsed().as_secs_f32();
+        // Dev-tools: hold `time` when frozen (debug aid), else track live time so
+        // toggling the freeze on holds the current animation phase.
+        #[cfg(feature = "dev-tools")]
+        let time = if self.freeze_time {
+            self.frozen_time
+        } else {
+            self.frozen_time = self.app_start.elapsed().as_secs_f32();
+            self.frozen_time
+        };
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
             camera_position,

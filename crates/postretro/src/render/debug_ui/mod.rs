@@ -159,6 +159,17 @@ pub fn draw_diagnostics_panel(
                 if mode != prev_mode {
                     renderer.set_lighting_isolation(mode);
                 }
+
+                // Pins `uniforms.time` so all curve-driven animation holds still.
+                // Diagnostic aid: if a flickering artifact freezes too, it is
+                // time/animation-driven; if it keeps moving, it is not.
+                let mut frozen = renderer.freeze_time();
+                if ui
+                    .checkbox(&mut frozen, "Freeze animation time")
+                    .changed()
+                {
+                    renderer.set_freeze_time(frozen);
+                }
             });
 
         egui::CollapsingHeader::new("GPU Timing")

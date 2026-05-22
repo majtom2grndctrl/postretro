@@ -655,20 +655,11 @@ impl ApplicationHandler for App {
                                 // overwrite. Runtime parses; caller owns
                                 // lifecycle. See:
                                 // context/lib/boot_sequence.md §3.
-                                let graphics_mode = manifest.default_graphics_mode;
                                 let mut data_registry = self.script_ctx.data_registry.borrow_mut();
                                 for desc in std::mem::take(&mut manifest.entities) {
                                     data_registry.upsert_entity_type(desc);
                                 }
                                 drop(data_registry);
-                                // Re-apply the mod-chosen filtering mode on
-                                // hot-reload. `None` leaves the current mode
-                                // untouched (the renderer's default persists).
-                                if let (Some(mode), Some(renderer)) =
-                                    (graphics_mode, self.renderer.as_mut())
-                                {
-                                    renderer.set_graphics_mode(mode);
-                                }
                             }
                             // `pending_splash_override` is intentionally not checked here:
                             // we are in `Running` state, the splash phase is over, and
@@ -1272,17 +1263,11 @@ impl App {
                     // `setupMod()` return value into the engine-global
                     // `DataRegistry`. Runtime parses; caller owns lifecycle.
                     // See: context/lib/boot_sequence.md §3.
-                    let graphics_mode = manifest.default_graphics_mode;
                     let mut data_registry = self.script_ctx.data_registry.borrow_mut();
                     for desc in std::mem::take(&mut manifest.entities) {
                         data_registry.upsert_entity_type(desc);
                     }
                     drop(data_registry);
-                    // Apply the mod-chosen startup filtering mode. `None` leaves
-                    // the renderer's construction default (Post Retro) in place.
-                    if let (Some(mode), Some(renderer)) = (graphics_mode, self.renderer.as_mut()) {
-                        renderer.set_graphics_mode(mode);
-                    }
                 }
                 // Hot-reload watcher (debug-only); release builds no-op.
                 if let Err(err) = self

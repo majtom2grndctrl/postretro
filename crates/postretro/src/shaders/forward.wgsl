@@ -2,12 +2,20 @@
 // plus a scalar ambient floor, with baked SH irradiance indirect.
 // See: context/lib/rendering_pipeline.md §4
 
-// Manual per-pixel anisotropic sampling — perf-vs-quality knob. Disabling
-// const-folds back to the plain single-tap path; tap count trades cost for
-// grazing-angle sharpness.
+// Manual per-pixel anisotropic sampling — these four consts are the frame-budget
+// dials for the lit pass. `ENABLE_MANUAL_ANISO = false` const-folds the whole
+// feature back to the stock single-tap path (the perf-floor escape hatch).
+// Lower `ANISO_THRESHOLD` routes more fragments through the costly multi-tap
+// branch; higher `ANISO_TAP_COUNT` spends more texture fetches per grazing
+// fragment. Shipped default is 2 taps; 4 is the higher-quality option to enable
+// only when the target GPU has headroom against a realistic combat frame.
+// ANISO_TINY_EPS floors degenerate derivative lengths so footprint math stays
+// finite. Two helpers exist because normal maps must be decoded to tangent space
+// before averaging — averaging encoded normals biases toward flat.
 const ENABLE_MANUAL_ANISO: bool = true;
-const ANISO_TAP_COUNT: u32 = 4u;
+const ANISO_TAP_COUNT: u32 = 2u;
 const ANISO_THRESHOLD: f32 = 2.0;
+const ANISO_TINY_EPS: f32 = 1.0e-6;
 
 struct Uniforms {
     view_proj: mat4x4<f32>,
@@ -415,80 +423,92 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 // so the hardware picks a sharper mip per tap. Suppresses grazing shimmer
 // without forcing in-plane linear filtering (which would blur the pixel grid).
 //
-// Always uses textureSampleGrad — never relies on implicit derivatives — so it
-// is safe to call from the non-uniform control flow of fs_main.
-const ANISO_TINY_EPS: f32 = 1.0e-6;
+// The footprint is identical across the three texture slots (all share in.uv
+// and the same derivatives), so it is computed once per fragment by
+// compute_aniso_footprint and threaded into each helper. The helpers always
+// use textureSampleGrad — never implicit derivatives — so they are safe to call
+// from the non-uniform control flow of fs_main.
+
+// Precomputed anisotropic footprint shared by all three texture slots. `min_len`
+// is floored to ANISO_TINY_EPS here so the tap derivatives can never be a
+// zero-length gradient pair (which makes textureSampleGrad's LOD undefined and
+// can poison the averaged result with NaN).
+struct AnisoFootprint {
+    is_aniso: bool,
+    major_dir: vec2<f32>,
+    extension: f32,
+    ddx_tap: vec2<f32>,
+    ddy_tap: vec2<f32>,
+    ddx: vec2<f32>,
+    ddy: vec2<f32>,
+}
+
+fn compute_aniso_footprint(ddx: vec2<f32>, ddy: vec2<f32>) -> AnisoFootprint {
+    let len_x = length(ddx);
+    let len_y = length(ddy);
+    let x_is_major = len_x >= len_y;
+    let max_len = select(len_y, len_x, x_is_major);
+    let min_len = max(select(len_x, len_y, x_is_major), ANISO_TINY_EPS);
+    let aniso_ratio = max_len / min_len;
+
+    let major = select(ddy, ddx, x_is_major);
+    let major_dir = major / max(max_len, ANISO_TINY_EPS);
+    let minor_perp = vec2<f32>(-major_dir.y, major_dir.x);
+
+    var fp: AnisoFootprint;
+    fp.is_aniso = aniso_ratio >= ANISO_THRESHOLD;
+    fp.major_dir = major_dir;
+    // Only the anisotropic extension is distributed across taps — the isotropic
+    // minor-sized core is covered by per-tap mip selection.
+    fp.extension = max_len - min_len;
+    // Each tap selects the sharpest mip the minor axis allows, so spreading the
+    // taps along the major axis reconstructs major-axis detail instead of
+    // blurring it into the over-large isotropic-major mip a single tap would pick.
+    fp.ddx_tap = major_dir * min_len;
+    fp.ddy_tap = minor_perp * min_len;
+    fp.ddx = ddx;
+    fp.ddy = ddy;
+    return fp;
+}
 
 fn sample_aniso(
     texture: texture_2d<f32>,
     samp: sampler,
     uv: vec2<f32>,
-    ddx: vec2<f32>,
-    ddy: vec2<f32>,
+    fp: AnisoFootprint,
 ) -> vec4<f32> {
-    let len_x = length(ddx);
-    let len_y = length(ddy);
-    let x_is_major = len_x >= len_y;
-    let max_len = select(len_y, len_x, x_is_major);
-    let min_len = select(len_x, len_y, x_is_major);
-    let aniso_ratio = max_len / max(min_len, ANISO_TINY_EPS);
-
-    if aniso_ratio < ANISO_THRESHOLD {
-        return textureSampleGrad(texture, samp, uv, ddx, ddy);
+    if !fp.is_aniso {
+        return textureSampleGrad(texture, samp, uv, fp.ddx, fp.ddy);
     }
-
-    let major = select(ddy, ddx, x_is_major);
-    let major_dir = major / max(max_len, ANISO_TINY_EPS);
-    // Only the anisotropic extension is distributed across taps — the isotropic
-    // minor-sized core is covered by per-tap mip selection below.
-    let extension = max_len - min_len;
-    // Isotropic minor-sized footprint so each tap reads the sharp minor-axis mip.
-    let minor_perp = vec2<f32>(-major_dir.y, major_dir.x);
-    let ddx_tap = major_dir * min_len;
-    let ddy_tap = minor_perp * min_len;
 
     let n = f32(ANISO_TAP_COUNT);
     var sum = vec4<f32>(0.0);
     for (var i: u32 = 0u; i < ANISO_TAP_COUNT; i = i + 1u) {
-        let offset = ((f32(i) + 0.5) / n - 0.5) * extension;
-        sum = sum + textureSampleGrad(texture, samp, uv + major_dir * offset, ddx_tap, ddy_tap);
+        let offset = ((f32(i) + 0.5) / n - 0.5) * fp.extension;
+        sum = sum + textureSampleGrad(texture, samp, uv + fp.major_dir * offset, fp.ddx_tap, fp.ddy_tap);
     }
     return sum / n;
 }
 
 // As sample_aniso, but for tangent-space normal maps: each tap is decoded
 // (`* 2 - 1`) before summing, then the average is renormalized. Averaging
-// encoded normals and decoding afterward biases toward (0.5,0.5,1.0) → wrong.
+// encoded normals and decoding afterward cancels micro-normal variation —
+// losing exactly the surface detail aniso is meant to preserve at grazing angles.
 fn sample_aniso_normal(
     texture: texture_2d<f32>,
     samp: sampler,
     uv: vec2<f32>,
-    ddx: vec2<f32>,
-    ddy: vec2<f32>,
+    fp: AnisoFootprint,
 ) -> vec3<f32> {
-    let len_x = length(ddx);
-    let len_y = length(ddy);
-    let x_is_major = len_x >= len_y;
-    let max_len = select(len_y, len_x, x_is_major);
-    let min_len = select(len_x, len_y, x_is_major);
-    let aniso_ratio = max_len / max(min_len, ANISO_TINY_EPS);
-
-    if aniso_ratio < ANISO_THRESHOLD {
-        return normalize(textureSampleGrad(texture, samp, uv, ddx, ddy).rgb * 2.0 - 1.0);
+    if !fp.is_aniso {
+        return normalize(textureSampleGrad(texture, samp, uv, fp.ddx, fp.ddy).rgb * 2.0 - 1.0);
     }
-
-    let major = select(ddy, ddx, x_is_major);
-    let major_dir = major / max(max_len, ANISO_TINY_EPS);
-    let extension = max_len - min_len;
-    let minor_perp = vec2<f32>(-major_dir.y, major_dir.x);
-    let ddx_tap = major_dir * min_len;
-    let ddy_tap = minor_perp * min_len;
 
     let n = f32(ANISO_TAP_COUNT);
     var sum = vec3<f32>(0.0);
     for (var i: u32 = 0u; i < ANISO_TAP_COUNT; i = i + 1u) {
-        let offset = ((f32(i) + 0.5) / n - 0.5) * extension;
-        let tap = textureSampleGrad(texture, samp, uv + major_dir * offset, ddx_tap, ddy_tap).rgb;
+        let offset = ((f32(i) + 0.5) / n - 0.5) * fp.extension;
+        let tap = textureSampleGrad(texture, samp, uv + fp.major_dir * offset, fp.ddx_tap, fp.ddy_tap).rgb;
         sum = sum + (tap * 2.0 - 1.0);
     }
     return normalize(sum);
@@ -497,13 +517,16 @@ fn sample_aniso_normal(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // UV footprint derivatives — computed once in uniform control flow so the
-    // aniso helpers can run from the non-uniform branches below.
+    // aniso helpers can run from the non-uniform branches below. The footprint
+    // is shared by all three texture slots; when ENABLE_MANUAL_ANISO is false it
+    // is unused and naga const-folds it away with the multi-tap path.
     let uv_ddx = dpdx(in.uv);
     let uv_ddy = dpdy(in.uv);
+    let aniso_fp = compute_aniso_footprint(uv_ddx, uv_ddy);
 
     var base_color: vec4<f32>;
     if ENABLE_MANUAL_ANISO {
-        base_color = sample_aniso(base_texture, base_sampler, in.uv, uv_ddx, uv_ddy);
+        base_color = sample_aniso(base_texture, base_sampler, in.uv, aniso_fp);
     } else {
         base_color = textureSample(base_texture, base_sampler, in.uv);
     }
@@ -520,7 +543,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if iso != 4u {
         var n_ts: vec3<f32>;
         if ENABLE_MANUAL_ANISO {
-            n_ts = sample_aniso_normal(t_normal, base_sampler, in.uv, uv_ddx, uv_ddy);
+            n_ts = sample_aniso_normal(t_normal, base_sampler, in.uv, aniso_fp);
         } else {
             n_ts = textureSample(t_normal, base_sampler, in.uv).rgb * 2.0 - 1.0;
         }
@@ -604,7 +627,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let V = normalize(uniforms.camera_position - in.world_position);
         var spec_int: f32;
         if ENABLE_MANUAL_ANISO {
-            spec_int = sample_aniso(spec_texture, base_sampler, in.uv, uv_ddx, uv_ddy).r;
+            spec_int = sample_aniso(spec_texture, base_sampler, in.uv, aniso_fp).r;
         } else {
             spec_int = textureSample(spec_texture, base_sampler, in.uv).r;
         }

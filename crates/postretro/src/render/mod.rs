@@ -3537,6 +3537,25 @@ mod tests {
         }
     }
 
+    /// Validates that `forward.wgsl` passes naga's full uniformity analysis.
+    /// Implicit derivatives (`dpdx`/`dpdy`) and `textureSample` must stay in
+    /// uniform control flow; the anisotropic filtering branches must use only
+    /// `textureSampleGrad` (which is safe under non-uniform flow).  Naga's
+    /// `Validator` enforces this property — `parse_str` alone does not.
+    /// A future edit that moves a derivative call under a non-uniform branch
+    /// would silently pass `parse_str` but will be caught here at `cargo test`
+    /// time, before reaching GPU pipeline creation.
+    #[test]
+    fn forward_wgsl_passes_naga_validation() {
+        let module = naga::front::wgsl::parse_str(SHADER_SOURCE).expect("forward.wgsl must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("forward.wgsl must pass naga validation (control-flow uniformity)");
+    }
+
     /// The depth pre-pass shader must parse as valid WGSL and declare
     /// the same `Uniforms` struct binding as `forward.wgsl` (only the
     /// leading `view_proj` field is referenced, but the shader still

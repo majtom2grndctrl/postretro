@@ -3,8 +3,9 @@
 // See: context/lib/rendering_pipeline.md §4
 
 // Manual per-pixel anisotropic sampling — these four consts are the frame-budget
-// dials for the lit pass. `ENABLE_MANUAL_ANISO = false` const-folds the whole
-// feature back to the stock single-tap path (the perf-floor escape hatch).
+// dials for the lit pass. `ENABLE_MANUAL_ANISO = false` const-folds the branch
+// away, routing back to the stock single-tap path (the perf-floor escape hatch);
+// the unused footprint computation chain is then dead-code-eliminated by naga.
 // Lower `ANISO_THRESHOLD` routes more fragments through the costly multi-tap
 // branch; higher `ANISO_TAP_COUNT` spends more texture fetches per grazing
 // fragment. Shipped default is 2 taps; 4 is the higher-quality option to enable
@@ -25,8 +26,8 @@ struct Uniforms {
     // Elapsed seconds since renderer start. Consumed by SH animated-layer
     // evaluation; wrapping is handled per-light via fract().
     time: f32,
-    // Lighting-term isolation for leak/bleed debugging. Cycled by the
-    // Alt+Shift+4 diagnostic chord. Values 0..=9 — see fs_main for the full
+    // Lighting-term isolation for leak/bleed debugging. Set via the
+    // Diagnostics panel dropdown (dev-tools). Values 0..=9 — see fs_main for the full
     // table; in summary 0 = Normal, 1 = NoLightmap, 2 = DirectOnly,
     // 3 = IndirectOnly, 4 = AmbientOnly, 5 = LightmapOnly,
     // 6 = StaticSHOnly, 7 = AnimatedDeltaOnly, 8 = DynamicOnly,
@@ -99,7 +100,7 @@ struct ChunkGridInfo {
 // Group 3 — SH irradiance volume. 9 3D textures (one per SH L2 band) carry
 // RGB coefficients in their .rgb channels (.a unused). When `grid.has_sh_volume`
 // is 0 the bindings point at dummy 1×1×1 textures and the shader skips SH
-// sampling. See sub-plan 6 and postretro/src/render/sh_volume.rs.
+// sampling. See postretro/src/render/sh_volume.rs.
 struct ShGridInfo {
     grid_origin: vec3<f32>,
     has_sh_volume: u32,
@@ -158,7 +159,7 @@ struct AnimationDescriptor {
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
 
 // Group 4 — baked directional lightmap (static direct lighting).
-// See context/plans/ready/lighting-lightmaps/index.md.
+// See context/lib/rendering_pipeline.md §4.
 @group(4) @binding(0) var lightmap_irradiance: texture_2d<f32>;
 @group(4) @binding(1) var lightmap_direction: texture_2d<f32>;
 @group(4) @binding(2) var lightmap_sampler: sampler;
@@ -171,7 +172,7 @@ struct AnimationDescriptor {
 @group(4) @binding(3) var animated_lm_atlas: texture_2d<f32>;
 
 // Group 5 — dynamic spot light shadow maps.
-// See context/plans/in-progress/lighting-spot-shadows/index.md § Task B.
+// See context/lib/rendering_pipeline.md §4.
 @group(5) @binding(0) var spot_shadow_depth: texture_depth_2d_array;
 @group(5) @binding(1) var spot_shadow_compare: sampler_comparison;
 // Uniform (not storage) so we stay under `max_storage_buffers_per_shader_stage`
@@ -430,9 +431,9 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 // from the non-uniform control flow of fs_main.
 
 // Precomputed anisotropic footprint shared by all three texture slots. `min_len`
-// is floored to ANISO_TINY_EPS here so the tap derivatives can never be a
-// zero-length gradient pair (which makes textureSampleGrad's LOD undefined and
-// can poison the averaged result with NaN).
+// is floored to ANISO_TINY_EPS to keep `major_dir` normalization and the
+// `aniso_ratio = max_len / min_len` division finite — guarding divide-by-zero,
+// not NaN (zero-length explicit gradients are well-defined: they select LOD 0).
 struct AnisoFootprint {
     is_aniso: bool,
     major_dir: vec2<f32>,
@@ -511,15 +512,20 @@ fn sample_aniso_normal(
         let tap = textureSampleGrad(texture, samp, uv + fp.major_dir * offset, fp.ddx_tap, fp.ddy_tap).rgb;
         sum = sum + (tap * 2.0 - 1.0);
     }
+    // Zero-sum (opposing grazing taps) yields NaN from normalize; benign because
+    // the downstream TBN-magnitude guard rejects NaN and N_bump falls back to mesh_n.
     return normalize(sum);
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // UV footprint derivatives — computed once in uniform control flow so the
-    // aniso helpers can run from the non-uniform branches below. The footprint
-    // is shared by all three texture slots; when ENABLE_MANUAL_ANISO is false it
-    // is unused and naga const-folds it away with the multi-tap path.
+    // aniso helpers can run from the non-uniform branches below. WGSL requires
+    // dpdx/dpdy to be called from uniform control flow (calling them inside a
+    // non-uniform branch is undefined behavior) — that is why they are hoisted
+    // here rather than inside the ENABLE_MANUAL_ANISO branch. The footprint is
+    // shared by all three texture slots; when ENABLE_MANUAL_ANISO is false the
+    // footprint chain is unused and naga dead-code-eliminates it.
     let uv_ddx = dpdx(in.uv);
     let uv_ddy = dpdy(in.uv);
     let aniso_fp = compute_aniso_footprint(uv_ddx, uv_ddy);

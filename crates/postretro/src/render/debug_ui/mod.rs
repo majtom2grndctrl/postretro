@@ -4,6 +4,7 @@
 use winit::event::WindowEvent;
 use winit::window::Window;
 
+use super::GraphicsMode;
 use super::LightingIsolation;
 use super::Renderer;
 use super::frame_timing::FrameTimingSnapshot;
@@ -158,6 +159,27 @@ pub fn draw_diagnostics_panel(
                     });
                 if mode != prev_mode {
                     renderer.set_lighting_isolation(mode);
+                }
+            });
+
+        // Player-facing aesthetic, kept distinct from the developer lighting
+        // diagnostics above. Read the mode fresh each frame so the combo
+        // tracks the live renderer even when a manifest default or hot-reload
+        // changed it underneath the panel.
+        egui::CollapsingHeader::new("Rendering")
+            .default_open(true)
+            .show(ui, |ui| {
+                let mut graphics_mode = renderer.graphics_mode();
+                let prev_graphics_mode = graphics_mode;
+                egui::ComboBox::from_label("Graphics Mode")
+                    .selected_text(graphics_mode.label())
+                    .show_ui(ui, |ui| {
+                        for variant in GraphicsMode::ALL_VARIANTS {
+                            ui.selectable_value(&mut graphics_mode, variant, variant.label());
+                        }
+                    });
+                if graphics_mode != prev_graphics_mode {
+                    renderer.set_graphics_mode(graphics_mode);
                 }
             });
 

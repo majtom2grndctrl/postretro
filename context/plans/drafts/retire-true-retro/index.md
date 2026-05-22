@@ -31,7 +31,7 @@ The roadmap (around line 153) frames this plan as depending on `prm-bc5-normals`
 
 ## Acceptance criteria
 
-- [ ] No symbol named `GraphicsMode`, `graphics_mode`, `defaultGraphicsMode`, `default_graphics_mode`, `parse_graphics_mode`, `TRUE_RETRO`, `POST_RETRO`, `compute_aniso_footprint`, `sample_aniso`, `sample_aniso_normal`, `AnisoFootprint`, `ANISO_*`, `create_mip_sampler`, `mip_count_samplers`, or `base_sampler` remains anywhere in `crates/postretro/src` (verifiable by repo-wide search).
+- [ ] No symbol named `GraphicsMode`, `graphics_mode`, `defaultGraphicsMode`, `default_graphics_mode`, `parse_graphics_mode`, `TRUE_RETRO`, `POST_RETRO`, `compute_aniso_footprint`, `sample_aniso`, `sample_aniso_normal`, `AnisoFootprint`, `ANISO_*`, `create_mip_sampler`, `mip_count_samplers`, or `base_sampler` remains anywhere in `crates/postretro/src` (verifiable by repo-wide search). `TRUE_RETRO` / `POST_RETRO` here mean the `forward.wgsl` mode-discriminant consts, matched whole-word — the retained `POST_RETRO_ANISO_CLAMP` clamp const and the kept aniso-pool symbols (`create_mip_aniso_sampler`, `mip_count_aniso_samplers`) are explicitly excluded.
 - [ ] `cargo build -p postretro` and `cargo build -p postretro --features dev-tools` both succeed with no dead-code or unused-import warnings introduced.
 - [ ] `cargo test -p postretro` passes, including the WGSL-stride parity tests for both `forward.wgsl` and `wireframe.wgsl` (`Uniforms` stride equals the new `UNIFORM_SIZE`).
 - [ ] A mod whose `setupMod()` returns `defaultGraphicsMode` (any value) loads with that key silently ignored — it is no longer a recognized manifest field and does not error. (Breaking change: the key is removed from the contract; mods relying on it no longer switch modes.)

@@ -173,6 +173,9 @@ pub(super) fn emit(
     }
 }
 
+// Cohesive single-call overlay params; grouping would add an abstraction with
+// one caller and break parallelism with the sibling `emit_markers`.
+#[allow(clippy::too_many_arguments)]
 fn emit_cells(
     state: &ShDiagnosticsState,
     dims: [u32; 3],

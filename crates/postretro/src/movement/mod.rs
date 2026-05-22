@@ -96,6 +96,9 @@ fn wish_dir_from_input(input: Vec2, facing_yaw: f32) -> Vec3 {
 /// within `step_height + skin` below the lifted capsule. Returns `None` for
 /// pure walls (nothing walkable above) so the slide loop handles them via
 /// plane projection without a 0.35 m intra-tick excursion.
+// Cohesive single-call physics probe params; grouping would add an abstraction
+// with one production caller and no reuse.
+#[allow(clippy::too_many_arguments)]
 fn step_up_lift(
     collision_world: &CollisionWorld,
     capsule: &Capsule,

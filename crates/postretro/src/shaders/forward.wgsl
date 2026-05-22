@@ -35,7 +35,6 @@ struct GpuLight {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
-@group(1) @binding(1) var base_sampler: sampler;
 // Per-material specular texture (R8Unorm sampled as .r). 1×1 black when the
 // diffuse's `_s.png` sibling is absent — zeros `spec_int` without any
 // shader branching. See context/lib/resource_management.md §4.1.
@@ -48,17 +47,17 @@ struct MaterialUniform {
     _pad: vec3<f32>,
 };
 @group(1) @binding(3) var<uniform> material: MaterialUniform;
-// Per-material tangent-space normal map. Sampled with `base_sampler`. The
+// Per-material tangent-space normal map. Sampled with `aniso_sampler`. The
 // neutral placeholder is (127, 127, 255, 255) which decodes to ~(0, 0, 1)
 // in tangent space, so surfaces with no `_n.png` sibling render identically
 // to the mesh-normal path. See context/lib/resource_management.md §4.3.
 @group(1) @binding(4) var t_normal: texture_2d<f32>;
-// Linear + hardware-anisotropic sampler. Parallel to `base_sampler` (nearest);
-// the Post Retro path samples through this so hardware aniso kills
-// grazing-angle shimmer while in-shader texel-grid reconstruction keeps texels
-// crisp up close. Wired by the BGL and every material bind group on the Rust
-// side — see `Renderer::mip_count_aniso_samplers` and the group-1 BGL comment
-// in render/mod.rs.
+// Linear + hardware-anisotropic sampler. The sole texture-filtering path: the
+// Post Retro path samples through this so hardware aniso kills grazing-angle
+// shimmer while in-shader texel-grid reconstruction keeps texels crisp up
+// close. Wired by the BGL and every material bind group on the Rust side — see
+// `Renderer::mip_count_aniso_samplers` and the group-1 BGL comment in
+// render/mod.rs. (Binding 1 is intentionally vacated.)
 @group(1) @binding(5) var aniso_sampler: sampler;
 
 @group(2) @binding(0) var<storage, read> lights: array<GpuLight>;

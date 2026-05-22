@@ -57,7 +57,7 @@ struct MaterialUniform {
 // shimmer while in-shader texel-grid reconstruction keeps texels crisp up
 // close. Wired by the BGL and every material bind group on the Rust side — see
 // `Renderer::mip_count_aniso_samplers` and the group-1 BGL comment in
-// render/mod.rs. (Binding 1 is intentionally vacated.)
+// render/mod.rs. (Binding 1 is intentionally vacated — renumbering the aniso sampler down would require a matching BGL and material-bind-group rebuild with no functional benefit.)
 @group(1) @binding(5) var aniso_sampler: sampler;
 
 @group(2) @binding(0) var<storage, read> lights: array<GpuLight>;

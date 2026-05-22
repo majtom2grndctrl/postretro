@@ -2,10 +2,10 @@
 // plus a scalar ambient floor, with baked SH irradiance indirect.
 // See: context/lib/rendering_pipeline.md §4
 
-// Texture-filtering mode selectors. Branched at runtime on
-// `uniforms.graphics_mode` (a uniform-buffer value, uniform across the
-// workgroup) at each texture sample site — so `textureSampleGrad` inside the
-// branches stays in uniform control flow and passes naga's uniformity analysis.
+// Texture-filtering mode selectors. Branched at each texture sample site — so
+// `textureSampleGrad` inside the branches stays in uniform control flow and
+// passes naga's uniformity analysis. The GraphicsMode seam is being retired;
+// the mode is now pinned to POST_RETRO until a later task collapses the branch.
 const TRUE_RETRO: u32 = 0u;
 const POST_RETRO: u32 = 1u;
 
@@ -45,17 +45,6 @@ struct Uniforms {
     // lightmap shadow contrast. Forced to 1.0 in indirect-only isolation
     // modes so debug views aren't affected by runtime suppression.
     indirect_scale: f32,
-    // Texture-filtering mode. 0 = True Retro (nearest sampler + manual
-    // shader-aniso, hard pixel edges), 1 = Post Retro (hardware-anisotropic
-    // sampler + in-shader texel-grid reconstruction). Default is Post Retro.
-    graphics_mode: u32,
-    // Pad to 112 bytes so the struct stays 16-byte aligned (graphics_mode
-    // lands at offset 96). Three scalar u32s, not a vec3<u32> — a vec3 has
-    // 16-byte alignment in the uniform address space and would push the
-    // struct to 128. Mirrors UNIFORM_SIZE in render/mod.rs.
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
@@ -606,8 +595,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let aniso_fp = compute_aniso_footprint(ddx, ddy);
 
     // Texture-filtering mode (uniform across the workgroup; see TRUE_RETRO /
-    // POST_RETRO). Threaded into each per-slot sampling helper.
-    let gfx_mode = uniforms.graphics_mode;
+    // POST_RETRO). Threaded into each per-slot sampling helper. The runtime
+    // GraphicsMode seam is being retired — Post Retro is the sole path now;
+    // collapsing the sampling branches is a later task.
+    let gfx_mode = POST_RETRO;
 
     let base_color = sample_color(base_texture, gfx_mode, in.uv, aniso_fp);
 

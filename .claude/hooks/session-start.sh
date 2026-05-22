@@ -7,6 +7,11 @@ set -euo pipefail
 #   - libudev-dev          -> libudev-sys, pulled in by gilrs (gamepad)
 # Without them `cargo build`/`test`/`clippy` fail in their build scripts.
 
+# Async: the session starts immediately and the install runs in the
+# background. The libs only need to be present before the first build/test,
+# not before work begins.
+echo '{"async": true, "asyncTimeout": 300000}'
+
 # Only the remote (web) container needs this; local machines already have it.
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0

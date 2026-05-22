@@ -306,10 +306,21 @@ struct GpuTexture {
     bind_group: wgpu::BindGroup,
 }
 
+/// Hardware anisotropy cap for the Post Retro filtering pool. wgpu 29 requires
+/// `anisotropy_clamp >= 1`; 16 is the common ceiling exposed by desktop adapters
+/// and the visual point of diminishing returns for grazing-angle sharpness.
+pub const POST_RETRO_ANISO_CLAMP: u16 = 16;
+
+/// Highest valid LOD index for a chain of `mip_count` mips. Both sampler pools
+/// clamp `lod_max` to this so no sampler reads past the uploaded chain.
+fn mip_lod_max_clamp(mip_count: u32) -> f32 {
+    mip_count.saturating_sub(1) as f32
+}
+
 /// Create a Nearest min/mag, Linear mipmap sampler clamped to `mip_count - 1`
 /// LOD. One sampler per distinct mip count is kept in
 /// `Renderer::mip_count_samplers` so each material binds the clamp that
-/// matches its uploaded mip chain.
+/// matches its uploaded mip chain. This is the True Retro filtering pool.
 fn create_mip_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("Mip Texture Sampler"),
@@ -320,7 +331,30 @@ fn create_mip_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
         min_filter: wgpu::FilterMode::Nearest,
         mipmap_filter: wgpu::MipmapFilterMode::Linear,
         lod_min_clamp: 0.0,
-        lod_max_clamp: (mip_count.saturating_sub(1)) as f32,
+        lod_max_clamp: mip_lod_max_clamp(mip_count),
+        ..Default::default()
+    })
+}
+
+/// Create the Post Retro filtering pool's sibling of `create_mip_sampler`:
+/// fully Linear min/mag/mip with `anisotropy_clamp = POST_RETRO_ANISO_CLAMP`,
+/// sharing the same per-mip-count LOD clamp. wgpu 29 validates that aniso > 1
+/// requires all three filters to be Linear, so this descriptor cannot share the
+/// nearest pool's filter modes. Kept resident alongside the nearest sampler in
+/// every material bind group (binding 5) so the shader picks per graphics mode
+/// with no rebind.
+fn create_mip_aniso_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("Mip Texture Aniso Sampler"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        address_mode_w: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        lod_min_clamp: 0.0,
+        lod_max_clamp: mip_lod_max_clamp(mip_count),
+        anisotropy_clamp: POST_RETRO_ANISO_CLAMP,
         ..Default::default()
     })
 }
@@ -330,6 +364,7 @@ fn build_material_bind_group(
     texture_bind_group_layout: &wgpu::BindGroupLayout,
     loaded: &LoadedTexture,
     sampler: &wgpu::Sampler,
+    aniso_sampler: &wgpu::Sampler,
     material: Material,
     label_prefix: &str,
 ) -> wgpu::BindGroup {
@@ -362,6 +397,12 @@ fn build_material_bind_group(
             wgpu::BindGroupEntry {
                 binding: 4,
                 resource: wgpu::BindingResource::TextureView(&loaded.normal_view),
+            },
+            // Post Retro filtering pool. Both samplers stay resident; the shader
+            // selects per `graphics_mode` so the mode switch costs no rebind.
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::Sampler(aniso_sampler),
             },
         ],
     })
@@ -459,6 +500,12 @@ pub struct Renderer {
     /// reloads so re-installing the same mip chain reuses the existing sampler.
     /// Placeholders pick up the `1` entry seeded at construction.
     mip_count_samplers: HashMap<u32, wgpu::Sampler>,
+    /// Post Retro counterpart of `mip_count_samplers`: linear+anisotropic
+    /// samplers keyed by the same `mip_count`, sharing the per-mip LOD clamp.
+    /// Populated in lockstep with the nearest pool so every material can bind
+    /// both samplers (binding 1 nearest, binding 5 aniso) and let the shader
+    /// pick per graphics mode with no rebind cost.
+    mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler>,
     /// Engine-lifetime owners of the loaded textures and views referenced by
     /// material bind groups. Replaced wholesale on every `install_textures`.
     /// Bind groups borrow these handles; dropping the vec invalidates them,
@@ -908,8 +955,12 @@ impl Renderer {
             }],
         });
 
-        // Group 1: 0=diffuse(sRGB), 1=sampler, 2=specular(R8), 3=shininess,
-        //          4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1)
+        // Group 1: 0=diffuse(sRGB), 1=base_sampler (nearest, True Retro),
+        //          2=specular(R8), 3=shininess,
+        //          4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
+        //          5=aniso_sampler (linear+anisotropic, Post Retro).
+        // Binding 5 has no shader consumer until Task 3; a BGL may be a superset
+        // of what the shader uses, so declaring it now is valid.
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Material Bind Group Layout"),
@@ -958,6 +1009,12 @@ impl Renderer {
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                 ],
@@ -1124,6 +1181,9 @@ impl Renderer {
         // the `1` entry; never miss this lookup.
         let mut mip_count_samplers: HashMap<u32, wgpu::Sampler> = HashMap::new();
         mip_count_samplers.insert(1, create_mip_sampler(&device, 1));
+        // Post Retro pool seeded in lockstep with the nearest pool above.
+        let mut mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler> = HashMap::new();
+        mip_count_aniso_samplers.insert(1, create_mip_aniso_sampler(&device, 1));
 
         // Construct an initial placeholder bind group so the world pipeline
         // has a bind group bound even before a level loads. Replaced wholesale
@@ -1135,11 +1195,15 @@ impl Renderer {
             let sampler = mip_count_samplers
                 .get(&1)
                 .expect("mip_count 1 seeded above");
+            let aniso_sampler = mip_count_aniso_samplers
+                .get(&1)
+                .expect("mip_count 1 aniso seeded above");
             let bind_group = build_material_bind_group(
                 &device,
                 &texture_bind_group_layout,
                 &placeholder,
                 sampler,
+                aniso_sampler,
                 Material::Default,
                 "Placeholder Material",
             );
@@ -1670,6 +1734,7 @@ impl Renderer {
             texture_bind_group_layout,
             lighting_bind_group_layout,
             mip_count_samplers,
+            mip_count_aniso_samplers,
             loaded_textures,
             has_multi_draw_indirect,
             stored_texture_materials: Vec::new(),
@@ -1974,6 +2039,9 @@ impl Renderer {
             self.mip_count_samplers
                 .entry(tex.mip_count)
                 .or_insert_with(|| create_mip_sampler(&self.device, tex.mip_count));
+            self.mip_count_aniso_samplers
+                .entry(tex.mip_count)
+                .or_insert_with(|| create_mip_aniso_sampler(&self.device, tex.mip_count));
         }
 
         let mut gpu_textures: Vec<GpuTexture> = Vec::with_capacity(loaded.len());
@@ -1982,6 +2050,10 @@ impl Renderer {
                 .mip_count_samplers
                 .get(&tex.mip_count)
                 .expect("mip sampler must have been eagerly populated");
+            let aniso_sampler = self
+                .mip_count_aniso_samplers
+                .get(&tex.mip_count)
+                .expect("aniso mip sampler must have been eagerly populated");
             let material = texture_materials
                 .get(idx)
                 .copied()
@@ -1991,6 +2063,7 @@ impl Renderer {
                 &self.texture_bind_group_layout,
                 tex,
                 sampler,
+                aniso_sampler,
                 material,
                 &format!("Material {idx}"),
             );
@@ -2005,11 +2078,16 @@ impl Renderer {
                 .mip_count_samplers
                 .get(&1)
                 .expect("mip_count 1 sampler is seeded at Renderer::new");
+            let aniso_sampler = self
+                .mip_count_aniso_samplers
+                .get(&1)
+                .expect("mip_count 1 aniso sampler is seeded at Renderer::new");
             let bind_group = build_material_bind_group(
                 &self.device,
                 &self.texture_bind_group_layout,
                 &placeholder,
                 sampler,
+                aniso_sampler,
                 crate::material::Material::Default,
                 "Placeholder Material",
             );
@@ -3314,6 +3392,16 @@ mod tests {
         for (i, val) in cols.iter().enumerate() {
             assert!(val.is_finite(), "view_proj[{i}] is not finite: {val}");
         }
+    }
+
+    #[test]
+    fn mip_lod_max_clamp_derivation() {
+        // Both sampler pools (nearest and aniso) share this clamp so neither
+        // reads past the uploaded mip chain.
+        assert_eq!(mip_lod_max_clamp(1), 0.0);
+        assert_eq!(mip_lod_max_clamp(8), 7.0);
+        // mip_count 0 is degenerate; saturating_sub keeps it at the base level.
+        assert_eq!(mip_lod_max_clamp(0), 0.0);
     }
 
     #[test]

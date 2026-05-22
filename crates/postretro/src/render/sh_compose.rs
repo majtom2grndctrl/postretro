@@ -35,6 +35,19 @@ pub struct ShComposeResources {
     /// Probe grid dimensions. Drives the dispatch shape — one thread per
     /// probe, rounded up to the (4,4,4) workgroup size.
     grid_dimensions: [u32; 3],
+    /// The `GridDims` uniform (binding 18). Rewritten per dispatch only when the
+    /// dev-tools base-only toggle flips, to override `delta_light_count` — see
+    /// `dispatch`.
+    #[cfg(feature = "dev-tools")]
+    grid_buffer: wgpu::Buffer,
+    /// True animated-light count baked into `grid_buffer` at build time. The
+    /// base-only override writes 0 in its place and this value back on restore.
+    #[cfg(feature = "dev-tools")]
+    delta_light_count: u32,
+    /// Last `delta_light_count` written to `grid_buffer`; lets `dispatch` skip
+    /// redundant uploads so the override costs nothing while the toggle is steady.
+    #[cfg(feature = "dev-tools")]
+    grid_light_count_uploaded: u32,
 }
 
 impl ShComposeResources {
@@ -90,10 +103,12 @@ impl ShComposeResources {
         grid_bytes[4..8].copy_from_slice(&sh.grid_dimensions[1].to_ne_bytes());
         grid_bytes[8..12].copy_from_slice(&sh.grid_dimensions[2].to_ne_bytes());
         grid_bytes[12..16].copy_from_slice(&light_count.to_ne_bytes());
+        // COPY_DST so the dev-tools base-only toggle can rewrite `delta_light_count`
+        // in place at dispatch time. Release builds never write it post-init.
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Dims"),
             contents: &grid_bytes,
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         // Grid origin uniform: vec3<f32> grid_origin, f32 _pad, vec3<f32> cell_size, f32 _pad.
@@ -213,11 +228,51 @@ impl ShComposeResources {
             pipeline,
             bind_group,
             grid_dimensions: sh.grid_dimensions,
+            #[cfg(feature = "dev-tools")]
+            grid_buffer,
+            #[cfg(feature = "dev-tools")]
+            delta_light_count: light_count,
+            #[cfg(feature = "dev-tools")]
+            grid_light_count_uploaded: light_count,
         }
     }
 
     /// Encode the per-frame compose dispatch.
+    ///
+    /// `base_only` (dev-tools) overrides the shader's `delta_light_count` to 0,
+    /// making the pass a pure base→total copy. The shader already treats a zero
+    /// count as base-only (see `sh_compose.wgsl`), so no shader change is needed
+    /// — bisecting whether the marker flicker comes from delta application is as
+    /// cheap as one `write_buffer` on the toggle edge. Only the count word is
+    /// rewritten, and only when it actually changes.
+    #[cfg(feature = "dev-tools")]
     pub fn dispatch(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        uniform_bind_group: &wgpu::BindGroup,
+        base_only: bool,
+    ) {
+        let want = if base_only { 0 } else { self.delta_light_count };
+        if want != self.grid_light_count_uploaded {
+            // `delta_light_count` is the 4th u32 of `GridDims` (byte offset 12).
+            queue.write_buffer(&self.grid_buffer, 12, &want.to_ne_bytes());
+            self.grid_light_count_uploaded = want;
+        }
+        self.encode_dispatch(encoder, uniform_bind_group);
+    }
+
+    /// Encode the per-frame compose dispatch.
+    #[cfg(not(feature = "dev-tools"))]
+    pub fn dispatch(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        uniform_bind_group: &wgpu::BindGroup,
+    ) {
+        self.encode_dispatch(encoder, uniform_bind_group);
+    }
+
+    fn encode_dispatch(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
@@ -280,6 +335,25 @@ fn build_delta_buffers(
             );
             // Emit a meta record to keep per-light index alignment intact;
             // descriptor_index = u32::MAX lets the shader early-out.
+        }
+
+        // The shader indexes probes by `grid_dimensions` with no bound against
+        // the count actually written, so dims exceeding the written probes let
+        // it read past this light's block — off the buffer end for the last
+        // light, into per-frame-rewritten memory (a suspected flicker source).
+        // The two must agree; warn if they don't.
+        let declared = grid.grid_dimensions[0] as u64
+            * grid.grid_dimensions[1] as u64
+            * grid.grid_dimensions[2] as u64;
+        if declared != grid.probes.len() as u64 {
+            log::warn!(
+                "[Renderer] DeltaShVolumes light {} grid_dimensions {:?} imply {} probes \
+                 but {} were written — OOB delta reads possible (likely flicker source)",
+                i,
+                grid.grid_dimensions,
+                declared,
+                grid.probes.len(),
+            );
         }
 
         // Write 48-byte per-light meta record.

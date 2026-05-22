@@ -340,12 +340,18 @@ impl ShProbeReadback {
         self.wanted = wanted;
     }
 
+    /// Whether `encode_copy` would actually encode a copy this frame. Lets the
+    /// caller skip creating and submitting an otherwise-empty command buffer.
+    pub fn wants_copy(&self) -> bool {
+        self.wanted && !self.copied_pending && !self.map_pending.load(Ordering::Acquire)
+    }
+
     /// Copy band 0 of the "total" SH volume into the readback buffer. No-op
     /// unless the overlay is wanted, no map is in flight, and no copy is already
     /// awaiting its map. Must be encoded after the compose dispatch so it
     /// captures this frame's composed result.
     pub fn encode_copy(&mut self, encoder: &mut wgpu::CommandEncoder, total_band0: &wgpu::Texture) {
-        if !self.wanted || self.copied_pending || self.map_pending.load(Ordering::Acquire) {
+        if !self.wants_copy() {
             return;
         }
         encoder.copy_texture_to_buffer(
@@ -395,9 +401,9 @@ impl ShProbeReadback {
             let size = self.buffer_size;
             let dims = self.grid_dimensions;
             let stride = self.padded_bytes_per_row;
-            self.buffer
-                .slice(0..size)
-                .map_async(wgpu::MapMode::Read, move |res| match res {
+            self.buffer.slice(0..size).map_async(
+                wgpu::MapMode::Read,
+                move |res| match res {
                     Ok(()) => {
                         let view = buf.slice(0..size).get_mapped_range();
                         let decoded = decode_l0(&view, dims, stride);
@@ -410,7 +416,8 @@ impl ShProbeReadback {
                         log::warn!("[sh-readback] band-0 map failed: {err:?}");
                         pending.store(false, Ordering::Release);
                     }
-                });
+                },
+            );
         }
 
         out

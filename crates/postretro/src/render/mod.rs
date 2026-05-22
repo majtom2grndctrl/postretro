@@ -486,6 +486,23 @@ pub struct Renderer {
     #[cfg(feature = "dev-tools")]
     sh_probe_readback: sh_diagnostics::ShProbeReadback,
 
+    /// Dev-tools toggle: when set, `uniforms.time` is pinned to `frozen_time`,
+    /// so all curve-driven animation (SH compose, animated lightmap, scripted
+    /// lights) holds still — a debugging aid for isolating time-driven artifacts.
+    #[cfg(feature = "dev-tools")]
+    freeze_time: bool,
+    /// Time held while `freeze_time` is set; tracks live time otherwise, so
+    /// enabling the freeze holds whatever animation phase is currently showing.
+    #[cfg(feature = "dev-tools")]
+    frozen_time: f32,
+
+    /// Dev-tools toggle: when set, the SH compose skips animated-delta
+    /// contributions and emits the static base bake only. Bisects whether the
+    /// irradiance-marker flicker originates in delta application vs. base
+    /// sampling / compose-target init. See `ShComposeResources::dispatch`.
+    #[cfg(feature = "dev-tools")]
+    sh_compose_base_only: bool,
+
     /// Composes base SH bands into the total bands consumers sample. Must run
     /// before the depth pre-pass so the storage→sampled barrier resolves first.
     sh_compose: ShComposeResources,
@@ -1610,6 +1627,12 @@ impl Renderer {
             sh_delta_volumes_meta,
             #[cfg(feature = "dev-tools")]
             sh_probe_readback,
+            #[cfg(feature = "dev-tools")]
+            freeze_time: false,
+            #[cfg(feature = "dev-tools")]
+            frozen_time: 0.0,
+            #[cfg(feature = "dev-tools")]
+            sh_compose_base_only: false,
             sh_compose,
             lightmap_resources,
             animated_lightmap,
@@ -2175,6 +2198,30 @@ impl Renderer {
         self.lighting_isolation
     }
 
+    #[cfg(feature = "dev-tools")]
+    pub fn freeze_time(&self) -> bool {
+        self.freeze_time
+    }
+
+    /// Pin/unpin `uniforms.time`. Used by the debug panel to freeze all
+    /// curve-driven animation while diagnosing time-dependent artifacts.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_freeze_time(&mut self, freeze: bool) {
+        self.freeze_time = freeze;
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn sh_compose_base_only(&self) -> bool {
+        self.sh_compose_base_only
+    }
+
+    /// Drop animated-delta SH contributions, composing the static base only.
+    /// Debug aid for bisecting irradiance-marker flicker — see the field doc.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_sh_compose_base_only(&mut self, base_only: bool) {
+        self.sh_compose_base_only = base_only;
+    }
+
     /// Most recent averaged GPU-timing window, or `None` when GPU timing is
     /// disabled / no window has elapsed yet. The debug panel reads this each
     /// frame; the underlying snapshot is overwritten every
@@ -2220,7 +2267,17 @@ impl Renderer {
     }
 
     pub fn update_per_frame_uniforms(&mut self, view_proj: Mat4, camera_position: Vec3) {
+        #[cfg(not(feature = "dev-tools"))]
         let time = self.app_start.elapsed().as_secs_f32();
+        // Dev-tools: hold `time` when frozen (debug aid), else track live time so
+        // toggling the freeze on holds the current animation phase.
+        #[cfg(feature = "dev-tools")]
+        let time = if self.freeze_time {
+            self.frozen_time
+        } else {
+            self.frozen_time = self.app_start.elapsed().as_secs_f32();
+            self.frozen_time
+        };
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
             camera_position,
@@ -2697,14 +2754,22 @@ impl Renderer {
         }
 
         // Before depth pre-pass: storage-write → sampled-read barrier for SH.
+        #[cfg(feature = "dev-tools")]
+        self.sh_compose.dispatch(
+            &self.queue,
+            &mut encoder,
+            &self.uniform_bind_group,
+            self.sh_compose_base_only,
+        );
+        #[cfg(not(feature = "dev-tools"))]
         self.sh_compose
             .dispatch(&mut encoder, &self.uniform_bind_group);
 
-        // Capture the just-composed band-0 SH for the live irradiance overlay.
-        // No-op unless the overlay is active; reads this frame's compose output.
-        #[cfg(feature = "dev-tools")]
-        self.sh_probe_readback
-            .encode_copy(&mut encoder, &self.sh_volume_resources.total_band0_texture);
+        // The readback copy is deliberately not encoded here. A
+        // `copy_texture_to_buffer` in the same command buffer as the compose
+        // dispatch reads the `total` band-0 texture before its storage writes
+        // are visible, flickering garbage into the markers. It runs after a
+        // blocking `poll(Wait)` below, once the compose submit has retired.
 
         // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
         // Both eff_brightness and influences use this pattern for the same reason.
@@ -3019,6 +3084,33 @@ impl Renderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Capture the just-composed band-0 SH for the live irradiance overlay.
+        // Separate submission so the boundary orders this copy after the compose
+        // storage writes (see the note at the compose dispatch above). Skipped
+        // unless the overlay is active.
+        #[cfg(feature = "dev-tools")]
+        if self.sh_probe_readback.wants_copy() {
+            // Block until the compose submit above has fully retired before the
+            // copy reads `total`. A submission boundary alone does not hard-sync
+            // the compute storage writes against the copy on the Metal backend:
+            // when the in-room compose runs longer (active delta lights), the
+            // copy catches the last-written (high-z) texels mid-flight and reads
+            // foreign/zero garbage. Only reached while the overlay is active, so
+            // the per-readback stall is confined to debug sessions.
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+            let mut readback_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("SH Readback Encoder"),
+                    });
+            self.sh_probe_readback.encode_copy(
+                &mut readback_encoder,
+                &self.sh_volume_resources.total_band0_texture,
+            );
+            self.queue
+                .submit(std::iter::once(readback_encoder.finish()));
+        }
 
         if let Some(timing) = self.frame_timing.as_mut() {
             timing.post_submit(&self.device);

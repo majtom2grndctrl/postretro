@@ -159,6 +159,28 @@ pub fn draw_diagnostics_panel(
                 if mode != prev_mode {
                     renderer.set_lighting_isolation(mode);
                 }
+
+                // Pins `uniforms.time` so all curve-driven animation holds still.
+                // Diagnostic aid: if a flickering artifact freezes too, it is
+                // time/animation-driven; if it keeps moving, it is not.
+                let mut frozen = renderer.freeze_time();
+                if ui
+                    .checkbox(&mut frozen, "Freeze animation time")
+                    .changed()
+                {
+                    renderer.set_freeze_time(frozen);
+                }
+
+                // Composes the static base SH only, dropping animated deltas.
+                // Diagnostic aid: bisects whether irradiance-marker flicker
+                // comes from delta application or base sampling / compose init.
+                let mut base_only = renderer.sh_compose_base_only();
+                if ui
+                    .checkbox(&mut base_only, "SH compose: base only (no animated deltas)")
+                    .changed()
+                {
+                    renderer.set_sh_compose_base_only(base_only);
+                }
             });
 
         egui::CollapsingHeader::new("GPU Timing")

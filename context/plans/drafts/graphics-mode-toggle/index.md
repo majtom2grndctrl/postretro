@@ -18,7 +18,7 @@ Two named texture-filtering modes, switchable at runtime. **True Retro** keeps t
 - Post Retro sampling path in `forward.wgsl`: per-slot (diffuse, specular, normal) texel-grid reconstruction feeding `textureSampleGrad` through a linear+anisotropic sampler.
 - A second sampler: linear min/mag/mip + `anisotropy_clamp` (const, start 16), per-mip-count LOD clamp, parallel to the existing nearest pool. Bound at group 1 binding 5 alongside the nearest sampler at binding 1, so both are resident and the shader chooses per mode. BGL extended.
 - Mod-manifest default: optional `defaultGraphicsMode` on `setupMod()`'s return value, applied to the renderer after mod-init; absent → the renderer's Post Retro construction default. SDK typedef + parity-guard test updated.
-- egui diagnostics combo box to switch modes live (dev-tools), matching the Lighting Isolation control.
+- egui diagnostics combo box to switch modes live (dev-tools A/B toggle), in its own "Rendering" panel section, separate from the lighting-diagnostics controls.
 
 ### Out of scope
 
@@ -65,7 +65,7 @@ Add `default_graphics_mode: Option<GraphicsMode>` to `ModManifestResult`. In bot
 
 ### Task 5: egui mode toggle
 
-Add a `graphics_mode` field to `DiagnosticsState`, seeded from `renderer.graphics_mode()`. Add a Graphics Mode combo box to `draw_diagnostics_panel` over `GraphicsMode::ALL_VARIANTS`, calling `renderer.set_graphics_mode` on change — same shape as the Lighting Isolation combo.
+Developer A/B shortcut — not the player-facing graphics surface (see open questions). No `graphics_mode` field on `DiagnosticsState`; no seeding. Read `renderer.graphics_mode()` freshly each frame into a local, keeping the renderer as the single source of truth — the combo reflects the live mode even when the manifest default or a hot-reload changes it. Add a Graphics Mode combo box over `GraphicsMode::ALL_VARIANTS` under its own "Rendering" collapsing header, calling `renderer.set_graphics_mode` only on change. Separate from the "Lighting systems" diagnostic controls — `GraphicsMode` is a player-facing aesthetic choice; `LightingIsolation` is a developer diagnostic. Same read-fresh shape as the existing Lighting Isolation combo.
 
 ### Task 6: Perf measurement + aniso-clamp decision
 
@@ -110,3 +110,5 @@ Reconstruction is per-slot because slots may differ in resolution (`dims` from e
 - **Reconstruction edge feel.** The one-pixel antialiased seam is the deliberate Post Retro difference from True Retro's hard edges. If it reads as too soft, narrow the `fwidth` window (sub-pixel) — costs nothing, sharpens the seam. Decide by eye in the A/B.
 - **Aniso clamp value.** 16 is the wgpu ceiling and the quality default. Task 6 may set it to 8 if the target GPU's aniso cost is too high; "much smaller than Crysis" arenas top out around 16:1 aspect, so 16 is unlikely to be wasted.
 - **GraphicsMode string casing.** Values pinned camelCase (`"trueRetro"`/`"postRetro"`) to match the script-facing key idiom. Switch to a `#[serde(rename_all)]`-style scheme only if manifest parsing moves to serde.
+- **Diagnostic vs. player-facing settings; future `GraphicsSettings` struct.** `GraphicsMode` is a player-facing aesthetic choice; `LightingIsolation` is a developer diagnostic — keep them conceptually distinct. This plan's egui toggle is a dev A/B shortcut; the real player surface is future work (no UI framework yet). The durable home for `GraphicsMode` is a future `GraphicsSettings { texture_filtering, aniso_clamp, ... }` struct, introduced once a second independent knob exists — `POST_RETRO_ANISO_CLAMP` as a user-facing anisotropic quality slider is the obvious first candidate. When that struct lands, `TrueRetro`/`PostRetro` become named preset constants on it; preset names are player-facing while mechanism-level names (e.g. `texture_filtering: Nearest | Aniso`) live on struct fields. The renderer's setter + dirty-flag pattern and the manifest default generalize to the struct unchanged. Do not introduce the struct in this plan — the enum is correct for one dimension.
+- **TAA as a future orthogonal axis.** If temporal AA is added, it slots into `GraphicsSettings` as a separate axis (e.g. `temporal_aa`), not a `GraphicsMode` variant. It arrives additively: camera jitter, motion-vector output, history buffer, resolve pass. One interaction to flag for that future plan: Post Retro's texel-grid reconstruction and TAA both anti-alias edges and can fight each other; that plan decides whether they coexist or TAA relaxes reconstruction.

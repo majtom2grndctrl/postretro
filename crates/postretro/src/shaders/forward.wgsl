@@ -2,6 +2,13 @@
 // plus a scalar ambient floor, with baked SH irradiance indirect.
 // See: context/lib/rendering_pipeline.md §4
 
+// Manual per-pixel anisotropic sampling — perf-vs-quality knob. Disabling
+// const-folds back to the plain single-tap path; tap count trades cost for
+// grazing-angle sharpness.
+const ENABLE_MANUAL_ANISO: bool = true;
+const ANISO_TAP_COUNT: u32 = 4u;
+const ANISO_THRESHOLD: f32 = 2.0;
+
 struct Uniforms {
     view_proj: mat4x4<f32>,
     camera_position: vec3<f32>,
@@ -401,9 +408,105 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     return sample_sh_indirect_fast(normal, gi, gfrac);
 }
 
+// Per-pixel anisotropic sampling, gated by screen-space derivative aspect
+// ratio. Below ANISO_THRESHOLD the footprint is near-isotropic — one tap, the
+// stock single-sample behaviour. Grazing footprints take ANISO_TAP_COUNT taps
+// spread along the major axis, each handed a shrunken minor-axis derivative pair
+// so the hardware picks a sharper mip per tap. Suppresses grazing shimmer
+// without forcing in-plane linear filtering (which would blur the pixel grid).
+//
+// Always uses textureSampleGrad — never relies on implicit derivatives — so it
+// is safe to call from the non-uniform control flow of fs_main.
+const ANISO_TINY_EPS: f32 = 1.0e-6;
+
+fn sample_aniso(
+    texture: texture_2d<f32>,
+    samp: sampler,
+    uv: vec2<f32>,
+    ddx: vec2<f32>,
+    ddy: vec2<f32>,
+) -> vec4<f32> {
+    let len_x = length(ddx);
+    let len_y = length(ddy);
+    let x_is_major = len_x >= len_y;
+    let max_len = select(len_y, len_x, x_is_major);
+    let min_len = select(len_x, len_y, x_is_major);
+    let aniso_ratio = max_len / max(min_len, ANISO_TINY_EPS);
+
+    if aniso_ratio < ANISO_THRESHOLD {
+        return textureSampleGrad(texture, samp, uv, ddx, ddy);
+    }
+
+    let major = select(ddy, ddx, x_is_major);
+    let major_dir = major / max(max_len, ANISO_TINY_EPS);
+    // Only the anisotropic extension is distributed across taps — the isotropic
+    // minor-sized core is covered by per-tap mip selection below.
+    let extension = max_len - min_len;
+    // Isotropic minor-sized footprint so each tap reads the sharp minor-axis mip.
+    let minor_perp = vec2<f32>(-major_dir.y, major_dir.x);
+    let ddx_tap = major_dir * min_len;
+    let ddy_tap = minor_perp * min_len;
+
+    let n = f32(ANISO_TAP_COUNT);
+    var sum = vec4<f32>(0.0);
+    for (var i: u32 = 0u; i < ANISO_TAP_COUNT; i = i + 1u) {
+        let offset = ((f32(i) + 0.5) / n - 0.5) * extension;
+        sum = sum + textureSampleGrad(texture, samp, uv + major_dir * offset, ddx_tap, ddy_tap);
+    }
+    return sum / n;
+}
+
+// As sample_aniso, but for tangent-space normal maps: each tap is decoded
+// (`* 2 - 1`) before summing, then the average is renormalized. Averaging
+// encoded normals and decoding afterward biases toward (0.5,0.5,1.0) → wrong.
+fn sample_aniso_normal(
+    texture: texture_2d<f32>,
+    samp: sampler,
+    uv: vec2<f32>,
+    ddx: vec2<f32>,
+    ddy: vec2<f32>,
+) -> vec3<f32> {
+    let len_x = length(ddx);
+    let len_y = length(ddy);
+    let x_is_major = len_x >= len_y;
+    let max_len = select(len_y, len_x, x_is_major);
+    let min_len = select(len_x, len_y, x_is_major);
+    let aniso_ratio = max_len / max(min_len, ANISO_TINY_EPS);
+
+    if aniso_ratio < ANISO_THRESHOLD {
+        return normalize(textureSampleGrad(texture, samp, uv, ddx, ddy).rgb * 2.0 - 1.0);
+    }
+
+    let major = select(ddy, ddx, x_is_major);
+    let major_dir = major / max(max_len, ANISO_TINY_EPS);
+    let extension = max_len - min_len;
+    let minor_perp = vec2<f32>(-major_dir.y, major_dir.x);
+    let ddx_tap = major_dir * min_len;
+    let ddy_tap = minor_perp * min_len;
+
+    let n = f32(ANISO_TAP_COUNT);
+    var sum = vec3<f32>(0.0);
+    for (var i: u32 = 0u; i < ANISO_TAP_COUNT; i = i + 1u) {
+        let offset = ((f32(i) + 0.5) / n - 0.5) * extension;
+        let tap = textureSampleGrad(texture, samp, uv + major_dir * offset, ddx_tap, ddy_tap).rgb;
+        sum = sum + (tap * 2.0 - 1.0);
+    }
+    return normalize(sum);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let base_color = textureSample(base_texture, base_sampler, in.uv);
+    // UV footprint derivatives — computed once in uniform control flow so the
+    // aniso helpers can run from the non-uniform branches below.
+    let uv_ddx = dpdx(in.uv);
+    let uv_ddy = dpdy(in.uv);
+
+    var base_color: vec4<f32>;
+    if ENABLE_MANUAL_ANISO {
+        base_color = sample_aniso(base_texture, base_sampler, in.uv, uv_ddx, uv_ddy);
+    } else {
+        base_color = textureSample(base_texture, base_sampler, in.uv);
+    }
 
     let mesh_n = normalize(in.world_normal);
 
@@ -415,7 +518,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let iso = uniforms.lighting_isolation;
     var N_bump: vec3<f32> = mesh_n;
     if iso != 4u {
-        let n_ts = textureSample(t_normal, base_sampler, in.uv).rgb * 2.0 - 1.0;
+        var n_ts: vec3<f32>;
+        if ENABLE_MANUAL_ANISO {
+            n_ts = sample_aniso_normal(t_normal, base_sampler, in.uv, uv_ddx, uv_ddy);
+        } else {
+            n_ts = textureSample(t_normal, base_sampler, in.uv).rgb * 2.0 - 1.0;
+        }
         // Degenerate-tangent guard: meshes with collapsed UVs produce zero-length
         // tangents. Skip TBN in that case to avoid NaN propagation.
         const TBN_EPS: f32 = 1.0e-4;
@@ -494,7 +602,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var specular_sum = vec3<f32>(0.0);
     if use_specular {
         let V = normalize(uniforms.camera_position - in.world_position);
-        let spec_int = textureSample(spec_texture, base_sampler, in.uv).r;
+        var spec_int: f32;
+        if ENABLE_MANUAL_ANISO {
+            spec_int = sample_aniso(spec_texture, base_sampler, in.uv, uv_ddx, uv_ddy).r;
+        } else {
+            spec_int = textureSample(spec_texture, base_sampler, in.uv).r;
+        }
         let spec_exp = max(material.shininess, 1.0);
 
         // Chunk lookup when the offline index is populated; otherwise walk

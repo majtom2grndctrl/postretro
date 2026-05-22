@@ -210,7 +210,7 @@ fn make_normal_placeholder(
 
 /// Maximum mip levels across all three slots, defaulting to 1 when none parse
 /// cleanly. The sampler pool is keyed by this value — a wrong count here
-/// selects the wrong `lod_max_clamp` from `mip_count_samplers`, producing GPU
+/// selects the wrong `lod_max_clamp` from `mip_count_aniso_samplers`, producing GPU
 /// sampling artifacts at distance with no compile-time error. Taking the
 /// maximum (rather than diffuse-only) handles `.prm` files where diffuse is
 /// absent or corrupted but sibling slots carry full mip chains; those siblings

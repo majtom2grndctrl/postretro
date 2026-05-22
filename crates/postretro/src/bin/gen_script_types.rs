@@ -12,19 +12,6 @@
 #[path = "../scripting/mod.rs"]
 mod scripting;
 
-// `scripting::runtime` imports `crate::render::GraphicsMode`, but this bin does
-// not pull in the GPU-heavy `render` module (it would drag wgpu into a tool
-// that only walks the type registry). Provide a minimal stand-in so the shared
-// `scripting` tree compiles here. The real definition lives in
-// `src/render/mod.rs`; keep the two variant sets in sync.
-mod render {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum GraphicsMode {
-        TrueRetro,
-        PostRetro,
-    }
-}
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 

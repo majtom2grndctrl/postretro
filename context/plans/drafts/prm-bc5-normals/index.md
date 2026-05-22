@@ -4,7 +4,7 @@
 
 Encode normal-map slots in `.prm` files as BC5 (two-channel block compression) instead of Rgba8Unorm. Halves VRAM and disk for normals with no visible aesthetic cost: normal maps are low-frequency relative to pixel-art diffuse, and BC5's per-block RG quantisation stays well below the threshold where specular shading shows banding. Diffuse stays uncompressed — BC1/BC7 visibly degrade hard-edged pixel art and are out of scope.
 
-Depends on the baked-texture-mips plan landing first. This plan extends the `.prm` (PostRetro Material) sidecar format defined there with a new per-slot `format_tag` value. See `context/plans/drafts/baked-texture-mips/index.md` for `.prm` location, layout, and the existing `format_tag` set.
+Depends on the baked-texture-mips plan, which has already landed. This plan extends the `.prm` (PostRetro Material) sidecar format defined there with a new per-slot `format_tag` value. See `context/plans/done/baked-texture-mips/index.md` for `.prm` location and layout, and confirm the existing `format_tag` set against `crates/level-format/src/prm.rs` (the done plan is frozen and may be stale).
 
 ## Scope
 
@@ -35,7 +35,7 @@ Depends on the baked-texture-mips plan landing first. This plan extends the `.pr
 - [ ] Disk size for the campaign-test scene's normal `.prm` payloads is ≤ 55% of the pre-BC5 baseline. VRAM measurement on the same scene shows the same ratio for normal textures.
 - [ ] `cargo run -p postretro -- content/dev/maps/campaign-test.prl` renders with no rendering errors. Specular highlights on normal-mapped surfaces at grazing angles show no visible quantisation banding compared to the pre-BC5 build (A/B screenshot pair in the PR).
 - [ ] Engine started on an adapter without `TEXTURE_COMPRESSION_BC` exits with a clear error naming the missing feature. Verified by temporarily masking the feature from the requested set.
-- [ ] `.prm` cache stage `STAGE_VERSION` is incremented. A second `cargo run -p postretro-level-compiler` with no source changes touches no files (cache hit on the new version).
+- [ ] `.prm` cache stage `STAGE_VERSION` is incremented from `1` to `2`. A second `cargo run -p postretro-level-compiler` with no source changes touches no files (cache hit on the new version).
 - [ ] Compiler rejects a `format_tag = 3` on the diffuse or specular slot with a clear error naming the slot and the file.
 
 ## Tasks
@@ -44,11 +44,11 @@ Depends on the baked-texture-mips plan landing first. This plan extends the `.pr
 
 Pick the encoder crate. Investigate `intel_tex_2` (Intel ISPC Texture Compressor bindings, MIT licensed, ships ISPC binaries) and `texpresso` (pure-Rust BC1–BC3 — does not currently ship BC5, confirm during the task) and `basis_universal` (broader scope, heavier). Recommend the most permissively-licensed, actively-maintained crate that ships BC5 RG encoding. If none fits, write a small in-tree BC5 block encoder (BC5 = two independent BC4 blocks; BC4 is a min/max endpoint pair plus 3-bit-per-texel selectors over a 4×4 block — straightforward, ~150 LoC).
 
-Expose a single helper in `postretro-level-compiler` that takes a `&[u8]` Rgba8Unorm linear normal-map level (width, height, row-major, tight) and returns BC5 bytes. Width and height must be ≥ 4 and multiples of 4; caller pads or skips per the per-mip rule (Task 3). Include a unit test on a fixed synthetic normal map asserting the round-trip tolerance from acceptance criterion #1.
+Expose a single helper in `postretro-level-compiler` that takes a `&[u8]` Rgba8Unorm linear normal-map level (width, height, row-major, tight) and returns BC5 bytes. Width and height must be ≥ 4 and multiples of 4; caller pads or skips per the per-mip rule (Task 3). Include a unit test on a fixed synthetic normal map asserting the round-trip tolerance from acceptance criterion #1. The test reconstructs `n.z` in Rust mirroring the shader formula (`sqrt(max(0, 1 - x*x - y*y))`), since the shader path is not exercisable from a compiler unit test.
 
 ### Task 2: `.prm` format-tag extension
 
-Add `format_tag = 3 = Bc5RgUnorm` to the `.prm` per-slot format enum. Update the `.prm` writer to permit `format_tag = 3` only on the normal slot — diffuse and specular writes fail. Update the reader to map `3` to `wgpu::TextureFormat::Bc5RgUnorm`. Bump the `.prm` texture-baker `STAGE_VERSION`. See baked-texture-mips for the `.prm` byte layout and slot ordering; no new sections.
+Add `Bc5RgUnorm = 3` to the `.prm` per-slot format enum `PrmFormat` (in the shared `postretro-level-format` crate, `crates/level-format/src/prm.rs`), and extend `PrmFormat::from_tag` to map `3`. The enum change lands in the shared crate, consumed by both compiler and runtime. Update the `.prm` writer to permit `format_tag = 3` only on the normal slot — diffuse and specular writes fail with an error naming the offending slot and the source/`.prm` file. Update the reader to map `3` to `wgpu::TextureFormat::Bc5RgUnorm`. Bump the `.prm` texture-baker `STAGE_VERSION` (`u8`, `crates/level-format/src/prm.rs`) from `1` to `2`. See baked-texture-mips for the `.prm` byte layout and slot ordering; no new sections.
 
 ### Task 3: Per-level format and mip fall-back
 
@@ -70,10 +70,10 @@ In `forward.wgsl`, the normal-slot sample path changes from `vec4` → `(rgb * 2
 ```wgsl
 let rg = textureSample(normal_tex, normal_samp, uv).rg * 2.0 - 1.0;
 let z  = sqrt(max(0.0, 1.0 - dot(rg, rg)));
-let n  = vec3<f32>(rg, z);
+let n  = normalize(vec3<f32>(rg, z));
 ```
 
-(`// Proposed design` — remove once landed.) Renormalise only if filtering tolerance demands it (BC5 hardware sampling already produces near-unit-length results after the sqrt). Confirm against acceptance criterion #3. The shader-aniso plan's True Retro normal path (`sample_aniso_normal`) is deleted rather than ported to RG-reconstruct — True Retro retires when this plan lands (see roadmap M8 "Retire True Retro mode"). Only the Post Retro path (`sample_normal` / `sample_post_retro`) needs the RG decode.
+(`// Proposed design` — remove once landed.) Renormalise unconditionally: BC5 endpoint quantisation plus bilinear filtering leaves sampled normals off unit length, and acceptance criterion #1 requires unit length within 1/127. Confirm against acceptance criterion #3. The shader-aniso plan's True Retro normal path (`sample_aniso_normal`) is deleted rather than ported to RG-reconstruct — True Retro retires when this plan lands (see roadmap M8 "Retire True Retro mode"). Only the Post Retro path (`sample_normal` / `sample_post_retro`) needs the RG decode.
 
 ## Sequencing
 
@@ -92,7 +92,7 @@ let n  = vec3<f32>(rg, z);
 
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
-| Format tag | `PrmFormatTag::Bc5RgUnorm` | `u8 = 3` (in `.prm` per-slot header) | n/a | n/a | n/a |
+| Format tag | `PrmFormat::Bc5RgUnorm` | `u8 = 3` (in `.prm` per-slot header) | n/a | n/a | n/a |
 | Adapter feature | `wgpu::Features::TEXTURE_COMPRESSION_BC` | n/a | n/a | n/a | n/a |
 | GPU format | `wgpu::TextureFormat::Bc5RgUnorm` | n/a | n/a | n/a | n/a |
 

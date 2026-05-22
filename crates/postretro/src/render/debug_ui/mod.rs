@@ -199,6 +199,11 @@ pub fn draw_diagnostics_panel(
                     ui.label("Marker mode");
                     ui.radio_value(&mut sh_state.marker_mode, MarkerMode::Validity, "Validity");
                     ui.radio_value(&mut sh_state.marker_mode, MarkerMode::Uniform, "Uniform");
+                    ui.radio_value(
+                        &mut sh_state.marker_mode,
+                        MarkerMode::Irradiance,
+                        "Irradiance",
+                    );
                 });
 
                 ui.label("Marker scale");

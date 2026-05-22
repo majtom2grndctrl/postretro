@@ -572,18 +572,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if scripted_desc.is_active != 0u {
             let cycle_t = fract(uniforms.time / max(scripted_desc.period, 0.0001) + scripted_desc.phase);
             // Color channel wins when present; otherwise apply brightness to base_color.
+            // Clamp non-negative: Catmull-Rom overshoot between keyframes can go
+            // below zero, which would make an animated light emit negative,
+            // sign-flipped (wrong-colored) light.
             if scripted_desc.color_count > 0u {
-                effective_color = sample_color_catmull_rom(
-                    scripted_desc.color_offset,
-                    scripted_desc.color_count,
-                    cycle_t,
-                    scripted_desc.base_color,
+                effective_color = max(
+                    sample_color_catmull_rom(
+                        scripted_desc.color_offset,
+                        scripted_desc.color_count,
+                        cycle_t,
+                        scripted_desc.base_color,
+                    ),
+                    vec3<f32>(0.0),
                 );
             } else if scripted_desc.brightness_count > 0u {
-                let brightness = sample_curve_catmull_rom(
-                    scripted_desc.brightness_offset,
-                    scripted_desc.brightness_count,
-                    cycle_t,
+                let brightness = max(
+                    sample_curve_catmull_rom(
+                        scripted_desc.brightness_offset,
+                        scripted_desc.brightness_count,
+                        cycle_t,
+                    ),
+                    0.0,
                 );
                 effective_color = scripted_desc.base_color * brightness;
             }

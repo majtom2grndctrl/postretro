@@ -138,8 +138,13 @@ fn compose_main(
             continue;
         }
         let t = fract(uniforms.time / max(desc.period, 1.0e-6) + desc.phase);
-        let b = sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t);
-        let c = sample_color_catmull_rom(desc.color_offset, desc.color_count, t, desc.base_color);
+        // Clamp non-negative — Catmull-Rom overshoot can dip below zero between
+        // keyframes; a negative brightness/color would subtract light.
+        let b = max(sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t), 0.0);
+        let c = max(
+            sample_color_catmull_rom(desc.color_offset, desc.color_count, t, desc.base_color),
+            vec3<f32>(0.0),
+        );
         accum = accum + c * b * entry.weight;
     }
     textureStore(

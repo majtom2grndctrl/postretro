@@ -461,6 +461,11 @@ pub struct Renderer {
     #[cfg(feature = "dev-tools")]
     sh_delta_volumes_meta: Vec<sh_volume::DeltaVolumeMeta>,
 
+    /// Async readback of the composed band-0 SH so irradiance probe markers
+    /// reflect live (base + animated-delta) lighting. Rebuilt per level load.
+    #[cfg(feature = "dev-tools")]
+    sh_probe_readback: sh_diagnostics::ShProbeReadback,
+
     /// Composes base SH bands into the total bands consumers sample. Must run
     /// before the depth pre-pass so the storage→sampled barrier resolves first.
     sh_compose: ShComposeResources,
@@ -1130,6 +1135,10 @@ impl Renderer {
         let sh_delta_volumes_meta =
             collect_delta_volume_meta(geometry.and_then(|g| g.delta_sh_volumes));
 
+        #[cfg(feature = "dev-tools")]
+        let sh_probe_readback =
+            sh_diagnostics::ShProbeReadback::new(&device, sh_volume_resources.grid_dimensions);
+
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
             &device,
@@ -1576,6 +1585,8 @@ impl Renderer {
             sh_volume_resources,
             #[cfg(feature = "dev-tools")]
             sh_delta_volumes_meta,
+            #[cfg(feature = "dev-tools")]
+            sh_probe_readback,
             sh_compose,
             lightmap_resources,
             animated_lightmap,
@@ -1823,6 +1834,11 @@ impl Renderer {
         #[cfg(feature = "dev-tools")]
         {
             self.sh_delta_volumes_meta = collect_delta_volume_meta(geometry.delta_sh_volumes);
+            // Grid dims (hence readback buffer size) change per level — rebuild.
+            self.sh_probe_readback = sh_diagnostics::ShProbeReadback::new(
+                &self.device,
+                self.sh_volume_resources.grid_dimensions,
+            );
         }
 
         let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(&self.device);
@@ -2094,6 +2110,13 @@ impl Renderer {
         world: &crate::prl::LevelWorld,
         visible_leaf_mask: &[bool],
     ) {
+        // Drive the live band-0 readback only while the irradiance overlay is
+        // actually drawn — every other frame it costs nothing.
+        let want_live_irradiance = state.show_markers
+            && state.marker_mode == sh_diagnostics::MarkerMode::Irradiance
+            && self.sh_volume_resources.present;
+        self.sh_probe_readback.set_wanted(want_live_irradiance);
+
         sh_diagnostics::emit(
             state,
             &self.sh_volume_resources,
@@ -2654,6 +2677,12 @@ impl Renderer {
         self.sh_compose
             .dispatch(&mut encoder, &self.uniform_bind_group);
 
+        // Capture the just-composed band-0 SH for the live irradiance overlay.
+        // No-op unless the overlay is active; reads this frame's compose output.
+        #[cfg(feature = "dev-tools")]
+        self.sh_probe_readback
+            .encode_copy(&mut encoder, &self.sh_volume_resources.total_band0_texture);
+
         // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
         // Both eff_brightness and influences use this pattern for the same reason.
         let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
@@ -2970,6 +2999,14 @@ impl Renderer {
 
         if let Some(timing) = self.frame_timing.as_mut() {
             timing.post_submit(&self.device);
+        }
+
+        // Drive the SH readback map and, when a frame's data has landed, swap it
+        // into the probe-marker source so the next overlay frame shows live
+        // (base + animated-delta) irradiance instead of the static bake.
+        #[cfg(feature = "dev-tools")]
+        if let Some(live_l0) = self.sh_probe_readback.post_submit(&self.device) {
+            self.sh_volume_resources.probe_l0 = live_l0;
         }
 
         // Caller (`App`) presents after optionally appending the egui overlay

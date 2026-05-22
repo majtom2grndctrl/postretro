@@ -311,7 +311,7 @@ fn build_delta_buffers(
 
 /// IEEE 754 binary16 → f32. Subnormals supported; NaN preserved.
 /// Inverse of `f32_to_f16_bits` in `sh_volume.rs`.
-fn f16_bits_to_f32(bits: u16) -> f32 {
+pub(crate) fn f16_bits_to_f32(bits: u16) -> f32 {
     let sign = ((bits >> 15) & 0x1) as u32;
     let exp = ((bits >> 10) & 0x1f) as u32;
     let mant = (bits & 0x3ff) as u32;

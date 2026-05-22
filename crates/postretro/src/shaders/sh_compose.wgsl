@@ -264,13 +264,22 @@ fn compose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // be 0 for static-by-construction descriptors; clamp to avoid
         // divide-by-zero. The animated-lightmap pass uses the same guard.
         let t = fract(uniforms.time / max(desc.period, 1.0e-6) + desc.phase);
-        let brightness =
-            sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t);
-        let color = sample_color_catmull_rom(
-            desc.color_offset,
-            desc.color_count,
-            t,
-            desc.base_color,
+        // Clamp intensity/tint non-negative: Catmull-Rom overshoots between
+        // keyframes and can dip below zero, which would flip the sign of a delta
+        // light's contribution and produce flickering wrong-colored irradiance
+        // where multiple differently-colored animated lights overlap.
+        let brightness = max(
+            sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t),
+            0.0,
+        );
+        let color = max(
+            sample_color_catmull_rom(
+                desc.color_offset,
+                desc.color_count,
+                t,
+                desc.base_color,
+            ),
+            vec3<f32>(0.0),
         );
 
         // Trilinearly sample the delta grid and accumulate.

@@ -71,8 +71,9 @@ pub const SCRIPTED_FLOATS_PER_LIGHT: usize = SCRIPTED_BRIGHTNESS_SLOT + SCRIPTED
 /// - **total**: storage-writeable copies the per-frame compose pass
 ///   (`sh_compose`) writes into. The consumer-facing `bind_group` references
 ///   these — forward, billboard, fog all sample "total" so animated deltas
-///   apply seamlessly. In the stub phase the compose pass is a base→total
-///   copy, so total ≡ base every frame.
+///   apply seamlessly. The compose pass samples each animated light's curves
+///   and adds its delta volume onto the base, so `total` differs from `base`
+///   whenever an animated light is active.
 pub struct ShVolumeResources {
     pub bind_group: wgpu::BindGroup,
     pub bind_group_layout: wgpu::BindGroupLayout,
@@ -105,12 +106,24 @@ pub struct ShVolumeResources {
     /// Consumed by `sh_diagnostics::emit` for probe-marker coloring.
     #[cfg(feature = "dev-tools")]
     pub validity: Vec<u8>,
+    /// CPU mirror of each probe's L0 (DC) SH coefficient as linear RGB, z-major
+    /// like `validity`. The L0 band reconstructs to a constant ambient
+    /// irradiance in every direction, so this is the average color of light at
+    /// the probe — consumed by `sh_diagnostics::emit` for irradiance-colored
+    /// markers. Invalid probes store zero, matching the band-texture upload.
+    #[cfg(feature = "dev-tools")]
+    pub probe_l0: Vec<[f32; 3]>,
     /// CPU copies of grid origin and cell size for `sh_diagnostics` (CPU-side probe-marker emission);
     /// `grid_info_buffer` is the canonical GPU-side source for the shader.
     #[cfg(feature = "dev-tools")]
     pub grid_origin: [f32; 3],
     #[cfg(feature = "dev-tools")]
     pub cell_size: [f32; 3],
+    /// Band-0 (L0) "total" texture handle, retained so the diagnostics readback
+    /// can copy it back to CPU each frame. Carries `COPY_SRC`. Band 0 alone is
+    /// enough for the average light color the irradiance markers display.
+    #[cfg(feature = "dev-tools")]
+    pub total_band0_texture: wgpu::Texture,
 }
 
 /// Per-animated-light delta volume placement, mirrored on CPU for diagnostics.
@@ -237,6 +250,28 @@ impl ShVolumeResources {
         #[cfg(feature = "dev-tools")]
         let validity: Vec<u8> = usable
             .map(|s| s.probes.iter().map(|p| p.validity).collect())
+            .unwrap_or_default();
+
+        // Mirror the pack: invalid probes upload as zero, so store zero here too
+        // — keeps the irradiance marker dark where the band textures are dark.
+        #[cfg(feature = "dev-tools")]
+        let probe_l0: Vec<[f32; 3]> = usable
+            .map(|s| {
+                s.probes
+                    .iter()
+                    .map(|p| {
+                        if p.validity == 0 {
+                            [0.0; 3]
+                        } else {
+                            [
+                                p.sh_coefficients[0],
+                                p.sh_coefficients[1],
+                                p.sh_coefficients[2],
+                            ]
+                        }
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
 
         if let Some(sec) = usable {
@@ -369,6 +404,12 @@ impl ShVolumeResources {
             entries: &entries,
         });
 
+        // Retain the band-0 total texture for the dev-tools readback. The
+        // `wgpu::Texture` handle is an Arc clone — the views above already keep
+        // the texture alive, this just gives the readback a handle to copy from.
+        #[cfg(feature = "dev-tools")]
+        let total_band0_texture = total_textures[0].clone();
+
         let animation = AnimatedLightBuffers {
             descriptors: anim_descriptors_buffer,
             anim_samples: anim_samples_buffer,
@@ -391,9 +432,13 @@ impl ShVolumeResources {
             #[cfg(feature = "dev-tools")]
             validity,
             #[cfg(feature = "dev-tools")]
+            probe_l0,
+            #[cfg(feature = "dev-tools")]
             grid_origin,
             #[cfg(feature = "dev-tools")]
             cell_size,
+            #[cfg(feature = "dev-tools")]
+            total_band0_texture,
         }
     }
 }
@@ -550,6 +595,15 @@ fn upload_band_texture(
 /// each frame.
 fn create_total_band_texture(device: &wgpu::Device, grid: [u32; 3], band: usize) -> wgpu::Texture {
     let label = format!("SH Total Band {band}");
+    // dev-tools reads back band 0 (L0) for the irradiance probe-marker overlay,
+    // which needs COPY_SRC. The flag is only added under the feature so release
+    // builds — where the readback path is compiled out — keep the minimal usage.
+    #[allow(unused_mut)]
+    let mut usage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
+    #[cfg(feature = "dev-tools")]
+    {
+        usage |= wgpu::TextureUsages::COPY_SRC;
+    }
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(&label),
         size: wgpu::Extent3d {
@@ -561,7 +615,7 @@ fn create_total_band_texture(device: &wgpu::Device, grid: [u32; 3], band: usize)
         sample_count: 1,
         dimension: wgpu::TextureDimension::D3,
         format: wgpu::TextureFormat::Rgba16Float,
-        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage,
         view_formats: &[],
     })
 }

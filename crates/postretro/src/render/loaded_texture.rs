@@ -110,6 +110,14 @@ fn slot_levels(slot: &PrmSlot) -> Vec<(u32, u32, &[u8])> {
     let bpp = match format {
         PrmFormat::Rgba8Unorm | PrmFormat::Rgba8UnormSrgb => 4,
         PrmFormat::R8Unorm => 1,
+        // BC5 is block-compressed and uses a block-based level layout, not a
+        // bytes-per-pixel one. The block-aware upload path lands in Task 4 of
+        // the prm-bc5-normals plan; until then no BC5 `.prm` slots are produced
+        // (that is Task 3), so this arm is never reached at runtime.
+        PrmFormat::Bc5RgUnorm => unreachable!(
+            "BC5 slot upload is not implemented yet (prm-bc5-normals Task 4); \
+             no BC5 .prm slots are produced until Task 3"
+        ),
     };
     debug_assert_eq!(
         slot.payload.len(),
@@ -145,6 +153,12 @@ fn prm_format_to_wgpu(format: PrmFormat) -> wgpu::TextureFormat {
         PrmFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
         PrmFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
         PrmFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
+        // Real BC5 → wgpu mapping (Bc5RgUnorm + GPU feature gating) lands in
+        // Task 4 of the prm-bc5-normals plan. No BC5 .prm slots exist until
+        // Task 3, so this arm is never reached at runtime.
+        PrmFormat::Bc5RgUnorm => unreachable!(
+            "BC5 → wgpu format mapping is not implemented yet (prm-bc5-normals Task 4)"
+        ),
     }
 }
 

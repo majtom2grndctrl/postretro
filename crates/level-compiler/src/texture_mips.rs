@@ -617,7 +617,9 @@ pub fn bake_texture_mips(
             slots: slots_arr,
         };
 
-        let encoded = prm.to_bytes();
+        let encoded = prm
+            .to_bytes()
+            .map_err(|e| anyhow::anyhow!("encoding .prm for texture {name:?}: {e}"))?;
         atomic_write(&prm_path, &encoded)?;
 
         out.insert(name.clone(), filename_key);

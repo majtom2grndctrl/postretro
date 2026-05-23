@@ -16,6 +16,9 @@ const MAGENTA: [u8; 4] = [255, 0, 0xFF, 255];
 const BLACK_RGBA: [u8; 4] = [0, 0, 0, 255];
 
 /// Tangent-space +Z normal encoded as Rgba8Unorm: (0,0,1) → (127,127,255).
+/// The 1×1 placeholder stays Rgba8Unorm because BC5 requires a 4×4-block
+/// minimum. The shader samples both Rgba8Unorm and Bc5RgUnorm normals as
+/// `texture_2d<f32>`, so its `.rg * 2 - 1` decode works for either format.
 const NEUTRAL_NORMAL_PIXEL: [u8; 4] = [127, 127, 255, 255];
 
 /// GPU resources for one world-material texture (diffuse + specular + normal).

@@ -53,11 +53,11 @@ Deferring is low-risk because the decision hinges on one empirical fact — does
 ## Where we're heading / next steps
 
 1. ~~Draft the chain head.~~ Done: the chain head was #0 + #1; #0 turned out already wired (see Decisions), so the head is just spec #1 — **drafted** in `context/plans/drafts/M9--probe-weight-correctness/`. Not yet reviewed.
-2. Review spec #1 (`review-draft-spec`); resolve its 4 open questions (zero-packed validity ambiguity, shader-copy scope, 72-fetch cost, measurement-gate storage). Then draft #2–#5.
+2. Review spec #1 (`review-draft-spec`). Its four drafting questions are now resolved (validity rides in band-0 alpha — already-baked data, no new section; one shared WGSL SH helper for forward/billboard/fog; CPU frame-time gate since GPU per-pass timing isn't set up; manual before/after in a `measurements/` subfolder). Then draft #2–#5.
 3. Promote reviewed specs to `ready/` — at which point durable GI/fog contract decisions migrate into `context/lib/rendering_pipeline.md`.
 
 ## Open questions
 
-- Exact PRL section strategy for depth moments: extend the existing SH section or add a sibling section? (Decide during spec #1.)
+- Exact PRL section strategy for depth moments: extend the existing SH section or add a sibling section? (Decide during spec #2 — spec #1 adds no new section.)
 - Probe spacing policy for open areas: uniform-coarse vs. adaptive. (Spec #4.)
 - Whether directional fog shares uniforms/format with the existing volumetric fog or gets its own. (Spec #3.)

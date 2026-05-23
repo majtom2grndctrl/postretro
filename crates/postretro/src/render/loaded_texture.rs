@@ -110,7 +110,8 @@ pub fn upload_texture_data(
                 rows_per_image: Some(rows_per_image),
             },
             // Copy extent stays the LOGICAL mip size; wgpu allows a block-
-            // compressed copy extent that isn't a multiple of the block dims.
+            // compressed copy whose extent equals the logical mip dims even when
+            // not a multiple of 4×4 (WebGPU physical-vs-logical size rule, GPUImageCopyTexture).
             wgpu::Extent3d {
                 width: *level_w,
                 height: *level_h,
@@ -248,15 +249,11 @@ fn make_normal_placeholder(
     )
 }
 
-/// Maximum mip levels across all three slots, defaulting to 1 when none parse
-/// cleanly. The sampler pool is keyed by this value — a wrong count here
-/// selects the wrong `lod_max_clamp` from `mip_count_aniso_samplers`, producing GPU
-/// sampling artifacts at distance with no compile-time error. Taking the
-/// maximum (rather than diffuse-only) handles `.prm` files where diffuse is
-/// absent or corrupted but sibling slots carry full mip chains; those siblings
-/// would be clamped to LOD 0 otherwise. Defaulting to 1 on error is
-/// conservative: it disables mip filtering rather than clamping to a wrong
-/// level count.
+/// Maximum mip levels across all three slots. Takes the max (not diffuse-only)
+/// so a corrupted diffuse with intact siblings doesn't clamp those siblings to
+/// LOD 0. Defaults to 1 when no slot parses cleanly — disables mip filtering
+/// rather than clamping to a wrong level. Used to key the sampler pool
+/// (`render/mod.rs` `mip_count_aniso_samplers`).
 fn header_mip_count(slots: &[Result<PrmSlot, PrmReadError>; 3]) -> u32 {
     slots
         .iter()

@@ -426,8 +426,8 @@ fn build_normal_bc5_chain(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
             ch = nh;
         }
 
-        // Renormalised Rgba8 for this level — exactly the bytes the old
-        // Rgba8Unorm path emitted, but now fed into BC5.
+        // Renormalised Rgba8 scratch for this level; the BC5 encoder reads
+        // only R and G (B/A written for a valid Rgba8 layout).
         let rgba8 = renormalize_to_rgba8(&cur);
 
         // BC5 needs 4×4 block alignment. Power-of-two levels are already
@@ -647,15 +647,28 @@ pub fn bake_texture_mips(
         }
         if let (Some(b), Some(p)) = (norm_bytes.as_deref(), norm_path.as_ref()) {
             let (rgba, w, h) = decode_png_rgba(b, p)?;
-            let payload = build_normal_bc5_chain(&rgba, w, h);
-            slots_arr[2] = Some(PrmSlot {
-                format: PrmFormat::Bc5RgUnorm,
-                width: w as u16,
-                height: h as u16,
-                level_count: bc5_level_count(w as u16, h as u16),
-                payload,
-            });
-            slot_mask |= PrmSlots::NORMAL;
+            // BC5 needs both dims ≥ 4. A normal map smaller than 4×4 has no
+            // valid BC5 level, so emitting the slot would write level_count = 0
+            // with an empty payload — which the runtime cannot upload. Drop the
+            // slot instead; the runtime substitutes its neutral-normal
+            // placeholder for an absent NORMAL slot.
+            let level_count = bc5_level_count(w as u16, h as u16);
+            if level_count == 0 {
+                log::warn!(
+                    "[prl-build] normal map for '{name}' is {w}x{h}, below the BC5 4x4 minimum — \
+                     dropping the normal slot; the runtime neutral-normal placeholder will be used"
+                );
+            } else {
+                let payload = build_normal_bc5_chain(&rgba, w, h);
+                slots_arr[2] = Some(PrmSlot {
+                    format: PrmFormat::Bc5RgUnorm,
+                    width: w as u16,
+                    height: h as u16,
+                    level_count,
+                    payload,
+                });
+                slot_mask |= PrmSlots::NORMAL;
+            }
         }
 
         let prm = PrmFile {
@@ -897,9 +910,10 @@ mod tests {
         assert_eq!(parsed.level_count, level_count);
     }
 
-    /// Recompute the reader's BC5 expected payload size from the public
-    /// `bc5_level_count` and the block-size contract, so the test does not
-    /// depend on the format crate's private `expected_payload_bytes`.
+    /// Independent restatement of the reader's BC5 payload-size contract:
+    /// `bc5_level_count` levels, each `ceil(w/4) * ceil(h/4) * 16` bytes. The
+    /// round-trip tests assert the baker's emitted payload matches this, pinning
+    /// the seam between what `prl-build` writes and what the reader expects.
     fn expected_payload_bytes_pub(format: PrmFormat, width: u16, height: u16) -> u32 {
         assert_eq!(format, PrmFormat::Bc5RgUnorm);
         let level_count = bc5_level_count(width, height);
@@ -910,6 +924,27 @@ mod tests {
             total += w_n.div_ceil(4) * h_n.div_ceil(4) * 16;
         }
         total
+    }
+
+    /// A sub-4×4 normal source has no valid BC5 level: `bc5_level_count` is 0
+    /// and the chain builder emits an empty payload. `bake_texture_mips` keys
+    /// its drop-the-slot decision on exactly this `level_count == 0` condition,
+    /// so emitting the slot would write a zero-level payload the runtime cannot
+    /// upload. Pinning the precondition keeps the baker's guard honest.
+    #[test]
+    fn sub_four_normal_source_has_no_bc5_level() {
+        for (w, h) in [(2u32, 2u32), (3, 8), (4, 2)] {
+            assert_eq!(
+                bc5_level_count(w as u16, h as u16),
+                0,
+                "{w}x{h} should have no BC5 level (needs both dims ≥ 4)"
+            );
+            let rgba = synthetic_normal_rgba(w, h);
+            assert!(
+                build_normal_bc5_chain(&rgba, w, h).is_empty(),
+                "{w}x{h} normal chain must be empty so the baker drops the slot"
+            );
+        }
     }
 
     #[test]

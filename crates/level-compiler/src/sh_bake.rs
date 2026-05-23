@@ -6,6 +6,7 @@ use bvh::bvh::Bvh;
 use bvh::ray::Ray;
 use glam::{DVec3, Vec3};
 use nalgebra::{Point3, Vector3};
+use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::sh_volume::{
     AnimationDescriptor, PROBE_STRIDE, ShProbe, ShVolumeSection,
 };
@@ -22,7 +23,7 @@ pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
 /// Bump this when the SH baking algorithm changes. Invalidates all existing
 /// cache entries for this stage.
-pub const STAGE_VERSION: u32 = 1;
+pub const STAGE_VERSION: u32 = 2;
 
 const RAYS_PER_PROBE: u32 = 256;
 
@@ -105,6 +106,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
     let (world_min, world_max) = world_aabb(inputs);
     let dims = grid_dimensions(world_min, world_max, probe_spacing_meters);
     let total = dims[0] as usize * dims[1] as usize * dims[2] as usize;
+    let cell_size = [probe_spacing_meters; 3];
 
     let static_lights: Vec<&MapLight> = inputs
         .static_lights
@@ -134,6 +136,11 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
         })
         .collect();
 
+    // Sky-miss rays contribute this distance to the depth moments. Cell-relative
+    // (4× the full 3D cell diagonal) so it reads as "fully open" at the
+    // probe-spacing scale the runtime Chebyshev interpolant operates in.
+    let far_sentinel = 4.0 * Vec3::from(cell_size).length();
+
     let base_probes: Vec<ShProbe> = (0..total)
         .into_par_iter()
         .map(|i| {
@@ -141,10 +148,17 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
                 return ShProbe::default();
             }
             let pos = vec3_from(probe_positions[i]);
-            let coeffs = bake_probe_rgb(inputs, pos, &static_lights);
+            let (coeffs, sum_d, sum_d2) =
+                bake_probe_rgb_with_moments(inputs, pos, &static_lights, far_sentinel);
+            // All RAYS_PER_PROBE rays accumulate (sky misses via the sentinel),
+            // so these are exact divisions by the constant.
+            let mean_distance = sum_d / RAYS_PER_PROBE as f32;
+            let mean_sq_distance = sum_d2 / RAYS_PER_PROBE as f32;
             ShProbe {
                 sh_coefficients: coeffs,
                 validity: 1,
+                mean_distance: f32_to_f16_bits(mean_distance),
+                mean_sq_distance: f32_to_f16_bits(mean_sq_distance),
             }
         })
         .collect();
@@ -157,7 +171,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
 
     ShVolumeSection {
         grid_origin: [world_min.x as f32, world_min.y as f32, world_min.z as f32],
-        cell_size: [probe_spacing_meters; 3],
+        cell_size,
         grid_dimensions: dims,
         probe_stride: PROBE_STRIDE,
         probes: base_probes,
@@ -169,15 +183,53 @@ pub fn log_stats(section: &ShVolumeSection) {
     let dims = section.grid_dimensions;
     let total = section.total_probes();
     let valid = section.probes.iter().filter(|p| p.validity == 1).count();
+    let invalid = total - valid;
+
+    // Coarse depth-moment aggregate over valid probes: mean and max E[d].
+    // Decoded from the stored f16 bits — diagnostic only, so f16 precision is
+    // fine and avoids threading the pre-rounding f32 moments through the bake.
+    let mut sum_mean_d = 0.0f64;
+    let mut max_mean_d = 0.0f32;
+    for probe in section.probes.iter().filter(|p| p.validity == 1) {
+        let mean_d = f16_bits_to_f32(probe.mean_distance);
+        sum_mean_d += mean_d as f64;
+        max_mean_d = max_mean_d.max(mean_d);
+    }
+    let avg_mean_d = if valid > 0 {
+        (sum_mean_d / valid as f64) as f32
+    } else {
+        0.0
+    };
+
     log::info!(
-        "ShVolume: grid {}x{}x{} = {total} probes ({valid} valid), \
-         cell {}m, {} animated light(s)",
+        "ShVolume: grid {}x{}x{} = {total} probes ({valid} valid, \
+         {invalid} invalid), cell {}m, depth E[d] mean {avg_mean_d:.2}m / \
+         max {max_mean_d:.2}m, {} animated light(s)",
         dims[0],
         dims[1],
         dims[2],
         section.cell_size[0],
         section.animation_descriptors.len(),
     );
+}
+
+/// Decode IEEE 754 binary16 bits → f32. The inverse of
+/// `lightmap::f32_to_f16_bits` for the depth moments; used only for the
+/// diagnostic stats aggregate, so it covers finite non-negative magnitudes.
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = (bits >> 15) & 0x1;
+    let exp = (bits >> 10) & 0x1f;
+    let mant = bits & 0x3ff;
+    let value = if exp == 0 {
+        // Subnormal: no implicit leading 1.
+        (mant as f32) * 2.0f32.powi(-24)
+    } else if exp == 0x1f {
+        if mant == 0 { f32::INFINITY } else { f32::NAN }
+    } else {
+        let m = 1.0 + (mant as f32) / 1024.0;
+        m * 2.0f32.powi(exp as i32 - 15)
+    };
+    if sign == 1 { -value } else { value }
 }
 
 fn world_aabb(inputs: &ShBakeCtx<'_>) -> (DVec3, DVec3) {
@@ -551,7 +603,11 @@ fn cosine_lobe_factor(band: usize) -> f32 {
     }
 }
 
-/// Indirect-only SH L2 RGB. Shared with the per-light delta SH baker.
+/// Indirect-only SH L2 RGB. Shared with the per-light delta SH baker, which
+/// carries no depth moments — its ray loop stays radiance-only here. The
+/// SH-volume path uses `bake_probe_rgb_with_moments` instead, which duplicates
+/// this loop to also accumulate depth moments (a deliberate split so the delta
+/// path is untouched).
 pub(crate) fn bake_probe_indirect_rgb(
     ctx: &RaytracingCtx<'_>,
     probe_pos: Vec3,
@@ -561,11 +617,42 @@ pub(crate) fn bake_probe_indirect_rgb(
     let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
     let mut acc = [0f32; 27];
     for dir in &directions {
-        let radiance = sample_radiance_rgb(ctx, probe_pos, *dir, lights);
+        let radiance = sample_indirect_radiance_rgb(ctx, probe_pos, *dir, lights);
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
     }
     apply_cosine_lobe_rgb(&mut acc);
     acc
+}
+
+/// SH-volume-path twin of `bake_probe_indirect_rgb` that also accumulates the
+/// per-probe depth moments `Σd` / `Σd²` over the same 256-direction loop. The
+/// duplication is intentional: the delta SH baker reuses
+/// `bake_probe_indirect_rgb` and must not carry depth moments. Sky-miss rays
+/// contribute `far_sentinel` to both sums (via `sample_radiance_rgb`), so all
+/// `RAYS_PER_PROBE` rays accumulate and the caller's division by the constant
+/// is exact. Accumulation is a sequential sum over the fixed direction list so
+/// the bake stays byte-identical across runs.
+fn bake_probe_rgb_with_moments(
+    inputs: &ShBakeCtx<'_>,
+    probe_pos: Vec3,
+    static_lights: &[&MapLight],
+    far_sentinel: f32,
+) -> ([f32; 27], f32, f32) {
+    let ctx = inputs.ray_ctx();
+    let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
+    let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
+    let mut acc = [0f32; 27];
+    let mut sum_d = 0.0f32;
+    let mut sum_d2 = 0.0f32;
+    for dir in &directions {
+        let (radiance, distance) =
+            sample_radiance_rgb(&ctx, probe_pos, *dir, static_lights, far_sentinel);
+        accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
+        sum_d += distance;
+        sum_d2 += distance * distance;
+    }
+    apply_cosine_lobe_rgb(&mut acc);
+    (acc, sum_d, sum_d2)
 }
 
 /// Direct SH L2 RGB for a single light at a probe — used by the delta SH baker.
@@ -594,16 +681,11 @@ pub(crate) fn bake_probe_direct_rgb(
     acc
 }
 
-fn bake_probe_rgb(
-    inputs: &ShBakeCtx<'_>,
-    probe_pos: Vec3,
-    static_lights: &[&MapLight],
-) -> [f32; 27] {
-    bake_probe_indirect_rgb(&inputs.ray_ctx(), probe_pos, static_lights)
-}
-
-/// Indirect (bounced) radiance along one ray — direct term is the lightmap's responsibility.
-fn sample_radiance_rgb(
+/// Indirect (bounced) radiance along one ray — direct term is the lightmap's
+/// responsibility. Radiance-only twin of `sample_radiance_rgb` for the
+/// delta SH path (`bake_probe_indirect_rgb`), which does not accumulate depth
+/// moments and so needs no hit distance.
+fn sample_indirect_radiance_rgb(
     ctx: &RaytracingCtx<'_>,
     origin: Vec3,
     dir: Vec3,
@@ -620,6 +702,32 @@ fn sample_radiance_rgb(
                 radiance += light_contribution_lambert(light, hit.point, hit.normal);
             }
             radiance * BOUNCE_ALBEDO / std::f32::consts::PI
+        }
+    }
+}
+
+/// Indirect (bounced) radiance along one ray plus the ray's hit distance.
+/// Direct term is the lightmap's responsibility. A ray that misses all geometry
+/// returns `SKY_COLOR` and `far_sentinel` as its distance — the depth-moment
+/// bake reads "no hit" as "fully open" at the probe-spacing scale.
+fn sample_radiance_rgb(
+    ctx: &RaytracingCtx<'_>,
+    origin: Vec3,
+    dir: Vec3,
+    lights: &[&MapLight],
+    far_sentinel: f32,
+) -> (Vec3, f32) {
+    match closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
+        None => (Vec3::from(SKY_COLOR), far_sentinel),
+        Some(hit) => {
+            let mut radiance = Vec3::ZERO;
+            for light in lights {
+                if !shadow_visible(ctx, hit.point, hit.normal, light) {
+                    continue;
+                }
+                radiance += light_contribution_lambert(light, hit.point, hit.normal);
+            }
+            (radiance * BOUNCE_ALBEDO / std::f32::consts::PI, hit.distance)
         }
     }
 }

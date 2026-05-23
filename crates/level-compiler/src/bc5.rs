@@ -65,6 +65,8 @@ pub fn encode_bc5_rg(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// `ep0 > ep1`. Index 0 = ep0 (max), index 1 = ep1 (min), indices 2..=7 are
 /// the 6 interpolated entries between them using the D3D/wgpu hardware integer
 /// formulas so selector assignment matches what the GPU reconstructs.
+// The `1 *` coefficients keep the rows aligned with the D3D BC4 coefficient ladder (6:1 … 1:6).
+#[allow(clippy::identity_op)]
 fn bc4_palette(ep0: u8, ep1: u8) -> [u8; 8] {
     let e0 = ep0 as u32;
     let e1 = ep1 as u32;
@@ -138,6 +140,8 @@ mod tests {
     /// Decode one BC4 block (8 bytes) back to 16 channel values using the D3D/wgpu
     /// hardware integer interpolation formulas. Used by the round-trip test to
     /// guard against encoder-vs-hardware drift.
+    // The `1 *` coefficients keep the rows aligned with the D3D BC4 coefficient ladders (6:1 … 1:6 and 4:1 … 1:4).
+    #[allow(clippy::identity_op)]
     fn decode_bc4_block(block: &[u8; 8]) -> [u8; 16] {
         let ep0 = block[0] as u32;
         let ep1 = block[1] as u32;
@@ -271,6 +275,45 @@ mod tests {
                 angle <= angle_tol_rad,
                 "texel {i}: reconstructed normal {angle} rad off (> 2°): \
                  got ({rx}, {ry}, {rz}), expected {expected:?}"
+            );
+        }
+    }
+
+    /// A constant block hits the `min == max` degenerate path in both BC4
+    /// sub-blocks (ep0 == ep1, zero selectors). The hardware palette is then
+    /// constant, so every texel decodes back to the input byte exactly,
+    /// regardless of which interpolation mode the GPU infers from the endpoints.
+    #[test]
+    fn bc5_rg_roundtrip_reproduces_flat_block_exactly() {
+        let w = 4u32;
+        let h = 4u32;
+
+        // A single off-axis tangent-space normal, identical across the block.
+        let nx = 0.3_f32;
+        let ny = -0.2_f32;
+        let nz = (1.0 - nx * nx - ny * ny).max(0.0).sqrt();
+        let len = (nx * nx + ny * ny + nz * nz).sqrt();
+        let r = encode_axis(nx / len);
+        let g = encode_axis(ny / len);
+        let b = encode_axis(nz / len);
+
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..(w * h) {
+            rgba.push(r);
+            rgba.push(g);
+            rgba.push(b); // ignored by the encoder
+            rgba.push(255);
+        }
+
+        let blocks = encode_bc5_rg(&rgba, w, h);
+        let rg = decode_bc5_rg(&blocks, w, h);
+
+        for i in 0..(w * h) as usize {
+            assert_eq!(rg[i * 2], r, "texel {i}: R channel not reproduced exactly");
+            assert_eq!(
+                rg[i * 2 + 1],
+                g,
+                "texel {i}: G channel not reproduced exactly"
             );
         }
     }

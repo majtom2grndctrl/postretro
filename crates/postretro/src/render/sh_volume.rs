@@ -506,10 +506,13 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
 /// (`[b0_r, b0_g, b0_b, b1_r, ...]`) into 9 per-band byte buffers, each sized
 /// `grid_x × grid_y × grid_z × 8 bytes` (one `Rgba16Float` texel per probe).
 ///
-/// Invalid probes (`validity == 0`) upload as all-zero coefficients so the
-/// hardware trilinear filter blends them towards darkness near walls — this
-/// matches the baker's contract and removes the need for a shader-side
-/// validity branch.
+/// Invalid probes (`validity == 0`) upload as all-zero coefficients, including
+/// a zero band-0 alpha. Valid probes carry the baked validity bit in band-0
+/// alpha (`f32_to_f16_bits(1.0) == 0x3c00`); bands 1..=8 keep alpha 0. The
+/// forward shader reads band-0 alpha to drop in-wall corners from its manual
+/// 8-corner blend, so the alpha is exactly two-state (`0x0000` invalid /
+/// `0x3c00` valid) and distinguishes an in-wall probe from a genuinely
+/// dark-but-valid one.
 fn pack_probes_to_band_slices(probes: &[ShProbe], grid: [u32; 3]) -> Vec<Vec<u16>> {
     let total = (grid[0] as usize) * (grid[1] as usize) * (grid[2] as usize);
     debug_assert_eq!(probes.len(), total);
@@ -530,7 +533,10 @@ fn pack_probes_to_band_slices(probes: &[ShProbe], grid: [u32; 3]) -> Vec<Vec<u16
             band_buf[off] = f32_to_f16_bits(r);
             band_buf[off + 1] = f32_to_f16_bits(g);
             band_buf[off + 2] = f32_to_f16_bits(b);
-            band_buf[off + 3] = 0;
+            // Validity signal lives in band-0 alpha only. This probe is valid
+            // (the `validity == 0` branch above skipped invalid ones), so write
+            // 1.0; bands 1..=8 keep alpha 0.
+            band_buf[off + 3] = if band == 0 { f32_to_f16_bits(1.0) } else { 0 };
         }
     }
 
@@ -1036,19 +1042,48 @@ mod tests {
         assert_eq!(r, f32_to_f16_bits(1.0));
         assert_eq!(g, f32_to_f16_bits(2.0));
         assert_eq!(b, f32_to_f16_bits(3.0));
-        assert_eq!(a, 0);
+        // Band-0 alpha carries the baked validity bit: valid → 0x3c00.
+        assert_eq!(a, f32_to_f16_bits(1.0));
 
-        // Invalid probe: everything must be zero.
+        // Invalid probe: everything must be zero, including band-0 alpha.
         assert_eq!(b0[4], 0);
         assert_eq!(b0[5], 0);
         assert_eq!(b0[6], 0);
         assert_eq!(b0[7], 0);
 
-        // Higher band on valid probe encodes next RGB triplet.
+        // Higher band on valid probe encodes next RGB triplet, alpha stays 0.
         let b1 = &bands[1];
         assert_eq!(b1[0], f32_to_f16_bits(4.0));
         assert_eq!(b1[1], f32_to_f16_bits(5.0));
         assert_eq!(b1[2], f32_to_f16_bits(6.0));
+        assert_eq!(b1[3], 0);
+    }
+
+    /// Validity must be exactly two-state in band-0 alpha — `0x0000` for
+    /// invalid probes and `0x3c00` (f16 1.0) for valid ones — and confined to
+    /// band 0 so bands 1..=8 never carry a validity signal. The forward shader
+    /// reads band-0 alpha `>= 0.5` as the per-corner validity test.
+    #[test]
+    fn pack_probes_writes_two_state_validity_into_band0_alpha() {
+        let probe_valid = ShProbe {
+            sh_coefficients: [0.0; 27],
+            validity: 1,
+        };
+        let probe_invalid = ShProbe {
+            sh_coefficients: [0.0; 27],
+            validity: 0,
+        };
+        let bands = pack_probes_to_band_slices(&[probe_valid, probe_invalid], [2, 1, 1]);
+
+        // Band 0 alpha: valid probe (texel 0) -> 0x3c00, invalid (texel 1) -> 0x0000.
+        assert_eq!(bands[0][3], 0x3c00);
+        assert_eq!(bands[0][7], 0x0000);
+
+        // No other band carries a validity signal — alpha stays 0 everywhere.
+        for band in 1..SH_BAND_COUNT {
+            assert_eq!(bands[band][3], 0, "band {band} valid-probe alpha must be 0");
+            assert_eq!(bands[band][7], 0, "band {band} invalid-probe alpha must be 0");
+        }
     }
 
     /// SH L2 irradiance reconstruction, CPU-side reference. The shader does

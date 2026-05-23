@@ -16,6 +16,17 @@ use crate::fx::smoke::{MAX_SPRITES, SPRITE_INSTANCE_SIZE, SpriteFrame};
 /// Byte size of `SpriteDrawParams` (one `vec4<f32>` = 16 B, padded to 16).
 pub const SPRITE_DRAW_PARAMS_SIZE: usize = 16;
 
+// `sh_sample.wgsl` reads `sh_band0..8` / `sh_grid`, declared in `billboard.wgsl`;
+// WGSL resolves module-scope names regardless of textual order, so appending
+// after is safe. The helper owns the SH reconstruction + 8-corner blend symbols
+// (`sh_irradiance`, `sample_sh_indirect_corners`) — billboard must not redeclare
+// them. See rendering_pipeline.md §8.
+const BILLBOARD_SHADER_SOURCE: &str = concat!(
+    include_str!("../shaders/billboard.wgsl"),
+    "\n",
+    include_str!("../shaders/sh_sample.wgsl"),
+);
+
 /// Stitch a set of animation frames into a single horizontal strip
 /// (`N × H` per frame) for GPU upload. All frames must have matching
 /// dimensions; frames with mismatched sizes are dropped with a warning.
@@ -123,10 +134,9 @@ impl SmokePass {
         lighting_bgl: &wgpu::BindGroupLayout,
         sh_bgl: &wgpu::BindGroupLayout,
     ) -> Self {
-        let shader_src = include_str!("../shaders/billboard.wgsl");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Billboard Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+            source: wgpu::ShaderSource::Wgsl(BILLBOARD_SHADER_SOURCE.into()),
         });
 
         // Group 1: sprite texture (binding 0) + sampler (binding 1)
@@ -433,12 +443,13 @@ mod tests {
     use super::*;
 
     /// Billboard shader must parse cleanly and declare the expected entry
-    /// points. Catches WGSL regressions before they reach pipeline creation.
+    /// points. Parses the full concatenated source (billboard + the shared
+    /// `sh_sample.wgsl` helper) so the helper's compilation in this pipeline is
+    /// covered. Catches WGSL regressions before they reach pipeline creation.
     #[test]
     fn billboard_wgsl_parses() {
-        let src = include_str!("../shaders/billboard.wgsl");
-        let module =
-            naga::front::wgsl::parse_str(src).expect("billboard.wgsl should parse as WGSL");
+        let module = naga::front::wgsl::parse_str(BILLBOARD_SHADER_SOURCE)
+            .expect("billboard shader should parse as WGSL");
         let has_vs = module
             .entry_points
             .iter()
@@ -451,12 +462,32 @@ mod tests {
         assert!(has_fs, "billboard.wgsl must export @fragment fs_main");
     }
 
+    /// The full billboard pipeline source (billboard + `sh_sample.wgsl`) must
+    /// pass naga's validation, including control-flow uniformity. `parse_str`
+    /// alone does not enforce this; a future edit that breaks the shared
+    /// helper's compilation in the billboard pipeline is caught here at
+    /// `cargo test` time, before GPU pipeline creation.
+    #[test]
+    fn billboard_wgsl_passes_naga_validation() {
+        let module = naga::front::wgsl::parse_str(BILLBOARD_SHADER_SOURCE)
+            .expect("billboard shader must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("billboard shader must pass naga validation");
+    }
+
     /// The `SpriteInstance` WGSL struct must match the CPU-side
     /// `SPRITE_INSTANCE_SIZE` byte layout.
     #[test]
     fn billboard_wgsl_sprite_instance_stride_matches_cpu() {
-        let src = include_str!("../shaders/billboard.wgsl");
-        let module = naga::front::wgsl::parse_str(src).unwrap();
+        // Parse the full concatenated source: standalone `billboard.wgsl` no
+        // longer parses on its own since it references the shared
+        // `sh_sample.wgsl` helper symbols. The `SpriteInstance` struct span is
+        // identical regardless of the appended helper source.
+        let module = naga::front::wgsl::parse_str(BILLBOARD_SHADER_SOURCE).unwrap();
         let span = module
             .types
             .iter()

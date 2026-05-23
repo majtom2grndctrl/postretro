@@ -213,7 +213,13 @@ fn compose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Load base SH bands at this probe.
     var bands: array<vec3<f32>, 9>;
-    bands[0] = textureLoad(sh_base_band0, p, 0).rgb;
+    let t0 = textureLoad(sh_base_band0, p, 0);
+    bands[0] = t0.rgb;
+    // Baked per-probe validity rides in base band-0 alpha (0 = in-wall/off-grid,
+    // 1 = valid). Carry it through to total band-0 alpha unchanged: delta
+    // accumulation below is rgb-only, so validity never gets polluted. Consumers
+    // sample the total textures, so this is the only path the bit can travel.
+    let base_validity = t0.a;
     bands[1] = textureLoad(sh_base_band1, p, 0).rgb;
     bands[2] = textureLoad(sh_base_band2, p, 0).rgb;
     bands[3] = textureLoad(sh_base_band3, p, 0).rgb;
@@ -292,7 +298,7 @@ fn compose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    textureStore(sh_total_band0, p, vec4<f32>(bands[0], 0.0));
+    textureStore(sh_total_band0, p, vec4<f32>(bands[0], base_validity));
     textureStore(sh_total_band1, p, vec4<f32>(bands[1], 0.0));
     textureStore(sh_total_band2, p, vec4<f32>(bands[2], 0.0));
     textureStore(sh_total_band3, p, vec4<f32>(bands[3], 0.0));

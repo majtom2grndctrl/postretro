@@ -500,7 +500,10 @@ fn parse_slot(
     slot_index: u8,
 ) -> (Result<PrmSlot, PrmReadError>, usize) {
     if offset.saturating_add(SLOT_HEADER_SIZE) > body.len() {
-        return (Err(PrmReadError::Truncated), body.len().saturating_sub(offset));
+        return (
+            Err(PrmReadError::Truncated),
+            body.len().saturating_sub(offset),
+        );
     }
 
     let tag = body[offset];
@@ -583,7 +586,10 @@ fn parse_slot(
     if payload_end > body.len() {
         // Payload itself is truncated; consume the rest of the buffer to keep
         // the cursor monotonic but signal Truncated.
-        return (Err(PrmReadError::Truncated), body.len().saturating_sub(offset));
+        return (
+            Err(PrmReadError::Truncated),
+            body.len().saturating_sub(offset),
+        );
     }
 
     let payload = body[payload_start..payload_end].to_vec();

@@ -133,12 +133,17 @@ fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec
     false
 }
 
-// `curve_eval.wgsl` reads `anim_samples` declared in `forward.wgsl`; WGSL resolves
-// module-scope names regardless of textual order, so appending after is safe.
+// `curve_eval.wgsl` reads `anim_samples` and `sh_sample.wgsl` reads `sh_band0..8` /
+// `sh_grid`, all declared in `forward.wgsl`; WGSL resolves module-scope names
+// regardless of textual order, so appending after is safe. `sh_sample.wgsl` owns
+// the SH reconstruction + 8-corner blend symbols (`sh_irradiance`,
+// `sample_sh_indirect_corners`) — forward must not redeclare them.
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),
+    "\n",
+    include_str!("../shaders/sh_sample.wgsl"),
 );
 
 const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");

@@ -88,9 +88,11 @@ struct ChunkGridInfo {
 @group(2) @binding(5) var<storage, read> chunk_indices: array<u32>;
 
 // Group 3 — SH irradiance volume. 9 3D textures (one per SH L2 band) carry
-// RGB coefficients in their .rgb channels (.a unused). When `grid.has_sh_volume`
-// is 0 the bindings point at dummy 1×1×1 textures and the shader skips SH
-// sampling. See postretro/src/render/sh_volume.rs.
+// RGB coefficients in their .rgb channels. Band-0 .a carries the baked per-probe
+// validity bit (1 = valid, 0 = in-wall/off-grid); bands 1..=8 .a are unused. The
+// shared 8-corner blend in sh_sample.wgsl reads band-0 .a to drop invalid corners.
+// When `grid.has_sh_volume` is 0 the bindings point at dummy 1×1×1 textures and
+// the shader skips SH sampling. See postretro/src/render/sh_volume.rs.
 struct ShGridInfo {
     grid_origin: vec3<f32>,
     has_sh_volume: u32,
@@ -125,7 +127,6 @@ struct AnimationDescriptor {
     direction_count: u32,
 };
 
-@group(3) @binding(0) var sh_sampler: sampler;
 @group(3) @binding(1) var sh_band0: texture_3d<f32>;
 @group(3) @binding(2) var sh_band1: texture_3d<f32>;
 @group(3) @binding(3) var sh_band2: texture_3d<f32>;
@@ -332,62 +333,19 @@ fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<
     );
 }
 
-// SH L0..L2 basis evaluation. Constants are standard real SH normalization factors.
-// Signs on bands 1, 3, 5, 7 match the signed basis used by the baker
-// (postretro-level-compiler/src/sh_bake.rs::sh_basis_l2) — projection and
-// reconstruction MUST use the same signed basis, or L1-y / L1-x / L2-yz / L2-xz invert.
-//
-// The Ramamoorthi-Hanrahan cosine-lobe convolution (A_0=π, A_1=2π/3, A_2=π/4)
-// is folded into the baked coefficients at bake time (sh_bake.rs::apply_cosine_lobe_rgb).
-// Runtime reconstruction applies only the basis — if indirect looks wrong, suspect
-// the baker or upload path, not these constants.
-fn sh_irradiance(
-    b0: vec3<f32>, b1: vec3<f32>, b2: vec3<f32>, b3: vec3<f32>,
-    b4: vec3<f32>, b5: vec3<f32>, b6: vec3<f32>, b7: vec3<f32>, b8: vec3<f32>,
-    normal: vec3<f32>,
-) -> vec3<f32> {
-    let nx = normal.x;
-    let ny = normal.y;
-    let nz = normal.z;
-    var r: vec3<f32> = b0 * 0.282095;                 // L0
-    r = r + b1 * (-0.488603 * ny);                    // L1 y  (signed basis)
-    r = r + b2 * ( 0.488603 * nz);                    // L1 z
-    r = r + b3 * (-0.488603 * nx);                    // L1 x  (signed basis)
-    r = r + b4 * ( 1.092548 * nx * ny);               // L2 xy
-    r = r + b5 * (-1.092548 * ny * nz);               // L2 yz (signed basis)
-    r = r + b6 * ( 0.315392 * (3.0 * nz * nz - 1.0)); // L2 z^2
-    r = r + b7 * (-1.092548 * nx * nz);               // L2 xz (signed basis)
-    r = r + b8 * ( 0.546274 * (nx * nx - ny * ny));   // L2 x^2 - y^2
-    return r;
-}
+// SH reconstruction (`sh_irradiance`) and the manual 8-corner blend
+// (`sample_sh_indirect_corners`) live in `sh_sample.wgsl`, concatenated after
+// this source at pipeline-build time (render/mod.rs `SHADER_SOURCE`). They read
+// the group-3 `sh_band0..8` textures and `sh_grid` declared above by lexical
+// name. The helper drops invalid (in-wall) corners via the baked validity bit
+// in band-0 alpha, downweights backfacing corners, and renormalizes survivors.
 
-// Hardware-trilinear fetch of all 9 SH bands. `cell_center_uvw` lands between
-// the 8 texel centers so trilinear reproduces per-corner weighting exactly —
-// one sample per band in lieu of eight manual fetches.
-fn sample_sh_indirect_fast(
-    normal: vec3<f32>,
-    gi: vec3<u32>,
-    gfrac: vec3<f32>,
-) -> vec3<f32> {
-    let gdims_f = max(vec3<f32>(sh_grid.grid_dimensions), vec3<f32>(1.0));
-    let cell_center_uvw = (vec3<f32>(gi) + vec3<f32>(0.5) + gfrac) / gdims_f;
-    let b0 = textureSampleLevel(sh_band0, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b1 = textureSampleLevel(sh_band1, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b2 = textureSampleLevel(sh_band2, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b3 = textureSampleLevel(sh_band3, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b4 = textureSampleLevel(sh_band4, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b5 = textureSampleLevel(sh_band5, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b6 = textureSampleLevel(sh_band6, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b7 = textureSampleLevel(sh_band7, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b8 = textureSampleLevel(sh_band8, sh_sampler, cell_center_uvw, 0.0).rgb;
-
-    return max(
-        sh_irradiance(b0, b1, b2, b3, b4, b5, b6, b7, b8, normal),
-        vec3<f32>(0.0),
-    );
-}
-
-fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+// Normal-offset wrapper. Biases the lookup toward the lit side and derives the
+// grid index / sub-cell fraction, then defers the corrected 8-corner blend to
+// the shared helper with backface rejection enabled (forward-only). The
+// geometric mesh normal keys the backface test; the (possibly normal-mapped)
+// shading normal drives SH reconstruction.
+fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal: vec3<f32>) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
     }
@@ -395,7 +353,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     // Bias the lookup toward the lit side by offsetting along the surface
     // normal. Reduces SH bleed across thin walls.
     const SH_NORMAL_OFFSET_M: f32 = 0.1;
-    let offset_world = world_pos + normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
+    let offset_world = world_pos + shading_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
     let gdims_u = sh_grid.grid_dimensions;
     let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
     let cell_coord = (offset_world - sh_grid.grid_origin) /
@@ -404,7 +362,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     let gi = vec3<u32>(floor(gf));
     let gfrac = fract(gf);
 
-    return sample_sh_indirect_fast(normal, gi, gfrac);
+    return sample_sh_indirect_corners(gi, gfrac, shading_normal, geo_normal, true);
 }
 
 // Post Retro sample. Reconstructs the texel grid in UV space — warping the
@@ -513,7 +471,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let indirect_scale = select(uniforms.indirect_scale, 1.0, iso == 3u || iso == 6u);
     var indirect = vec3<f32>(0.0);
     if use_indirect {
-        indirect = sample_sh_indirect(in.world_position, N_bump) * indirect_scale;
+        indirect = sample_sh_indirect(in.world_position, N_bump, mesh_n) * indirect_scale;
     }
 
     // Static direct term: baked directional lightmap. NdotL is already folded

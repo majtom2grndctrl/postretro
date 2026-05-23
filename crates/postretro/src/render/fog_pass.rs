@@ -20,6 +20,17 @@ use crate::fx::fog_volume::{
 /// Format of the low-resolution scatter target.
 pub const SCATTER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+// `sh_sample.wgsl` reads `sh_band0..8` / `sh_grid`, declared in `fog_volume.wgsl`;
+// WGSL resolves module-scope names regardless of textual order, so appending
+// after is safe. The helper owns the SH reconstruction + 8-corner blend symbols
+// (`sh_irradiance`, `sample_sh_indirect_corners`) — fog must not redeclare them.
+// See rendering_pipeline.md §8.
+const FOG_SHADER_SOURCE: &str = concat!(
+    include_str!("../shaders/fog_volume.wgsl"),
+    "\n",
+    include_str!("../shaders/sh_sample.wgsl"),
+);
+
 /// Group 6 binding indices. Mirrored in fog_volume.wgsl and fog_composite.wgsl.
 pub const BIND_DEPTH_TEX: u32 = 0;
 pub const BIND_VOLUMES: u32 = 1;
@@ -301,7 +312,7 @@ impl FogPass {
         // --- Raymarch compute pipeline ---
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fog Raymarch Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/fog_volume.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(FOG_SHADER_SOURCE.into()),
         });
         let raymarch_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Fog Raymarch Pipeline Layout"),
@@ -928,7 +939,7 @@ fn build_group6(
 
 #[cfg(test)]
 mod tests {
-    use super::{FOG_HYSTERESIS_SECONDS, compute_active_mask_with_hysteresis};
+    use super::{FOG_HYSTERESIS_SECONDS, FOG_SHADER_SOURCE, compute_active_mask_with_hysteresis};
 
     // Regression: `set_canonical_volumes` runs every frame and previously
     // wiped `last_active_time`, so the 300 ms sticky window never fired and a
@@ -987,17 +998,35 @@ mod tests {
     }
 
     /// The fog raymarch shader must parse cleanly and declare the expected
-    /// compute entry point. Catches WGSL regressions before pipeline creation.
+    /// compute entry point. Parses the full concatenated source (fog_volume +
+    /// the shared `sh_sample.wgsl` helper) so the helper's compilation in this
+    /// pipeline is covered. Catches WGSL regressions before pipeline creation.
     #[test]
     fn fog_volume_wgsl_parses() {
-        let src = include_str!("../shaders/fog_volume.wgsl");
-        let module =
-            naga::front::wgsl::parse_str(src).expect("fog_volume.wgsl should parse as WGSL");
+        let module = naga::front::wgsl::parse_str(FOG_SHADER_SOURCE)
+            .expect("fog shader should parse as WGSL");
         let has_cs = module
             .entry_points
             .iter()
             .any(|ep| ep.name == "cs_main" && ep.stage == naga::ShaderStage::Compute);
         assert!(has_cs, "fog_volume.wgsl must export @compute cs_main");
+    }
+
+    /// The full fog pipeline source (fog_volume + `sh_sample.wgsl`) must pass
+    /// naga's validation, including control-flow uniformity. `parse_str` alone
+    /// does not enforce this; a future edit that breaks the shared helper's
+    /// compilation in the fog pipeline is caught here at `cargo test` time,
+    /// before GPU pipeline creation.
+    #[test]
+    fn fog_volume_wgsl_passes_naga_validation() {
+        let module =
+            naga::front::wgsl::parse_str(FOG_SHADER_SOURCE).expect("fog shader must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("fog shader must pass naga validation");
     }
 
     /// The fog composite shader must parse and declare fullscreen vertex +

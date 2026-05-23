@@ -51,7 +51,7 @@ Three components: **static direct** (baked), **dynamic direct** (runtime), and *
 
 **Dynamic direct.** Dynamic lights run a per-fragment loop with an influence-volume early-out. Dynamic spot lights support shadow maps (depth texture array, comparison sampler); omnidirectional and sun lights cast no dynamic shadows. Light sources: FGD entities (`light`, `light_spot`, `light_sun`) and gameplay effects. Clustered forward+ binning deferred until profiling shows the flat loop bottlenecks.
 
-**Indirect.** prl-build bakes an SH L2 irradiance volume (3D probe grid) over the level's empty space. Runtime samples via trilinear interpolation per fragment. Missing probe section falls back to the ambient floor.
+**Indirect.** prl-build bakes an SH L2 irradiance volume (3D probe grid) over the level's empty space. Runtime samples via a manual 8-corner `textureLoad` blend: each corner's weight = trilinear factor × baked validity bit (band-0 alpha; in-wall/off-grid probes are dropped) × optional backface-rejection term (forward path only); surviving weights are renormalized. Billboard and fog apply validity exclusion and renormalization but skip backface rejection. When no corners survive, the indirect term degrades to the ambient floor.
 
 **Animated lights.** Animated lights carry per-light curve data (brightness scalar, RGB color) stored as packed f32 samples in a flat GPU storage buffer. Runtime evaluates Catmull-Rom splines over a `[0, 1)` cycle time with closed-loop wrap — uniform knot spacing, tension 0.5. A shared WGSL helper handles evaluation; it declares no buffers, so both the SH animation path and the animated-lightmap compose pass can bind their own `anim_samples` buffers at different bind-group slots without conflict. The animated-lightmap atlas is sampled by the forward pass only when the cell it belongs to passes the portal-traversed `VisibleCells` bitmask — any future pass that draws animated-lit geometry must share the same visibility gate or skip animated-lit chunks entirely.
 
@@ -113,7 +113,7 @@ One `multi_draw_indexed_indirect` call per material bucket. Depth loaded from th
 
 - Sample albedo and normal map; reconstruct world-space normal from TBN and normal-map sample.
 - Sample lightmap atlas (irradiance + dominant direction); apply bumped-Lambert correction for normal-map response to static lights.
-- Sample SH irradiance volume (trilinear) for indirect lighting.
+- Sample SH irradiance volume (8-corner validity-weighted blend) for indirect lighting.
 - Loop over dynamic lights; evaluate direct contribution with influence-volume early-out.
 - Output: `albedo × (static_direct + indirect_sh + Σ dynamic_direct)`.
 

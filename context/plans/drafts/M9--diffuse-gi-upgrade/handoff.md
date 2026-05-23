@@ -18,6 +18,17 @@ Upgrade the Milestone 5 diffuse GI so indirect light stops leaking through walls
 | Fog pass wire-up | **Separate pre-milestone fix** | `fog_pass.rs` (634 lines) is written but never imported in `render/mod.rs`. Ships first, standalone — not part of M9. |
 | Probe streaming | **Defer + measure** | See rationale below. |
 
+## "Free leak fixes" — ship before the depth atlas
+
+Cheap, pure-ALU probe-blend fixes that do **not** get superseded by DDGI and go *first*:
+
+- **Renormalize valid-probe weights + exclude invalid probes.** Today invalid probes are packed as zero and blended in, dragging near-wall surfaces toward black. This is a latent darkening bug **independent of DDGI**, and DDGI needs the same fix anyway (it divides by the sum of weights and drops zero-weight probes). Permanent correctness fix, not a throwaway approximation.
+- **Normal-based corner rejection.** Reject trilinear corners facing away from the surface normal. Eventually folds into DDGI's unified weight (the backface/cosine term), but ships first because it's near-free and diagnostic.
+
+**Why first:** establishes the residual-smear baseline. Measure leak/smear after the free fixes and before the depth atlas — that delta is what the atlas actually buys. Same defer-and-measure discipline as streaming.
+
+Superseded by DDGI (do **not** ship separately): hand-rolled per-probe visibility heuristics that approximate the depth test — the Chebyshev interpolant does this properly.
+
 ## Streaming: why deferred
 
 Including cell/portal-PVS brick streaming now would triple the milestone's moving parts on the *same* hot sampling path (DDGI interpolant + directional fog + streaming all live in the probe-sampling shader), entangling debugging. Specific risks: trilinear filtering can't cross separate brick textures (bordered-brick bake or manual neighbor lookups — the classic seam/leak time-sink); two datasets to stream (SH bands + depth atlas); dependency on the still-evolving cell system (camera-leaf lookup still rides the BSP).
@@ -31,12 +42,13 @@ Deferring is low-risk because the decision hinges on one empirical fact — does
 | # | Spec | Depends on |
 |---|---|---|
 | 0 | Wire up the fog pass (pre-milestone, standalone) | — |
-| 1 | Probe depth/visibility atlas (bake) — per-probe depth moments alongside SH bands, ray-cast through the M4 BVH; chunk-friendly format | — |
-| 2 | Depth-aware runtime interpolant — visibility-weighted (Chebyshev) sample replacing trilinear, for static surfaces and dynamic entities | #1 |
-| 3 | Directional fog — extend the wired fog pass with the directional term | #0 |
-| 4 | Memory-budget checkpoint + coarse open-area probe spacing — the "measure" gate | — |
+| 1 | Probe weight correctness (no new data) — corner rejection + valid-weight renormalization; fixes near-wall darkening; **measurement gate** for residual smear | — |
+| 2 | Probe depth/visibility atlas (bake) — per-probe depth moments alongside SH bands, ray-cast through the M4 BVH; chunk-friendly format | #1 measurement informs whether/how much |
+| 3 | Depth-aware runtime interpolant — visibility-weighted (Chebyshev) sample replacing trilinear, for static surfaces and dynamic entities | #2 |
+| 4 | Directional fog — extend the wired fog pass with the directional term | #0 |
+| 5 | Memory-budget checkpoint + coarse open-area probe spacing — the streaming "measure" gate | — |
 
-**Sequencing:** #0 → #1 → #2 (chain); #3 after #0; #4 independent.
+**Sequencing:** #0 → #1 → #2 → #3 (chain); #4 after #0; #5 independent. #1 is the cheap leak/darkening fix and its measurement gates the cost of #2.
 
 ## Where we're heading / next steps
 

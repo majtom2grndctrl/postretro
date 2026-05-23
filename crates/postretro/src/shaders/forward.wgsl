@@ -127,7 +127,6 @@ struct AnimationDescriptor {
     direction_count: u32,
 };
 
-@group(3) @binding(0) var sh_sampler: sampler;
 @group(3) @binding(1) var sh_band0: texture_3d<f32>;
 @group(3) @binding(2) var sh_band1: texture_3d<f32>;
 @group(3) @binding(3) var sh_band2: texture_3d<f32>;

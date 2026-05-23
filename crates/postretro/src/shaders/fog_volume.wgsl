@@ -29,7 +29,6 @@ struct ShGridInfo {
     _pad1: u32,
 }
 
-@group(3) @binding(0) var sh_sampler: sampler;
 @group(3) @binding(1) var sh_band0: texture_3d<f32>;
 @group(3) @binding(2) var sh_band1: texture_3d<f32>;
 @group(3) @binding(3) var sh_band2: texture_3d<f32>;
@@ -209,10 +208,9 @@ struct FogSpotLight {
 // No surface-normal offset — the wall-bleed mitigation in forward.wgsl has no
 // meaning in fog.
 //
-// `gi`/`gfrac` are passed unclamped — the shared helper owns corner indexing
-// and edge clamping, so a local clamp here would double-clamp. With
-// `reject_backface = false` the geo-normal arg is unused, so the world-up
-// shading normal fills both slots.
+// `gi`/`gfrac` clamp the low side to the grid origin; the helper owns high-side
+// edge clamping per corner. With `reject_backface = false` the geo-normal arg is
+// unused, so the world-up shading normal fills both slots.
 fn sample_sh_fog(world_pos: vec3<f32>) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
@@ -220,8 +218,11 @@ fn sample_sh_fog(world_pos: vec3<f32>) -> vec3<f32> {
     let normal = vec3<f32>(0.0, 1.0, 0.0);
     let cell_coord = (world_pos - sh_grid.grid_origin) /
         max(sh_grid.cell_size, vec3<f32>(1.0e-6));
-    let gi = vec3<u32>(floor(max(cell_coord, vec3<f32>(0.0))));
-    let gfrac = fract(cell_coord);
+    // Clamp before deriving the fraction so a sample below the grid origin
+    // resolves to clamp-to-edge instead of biasing the blend toward the interior.
+    let clamped = max(cell_coord, vec3<f32>(0.0));
+    let gi = vec3<u32>(floor(clamped));
+    let gfrac = fract(clamped);
     return sample_sh_indirect_corners(gi, gfrac, normal, normal, false);
 }
 
@@ -441,7 +442,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var step_count: u32 = 0u;
 
     // SH irradiance is band-limited and the SH grid is much coarser than the
-    // march step size. Sampling 9 trilinear 3D fetches per step is wasted
+    // march step size. Sampling 72 textureLoad calls per step (8 corners × 9 bands) is wasted
     // bandwidth — we cache one sample and refresh whenever the march has
     // advanced more than `sh_coverage_dist` world units since the last sample
     // (reset at each sub-interval boundary) to bound drift without per-step cost.

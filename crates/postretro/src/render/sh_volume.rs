@@ -1,11 +1,13 @@
-// SH irradiance volume GPU resources: 3D textures, sampler, grid-info uniform, bind group (group 3).
+// SH irradiance volume GPU resources: 3D textures, grid-info uniform, bind group (group 3).
 // See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::sh_volume::{AnimationDescriptor, ShProbe, ShVolumeSection};
 
-/// 9 textures + 1 sampler + 1 uniform + 2 animation storage buffers
-/// = 13 bindings in group 3 (indices 0..=12), well under wgpu's default
-/// `max_sampled_textures_per_shader_stage` limit.
+/// 9 textures + 1 uniform + 3 animation storage buffers in group 3. The shared
+/// `sh_sample.wgsl` helper loads probes with `textureLoad`, so no sampler is
+/// bound; binding index 0 is intentionally vacant. WGSL/wgpu binding indices
+/// need not be contiguous, so the textures stay at 1..=SH_BAND_COUNT. Well
+/// under wgpu's default `max_sampled_textures_per_shader_stage` limit.
 pub const SH_BAND_COUNT: usize = 9;
 
 /// Binding indices for the group 3 animation storage buffers. These sit
@@ -221,17 +223,6 @@ impl ShVolumeResources {
             entries: &sh_bind_group_layout_entries(),
         });
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("SH Volume Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-
         // A zero-dimension grid is treated the same as a missing section.
         let usable = section.filter(|s| {
             s.grid_dimensions[0] > 0 && s.grid_dimensions[1] > 0 && s.grid_dimensions[2] > 0
@@ -367,11 +358,7 @@ impl ShVolumeResources {
             })
             .collect();
 
-        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(SH_BAND_COUNT + 6);
-        entries.push(wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::Sampler(&sampler),
-        });
+        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(SH_BAND_COUNT + 5);
         // Bind the **total** sampled views — consumers (forward, billboard,
         // fog) read post-compose SH. The compose pass writes here every
         // frame; in the stub phase it's a base→total copy.
@@ -446,24 +433,20 @@ impl ShVolumeResources {
 // --- Helpers ---
 
 fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(SH_BAND_COUNT + 2);
+    let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(SH_BAND_COUNT + 1);
     // Shared with the forward pass (fragment) and fog raymarch (compute), so visibility
     // covers both stages on every entry.
     let vis = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
-    // binding 0: sampler
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: 0,
-        visibility: vis,
-        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-        count: None,
-    });
-    // bindings 1..=SH_BAND_COUNT: 3D textures
+    // bindings 1..=SH_BAND_COUNT: 3D textures. Binding 0 is intentionally vacant
+    // — the SH bands are read via `textureLoad` in `sh_sample.wgsl`, so no
+    // sampler is bound. `filterable: false` is the honest declaration since
+    // nothing samples these through a filtering sampler.
     for i in 0..SH_BAND_COUNT {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: 1 + i as u32,
             visibility: vis,
             ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
                 view_dimension: wgpu::TextureViewDimension::D3,
                 multisampled: false,
             },

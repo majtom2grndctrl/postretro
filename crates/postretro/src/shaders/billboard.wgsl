@@ -59,7 +59,6 @@ struct ShGridInfo {
     _pad1: u32,
 };
 
-@group(3) @binding(0) var sh_sampler: sampler;
 @group(3) @binding(1) var sh_band0: texture_3d<f32>;
 @group(3) @binding(2) var sh_band1: texture_3d<f32>;
 @group(3) @binding(3) var sh_band2: texture_3d<f32>;
@@ -251,18 +250,21 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
 // applies but backface rejection does not.
 
 // Derive the raw grid index / sub-cell fraction and defer the validity-weighted
-// 8-corner blend to the shared helper. `gi`/`gfrac` are passed unclamped — the
-// helper owns corner indexing and edge clamping. Billboard uses camera-forward
-// (`N = V`) as its normal; with `reject_backface = false` the geo-normal arg is
-// unused, so the shading normal fills both slots.
+// 8-corner blend to the shared helper. `gi`/`gfrac` clamp the low side to the
+// grid origin; the helper owns high-side edge clamping per corner. Billboard
+// uses camera-forward (`N = V`) as its normal; with `reject_backface = false`
+// the geo-normal arg is unused, so the shading normal fills both slots.
 fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
     }
     let cell_coord = (world_pos - sh_grid.grid_origin) /
         max(sh_grid.cell_size, vec3<f32>(1.0e-6));
-    let gi = vec3<u32>(floor(max(cell_coord, vec3<f32>(0.0))));
-    let gfrac = fract(cell_coord);
+    // Clamp before deriving the fraction so a sample below the grid origin
+    // resolves to clamp-to-edge instead of biasing the blend toward the interior.
+    let clamped = max(cell_coord, vec3<f32>(0.0));
+    let gi = vec3<u32>(floor(clamped));
+    let gfrac = fract(clamped);
 
     return sample_sh_indirect_corners(gi, gfrac, normal, normal, false);
 }

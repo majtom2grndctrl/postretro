@@ -44,8 +44,9 @@ fn sh_irradiance(
     return r;
 }
 
-// Reconstruct irradiance from one corner's loaded SH bands toward
-// `shading_normal`, clamped non-negative.
+// Isolates per-corner reconstruction so the 8-corner loop in
+// `sample_sh_indirect_corners` stays readable and the clamp-to-non-negative
+// is applied in exactly one place.
 fn sh_corner_irradiance(bands: array<vec3<f32>, 9>, shading_normal: vec3<f32>) -> vec3<f32> {
     return max(
         sh_irradiance(
@@ -60,8 +61,9 @@ fn sh_corner_irradiance(bands: array<vec3<f32>, 9>, shading_normal: vec3<f32>) -
 // Manual 8-corner SH blend.
 //
 // `gi`     — integer grid index of the lower corner.
-// `gfrac`  — sub-cell fraction in [0, 1) within the cell (from the offset
-//            sample position the consumer already applies).
+// `gfrac`  — sub-cell fraction in [0, 1) within the cell. Forward derives this
+//            from a normal-offset sample position; billboard and fog pass the
+//            raw grid-space coordinate with no offset.
 // `shading_normal` — normal used for SH reconstruction (may be normal-mapped).
 // `geo_normal`     — geometric mesh normal, used for backface rejection.
 // `reject_backface`— when true, downweight corners on the far side of the

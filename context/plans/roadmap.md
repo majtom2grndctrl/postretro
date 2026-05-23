@@ -121,7 +121,7 @@ Establish the entity model and scripting layer together. Scripting and entities 
 
 ---
 
-## Milestone 7: Grounded Movement
+## Milestone 7: Grounded Movement ✓
 
 Player controller with world collision, gravity, and jumping. The player is an entity. Movement behavior is scripts (TypeScript and Luau) with enforced parity; the engine exposes collision and gravity primitives. Quake-inspired grounded movement with air control as modder-configurable data parameters.
 
@@ -129,31 +129,33 @@ Player controller with world collision, gravity, and jumping. The player is an e
 
 Plans ship in this sequence:
 
-- [ ] **Scripting primitives folder** — refactor flat `primitives.rs` / `primitives_light.rs` into a `scripting/primitives/` domain folder. Prerequisite for collision and gravity plans. `context/plans/ready/scripting-primitives-folder/`
-- [ ] **Mod script layer** — mod-level script execution layer that runs before any level loads. Player entity types declared here; prerequisite for player spawn. `context/plans/ready/M7--mod-script-layer/`
-- [ ] **Collision foundation** — parry3d dependency; `CollisionWorld` backed by PRL static geometry trimesh; Rust-owned, not script-visible. `context/plans/ready/M7--collision-foundation/`
-- [ ] **Gravity primitives** — `initialGravity` worldspawn KVP; `world.getGravity()` / `world.setGravity()` behavior-scope primitives; SDK and docs updated. Depends on scripting primitives folder. `context/plans/drafts/M7--gravity-primitives/`
+- [x] **Scripting primitives folder** — refactor flat `primitives.rs` / `primitives_light.rs` into a `scripting/primitives/` domain folder. Prerequisite for collision and gravity plans. `context/plans/done/scripting-primitives-folder/`
+- [x] **Mod script layer** — mod-level script execution layer that runs before any level loads. Player entity types declared here; prerequisite for player spawn. `context/plans/done/M7--mod-script-layer/`
+- [x] **Collision foundation** — parry3d dependency; `CollisionWorld` backed by PRL static geometry trimesh; Rust-owned, not script-visible. `context/plans/done/M7--collision-foundation/`
+- [x] **Gravity primitives** — `initialGravity` worldspawn KVP; `world.getGravity()` / `world.setGravity()` behavior-scope primitives; SDK and docs updated. Depends on scripting primitives folder. `context/plans/done/M7--gravity-primitives/`
 - [x] **Player spawn** — `player_spawn` FGD entry with `entity_class` KVP; level load spawns player entities from it. Depends on mod script layer.
-- [ ] **Movement scripts** — TypeScript and Luau reference movement scripts with full feature parity (gravity, wall slide, step-up, jump, strafe, air control); contract test asserts matching output. Depends on collision foundation, gravity primitives, player spawn. `context/plans/drafts/M7--movement-scripts/`
+- [x] **Movement scripts** — TypeScript and Luau reference movement scripts with full feature parity (gravity, wall slide, step-up, jump, strafe, air control); contract test asserts matching output. Depends on collision foundation, gravity primitives, player spawn. `context/plans/done/M7--movement-scripts/`
 
-**Testable outcome:** player walks through a PRL level with full collision response — no clipping, wall slide, step-up, jump. Modder can edit and hot-reload the movement script in either TypeScript or Luau.
+**Testable outcome:** player walks through a PRL level with full collision response — no clipping, wall slide, step-up, jump. Modder can edit and hot-reload the movement script in either TypeScript or Luau. ✓
 
 ---
 
-## Milestone 8: Material Optimization
+## Milestone 8: Material Optimization ✓
 
 Texture and material pipeline polish. Move mip generation offline, establish Post Retro (hardware aniso + in-shader texel-grid reconstruction) as the foundational default look, and shrink normals on disk and in VRAM. Post Retro is now the sole texture-filtering path. Independent of Milestone 7 — ships in either order.
 
 Plans ship in this sequence:
 
-- [x] **Baked texture mips** — move mip generation from runtime renderer into prl-build. Gamma-correct linear-space Mitchell-Netravali filtering. Output as `.prm` sidecar files in per-mod `.prl-cache/tex/<blake3>.prm`, not embedded in PRL. `.prm` is a material bundle: per-slot (diffuse / specular / normal) with format tag, mip chain, payload bytes. Source PNGs remain the authoring source of truth; conversion is implicit during prl-build. `context/plans/drafts/baked-texture-mips/`
+- [x] **Baked texture mips** — move mip generation from runtime renderer into prl-build. Gamma-correct linear-space Mitchell-Netravali filtering. Output as `.prm` sidecar files in per-mod `.prl-cache/tex/<blake3>.prm`, not embedded in PRL. `.prm` is a material bundle: per-slot (diffuse / specular / normal) with format tag, mip chain, payload bytes. Source PNGs remain the authoring source of truth; conversion is implicit during prl-build. `context/plans/done/baked-texture-mips/`
 - [x] **Shader anisotropic filtering** — per-pixel manual aniso in `forward.wgsl`, derivative-gated, N taps of `textureSampleGrad` along the major axis. Preserves nearest-filter chunky look in-plane while killing grazing-angle shimmer. Depends on baked texture mips. `context/plans/done/shader-anisotropic-filtering/` (shipped, then retired with True Retro mode)
 - [x] **Graphics mode toggle** — introduced Post Retro and True Retro runtime filtering modes; `GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key, egui combo. Scaffolding subsequently removed by Retire True Retro mode. `context/plans/done/graphics-mode-toggle/`
-- [ ] **BC5 normal compression** — BC5 encoder in prl-build, BC5 `format_tag` value in `.prm`, GPU upload path. Normals only — BC1/BC7 fight the pixel-art aesthetic on diffuse. Additive: `format_tag` is extensible from day one, no version bump. Also retires the Post Retro normal-averaging bias under hardware aniso. `context/plans/drafts/prm-bc5-normals/`
-- [x] **Retire True Retro mode** — deleted manual-aniso shader code and True Retro branches in `forward.wgsl`; unwound `GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key, nearest sampler pool, and egui mode combo. Post Retro normal path retains existing `(rgb*2-1)->normalize` decode unchanged. `context/plans/in-progress/retire-true-retro/`
-- [ ] **Texture pack format (optional)** — shipping consolidation of `.prl-cache/tex/` into a single pack file. Deferred unless iteration-vs-ship tension actually appears.
+- [x] **BC5 normal compression** — BC5 encoder in prl-build, BC5 `format_tag` value in `.prm`, GPU upload path. Normals only — BC1/BC7 fight the pixel-art aesthetic on diffuse. Additive: `format_tag` is extensible from day one, no version bump. Also retires the Post Retro normal-averaging bias under hardware aniso. `context/plans/done/prm-bc5-normals/`
+- [x] **Retire True Retro mode** — deleted manual-aniso shader code and True Retro branches in `forward.wgsl`; unwound `GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key, nearest sampler pool, and egui mode combo. Post Retro normal path retains existing `(rgb*2-1)->normalize` decode unchanged. `context/plans/done/retire-true-retro/`
+- [ ] **Texture pack format (optional)** — shipping consolidation of `.prl-cache/tex/` into a single pack file. **Deferred** until there are more real textures and the iteration-vs-ship tension actually appears. `context/plans/drafts/texture-pack-format/`
 
-**Testable outcome:** Post Retro mode renders with no grazing-angle shimmer and crisp hardware-aniso filtering; True Retro opt-in is removed; normals are ~50% smaller on disk and in VRAM; level load does zero CPU mip work.
+**Testable outcome:** Post Retro mode renders with no grazing-angle shimmer and crisp hardware-aniso filtering; True Retro opt-in is removed; normals are ~50% smaller on disk and in VRAM; level load does zero CPU mip work. ✓
+
+**Status note:** all tasks shipped except the optional Texture pack format, deferred until there are more real textures.
 
 ---
 
@@ -177,14 +179,61 @@ Plans ship in this sequence:
 
 ---
 
+## Milestone 10: First Playable (Vertical Slice)
+
+The first playable slice. Its job is to answer one question: does this foundation feel good enough to commit a full game to? Build the real weapon and enemy primitive layers — genuine primitive surface plus SDK reference implementations, refined in later passes, **not throwaway stubs** — and a placeholder sound layer so combat and enemies aren't judged silent. Enemy AI/navigation is the highest-uncertainty system on the whole roadmap; it is sequenced here, early, precisely to surface any foundation problem while the engine bet can still change.
+
+**Prerequisite:** Milestone 6 (entity model + scripting + damage events) ✓ and Milestone 7 (grounded movement) ✓.
+
+Plans ship in this sequence:
+
+- [ ] **Basic weapon primitives** — engine-level weapon primitive surface (hitscan first, projectile to follow); first weapons authored in the SDK as reference behaviors. Testable against the static world (impacts, the `DamageSource` entity) before any enemy exists. A foundation to refine, not a stub.
+- [ ] **Basic enemy primitives** — enemy primitive surface (simple AI state machine + navigation against the Milestone 7 trimesh collider, damageable); first enemy authored in the SDK. Front-loaded as the highest-uncertainty system — it validates whether the foundation carries AI and navigation. A foundation to refine, not a stub.
+- [ ] **Stub sound layer (Nintendo-style SFX)** — placeholder retro SFX (fire, impact, footstep, alert, pain) wired through entity-emitted sound events so combat reads correctly. Explicitly a stub: the sound-event hooks are durable, the assets and backend are placeholder. The real spatial audio foundation lands in Milestone 11.
+
+**Testable outcome:** shoot a foundational weapon and kill a foundational enemy that navigates and reacts, with placeholder SFX selling the feel — enough to judge whether to commit a full game to PostRetro.
+
+---
+
+## Milestone 11: Sound Foundation
+
+Replace the Milestone 10 stub SFX layer with a real audio foundation: kira integration, spatial/3D audio, and reverb zones. The Milestone 10 sound-event hooks were designed so this swaps in behind them — no weapon or enemy code should need to change.
+
+**Prerequisite:** Milestone 10 (stub sound layer + sound-event hooks to build behind).
+
+Plans ship in this sequence:
+
+- [ ] **kira integration** — audio subsystem in its own module (subsystem-boundary principle); mixing, buses, lifecycle.
+- [ ] **Spatial audio** — positional sources with attenuation; listener driven by the player/camera.
+- [ ] **Reverb zones** — runtime playback for `env_reverb_zone` acoustic zones (baked data already resolves them to leaves at load; see `context/lib/audio.md`).
+- [ ] **Replace stub SFX** — route the Milestone 10 sound-event hooks through real mixed, spatialized playback; retire the placeholder layer.
+
+**Testable outcome:** spatialized combat and ambient audio; reverb zones audibly change acoustics; the Milestone 10 stub layer is fully replaced with no changes to weapon or enemy code.
+
+---
+
+## Milestone 12: UI
+
+The full UI/HUD layer — health, ammo, crosshair, and menus — replacing the debug egui stand-in used during the vertical slice. The detailed design is captured in `context/research/ui-layer.md`; it is promoted to a ready plan when this milestone opens.
+
+**Prerequisite:** Milestone 10 (gameplay state to surface — health, ammo, hit feedback).
+
+Plans ship in this sequence:
+
+- [ ] **UI layer** — HUD, menu system, and supporting UI primitives per `context/research/ui-layer.md`. Detailed sequencing is finalized when the research doc is promoted.
+
+**Testable outcome:** a playable HUD (health / ammo / crosshair) and functional menus drive the slice without the debug overlay; the design from `ui-layer.md` is realized.
+
+---
+
 ## Future / Speculative
 
 Features below are intended but not yet sequenced. Rough priority ordering within each group.
 
 ### Gameplay systems
 
-- **Weapons** — hitscan and projectile primitives, scripted weapon definitions, viewmodel hooks; at least one weapon triggers chunk destruction. Requires grounded player (Milestone 7) and damage events (Milestone 6).
-- **NPC Entities** — navigation queries, line-of-sight, scripted AI state machines (patrol / chase / attack). Navigation against the world trimesh collider from Milestone 7.
+- **Weapons** — foundation (weapon primitives + first SDK weapons) lands in Milestone 10. Remaining/speculative refinements: projectile variety, viewmodel hooks, and at least one weapon that triggers chunk destruction.
+- **NPC Entities** — first enemy plus the nav/AI foundation lands in Milestone 10. Remaining/speculative refinements: richer scripted AI state machines (patrol / chase / attack), line-of-sight and navigation queries, and multiple enemy archetypes.
 - **World Entities** — common base scripts for doors, pickups, trigger volumes, timeline/sequence helpers; a scripted ambush set piece with destruction choreography.
 
 ### Moving and destructible geometry
@@ -205,8 +254,8 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 - **Sector Graph + Portal Culling** — replace BSP-as-runtime-scaffolding with an author-defined sector graph. Latent portals (activate on event) support destruction reveals. Prerequisite for kinematic clusters that need their own sector graphs.
 - **Chunk Primitive** — unify static world geometry, kinematic clusters, and dynamic debris into one record type (mesh + collider + transform + sector membership). Deferred until two or more of those consumers exist and the duplication cost is clear.
-- **Audio foundation** — kira integration, spatial audio, reverb zones.
-- **HUD and UI** — health, ammo, crosshair, menus.
+- **Audio foundation** — kira integration, spatial audio, reverb zones. → Sequenced as Milestone 11 (real layer replacing the Milestone 10 stub SFX).
+- **HUD and UI** — health, ammo, crosshair, menus. → Sequenced as Milestone 12 (see `context/research/ui-layer.md`).
 - **`canonicalName` rename** — rename `classname` to `canonicalName` in scripting API and PRL. Source formats translate their identifier (Quake `.map` `classname`, UDMF thing-type, Blender prop) to this canonical name at compile time. Absence on an archetype means not directly placeable from source — script-spawned or marker-indirected only. Subsumes the `spawn_only` / `map_entity_classname` patterns into one field's presence.
 - **FGD generated from script registry** — scripts are the single source of truth for entity archetypes. FGD emitted at script compile time, not hand-edited. Removes the divergence class of bug where registry and FGD describe different archetypes.
 - **Composable archetypes via `@BaseClass` mixins** — `@BaseClass` declarations map to component lists; property bags drive behavior instead of proliferating archetype names. Reference patterns from `bevy_trenchbroom`: `Default::default()` as the property-fallback source, recursive depth-first base spawn with TypeId dedup, two-phase spawn (component insertion at load, subsystem registration at lifecycle hook).

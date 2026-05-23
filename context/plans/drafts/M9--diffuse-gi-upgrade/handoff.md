@@ -1,7 +1,7 @@
 # Milestone 9 Planning Handoff
 
 > **Read this when:** resuming Milestone 9 planning in a fresh session.
-> **State:** roadmap entry written and committed. No specs drafted yet.
+> **State:** roadmap committed. Spec #1 (probe weight correctness) drafted in `context/plans/drafts/M9--probe-weight-correctness/`. Spec #0 (fog wire-up) found already done — see Decisions below.
 > **Related:** `context/plans/roadmap.md` (Milestone 9), `context/lib/rendering_pipeline.md` (§5 BVH, M5 lighting).
 
 ## What this milestone is
@@ -15,7 +15,7 @@ Upgrade the Milestone 5 diffuse GI so indirect light stops leaking through walls
 | Roadmap slot | New **Milestone 9** | Promoted out of scattered Future/Rendering bullets into a numbered milestone. |
 | GI interpolant | **Replace** trilinear SH sampling | Depth-aware (Chebyshev) visibility weighting becomes the single runtime path; plain trilinear removed. No dual-path maintenance. |
 | Fog scope | **Add directional fog** | On top of the existing volumetric fog scope. |
-| Fog pass wire-up | **Separate pre-milestone fix** | `fog_pass.rs` (634 lines) is written but never imported in `render/mod.rs`. Ships first, standalone — not part of M9. |
+| Fog pass wire-up | **Already done — no spec needed** | `fog_pass.rs` is imported (`render/mod.rs`), owned by `Renderer`, and runs every frame; it was wired with the portal-fog-culling work. The "never imported" premise was stale. Directional fog (#4) builds on the live pass. |
 | Probe streaming | **Defer + measure** | See rationale below. |
 
 ## "Free leak fixes" — ship before the depth atlas
@@ -41,19 +41,20 @@ Deferring is low-risk because the decision hinges on one empirical fact — does
 
 | # | Spec | Depends on |
 |---|---|---|
-| 0 | Wire up the fog pass (pre-milestone, standalone) | — |
-| 1 | Probe weight correctness (no new data) — corner rejection + valid-weight renormalization; fixes near-wall darkening; **measurement gate** for residual smear | — |
+| 0 | ~~Wire up the fog pass~~ — **already done** (pass is live in `render/mod.rs`) | — |
+| 1 | Probe weight correctness (no new data) — corner rejection + valid-weight renormalization; fixes near-wall darkening; **measurement gate** for residual smear — **drafted** → `M9--probe-weight-correctness/` | — |
 | 2 | Probe depth/visibility atlas (bake) — per-probe depth moments alongside SH bands, ray-cast through the M4 BVH; chunk-friendly format | #1 measurement informs whether/how much |
 | 3 | Depth-aware runtime interpolant — visibility-weighted (Chebyshev) sample replacing trilinear, for static surfaces and dynamic entities | #2 |
-| 4 | Directional fog — extend the wired fog pass with the directional term | #0 |
+| 4 | Directional fog — extend the live fog pass with the directional term | — (fog pass already live) |
 | 5 | Memory-budget checkpoint + coarse open-area probe spacing — the streaming "measure" gate | — |
 
-**Sequencing:** #0 → #1 → #2 → #3 (chain); #4 after #0; #5 independent. #1 is the cheap leak/darkening fix and its measurement gates the cost of #2.
+**Sequencing:** #1 → #2 → #3 (chain; #0 already done); #4 independent (fog pass live); #5 independent. #1 is the cheap leak/darkening fix and its measurement gates the cost of #2.
 
 ## Where we're heading / next steps
 
-1. Draft specs via the `draft-plan` skill — one folder per plan under `context/plans/drafts/`. **Open question:** draft all five this session, or start with the chain head (#0 + #1) and review before the rest? (User leaned toward reviewing the head first; not finalized.)
-2. Review drafts (`review-draft-spec`), then promote to `ready/` — at which point durable GI/fog contract decisions migrate into `context/lib/rendering_pipeline.md`.
+1. ~~Draft the chain head.~~ Done: the chain head was #0 + #1; #0 turned out already wired (see Decisions), so the head is just spec #1 — **drafted** in `context/plans/drafts/M9--probe-weight-correctness/`. Not yet reviewed.
+2. Review spec #1 (`review-draft-spec`); resolve its 4 open questions (zero-packed validity ambiguity, shader-copy scope, 72-fetch cost, measurement-gate storage). Then draft #2–#5.
+3. Promote reviewed specs to `ready/` — at which point durable GI/fog contract decisions migrate into `context/lib/rendering_pipeline.md`.
 
 ## Open questions
 

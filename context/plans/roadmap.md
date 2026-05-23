@@ -163,16 +163,14 @@ Kill light-leak-through-walls by adding per-probe visibility data to the Milesto
 
 **Assumes the shipped Milestone 5 lighting foundation** — SH irradiance volume + baker, runtime probe sampling (SH as a 3D texture), lightmaps, and CSM sun shadows are all in place. Milestone 9 is a pure upgrade layer on top; it builds nothing M5 already delivers. Independent of Milestones 7–8.
 
-**Pre-milestone fix (ships first, standalone — not part of this milestone):**
-
-- [ ] **Wire up the fog pass** — `src/render/fog_pass.rs` (634 lines) exists but is never imported in `render/mod.rs`. Import it and run it in the frame's render stage so the written-but-dead code actually executes. `context/plans/drafts/<tbd>/`
+**Pre-milestone fix — already satisfied:** the fog pass (`src/render/fog_pass.rs`) is imported, owned by `Renderer`, and runs in every frame's render stage. It was wired as part of the portal-fog-culling work, not as a standalone M9 prerequisite. See `rendering_pipeline.md` §7.5 and `plans/done/perf-portal-fog-culling/`. Directional fog (below) builds directly on the live pass.
 
 Plans ship in this sequence:
 
 - [ ] **Probe weight correctness (no new data)** — in the world shader: reject trilinear corners facing away from the surface normal, exclude invalid (zero-packed) probes from the blend, renormalize remaining weights. Pure ALU. Fixes a latent bug where invalid probes drag near-wall surfaces toward black — independent of DDGI, and a prerequisite the depth-aware interpolant needs anyway. **Measurement gate:** record residual smear/leak here to quantify what the depth atlas buys before paying for it.
 - [ ] **Probe depth/visibility atlas (bake)** — prl-build stage baking per-probe depth moments alongside the existing SH bands, ray-cast through the Milestone 4 BVH. Format kept chunk-friendly so a later brick split needs no interpolant rewrite (deferred-streaming insurance). New/extended PRL section.
 - [ ] **Depth-aware runtime interpolant** — replace the trilinear SH sample with a visibility-weighted (Chebyshev) interpolant in the world shader, for both static surfaces and dynamic entities. Removes the plain-trilinear path. Depends on the depth atlas.
-- [ ] **Directional fog** — extend the now-wired fog pass with the directional term, on top of the existing volumetric fog scope.
+- [ ] **Directional fog** — extend the live fog pass with the directional term, on top of the existing volumetric fog scope.
 - [ ] **Memory-budget checkpoint + coarse open-area spacing** — VRAM budget readout plus coarser probe spacing in open volumes; produces the empirical resident-fit number that gates any future streaming milestone.
 
 **Testable outcome:** near-wall surfaces no longer darken from invalid-probe averaging; indirect light no longer bleeds through walls (visibility-weighted probe sampling); a single resident probe representation drives both static and dynamic surfaces; the fog pass runs with a working directional term; residual-smear and VRAM budget for a representative large map are both recorded.
@@ -198,7 +196,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 - **Billboard sprite rendering** — ~~character and effect sprites; depth-sort against world geometry.~~ **Shipped.** `BillboardEmitter` entity type, particle sim, and additive billboard pass (`src/fx/smoke.rs`, `billboard.wgsl`). See `plans/done/scripting-foundation/plan-3-emitter-entity.md`.
 - **Specular maps** — ~~per-texel specular highlights in the direct light loop. Shading model decision (Phong vs. PBR) required first.~~ **Shipped.** Blinn-Phong per-texel specular via `_s.png` siblings, chunk-list multi-source loop, bumped-Lambert correction. See `plans/done/normal-maps/`.
-- **Fog volumes** — `env_fog_volume` brush entity fully wired to a runtime fog pass. **Promoted to Milestone 9** (wire-up + directional fog). `src/render/fog_pass.rs` written (634 lines) but not yet imported in `render/mod.rs`. See `plans/in-progress/fx-volumetric-smoke/` Task B.
+- **Fog volumes** — `env_fog_volume` brush entity wired to a runtime fog pass. Pass is wired and runs each frame (with portal-fog culling — see `plans/done/perf-portal-fog-culling/` and `rendering_pipeline.md` §7.5). Only the **directional fog** term remains, tracked under Milestone 9.
 - **Emissive / fullbright surfaces** — ~~texture prefix or material flag for self-lit surfaces.~~ **Shipped.** `emissive_` prefix → `Material::Emissive`; `emissive_intensity` uniform; bloom-ready bypass in forward shader. See `plans/done/emissive-surfaces/`.
 - **Post-processing** — bloom, optional CRT/scanline filter.
 - **Baked cubemap reflections** — `env_cubemap` point entity baked to a cubemap atlas at compile time.

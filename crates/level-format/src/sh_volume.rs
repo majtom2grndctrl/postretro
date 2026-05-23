@@ -1,8 +1,7 @@
 // SH irradiance volume section (ID 20): regular-grid L2 spherical harmonic
-// probes with static RGB base coefficients and optional per-animated-light
-// monochrome layers + animation descriptors.
+// probes with static RGB base coefficients and animation descriptors.
 //
-// See: context/plans/in-progress/lighting-foundation/2-sh-baker.md
+// See: context/lib/build_pipeline.md
 
 use crate::FormatError;
 
@@ -60,8 +59,8 @@ pub const SH_VOLUME_VERSION: u32 = 4;
 /// 4-byte boundary = 116 bytes.
 ///
 /// The header's `probe_stride` field is written from this constant. It is
-/// forward-compat scaffolding: per-probe base data (e.g. the version-4 DDGI
-/// depth moments) grows the stride without breaking the loader, which advances
+/// forward-compat scaffolding: per-probe base data (e.g. the version-4
+/// depth-visibility moments) grows the stride without breaking the loader, which advances
 /// by the file's `probe_stride` field rather than this compiled-in constant.
 pub const PROBE_STRIDE: u32 = 116;
 
@@ -574,9 +573,10 @@ mod tests {
         );
     }
 
-    /// Old `.prl` rejection: a fixture stamped with the previous version (3,
-    /// pre-depth-moments) must be rejected rather than misread as if it carried
-    /// the version-4 per-probe record. Anchors the old-`.prl`-rejection AC.
+    /// Old `.prl` rejection: a v4-layout fixture with the version field
+    /// re-stamped to 3 must be rejected — the loader must not accept a version
+    /// mismatch even when the bytes happen to be v4-compatible. Anchors the
+    /// old-`.prl`-rejection AC.
     #[test]
     fn rejects_previous_section_version_three() {
         let section = empty_section([1, 1, 1]);

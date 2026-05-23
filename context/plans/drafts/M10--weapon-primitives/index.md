@@ -17,7 +17,8 @@ Weapons follow the M7 movement precedent exactly: **script declares parameters, 
 - Rust fire system in the game-logic stage: reads `Action::Shoot` (edge for semi, held for auto), gates on cooldown, builds the aim ray, casts against `CollisionWorld`, computes the world hit.
 - Aim ray: a `Camera` view-ray method (origin + pitch-inclusive direction).
 - Impact effect: a transient particle burst at the world hit point, oriented by the surface normal, that cleans itself up.
-- Damage intent emitted as a typed hit event carrying hit position, normal, and an optional target entity id (pre-emptive wiring — the consumer is the enemy-entity plan). See open questions.
+- Damage intent emitted as a typed hit event carrying hit position, normal, and an optional target entity id. Pre-emptive wiring — the consumer (health/kill) is the enemy-entity plan.
+- Typed `fire` and `impact` sound events emitted on discharge and on a world hit. Pre-emptive wiring — the sink lands in the M10 stub-sound plan (next).
 
 ### Out of scope
 
@@ -28,7 +29,7 @@ Weapons follow the M7 movement precedent exactly: **script declares parameters, 
 - Material-aware impacts (per-surface spark/decal/sound). Requires a `cast_ray` extension to expose the hit triangle → `face_meta.material`; deferred.
 - Spread / recoil / accuracy cone. Single ray down the crosshair.
 - Muzzle flash, viewmodel.
-- Real audio. Fire/impact sound events may be emitted as wiring (see open questions); playback is the M11 sound plan.
+- Audio backend and playback. The M10 stub-sound plan (next) and the M11 sound foundation own those; this plan only emits the `fire`/`impact` sound events.
 
 ## Acceptance criteria
 
@@ -39,17 +40,18 @@ Weapons follow the M7 movement precedent exactly: **script declares parameters, 
 - [ ] Weapon parameters are declared in a reference script via the SDK and drive runtime behavior; editing a value and hot-reloading (debug) changes firing behavior accordingly.
 - [ ] `gen-script-types` output includes the weapon descriptor type and the type-definition drift test passes.
 - [ ] The reference weapon script is present under `content/dev/scripts/` (or `sdk/`) and is the authoring template for a weapon.
+- [ ] Discharging emits a `fire` sound event; a world hit emits an `impact` sound event (verifiable via the game-events log), though no audio backend consumes them yet.
 
 ## Tasks
 
 ### Task 1: Weapon data model
-Add a weapon descriptor to the script surface and a runtime weapon component. Extend `EntityTypeDescriptor` with an optional weapon block (mirror the existing `movement` field). Add `ComponentKind::Weapon` and a weapon component implementing the `Component` trait, materialized from the descriptor at spawn (mirror `PlayerMovementComponent::from_descriptor`). Wire the SDK `defineEntity` weapon block, add the FGD weapon archetype, and regenerate type defs. Author the first weapon as a reference script (the authoring template) under `content/dev/scripts/`. The player equips one weapon at spawn — decide equip source in open questions.
+Add a weapon descriptor to the script surface and a runtime weapon component. Extend `EntityTypeDescriptor` with an optional weapon block (mirror the existing `movement` field). Add `ComponentKind::Weapon` and a weapon component implementing the `Component` trait, materialized from the descriptor at spawn (mirror `PlayerMovementComponent::from_descriptor`). Wire the SDK `defineEntity` weapon block, add the FGD weapon archetype, and regenerate type defs. Author the first weapon as a reference script (the authoring template) under `content/dev/scripts/`. The player equips one weapon at spawn via a weapon reference (canonical name) on the player descriptor — the natural grow path to weapon switching.
 
 ### Task 2: Aim ray
 Promote the pitch-inclusive view-ray math (currently test-only in `camera.rs`) to a real `Camera` method returning ray origin (camera position) and normalized direction from yaw + pitch.
 
 ### Task 3: Hitscan fire system
-A Rust system in the game-logic stage, after the movement tick (frame order: Input → Game logic). For the player's weapon component: read `Action::Shoot` per fire mode, decrement/check the cooldown timer against the fixed tick, and on a valid shot build the aim ray (Task 2), `cast_ray` against `CollisionWorld` clamped to weapon range, and produce the hit (point = `origin + dir*toi`, plus normal) or a miss. Reset the cooldown on fire. Emit the hit event if that lands in scope.
+A Rust system in the game-logic stage, after the movement tick (frame order: Input → Game logic). For the player's weapon component: read `Action::Shoot` per fire mode, decrement/check the cooldown timer against the fixed tick, and on a valid shot build the aim ray (Task 2), `cast_ray` against `CollisionWorld` clamped to weapon range, and produce the hit (point = `origin + dir*toi`, plus normal) or a miss. Reset the cooldown on fire. Emit the hit event on a hit, a `fire` sound event on every discharge, and an `impact` sound event on a world hit.
 
 ### Task 4: Impact effect
 A transient impact spawned at the Task 3 hit point: a short particle burst reusing the billboard/particle pipeline, oriented by the surface normal, that despawns after its burst without leaking entities. The fire system calls the impact spawner on a world hit.
@@ -66,7 +68,7 @@ A transient impact spawned at the Task 3 hit point: a short particle burst reusi
 - **Fire mode** is a descriptor enum; the fire system maps semi → `ButtonState::Pressed`, auto → `is_active()`.
 - **Cooldown** counts down in fixed-tick units; fire rate is expressed as a period (ms or ticks) in the descriptor, converted at materialization.
 - **Range** clamps `max_toi` on the cast.
-- **Impact** is the one genuinely new bit of infra (no one-shot emitter exists). Constraint: reuse the existing particle sim and billboard pass; the burst must self-clean. Exact lifetime/despawn mechanism is the implementer's call — see open questions for the build-vs-defer decision.
+- **Impact** is the one genuinely new bit of infra (no one-shot emitter exists). Constraint: reuse the existing particle sim and billboard pass; the burst must self-clean without leaking entities. Exact lifetime/despawn mechanism is the implementer's call.
 - Named identifiers and current signatures are inventoried in `research.md`; confirm against source before editing.
 
 ## Boundary inventory
@@ -85,9 +87,9 @@ Casing for the weapon archetype across boundaries. Field names are camelCase on 
 
 (Concrete field names above are proposed, not load-bearing — pin them during implementation. The casing rule is the durable part.)
 
-## Open questions
+## Resolved decisions
 
-1. **Hit event in scope?** Recommend yes: emit a typed hit event (position, normal, optional target id) now as pre-emptive wiring, so the enemy-entity plan drops in the health/kill consumer without touching the fire path. Alternative: defer the event entirely to the enemy plan, leaving the weapon plan world-only. Decision affects whether Task 3 has an event output.
-2. **Impact: build or defer?** A one-shot burst emitter doesn't exist. Recommend building a minimal self-cleaning burst (impacts are what make hitscan read). Alternative for maximum lean: defer all visual impact, emit only an impact event + log for v1. Decision sizes Task 4.
-3. **Equip source.** Does the player descriptor name a default weapon by canonical name, or does v1 hardcode equipping the single declared weapon at player spawn? Recommend the descriptor reference — small, and it's the natural grow path to weapon switching.
-4. **Fire/impact sound events.** Emit now as wiring for the M11 sound plan, or leave the weapon silent until then? Cheap to emit; recommend emitting.
+1. **Hit event — in scope.** Emit a typed hit event (position, normal, optional target id) as pre-emptive wiring; the enemy-entity plan adds the health/kill consumer.
+2. **Impact — build it.** Minimal self-cleaning particle burst; impacts are what make hitscan read.
+3. **Equip — via descriptor reference.** Player descriptor names the default weapon by canonical name.
+4. **Sound events — emit fire + impact.** The stub-sound plan ships second in M10 (right after this one), so the weapon emits typed `fire` and `impact` sound events; they are brief pre-emptive wiring until the sink lands one plan later. Event kinds are emitter-defined; the sink is generic over kind.

@@ -446,9 +446,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // SH irradiance is band-limited and the SH grid is much coarser than the
     // march step size. Sampling 72 textureLoad calls per step (8 corners ×
     // 9 bands) is wasted bandwidth — we cache one sample and refresh whenever
-    // the march has
-    // advanced more than `sh_coverage_dist` world units since the last sample
-    // (reset at each sub-interval boundary) to bound drift without per-step cost.
+    // the march has advanced more than `sh_coverage_dist` world units since the
+    // last sample (reset at each sub-interval boundary) to bound drift without
+    // per-step cost.
     // The cache lives in scalar locals (no array, no callee pointer) so it stays
     // in registers and never hits the Metal private-memory trap.
     //

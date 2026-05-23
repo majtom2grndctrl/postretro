@@ -1,10 +1,13 @@
 # M9 Probe-Weight-Correctness — Measurement Gate (Task 3)
 
-> **Status: NOT YET CAPTURED.** This gate requires running the engine with a GPU.
-> It could not be executed in the headless cloud session that implemented the
-> fix. Run the steps below locally, fill in the bracketed fields, and commit the
-> screenshots alongside this file. Spec #2 (probe depth/visibility atlas) reads
-> the before/after delta recorded here to justify the atlas.
+> **Status: VISUALLY VERIFIED (qualitative); closed by maintainer decision
+> 2026-05-23.** The fix was confirmed on a local GPU run: the maintainer
+> observed the indirect-light leak through walls visibly reduced in the *after*
+> vs. *before*. The quantitative fields (CPU frame-time before/after) and the
+> `before.png`/`after.png` pair were captured locally but **not transcribed into
+> the repo**, so no numeric before/after delta is recorded here. Spec #2 (probe
+> depth/visibility atlas) was intended to read that delta to justify the atlas;
+> if it needs one, re-run the procedure below to regenerate it.
 
 ## Commit anchors
 
@@ -59,20 +62,22 @@
 - **Map:** `content/dev/maps/occlusion-test.map` → `occlusion-test.prl`
   - (Open question from the plan: if the bleed structure is not observable from a
     single fixed pose, fall back to `campaign-test`. Note which map was used.)
-- **Camera pose:** position `[ x, y, z ]`, yaw `[ ]`, pitch `[ ]`
+- **Camera pose:** not recorded (qualitative close-out).
 - **Isolation mode:** StaticSHOnly (6)
 - **Before commit:** `7773a33`
 - **After commit:** `44f8807`
-- **Qualitative residual (through-wall bleed):** [ gone / reduced / unchanged — describe ]
-- **Qualitative residual (near-wall darkening):** [ gone / reduced / unchanged ]
-- **CPU frame-time before:** [ ms ]
-- **CPU frame-time after:** [ ms ]
-- **Frame-time delta:** [ ms ] — note: wall-clock; reflects the added 72-fetch
-  cost only when GPU-bound (see plan Open questions, "72-fetch cost").
+- **Qualitative residual (through-wall bleed):** reduced/gone — confirmed
+  visually by the maintainer on a local GPU run (2026-05-23).
+- **Qualitative residual (near-wall darkening):** not separately recorded in
+  this qualitative pass.
+- **CPU frame-time before:** captured locally; not transcribed.
+- **CPU frame-time after:** captured locally; not transcribed.
+- **Frame-time delta:** not recorded — note: wall-clock; reflects the added
+  72-fetch cost only when GPU-bound (see plan Open questions, "72-fetch cost").
 
 ## Acceptance criteria checked here
 
-- [ ] Through-wall bleed at the `occlusion-test` structure visibly reduced/gone vs. before.
-- [ ] Near-wall surfaces no longer darken from in-wall (invalid) probes.
-- [ ] (dev-tools) `MarkerMode::Validity` overlay renders baked validity correctly at a known valid and a known invalid (in-wall) probe (validates the bake, not the GPU compose propagation).
-- [ ] before.png / after.png committed in this directory.
+- [x] Through-wall bleed at the `occlusion-test` structure visibly reduced/gone vs. before. — confirmed visually 2026-05-23.
+- [ ] Near-wall surfaces no longer darken from in-wall (invalid) probes. — not separately recorded.
+- [ ] (dev-tools) `MarkerMode::Validity` overlay renders baked validity correctly at a known valid and a known invalid (in-wall) probe (validates the bake, not the GPU compose propagation). — not run.
+- [ ] before.png / after.png committed in this directory. — captured locally; not committed.

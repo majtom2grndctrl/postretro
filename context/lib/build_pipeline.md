@@ -143,7 +143,7 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | FogCellMasks | 31 | When at least one fog volume entity is present (fog_volume brush, fog_lamp, or fog_tube) |
 | TextureCacheKeys | 32 | Always; one 32-byte blake3 per TextureNames entry pointing at a `.prm` sidecar under `.build-caches/prm-cache/` |
 
-**ShVolume (id 20) probe record** (SH_VOLUME_VERSION 4, PROBE_STRIDE 116): `[27 × f32 sh_coefficients (bytes 0–107)][u8 validity (byte 108)][f16 E_d mean-distance (bytes 109–110)][f16 E_d2 mean-squared-distance (bytes 111–112)][3 bytes padding]`. Distances are linear world-space meters from the probe origin; sky-miss sentinel = `4 × length(cell_size)`. The read loop advances by the file header's `probe_stride` field, not the compiled `PROBE_STRIDE` constant, so stride growth tolerates unaware readers. f16 via `lightmap::f32_to_f16_bits`; validity byte = band-0 alpha; in-wall/exterior probes write zeroed moments.
+**ShVolume (id 20) probe record:** byte layout, field offsets, PROBE_STRIDE, and f16 encoding are documented in the `ShProbe` and `PROBE_STRIDE` doc comments in `crates/level-format/src/sh_volume.rs`. Non-obvious contract: sky-miss sentinel distance = `4 × length(cell_size)` — four times the full 3D cell diagonal, chosen so any valid in-cell ray distance is always smaller. `SH_VOLUME_VERSION` is a section-internal version (not the PRL header version); bump it whenever the per-probe record layout changes, so the loader rejects stale `.prl` files with a clear error.
 
 ### Runtime visibility
 
@@ -178,7 +178,7 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 | `--cache-dir <PATH>` | Use a custom cache directory instead of `.build-caches/prl-cache/` at the workspace root |
 | `--no-cache` | Disable the cache entirely — neither read nor write, no directory created |
 
-**Entry format.** One file per entry, named by the hex key. Layout: `[u32 le length | 32-byte blake3 hash | payload]`. `get()` validates length and hash before returning payload; mismatch is a soft failure (warning, cache miss).
+**Entry format.** One file per entry, named by the hex key. `get()` validates integrity before returning payload; mismatch is a soft failure (warning, cache miss).
 
 **Eviction.** No policy-driven eviction. Delete `.build-caches/prl-cache/` manually when it grows too large. A corrupted entry is discarded as a cache miss without touching other entries.
 
@@ -190,7 +190,7 @@ Per-texture mip-chain sidecars live alongside the stage-output cache. prl-build 
 
 **`.prm` files.** Each sidecar bundles up to three material slots — diffuse, specular, and normal — each optional. Content-addressed by `blake3(diffuse PNG content)` when a diffuse slot is present; otherwise `blake3(tag_byte || first_present_PNG)`. The `tag_byte` prevents hash collisions between specular-only and normal-only single-slot textures. Stored at `<workspace>/.build-caches/prm-cache/<hex>.prm`. Cross-mod dedupe is intended: identical PNG bytes produce the same `.prm` regardless of which mod authored them.
 
-**Wire format.** 43-byte header + per-slot 12-byte block + tight payload. Header carries magic `b"PRM\x01"`, `stage_version` (`u8`), `slot_mask` (`u8`; bits 0/1/2 = diffuse/specular/normal), `bundle_hash` (`[u8; 32]`), and `total_body_bytes`. Per-slot block carries `format_tag` (0 = sRGB diffuse Rgba8, 1 = linear normal Rgba8, 2 = R8 specular, 3 = Bc5RgUnorm block-compressed two-channel — normal slot only), `width`, `height`, `level_count` (non-BC5: `floor(log2(max(w, h))) + 1`; BC5: count of leading levels whose width AND height are both ≥ 4), and `payload_bytes`; payload is levels packed back-to-back from level 0, no row padding. `STAGE_VERSION` for `.prm` is a `u8` (in `postretro-level-format::prm`) — the header packs tightly and owns its own version semantics, diverging from the stage-cache `u32` `STAGE_VERSION` convention.
+**Wire format.** Header + per-slot blocks + packed mip payload. Wire layout lives in `postretro-level-format::prm`. Note: `.prm` uses a `u8` `STAGE_VERSION` (not the stage-cache `u32` convention) — the header owns its own version semantics.
 
 **Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear space throughout. sRGB diffuse decoded via 256-entry LUT before filtering, re-encoded via IEC 61966-2-1. Specular filtered as linear R8. Normal filtered linearly then renormalised per output texel; `(0, 0, 1)` substituted when magnitude < 1e-4. Output is then BC5-encoded (RG channels only; the shader reconstructs Z).
 

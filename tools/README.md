@@ -21,6 +21,25 @@ tools/gen_normal.py --help` for usage.
 Placeholder for future automation scripts (e.g. `new-mod.sh`, `new-level.sh`). See
 `tools/scripts/README.md`.
 
+## Python tool setup
+
+Both `gen_specular.py` and `gen_normal.py` require a `uv`-managed virtual environment.
+Run once from the repo root:
+
+```sh
+uv venv && source .venv/bin/activate
+uv pip install Pillow numpy   # numpy only required by gen_normal.py
+```
+
+### Invocation
+
+```sh
+python3 tools/gen_specular.py --input <path> --recursive
+python3 tools/gen_normal.py   --input <path> --recursive
+```
+
+Pass `--help` to either script for full option reference.
+
 ## Map compilation
 
 Map compilation is handled exclusively by the in-tree `prl-build` crate

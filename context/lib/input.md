@@ -61,10 +61,10 @@ Each frame, the input subsystem produces two reads:
 
 1. Drains pending winit events (keyboard, mouse) accumulated since last frame.
 2. Polls gilrs for current gamepad state.
-3. **`drain_look_inputs()`** — consumes the accumulated mouse delta and current gamepad look axis values. Returns a `LookInputs` value. Clears `mouse_delta` so look input is not double-applied. Called once per frame before the tick loop.
+3. **`drain_look_inputs()`** — consumes accumulated look contributions from both input source classes and clears them so they are not double-applied. Called once per frame before the tick loop.
 4. **`snapshot()`** — resolves remaining bindings (movement, buttons) into an action-state snapshot. Called once per frame before the tick loop.
 
-Look rotation is applied from `LookInputs` at render rate, once per frame, before the fixed-tick loop runs. The tick loop consumes the `snapshot` for movement and gameplay actions.
+Look rotation is applied from `drain_look_inputs()` at render rate, once per frame, before the fixed-tick loop runs. The result sums two additive source classes: mouse motion contributes a per-frame displacement (already a delta — apply as-is), and gamepad stick contributes a continuous velocity that is integrated over frame elapsed time. Both classes drive look simultaneously; neither zeroes the other. The tick loop consumes the `snapshot` for movement and gameplay actions.
 
 The snapshot is a read-only value. Game logic consumes it; nothing writes back to input state mid-frame.
 

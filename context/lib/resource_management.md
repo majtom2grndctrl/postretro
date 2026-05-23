@@ -66,17 +66,18 @@ Example prefixes (illustrative, not exhaustive):
 
 | Prefix | Material |
 |--------|----------|
-| `emissive` | Emissive — sole type with rendering bypass (see below) |
-| `neon` | Neon — aesthetic type (shininess, future audio behaviors); not emissive |
 | `metal` | Metal |
 | `concrete` | Concrete |
 | `grate` | Grate |
+| `neon` | Neon — carries the emissive property; surfaces render at full albedo brightness, bypassing lightmap and dynamic light modulation. `emissive_intensity > 1.0` targets bloom brightness for a future bloom pass. The `neon_` prefix is the current bloom opt-in signal — no threshold-driven framebuffer extraction. |
+| `glass` | Glass |
+| `wood` | Wood |
 
 The material enum and prefix derivation are implemented. Behavior hooks are planned for later phases:
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive rendering bypass** | Implemented — `emissive_` surfaces render at full albedo brightness, bypassing lightmap and dynamic light modulation. `emissive_intensity` controls per-surface bypass strength (1.0 = full bypass; values above 1.0 are bloom intensity targets for a future bloom pass). The `emissive_` prefix is the bloom opt-in signal — no threshold-driven framebuffer extraction. See §4.5. |
+| **Emissive rendering bypass** | Implemented via `neon_` prefix — full albedo brightness, bypassing lightmap and dynamic light modulation. A dedicated `emissive_` prefix with per-texel mask pipeline is reserved for a future milestone (see §4.5). |
 | **Shininess** | Implemented (Milestone 5) — specular exponent on enum variant. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
@@ -111,9 +112,7 @@ Per-texel specular intensity modulates the direct lighting highlight.
 `tools/gen_specular.py` generates specular maps from diffuse textures using material-prefix heuristics.
 
 - **Heuristics:** `metal_` (high intensity, low gamma), `concrete_` (low intensity, high gamma), `wood_` (moderate).
-- **Dependency:** Requires `Pillow`, managed via `uv`.
-- **Setup:** `uv venv && source .venv/bin/activate && uv pip install Pillow`.
-- **Usage:** `python3 tools/gen_specular.py --input <path> --recursive`.
+- **Dependency:** `Pillow`, managed via `uv`. Setup and invocation: `tools/README.md`.
 - **Linear-output guarantee:** outputs are written without `sRGB`, `gAMA`, or `iCCP` PNG chunks, so they pass `prl-build`'s linear color-space validation (see §4.1, §4.3). The script strips any color-management metadata that Pillow would otherwise carry forward from the diffuse source.
 
 ### 4.3 Normal Maps (Phase 5+)
@@ -131,22 +130,15 @@ Optional per-texture normal maps for fine surface detail.
 
 `tools/gen_normal.py` generates `_n.png` siblings from diffuse textures via Sobel filtering on luminance. Material-prefix strength heuristics: `metal_` (1.5), `stone_` (1.2), `concrete_`/`wood_` (1.0), `plaster_` (0.8).
 
-- **Dependencies:** `Pillow` + `numpy`. Managed via `uv`.
-- **Setup:** `uv venv && source .venv/bin/activate && uv pip install Pillow numpy`.
-- **Usage:** `python3 tools/gen_normal.py --input <path> --recursive`.
+- **Dependencies:** `Pillow` + `numpy`. Managed via `uv`. Setup and invocation: `tools/README.md`.
 - **Fallback:** without `numpy`, emits flat `(127, 127, 255)` maps with no surface detail.
 - **Linear guarantee:** no `sRGB`, `gAMA`, or `iCCP` chunks — passes `prl-build` validation.
 
-### 4.5 Emissive Masks
+### 4.5 Emissive Masks (Reserved)
 
-Per-texel emissive weight for `emissive_` prefixed surfaces. The mask blends each texel between normal lighting (weight 0.0) and the emissive bypass (weight 1.0). Non-emissive buckets bind the shared white placeholder at binding 5 without sampling it — the pipeline layout requires all bindings to be satisfied.
+> **Not yet implemented.** The emissive bit in `.prm` is reserved. No `_e.png` suffix is baked or sampled; no mask binding exists in the forward shader.
 
-- **Naming:** `{name}_e.png` suffix.
-- **Format:** R8Unorm (sampled as `.r` in shader). Must not be sRGB-tagged — sRGB-tagged files are rejected at load time and fall back to the white placeholder with a warning.
-- **Color Space:** Linear.
-- **Dimensions:** Must match the diffuse texture. Mismatch logs a warning and falls back to the white placeholder.
-- **Fallback:** Shared 1×1 white texture (entire surface emissive). Silent substitution for missing `_e.png`.
-- **Bloom opt-in:** The `emissive_` prefix is the bloom opt-in signal for a future bloom pass. `emissive_intensity > 1.0` sets per-surface bloom brightness. No threshold-driven framebuffer extraction.
+The current emissive path is the `neon_` prefix: full-albedo brightness applied uniformly per surface. A future `emissive_` prefix with per-texel `_e.png` mask pipeline is designed but not built. When implemented, the mask will blend each texel between normal lighting (weight 0.0) and the emissive bypass (weight 1.0), letting a single texture carry both lit and glowing regions. `emissive_intensity > 1.0` will target bloom brightness. No threshold-driven framebuffer extraction is planned.
 
 ---
 

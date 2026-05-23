@@ -401,9 +401,9 @@ impl ShProbeReadback {
             let size = self.buffer_size;
             let dims = self.grid_dimensions;
             let stride = self.padded_bytes_per_row;
-            self.buffer.slice(0..size).map_async(
-                wgpu::MapMode::Read,
-                move |res| match res {
+            self.buffer
+                .slice(0..size)
+                .map_async(wgpu::MapMode::Read, move |res| match res {
                     Ok(()) => {
                         let view = buf.slice(0..size).get_mapped_range();
                         let decoded = decode_l0(&view, dims, stride);
@@ -416,8 +416,7 @@ impl ShProbeReadback {
                         log::warn!("[sh-readback] band-0 map failed: {err:?}");
                         pending.store(false, Ordering::Release);
                     }
-                },
-            );
+                });
         }
 
         out

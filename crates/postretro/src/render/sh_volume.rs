@@ -1080,9 +1080,9 @@ mod tests {
         assert_eq!(bands[0][7], 0x0000);
 
         // No other band carries a validity signal — alpha stays 0 everywhere.
-        for band in 1..SH_BAND_COUNT {
-            assert_eq!(bands[band][3], 0, "band {band} valid-probe alpha must be 0");
-            assert_eq!(bands[band][7], 0, "band {band} invalid-probe alpha must be 0");
+        for (band, slice) in bands.iter().enumerate().take(SH_BAND_COUNT).skip(1) {
+            assert_eq!(slice[3], 0, "band {band} valid-probe alpha must be 0");
+            assert_eq!(slice[7], 0, "band {band} invalid-probe alpha must be 0");
         }
     }
 

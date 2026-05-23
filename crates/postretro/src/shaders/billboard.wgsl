@@ -242,53 +242,29 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
     return smoothstep(cos_outer, cos_inner, cos_angle);
 }
 
-fn sh_irradiance(
-    b0: vec3<f32>, b1: vec3<f32>, b2: vec3<f32>, b3: vec3<f32>,
-    b4: vec3<f32>, b5: vec3<f32>, b6: vec3<f32>, b7: vec3<f32>, b8: vec3<f32>,
-    normal: vec3<f32>,
-) -> vec3<f32> {
-    let nx = normal.x;
-    let ny = normal.y;
-    let nz = normal.z;
-    var r: vec3<f32> = b0 * 0.282095;
-    r = r + b1 * (-0.488603 * ny);
-    r = r + b2 * ( 0.488603 * nz);
-    r = r + b3 * (-0.488603 * nx);
-    r = r + b4 * ( 1.092548 * nx * ny);
-    r = r + b5 * (-1.092548 * ny * nz);
-    r = r + b6 * ( 0.315392 * (3.0 * nz * nz - 1.0));
-    r = r + b7 * (-1.092548 * nx * nz);
-    r = r + b8 * ( 0.546274 * (nx * nx - ny * ny));
-    return r;
-}
+// SH reconstruction (`sh_irradiance`) and the manual 8-corner blend
+// (`sample_sh_indirect_corners`) live in `sh_sample.wgsl`, concatenated after
+// this source at pipeline-build time (render/smoke.rs `BILLBOARD_SHADER_SOURCE`).
+// They read the group-3 `sh_band0..8` textures and `sh_grid` declared above by
+// lexical name. Billboard passes `reject_backface = false`: a camera-facing
+// sprite has no real surface normal, so validity exclusion of in-wall corners
+// applies but backface rejection does not.
 
+// Derive the raw grid index / sub-cell fraction and defer the validity-weighted
+// 8-corner blend to the shared helper. `gi`/`gfrac` are passed unclamped — the
+// helper owns corner indexing and edge clamping. Billboard uses camera-forward
+// (`N = V`) as its normal; with `reject_backface = false` the geo-normal arg is
+// unused, so the shading normal fills both slots.
 fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
     }
-    let gdims_u = sh_grid.grid_dimensions;
-    let gdims_f = max(vec3<f32>(gdims_u), vec3<f32>(1.0));
     let cell_coord = (world_pos - sh_grid.grid_origin) /
         max(sh_grid.cell_size, vec3<f32>(1.0e-6));
-    let gf = clamp(cell_coord, vec3<f32>(0.0), gdims_f - vec3<f32>(1.0));
-    let gi = vec3<u32>(floor(gf));
-    let gfrac = fract(gf);
-    let cell_center_uvw = (vec3<f32>(gi) + vec3<f32>(0.5) + gfrac) / gdims_f;
+    let gi = vec3<u32>(floor(max(cell_coord, vec3<f32>(0.0))));
+    let gfrac = fract(cell_coord);
 
-    let b0 = textureSampleLevel(sh_band0, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b1 = textureSampleLevel(sh_band1, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b2 = textureSampleLevel(sh_band2, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b3 = textureSampleLevel(sh_band3, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b4 = textureSampleLevel(sh_band4, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b5 = textureSampleLevel(sh_band5, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b6 = textureSampleLevel(sh_band6, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b7 = textureSampleLevel(sh_band7, sh_sampler, cell_center_uvw, 0.0).rgb;
-    let b8 = textureSampleLevel(sh_band8, sh_sampler, cell_center_uvw, 0.0).rgb;
-
-    return max(
-        sh_irradiance(b0, b1, b2, b3, b4, b5, b6, b7, b8, normal),
-        vec3<f32>(0.0),
-    );
+    return sample_sh_indirect_corners(gi, gfrac, normal, normal, false);
 }
 
 @fragment

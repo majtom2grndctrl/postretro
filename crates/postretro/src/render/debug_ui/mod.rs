@@ -164,10 +164,7 @@ pub fn draw_diagnostics_panel(
                 // Diagnostic aid: if a flickering artifact freezes too, it is
                 // time/animation-driven; if it keeps moving, it is not.
                 let mut frozen = renderer.freeze_time();
-                if ui
-                    .checkbox(&mut frozen, "Freeze animation time")
-                    .changed()
-                {
+                if ui.checkbox(&mut frozen, "Freeze animation time").changed() {
                     renderer.set_freeze_time(frozen);
                 }
 

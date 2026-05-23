@@ -4,9 +4,10 @@
 
 Replace the current validity/backface-only SH probe blend with a DDGI-style
 depth-aware runtime interpolant. The runtime consumes the baked per-probe depth
-moments already stored in `ShVolume` and weights each probe corner by
-Chebyshev visibility, reducing indirect-light bleed through walls for static
-world surfaces and dynamic billboard entities.
+moments already stored in the `ShVolumeSection` payload for
+`SectionId::ShVolume` and weights each probe corner by Chebyshev visibility,
+reducing indirect-light bleed through walls for static world surfaces and
+dynamic billboard entities.
 
 Milestone 9 spec #3. Depends on shipped M9 #1 (manual corner blend and validity
 weighting) and M9 #2 (baked probe depth moments).
@@ -57,11 +58,16 @@ weighting) and M9 #2 (baked probe depth moments).
 - [ ] A corner whose sample point is beyond the probe's mean distance is
       smoothly attenuated by the moment variance. No hard popping at cell
       boundaries.
+- [ ] Any minimum visibility floor is low enough to prevent f16 moment-noise
+      blackouts without masking the intended through-wall leak reduction.
 - [ ] The runtime has no plain-trilinear SH sampling path and no parallel
-      non-depth-aware path for forward or billboard shading.
+      non-depth-aware path for forward or billboard shading. A fog-only
+      compatibility path may keep SH depth visibility disabled until the
+      directional fog plan.
 - [ ] Shader validation passes for forward, billboard, and fog shader modules.
 - [ ] A before/after note records map, camera pose, diagnostics mode, commit,
-      and qualitative residual leak.
+      and qualitative residual leak in
+      `context/plans/drafts/M9--depth-aware-runtime-interpolant/measurements/static-sh-only.md`.
 
 ## Tasks
 
@@ -74,8 +80,9 @@ Pack `mean_distance` and `mean_sq_distance` into the red and green channels of
 an `Rgba16Float` 3D texture; leave the remaining channels zero. Missing or
 zero-dimension SH sections bind a 1x1x1 zero texture. Add the texture view to
 the group-3 bind group and bind group layout after the current scripted-light
-descriptor binding. Keep visibility `FRAGMENT | COMPUTE` because group 3 is
-shared by forward, billboard, and fog.
+descriptor binding. Keep visibility `FRAGMENT | COMPUTE`: forward and
+billboard consume group 3 from fragment stages, while fog shares the same
+group-3 layout from its compute raymarch.
 
 Plumbing: `ShVolumeResources::new` already receives the decoded
 `ShVolumeSection`, creates the SH band textures, and installs the group-3 bind
@@ -114,11 +121,14 @@ implementation constants with tests that pin behavior, not user-facing
 settings.
 
 Plumbing: today callers pass only `gi` and `gfrac`. Change the helper signature
-to also receive the world-space SH sample position. Forward already computes
-`offset_world`; pass that value. Billboard and fog already compute
-`cell_coord`; derive the equivalent clamped world sample point or pass
-`world_pos` after matching the existing low-side clamp semantics. Fog can call
-the helper for compatibility, but directional fog remains out of scope.
+to also receive the world-space point being sampled for SH. Forward already
+computes `offset_world`; pass that value. Billboard passes its current
+`in.world_position` / sprite-center sample point, preserving the existing
+per-particle SH sampling model. Fog must use an explicit helper entry point or
+boolean that leaves Chebyshev depth visibility disabled for this plan. The
+helper still clamps probe indices only for texture loads and probe position
+reconstruction; it does not clamp the SH sample point before computing
+probe-to-sample distance. Directional fog remains out of scope.
 
 ### Task 3: Adopt the updated helper in forward, billboard, and fog safely
 
@@ -126,9 +136,11 @@ Update group-3 declarations in `forward.wgsl`, `billboard.wgsl`, and
 `fog_volume.wgsl` to declare the new moment texture at the chosen binding.
 Update the local wrapper functions to pass the world-space sample position into
 `sample_sh_indirect_corners`. Forward keeps normal offset and backface
-rejection. Billboard keeps no normal offset and no backface rejection. Fog keeps
-its current fixed world-up SH evaluation and no normal offset; no directional
-fog term is added.
+rejection. Billboard keeps no normal offset and no backface rejection. Fog work
+is compatibility-only: keep the fog shader compiling against the shared group-3
+layout and helper contract, preserve its current fixed world-up SH evaluation
+and no-normal-offset behavior, and route it through the explicit depth-disabled
+fog compatibility path. No directional fog term is added.
 
 Plumbing: `render/mod.rs`, `render/smoke.rs`, and `render/fog_pass.rs` already
 append `sh_sample.wgsl` to the consumer shader source. Do not duplicate the
@@ -138,19 +150,21 @@ behavior without adding directional fog.
 
 ### Task 4: Tests, diagnostics, and measurement
 
-Add Rust-side tests for moment texture packing: valid probes preserve the f16
-moment bits in RG, invalid probes pack zero moments, and dummy resources exist
-when the SH section is absent. Extend group-3 layout tests so shader bindings
-and Rust bindings agree. Add a CPU reference test for the Chebyshev visibility
-function: fully visible before the mean distance, smoothly lower past the mean,
-stable under zero variance, and zero contribution for invalid probes. Keep WGSL
-parse/validation tests green for concatenated forward, billboard, and fog
-sources.
+Add Rust-side tests for the CPU moment packing helper before GPU upload: valid
+probes preserve the f16 moment bits in RG, invalid probes pack zero moments,
+and dummy resources exist when the SH section is absent. Extend group-3 layout
+tests so shader bindings and Rust bindings agree. Add a CPU reference test for
+the Chebyshev visibility function: fully visible before the mean distance,
+smoothly lower past the mean, stable under zero variance, and zero contribution
+for invalid probes. Keep WGSL parse/validation tests green for concatenated
+forward, billboard, and fog sources.
 
 Run a visual check on a leak-prone map in StaticSHOnly mode. Record the
-before/after result in this plan folder or a `measurements/` subfolder with map,
-camera pose, diagnostics mode, commit, and qualitative residual leak. GPU timing
-is useful when available, but visual correctness is the gate for this spec.
+before/after result in
+`context/plans/drafts/M9--depth-aware-runtime-interpolant/measurements/static-sh-only.md`
+with map, camera pose, diagnostics mode, commit, and qualitative residual leak.
+GPU timing is useful when available, but visual correctness is the gate for this
+spec.
 
 ## Sequencing
 
@@ -178,9 +192,12 @@ is useful when available, but visual correctness is the gate for this spec.
 - Forward wrapper: `crates/postretro/src/shaders/forward.wgsl::sample_sh_indirect`
   computes `offset_world`; pass it into the helper.
 - Billboard wrapper: `crates/postretro/src/shaders/billboard.wgsl::sample_sh_indirect`
-  samples at entity/particle world position with no surface-normal offset.
+  samples at the existing entity/particle center world position with no
+  surface-normal offset; do not change billboard interpolation to per-corner
+  world positions in this plan.
 - Fog wrapper: `crates/postretro/src/shaders/fog_volume.wgsl::sample_sh_fog`
-  remains ambient SH sampling only. Do not add directional scattering.
+  remains ambient SH sampling only. Update only what is needed for group-3
+  binding/helper compatibility. Do not add directional scattering.
 - Pipeline composition: `SHADER_SOURCE`, `BILLBOARD_SHADER_SOURCE`, and
   `FOG_SHADER_SOURCE` already append `sh_sample.wgsl`; keep that pattern.
 
@@ -201,9 +218,10 @@ No JS, Luau, FGD, or PRL wire names are added.
 - **Tuning constants.** Pick exact variance floor, depth bias, and minimum
   visibility during implementation. They are renderer constants, not scripting
   API.
-- **Fog compatibility.** Fog shares `sh_sample.wgsl`. Preserve current fog
-  behavior enough to keep validation and rendering stable, but defer the
-  directional fog lighting model to the next M9 plan.
-- **Measurement map.** Prefer the M9 probe-weight-correctness measurement map
-  if it still shows residual smear after latest code. Use `campaign-test` as
-  fallback if the original pose no longer demonstrates the leak.
+- **Fog compatibility.** Fog shares `sh_sample.wgsl`. Treat fog as
+  compatibility-only in this plan: keep validation and rendering stable while
+  deferring the directional fog lighting model to the next M9 plan.
+- **Measurement map.** Prefer `content/dev/maps/occlusion-test.map` if it
+  still shows residual smear after latest code. Use
+  `content/dev/maps/campaign-test.map` as fallback if the original pose no
+  longer demonstrates the leak.

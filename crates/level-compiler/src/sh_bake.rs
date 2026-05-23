@@ -1,4 +1,5 @@
 // SH irradiance volume baker — indirect-only L2 probe grid over the level AABB.
+// See: context/lib/build_pipeline.md
 
 use std::collections::HashSet;
 
@@ -6,6 +7,7 @@ use bvh::bvh::Bvh;
 use bvh::ray::Ray;
 use glam::{DVec3, Vec3};
 use nalgebra::{Point3, Vector3};
+use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::sh_volume::{
     AnimationDescriptor, PROBE_STRIDE, ShProbe, ShVolumeSection,
 };
@@ -22,7 +24,7 @@ pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
 /// Bump this when the SH baking algorithm changes. Invalidates all existing
 /// cache entries for this stage.
-pub const STAGE_VERSION: u32 = 1;
+pub const STAGE_VERSION: u32 = 2;
 
 const RAYS_PER_PROBE: u32 = 256;
 
@@ -105,6 +107,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
     let (world_min, world_max) = world_aabb(inputs);
     let dims = grid_dimensions(world_min, world_max, probe_spacing_meters);
     let total = dims[0] as usize * dims[1] as usize * dims[2] as usize;
+    let cell_size = [probe_spacing_meters; 3];
 
     let static_lights: Vec<&MapLight> = inputs
         .static_lights
@@ -134,6 +137,11 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
         })
         .collect();
 
+    // Sky-miss rays contribute this distance to the depth moments. Cell-relative
+    // (4× the full 3D cell diagonal) so it reads as "fully open" at the
+    // probe-spacing scale the runtime Chebyshev interpolant operates in.
+    let far_sentinel = 4.0 * Vec3::from(cell_size).length();
+
     let base_probes: Vec<ShProbe> = (0..total)
         .into_par_iter()
         .map(|i| {
@@ -141,15 +149,22 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
                 return ShProbe::default();
             }
             let pos = vec3_from(probe_positions[i]);
-            let coeffs = bake_probe_rgb(inputs, pos, &static_lights);
+            let (coeffs, sum_d, sum_d2) =
+                bake_probe_rgb_with_moments(inputs, pos, &static_lights, far_sentinel);
+            // All RAYS_PER_PROBE rays accumulate (sky misses via the sentinel),
+            // so these are exact divisions by the constant.
+            let mean_distance = sum_d / RAYS_PER_PROBE as f32;
+            let mean_sq_distance = sum_d2 / RAYS_PER_PROBE as f32;
             ShProbe {
                 sh_coefficients: coeffs,
                 validity: 1,
+                mean_distance: f32_to_f16_bits(mean_distance),
+                mean_sq_distance: f32_to_f16_bits(mean_sq_distance),
             }
         })
         .collect();
 
-    // Per-light monochrome SH layers removed; animated indirect is handled by the lightmap compose pass.
+    // Per-light monochrome SH layers removed; animated indirect is handled by the SH compose pass via delta SH volumes.
     let animation_descriptors: Vec<AnimationDescriptor> = animated_lights
         .iter()
         .map(|l| animation_descriptor_for(l))
@@ -157,7 +172,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
 
     ShVolumeSection {
         grid_origin: [world_min.x as f32, world_min.y as f32, world_min.z as f32],
-        cell_size: [probe_spacing_meters; 3],
+        cell_size,
         grid_dimensions: dims,
         probe_stride: PROBE_STRIDE,
         probes: base_probes,
@@ -169,15 +184,53 @@ pub fn log_stats(section: &ShVolumeSection) {
     let dims = section.grid_dimensions;
     let total = section.total_probes();
     let valid = section.probes.iter().filter(|p| p.validity == 1).count();
+    let invalid = total - valid;
+
+    // Coarse depth-moment aggregate over valid probes: mean and max E[d].
+    // Decoded from the stored f16 bits — diagnostic only, so f16 precision is
+    // fine and avoids threading the pre-rounding f32 moments through the bake.
+    let mut sum_mean_d = 0.0f64;
+    let mut max_mean_d = 0.0f32;
+    for probe in section.probes.iter().filter(|p| p.validity == 1) {
+        let mean_d = f16_bits_to_f32(probe.mean_distance);
+        sum_mean_d += mean_d as f64;
+        max_mean_d = max_mean_d.max(mean_d);
+    }
+    let avg_mean_d = if valid > 0 {
+        (sum_mean_d / valid as f64) as f32
+    } else {
+        0.0
+    };
+
     log::info!(
-        "ShVolume: grid {}x{}x{} = {total} probes ({valid} valid), \
-         cell {}m, {} animated light(s)",
+        "ShVolume: grid {}x{}x{} = {total} probes ({valid} valid, \
+         {invalid} invalid), cell {}m, depth E[d] mean {avg_mean_d:.2}m / \
+         max {max_mean_d:.2}m, {} animated light(s)",
         dims[0],
         dims[1],
         dims[2],
         section.cell_size[0],
         section.animation_descriptors.len(),
     );
+}
+
+/// Decode IEEE 754 binary16 bits → f32. The inverse of
+/// `lightmap::f32_to_f16_bits` for the depth moments; used only for the
+/// diagnostic stats aggregate, so it covers finite non-negative magnitudes.
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = (bits >> 15) & 0x1;
+    let exp = (bits >> 10) & 0x1f;
+    let mant = bits & 0x3ff;
+    let value = if exp == 0 {
+        // Subnormal: no implicit leading 1.
+        (mant as f32) * 2.0f32.powi(-24)
+    } else if exp == 0x1f {
+        if mant == 0 { f32::INFINITY } else { f32::NAN }
+    } else {
+        let m = 1.0 + (mant as f32) / 1024.0;
+        m * 2.0f32.powi(exp as i32 - 15)
+    };
+    if sign == 1 { -value } else { value }
 }
 
 fn world_aabb(inputs: &ShBakeCtx<'_>) -> (DVec3, DVec3) {
@@ -551,7 +604,12 @@ fn cosine_lobe_factor(band: usize) -> f32 {
     }
 }
 
-/// Indirect-only SH L2 RGB. Shared with the per-light delta SH baker.
+/// Indirect-only SH L2 RGB for the per-light delta SH baker (`delta_sh_bake.rs`),
+/// which carries no depth moments. Shares the per-ray sampler with the SH-volume
+/// path (`bake_probe_rgb_with_moments`); only the ray-accumulation loop is
+/// duplicated, so the delta path projects radiance without ever touching the
+/// `Σd` / `Σd²` moments. This loop discards the distance the shared sampler
+/// returns.
 pub(crate) fn bake_probe_indirect_rgb(
     ctx: &RaytracingCtx<'_>,
     probe_pos: Vec3,
@@ -561,11 +619,44 @@ pub(crate) fn bake_probe_indirect_rgb(
     let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
     let mut acc = [0f32; 27];
     for dir in &directions {
-        let radiance = sample_radiance_rgb(ctx, probe_pos, *dir, lights);
+        // Pass f32::INFINITY as an unreachable sentinel; the delta path discards
+        // the returned distance, so this value is never read.
+        let (radiance, _) = sample_radiance_rgb(ctx, probe_pos, *dir, lights, f32::INFINITY);
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
     }
     apply_cosine_lobe_rgb(&mut acc);
     acc
+}
+
+/// SH-volume-path twin of `bake_probe_indirect_rgb` that also accumulates the
+/// per-probe depth moments `Σd` / `Σd²` over the same 256-direction loop. The
+/// shared per-ray sampler keeps the bounce math identical across both paths;
+/// the ray-accumulation loop is duplicated so the delta path stays moment-free.
+/// Sky-miss rays contribute `far_sentinel` to both sums (via
+/// `sample_radiance_rgb`), so all `RAYS_PER_PROBE` rays accumulate and the
+/// caller's division by the constant is exact. Accumulation is a sequential sum
+/// over the fixed direction list so the bake stays byte-identical across runs.
+fn bake_probe_rgb_with_moments(
+    inputs: &ShBakeCtx<'_>,
+    probe_pos: Vec3,
+    static_lights: &[&MapLight],
+    far_sentinel: f32,
+) -> ([f32; 27], f32, f32) {
+    let ctx = inputs.ray_ctx();
+    let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
+    let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
+    let mut acc = [0f32; 27];
+    let mut sum_d = 0.0f32;
+    let mut sum_d2 = 0.0f32;
+    for dir in &directions {
+        let (radiance, distance) =
+            sample_radiance_rgb(&ctx, probe_pos, *dir, static_lights, far_sentinel);
+        accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
+        sum_d += distance;
+        sum_d2 += distance * distance;
+    }
+    apply_cosine_lobe_rgb(&mut acc);
+    (acc, sum_d, sum_d2)
 }
 
 /// Direct SH L2 RGB for a single light at a probe — used by the delta SH baker.
@@ -594,23 +685,21 @@ pub(crate) fn bake_probe_direct_rgb(
     acc
 }
 
-fn bake_probe_rgb(
-    inputs: &ShBakeCtx<'_>,
-    probe_pos: Vec3,
-    static_lights: &[&MapLight],
-) -> [f32; 27] {
-    bake_probe_indirect_rgb(&inputs.ray_ctx(), probe_pos, static_lights)
-}
-
-/// Indirect (bounced) radiance along one ray — direct term is the lightmap's responsibility.
+/// Indirect (bounced) radiance along one ray plus the ray's hit distance —
+/// direct term is the lightmap's responsibility. Shared by both bake paths: the
+/// SH-volume path consumes the distance for its depth moments, the delta path
+/// discards it. A ray that misses all geometry returns `SKY_COLOR` and
+/// `far_sentinel` as its distance — the depth-moment bake reads "no hit" as
+/// "fully open" at the probe-spacing scale.
 fn sample_radiance_rgb(
     ctx: &RaytracingCtx<'_>,
     origin: Vec3,
     dir: Vec3,
     lights: &[&MapLight],
-) -> Vec3 {
+    far_sentinel: f32,
+) -> (Vec3, f32) {
     match closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
-        None => Vec3::from(SKY_COLOR),
+        None => (Vec3::from(SKY_COLOR), far_sentinel),
         Some(hit) => {
             let mut radiance = Vec3::ZERO;
             for light in lights {
@@ -619,7 +708,10 @@ fn sample_radiance_rgb(
                 }
                 radiance += light_contribution_lambert(light, hit.point, hit.normal);
             }
-            radiance * BOUNCE_ALBEDO / std::f32::consts::PI
+            (
+                radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
+                hit.distance,
+            )
         }
     }
 }
@@ -858,6 +950,60 @@ mod tests {
         }
     }
 
+    /// Geometry from a list of triangles, one BVH face/primitive per triangle.
+    /// A single floor triangle gives near-uniform ray distances (most rays sky-
+    /// miss to the sentinel, the rest graze one plane); multiple triangles at
+    /// different depths give the depth-moment accumulator a real spread of
+    /// `closest_hit` distances to integrate.
+    fn multi_triangle_geometry(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
+        let mut vertices = Vec::with_capacity(triangles.len() * 3);
+        let mut indices = Vec::with_capacity(triangles.len() * 3);
+        let mut faces = Vec::with_capacity(triangles.len());
+        let mut face_index_ranges = Vec::with_capacity(triangles.len());
+        for (i, tri) in triangles.iter().enumerate() {
+            let base = (i * 3) as u32;
+            for &p in tri {
+                vertices.push(tri_vertex(p));
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2]);
+            faces.push(FaceMeta {
+                leaf_index: 0,
+                texture_index: 0,
+            });
+            face_index_ranges.push(FaceIndexRange {
+                index_offset: base,
+                index_count: 3,
+            });
+        }
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices,
+                indices,
+                faces,
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges,
+        }
+    }
+
+    /// A 4 m floor plus three walls forming an open-topped box. Probes in the
+    /// box see a real spread of `closest_hit` distances: rays toward a near wall
+    /// hit close, rays toward a far wall hit far, rays out the open top sky-miss
+    /// to the sentinel. Exercises the depth-moment accumulation that a single
+    /// floor triangle leaves near-degenerate.
+    fn floor_and_walls_geometry() -> GeometryResult {
+        // Floor (two triangles) spanning x,z in [0, 4] at y = 0.
+        let floor_a = [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 0.0, 4.0]];
+        let floor_b = [[0.0, 0.0, 0.0], [4.0, 0.0, 4.0], [0.0, 0.0, 4.0]];
+        // Near wall at x = 0 and far wall at x = 4, plus a side wall at z = 4,
+        // each a single triangle rising to y = 3. Their differing distances from
+        // any interior probe spread the per-ray hit distances.
+        let wall_near = [[0.0, 0.0, 0.0], [0.0, 0.0, 4.0], [0.0, 3.0, 0.0]];
+        let wall_far = [[4.0, 0.0, 0.0], [4.0, 0.0, 4.0], [4.0, 3.0, 0.0]];
+        let wall_side = [[0.0, 0.0, 4.0], [4.0, 0.0, 4.0], [0.0, 3.0, 4.0]];
+        multi_triangle_geometry(&[floor_a, floor_b, wall_near, wall_far, wall_side])
+    }
+
     fn tree_all_empty() -> BspTree {
         BspTree {
             nodes: Vec::new(),
@@ -1040,9 +1186,14 @@ mod tests {
     /// chunks and asserts byte-for-byte equality on the encoded section.
     #[test]
     fn sh_volume_bake_produces_byte_identical_output_on_repeated_runs() {
-        // 4 m × 4 m floor → 5×1×5 probe grid at 1 m spacing = 25 probes,
-        // enough work for rayon to schedule across several threads.
-        let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 0.0, 4.0]]);
+        // Open-topped box (floor + three walls) spanning ~4 m → a 5×4×5 probe
+        // grid at 1 m spacing, enough work for rayon to schedule across several
+        // threads. The walls give probes a real spread of `closest_hit`
+        // distances (near wall vs. far wall vs. open-top sky-miss), so this
+        // genuinely exercises the depth-moment accumulation — a single floor
+        // triangle would leave the moments near-degenerate and let the bake pass
+        // without ever stressing the per-probe `Σd`/`Σd²` sums.
+        let geo = floor_and_walls_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
 
@@ -1102,6 +1253,122 @@ mod tests {
             bytes_a, bytes_b,
             "SH volume bake output drifted between runs; the build-stage cache requires \
              byte-identical output for identical inputs",
+        );
+    }
+
+    // Regression: guards variance non-negativity (`E[d²] >= E[d]²`) for a valid,
+    // non-degenerate probe. Compares the pre-rounding f32 moments — two
+    // independently-rounded f16 values can violate a naive `>=` and flake.
+    #[test]
+    fn probe_depth_moments_keep_squared_distance_at_least_mean_squared() {
+        // Open-topped box gives this probe a genuine spread of ray distances:
+        // some rays hit a near wall, some a far wall, some sky-miss to the
+        // sentinel. A non-degenerate spread is what makes the variance check
+        // meaningful rather than vacuously satisfied by equal distances.
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights: &[MapLight] = &[];
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
+        let inputs = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+        };
+        let static_light_refs: Vec<&MapLight> = Vec::new();
+
+        // Probe off-center so the four bounding walls sit at distinct distances.
+        let probe_pos = Vec3::new(1.0, 1.0, 1.5);
+        // 1 m cell → far sentinel matches the bake's `4 * length(cell_size)`.
+        let far_sentinel = 4.0 * Vec3::splat(1.0).length();
+
+        // Pre-rounding f32 moments: divide the raw sums by RAYS_PER_PROBE before
+        // any f16 encoding (the f16 store happens later in `bake_sh_volume`).
+        let (_coeffs, sum_d, sum_d2) =
+            bake_probe_rgb_with_moments(&inputs, probe_pos, &static_light_refs, far_sentinel);
+        let mean_d = sum_d / RAYS_PER_PROBE as f32;
+        let mean_sq_d = sum_d2 / RAYS_PER_PROBE as f32;
+
+        // Variance = E[d²] - E[d]² is non-negative by construction; allow a tiny
+        // epsilon on the boundary for f32 summation rounding.
+        assert!(
+            mean_sq_d >= mean_d * mean_d - 1.0e-3,
+            "variance must be non-negative: E[d²]={mean_sq_d} < E[d]²={}",
+            mean_d * mean_d,
+        );
+        // Guard against a vacuous pass: a degenerate probe (all rays the same
+        // distance) would make variance ~0. This fixture must produce spread.
+        assert!(
+            mean_sq_d - mean_d * mean_d > 1.0e-2,
+            "fixture is degenerate — no distance spread to exercise the moments \
+             (E[d²]={mean_sq_d}, E[d]²={})",
+            mean_d * mean_d,
+        );
+    }
+
+    // Anchors AC#2: the depth moments encode local occlusion, so an open-space
+    // probe must bake a meaningfully larger mean distance than a cornered one.
+    #[test]
+    fn open_probe_mean_distance_exceeds_cornered_probe() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights: &[MapLight] = &[];
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
+        let inputs = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+        };
+        let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
+
+        // Fixture grid: 5×4×5 probes at 1 m spacing over the [0,4] box, origin
+        // at (0,0,0). Walls sit at x=0, x=4, z=4; the z=0 face and the top are
+        // open. Flat index is z-major then y then x (see `probe_index_to_xyz`).
+        let dims = section.grid_dimensions;
+        assert_eq!(dims, [5, 4, 5], "fixture grid changed; revisit probe picks");
+        let nx = dims[0] as usize;
+        let ny = dims[1] as usize;
+        let flat = |x: usize, y: usize, z: usize| z * nx * ny + y * nx + x;
+
+        // Open probe: x-center (x=2) on the open z=0 face, on the floor — its
+        // rays escape through the open side and open top, so it sees far.
+        let open = &section.probes[flat(2, 0, 0)];
+        // Cornered probe: tucked against the x=0 and z=4 walls, one step off the
+        // floor — three nearby occluders pull its mean ray distance down.
+        let corner = &section.probes[flat(1, 1, 3)];
+
+        assert_eq!(
+            open.validity, 1,
+            "open probe must be a valid interior probe"
+        );
+        assert_eq!(
+            corner.validity, 1,
+            "corner probe must be a valid interior probe"
+        );
+
+        let open_mean = f16_bits_to_f32(open.mean_distance);
+        let corner_mean = f16_bits_to_f32(corner.mean_distance);
+
+        // Observed gap is ~2.5 m (open ≈6.4 m vs corner ≈3.9 m); require ≥1.5 m
+        // so the assertion is non-vacuous yet has ample headroom against f16
+        // rounding and any minor sampler tweak.
+        assert!(
+            open_mean - corner_mean >= 1.5,
+            "open-space probe should bake a meaningfully larger mean distance \
+             than a cornered probe (open={open_mean}, corner={corner_mean})",
         );
     }
 
@@ -1368,6 +1635,14 @@ mod tests {
             assert_eq!(
                 probe.validity, 0,
                 "probes in an exterior-flagged leaf must be invalid after bake",
+            );
+            assert_eq!(
+                probe.mean_distance, 0,
+                "invalid probes must carry zeroed depth moments (AC#3)"
+            );
+            assert_eq!(
+                probe.mean_sq_distance, 0,
+                "invalid probes must carry zeroed depth moments (AC#3)"
             );
         }
     }

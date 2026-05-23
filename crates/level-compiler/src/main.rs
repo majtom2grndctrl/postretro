@@ -1294,6 +1294,53 @@ mod tests {
     }
 
     #[test]
+    fn sh_volume_stage_version_bump_misses_then_hits() {
+        // Anchors the contract that bumping `sh_bake::STAGE_VERSION` is what
+        // invalidates the prior `sh_volume` cache entry (the depth-moment bake
+        // rides this version bump). A stale entry written under the previous
+        // version must not be served under the current one; the current version
+        // then exhibits the normal miss → bake/put → hit sequence.
+        let dir = fresh_cache_dir("sh_stage_bump");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let inputs = ShInputs {
+            static_lights: vec![baseline_point_light()],
+            animated_lights: Vec::new(),
+            geometry: minimal_geometry(),
+            exterior_leaves: Vec::new(),
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+        let hash = sh_input_hash(&inputs, &config);
+
+        // A pre-bump entry baked by the previous SH algorithm version.
+        let stale_key = CacheKey::new("sh_volume", sh_bake::STAGE_VERSION - 1, &hash);
+        cache.put(&stale_key, b"sh-volume-baked-by-old-algorithm");
+
+        // Same inputs, current version: the version is folded into the key, so
+        // the stale entry must not be reachable — the first build is a miss.
+        let current_key = CacheKey::new("sh_volume", sh_bake::STAGE_VERSION, &hash);
+        assert_ne!(
+            stale_key.as_filename(),
+            current_key.as_filename(),
+            "a STAGE_VERSION bump must change the sh_volume cache key",
+        );
+        assert!(
+            cache.get(&current_key).is_none(),
+            "first build after a STAGE_VERSION bump must miss and rebake",
+        );
+
+        // The rebake stores the moment-bearing section; the second build hits.
+        let rebaked = b"sh-volume-with-depth-moments".to_vec();
+        cache.put(&current_key, &rebaked);
+        let loaded = cache
+            .get(&current_key)
+            .expect("second build under the bumped version must hit the cache");
+        assert_eq!(loaded, rebaked);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn cache_misses_when_light_changes() {
         let dir = fresh_cache_dir("lm_light_change");
         let cache = StageCache::new(&dir).expect("create cache dir");

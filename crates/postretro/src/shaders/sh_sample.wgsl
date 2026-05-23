@@ -60,7 +60,10 @@ fn sh_corner_irradiance(bands: array<vec3<f32>, 9>, shading_normal: vec3<f32>) -
 
 // Manual 8-corner SH blend.
 //
-// `gi`     — integer grid index of the lower corner.
+// `gi`     — integer grid index of the lower corner. Billboard/fog clamp only
+//            the low side before computing `gi`, so it may equal or exceed the
+//            grid dimensions on the high side; the per-corner clamp below
+//            handles this correctly.
 // `gfrac`  — sub-cell fraction in [0, 1) within the cell. Forward derives this
 //            from a normal-offset sample position; billboard and fog pass the
 //            raw grid-space coordinate with no offset.
@@ -140,8 +143,10 @@ fn sample_sh_indirect_corners(
         weight_sum = weight_sum + w;
     }
 
-    // All corners dropped: degrade to the ambient floor (the `has_sh_volume == 0`
-    // path). Epsilon guard avoids div-by-zero / NaN / black flash.
+    // All corners dropped: return zero SH contribution, matching the
+    // `has_sh_volume == 0` early-out. Forward callers then see only the
+    // ambient floor they add outside this function; billboard/fog callers
+    // see zero SH. Epsilon guard avoids div-by-zero / NaN / black flash.
     if weight_sum < 1.0e-5 {
         return vec3<f32>(0.0);
     }

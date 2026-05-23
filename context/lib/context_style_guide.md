@@ -181,6 +181,8 @@ Context files are the durable layer. Plans are the ephemeral layer.
 
 **Plans** live in `context/plans/`, moving through four stages: `drafts/` → `ready/` → `in-progress/` → `done/`. Plans contain detailed implementation specs — function names, algorithms, task breakdowns, acceptance criteria. That detail earns its place during planning but becomes maintenance debt once the code exists.
 
+**When a new doc is added to `context/lib/`:** add a corresponding entry to the Agent Router in `index.md` before merging. An unrouted doc is invisible to agents.
+
 **Before a plan moves from `drafts/` to `ready/`:** capture durable decisions in `context/lib/`. New architectural constraints, subsystem contracts, and pipeline topology belong there — not in the plan. Agents working the plan find full context in the codebase, not in plan documents.
 
 **After a plan ships:** the plan moves to `done/` and stays as a historical record. Don't maintain it. The implementation is the source of truth; `context/lib/` holds the durable architectural layer.

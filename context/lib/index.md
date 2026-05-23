@@ -22,10 +22,11 @@
 - **Game / mod author docs (human-facing, not agent context)** → `docs/`
 - **Collision / player movement** → `entity_model.md` §7
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
+- **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Roadmap / implementation phases** → `plans/roadmap.md`
 - **Draft plans / future features** → `plans/drafts/`
 - **Shipped plans** → `plans/done/` — historical record, frozen at ship time. May describe stale state. Read only when explicitly referenced.
-- **Research archive** → `research/` — past research, not current design. Do not read unless explicitly instructed.
+- **Research archive** → `research/` — past research, not current design. Do not read unless explicitly instructed. See also: `research/weapon-model.md` for weapon-model / weapon-instance design intent.
 - **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).
 
 ---
@@ -61,22 +62,18 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 
 ### PRL baked data
 
-| Data | Source | How |
-|------|--------|-----|
-| Geometry | prl-build (brush-volume BSP → brush-side projection → pack) | Geometry section — positions, UVs, packed normals, packed tangents, per-face metadata |
-| BSP tree | prl-build | BspNodes + BspLeaves sections (compile-time scaffolding; see `build_pipeline.md`) |
-| Visibility | prl-build (portal generation) | Portals section — runtime traverses the portal graph each frame |
-| Surface material types | Texture naming convention | Prefix lookup table → footsteps, impacts, decals |
-| Light entities | FGD entities (`light`, `light_spot`, `light_sun`) | Parsed and translated to canonical format at compile time |
-| Indirect lighting | prl-build (Milestone 5) | SH L2 irradiance volume baked from canonical lights; stored in PRL section |
-| Fog volumes | FGD entity (`fog_volume`) | Brush entity resolved to BSP leaves at load time |
-| Reflection probes | FGD entity (`env_cubemap`) | Point entity → baked cubemap |
-| Acoustic zones | FGD entity (`env_reverb_zone`) | Brush entity resolved to BSP leaves at load time |
-| Animated light weight maps | prl-build (animated-light-weight-maps plan) | SectionId 25 — per-texel light-weight data for the animated-lightmap compose pass; see `build_pipeline.md` for the full PRL section inventory |
+| Data | Source |
+|------|--------|
+| Geometry | prl-build (brush-volume BSP → brush-side projection → pack) |
+| BSP tree | prl-build (compile-time scaffolding; BspNodes/BspLeaves used for camera-leaf lookup) |
+| Visibility | prl-build (portal generation — runtime traverses portal graph each frame) |
+| Light entities | FGD entities parsed and translated to canonical format at compile time |
+| Indirect lighting | SH L2 irradiance volume baked from canonical lights |
+| Fog volumes | FGD brush entities resolved to BSP leaves at load time |
+| Acoustic zones | FGD brush entities resolved to BSP leaves at load time |
+| Reflection probes | FGD point entities → baked cubemaps |
 
-`chart_raster.rs` (in `postretro-level-compiler`) is a shared baker helper: both the static lightmap baker and the animated-weight baker use it to derive world positions and normals from chart placements without duplication.
-
-Full detail: `build_pipeline.md`.
+Full detail (section inventory, SectionId registry): `build_pipeline.md`.
 
 ---
 

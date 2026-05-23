@@ -1,4 +1,5 @@
 // SH irradiance volume baker — indirect-only L2 probe grid over the level AABB.
+// See: context/lib/build_pipeline.md
 
 use std::collections::HashSet;
 
@@ -163,7 +164,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
         })
         .collect();
 
-    // Per-light monochrome SH layers removed; animated indirect is handled by the lightmap compose pass.
+    // Per-light monochrome SH layers removed; animated indirect is handled by the SH compose pass via delta SH volumes.
     let animation_descriptors: Vec<AnimationDescriptor> = animated_lights
         .iter()
         .map(|l| animation_descriptor_for(l))
@@ -618,8 +619,8 @@ pub(crate) fn bake_probe_indirect_rgb(
     let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
     let mut acc = [0f32; 27];
     for dir in &directions {
-        // Delta path discards the distance, so the sky-miss sentinel is
-        // immaterial here — pass an obviously-unused value.
+        // Pass f32::INFINITY as an unreachable sentinel; the delta path discards
+        // the returned distance, so this value is never read.
         let (radiance, _) = sample_radiance_rgb(ctx, probe_pos, *dir, lights, f32::INFINITY);
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
     }
@@ -1634,6 +1635,14 @@ mod tests {
             assert_eq!(
                 probe.validity, 0,
                 "probes in an exterior-flagged leaf must be invalid after bake",
+            );
+            assert_eq!(
+                probe.mean_distance, 0,
+                "invalid probes must carry zeroed depth moments (AC#3)"
+            );
+            assert_eq!(
+                probe.mean_sq_distance, 0,
+                "invalid probes must carry zeroed depth moments (AC#3)"
             );
         }
     }

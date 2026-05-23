@@ -59,8 +59,8 @@ pub const SH_VOLUME_VERSION: u32 = 4;
 /// 4-byte boundary = 116 bytes.
 ///
 /// The header's `probe_stride` field is written from this constant. It is
-/// forward-compat scaffolding: per-probe base data (e.g. the version-4
-/// depth-visibility moments) grows the stride without breaking the loader, which advances
+/// forward-compat scaffolding: per-probe base data (e.g. a future Chebyshev
+/// visibility term) grows the stride without breaking the loader, which advances
 /// by the file's `probe_stride` field rather than this compiled-in constant.
 pub const PROBE_STRIDE: u32 = 116;
 
@@ -143,7 +143,7 @@ impl Default for AnimationDescriptor {
 /// A section with `animated_light_count == 0` is valid: the loader produces
 /// an empty `animation_descriptors` vector and the runtime skips
 /// animated-layer processing. Per-light monochrome SH layers were removed;
-/// animated indirect is now handled entirely by the lightmap compose pass.
+/// animated indirect is handled by the SH compose pass via per-light delta SH volumes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShVolumeSection {
     pub grid_origin: [f32; 3],

@@ -161,7 +161,7 @@ Plans ship in this sequence:
 
 Kill light-leak-through-walls by adding per-probe visibility data to the Milestone 5 SH irradiance volume, then extend the fog system. The depth-aware interpolant replaces the plain trilinear SH sample entirely — one runtime path. Probe streaming is deferred: this milestone keeps probes resident and produces the VRAM-fit measurement that decides whether streaming ever becomes its own milestone.
 
-**Prerequisite:** Milestone 5 (lighting foundation) ✓. Independent of Milestones 7–8.
+**Assumes the shipped Milestone 5 lighting foundation** — SH irradiance volume + baker, runtime probe sampling (SH as a 3D texture), lightmaps, and CSM sun shadows are all in place. Milestone 9 is a pure upgrade layer on top; it builds nothing M5 already delivers. Independent of Milestones 7–8.
 
 **Pre-milestone fix (ships first, standalone — not part of this milestone):**
 

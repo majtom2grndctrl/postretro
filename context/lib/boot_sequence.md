@@ -6,7 +6,7 @@
 
 ---
 
-## 1. Folder Structure (planned)
+## 1. Folder Structure (planned — paths below are aspirational; most do not exist yet)
 
 ```
 content/
@@ -41,7 +41,7 @@ content/
 | Level pack | A loosely-defined mod — primarily maps, light scripting. |
 | Actor | Any autonomous mobile entity regardless of faction. Faction is a schema field, not a folder. |
 
-The domain folder structure, the fixed `start-script` entry, and the `mods/` directory are **planned**.
+The domain folder structure, the fixed `start-script` entry, and the `mods/` directory are **planned**. The folder layout above is aspirational — these paths do not yet exist.
 
 ---
 
@@ -62,7 +62,7 @@ Start scripts and domain scripts declare entity types as `entities` on the `setu
 
 | Phase | Stage | Owner | Status |
 |-------|-------|-------|--------|
-| 0 | Engine init: wgpu adapter, audio, input, scripting runtimes constructed; SDK preludes installed | Engine | today |
+| 0 | Engine init: wgpu adapter, input, scripting runtimes constructed; SDK preludes installed | Engine | today |
 | 1 | Discover mods: scan `content/base/` and `content/mods/*/` for valid manifests | Engine | planned |
 | 2 | Mod browser UI: present discovered mods, user selects active set (or skip via CLI / saved selection) | Engine + UI system | planned |
 | 3 | Resolve load order: base first, then selected mods in user-specified order | Engine | planned |
@@ -76,6 +76,18 @@ Start scripts and domain scripts declare entity types as `entities` on the `setu
 **Open:** mod manifest format (name, version, dependencies, UI contributions). Required by phase 1.
 **Open:** UI system — declarative format, where definitions live (per-mod `ui/` folder?), and how the renderer consumes them.
 
+### 3a. Boot State Machine (today)
+
+Engine startup today runs a three-state progression: pre-window → splash → running.
+
+The engine transitions from pre-window to splash when the OS window and GPU device are ready. From that point, a per-frame splash protocol runs:
+
+- **Frame 0.** Renders a black screen so the OS window appears immediately. After present, decodes the splash image synchronously and uploads it to the GPU. No mod or level work runs yet.
+- **Frame 1.** Renders the splash so the user sees it before any user-authored work executes. After present: runs mod init (compiles stale scripts, executes the start-script, drains entity-type descriptors into the global registry); optionally swaps in a mod-supplied splash image; spawns the level-load worker thread. The worker handles PRL parse, texture decode, and UV normalization off the main thread.
+- **Frames 2+.** Polls the worker channel each frame. Splash keeps painting while the worker runs. When the worker delivers, the main thread performs GPU upload and level install, then transitions to running.
+
+The purpose of the two-frame delay is causal: pixels reach the user before any mod-supplied or level-load work consumes CPU. All GPU work (texture upload, geometry upload) stays on the main thread; only file I/O, parsing, and decoding run on the worker.
+
 ---
 
 ## 4. Level Load Sequence
@@ -86,8 +98,8 @@ Today:
 |-------|-------|
 | 1 | PRL parse, texture decode, UV normalize |
 | 2 | Geometry and texture upload to GPU |
-| 3 | Spatial subsystems initialized from level data (fog volumes, collision regions resolved against BSP leaves) |
-| 4 | Built-in classname dispatch (hardcoded engine entities — player_start, billboard_emitter, lights, etc.) |
+| 3 | Spatial subsystems initialized from level data: fog volumes registered per leaf; collision world populated from static geometry (separate from BSP) |
+| 4 | Built-in classname dispatch: `player_spawn` placements routed to player-spawn logic; `billboard_emitter` placements materialized as engine emitter entities. Lights come from PRL data via the light bridge, not classname dispatch. |
 | 5 | Level script runs in a short-lived VM; `setupLevel(ctx)` returns `{reactions}` → per-level reaction registry. Entity types are engine-global and arrive via `setupMod`, not here. |
 | 6 | Entity spawn sweep: match map entity list against `DataRegistry`, spawn |
 | 7 | `levelLoad` event fired |

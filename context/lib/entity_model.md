@@ -1,20 +1,16 @@
 # Entity Model
 
 > **Read this when:** working on game logic, implementing entity types, loading entities from level data, or integrating entity state with renderer/audio.
-> **Key invariant:** game logic owns all entities. Other subsystems borrow entity state read-only. Entities are concrete typed objects, not component bags.
+> **Key invariant:** game logic owns all entities. Other subsystems borrow entity state read-only. Entities are component-tagged bags in a scripting registry; the engine ticks first-class components each frame.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Audio](./audio.md)
 
 ---
 
 ## 1. Design Philosophy
 
-Simple, direct entity model. Not an ECS. Not a component system.
+Entities are component-tagged bags in a central registry. Every entity carries a `Transform` at minimum; additional components attach capabilities. The engine walks component columns each tick — no runtime type checks, no downcasting.
 
-Each entity is a concrete typed object. Player is a player, door is a door, projectile is a projectile. Type-specific data lives on the concrete type. No generic property bags, no trait-object soup, no inheritance hierarchies.
-
-Typed collections over heterogeneous lists. The game stores players in one collection, enemies in another, projectiles in a third. Iteration is direct and predictable. No runtime type checks, no downcasting.
-
-Favor readability and simplicity over maximum flexibility.
+This is not a full ECS. There is no archetype storage, no query planner, no system scheduler. Component iteration is straightforward: iterate all entities carrying a given component kind and act on them. Favor readability and simplicity over maximum flexibility.
 
 ---
 
@@ -22,29 +18,25 @@ Favor readability and simplicity over maximum flexibility.
 
 ### Common Data
 
-All entities share a core set of spatial state.
+Every entity carries a `Transform` (position, rotation, scale in world space). `Transform` is the only component guaranteed present at spawn.
 
-| Data | Purpose |
-|------|---------|
-| Position | World-space location (3D vector) |
-| Orientation | Facing direction (yaw at minimum; pitch where relevant) |
-| Velocity | Movement vector, applied each tick |
-| BSP leaf | Current leaf index for visibility culling, audio reverb zone lookup, and collision context |
-| Bounding volume | AABB or sphere for entity-entity collision |
+BSP leaf tracking is camera-only. The camera's current leaf is computed each frame for visibility. Entities do not track which leaf they occupy.
 
-Common data is embedded directly in each entity type. No shared base struct inheritance — each type carries its own copy of these fields.
+### Components
 
-### Type-Specific Data
+Capabilities attach via component columns in the registry. Current engine components:
 
-Type-specific state lives on the concrete type. Examples:
+| Component | Purpose |
+|-----------|---------|
+| Transform | World-space position, rotation, scale |
+| PlayerMovement | Capsule physics state for the player pawn |
+| Light | Dynamic point-light parameters |
+| BillboardEmitter | Particle emitter configuration |
+| ParticleState | Per-particle simulation state |
+| SpriteVisual | Billboard visual parameters |
+| FogVolume | Runtime fog-volume parameters |
 
-- Health and armor on entities that take damage.
-- Weapon state (ammo, cooldown, selected weapon) on the player.
-- AI state (patrol path, alert level, target) on enemies.
-- Open/closed state and linked trigger on doors.
-- Damage, speed, and owner on projectiles.
-
-These are illustrative. Specific entity types are implementation scope, not spec scope.
+Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Future entity types (enemies, doors, projectiles, pickups) follow the same pattern — illustrative, not current scope.
 
 ---
 
@@ -69,11 +61,10 @@ All entities update each fixed-timestep game logic tick. See section 5 for updat
 
 Entities are destroyed when:
 
-- Health reaches zero (killed).
-- A trigger condition fires (consumed pickup, expired projectile, door that auto-removes).
+- A scripted or engine bridge condition fires (expired particle, emitter despawn, level unload).
 - Level unloads (all entities destroyed).
 
-Destruction is deferred to the end of the tick. Entities marked for destruction are removed after all updates complete. This avoids invalidating references mid-tick.
+Destruction is immediate: the entity's slot is cleared and its generation bumped (or the slot retired on generation overflow) in the same call that removes the entity. Callers must not hold entity IDs across points where destruction can occur.
 
 ---
 
@@ -83,7 +74,7 @@ Level files embed entity definitions: key-value pairs grouped per entity. Each g
 
 ### Loading
 
-The loader reads entity definitions and resolves each `classname` to an engine entity type. Recognized classnames produce the corresponding entity, initialized from the key-value pairs (position, angle, flags, etc.).
+The loader reads entity definitions and resolves each `classname` via a classname-dispatch table to an engine spawn handler. Recognized classnames produce an entity initialized from the key-value pairs (position, angle, flags, etc.).
 
 Unknown classnames are logged as warnings and skipped. The engine does not crash on unrecognized entities — maps may contain editor-only or tool entities that have no runtime meaning.
 
@@ -97,29 +88,20 @@ Entity properties arrive as string key-value pairs. The loader parses these into
 
 ### Fixed Timestep
 
-Game logic runs at a fixed tick rate, decoupled from render framerate. All entities update at the same rate. Renderer interpolates between the last two game states for smooth visuals.
+Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer interpolates between the last two game states for smooth visuals.
 
 ### Update Order
 
-| Order | Category | Rationale |
-|-------|----------|-----------|
-| 1 | Player | Input-driven; must resolve before anything reacts to player state |
-| 2 | All other entities | Read world state including updated player position |
+| Order | Stage | Rationale |
+|-------|-------|-----------|
+| 1 | Player movement tick | Input-driven; resolves capsule physics and position before anything reads player state |
+| 2 | Scripting bridges | Emitter, particle sim, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities |
 
-Within non-player entities, update order is stable but not individually specified. Entities read world state (BSP geometry, other entity positions) but do not modify other entities directly during their own update.
+The camera follows the player pawn after movement resolves. When no player pawn exists (no `PlayerMovement` entity), a fly-camera moves directly from input.
 
 ### Events
 
-Entities emit game events during their update. Events are collected, not processed inline.
-
-| Event category | Examples |
-|----------------|----------|
-| Audio triggers | Footstep, gunshot, explosion, door movement |
-| Damage | Projectile hit, hazard contact |
-| State changes | Pickup collected, enemy killed, door opened |
-| Visual effects | Muzzle flash, impact spark, blood spray |
-
-Events are consumed by audio and renderer after game logic completes, respecting frame order: Input -> Game logic -> Audio -> Render -> Present.
+Movement events (footstep, landing, etc.) are collected across all ticks in a frame and drained after the tick loop completes, so reactions observe the fully-settled post-tick world state. Audio is not yet implemented; event categories listed above are illustrative of the intended model, not current consumers.
 
 ---
 
@@ -127,26 +109,18 @@ Events are consumed by audio and renderer after game logic completes, respecting
 
 ### Ownership
 
-Game logic owns entities exclusively. No other subsystem creates, modifies, or destroys entities.
+Game logic owns entities exclusively. No other subsystem creates, modifies, or destroys entities directly.
 
 | Subsystem | Interaction with entities |
 |-----------|--------------------------|
-| **Game logic** | Owns, creates, updates, destroys |
-| **Renderer** | Borrows position, orientation, and visual data (sprite index, animation frame, or 3D model handle) read-only for drawing |
-| **Audio** | Consumes game events (sound triggers) emitted during update; reads entity positions for spatial audio |
-| **Input** | No direct interaction with entities; input state flows through game logic |
+| **Game logic / bridges** | Own, create, update, destroy via the registry |
+| **Renderer** | Borrows transform and visual-component data read-only for drawing |
+| **Audio** | Not yet implemented. Planned to consume movement events for spatial sound. |
+| **Input** | No direct entity interaction; input state flows through game logic |
 
 ### BSP Leaf Linkage
 
-Each entity tracks which BSP leaf it occupies. This leaf index serves three consumers:
-
-| Consumer | Use |
-|----------|-----|
-| Renderer | Visibility culling — skip entities in leaves outside the camera's current visibility set |
-| Audio | Reverb zone lookup — determine acoustic environment for sounds emitted at entity position |
-| Game logic | Spatial queries — which entities are near a point, which zone an entity occupies |
-
-Leaf index updates each tick after position changes.
+The camera's current BSP leaf is computed each frame for portal-visibility culling. Entities do not track a leaf index; there is no per-entity leaf update.
 
 ---
 
@@ -173,6 +147,16 @@ World collision resolves inline during each entity's movement — the entity sli
 
 ---
 
+## 7b. Player Movement Component
+
+The dominant engine entity today is the player pawn. It carries a `PlayerMovement` component alongside its `Transform`. The component holds the capsule geometry, per-axis physics parameters (ground, air, fall), and mutable tick state (velocity, grounded flag, air-jumps remaining).
+
+Movement is purely engine-internal. Scripts cannot read or write `PlayerMovement` through `worldQuery`; the movement system owns it exclusively. The camera follows the pawn's position each tick (eye-height offset above capsule center); yaw and pitch remain mouse-driven.
+
+A player pawn is present only when a `player_spawn` entity in the level resolves to a movement descriptor. When no pawn exists, the engine falls back to a fly-camera so maps are navigable without a player descriptor.
+
+---
+
 ## 8. Particles
 
 Each live particle is a full ECS entity in the scripting entity registry, carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge spawns and despawns particles each tick via `EntityRegistry::spawn` / `despawn` — scripts never observe or manipulate individual particles.
@@ -185,7 +169,7 @@ The parent emitter entity carries `BillboardEmitterComponent`. Particles back-re
 
 ## 9. Non-Goals
 
-- ECS or component system
+- Full ECS (archetype storage, query planner, system scheduler)
 - Entity inheritance hierarchies
 - Per-entity script lifecycle callbacks (entity types don't have script attachment points; scripts manipulate entities through registered primitives)
 - Networked entity replication

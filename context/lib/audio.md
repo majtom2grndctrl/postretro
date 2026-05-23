@@ -4,43 +4,45 @@
 > **Key invariant:** audio subsystem never touches wgpu or renderer types. It receives listener state and sound event requests; it produces audio output internally via kira.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Build Pipeline](./build_pipeline.md)
 
+**Status: not yet implemented.** `kira` is declared in the workspace `Cargo.toml` but no audio module exists in engine source. This doc describes intended design.
+
 ---
 
 ## 1. Subsystem Boundary
 
-Audio is a self-contained subsystem. It does not depend on the renderer or wgpu.
+Audio will be a self-contained subsystem. It will not depend on the renderer or wgpu.
 
 | Direction | Data |
 |-----------|------|
 | **Receives** | Listener position and orientation, sound event requests, current BSP leaf index (for reverb lookup) |
 | **Produces** | Audio output (mixed and delivered to the OS by kira internally) |
 
-Sound assets load at level load time. No streaming from disk during gameplay.
+Sound assets will load at level load time. No streaming from disk during gameplay.
 
 ---
 
 ## 2. Playback Crate
 
-kira 0.12 handles playback and mixing. Engine code configures tracks, spatial parameters, and reverb effects through kira's API. kira pulls glam 0.32 transitively; its math types do not cross into engine code. Audio subsystem boundary uses primitive types (f32 arrays, tuples) — no glam types in the public API.
+kira 0.12 will handle playback and mixing. Engine code will configure tracks, spatial parameters, and reverb effects through kira's API. kira pulls glam 0.32 transitively; its math types will not cross into engine code. The audio subsystem boundary will use primitive types (f32 arrays, tuples) — no glam types in the public API.
 
 ---
 
 ## 3. Frame Integration
 
-Audio runs third in frame order: Input → Game logic → **Audio** → Render → Present.
+Audio will run third in frame order: Input → Game logic → **Audio** → Render → Present.
 
-Each frame, audio:
-1. Updates listener position and orientation from camera/player state.
-2. Processes sound event requests emitted by game logic.
-3. Updates spatial parameters for active sounds.
+Each frame, audio will:
+1. Update listener position and orientation from camera/player state.
+2. Process sound event requests emitted by game logic.
+3. Update spatial parameters for active sounds.
 
-Audio never blocks the frame. kira manages its own audio thread; the per-frame work is parameter updates and playback triggers.
+Audio must never block the frame. kira will manage its own audio thread; per-frame work is parameter updates and playback triggers.
 
 ---
 
 ## 4. Sound Triggering
 
-Game logic emits sound event requests. Audio processes them.
+Game logic will emit sound event requests. Audio will process them.
 
 | Event | Example trigger |
 |-------|-----------------|
@@ -51,33 +53,33 @@ Game logic emits sound event requests. Audio processes them.
 | Door | Door open/close |
 | Impact | Projectile hitting a surface |
 
-Each request carries: sound category, world position, and (where relevant) surface material type.
+Each request will carry: sound category, world position, and (where relevant) surface material type.
 
 ### Surface Material Sounds
 
-Texture name prefix maps to a material enum. Footstep and impact sounds vary by material. The material lookup is shared with the renderer's decal system — one prefix table, one enum. Which prefixes exist is a game content concern; see `resource_management.md` §3.
+Texture name prefix will map to a material enum. Footstep and impact sounds will vary by material. The material lookup will be shared with the renderer's decal system — one prefix table, one enum. Which prefixes exist is a game content concern; see `resource_management.md` §3.
 
 ---
 
 ## 5. Spatial Positioning
 
-All in-world sounds are positioned in 3D relative to the listener.
+All in-world sounds will be positioned in 3D relative to the listener.
 
 | Parameter | Behavior |
 |-----------|----------|
 | Distance attenuation | Sounds fall off with distance from listener |
 | Stereo panning | Left/right balance derived from sound direction relative to listener facing |
-| Position tracking | Active sounds update position each frame if their source moves |
+| Position tracking | Active sounds will update position each frame if their source moves |
 
 ---
 
 ## 6. Reverb Zones
 
-Reverb varies spatially through mapper-placed brush entities.
+Reverb will vary spatially through mapper-placed brush entities.
 
 ### Entity: `env_reverb_zone`
 
-Placed in TrenchBroom via custom FGD. Mappers paint acoustic regions as brush volumes.
+Will be placed in TrenchBroom via custom FGD. Mappers paint acoustic regions as brush volumes.
 
 | Property | Purpose |
 |----------|---------|
@@ -87,13 +89,13 @@ Placed in TrenchBroom via custom FGD. Mappers paint acoustic regions as brush vo
 
 ### BSP Leaf Resolution
 
-At level load time, each `env_reverb_zone` brush is resolved to the set of BSP leaves it contains. This is the same resolution strategy used for fog volumes.
+At level load time, each `env_reverb_zone` brush will be resolved to the set of BSP leaves it contains. This is the same resolution strategy intended for fog volumes.
 
-At runtime, audio looks up the listener's current BSP leaf and checks which (if any) reverb zone contains that leaf. Reverb parameters apply per leaf — a listener crossing from one zone to another gets the new zone's parameters immediately.
+At runtime, audio will look up the listener's current BSP leaf and check which (if any) reverb zone contains that leaf. Reverb parameters will apply per leaf — a listener crossing from one zone to another gets the new zone's parameters immediately.
 
-**Overlap rule:** when a BSP leaf belongs to multiple reverb zones, the smallest zone (fewest leaves) wins. This means a small tunnel zone inside a large outdoor zone produces tunnel reverb, not outdoor. No blending between zones — transitions are immediate on leaf crossing.
+**Overlap rule:** when a BSP leaf belongs to multiple reverb zones, the smallest zone (fewest leaves) wins. A small tunnel zone inside a large outdoor zone produces tunnel reverb, not outdoor. No blending between zones — transitions are immediate on leaf crossing.
 
-Leaves outside any reverb zone get no reverb effect (dry signal only).
+Leaves outside any reverb zone will get no reverb effect (dry signal only).
 
 ---
 

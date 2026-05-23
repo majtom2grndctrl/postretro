@@ -8,7 +8,7 @@
 
 ## Workspace
 
-Three crates in a Cargo workspace:
+Four crates in a Cargo workspace:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
@@ -34,6 +34,7 @@ Three crates in a Cargo workspace:
 | Logging | log 0.4 + env_logger 0.11 |
 | Scripting (JS/TS) | rquickjs (QuickJS embed) |
 | Scripting (Luau) | mlua (Luau embed) |
+| Collision | parry3d 0.17 (nalgebra-based — convert to glam at collision module boundary; nalgebra types must not cross into engine code) |
 
 ### Level compiler (`postretro-level-compiler`)
 
@@ -112,7 +113,7 @@ Never leave a bare `// TODO: fix later`. Either file a follow-up with context or
 
 ### 1.5 Documentation lifecycle
 
-See [Context Style Guide](./context_style_guide.md) §Documentation Lifecycle. Specs are consumed during implementation, then deleted. Durable knowledge lives in context files; implementation-level "why" lives in code comments.
+See [Context Style Guide](./context_style_guide.md) §Documentation Lifecycle for the full lifecycle rules. In brief: specs are consumed during implementation; after a plan ships, durable knowledge belongs in context files and implementation-level "why" in code comments.
 
 ### 1.6 Breaking API changes
 

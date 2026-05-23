@@ -87,8 +87,10 @@ bitflags! {
 pub enum PrmFormat {
     /// 4 bytes per pixel, sRGB-encoded RGBA. Used for albedo (diffuse).
     Rgba8UnormSrgb = 0,
-    /// 4 bytes per pixel, linear RGBA. Used for normal maps; each texel stores
-    /// a filtered, renormalised direction (`n = sample.rgb * 2 - 1`).
+    /// 4 bytes per pixel, linear RGBA. Previously the normal-map format;
+    /// superseded by `Bc5RgUnorm` (tag 3), which the baker now emits for all
+    /// normal slots. Tag 1 remains readable for pre-BC5 `.prm` files but is no
+    /// longer written for normals.
     Rgba8Unorm = 1,
     /// 1 byte per pixel, linear single channel. Used for specular intensity.
     R8Unorm = 2,
@@ -601,7 +603,10 @@ mod tests {
 
     /// Build a fully-populated `PrmFile` with three slots at modest sizes.
     fn make_three_slot_file() -> PrmFile {
-        // Pick dimensions whose mip math is easy to reason about.
+        // Pick dimensions whose mip math is easy to reason about. The normal
+        // slot uses the legacy Rgba8Unorm format here to exercise reader
+        // parsing of pre-BC5 files — it is not what prl-build now emits for
+        // normals (see the BC5 baker tests for current output).
         let diffuse = make_slot(PrmFormat::Rgba8UnormSrgb, 4, 4);
         let specular = make_slot(PrmFormat::R8Unorm, 2, 2);
         let normal = make_slot(PrmFormat::Rgba8Unorm, 8, 8);

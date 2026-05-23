@@ -360,8 +360,9 @@ impl ShVolumeResources {
 
         let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(SH_BAND_COUNT + 5);
         // Bind the **total** sampled views — consumers (forward, billboard,
-        // fog) read post-compose SH. The compose pass writes here every
-        // frame; in the stub phase it's a base→total copy.
+        // fog) read post-compose SH. The compose pass accumulates animated
+        // deltas onto the base each frame; with no active animated lights the
+        // result equals the base.
         for (i, view) in total_sampled_views.iter().enumerate() {
             entries.push(wgpu::BindGroupEntry {
                 binding: 1 + i as u32,

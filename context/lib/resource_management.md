@@ -50,11 +50,9 @@ Frame ordering derives from the numeric suffix. Playback rate is defined by the 
 
 World textures use individual bind groups — one per unique material. Draw calls batch by material to minimize bind group switches. No atlas; atlas packing is an unscheduled optimization.
 
-### 2.1 SH Irradiance Volume (Milestone 5)
+### 2.1 SH Irradiance Volume
 
-> **Not yet implemented.**
-
-Indirect lighting is carried by an SH L2 irradiance volume (3D probe grid), not by per-face lightmaps. The probe section is loaded from PRL and sampled trilinearly per fragment in the world shader. See `rendering_pipeline.md` §4.
+Indirect lighting is carried by an SH L2 irradiance volume (3D probe grid), not by per-face lightmaps. The probe section is loaded from PRL. Sampling is a manual 8-corner `textureLoad` blend: invalid (in-wall) corners are dropped via a baked per-probe validity bit, backfacing corners are downweighted (forward pass only), and surviving weights are renormalized. See `rendering_pipeline.md` §4.
 
 ---
 

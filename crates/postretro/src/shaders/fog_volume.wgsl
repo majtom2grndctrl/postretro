@@ -41,8 +41,10 @@ struct ShGridInfo {
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 
 // Animated buffers (bindings 11..12) are declared to satisfy the shared
-// group-3 layout but are not read here; the fog pass uses only the static
-// SH volume for ambient scatter.
+// group-3 layout but are not read here — the fog pass does not evaluate
+// animation curves itself. The sh_band textures it samples (bindings 1..9)
+// are the composed total (static base + animated deltas), so animated-light
+// contributions are already reflected in the ambient scatter automatically.
 struct AnimationDescriptor {
     period: f32,
     phase: f32,
@@ -442,10 +444,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var step_count: u32 = 0u;
 
     // SH irradiance is band-limited and the SH grid is much coarser than the
-    // march step size. Sampling 72 textureLoad calls per step (8 corners × 9 bands) is wasted
-    // bandwidth — we cache one sample and refresh whenever the march has
-    // advanced more than `sh_coverage_dist` world units since the last sample
-    // (reset at each sub-interval boundary) to bound drift without per-step cost.
+    // march step size. Sampling 72 textureLoad calls per step (8 corners ×
+    // 9 bands) is wasted bandwidth — we cache one sample and refresh whenever
+    // the march has advanced more than `sh_coverage_dist` world units since the
+    // last sample (reset at each sub-interval boundary) to bound drift without
+    // per-step cost.
     // The cache lives in scalar locals (no array, no callee pointer) so it stays
     // in registers and never hits the Metal private-memory trap.
     //

@@ -483,10 +483,10 @@ mod tests {
     /// `SPRITE_INSTANCE_SIZE` byte layout.
     #[test]
     fn billboard_wgsl_sprite_instance_stride_matches_cpu() {
-        // Parse the full concatenated source: standalone `billboard.wgsl` no
-        // longer parses on its own since it references the shared
-        // `sh_sample.wgsl` helper symbols. The `SpriteInstance` struct span is
-        // identical regardless of the appended helper source.
+        // Parse the full concatenated source: `billboard.wgsl` references
+        // symbols from `sh_sample.wgsl` and cannot parse standalone. The
+        // `SpriteInstance` struct span is identical regardless of the appended
+        // helper source.
         let module = naga::front::wgsl::parse_str(BILLBOARD_SHADER_SOURCE).unwrap();
         let span = module
             .types

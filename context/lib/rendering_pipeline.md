@@ -158,7 +158,7 @@ All wgpu calls live in the renderer module. Map loader, game logic, audio, and i
 | 0 | Camera uniforms |
 | 1 | Material (albedo texture, normal map, per-material uniforms) |
 | 2 | Dynamic lights, influence volumes, per-chunk static light lists |
-| 3 | SH irradiance volume (sampler, 9 coefficient band textures for static base + animated-composed total, grid uniform, animation descriptor buffer, curve sample buffer) |
+| 3 | SH irradiance volume (9 coefficient band textures for static base + animated-composed total, read via `textureLoad` — no sampler, binding 0 vacant; grid uniform, animation descriptor buffer, curve sample buffer) |
 | 4 | Lightmap atlas (irradiance + dominant direction textures) |
 | 5 | Spot shadow maps (depth texture array, comparison sampler, light-space matrices) |
 | 6 | FX resources (sprite instance storage buffer; fog depth buffer, AABB buffer, scatter target) |

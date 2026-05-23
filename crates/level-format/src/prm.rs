@@ -3,9 +3,9 @@
 // One `.prm` file per source PNG texture: it carries the precomputed mip chain
 // for that texture's three material slots (diffuse, specular, normal), baked
 // at compile time by `prl-build` and uploaded directly at runtime by the
-// renderer. The format is intentionally trivial — no compression, no
-// per-mip headers — so loading is a header parse plus a few `memcpy`s into
-// staging buffers.
+// renderer. Normal slots may use BC5 block compression (format_tag 3); diffuse
+// and specular stay uncompressed. Loading is still a header parse plus memcpy —
+// BC5 payload bytes are uploaded verbatim. No per-mip headers.
 //
 // Wire format (little-endian throughout):
 //
@@ -25,7 +25,9 @@
 //   u8       reserved             = 0
 //   u16      width                -- mip 0, >= 1
 //   u16      height               -- mip 0, >= 1
-//   u8       level_count          -- floor(log2(max(w, h))) + 1
+//   u8       level_count          -- non-BC5: floor(log2(max(w, h))) + 1
+//                                    Bc5RgUnorm: count of leading levels whose
+//                                    width AND height are both >= 4 (see bc5_level_count)
 //   u8       reserved             = 0
 //   u32      payload_bytes        -- total bytes for all levels concatenated
 //   [u8; payload_bytes]           -- levels packed back-to-back, level 0 first
@@ -120,8 +122,11 @@ impl PrmFormat {
             // BC5 has no per-pixel size; callers route it through the
             // block-based payload-size path instead. Reaching here is a bug.
             Self::Bc5RgUnorm => {
-                debug_assert!(false, "bytes_per_pixel called for Bc5RgUnorm");
-                0
+                unreachable!(
+                    "bytes_per_pixel is not defined for Bc5RgUnorm; \
+                     callers must route block-compressed formats through \
+                     the block-based payload-size path"
+                )
             }
         }
     }
@@ -492,8 +497,8 @@ fn parse_slot(
     offset: usize,
     slot_index: u8,
 ) -> (Result<PrmSlot, PrmReadError>, usize) {
-    if offset + SLOT_HEADER_SIZE > body.len() {
-        return (Err(PrmReadError::Truncated), body.len() - offset);
+    if offset.saturating_add(SLOT_HEADER_SIZE) > body.len() {
+        return (Err(PrmReadError::Truncated), body.len().saturating_sub(offset));
     }
 
     let tag = body[offset];
@@ -508,7 +513,7 @@ fn parse_slot(
                     slot: slot_index,
                     tag,
                 }),
-                body.len() - offset,
+                body.len().saturating_sub(offset),
             );
         }
     };
@@ -527,7 +532,7 @@ fn parse_slot(
     // Dimension sanity bound. Zero dimensions are rejected because a zero-size payload is always malformed.
     if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
         let consumed = SLOT_HEADER_SIZE.saturating_add(payload_bytes as usize);
-        let consumed = consumed.min(body.len() - offset);
+        let consumed = consumed.min(body.len().saturating_sub(offset));
         return (
             Err(PrmReadError::DimensionTooLarge {
                 slot: slot_index,
@@ -546,7 +551,7 @@ fn parse_slot(
     };
     if level_count != expected_levels {
         let consumed = SLOT_HEADER_SIZE.saturating_add(payload_bytes as usize);
-        let consumed = consumed.min(body.len() - offset);
+        let consumed = consumed.min(body.len().saturating_sub(offset));
         return (
             Err(PrmReadError::LevelCountMismatch {
                 slot: slot_index,
@@ -560,7 +565,7 @@ fn parse_slot(
     let expected_payload = expected_payload_bytes(format, width, height, level_count);
     if payload_bytes != expected_payload {
         let consumed = SLOT_HEADER_SIZE.saturating_add(payload_bytes as usize);
-        let consumed = consumed.min(body.len() - offset);
+        let consumed = consumed.min(body.len().saturating_sub(offset));
         return (
             Err(PrmReadError::PayloadBytesMismatch {
                 slot: slot_index,
@@ -576,7 +581,7 @@ fn parse_slot(
     if payload_end > body.len() {
         // Payload itself is truncated; consume the rest of the buffer to keep
         // the cursor monotonic but signal Truncated.
-        return (Err(PrmReadError::Truncated), body.len() - offset);
+        return (Err(PrmReadError::Truncated), body.len().saturating_sub(offset));
     }
 
     let payload = body[payload_start..payload_end].to_vec();

@@ -774,7 +774,8 @@ impl Renderer {
         };
 
         // Explicit pre-check so an adapter without BC support fails with a
-        // feature-naming error rather than the generic request_device failure.
+        // clear feature-naming error rather than the opaque `request_device`
+        // rejection wgpu returns when a requested feature is unsupported.
         if !adapter_features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
             anyhow::bail!(
                 "GPU adapter lacks required feature TEXTURE_COMPRESSION_BC \

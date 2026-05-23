@@ -143,6 +143,8 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | FogCellMasks | 31 | When at least one fog volume entity is present (fog_volume brush, fog_lamp, or fog_tube) |
 | TextureCacheKeys | 32 | Always; one 32-byte blake3 per TextureNames entry pointing at a `.prm` sidecar under `.build-caches/prm-cache/` |
 
+**ShVolume (id 20) probe record** (SH_VOLUME_VERSION 4, PROBE_STRIDE 116): `[27 × f32 sh_coefficients (bytes 0–107)][u8 validity (byte 108)][f16 E_d mean-distance (bytes 109–110)][f16 E_d2 mean-squared-distance (bytes 111–112)][3 bytes padding]`. Distances are linear world-space meters from the probe origin; sky-miss sentinel = `4 × length(cell_size)`. The read loop advances by the file header's `probe_stride` field, not the compiled `PROBE_STRIDE` constant, so stride growth tolerates unaware readers. f16 via `lightmap::f32_to_f16_bits`; validity byte = band-0 alpha; in-wall/exterior probes write zeroed moments.
+
 ### Runtime visibility
 
 Portal traversal is the sole visibility path: per-frame flood-fill from the camera leaf with frustum narrowing at each portal. The runtime falls back to per-leaf AABB frustum culling for solid-leaf, exterior-camera, and no-portals cases. See `rendering_pipeline.md` §2.

@@ -89,8 +89,7 @@ struct ChunkGridInfo {
 
 // Group 3 — SH irradiance volume. 9 3D textures (one per SH L2 band) carry
 // RGB coefficients in their .rgb channels. Band-0 .a carries the baked per-probe
-// validity bit (1 = valid, 0 = in-wall/off-grid); bands 1..=8 .a are unused. The
-// shared 8-corner blend in sh_sample.wgsl reads band-0 .a to drop invalid corners.
+// validity bit (1 = valid, 0 = in-wall/off-grid); bands 1..=8 .a are unused.
 // When `grid.has_sh_volume` is 0 the bindings point at dummy 1×1×1 textures and
 // the shader skips SH sampling. See postretro/src/render/sh_volume.rs.
 struct ShGridInfo {
@@ -148,6 +147,7 @@ struct AnimationDescriptor {
 // counter `i`. `is_active == 0` → static GpuLight.color used unchanged.
 // Uploaded by `LightBridge::update → Renderer::upload_bridge_descriptors`.
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
+@group(3) @binding(14) var sh_depth_moments: texture_3d<f32>;
 
 // Group 4 — baked directional lightmap (static direct lighting).
 // See context/lib/rendering_pipeline.md §4.
@@ -333,12 +333,13 @@ fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<
     );
 }
 
-// SH reconstruction (`sh_irradiance`) and the manual 8-corner blend
-// (`sample_sh_indirect_corners`) live in `sh_sample.wgsl`, concatenated after
-// this source at pipeline-build time (render/mod.rs `SHADER_SOURCE`). They read
-// the group-3 `sh_band0..8` textures and `sh_grid` declared above by lexical
-// name. The helper drops invalid (in-wall) corners via the baked validity bit
-// in band-0 alpha, downweights backfacing corners, and renormalizes survivors.
+// SH reconstruction (`sh_irradiance`) and the manual depth-aware 8-corner blend
+// (`sample_sh_indirect_corners_depth_aware`) live in `sh_sample.wgsl`,
+// concatenated after this source at pipeline-build time (render/mod.rs
+// `SHADER_SOURCE`). They read the group-3 `sh_band0..8`, `sh_depth_moments`,
+// and `sh_grid` declared above by lexical name. The helper drops invalid
+// (in-wall) corners via the baked validity bit in band-0 alpha, downweights
+// backfacing corners, applies moment visibility, and renormalizes survivors.
 
 // Normal-offset wrapper. Biases the lookup toward the lit side and derives the
 // grid index / sub-cell fraction, then defers the corrected 8-corner blend to
@@ -362,7 +363,14 @@ fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_norma
     let gi = vec3<u32>(floor(gf));
     let gfrac = fract(gf);
 
-    return sample_sh_indirect_corners(gi, gfrac, shading_normal, geo_normal, true);
+    return sample_sh_indirect_corners_depth_aware(
+        gi,
+        gfrac,
+        offset_world,
+        shading_normal,
+        geo_normal,
+        true,
+    );
 }
 
 // Post Retro sample. Reconstructs the texel grid in UV space — warping the

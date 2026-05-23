@@ -1,9 +1,10 @@
 // SH irradiance volume GPU resources: 3D textures, grid-info uniform, bind group (group 3).
-// See: context/lib/rendering_pipeline.md §4
+// See: context/lib/rendering_pipeline.md §4, §8
 
 use postretro_level_format::sh_volume::{AnimationDescriptor, ShProbe, ShVolumeSection};
 
-/// 9 textures + 1 uniform + 3 animation storage buffers in group 3. The shared
+/// 9 SH band textures + 1 depth-moment texture + 1 grid-info uniform + 3 animation storage buffers in group 3.
+/// The shared
 /// `sh_sample.wgsl` helper loads probes with `textureLoad`, so no sampler is
 /// bound; binding index 0 is intentionally vacant. WGSL/wgpu binding indices
 /// need not be contiguous, so the textures stay at 1..=SH_BAND_COUNT. Well
@@ -19,6 +20,8 @@ pub const BIND_ANIM_SAMPLES: u32 = 12;
 /// compose pass) because the two consumers use different indexing schemes —
 /// section-indexed vs map-light-indexed.
 pub const BIND_SCRIPTED_LIGHT_DESCRIPTORS: u32 = 13;
+/// Static per-probe depth moments: R = mean distance, G = mean squared distance.
+pub const BIND_SH_DEPTH_MOMENTS: u32 = BIND_SCRIPTED_LIGHT_DESCRIPTORS + 1;
 
 /// Byte size of `ShGridInfo` — four `vec4` slots to satisfy std140 alignment
 /// rules (vec3 fields align to 16, followed by a same-slot scalar).
@@ -237,6 +240,7 @@ impl ShVolumeResources {
         // Total SH bands: storage-writeable parallel set the compose pass writes each frame;
         // consumer bind group samples from these. STORAGE_BINDING | TEXTURE_BINDING so one texture serves both roles.
         let total_textures: Vec<wgpu::Texture>;
+        let depth_moment_texture: wgpu::Texture;
 
         #[cfg(feature = "dev-tools")]
         let validity: Vec<u8> = usable
@@ -275,18 +279,22 @@ impl ShVolumeResources {
             total_textures = (0..SH_BAND_COUNT)
                 .map(|band| create_total_band_texture(device, sec.grid_dimensions, band))
                 .collect();
+            let moments = pack_probe_depth_moments(&sec.probes, sec.grid_dimensions);
+            depth_moment_texture =
+                upload_depth_moment_texture(device, queue, sec.grid_dimensions, &moments);
             grid_origin = sec.grid_origin;
             cell_size = sec.cell_size;
             grid_dimensions = sec.grid_dimensions;
             present = true;
         } else {
-            let dummy = [0u16; 4]; // one rgba16float texel, all zeros.
+            let dummy = dummy_depth_moment_payload();
             base_textures = (0..SH_BAND_COUNT)
                 .map(|band| upload_band_texture(device, queue, [1, 1, 1], &dummy, band))
                 .collect();
             total_textures = (0..SH_BAND_COUNT)
                 .map(|band| create_total_band_texture(device, [1, 1, 1], band))
                 .collect();
+            depth_moment_texture = upload_depth_moment_texture(device, queue, [1, 1, 1], &dummy);
             grid_origin = [0.0; 3];
             cell_size = [1.0; 3];
             grid_dimensions = [1, 1, 1];
@@ -357,8 +365,12 @@ impl ShVolumeResources {
                 })
             })
             .collect();
+        let depth_moment_view = depth_moment_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("SH Depth Moment View"),
+            ..Default::default()
+        });
 
-        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(SH_BAND_COUNT + 5);
+        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(SH_BAND_COUNT + 6);
         // Bind the **total** sampled views — consumers (forward, billboard,
         // fog) read post-compose SH. The compose pass accumulates animated
         // deltas onto the base each frame; with no active animated lights the
@@ -384,6 +396,10 @@ impl ShVolumeResources {
         entries.push(wgpu::BindGroupEntry {
             binding: BIND_SCRIPTED_LIGHT_DESCRIPTORS,
             resource: scripted_light_descriptors_buffer.as_entire_binding(),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: BIND_SH_DEPTH_MOMENTS,
+            resource: wgpu::BindingResource::TextureView(&depth_moment_view),
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -434,7 +450,7 @@ impl ShVolumeResources {
 // --- Helpers ---
 
 fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(SH_BAND_COUNT + 1);
+    let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(SH_BAND_COUNT + 5);
     // Shared with the forward pass (fragment) and fog raymarch (compute), so visibility
     // covers both stages on every entry.
     let vis = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
@@ -483,6 +499,16 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             count: None,
         });
     }
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: BIND_SH_DEPTH_MOMENTS,
+        visibility: vis,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D3,
+            multisampled: false,
+        },
+        count: None,
+    });
     entries
 }
 
@@ -527,6 +553,31 @@ fn pack_probes_to_band_slices(probes: &[ShProbe], grid: [u32; 3]) -> Vec<Vec<u16
     bands
 }
 
+/// Pack per-probe depth moments into one `Rgba16Float` 3D texture payload.
+/// Probes are already ordered z-major/y/x by the PRL section; keeping the same
+/// linear order as the SH band textures makes the moment texture index-aligned
+/// with every band. Valid probes copy baked f16 bits directly into RG; invalid
+/// probes remain all zero.
+fn pack_probe_depth_moments(probes: &[ShProbe], grid: [u32; 3]) -> Vec<u16> {
+    let total = (grid[0] as usize) * (grid[1] as usize) * (grid[2] as usize);
+    debug_assert_eq!(probes.len(), total);
+
+    let mut moments = vec![0u16; total * 4];
+    for (probe_idx, probe) in probes.iter().enumerate() {
+        if probe.validity == 0 {
+            continue;
+        }
+        let off = probe_idx * 4;
+        moments[off] = probe.mean_distance;
+        moments[off + 1] = probe.mean_sq_distance;
+    }
+    moments
+}
+
+fn dummy_depth_moment_payload() -> [u16; 4] {
+    [0u16; 4]
+}
+
 /// Create a `Rgba16Float` 3D texture sized to `grid` and upload `data`
 /// (row-major by x, then y, then z — matching the baker's z-major iteration
 /// order after reshaping).
@@ -558,6 +609,49 @@ fn upload_band_texture(
     // Safe reinterpretation: Rgba16Float wants 8 bytes per texel (4 halves).
     let byte_slice = u16_slice_to_bytes(data_u16);
 
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &byte_slice,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(8 * size.width),
+            rows_per_image: Some(size.height),
+        },
+        size,
+    );
+
+    texture
+}
+
+fn upload_depth_moment_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    grid: [u32; 3],
+    data_u16: &[u16],
+) -> wgpu::Texture {
+    let size = wgpu::Extent3d {
+        width: grid[0].max(1),
+        height: grid[1].max(1),
+        depth_or_array_layers: grid[2].max(1),
+    };
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("SH Depth Moments"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    let byte_slice = u16_slice_to_bytes(data_u16);
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture: &texture,
@@ -860,6 +954,10 @@ impl DeviceBufferInit for wgpu::Device {
 mod tests {
     use super::*;
 
+    const SH_DEPTH_MIN_VARIANCE_M2_REF: f32 = 1.0e-4;
+    const SH_DEPTH_BIAS_CELL_FRACTION_REF: f32 = 0.05;
+    const SH_DEPTH_MIN_VISIBILITY_REF: f32 = 0.03;
+
     #[test]
     fn f32_to_f16_zero_and_one() {
         assert_eq!(f32_to_f16_bits(0.0), 0x0000);
@@ -1045,6 +1143,201 @@ mod tests {
         assert_eq!(b1[3], 0);
     }
 
+    #[test]
+    fn pack_probe_depth_moments_preserves_valid_probe_f16_bits() {
+        let probe_a = ShProbe {
+            validity: 1,
+            mean_distance: 0x4200,
+            mean_sq_distance: 0x4900,
+            ..Default::default()
+        };
+        let probe_b = ShProbe {
+            validity: 1,
+            mean_distance: 0x3c00,
+            mean_sq_distance: 0x4000,
+            ..Default::default()
+        };
+
+        let moments = pack_probe_depth_moments(&[probe_a, probe_b], [2, 1, 1]);
+
+        assert_eq!(
+            moments,
+            vec![
+                0x4200, 0x4900, 0, 0, //
+                0x3c00, 0x4000, 0, 0,
+            ],
+        );
+    }
+
+    #[test]
+    fn pack_probe_depth_moments_zeroes_invalid_probes() {
+        let probe_valid = ShProbe {
+            validity: 1,
+            mean_distance: 0x4400,
+            mean_sq_distance: 0x4c00,
+            ..Default::default()
+        };
+        let probe_invalid = ShProbe {
+            validity: 0,
+            mean_distance: 0x7bff,
+            mean_sq_distance: 0x7bff,
+            ..Default::default()
+        };
+
+        let moments = pack_probe_depth_moments(&[probe_valid, probe_invalid], [2, 1, 1]);
+
+        assert_eq!(
+            moments,
+            vec![
+                0x4400, 0x4c00, 0, 0, //
+                0, 0, 0, 0,
+            ],
+        );
+    }
+
+    #[test]
+    fn missing_sh_depth_moment_dummy_payload_is_one_zero_rgba16f_texel() {
+        assert_eq!(dummy_depth_moment_payload(), [0, 0, 0, 0]);
+        assert_eq!(dummy_depth_moment_payload().len(), 4);
+
+        let grid_info = build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false);
+        let flag = u32::from_ne_bytes(grid_info[12..16].try_into().unwrap());
+        assert_eq!(
+            flag, 0,
+            "missing SH section must disable shader SH sampling"
+        );
+    }
+
+    #[test]
+    fn sh_bind_group_layout_includes_depth_moments_after_scripted_light_descriptors() {
+        assert_eq!(BIND_SH_DEPTH_MOMENTS, BIND_SCRIPTED_LIGHT_DESCRIPTORS + 1);
+
+        let entries = sh_bind_group_layout_entries();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.binding == BIND_SH_DEPTH_MOMENTS)
+            .expect("group 3 layout should include SH depth moments");
+
+        assert_eq!(
+            entry.visibility,
+            wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE
+        );
+        assert!(entry.count.is_none());
+        match entry.ty {
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D3,
+                multisampled: false,
+            } => {}
+            other => panic!("unexpected SH depth moment binding type: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn group3_shader_bindings_are_represented_by_rust_layout() {
+        use std::collections::BTreeSet;
+
+        const FORWARD_SHADER_SOURCE: &str = concat!(
+            include_str!("../shaders/forward.wgsl"),
+            "\n",
+            include_str!("../shaders/curve_eval.wgsl"),
+            "\n",
+            include_str!("../shaders/sh_sample.wgsl"),
+        );
+        const BILLBOARD_SHADER_SOURCE: &str = concat!(
+            include_str!("../shaders/billboard.wgsl"),
+            "\n",
+            include_str!("../shaders/sh_sample.wgsl"),
+        );
+        const FOG_SHADER_SOURCE: &str = concat!(
+            include_str!("../shaders/fog_volume.wgsl"),
+            "\n",
+            include_str!("../shaders/sh_sample.wgsl"),
+        );
+
+        let rust_bindings: BTreeSet<u32> = sh_bind_group_layout_entries()
+            .iter()
+            .map(|entry| entry.binding)
+            .collect();
+        let expected_rust_bindings: BTreeSet<u32> = (1..=SH_BAND_COUNT as u32)
+            .chain([
+                (1 + SH_BAND_COUNT) as u32,
+                BIND_ANIM_DESCRIPTORS,
+                BIND_ANIM_SAMPLES,
+                BIND_SCRIPTED_LIGHT_DESCRIPTORS,
+                BIND_SH_DEPTH_MOMENTS,
+            ])
+            .collect();
+        assert_eq!(
+            rust_bindings, expected_rust_bindings,
+            "group-3 Rust layout bindings changed without updating the test contract",
+        );
+
+        for (label, source) in [
+            ("forward", FORWARD_SHADER_SOURCE),
+            ("billboard", BILLBOARD_SHADER_SOURCE),
+            ("fog", FOG_SHADER_SOURCE),
+        ] {
+            let shader_bindings = shader_group3_bindings(source);
+            assert!(
+                shader_bindings.contains(&BIND_SH_DEPTH_MOMENTS),
+                "{label} shader must declare sh_depth_moments at group 3 binding {BIND_SH_DEPTH_MOMENTS}",
+            );
+            for binding in &shader_bindings {
+                assert!(
+                    rust_bindings.contains(binding),
+                    "{label} shader declares group 3 binding {binding}, but Rust SH layout does not",
+                );
+            }
+        }
+
+        let forward_bindings = shader_group3_bindings(FORWARD_SHADER_SOURCE);
+        assert!(
+            forward_bindings.contains(&BIND_SCRIPTED_LIGHT_DESCRIPTORS),
+            "forward shader must declare scripted light descriptors at group 3 binding {BIND_SCRIPTED_LIGHT_DESCRIPTORS}",
+        );
+    }
+
+    #[test]
+    fn chebyshev_visibility_reference_is_full_before_mean_plus_bias() {
+        let cell_size = [2.0, 1.0, 3.0];
+        let bias = SH_DEPTH_BIAS_CELL_FRACTION_REF;
+        assert_eq!(
+            chebyshev_visibility_reference(4.0, 17.0, 4.0, cell_size, true),
+            1.0
+        );
+        assert_eq!(
+            chebyshev_visibility_reference(4.0, 17.0, 4.0 + bias, cell_size, true),
+            1.0
+        );
+    }
+
+    #[test]
+    fn chebyshev_visibility_reference_smoothly_attenuates_past_mean() {
+        let cell_size = [1.0, 1.0, 1.0];
+        let near = chebyshev_visibility_reference(2.0, 5.0, 2.25, cell_size, true);
+        let far = chebyshev_visibility_reference(2.0, 5.0, 4.0, cell_size, true);
+
+        assert!(near < 1.0, "beyond mean+bias should attenuate");
+        assert!(far < near, "farther samples should receive less visibility");
+        assert!(far > SH_DEPTH_MIN_VISIBILITY_REF);
+    }
+
+    #[test]
+    fn chebyshev_visibility_reference_stays_finite_with_zero_variance() {
+        let cell_size = [1.0, 1.0, 1.0];
+        let visibility = chebyshev_visibility_reference(2.0, 4.0, 20.0, cell_size, true);
+        assert!(visibility.is_finite());
+        // Near-zero variance with a far sample collapses visibility to the floor.
+        assert_eq!(visibility, SH_DEPTH_MIN_VISIBILITY_REF);
+    }
+
+    #[test]
+    fn chebyshev_visibility_reference_zeroes_invalid_probe() {
+        let visibility = chebyshev_visibility_reference(0.0, 0.0, 100.0, [1.0, 1.0, 1.0], false);
+        assert_eq!(visibility, 0.0);
+    }
+
     /// Validity must be exactly two-state in band-0 alpha — `0x0000` for
     /// invalid probes and `0x3c00` (f16 1.0) for valid ones — and confined to
     /// band 0 so bands 1..=8 never carry a validity signal. The forward shader
@@ -1150,6 +1443,40 @@ mod tests {
             out[i] += v * 0.546274 * (nx * nx - ny * ny);
         }
         out
+    }
+
+    fn chebyshev_visibility_reference(
+        mean: f32,
+        mean2: f32,
+        distance: f32,
+        cell_size: [f32; 3],
+        is_valid: bool,
+    ) -> f32 {
+        if !is_valid {
+            return 0.0;
+        }
+        let cell_min = cell_size[0].min(cell_size[1]).min(cell_size[2]).max(0.0);
+        let bias = cell_min * SH_DEPTH_BIAS_CELL_FRACTION_REF;
+        let variance = (mean2 - mean * mean).max(SH_DEPTH_MIN_VARIANCE_M2_REF);
+        let delta = (distance - mean - bias).max(0.0);
+        let visibility = if delta > 0.0 {
+            variance / (variance + delta * delta)
+        } else {
+            1.0
+        };
+        visibility.clamp(SH_DEPTH_MIN_VISIBILITY_REF, 1.0)
+    }
+
+    fn shader_group3_bindings(source: &str) -> std::collections::BTreeSet<u32> {
+        let module = naga::front::wgsl::parse_str(source).expect("shader source should parse");
+        module
+            .global_variables
+            .iter()
+            .filter_map(|(_, var)| {
+                let binding = var.binding.as_ref()?;
+                (binding.group == 3).then_some(binding.binding)
+            })
+            .collect()
     }
 
     /// Directional radiance test — the smoking gun for basis-sign drift.

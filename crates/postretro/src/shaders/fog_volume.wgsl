@@ -59,6 +59,7 @@ struct AnimationDescriptor {
 }
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
+@group(3) @binding(14) var sh_depth_moments: texture_3d<f32>;
 
 // --- Group 5: Spot shadow maps ---
 
@@ -197,13 +198,11 @@ struct FogSpotLight {
 
 // --- SH ambient sampling ---
 //
-// SH reconstruction (`sh_irradiance`) and the manual 8-corner blend
-// (`sample_sh_indirect_corners`) live in `sh_sample.wgsl`, concatenated after
-// this source at pipeline-build time (render/fog_pass.rs `FOG_SHADER_SOURCE`).
-// They read the group-3 `sh_band0..8` textures and `sh_grid` declared above by
-// lexical name. Fog passes `reject_backface = false`: it has no surface normal
+// SH reconstruction and 8-corner blend helpers live in `sh_sample.wgsl`,
+// concatenated after this source at pipeline-build time (fog_pass.rs
+// `FOG_SHADER_SOURCE`). Fog uses the no-depth entry point: no surface normal
 // (the evaluation normal is a fixed world-up isotropic probe), so validity
-// exclusion of in-wall corners applies but backface rejection does not.
+// exclusion of in-wall corners applies but backface and depth visibility do not.
 
 // World-up normal: fog is directionally isotropic, and an overhead-ambient
 // reading is the most stable single-direction probe for the L2 reconstruction.
@@ -225,7 +224,7 @@ fn sample_sh_fog(world_pos: vec3<f32>) -> vec3<f32> {
     let clamped = max(cell_coord, vec3<f32>(0.0));
     let gi = vec3<u32>(floor(clamped));
     let gfrac = fract(clamped);
-    return sample_sh_indirect_corners(gi, gfrac, normal, normal, false);
+    return sample_sh_indirect_corners_without_depth(gi, gfrac, normal, normal, false);
 }
 
 // --- Shadow sampling (matches forward.wgsl::sample_spot_shadow) ---

@@ -89,6 +89,7 @@ struct AnimationDescriptor {
 };
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
+@group(3) @binding(14) var sh_depth_moments: texture_3d<f32>;
 
 // --- Group 6: sprite instance storage buffer ---
 struct SpriteInstance {
@@ -241,15 +242,16 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
     return smoothstep(cos_outer, cos_inner, cos_angle);
 }
 
-// SH reconstruction (`sh_irradiance`) and the manual 8-corner blend
-// (`sample_sh_indirect_corners`) live in `sh_sample.wgsl`, concatenated after
-// this source at pipeline-build time (render/smoke.rs `BILLBOARD_SHADER_SOURCE`).
-// They read the group-3 `sh_band0..8` textures and `sh_grid` declared above by
-// lexical name. Billboard passes `reject_backface = false`: a camera-facing
-// sprite has no real surface normal, so validity exclusion of in-wall corners
-// applies but backface rejection does not.
+// SH reconstruction (`sh_irradiance`) and the manual depth-aware 8-corner blend
+// (`sample_sh_indirect_corners_depth_aware`) live in `sh_sample.wgsl`,
+// concatenated after this source at pipeline-build time (render/smoke.rs
+// `BILLBOARD_SHADER_SOURCE`). They read the group-3 `sh_band0..8`,
+// `sh_depth_moments`, and `sh_grid` declared above by lexical name. Billboard
+// passes `reject_backface = false`: a camera-facing sprite has no real surface
+// normal, so validity/depth exclusion of in-wall corners applies but backface
+// rejection does not.
 
-// Derive the raw grid index / sub-cell fraction and defer the validity-weighted
+// Derive the raw grid index / sub-cell fraction and defer the depth-aware
 // 8-corner blend to the shared helper. `gi`/`gfrac` clamp the low side to the
 // grid origin; the helper owns high-side edge clamping per corner. Billboard
 // uses camera-forward (`N = V`) as its normal; with `reject_backface = false`
@@ -266,7 +268,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     let gi = vec3<u32>(floor(clamped));
     let gfrac = fract(clamped);
 
-    return sample_sh_indirect_corners(gi, gfrac, normal, normal, false);
+    return sample_sh_indirect_corners_depth_aware(gi, gfrac, world_pos, normal, normal, false);
 }
 
 @fragment

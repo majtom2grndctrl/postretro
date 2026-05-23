@@ -20,11 +20,13 @@ use crate::fx::fog_volume::{
 /// Format of the low-resolution scatter target.
 pub const SCATTER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-// `sh_sample.wgsl` reads `sh_band0..8` / `sh_grid`, declared in `fog_volume.wgsl`;
-// WGSL resolves module-scope names regardless of textual order, so appending
-// after is safe. The helper owns the SH reconstruction + 8-corner blend symbols
-// (`sh_irradiance`, `sample_sh_indirect_corners`) — fog must not redeclare them.
-// See rendering_pipeline.md §8.
+// `sh_sample.wgsl` reads `sh_band0..8`, `sh_depth_moments`, and `sh_grid`,
+// declared in `fog_volume.wgsl`; WGSL resolves module-scope names regardless of
+// textual order, so appending after is safe. The helper owns the SH
+// reconstruction + 8-corner blend symbols (`sh_irradiance`,
+// `sample_sh_indirect_corners_depth_aware`,
+// `sample_sh_indirect_corners_without_depth`) — fog must not redeclare them. See
+// rendering_pipeline.md §8.
 const FOG_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/fog_volume.wgsl"),
     "\n",

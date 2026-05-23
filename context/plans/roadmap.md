@@ -170,7 +170,7 @@ Kill light-leak-through-walls by adding per-probe visibility data to the Milesto
 Plans ship in this sequence:
 
 - [x] **Probe weight correctness (no new data)** — in the world shader: reject trilinear corners facing away from the surface normal, exclude invalid (zero-packed) probes from the blend, renormalize remaining weights. Pure ALU. Fixes a latent bug where invalid probes drag near-wall surfaces toward black — independent of DDGI, and a prerequisite the depth-aware interpolant needs anyway. **Measurement gate:** record residual smear/leak here to quantify what the depth atlas buys before paying for it.
-- [ ] **Probe depth/visibility atlas (bake)** — prl-build stage baking per-probe depth moments alongside the existing SH bands, ray-cast through the Milestone 4 BVH. Format kept chunk-friendly so a later brick split needs no interpolant rewrite (deferred-streaming insurance). New/extended PRL section.
+- [x] **Probe depth/visibility atlas (bake)** — prl-build stage baking per-probe depth moments alongside the existing SH bands, ray-cast through the Milestone 4 BVH. Format kept chunk-friendly so a later brick split needs no interpolant rewrite (deferred-streaming insurance). New/extended PRL section.
 - [ ] **Depth-aware runtime interpolant** — replace the trilinear SH sample with a visibility-weighted (Chebyshev) interpolant in the world shader, for both static surfaces and dynamic entities. Removes the plain-trilinear path. Depends on the depth atlas.
 - [ ] **Directional fog** — extend the live fog pass with the directional term, on top of the existing volumetric fog scope.
 - [ ] **Memory-budget checkpoint + coarse open-area spacing** — VRAM budget readout plus coarser probe spacing in open volumes; produces the empirical resident-fit number that gates any future streaming milestone.
@@ -181,17 +181,21 @@ Plans ship in this sequence:
 
 ## Milestone 10: First Playable (Vertical Slice)
 
-The first playable slice. Its job is to answer one question: does this foundation feel good enough to commit a full game to? Build the real weapon and enemy primitive layers — genuine primitive surface plus SDK reference implementations, refined in later passes, **not throwaway stubs** — and a placeholder sound layer so combat and enemies aren't judged silent. Enemy AI/navigation is the highest-uncertainty system on the whole roadmap; it is sequenced here, early, precisely to surface any foundation problem while the engine bet can still change.
+The first playable slice. Its job: answer one question — does this foundation feel good enough to commit a full game to? Reach it fast. Build minimalist weapon and enemy primitive layers — genuine primitive surface plus SDK reference behaviors, refined in later passes. **Foundations with room to grow, not throwaway stubs and not finished features.** Add a placeholder sound layer so combat isn't judged silent. Enemy navigation is the highest-uncertainty system on the roadmap; sequenced here, early, to surface any foundation problem while the engine bet can still change.
+
+**Lean rule:** smallest primitive surface that reads as game-y. Defer richness (projectile variety, line-of-sight queries, patrol graphs) to later passes. Each plan ships a reasonable foundation, not a complete feature.
 
 **Prerequisite:** Milestone 6 (entity model + scripting + damage events) ✓ and Milestone 7 (grounded movement) ✓.
 
 Plans ship in this sequence:
 
-- [ ] **Basic weapon primitives** — engine-level weapon primitive surface (hitscan first, projectile to follow); first weapons authored in the SDK as reference behaviors. Testable against the static world (impacts, the `DamageSource` entity) before any enemy exists. A foundation to refine, not a stub.
-- [ ] **Basic enemy primitives** — enemy primitive surface (simple AI state machine + navigation against the Milestone 7 trimesh collider, damageable); first enemy authored in the SDK. Front-loaded as the highest-uncertainty system — it validates whether the foundation carries AI and navigation. A foundation to refine, not a stub.
+- [ ] **Weapon primitives** — engine-level weapon primitive surface. Hitscan resolution mode first: raycast the Milestone 7 collision world, apply damage, spawn impact. Projectile is a sibling resolution mode, deferred unless the slice needs it — not faked with a fast projectile. First weapon authored in the SDK as a reference behavior. Testable against the static world (impacts, the `DamageSource` entity) before any enemy exists. A foundation to refine, not a stub.
+- [ ] **Enemy entity + damage surface** — minimal enemy primitive: spawnable, damageable, dies. Builds on the Milestone 6 entity model and damage events; no navigation yet. Can land alongside weapon primitives — gives weapons a live target.
+- [ ] **Navigation foundation** — pathfinding against the Milestone 7 trimesh collider. The heavy, uncertain plan, isolated so it can't quietly balloon. Smallest workable primitive: move toward a target without clipping. Richer queries (line-of-sight, patrol paths) deferred. Front-loaded to validate whether the foundation carries navigation. Depends on the enemy entity surface.
+- [ ] **Enemy AI behavior** — simple state machine (idle → alert → attack), authored in the SDK as a reference behavior. First enemy reacts to the player and the world. Depends on the enemy entity surface and the navigation foundation. A foundation to refine, not a stub.
 - [ ] **Stub sound layer (Nintendo-style SFX)** — placeholder retro SFX (fire, impact, footstep, alert, pain) wired through entity-emitted sound events so combat reads correctly. Explicitly a stub: the sound-event hooks are durable, the assets and backend are placeholder. The real spatial audio foundation lands in Milestone 11.
 
-**Testable outcome:** shoot a foundational weapon and kill a foundational enemy that navigates and reacts, with placeholder SFX selling the feel — enough to judge whether to commit a full game to PostRetro.
+**Testable outcome:** shoot a foundational weapon, kill a foundational enemy that navigates the level and reacts to the player, with placeholder SFX selling the feel — enough to judge whether to commit a full game to PostRetro.
 
 ---
 

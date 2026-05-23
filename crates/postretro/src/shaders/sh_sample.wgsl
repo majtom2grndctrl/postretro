@@ -10,9 +10,14 @@
 // must declare, at the (group, binding) the helper expects, BEFORE this file
 // is textually concatenated:
 //     var sh_band0 .. sh_band8: texture_3d<f32>
+//     var sh_depth_moments: texture_3d<f32>
 //     var sh_grid: ShGridInfo   (with grid_origin / grid_dimensions / cell_size)
 // The consumer must NOT declare its own `sh_irradiance` / `sample_sh_indirect*`
 // — this helper owns those symbols; a local copy is a duplicate-definition error.
+
+const SH_DEPTH_MIN_VARIANCE_M2: f32 = 1.0e-4;
+const SH_DEPTH_BIAS_CELL_FRACTION: f32 = 0.05;
+const SH_DEPTH_MIN_VISIBILITY: f32 = 0.03;
 
 // SH L0..L2 basis evaluation. Constants are standard real SH normalization
 // factors. Signs on bands 1, 3, 5, 7 match the signed basis used by the baker
@@ -45,7 +50,7 @@ fn sh_irradiance(
 }
 
 // Isolates per-corner reconstruction so the 8-corner loop in
-// `sample_sh_indirect_corners` stays readable and the clamp-to-non-negative
+// `sample_sh_indirect_corners_impl` stays readable and the clamp-to-non-negative
 // is applied in exactly one place.
 fn sh_corner_irradiance(bands: array<vec3<f32>, 9>, shading_normal: vec3<f32>) -> vec3<f32> {
     return max(
@@ -56,6 +61,34 @@ fn sh_corner_irradiance(bands: array<vec3<f32>, 9>, shading_normal: vec3<f32>) -
         ),
         vec3<f32>(0.0),
     );
+}
+
+fn sh_probe_depth_bias() -> f32 {
+    let cell_min = min(min(sh_grid.cell_size.x, sh_grid.cell_size.y), sh_grid.cell_size.z);
+    return max(cell_min, 0.0) * SH_DEPTH_BIAS_CELL_FRACTION;
+}
+
+// One-tailed Chebyshev upper-bound estimate of the unoccluded fraction of
+// directions from the probe at `sample_world`. Returns 1.0 at or below the
+// mean depth (plus bias) — the sample point is in front of the probe's
+// depth horizon. Attenuates toward SH_DEPTH_MIN_VISIBILITY beyond it.
+// Invalid probes return 0.0 so they are excluded from the blend.
+// The `delta > 0` guard keeps visibility at 1.0 when the sample is inside
+// the mean: the Chebyshev bound only tightens for over-mean distances.
+fn sh_corner_depth_visibility(idx: vec3<i32>, sample_world: vec3<f32>, is_valid: bool) -> f32 {
+    if !is_valid {
+        return 0.0;
+    }
+
+    let moments = textureLoad(sh_depth_moments, idx, 0).rg;
+    let mean = moments.r;
+    let mean2 = moments.g;
+    let variance = max(mean2 - mean * mean, SH_DEPTH_MIN_VARIANCE_M2);
+    let probe_world = sh_grid.grid_origin + vec3<f32>(idx) * sh_grid.cell_size;
+    let distance = length(sample_world - probe_world);
+    let delta = max(distance - mean - sh_probe_depth_bias(), 0.0);
+    let visibility = select(1.0, variance / (variance + delta * delta), delta > 0.0);
+    return clamp(visibility, SH_DEPTH_MIN_VISIBILITY, 1.0);
 }
 
 // Manual 8-corner SH blend.
@@ -75,20 +108,25 @@ fn sh_corner_irradiance(bands: array<vec3<f32>, 9>, shading_normal: vec3<f32>) -
 // Per corner: clamp the index to the valid grid range (matching clamp-to-edge
 // sampling; an out-of-range load returns 0, which the validity test would
 // misread as invalid). Load all 9 total bands. Weight by
-//   w = trilinear * validity * bf
+//   w = trilinear * validity * bf * depth_visibility
 // where `validity` is 1 when band-0 alpha >= 0.5 (the baked validity bit),
-// and `bf` is 1 when `reject_backface` is false, else max(dot(dir, geo_normal), 0)
+// `bf` is 1 when `reject_backface` is false, else max(dot(dir, geo_normal), 0)
 // with `dir = (corner_offset - gfrac) * cell_size` (un-normalized; magnitude
-// divides out under renormalization). Accumulate Σ w·irradiance and Σ w, then
+// divides out under renormalization), and `depth_visibility` is the
+// Chebyshev moment-visibility term — 1.0 when depth visibility is disabled
+// or the corner is in front of its mean-depth horizon, attenuating toward
+// SH_DEPTH_MIN_VISIBILITY beyond. Accumulate Σ w·irradiance and Σ w, then
 // renormalize. When Σ w is below epsilon (all corners invalid/backfacing),
 // fall back to the ambient floor — matching the `has_sh_volume == 0` path so
 // there is no div-by-zero, NaN, or black flash.
-fn sample_sh_indirect_corners(
+fn sample_sh_indirect_corners_impl(
     gi: vec3<u32>,
     gfrac: vec3<f32>,
+    sample_world: vec3<f32>,
     shading_normal: vec3<f32>,
     geo_normal: vec3<f32>,
     reject_backface: bool,
+    use_depth_visibility: bool,
 ) -> vec3<f32> {
     let gmax = vec3<i32>(sh_grid.grid_dimensions) - vec3<i32>(1);
 
@@ -128,7 +166,8 @@ fn sample_sh_indirect_corners(
         let trilinear = lerp_w.x * lerp_w.y * lerp_w.z;
 
         // Validity rides in band-0 alpha (>= 0.5 → valid).
-        let validity = select(0.0, 1.0, t0.a >= 0.5);
+        let is_valid = t0.a >= 0.5;
+        let validity = select(0.0, 1.0, is_valid);
 
         // Backface term: corner direction from the fragment, projected onto the
         // geometric normal. Un-normalized — magnitude divides out below.
@@ -138,7 +177,12 @@ fn sample_sh_indirect_corners(
             bf = max(dot(dir, geo_normal), 0.0);
         }
 
-        let w = trilinear * validity * bf;
+        var depth_visibility = 1.0;
+        if use_depth_visibility {
+            depth_visibility = sh_corner_depth_visibility(idx, sample_world, is_valid);
+        }
+
+        let w = trilinear * validity * bf * depth_visibility;
         irradiance_sum = irradiance_sum + w * sh_corner_irradiance(bands, shading_normal);
         weight_sum = weight_sum + w;
     }
@@ -151,4 +195,42 @@ fn sample_sh_indirect_corners(
         return vec3<f32>(0.0);
     }
     return irradiance_sum / weight_sum;
+}
+
+fn sample_sh_indirect_corners_depth_aware(
+    gi: vec3<u32>,
+    gfrac: vec3<f32>,
+    sample_world: vec3<f32>,
+    shading_normal: vec3<f32>,
+    geo_normal: vec3<f32>,
+    reject_backface: bool,
+) -> vec3<f32> {
+    return sample_sh_indirect_corners_impl(
+        gi,
+        gfrac,
+        sample_world,
+        shading_normal,
+        geo_normal,
+        reject_backface,
+        true,
+    );
+}
+
+fn sample_sh_indirect_corners_without_depth(
+    gi: vec3<u32>,
+    gfrac: vec3<f32>,
+    shading_normal: vec3<f32>,
+    geo_normal: vec3<f32>,
+    reject_backface: bool,
+) -> vec3<f32> {
+    let unused_sample_world = sh_grid.grid_origin + vec3<f32>(gi) * sh_grid.cell_size;
+    return sample_sh_indirect_corners_impl(
+        gi,
+        gfrac,
+        unused_sample_world,
+        shading_normal,
+        geo_normal,
+        reject_backface,
+        false,
+    );
 }

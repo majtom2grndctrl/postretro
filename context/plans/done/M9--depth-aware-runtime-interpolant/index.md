@@ -67,7 +67,7 @@ weighting) and M9 #2 (baked probe depth moments).
 - [ ] Shader validation passes for forward, billboard, and fog shader modules.
 - [ ] A before/after note records map, camera pose, diagnostics mode, commit,
       and qualitative residual leak in
-      `context/plans/drafts/M9--depth-aware-runtime-interpolant/measurements/static-sh-only.md`.
+      `context/plans/in-progress/M9--depth-aware-runtime-interpolant/measurements/static-sh-only.md`.
 
 ## Tasks
 
@@ -161,7 +161,7 @@ forward, billboard, and fog sources.
 
 Run a visual check on a leak-prone map in StaticSHOnly mode. Record the
 before/after result in
-`context/plans/drafts/M9--depth-aware-runtime-interpolant/measurements/static-sh-only.md`
+`context/plans/in-progress/M9--depth-aware-runtime-interpolant/measurements/static-sh-only.md`
 with map, camera pose, diagnostics mode, commit, and qualitative residual leak.
 GPU timing is useful when available, but visual correctness is the gate for this
 spec.

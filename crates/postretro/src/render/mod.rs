@@ -133,11 +133,12 @@ fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec
     false
 }
 
-// `curve_eval.wgsl` reads `anim_samples` and `sh_sample.wgsl` reads `sh_band0..8` /
-// `sh_grid`, all declared in `forward.wgsl`; WGSL resolves module-scope names
-// regardless of textual order, so appending after is safe. `sh_sample.wgsl` owns
-// the SH reconstruction + 8-corner blend symbols (`sh_irradiance`,
-// `sample_sh_indirect_corners`) — forward must not redeclare them.
+// `curve_eval.wgsl` reads `anim_samples`; `sh_sample.wgsl` reads
+// `sh_band0..8`, `sh_depth_moments`, and `sh_grid`, all declared in
+// `forward.wgsl`. WGSL resolves module-scope names regardless of textual order,
+// so appending after is safe. `sh_sample.wgsl` owns the SH reconstruction +
+// 8-corner blend symbols (`sh_irradiance`, `sample_sh_indirect_corners_depth_aware`,
+// `sample_sh_indirect_corners_without_depth`) — forward must not redeclare them.
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",
@@ -768,13 +769,19 @@ impl Renderer {
         }
 
         // Forward pipeline uses groups 0–5 (camera, material, lights, SH, lightmap, shadow).
-        // Fragment shader binds 16 sampled textures (WebGPU spec floor):
-        // 3 material + 9 SH bands + 3 lightmap + 1 shadow. Adding more requires bumping
-        // this limit or collapsing SH bands into a texture array.
-        // SH compose writes 9 storage textures; WebGPU floor is 4 but desktop backends support ≥9.
+        // Fragment shader binds 17 sampled textures: 3 material + 9 SH bands +
+        // 1 SH depth-moment + 3 lightmap + 1 shadow. The WebGPU spec floor is 16,
+        // so we raise max_sampled_textures_per_shader_stage past it; desktop
+        // backends report far higher (e.g. Metal/AMD = 128). SH compose also
+        // writes 9 storage textures (spec floor 4). Both requests are clamped to
+        // the adapter's reported max so request_device never fails on lower-cap hardware.
+        let adapter_limits = adapter.limits();
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
-            max_storage_textures_per_shader_stage: 9,
+            max_sampled_textures_per_shader_stage: 17
+                .min(adapter_limits.max_sampled_textures_per_shader_stage),
+            max_storage_textures_per_shader_stage: 9
+                .min(adapter_limits.max_storage_textures_per_shader_stage),
             ..wgpu::Limits::default()
         };
 

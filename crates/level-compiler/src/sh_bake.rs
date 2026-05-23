@@ -727,7 +727,10 @@ fn sample_radiance_rgb(
                 }
                 radiance += light_contribution_lambert(light, hit.point, hit.normal);
             }
-            (radiance * BOUNCE_ALBEDO / std::f32::consts::PI, hit.distance)
+            (
+                radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
+                hit.distance,
+            )
         }
     }
 }
@@ -966,6 +969,60 @@ mod tests {
         }
     }
 
+    /// Geometry from a list of triangles, one BVH face/primitive per triangle.
+    /// A single floor triangle gives near-uniform ray distances (most rays sky-
+    /// miss to the sentinel, the rest graze one plane); multiple triangles at
+    /// different depths give the depth-moment accumulator a real spread of
+    /// `closest_hit` distances to integrate.
+    fn multi_triangle_geometry(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
+        let mut vertices = Vec::with_capacity(triangles.len() * 3);
+        let mut indices = Vec::with_capacity(triangles.len() * 3);
+        let mut faces = Vec::with_capacity(triangles.len());
+        let mut face_index_ranges = Vec::with_capacity(triangles.len());
+        for (i, tri) in triangles.iter().enumerate() {
+            let base = (i * 3) as u32;
+            for &p in tri {
+                vertices.push(tri_vertex(p));
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2]);
+            faces.push(FaceMeta {
+                leaf_index: 0,
+                texture_index: 0,
+            });
+            face_index_ranges.push(FaceIndexRange {
+                index_offset: base,
+                index_count: 3,
+            });
+        }
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices,
+                indices,
+                faces,
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges,
+        }
+    }
+
+    /// A 4 m floor plus three walls forming an open-topped box. Probes in the
+    /// box see a real spread of `closest_hit` distances: rays toward a near wall
+    /// hit close, rays toward a far wall hit far, rays out the open top sky-miss
+    /// to the sentinel. Exercises the depth-moment accumulation that a single
+    /// floor triangle leaves near-degenerate.
+    fn floor_and_walls_geometry() -> GeometryResult {
+        // Floor (two triangles) spanning x,z in [0, 4] at y = 0.
+        let floor_a = [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 0.0, 4.0]];
+        let floor_b = [[0.0, 0.0, 0.0], [4.0, 0.0, 4.0], [0.0, 0.0, 4.0]];
+        // Near wall at x = 0 and far wall at x = 4, plus a side wall at z = 4,
+        // each a single triangle rising to y = 3. Their differing distances from
+        // any interior probe spread the per-ray hit distances.
+        let wall_near = [[0.0, 0.0, 0.0], [0.0, 0.0, 4.0], [0.0, 3.0, 0.0]];
+        let wall_far = [[4.0, 0.0, 0.0], [4.0, 0.0, 4.0], [4.0, 3.0, 0.0]];
+        let wall_side = [[0.0, 0.0, 4.0], [4.0, 0.0, 4.0], [0.0, 3.0, 4.0]];
+        multi_triangle_geometry(&[floor_a, floor_b, wall_near, wall_far, wall_side])
+    }
+
     fn tree_all_empty() -> BspTree {
         BspTree {
             nodes: Vec::new(),
@@ -1148,9 +1205,14 @@ mod tests {
     /// chunks and asserts byte-for-byte equality on the encoded section.
     #[test]
     fn sh_volume_bake_produces_byte_identical_output_on_repeated_runs() {
-        // 4 m × 4 m floor → 5×1×5 probe grid at 1 m spacing = 25 probes,
-        // enough work for rayon to schedule across several threads.
-        let geo = one_triangle_geometry([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 0.0, 4.0]]);
+        // Open-topped box (floor + three walls) spanning ~4 m → a 5×4×5 probe
+        // grid at 1 m spacing, enough work for rayon to schedule across several
+        // threads. The walls give probes a real spread of `closest_hit`
+        // distances (near wall vs. far wall vs. open-top sky-miss), so this
+        // genuinely exercises the depth-moment accumulation — a single floor
+        // triangle would leave the moments near-degenerate and let the bake pass
+        // without ever stressing the per-probe `Σd`/`Σd²` sums.
+        let geo = floor_and_walls_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
 
@@ -1210,6 +1272,62 @@ mod tests {
             bytes_a, bytes_b,
             "SH volume bake output drifted between runs; the build-stage cache requires \
              byte-identical output for identical inputs",
+        );
+    }
+
+    // Regression: guards variance non-negativity (`E[d²] >= E[d]²`) for a valid,
+    // non-degenerate probe. Compares the pre-rounding f32 moments — two
+    // independently-rounded f16 values can violate a naive `>=` and flake.
+    #[test]
+    fn probe_depth_moments_keep_squared_distance_at_least_mean_squared() {
+        // Open-topped box gives this probe a genuine spread of ray distances:
+        // some rays hit a near wall, some a far wall, some sky-miss to the
+        // sentinel. A non-degenerate spread is what makes the variance check
+        // meaningful rather than vacuously satisfied by equal distances.
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights: &[MapLight] = &[];
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
+        let inputs = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+        };
+        let static_light_refs: Vec<&MapLight> = Vec::new();
+
+        // Probe off-center so the four bounding walls sit at distinct distances.
+        let probe_pos = Vec3::new(1.0, 1.0, 1.5);
+        // 1 m cell → far sentinel matches the bake's `4 * length(cell_size)`.
+        let far_sentinel = 4.0 * Vec3::splat(1.0).length();
+
+        // Pre-rounding f32 moments: divide the raw sums by RAYS_PER_PROBE before
+        // any f16 encoding (the f16 store happens later in `bake_sh_volume`).
+        let (_coeffs, sum_d, sum_d2) =
+            bake_probe_rgb_with_moments(&inputs, probe_pos, &static_light_refs, far_sentinel);
+        let mean_d = sum_d / RAYS_PER_PROBE as f32;
+        let mean_sq_d = sum_d2 / RAYS_PER_PROBE as f32;
+
+        // Variance = E[d²] - E[d]² is non-negative by construction; allow a tiny
+        // epsilon on the boundary for f32 summation rounding.
+        assert!(
+            mean_sq_d >= mean_d * mean_d - 1.0e-3,
+            "variance must be non-negative: E[d²]={mean_sq_d} < E[d]²={}",
+            mean_d * mean_d,
+        );
+        // Guard against a vacuous pass: a degenerate probe (all rays the same
+        // distance) would make variance ~0. This fixture must produce spread.
+        assert!(
+            mean_sq_d - mean_d * mean_d > 1.0e-2,
+            "fixture is degenerate — no distance spread to exercise the moments \
+             (E[d²]={mean_sq_d}, E[d]²={})",
+            mean_d * mean_d,
         );
     }
 

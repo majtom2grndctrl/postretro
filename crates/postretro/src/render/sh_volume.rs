@@ -1008,10 +1008,12 @@ mod tests {
         let probe_valid = ShProbe {
             sh_coefficients: core::array::from_fn(|i| (i + 1) as f32),
             validity: 1,
+            ..Default::default()
         };
         let probe_invalid = ShProbe {
             sh_coefficients: [999.0; 27],
             validity: 0,
+            ..Default::default()
         };
         let bands = pack_probes_to_band_slices(&[probe_valid, probe_invalid], [2, 1, 1]);
         assert_eq!(bands.len(), SH_BAND_COUNT);
@@ -1052,10 +1054,12 @@ mod tests {
         let probe_valid = ShProbe {
             sh_coefficients: [0.0; 27],
             validity: 1,
+            ..Default::default()
         };
         let probe_invalid = ShProbe {
             sh_coefficients: [0.0; 27],
             validity: 0,
+            ..Default::default()
         };
         let bands = pack_probes_to_band_slices(&[probe_valid, probe_invalid], [2, 1, 1]);
 

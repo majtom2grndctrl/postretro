@@ -36,7 +36,7 @@
 
 **Aesthetic:** Low-poly 3D environments + blocky pixelated textures; with modern embellishments like baked volumetric indirect lighting (SH irradiance volumes), normal-mapped surfaces, fully dynamic direct lighting, and billboard sprite volumetrics that react to light.
 
-**Architectural northstar:** Lean, wgpu-driven pipeline — not a modern engine with retro filters. Near-instant boot, tiny binary.
+**Architectural northstar:** Lean, wgpu-driven pipeline — not a resource heavy modern engine with retro filters. Near-instant boot, tiny binary, and _some_ retro filters, but used sparingly.
 
 ---
 

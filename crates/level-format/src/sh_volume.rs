@@ -6,18 +6,30 @@
 
 use crate::FormatError;
 
-/// One probe's static base SH L2 record: 27 f32 RGB coefficients + validity.
+/// One probe's static base SH L2 record: 27 f32 RGB coefficients + validity +
+/// two depth-visibility moments.
 ///
 /// `sh_coefficients` is laid out as 9 bands × 3 color channels, stored
 /// channel-interleaved per band: `[band0_r, band0_g, band0_b, band1_r, ...]`.
 /// The encoder/decoder writes the same order — downstream consumers should
 /// treat the array as opaque and index it with the same helper both sides use.
+///
+/// `mean_distance` / `mean_sq_distance` are the per-probe depth moments
+/// `E[d]` / `E[d²]` over the probe's sampled rays, stored as IEEE 754 binary16
+/// bits (round to nearest, encode via `lightmap::f32_to_f16_bits`) — matching
+/// `DeltaShProbe`'s f16 SH storage. A future runtime Chebyshev interpolant
+/// reconstructs `variance = E[d²] − E[d]²` from the pair to weight each probe
+/// by visibility. Invalid probes carry zeroed moments, like their zeroed SH.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShProbe {
     /// 9 bands × 3 channels = 27 f32. Channel-interleaved per band.
     pub sh_coefficients: [f32; 27],
     /// 0 = invalid (inside solid), 1 = valid (usable by runtime).
     pub validity: u8,
+    /// Mean ray distance `E[d]`, f16 bits.
+    pub mean_distance: u16,
+    /// Mean squared ray distance `E[d²]`, f16 bits.
+    pub mean_sq_distance: u16,
 }
 
 impl Default for ShProbe {
@@ -25,6 +37,8 @@ impl Default for ShProbe {
         Self {
             sh_coefficients: [0.0; 27],
             validity: 0,
+            mean_distance: 0,
+            mean_sq_distance: 0,
         }
     }
 }
@@ -34,18 +48,22 @@ impl Default for ShProbe {
 /// can reject stale `.prl` files with a clear error rather than silently
 /// misread them. History: version 1 (pre-animated-flag) — no `start_active`
 /// in the descriptor table; version 2 — `start_active: u32` lives
-/// alongside the brightness/color counts; version 3 (current) — direction
+/// alongside the brightness/color counts; version 3 — direction
 /// channel samples serialized after color samples, with a `direction_count`
-/// field in the descriptor header.
-pub const SH_VOLUME_VERSION: u32 = 3;
+/// field in the descriptor header; version 4 (current) — two f16 depth
+/// moments (`mean_distance`, `mean_sq_distance`) appended inside the per-probe
+/// record after `validity`, growing `PROBE_STRIDE` 112 → 116.
+pub const SH_VOLUME_VERSION: u32 = 4;
 
-/// Byte stride of a single serialized base probe record: 27 f32 + 1 u8 +
-/// 3 bytes of padding to land on a 4-byte boundary = 112 bytes.
+/// Byte stride of a single serialized base probe record: 27 f32 + 1 u8
+/// (validity) + 2 f16 (depth moments) + 3 bytes of padding to land on a
+/// 4-byte boundary = 116 bytes.
 ///
 /// The header's `probe_stride` field is written from this constant. It is
-/// forward-compat scaffolding: future per-probe base data (e.g. DDGI distance
-/// fields) can grow the stride without breaking the loader.
-pub const PROBE_STRIDE: u32 = 112;
+/// forward-compat scaffolding: per-probe base data (e.g. the version-4 DDGI
+/// depth moments) grows the stride without breaking the loader, which advances
+/// by the file's `probe_stride` field rather than this compiled-in constant.
+pub const PROBE_STRIDE: u32 = 116;
 
 /// Animation curves for one animated light, stored once per light (not per
 /// probe). Brightness and color channels are uniformly-sampled over the
@@ -98,12 +116,14 @@ impl Default for AnimationDescriptor {
 ///     f32 × 3  grid_origin            (world-space min corner, meters)
 ///     f32 × 3  cell_size              (meters per cell along x/y/z)
 ///     u32 × 3  grid_dimensions        (probe count along x/y/z)
-///     u32      probe_stride           (= PROBE_STRIDE = 112)
+///     u32      probe_stride           (= PROBE_STRIDE = 116)
 ///     u32      animated_light_count   (0 = no animation layers)
 ///
 ///   Base probe records (probe_stride bytes each, z-major then y, then x):
 ///     f32 × 27 sh_coefficients        (9 bands × 3 channels, RGB)
 ///     u8       validity               (0 = invalid, 1 = valid)
+///     f16      mean_distance          (E[d], depth moment)
+///     f16      mean_sq_distance       (E[d²], depth moment)
 ///     u8 × 3   padding
 ///
 ///   Animation descriptor table (omitted if animated_light_count == 0):
@@ -174,6 +194,9 @@ impl ShVolumeSection {
                 buf.extend_from_slice(&coeff.to_le_bytes());
             }
             buf.push(probe.validity);
+            // Depth moments (f16 bits) follow validity at byte 109.
+            buf.extend_from_slice(&probe.mean_distance.to_le_bytes());
+            buf.extend_from_slice(&probe.mean_sq_distance.to_le_bytes());
             // 3 bytes padding to reach probe_stride.
             buf.extend_from_slice(&[0u8; 3]);
         }
@@ -292,9 +315,16 @@ impl ShVolumeSection {
                 *coeff = read_f32(data, o + i * 4);
             }
             let validity = data[o + 27 * 4];
+            // Depth moments live at fixed in-record offsets just past validity
+            // (bytes 109–112). Read them relative to the record start, before
+            // advancing by the file's stride.
+            let mean_distance = read_u16(data, o + 27 * 4 + 1);
+            let mean_sq_distance = read_u16(data, o + 27 * 4 + 3);
             probes.push(ShProbe {
                 sh_coefficients,
                 validity,
+                mean_distance,
+                mean_sq_distance,
             });
             // Skip the full on-disk stride, including padding and any future
             // per-probe data beyond the minimum PROBE_STRIDE.
@@ -395,18 +425,27 @@ fn read_u32(data: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]])
 }
 
+fn read_u16(data: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([data[at], data[at + 1]])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lightmap::f32_to_f16_bits;
 
     fn sample_probe(seed: f32) -> ShProbe {
         let mut coeffs = [0f32; 27];
         for (i, c) in coeffs.iter_mut().enumerate() {
             *c = seed + i as f32 * 0.01;
         }
+        // Non-zero, f16-exact depth moments so every round-trip test exercises
+        // the moment fields. 0.5/0.25 round-trip representably in f16.
         ShProbe {
             sh_coefficients: coeffs,
             validity: 1,
+            mean_distance: f32_to_f16_bits(seed + 0.5),
+            mean_sq_distance: f32_to_f16_bits(seed + 0.25),
         }
     }
 
@@ -533,6 +572,100 @@ mod tests {
             msg.contains("version"),
             "expected version-mismatch error, got: {msg}",
         );
+    }
+
+    /// Old `.prl` rejection: a fixture stamped with the previous version (3,
+    /// pre-depth-moments) must be rejected rather than misread as if it carried
+    /// the version-4 per-probe record. Anchors the old-`.prl`-rejection AC.
+    #[test]
+    fn rejects_previous_section_version_three() {
+        let section = empty_section([1, 1, 1]);
+        let mut bytes = section.to_bytes();
+        bytes[0..4].copy_from_slice(&3u32.to_le_bytes());
+        let err = ShVolumeSection::from_bytes(&bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("version"),
+            "expected version-mismatch error, got: {msg}",
+        );
+    }
+
+    /// Depth moments survive the round trip: a probe with non-zero `E[d]` /
+    /// `E[d²]` moments encodes and decodes byte-identically, and the moments
+    /// compare equal after `to_bytes` → `from_bytes`.
+    #[test]
+    fn round_trip_preserves_depth_moments() {
+        let mut section = empty_section([2, 1, 1]);
+        section.probes[0].mean_distance = f32_to_f16_bits(3.5);
+        section.probes[0].mean_sq_distance = f32_to_f16_bits(12.25);
+        section.probes[1].mean_distance = f32_to_f16_bits(0.125);
+        section.probes[1].mean_sq_distance = f32_to_f16_bits(0.015625);
+
+        let bytes = section.to_bytes();
+        let restored = ShVolumeSection::from_bytes(&bytes).unwrap();
+        assert_eq!(section, restored);
+
+        // Re-encoding the decoded section reproduces the exact same bytes.
+        assert_eq!(restored.to_bytes(), bytes);
+
+        // The moments survive at their fixed in-record offsets.
+        assert_eq!(restored.probes[0].mean_distance, f32_to_f16_bits(3.5));
+        assert_eq!(restored.probes[0].mean_sq_distance, f32_to_f16_bits(12.25));
+        assert_eq!(restored.probes[1].mean_distance, f32_to_f16_bits(0.125));
+        assert_eq!(
+            restored.probes[1].mean_sq_distance,
+            f32_to_f16_bits(0.015625)
+        );
+    }
+
+    /// Unaware-consumer contract: a reader compiled with only the minimum
+    /// `PROBE_STRIDE` still reads SH coefficients and validity correctly from a
+    /// record written with a LARGER stride. We simulate a future bigger stride
+    /// by hand-writing records padded out to `PROBE_STRIDE + 8`, then decoding
+    /// with the current loader (which advances by the file's `probe_stride`).
+    #[test]
+    fn reads_records_written_with_a_larger_stride() {
+        let future_stride = PROBE_STRIDE + 8;
+        let probe_a = sample_probe(1.0);
+        let probe_b = sample_probe(2.0);
+        let probes = [probe_a, probe_b];
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&SH_VOLUME_VERSION.to_le_bytes());
+        for v in [0.0f32, 0.0, 0.0] {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [1.0f32, 1.0, 1.0] {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [2u32, 1, 1] {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        buf.extend_from_slice(&future_stride.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // animated_light_count
+
+        for probe in &probes {
+            let record_start = buf.len();
+            for coeff in &probe.sh_coefficients {
+                buf.extend_from_slice(&coeff.to_le_bytes());
+            }
+            buf.push(probe.validity);
+            buf.extend_from_slice(&probe.mean_distance.to_le_bytes());
+            buf.extend_from_slice(&probe.mean_sq_distance.to_le_bytes());
+            // Pad out to the larger future stride with trailing bytes the
+            // current reader knows nothing about.
+            while buf.len() - record_start < future_stride as usize {
+                buf.push(0xEE);
+            }
+        }
+
+        let restored = ShVolumeSection::from_bytes(&buf).unwrap();
+        assert_eq!(restored.probe_stride, future_stride);
+        assert_eq!(restored.probes.len(), 2);
+        // SH coefficients, validity, and the moments all read correctly from
+        // the fixed in-record offsets despite the unknown trailing bytes.
+        assert_eq!(restored.probes[0], probe_a);
+        assert_eq!(restored.probes[1], probe_b);
     }
 
     #[test]

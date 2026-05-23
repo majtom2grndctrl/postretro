@@ -41,14 +41,18 @@
    - Screenshot → `after.png`.
    - Record CPU frame-time at the same pose.
 
-4. **(Optional, dev-tools) Validity spot-check** — verifies the compose-pass
-   alpha-propagation directly (AC: dev-tools band-0 alpha):
+4. **(Optional, dev-tools) Validity spot-check** — confirms the baked validity
+   data renders correctly (AC: dev-tools validity overlay):
    ```bash
    cargo run -p postretro --features dev-tools -- content/base/maps/occlusion-test.prl
    ```
-   Use `ShProbeReadback` or the `MarkerMode::Validity` overlay to confirm total
-   band-0 alpha == 1 at a known valid probe and == 0 at a known invalid (in-wall)
-   probe.
+   Use the `MarkerMode::Validity` overlay to confirm a known valid probe reads
+   valid and a known invalid (in-wall) probe reads invalid. This validates the
+   bake (the CPU-side `ShVolume::validity` mirror), not the GPU compose-pass
+   alpha propagation — there is no direct band-0-alpha readback (`decode_l0`
+   returns RGB only). The packer→alpha encoding is covered by a unit test, and a
+   compose-pass propagation regression would resurface as the through-wall bleed
+   in steps 2–3.
 
 ## Fields to fill in
 
@@ -70,5 +74,5 @@
 
 - [ ] Through-wall bleed at the `occlusion-test` structure visibly reduced/gone vs. before.
 - [ ] Near-wall surfaces no longer darken from in-wall (invalid) probes.
-- [ ] (dev-tools) total band-0 alpha matches baked validity at a known invalid (0) and valid (1) probe.
+- [ ] (dev-tools) `MarkerMode::Validity` overlay renders baked validity correctly at a known valid and a known invalid (in-wall) probe (validates the bake, not the GPU compose propagation).
 - [ ] before.png / after.png committed in this directory.

@@ -53,7 +53,7 @@ Three components: **static direct** (baked), **dynamic direct** (runtime), and *
 
 **Indirect.** prl-build bakes an SH L2 irradiance volume (3D probe grid) over the level's empty space. Runtime samples via a manual 8-corner `textureLoad` blend: each corner's weight = trilinear factor × baked validity bit (band-0 alpha; in-wall/off-grid probes are dropped) × optional backface-rejection term (forward path only); surviving weights are renormalized. Billboard and fog apply validity exclusion and renormalization but skip backface rejection. When no corners survive, the indirect term degrades to the ambient floor.
 
-**Probe depth moments.** Each ShVolume probe record carries two baked f16 depth moments alongside the SH coefficients — mean ray distance `E[d]` and mean squared distance `E[d²]` — accumulated over the same 256-ray sphere loop. Sky-miss rays contribute sentinel `4 × length(cell_size)` (4× the full 3D cell diagonal). Spec #3 (Chebyshev runtime interpolant) consumes these to weight each probe by visibility and suppress through-wall indirect light leak; the runtime sampling path is untouched until that spec ships. Probe record layout: see `build_pipeline.md` §PRL section IDs.
+**Probe depth moments.** Each ShVolume probe record carries two baked f16 depth moments alongside the SH coefficients — mean ray distance `E[d]` and mean squared distance `E[d²]` — accumulated over the same 256-ray sphere loop. Sky-miss rays contribute sentinel `4 × length(cell_size)` (4× the full 3D cell diagonal). The Chebyshev runtime interpolant (§8) consumes these to weight each probe by visibility and suppress through-wall indirect light leak. Probe record layout: see `build_pipeline.md` §PRL section IDs.
 
 **Animated lights.** Animated lights carry per-light curve data (brightness scalar, RGB color) stored as packed f32 samples in a flat GPU storage buffer. Runtime evaluates Catmull-Rom splines over a `[0, 1)` cycle time with closed-loop wrap — uniform knot spacing, tension 0.5. A shared WGSL helper handles evaluation; it declares no buffers, so both the SH animation path and the animated-lightmap compose pass can bind their own `anim_samples` buffers at different bind-group slots without conflict. The animated-lightmap atlas is sampled by the forward pass only when the cell it belongs to passes the portal-traversed `VisibleCells` bitmask — any future pass that draws animated-lit geometry must share the same visibility gate or skip animated-lit chunks entirely.
 
@@ -160,7 +160,7 @@ All wgpu calls live in the renderer module. Map loader, game logic, audio, and i
 | 0 | Camera uniforms |
 | 1 | Material (albedo texture, normal map, per-material uniforms) |
 | 2 | Dynamic lights, influence volumes, per-chunk static light lists |
-| 3 | SH irradiance volume (9 coefficient band textures for static base + animated-composed total, read via `textureLoad` — no sampler, binding 0 vacant; grid uniform, animation descriptor buffer, curve sample buffer; binding 14: per-probe mean/mean-squared distances, `Rgba16Float`, used for Chebyshev depth-visibility weighting in the runtime SH interpolant) |
+| 3 | SH irradiance volume (9 coefficient band textures, grid uniform, animation descriptor + sample buffers, per-probe depth moments; see §4, §8) |
 | 4 | Lightmap atlas (irradiance + dominant direction textures) |
 | 5 | Spot shadow maps (depth texture array, comparison sampler, light-space matrices) |
 | 6 | FX resources (sprite instance storage buffer; fog depth buffer, AABB buffer, scatter target) |

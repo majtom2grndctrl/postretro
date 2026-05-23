@@ -89,6 +89,9 @@ struct AnimationDescriptor {
 };
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
+// Depth moments are likewise declared only for shared-layout compatibility with
+// the forward pass — billboard SH sampling uses the depth-disabled path
+// (`sample_sh_indirect_corners_without_depth`), so this texture is never read here.
 @group(3) @binding(14) var sh_depth_moments: texture_3d<f32>;
 
 // --- Group 6: sprite instance storage buffer ---

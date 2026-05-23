@@ -90,6 +90,8 @@ struct ChunkGridInfo {
 // Group 3 — SH irradiance volume. 9 3D textures (one per SH L2 band) carry
 // RGB coefficients in their .rgb channels. Band-0 .a carries the baked per-probe
 // validity bit (1 = valid, 0 = in-wall/off-grid); bands 1..=8 .a are unused.
+// A 10th 3D texture (@binding(14) sh_depth_moments) carries per-probe depth
+// moments (R = mean, G = mean²) for the depth-aware visibility term.
 // When `grid.has_sh_volume` is 0 the bindings point at dummy 1×1×1 textures and
 // the shader skips SH sampling. See postretro/src/render/sh_volume.rs.
 struct ShGridInfo {

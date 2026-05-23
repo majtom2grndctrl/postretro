@@ -3,12 +3,15 @@
 
 use postretro_level_format::sh_volume::{AnimationDescriptor, ShProbe, ShVolumeSection};
 
-/// 9 SH band textures + 1 depth-moment texture + 1 grid-info uniform + 3 animation storage buffers in group 3.
-/// The shared
-/// `sh_sample.wgsl` helper loads probes with `textureLoad`, so no sampler is
-/// bound; binding index 0 is intentionally vacant. WGSL/wgpu binding indices
-/// need not be contiguous, so the textures stay at 1..=SH_BAND_COUNT. Well
-/// under wgpu's default `max_sampled_textures_per_shader_stage` limit.
+/// 9 SH band textures + 1 depth-moment texture + 1 grid-info uniform + 3
+/// animation storage buffers in group 3. The shared `sh_sample.wgsl` helper
+/// loads probes with `textureLoad`, so no sampler is bound; binding index 0 is
+/// intentionally vacant. WGSL/wgpu binding indices need not be contiguous, so
+/// the textures stay at 1..=SH_BAND_COUNT. Combined with the lightmap, shadow,
+/// and material textures, the forward pass binds 17 sampled textures per stage
+/// — past the WebGPU spec floor of 16 — so the renderer requests a raised
+/// `max_sampled_textures_per_shader_stage` limit at device creation (see
+/// `RendererState::new`).
 pub const SH_BAND_COUNT: usize = 9;
 
 /// Binding indices for the group 3 animation storage buffers. These sit

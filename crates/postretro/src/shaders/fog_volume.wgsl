@@ -40,9 +40,10 @@ struct ShGridInfo {
 @group(3) @binding(9) var sh_band8: texture_3d<f32>;
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 
-// Animated buffers (bindings 11..12) are declared to satisfy the shared
-// group-3 layout but are not read here — the fog pass does not evaluate
-// animation curves itself. The sh_band textures it samples (bindings 1..9)
+// Animated buffers (bindings 11, 12) and the depth-moment texture (binding 14)
+// are declared to satisfy the shared group-3 layout but are not read here — the
+// fog pass does not evaluate animation curves itself and samples SH without the
+// depth-aware visibility term. The sh_band textures it samples (bindings 1..9)
 // are the composed total (static base + animated deltas), so animated-light
 // contributions are already reflected in the ambient scatter automatically.
 struct AnimationDescriptor {

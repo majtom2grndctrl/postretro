@@ -773,26 +773,45 @@ impl Renderer {
         // 1 SH depth-moment + 3 lightmap + 1 shadow. The WebGPU spec floor is 16,
         // so we raise max_sampled_textures_per_shader_stage past it; desktop
         // backends report far higher (e.g. Metal/AMD = 128). SH compose also
-        // writes 9 storage textures (spec floor 4). Both requests are clamped to
-        // the adapter's reported max so request_device never fails on lower-cap hardware.
+        // writes 9 storage textures (spec floor 4). These are hard requirements:
+        // we request exactly what the pipelines need and pre-check the adapter
+        // (below) so an under-spec adapter fails early and clearly instead of
+        // silently clamping low and crashing at pipeline-creation time.
+        const REQUIRED_SAMPLED_TEXTURES: u32 = 17;
+        const REQUIRED_STORAGE_TEXTURES: u32 = 9;
         let adapter_limits = adapter.limits();
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
-            max_sampled_textures_per_shader_stage: 17
-                .min(adapter_limits.max_sampled_textures_per_shader_stage),
-            max_storage_textures_per_shader_stage: 9
-                .min(adapter_limits.max_storage_textures_per_shader_stage),
+            max_sampled_textures_per_shader_stage: REQUIRED_SAMPLED_TEXTURES,
+            max_storage_textures_per_shader_stage: REQUIRED_STORAGE_TEXTURES,
             ..wgpu::Limits::default()
         };
 
-        // Explicit pre-check so an adapter without BC support fails with a
-        // clear feature-naming error rather than the opaque `request_device`
-        // rejection wgpu returns when a requested feature is unsupported.
+        // Explicit pre-checks so an under-spec adapter fails with a clear,
+        // named error here rather than the opaque `request_device` rejection
+        // (unsupported feature) or deferred pipeline-creation failure (limit
+        // requested above the adapter's reported max) that wgpu returns otherwise.
         if !adapter_features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
             anyhow::bail!(
                 "GPU adapter lacks required feature TEXTURE_COMPRESSION_BC \
                  (needed for BC5-compressed normal maps); this engine requires \
                  a desktop GPU with BC texture support"
+            );
+        }
+        if adapter_limits.max_sampled_textures_per_shader_stage < REQUIRED_SAMPLED_TEXTURES {
+            anyhow::bail!(
+                "GPU adapter supports only {} sampled textures per shader stage; \
+                 the forward pass requires {}",
+                adapter_limits.max_sampled_textures_per_shader_stage,
+                REQUIRED_SAMPLED_TEXTURES
+            );
+        }
+        if adapter_limits.max_storage_textures_per_shader_stage < REQUIRED_STORAGE_TEXTURES {
+            anyhow::bail!(
+                "GPU adapter supports only {} storage textures per shader stage; \
+                 the SH compose pass requires {}",
+                adapter_limits.max_storage_textures_per_shader_stage,
+                REQUIRED_STORAGE_TEXTURES
             );
         }
 

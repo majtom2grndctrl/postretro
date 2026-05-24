@@ -16,7 +16,27 @@ The visual target is something like Prodeus — chunky pixels, baked lighting, s
 
 For example: we want to bring back monster closets, but make them more theatrical and visually polished than was feasible in the 90s, while still retaining a vintage low-poly and blocky texture art direction.
 
-It's early days, but the foundation is coming together fast. Right now Postretro compiles TrenchBroom maps into a custom binary format, renders fully textured levels, and drives the whole thing through a GPU-culled rendering pipeline: per-frame portal traversal narrows the visible set, a global BVH handles frustum culling on the GPU, and geometry is dispatched via indirect draw calls with zero per-object CPU overhead. Everything after that — lighting, movement, enemies, the whole game — is still ahead of us. That's kind of the fun part.
+Nine milestones in, the engine foundation is solid. The rendering pipeline is GPU-driven end-to-end, lighting is fully baked and dynamic, scripted entities and grounded movement work, and the material pipeline is dialed in. The next milestone is the first playable slice — weapons, enemies, and enough combat feel to answer whether this is worth committing a full game to.
+
+## Planned Milestones
+
+**Nine milestones shipped.** Here's where things stand:
+
+The world pipeline runs end-to-end: author in TrenchBroom, compile to Postretro's custom `.prl` format, and the engine renders it through portal traversal, a global BVH, and indirect draw calls with zero per-object CPU overhead.
+
+Lighting is baked and dynamic in the same stack. SH L2 irradiance volumes carry indirect light; per-face lightmaps handle baked direct illumination; CSM cascades drive sun shadows; and a per-fragment loop handles dynamic lights with animated SH layers (flickering lights, colored transitions, the whole thing). Milestone 9 overhauled the probe system with depth/visibility baked data and a Chebyshev-weighted interpolant — indirect light bleeding through walls is gone.
+
+The fog system is fully featured: volumetric fog volumes authored right in TrenchBroom (ellipsoid, box, and sphere shapes), directional scattering, flicker and color reactions, and portal-aware culling so fog evaluation is skipped where it can't be seen.
+
+Materials are polished: BC5-compressed normals, offline mip baking with Mitchell-Netravali filtering, per-texel specular highlights, emissive surfaces, and Post Retro anisotropic filtering as the default look.
+
+The scripting and entity system is live. TypeScript/JavaScript (via QuickJS) and Luau run side by side — the entity model covers the full lifecycle with stable IDs, parent/child transforms, and a typed event system. Hot reload works in debug builds so you can iterate on scripts without restarting the engine.
+
+Player movement is grounded: wall slide, step-up, jump, and Quake-style air control, all backed by a parry3d collision world against the level geometry. The movement behavior itself is a modder-replaceable script.
+
+**Up next: Milestone 10 — the First Playable.** Weapons, enemies, navigation, and placeholder sound — enough to start feeling a little game-y!
+
+The full phased plan with acceptance criteria lives in `context/plans/roadmap.md`.
 
 ## Context Architecture (Like Project Docs for Agents)
 
@@ -103,23 +123,6 @@ The lifecycle is supported by Claude Code skills:
 | `review-panel` | Spawns 3 reviewer agents that approach review from different angles |
 | `preflight` | Pre-commit quality gate: fmt, clippy, test |
 | `create-skill` | Builds new skills for the project |
-
-## Planned Milestones
-
-The engine is being built in phases, each of which produces something you can actually see and test. Here's the rough shape of the road ahead:
-
-- **Milestone 1** ✅ — BSP loading and wireframe rendering, PVS culling, free-fly camera
-- **Milestone 1.5** ✅ — Custom PRL level compiler: .map → .prl with voxel-based visibility, portal geometry, and exterior void sealing
-- **Milestone 2** ✅ — Fixed-timestep game loop, action-mapped input (keyboard, mouse, gamepad)
-- **Milestone 3** ✅ — Textured world with solid rendering, depth buffer, material system
-- **Milestone 3.5** ✅ — Rendering foundation: vertex format upgrade (packed normals and tangents), GPU-driven indirect draw dispatch. Same visuals as Milestone 3, new architecture underneath.
-- **Milestone 4** ✅ — BVH foundation: global SAH BVH over all static geometry, GPU compute frustum culling via skip-index DFS traversal, fixed-slot indirect buffer. Per-cell chunking from Milestone 3.5 retired in favor of the global BVH.
-- **Milestone 5** ✅ — Lighting foundation: SH irradiance volume (baked indirect), lightmapped static surfaces, direct light loop, CSM sun shadows, animated light layers
-- **Milestone 6** — Scripting + entity foundation: entity model and scripting runtime co-designed; scripted behaviors, FGD entity parsing, hot reload, modder-facing API
-- **Milestone 7** — Grounded movement: collision, gravity, step-up, jump — movement behavior written as a script using engine-provided collision primitives
-- **Future** — Weapons, NPCs, world entities (doors, triggers, brush movers), visual polish (billboard sprites, emissives, fog, specular maps), post-processing (bloom, CRT filter, cubemap reflections), audio, HUD, destructible geometry, and whatever else a boomer shooter needs
-
-The full phased plan with acceptance criteria lives in `context/plans/roadmap.md`.
 
 ## Tech Stack
 

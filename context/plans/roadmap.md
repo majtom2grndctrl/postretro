@@ -159,7 +159,7 @@ Plans ship in this sequence:
 
 ---
 
-## Milestone 9: Diffuse GI Upgrade (depth-aware probes + fog)
+## Milestone 9: Diffuse GI Upgrade (depth-aware probes + fog) ✓
 
 Kill light-leak-through-walls by adding per-probe visibility data to the Milestone 5 SH irradiance volume, then extend the fog system. The depth-aware interpolant replaces the plain trilinear SH sample entirely — one runtime path. Probe streaming is deferred: this milestone keeps probes resident and produces the VRAM-fit measurement that decides whether streaming ever becomes its own milestone.
 
@@ -171,12 +171,12 @@ Plans ship in this sequence:
 
 - [x] **Probe weight correctness (no new data)** — in the world shader: reject trilinear corners facing away from the surface normal, exclude invalid (zero-packed) probes from the blend, renormalize remaining weights. Pure ALU. Fixes a latent bug where invalid probes drag near-wall surfaces toward black — independent of DDGI, and a prerequisite the depth-aware interpolant needs anyway. **Measurement gate:** record residual smear/leak here to quantify what the depth atlas buys before paying for it.
 - [x] **Probe depth/visibility atlas (bake)** — prl-build stage baking per-probe depth moments alongside the existing SH bands, ray-cast through the Milestone 4 BVH. Format kept chunk-friendly so a later brick split needs no interpolant rewrite (deferred-streaming insurance). New/extended PRL section.
-- [ ] **Depth-aware runtime interpolant** — replace the trilinear SH sample with a visibility-weighted (Chebyshev) interpolant in the world shader, for both static surfaces and dynamic entities. Removes the plain-trilinear path. Depends on the depth atlas.
-- [ ] **Directional fog** — extend the live fog pass with the directional term, on top of the existing volumetric fog scope.
-  - [ ] *(Optional)* **Back-scatter** — expose the signed `scatter_bias` range (negative `g`). Needs a third cached directional SH read. Wire format already stores signed `g`; no PRL format break when this lands.
-- [ ] **Memory-budget checkpoint + coarse open-area spacing** — VRAM budget readout plus coarser probe spacing in open volumes; produces the empirical resident-fit number that gates any future streaming milestone.
+- [x] **Depth-aware runtime interpolant** — replace the trilinear SH sample with a visibility-weighted (Chebyshev) interpolant in the world shader, for both static surfaces and dynamic entities. Removes the plain-trilinear path. Depends on the depth atlas.
+- [x] **Directional fog** — extend the live fog pass with the directional term, on top of the existing volumetric fog scope.
+  - [ ] *(Optional)* **Back-scatter** — expose the signed `scatter_bias` range (negative `g`). Needs a third cached directional SH read. Wire format already stores signed `g`; no PRL format break when this lands. Deferred to future.
+- [x] **Memory-budget checkpoint + coarse open-area spacing** — VRAM budget readout plus coarser probe spacing in open volumes; produces the empirical resident-fit number that gates any future streaming milestone.
 
-**Testable outcome:** near-wall surfaces no longer darken from invalid-probe averaging; indirect light no longer bleeds through walls (visibility-weighted probe sampling); a single resident probe representation drives both static and dynamic surfaces; the fog pass runs with a working directional term; residual-smear and VRAM budget for a representative large map are both recorded.
+**Testable outcome:** near-wall surfaces no longer darken from invalid-probe averaging; indirect light no longer bleeds through walls (visibility-weighted probe sampling); a single resident probe representation drives both static and dynamic surfaces; the fog pass runs with a working directional term; residual-smear and VRAM budget for a representative large map are both recorded. ✓
 
 ---
 

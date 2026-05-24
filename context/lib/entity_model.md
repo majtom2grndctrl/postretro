@@ -82,6 +82,8 @@ Unknown classnames are logged as warnings and skipped. The engine does not crash
 
 Entity properties arrive as string key-value pairs. The loader parses these into typed values (floats, vectors, integers, enums). Malformed values log a warning and fall back to defaults.
 
+**Gameplay tuning params are not map-overridable.** Tuning params — weapon damage/range/fire-rate, movement physics, future wieldable/ability params — are descriptor-owned, never FGD KVPs. Maps cannot rebalance gameplay. Scripts may mutate them at runtime, including on events. This mirrors §7b: `PlayerMovement` physics pass verbatim from the descriptor with no FGD override. When adding a descriptor block, add no FGD KVPs for its tuning params. An archetype may still need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
+
 ---
 
 ## 5. Update Model

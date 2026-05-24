@@ -62,7 +62,7 @@ use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
     register_fog_reaction_primitives, register_sequenced_fog_primitives,
 };
-use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
+use crate::scripting::runtime::{ReloadSummary, ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::startup::{BootState, LoadOutcome, SplashSource, StartupTimings, spawn_level_worker};
 use crate::visibility::{VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells};
@@ -87,6 +87,10 @@ fn content_root_from_map(map_path: &str) -> PathBuf {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
         .to_path_buf()
+}
+
+fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
+    summary.mod_init || summary.scripts
 }
 
 fn main() -> Result<()> {
@@ -650,16 +654,17 @@ impl ApplicationHandler for App {
                 let ticks = frame_result.ticks;
 
                 // Drain pending reload requests so the watcher channel does
-                // not back up. Definition-script edits are observed but no
-                // behavior-context rebuild runs (Live VM is gone). When a
-                // mod-init reload fires (start-script edited), re-run
-                // `run_mod_init`, upsert descriptors, and refresh the live
+                // not back up. Live scripting VMs are gone, so hot reload
+                // re-runs mod-init conservatively for start-script edits and
+                // scripts under `<mod>/scripts/` that can feed descriptor
+                // declarations through imports/requires. The refreshed
+                // manifest upserts descriptors and refreshes the live
                 // equipped weapon from its descriptor. See:
                 // context/lib/scripting.md
                 match self.script_runtime.drain_reload_requests() {
                     Ok(summary) => {
-                        if summary.mod_init {
-                            log::info!("[Scripting] start-script changed — re-running mod init",);
+                        if reload_summary_requires_mod_init(summary) {
+                            log::info!("[Scripting] scripts changed — re-running mod init",);
                             if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
                                 log::error!("[Scripting] mod-init re-run failed: {err}",);
                             } else if let Some(manifest) = self.script_runtime.mod_manifest_mut() {
@@ -2121,6 +2126,22 @@ mod tests {
     #[test]
     fn content_root_from_map_returns_dot_for_bare_filename() {
         assert_eq!(content_root_from_map("test.prl"), PathBuf::from("."));
+    }
+
+    #[test]
+    fn scripts_reload_requests_rerun_mod_init() {
+        // Regression: descriptor domain scripts under `<mod>/scripts/` can be
+        // imported by start-script, so draining them without rerunning mod-init
+        // left `DataRegistry` and the active weapon stale.
+        assert!(reload_summary_requires_mod_init(ReloadSummary {
+            scripts: true,
+            mod_init: false,
+        }));
+        assert!(reload_summary_requires_mod_init(ReloadSummary {
+            scripts: false,
+            mod_init: true,
+        }));
+        assert!(!reload_summary_requires_mod_init(ReloadSummary::default()));
     }
 
     /// Mirrors the consumed-event gate in `window_event` for keyboard input:

@@ -39,7 +39,9 @@ pub(crate) struct ModManifestResult {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReloadSummary {
     /// At least one definition-script change was observed under
-    /// `<mod>/scripts/`.
+    /// `<mod>/scripts/`. The frame loop treats this as a conservative
+    /// mod-init reload because these files can be imported/required by
+    /// `start-script` and affect descriptor declarations.
     pub(crate) scripts: bool,
     /// At least one change touched `start-script.{ts,js,luau}` (or a likely
     /// import sibling) at the mod root; the engine should re-run mod-init.

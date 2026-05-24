@@ -48,20 +48,23 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
 use log::{error, info, warn};
-use notify::{EventKind, RecursiveMode};
-use notify_debouncer_full::{DebouncedEvent, new_debouncer};
+use notify::{Config as NotifyConfig, EventKind, PollWatcher, RecursiveMode};
+use notify_debouncer_full::{DebouncedEvent, RecommendedCache, new_debouncer_opt};
 
 use super::error::ScriptError;
 
 /// ~200 ms debounce — well below a one-second reload budget even with a
 /// compile step on the critical path.
 const DEBOUNCE_MS: u64 = 200;
+/// Polling avoids native-watcher blind spots in sandboxed macOS development
+/// and still keeps debug hot reload comfortably under the one-second target.
+const POLL_INTERVAL_MS: u64 = 100;
 
 /// What kind of reload was triggered.
 ///
-/// `Scripts` — a file under the scripts root changed. The frame loop drains
-/// this flag but takes no rebuild action; definition-script hot-reload is not
-/// implemented.
+/// `Scripts` — a file under the scripts root changed. The frame loop treats
+/// this as a conservative mod-init reload because domain scripts under
+/// `<mod>/scripts/` can feed `setupMod()` through imports/requires.
 ///
 /// `ModInit` — `start-script.{ts,js,luau}` (or a `.ts` sibling at the mod
 /// root, treated as a likely import) changed; the engine should re-run
@@ -186,10 +189,7 @@ pub(crate) struct ScriptWatcher {
     /// Kept alive so the debouncer thread keeps running. On drop, the
     /// debouncer stops, the internal event channel closes, and the
     /// compile-worker loop exits naturally when its `recv` returns an error.
-    _debouncer: notify_debouncer_full::Debouncer<
-        notify::RecommendedWatcher,
-        notify_debouncer_full::RecommendedCache,
-    >,
+    _debouncer: notify_debouncer_full::Debouncer<PollWatcher, RecommendedCache>,
     reload_rx: Receiver<ReloadRequest>,
     /// Join handle for the compile-worker. Not joined explicitly — the thread
     /// exits once the event-channel sender side drops. Kept in the struct so
@@ -233,10 +233,13 @@ impl ScriptWatcher {
         // Channel 2: compile-worker → frame loop.
         let (reload_tx, reload_rx) = mpsc::channel::<ReloadRequest>();
 
-        // The closure passed to `new_debouncer` runs on the debouncer's
+        // The closure passed to `new_debouncer_opt` runs on the debouncer's
         // internal thread. Its only job: forward each `DebouncedEvent` to the
         // compile-worker. Never blocks on compilation.
-        let mut debouncer = new_debouncer(
+        let watcher_config = NotifyConfig::default()
+            .with_poll_interval(Duration::from_millis(POLL_INTERVAL_MS))
+            .with_compare_contents(true);
+        let mut debouncer = new_debouncer_opt::<_, PollWatcher, RecommendedCache>(
             Duration::from_millis(DEBOUNCE_MS),
             None,
             move |res: notify_debouncer_full::DebounceEventResult| match res {
@@ -253,6 +256,8 @@ impl ScriptWatcher {
                     }
                 }
             },
+            RecommendedCache::new(),
+            watcher_config,
         )
         .map_err(|e| ScriptError::InvalidArgument {
             reason: format!("failed to start script watcher: {e}"),
@@ -303,10 +308,10 @@ impl ScriptWatcher {
     /// Drain pending reload requests non-blockingly. Returns a
     /// [`ReloadSummary`] describing which kinds of reload were observed.
     ///
-    /// A `Scripts` reload sets `summary.scripts = true`; the caller drains it
-    /// but takes no rebuild action — definition-script hot-reload is not
-    /// implemented. A `ModInit` reload signals that `run_mod_init` should be
-    /// re-run.
+    /// A `Scripts` reload sets `summary.scripts = true`; the frame loop
+    /// handles it by re-running mod-init because imported domain scripts can
+    /// affect the returned descriptor manifest. A `ModInit` reload signals
+    /// the same path for start-script edits.
     pub(crate) fn drain_reload_requests(&mut self) -> Result<ReloadSummary, ScriptError> {
         let mut summary = ReloadSummary::default();
         loop {
@@ -359,8 +364,25 @@ fn compile_worker_loop(
 /// `start-script.luau` itself triggers `ModInit` (Luau scripts are loaded by
 /// the VM at require-time, not pre-watched as separate FS events).
 /// Everything else under the watched scripts subtree is a `Scripts` reload.
+fn same_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+
+    let Ok(left) = std::fs::canonicalize(left) else {
+        return false;
+    };
+    let Ok(right) = std::fs::canonicalize(right) else {
+        return false;
+    };
+    left == right
+}
+
 fn classify_reload(path: &Path, mod_root: &Path) -> ReloadKind {
-    if path.parent() == Some(mod_root) {
+    if path
+        .parent()
+        .is_some_and(|parent| same_path(parent, mod_root))
+    {
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())

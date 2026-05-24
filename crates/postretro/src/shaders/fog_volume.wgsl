@@ -91,14 +91,20 @@ const MAX_SH_RESAMPLE_STRIDE: u32 = 32u;
 const MAX_PIXEL_SCALE: u32 = 8u;
 
 // World-space coverage budget per cached SH sample, expressed as a multiple of
-// the SH grid cell size. SH irradiance is band-limited and the historical
-// quality bar (hardcoded stride 8 with default 1m probes / 0.5m step) cached
-// one sample for every 4 cells of march distance — that ratio is what this
-// constant preserves. Tightening `--probe-spacing` shrinks the cell, which
-// shrinks coverage and shortens the stride proportionally; tightening
-// `fog.step_size` lengthens the stride to keep meters-per-cache-sample roughly
-// constant, capped by `MAX_SH_RESAMPLE_STRIDE`.
-const SH_COVERAGE_CELLS: f32 = 4.0;
+// the SH grid cell size. The cache is resampled once per `SH_COVERAGE_CELLS`
+// cells of march distance and the per-step value is reconstructed by linear
+// interpolation between anchors. The view-derived directional read varies at
+// the grid's spatial frequency (one cell), so a stride wider than the cell
+// under-samples it: linear interpolation across the skipped cells leaves
+// slope kinks at the anchor boundaries, which — because anchors sit at constant
+// `t` along each ray — project to screen as concentric banding when the camera
+// is inside the volume. Anchoring at one cell (Nyquist for a trilinear field)
+// makes the cache no coarser than the grid's own trilinear seams, removing the
+// banding. The dual-read fetch (one 8-corner load reconstructed for both iso
+// and dir) keeps this affordable. Tightening `--probe-spacing` shrinks the
+// cell and the stride together; tightening `fog.step_size` is floored at one
+// sample per step and capped by `MAX_SH_RESAMPLE_STRIDE`.
+const SH_COVERAGE_CELLS: f32 = 1.0;
 
 // --- Group 6: Fog resources ---
 
@@ -216,6 +222,18 @@ struct FogSpotLight {
 const PI: f32 = 3.141592653589793;
 const HG_MAX_G: f32 = 0.9;
 
+// Interleaved Gradient Noise (Jimenez, "Next Generation Post Processing in
+// Call of Duty: Advanced Warfare"). A cheap, well-distributed screen-space hash
+// in [0, 1) keyed on integer pixel coordinates — mirrors the identical helper
+// in fog_composite.wgsl. Used here to jitter each ray's march start so that
+// neighboring pixels sample staggered `t` (see the jitter at the sub-interval
+// init). Stable per output pixel (no temporal/per-frame term), so the resulting
+// fine grain reads as stationary — it does not shimmer — matching the static
+// pixelated fog aesthetic.
+fn interleaved_gradient_noise(pixel: vec2<f32>) -> f32 {
+    return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
+}
+
 // Henyey-Greenstein phase: the standard cheap, single-parameter scattering lobe
 // for fog/aerosol media — `g` alone shapes forward bias, so it maps directly
 // onto the authored `scatter_bias` with no extra coefficients to bake.
@@ -252,16 +270,25 @@ fn fog_directional_sh_weight(cos_theta: f32, g: f32) -> f32 {
 }
 
 // No surface-normal offset — the wall-bleed mitigation in forward.wgsl has no
-// meaning in fog. The helper still receives a geo-normal argument, but with
-// `reject_backface = false` that slot is intentionally unused.
+// meaning in fog. The dual helper does no backface rejection (fog has no
+// surface normal).
 //
-// `gi`/`gfrac` clamp the low side to the grid origin; the helper owns high-side
-// edge clamping per corner.
-fn sample_sh_fog(world_pos: vec3<f32>, eval_direction: vec3<f32>) -> vec3<f32> {
+// One world position yields two SH reads (isotropic world-up + view-derived
+// directional). The 8-corner / 72-textureLoad fetch is direction-independent,
+// so both reads share a single fetch — half the texture bandwidth of two
+// separate samples. `gi`/`gfrac` clamp the low side to the grid origin; the
+// helper owns high-side edge clamping per corner.
+fn sample_sh_fog_dual(
+    world_pos: vec3<f32>,
+    dir_a: vec3<f32>,
+    dir_b: vec3<f32>,
+) -> ShDirPair {
     if sh_grid.has_sh_volume == 0u {
-        return vec3<f32>(0.0);
+        var zero: ShDirPair;
+        zero.a = vec3<f32>(0.0);
+        zero.b = vec3<f32>(0.0);
+        return zero;
     }
-    let normal = normalize(eval_direction);
     let cell_coord = (world_pos - sh_grid.grid_origin) /
         max(sh_grid.cell_size, vec3<f32>(1.0e-6));
     // Clamp before deriving the fraction so a sample below the grid origin
@@ -269,7 +296,12 @@ fn sample_sh_fog(world_pos: vec3<f32>, eval_direction: vec3<f32>) -> vec3<f32> {
     let clamped = max(cell_coord, vec3<f32>(0.0));
     let gi = vec3<u32>(floor(clamped));
     let gfrac = fract(clamped);
-    return sample_sh_indirect_corners_without_depth(gi, gfrac, normal, normal, false);
+    return sample_sh_indirect_corners_two_without_depth(
+        gi,
+        gfrac,
+        normalize(dir_a),
+        normalize(dir_b),
+    );
 }
 
 // --- Shadow sampling (matches forward.wgsl::sample_spot_shadow) ---
@@ -385,6 +417,34 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var transmittance: f32 = 1.0;
     var accum: vec3<f32> = vec3<f32>(0.0);
 
+    // Per-pixel ray-start jitter (decorrelates constant-`t` integration shells).
+    //
+    // The march uses a constant world-space `step` and — when the camera is
+    // inside a volume — every ray starts at `start_t = near_clip` (the slab
+    // entry `t_near` is negative inside the box, so `enter` clamps to the same
+    // `near_clip` for all rays). Constant start + constant step means every ray
+    // samples the SAME set of `t` values, so the fixed-step Riemann quadrature
+    // error of the base scatter/extinction integral is identical across
+    // neighboring pixels. That shared error forms iso-`t` shells; projected to
+    // screen, iso-`t` shells centered on the camera read as concentric rings
+    // about the view axis. This is independent of `scatter_bias` — it is in the
+    // base ambient-scatter + `exp(-density·step)` accumulation, present even
+    // when the directional SH term collapses (g→0).
+    //
+    // Standard cure (Frostbite et al.): offset each ray's first sample by a
+    // per-pixel pseudo-random fraction of one step. Neighboring pixels then
+    // sample staggered `t`, so the constant-`t` shells dissolve into fine noise.
+    // Offsetting the phase of a fixed-width forward-accumulated rectangle rule
+    // does not bias the integral (the step width and `exp(-density·step)`
+    // transmittance per step are unchanged); it only stratifies WHERE each
+    // ray's samples land. The SH anchor schedule keys off `t`, so it follows the
+    // jittered start automatically.
+    //
+    // Keyed on the output pixel (`gid.xy`) with no temporal term, so the grain
+    // is stationary frame-to-frame — no shimmer, matching the static fog look.
+    // Range [0, 1): replaces the former fixed `step * 0.5` interior offset.
+    let ray_jitter = interleaved_gradient_noise(vec2<f32>(gid.xy));
+
     // Cap the iteration count so a huge far distance doesn't hang the shader.
     // 256 steps × default 0.5m = 128m reach before early-out. Maps that need
     // more can reduce `fog_step_size`; plan target is <2ms/pass.
@@ -487,26 +547,38 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var step_count: u32 = 0u;
 
-    // SH irradiance is band-limited and the SH grid is much coarser than the
-    // march step size. Sampling 72 textureLoad calls per SH read (8 corners ×
-    // 9 bands) is wasted bandwidth — we cache an iso/dir sample pair and
-    // refresh whenever the march has advanced more than `sh_coverage_dist`
-    // world units since the last sample (reset at each sub-interval boundary)
-    // to bound drift without per-step cost.
-    // The cache lives in scalar locals (no array, no callee pointer) so it stays
-    // in registers and never hits the Metal private-memory trap.
+    // The SH read costs 72 textureLoads (8 corners × 9 bands) and the grid is
+    // coarser than the march step, so the iso/dir reads are resampled once per
+    // `sh_coverage_dist` of march distance and the per-step value is
+    // reconstructed by linearly interpolating between two look-ahead anchors
+    // (`lo` at `t_anchor`, `hi` at `t_anchor + sh_coverage_dist`). The iso and
+    // dir reads at each anchor share one fetch (`sample_sh_fog_dual`): the 72
+    // loads are direction-independent, so both directions reconstruct from the
+    // same corners at half the bandwidth of two separate samples.
     //
-    // Why distance-based, not step-count-based: an animated fog_lamp density
+    // `sh_coverage_dist` is anchored at one SH cell (see SH_COVERAGE_CELLS).
+    // The world-up (iso) read varies slowly in space and tolerates a wide
+    // stride, but the view-derived (dir) read varies at the grid's spatial
+    // frequency; a stride wider than the cell under-samples it. Linear
+    // interpolation across the skipped cells leaves slope kinks at the anchor
+    // boundaries, and because the anchors sit at constant `t` along each ray
+    // those kinks project to screen as faint concentric banding when the camera
+    // is inside the volume (worst at high `scatter_bias`, where the dir read
+    // dominates the blend). Anchoring at one cell — Nyquist for the trilinear
+    // field — keeps the cache no coarser than the grid's own trilinear seams,
+    // removing the banding while the dual fetch keeps the cost affordable.
+    // The anchors live in scalar locals (no array, no callee pointer) so they
+    // stay in registers and never hit the Metal private-memory trap.
+    //
+    // Why anchor on distance, not step count: an animated fog_lamp density
     // shifts the `transmittance < 0.01` early-out break point by ±1 step
-    // frame-to-frame. With a step-count schedule, that ±1 step shift changes
-    // which cached SH value governs the final step (up to stride-1 steps
-    // stale) for radial volumes, where per-step `fade` varies sharply with
-    // position — producing a frame-to-frame radiance discontinuity (flicker).
-    // A distance-based schedule is frame-stable: the t-sequence is
-    // deterministic per ray, so the cached SH pair at step k holds the same
-    // value every frame regardless of where the early-out fires. The animated
-    // early-out only controls whether a smooth additional contribution lands
-    // — it does not alter which cached value governed prior steps.
+    // frame-to-frame. A step-count schedule would let that ±1 shift change
+    // which segment governs the boundary step, producing a frame-to-frame
+    // radiance discontinuity (flicker). Anchoring on `t` is frame-stable: the
+    // t-sequence is deterministic per ray, so both anchors and the interpolant
+    // at step k hold the same value every frame regardless of where the
+    // early-out fires. The animated early-out only controls whether a smooth
+    // additional contribution lands — it does not alter the anchor schedule.
     //
     // `sh_coverage_dist` is derived once per ray from the SH grid cell size,
     // so the meters-per-cache-sample budget stays proportional to the baked
@@ -515,27 +587,28 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // `probe_spacing_meters` on the host); taking the minimum component is
     // the conservative choice for anisotropic grids. Floored at `step` (one
     // sample per step minimum) and capped at `MAX_SH_RESAMPLE_STRIDE * step`
-    // to keep pathological inputs (very small `step_size`) bounded — these
-    // bounds preserve the historical stride [1, MAX_SH_RESAMPLE_STRIDE]
-    // semantics, just expressed in distance.
+    // to keep pathological inputs (very small `step_size`) bounded.
     //
     // Default-case sanity: cell_size = 1.0m, step = 0.5m →
-    //   sh_coverage_dist = clamp(4.0, 0.5, 16.0) = 4.0m, i.e. ~one sample
-    //   every 8 steps — matches the previous hardcoded stride 8, so default
-    //   visual output is unchanged.
+    //   sh_coverage_dist = clamp(1.0, 0.5, 16.0) = 1.0m, i.e. anchors ~2 steps
+    //   apart — one resample per SH cell.
     let cell_min = min(min(sh_grid.cell_size.x, sh_grid.cell_size.y), sh_grid.cell_size.z);
     let sh_coverage_dist = clamp(
         SH_COVERAGE_CELLS * cell_min,
         step,
         f32(MAX_SH_RESAMPLE_STRIDE) * step,
     );
-    var cached_sh_iso: vec3<f32> = vec3<f32>(0.0);
-    var cached_sh_dir: vec3<f32> = vec3<f32>(0.0);
     let sh_iso_direction = vec3<f32>(0.0, 1.0, 0.0);
     let sh_view_direction = -ray.direction;
-    // Sentinel triggering a fresh sample on the first eligible step. Any value
-    // <= -sh_coverage_dist works; -1e30 is safely beyond any plausible `t`.
-    var t_last_sh_sample: f32 = -1.0e30;
+    // Interpolation anchors for the iso/dir SH reads. `*_lo` is the read at
+    // `sh_t_anchor`; `*_hi` is the read one stride further along the ray. Each
+    // is re-anchored per sub-interval (see the sub-interval init) and advanced
+    // when the march crosses past `sh_t_anchor + sh_coverage_dist`.
+    var sh_iso_lo: vec3<f32> = vec3<f32>(0.0);
+    var sh_iso_hi: vec3<f32> = vec3<f32>(0.0);
+    var sh_dir_lo: vec3<f32> = vec3<f32>(0.0);
+    var sh_dir_hi: vec3<f32> = vec3<f32>(0.0);
+    var sh_t_anchor: f32 = 0.0;
 
     for (var ui: u32 = 0u; ui < union_count; ui = ui + 1u) {
         if transmittance < 0.01 { break; }
@@ -543,12 +616,33 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         let sub_enter = union_enter[ui];
         let sub_exit = union_exit[ui];
-        // Align the first step inside the sub-interval to a half-step offset
-        // (matches the original `start_t = step * 0.5` cadence).
-        var t = sub_enter + step * 0.5;
-        // Force a fresh SH sample at the first eligible step in each new
-        // sub-interval (gaps between sub-intervals can be large).
-        t_last_sh_sample = -1.0e30;
+        // Offset the first step inside the sub-interval by a per-pixel fraction
+        // of one step (`ray_jitter` in [0, 1)). This replaces the former fixed
+        // `step * 0.5` interior offset: a constant offset left every ray on the
+        // same `t` grid (concentric-ring artifact); the per-pixel offset
+        // staggers the grid so neighboring pixels' integration errors no longer
+        // align into shells. Bounded to [0, step), so the first sample stays
+        // within the first step of the sub-interval — no skipped or
+        // double-counted boundary interval.
+        var t = sub_enter + step * ray_jitter;
+        // Re-anchor the SH interpolation at the first step of each new
+        // sub-interval (gaps between sub-intervals can be large, so the prior
+        // anchors are not meaningful across the gap). `lo` samples at the start
+        // position; `hi` samples one stride ahead along the ray.
+        // The look-ahead is clamped to `ray.max_t`: everything before the first
+        // opaque surface is empty space with valid SH probes, but a sample past
+        // `max_t` lands in solid geometry where every corner is in-wall and the
+        // SH helper returns 0 — interpolating toward that zero drags the fog
+        // ambient to black over the last stride before any surface.
+        sh_t_anchor = t;
+        let sh_anchor_pos = ray.origin + ray.direction * sh_t_anchor;
+        let sh_lookahead_pos = ray.origin + ray.direction * min(sh_t_anchor + sh_coverage_dist, ray.max_t);
+        let sh_lo = sample_sh_fog_dual(sh_anchor_pos, sh_iso_direction, sh_view_direction);
+        let sh_hi = sample_sh_fog_dual(sh_lookahead_pos, sh_iso_direction, sh_view_direction);
+        sh_iso_lo = sh_lo.a;
+        sh_dir_lo = sh_lo.b;
+        sh_iso_hi = sh_hi.a;
+        sh_dir_hi = sh_hi.b;
 
         loop {
             if t >= sub_exit { break; }
@@ -674,17 +768,28 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // color, then apply saturation and tint before folding into accum.
                 var step_scatter: vec3<f32> = vec3<f32>(0.0);
 
-                // Distance-based refresh: resample when the march has advanced
-                // at least `sh_coverage_dist` world units past the last sample.
-                // This keeps the cache schedule a function of world position
-                // (not step index), so animated-density-induced ±1 step shifts
-                // at the early-out don't change which cached value governs the
-                // boundary step.
-                if t - t_last_sh_sample >= sh_coverage_dist {
-                    cached_sh_iso = sample_sh_fog(pos, sh_iso_direction);
-                    cached_sh_dir = sample_sh_fog(pos, sh_view_direction);
-                    t_last_sh_sample = t;
+                // Advance the interpolation segment when the march crosses past
+                // the current `hi` anchor. `sh_coverage_dist >= step`, so at most
+                // one segment boundary falls in a single step — a single `if`
+                // (not a loop) reanchors correctly. Reuse the old `hi` as the new
+                // `lo` (no extra read) and sample one fresh `hi` a stride ahead.
+                // The schedule is keyed on `t` alone, so it stays deterministic
+                // per ray independent of the animated-density early-out.
+                if t >= sh_t_anchor + sh_coverage_dist {
+                    sh_t_anchor = sh_t_anchor + sh_coverage_dist;
+                    sh_iso_lo = sh_iso_hi;
+                    sh_dir_lo = sh_dir_hi;
+                    // Clamp to `ray.max_t` so the look-ahead never samples past
+                    // the first surface into solid geometry (zero-SH; see the
+                    // sub-interval init for the full rationale).
+                    let sh_lookahead_pos = ray.origin + ray.direction * min(sh_t_anchor + sh_coverage_dist, ray.max_t);
+                    let sh_hi = sample_sh_fog_dual(sh_lookahead_pos, sh_iso_direction, sh_view_direction);
+                    sh_iso_hi = sh_hi.a;
+                    sh_dir_hi = sh_hi.b;
                 }
+                let sh_frac = saturate((t - sh_t_anchor) / sh_coverage_dist);
+                let cached_sh_iso = mix(sh_iso_lo, sh_iso_hi, sh_frac);
+                let cached_sh_dir = mix(sh_dir_lo, sh_dir_hi, sh_frac);
                 // The directional read evaluates SH toward -ray.direction, so the
                 // HG lobe always points along the view ray (cos_theta == 1) and
                 // `fog_directional_sh_weight` collapses to `saturate(g)` for every

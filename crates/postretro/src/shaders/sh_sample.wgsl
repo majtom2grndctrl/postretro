@@ -50,7 +50,7 @@ fn sh_irradiance(
 }
 
 // Isolates per-corner reconstruction so the 8-corner loop in
-// `sample_sh_indirect_corners_impl` stays readable and the clamp-to-non-negative
+// `sample_sh_indirect_corners_pair` stays readable and the clamp-to-non-negative
 // is applied in exactly one place.
 fn sh_corner_irradiance(bands: array<vec3<f32>, 9>, shading_normal: vec3<f32>) -> vec3<f32> {
     return max(
@@ -91,7 +91,16 @@ fn sh_corner_depth_visibility(idx: vec3<i32>, sample_world: vec3<f32>, is_valid:
     return clamp(visibility, SH_DEPTH_MIN_VISIBILITY, 1.0);
 }
 
-// Manual 8-corner SH blend.
+struct ShDirPair {
+    a: vec3<f32>,
+    b: vec3<f32>,
+}
+
+// Canonical manual 8-corner SH blend — the single source of truth for the
+// fetch / trilinear weight / validity / backface / depth-visibility loop.
+// Reconstructs up to two directions (`normal_a`, `normal_b`) from one fetch
+// and returns both in a `ShDirPair`. Every public entry point below funnels
+// through this; the math lives in exactly one place.
 //
 // `gi`     — integer grid index of the lower corner. Billboard/fog clamp only
 //            the low side before computing `gi`, so it may equal or exceed the
@@ -100,10 +109,26 @@ fn sh_corner_depth_visibility(idx: vec3<i32>, sample_world: vec3<f32>, is_valid:
 // `gfrac`  — sub-cell fraction in [0, 1) within the cell. Forward derives this
 //            from a normal-offset sample position; billboard and fog pass the
 //            raw grid-space coordinate with no offset.
-// `shading_normal` — normal used for SH reconstruction (may be normal-mapped).
+// `normal_a`/`normal_b` — directions used for SH reconstruction. The
+//            single-direction wrappers pass the same (shading) normal in both
+//            slots and set `reconstruct_b = false`; the fog dual path passes
+//            two distinct directions and sets `reconstruct_b = true`.
 // `geo_normal`     — geometric mesh normal, used for backface rejection.
 // `reject_backface`— when true, downweight corners on the far side of the
-//                    surface. Forward sets this; billboard/fog will not.
+//                    surface. Forward sets this; billboard/fog do not.
+// `use_depth_visibility` — when true, apply the Chebyshev moment-visibility
+//                    term. Forward/billboard set this; fog does not (fog has no
+//                    surface, so there is no depth horizon to test against).
+// `reconstruct_b`  — when false, skip the second reconstruction entirely so the
+//                    hot single-direction path pays for exactly one
+//                    `sh_corner_irradiance` per corner. `result.b` is then
+//                    unspecified and must be ignored by the caller.
+//
+// IMPORTANT — Metal constraint: the 9-band array stays register-resident inside
+// this function. Do NOT factor the loop body into a callee taking
+// `ptr<function, array<...>>` — that spills to device-private memory and
+// destroys read coalescing on Apple Silicon (commit b93d31e, reverted by
+// bda93f4; see the `fog_volume.wgsl` cs_main comment).
 //
 // Per corner: clamp the index to the valid grid range (matching clamp-to-edge
 // sampling; an out-of-range load returns 0, which the validity test would
@@ -117,20 +142,28 @@ fn sh_corner_depth_visibility(idx: vec3<i32>, sample_world: vec3<f32>, is_valid:
 // or the corner is in front of its mean-depth horizon, attenuating toward
 // SH_DEPTH_MIN_VISIBILITY beyond. Accumulate Σ w·irradiance and Σ w, then
 // renormalize. When Σ w is below epsilon (all corners invalid/backfacing),
-// fall back to the ambient floor — matching the `has_sh_volume == 0` path so
-// there is no div-by-zero, NaN, or black flash.
-fn sample_sh_indirect_corners_impl(
+// return zero SH — matching the `has_sh_volume == 0` path so there is no
+// div-by-zero, NaN, or black flash.
+//
+// Normalization note: both components divide by `weight_sum` directly (not by a
+// shared reciprocal), so `.a` is bit-identical to the legacy single-direction
+// path and `.b` matches what the legacy dual helper produced for its second
+// direction within rounding of the same accumulation order.
+fn sample_sh_indirect_corners_pair(
     gi: vec3<u32>,
     gfrac: vec3<f32>,
     sample_world: vec3<f32>,
-    shading_normal: vec3<f32>,
+    normal_a: vec3<f32>,
+    normal_b: vec3<f32>,
     geo_normal: vec3<f32>,
     reject_backface: bool,
     use_depth_visibility: bool,
-) -> vec3<f32> {
+    reconstruct_b: bool,
+) -> ShDirPair {
     let gmax = vec3<i32>(sh_grid.grid_dimensions) - vec3<i32>(1);
 
-    var irradiance_sum = vec3<f32>(0.0);
+    var sum_a = vec3<f32>(0.0);
+    var sum_b = vec3<f32>(0.0);
     var weight_sum = 0.0;
 
     for (var c: u32 = 0u; c < 8u; c = c + 1u) {
@@ -183,7 +216,12 @@ fn sample_sh_indirect_corners_impl(
         }
 
         let w = trilinear * validity * bf * depth_visibility;
-        irradiance_sum = irradiance_sum + w * sh_corner_irradiance(bands, shading_normal);
+        sum_a = sum_a + w * sh_corner_irradiance(bands, normal_a);
+        // Skip the second reconstruction on the hot single-direction path; the
+        // bands are already register-resident, so when needed it is cheap.
+        if reconstruct_b {
+            sum_b = sum_b + w * sh_corner_irradiance(bands, normal_b);
+        }
         weight_sum = weight_sum + w;
     }
 
@@ -191,10 +229,17 @@ fn sample_sh_indirect_corners_impl(
     // `has_sh_volume == 0` early-out. Forward callers then see only the
     // ambient floor they add outside this function; billboard/fog callers
     // see zero SH. Epsilon guard avoids div-by-zero / NaN / black flash.
+    var result: ShDirPair;
     if weight_sum < 1.0e-5 {
-        return vec3<f32>(0.0);
+        result.a = vec3<f32>(0.0);
+        result.b = vec3<f32>(0.0);
+        return result;
     }
-    return irradiance_sum / weight_sum;
+    // Divide (not multiply-by-reciprocal) so `.a` is bit-identical to the
+    // legacy single-direction path.
+    result.a = sum_a / weight_sum;
+    result.b = sum_b / weight_sum;
+    return result;
 }
 
 fn sample_sh_indirect_corners_depth_aware(
@@ -205,15 +250,17 @@ fn sample_sh_indirect_corners_depth_aware(
     geo_normal: vec3<f32>,
     reject_backface: bool,
 ) -> vec3<f32> {
-    return sample_sh_indirect_corners_impl(
+    return sample_sh_indirect_corners_pair(
         gi,
         gfrac,
         sample_world,
         shading_normal,
+        shading_normal,
         geo_normal,
         reject_backface,
         true,
-    );
+        false,
+    ).a;
 }
 
 fn sample_sh_indirect_corners_without_depth(
@@ -224,13 +271,44 @@ fn sample_sh_indirect_corners_without_depth(
     reject_backface: bool,
 ) -> vec3<f32> {
     let unused_sample_world = sh_grid.grid_origin + vec3<f32>(gi) * sh_grid.cell_size;
-    return sample_sh_indirect_corners_impl(
+    return sample_sh_indirect_corners_pair(
         gi,
         gfrac,
         unused_sample_world,
         shading_normal,
+        shading_normal,
         geo_normal,
         reject_backface,
         false,
+        false,
+    ).a;
+}
+
+// Two-direction SH read sharing a single 8-corner fetch. The 72 textureLoads
+// and the per-corner trilinear/validity weights depend only on position, not
+// the reconstruction direction — so a consumer that needs two reads at the same
+// point (the fog pass: a world-up isotropic read and a view-derived directional
+// read) fetches the corners once and reconstructs both directions. Each
+// returned component is bit-identical to a corresponding
+// `sample_sh_indirect_corners_without_depth` call, at half the texture
+// bandwidth. No depth-visibility, no backface rejection (fog has no surface
+// normal); matches the `without_depth` / `reject_backface = false` path.
+fn sample_sh_indirect_corners_two_without_depth(
+    gi: vec3<u32>,
+    gfrac: vec3<f32>,
+    normal_a: vec3<f32>,
+    normal_b: vec3<f32>,
+) -> ShDirPair {
+    let unused_sample_world = sh_grid.grid_origin + vec3<f32>(gi) * sh_grid.cell_size;
+    return sample_sh_indirect_corners_pair(
+        gi,
+        gfrac,
+        unused_sample_world,
+        normal_a,
+        normal_b,
+        normal_a,
+        false,
+        false,
+        true,
     );
 }

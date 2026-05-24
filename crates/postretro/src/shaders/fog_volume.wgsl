@@ -178,7 +178,6 @@ struct FogParams {
     far_clip: f32,
     point_count: u32,
     spot_count: u32,
-    frame_index: u32,
 }
 
 // One entry per dynamic spot shadow slot. Packed CPU-side from MapLight +
@@ -441,22 +440,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // ray's samples land. The SH anchor schedule keys off `t`, so it follows the
     // jittered start automatically.
     //
-    // Keyed on the output pixel (`gid.xy`), then advanced each frame by a
-    // golden-ratio increment of the frame index. A purely spatial, frozen jitter
-    // bakes a static diagonal stratification pattern into the low-res scatter
-    // buffer that reads as fixed "pixellated" noise; advancing the phase per
-    // frame lets the eye time-integrate it into grain-like haze instead. The
-    // 0.618… increment is the canonical low-discrepancy step for evenly walking
-    // the unit interval frame-to-frame. We wrap the frame index mod 256 before
-    // the f32 cast: a raw monotonic u32 loses integer precision past ~2^24, which
-    // would degrade the golden-ratio sequence; the modulo keeps the multiplicand
-    // small and the wrap is invisible since `fract` only sees the fractional part.
-    // (No temporal accumulation yet, so this introduces subtle per-frame grain.)
+    // Keyed on the output pixel (`gid.xy`) with no temporal term, so the grain
+    // is stationary frame-to-frame — no shimmer, matching the static fog look.
     // Range [0, 1): replaces the former fixed `step * 0.5` interior offset.
-    let ray_jitter = fract(
-        interleaved_gradient_noise(vec2<f32>(gid.xy))
-        + f32(fog.frame_index % 256u) * 0.61803398875
-    );
+    let ray_jitter = interleaved_gradient_noise(vec2<f32>(gid.xy));
 
     // Cap the iteration count so a huge far distance doesn't hang the shader.
     // 256 steps × default 0.5m = 128m reach before early-out. Maps that need

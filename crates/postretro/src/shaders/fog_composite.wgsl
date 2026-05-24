@@ -1,14 +1,6 @@
 // Fullscreen additive composite of the low-res fog scatter buffer over the
-// surface. The low-res scatter (quarter-res by default, governed by
-// `fog_pixel_scale`) is upsampled to full res with a DEPTH-AWARE (bilateral)
-// filter — see `fs_main`. A plain nearest upsample replicates each low-res
-// texel into a `pixel_scale × pixel_scale` block, which reads as blocky
-// pixelation when the camera is inside a volume; a plain bilinear would smooth
-// the blocks but bleed fog across geometry depth edges (haze leaks over object
-// silhouettes). The bilateral filter weights each low-res tap by bilinear
-// proximity AND depth similarity to the full-res target pixel, so the blocks
-// dissolve into a smooth gradient without crossing silhouettes.
-// See context/lib/rendering_pipeline.md §7.5.
+// surface. Nearest-neighbor upscale — the pixelated blocks are aesthetic
+// intent, not a compromise. See context/lib/rendering_pipeline.md §7.5.
 //
 // Banding note: the scatter target is RGBA16Float (no quantization there), but
 // the surface is an 8-bit *UnormSrgb* swapchain. This pass additively blends
@@ -22,24 +14,7 @@
 // is the textbook fix for output-quantization banding and is essentially free.
 
 @group(0) @binding(0) var scatter_tex: texture_2d<f32>;
-@group(0) @binding(1) var depth_tex: texture_depth_2d;
-
-// Subset of the raymarch `FogParams` (fog_volume.rs::FogParams) — the composite
-// reuses the SAME per-frame params uniform buffer (no separate upload). Only
-// `near_clip`/`far_clip` are read here, to linearize the non-linear depth buffer
-// for a perceptually-meaningful bilateral depth comparison. The leading fields
-// are declared so the WGSL struct layout matches the bound buffer; the trailing
-// fields after `far_clip` are elided (WGSL does not require declaring the tail
-// of a uniform struct).
-struct FogParams {
-    inv_view_proj: mat4x4<f32>,
-    camera_position: vec3<f32>,
-    step_size: f32,
-    active_count: u32,
-    near_clip: f32,
-    far_clip: f32,
-}
-@group(0) @binding(2) var<uniform> fog: FogParams;
+@group(0) @binding(1) var scatter_sampler: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -89,115 +64,24 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, c <= vec3<f32>(0.04045));
 }
 
-// Convert a non-linear depth-buffer value (NDC z, [0,1], 0 at near) to a linear
-// view-space distance. The raymarch pass uses the same near-at-0 / far-at-1
-// convention. Linearizing first makes the bilateral depth weight behave
-// consistently across the whole depth range — a fixed NDC threshold would be
-// far too tight near the camera and far too loose in the distance, because NDC
-// depth crowds nearly all its precision against the near plane.
-fn linearize_depth(ndc: f32) -> f32 {
-    let n = fog.near_clip;
-    let f = fog.far_clip;
-    return (n * f) / max(f - ndc * (f - n), 1.0e-6);
-}
-
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let scatter_dims = vec2<f32>(textureDimensions(scatter_tex));
-    let depth_dims = textureDimensions(depth_tex);
-
-    // Full-res target pixel. `in.clip.xy` is the pixel center in framebuffer
-    // space; floor gives the integer texel for the depth load.
-    let full_px = vec2<i32>(in.clip.xy);
-    let target_depth_ndc = textureLoad(
-        depth_tex,
-        clamp(full_px, vec2<i32>(0), vec2<i32>(depth_dims) - vec2<i32>(1)),
-        0,
-    );
-
-    // Locate this pixel in low-res scatter texel space. Scatter texel centers
-    // sit at integer+0.5, so subtract 0.5 to get the fractional position for
-    // bilinear bracketing: `base` is the lower-left of the 2×2 tap quad,
-    // `frac` the interpolation weight within it.
-    let scatter_coord = in.uv * scatter_dims - vec2<f32>(0.5);
-    let base = floor(scatter_coord);
-    let frac = scatter_coord - base;
-    let base_i = vec2<i32>(base);
-    let scatter_max = vec2<i32>(scatter_dims) - vec2<i32>(1);
-
-    // Sample depth at the EXIT of geometry the raymarch used as `max_t`: the
-    // raymarch derives each low-res texel's ray endpoint from a min-over-block
-    // depth tap, so the foreground silhouette sits at the depth of the closest
-    // covered pixel. For the bilateral comparison we read the full-res depth at
-    // each low-res tap's pixel center and weight by similarity to the target
-    // pixel's depth — taps on the same surface as the target contribute, taps
-    // on a different surface (across a silhouette) are suppressed, so fog does
-    // not bleed past the edge.
-    let depth_per_scatter = vec2<f32>(depth_dims) / scatter_dims;
-    let target_lin = linearize_depth(target_depth_ndc);
-
-    // Depth-similarity falloff scale. Relative to the target's own linear
-    // distance (sigma = 5% of view depth): an absolute world-space sigma would
-    // over-reject distant surfaces (where one depth texel spans many world
-    // units) and under-reject near ones. A relative scale tracks the depth
-    // buffer's own precision distribution, so the edge stays equally crisp at
-    // any range. The `+near_clip` floor keeps the denominator sane right at the
-    // camera where `target_lin` approaches zero.
-    let sigma = 0.05 * target_lin + fog.near_clip;
-
-    var rgb_accum = vec3<f32>(0.0);
-    var weight_accum = 0.0;
-    for (var j: i32 = 0; j < 2; j = j + 1) {
-        for (var i: i32 = 0; i < 2; i = i + 1) {
-            let tap = clamp(base_i + vec2<i32>(i, j), vec2<i32>(0), scatter_max);
-
-            // Bilinear weight for this corner of the 2×2 quad.
-            let wx = mix(1.0 - frac.x, frac.x, f32(i));
-            let wy = mix(1.0 - frac.y, frac.y, f32(j));
-            let w_bilinear = wx * wy;
-
-            // Depth at this tap's full-res pixel center, linearized and compared
-            // to the target. exp(-Δ/σ) is the standard bilateral kernel: taps
-            // straddling a silhouette have a large Δ and get ~zero weight.
-            let tap_depth_px = vec2<i32>(
-                (vec2<f32>(tap) + vec2<f32>(0.5)) * depth_per_scatter,
-            );
-            let tap_depth_ndc = textureLoad(
-                depth_tex,
-                clamp(tap_depth_px, vec2<i32>(0), vec2<i32>(depth_dims) - vec2<i32>(1)),
-                0,
-            );
-            let tap_lin = linearize_depth(tap_depth_ndc);
-            let w_depth = exp(-abs(tap_lin - target_lin) / sigma);
-
-            let w = w_bilinear * w_depth;
-            rgb_accum = rgb_accum + textureLoad(scatter_tex, tap, 0).rgb * w;
-            weight_accum = weight_accum + w;
-        }
-    }
-    // weight_accum is always > 0: the bilinear weights sum to 1 and the nearest
-    // tap (smallest Δdepth) carries a non-zero depth weight, so no fallback is
-    // needed. Divide to renormalize the bilateral kernel.
-    let scatter = rgb_accum / weight_accum;
+    // Nearest sample — the pipeline's sampler is already NEAREST but
+    // `textureSample` here honors whatever is bound.
+    let scatter = textureSample(scatter_tex, scatter_sampler, in.uv).rgb;
 
     // One 8-bit LSB in the encoded (sRGB) domain.
     let lsb = 1.0 / 255.0;
 
-    // Triangular-PDF (TPDF) dither, the textbook fix for output-quantization
-    // banding: a triangle on [-1, 1] LSB makes the quantization error's first
-    // two moments signal-independent (clean band removal) where a single uniform
-    // (RPDF) leaves residual low-frequency structure. The triangle is derived
-    // analytically from ONE Interleaved Gradient Noise sample, NOT by
-    // differencing two. Differencing two IGN samples at a fixed pixel offset
-    // does not decorrelate them — both carry IGN's single diagonal frequency
-    // through the same nonlinear `fract`, so their difference beats into a
-    // low-frequency diagonal stripe that surfaces against dark, smoothly-lit fog.
-    // The single-sample remap keeps IGN's high-frequency distribution with no
-    // self-beat. `in.clip.xy` is the pixel center in framebuffer space.
-    let u = interleaved_gradient_noise(in.clip.xy);
-    let t = 2.0 * u;
-    let tri = select(1.0 - sqrt(2.0 - t), sqrt(t) - 1.0, t < 1.0);
-    let tpdf = tri * lsb;
+    // Triangular-PDF (TPDF) dither: two independent uniform noise samples
+    // differenced give a triangular distribution in [-1, 1], which fully
+    // decorrelates the quantization error from the signal (clean band removal)
+    // where a single uniform sample (RPDF) leaves residual low-frequency
+    // structure. Offset the second sample's pixel coords so the two hashes are
+    // independent. `in.clip.xy` is the pixel center in framebuffer space.
+    let n0 = interleaved_gradient_noise(in.clip.xy);
+    let n1 = interleaved_gradient_noise(in.clip.xy + vec2<f32>(113.0, 71.0));
+    let tpdf = (n0 - n1) * lsb;
 
     // Dither in encoded space, where the GPU's 8-bit quantization lives, then
     // decode back to linear so the hardware sRGB-encode-on-store lands the

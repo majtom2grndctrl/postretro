@@ -33,16 +33,6 @@ const FOG_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sh_sample.wgsl"),
 );
 
-/// Temporal-resolve shader source. Standalone (no shared SH helper needed).
-const FOG_RESOLVE_SHADER_SOURCE: &str = include_str!("../shaders/fog_resolve.wgsl");
-
-/// Resolve-pass bind-group binding indices. Mirrored in fog_resolve.wgsl.
-const RESOLVE_BIND_RAW_SCATTER: u32 = 0;
-const RESOLVE_BIND_HISTORY: u32 = 1;
-const RESOLVE_BIND_ACCUM_OUT: u32 = 2;
-const RESOLVE_BIND_DEPTH: u32 = 3;
-const RESOLVE_BIND_PARAMS: u32 = 4;
-
 /// Group 6 binding indices. Mirrored in fog_volume.wgsl and fog_composite.wgsl.
 pub const BIND_DEPTH_TEX: u32 = 0;
 pub const BIND_VOLUMES: u32 = 1;
@@ -80,22 +70,11 @@ pub struct FogPass {
     pub raymarch_pipeline: wgpu::ComputePipeline,
     pub raymarch_bind_group_layout: wgpu::BindGroupLayout,
 
-    // --- Temporal resolve (compute) pipeline ---
-    // Reads raw scatter + previous accumulation (history) + depth; writes the
-    // blended accumulation. See fog_resolve.wgsl and rendering_pipeline.md §7.5.
-    resolve_pipeline: wgpu::ComputePipeline,
-    resolve_bgl: wgpu::BindGroupLayout,
-    /// Resolve bind groups, indexed by write-target parity. `resolve_bind_groups[w]`
-    /// reads `accum[1-w]` as history and writes `accum[w]`.
-    resolve_bind_groups: [wgpu::BindGroup; 2],
-
     // --- Composite (fullscreen blit) pipeline ---
     pub composite_pipeline: wgpu::RenderPipeline,
-    /// One composite bind group per accumulation target. The composite reads the
-    /// accumulation buffer the resolve pass just wrote — `composite_bind_groups[w]`
-    /// reads `accum[w]`.
-    composite_bind_groups: [wgpu::BindGroup; 2],
+    pub composite_bind_group: wgpu::BindGroup,
     composite_bgl: wgpu::BindGroupLayout,
+    composite_sampler: wgpu::Sampler,
 
     // --- Buffers ---
     /// Packed fog-volume AABB + params storage buffer. Sized for
@@ -113,17 +92,9 @@ pub struct FogPass {
     pub fog_planes_buffer: wgpu::Buffer,
 
     // --- Scatter target ---
-    /// Raw per-frame raymarch output. The raymarch writes here unchanged; the
-    /// resolve pass reads it as the current-frame scatter.
     scatter_view: wgpu::TextureView,
     #[allow(dead_code)]
     scatter_texture: wgpu::Texture,
-    /// Ping-pong accumulation targets. Each frame the resolve pass reads one as
-    /// history and writes the other; the composite reads the one just written.
-    /// Rebuilt on resize alongside `scatter_*`.
-    #[allow(dead_code)]
-    accum_textures: [wgpu::Texture; 2],
-    accum_views: [wgpu::TextureView; 2],
     /// Low-res dimensions currently allocated for the scatter target. Used
     /// to skip reallocation when the surface resizes without changing the
     /// pixel scale.
@@ -182,11 +153,6 @@ pub struct FogPass {
     /// `arrayLength(&fog_points)` (which would replay stale records when a
     /// frame uploads zero point lights).
     pub point_count: u32,
-    /// Monotonic per-frame counter, incremented once per `upload_params`. Feeds
-    /// `FogParams.frame_index` to animate the raymarch ray-start jitter so the
-    /// stratification pattern shifts each frame instead of baking a static
-    /// diagonal noise texture into the scatter buffer.
-    frame_counter: u32,
 }
 
 impl FogPass {
@@ -327,11 +293,9 @@ impl FogPass {
             mapped_at_creation: false,
         });
 
-        // --- Scatter + accumulation targets ---
+        // --- Scatter target ---
         let (scatter_texture, scatter_view) =
             create_scatter_target(device, scatter_dims.0, scatter_dims.1);
-        let (accum_textures, accum_views) =
-            create_accum_targets(device, scatter_dims.0, scatter_dims.1);
 
         // --- Group 6 bind group ---
         let bind_group = build_group6(
@@ -373,52 +337,52 @@ impl FogPass {
             cache: None,
         });
 
-        // --- Temporal resolve pipeline (compute) ---
-        let resolve_bgl = build_resolve_bgl(device);
-        let resolve_bind_groups = build_resolve_bind_groups(
-            device,
-            &resolve_bgl,
-            &scatter_view,
-            &accum_views,
-            depth_view,
-            &params_buffer,
-        );
-        let resolve_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Fog Resolve Shader"),
-            source: wgpu::ShaderSource::Wgsl(FOG_RESOLVE_SHADER_SOURCE.into()),
-        });
-        let resolve_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Fog Resolve Pipeline Layout"),
-            bind_group_layouts: &[Some(&resolve_bgl)],
-            immediate_size: 0,
-        });
-        let resolve_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Fog Resolve Pipeline"),
-            layout: Some(&resolve_layout),
-            module: &resolve_shader,
-            entry_point: Some("cs_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-
         // --- Composite pipeline (fullscreen blit, additive) ---
-        //
-        // The composite does a depth-aware bilateral upsample of the
-        // ACCUMULATED (temporally resolved) low-res scatter (see
-        // fog_composite.wgsl), so it binds the full-res depth texture and the
-        // per-frame fog params uniform (for near/far depth linearization)
-        // alongside the accumulation target. All three are read via
-        // `textureLoad`/uniform — no sampler is needed. One bind group per
-        // accumulation target; the renderer selects the one the resolve pass
-        // just wrote.
-        let composite_bgl = build_composite_bgl(device);
-        let composite_bind_groups = build_composite_bind_groups(
-            device,
-            &composite_bgl,
-            &accum_views,
-            depth_view,
-            &params_buffer,
-        );
+        let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Fog Composite Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let composite_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Fog Composite BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+            ],
+        });
+        let composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Fog Composite Bind Group"),
+            layout: &composite_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&scatter_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&composite_sampler),
+                },
+            ],
+        });
         let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fog Composite Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/fog_composite.wgsl").into()),
@@ -474,12 +438,10 @@ impl FogPass {
             step_size: fog_volume::DEFAULT_FOG_STEP_SIZE,
             raymarch_pipeline,
             raymarch_bind_group_layout: raymarch_bgl,
-            resolve_pipeline,
-            resolve_bgl,
-            resolve_bind_groups,
             composite_pipeline,
-            composite_bind_groups,
+            composite_bind_group,
             composite_bgl,
+            composite_sampler,
             volumes_buffer,
             params_buffer,
             spots_buffer,
@@ -487,8 +449,6 @@ impl FogPass {
             fog_planes_buffer,
             scatter_view,
             scatter_texture,
-            accum_textures,
-            accum_views,
             scatter_dims,
             bind_group,
             active_count: 0,
@@ -500,13 +460,12 @@ impl FogPass {
             last_active_time: Vec::new(),
             spot_count: 0,
             point_count: 0,
-            frame_counter: 0,
         }
     }
 
     /// Rebuild the composite pipeline when the surface format changes.
-    /// Stored composite bind group stays valid for surface-format-only rebuilds
-    /// because its bindings are independent of the color output format.
+    /// Stored composite bind group stays valid because it only references the
+    /// scatter target — unrelated to the output format.
     pub fn rebuild_composite_for_format(
         &mut self,
         device: &wgpu::Device,
@@ -572,36 +531,24 @@ impl FogPass {
             let (tex, view) = create_scatter_target(device, dims.0, dims.1);
             self.scatter_texture = tex;
             self.scatter_view = view;
-            // Recreate BOTH accumulation targets on dims change. wgpu zero-
-            // clears the fresh textures, so the first post-resize frame's
-            // history reads as cleared — the resolve pass's neighborhood clamp
-            // collapses that toward the current frame, so no explicit re-init is
-            // needed.
-            let (accum_tex, accum_views) = create_accum_targets(device, dims.0, dims.1);
-            self.accum_textures = accum_tex;
-            self.accum_views = accum_views;
             self.scatter_dims = dims;
+            self.composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Fog Composite Bind Group"),
+                layout: &self.composite_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.scatter_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
+                    },
+                ],
+            });
         }
-        // Rebuild the resolve and composite bind groups unconditionally: the
-        // surface depth texture is recreated on every resize, and both passes
-        // bind it (resolve for reprojection depth, composite for the bilateral
-        // upsample), so the bind groups must re-reference the fresh depth view
-        // even when scatter dims are unchanged.
-        self.resolve_bind_groups = build_resolve_bind_groups(
-            device,
-            &self.resolve_bgl,
-            &self.scatter_view,
-            &self.accum_views,
-            depth_view,
-            &self.params_buffer,
-        );
-        self.composite_bind_groups = build_composite_bind_groups(
-            device,
-            &self.composite_bgl,
-            &self.accum_views,
-            depth_view,
-            &self.params_buffer,
-        );
+        // Depth view may have been recreated even if scatter dims are
+        // unchanged (e.g., surface resize that happens to match the scale).
         self.bind_group = build_group6(
             device,
             &self.raymarch_bind_group_layout,
@@ -804,23 +751,15 @@ impl FogPass {
         self.canonical_volumes.len() as u32
     }
 
-    /// Upload the per-frame fog params (inv view-proj, camera pos, step size,
-    /// previous-frame view-proj for temporal reprojection). The renderer caches
-    /// last frame's `view_projection()` and passes it as `prev_view_proj`.
-    #[allow(clippy::too_many_arguments)]
+    /// Upload the per-frame fog params (inv view-proj, camera pos, step size).
     pub fn upload_params(
         &mut self,
         queue: &wgpu::Queue,
         inv_view_proj: Mat4,
-        prev_view_proj: Mat4,
         camera_position: Vec3,
         near_clip: f32,
         far_clip: f32,
     ) {
-        // Called once per frame, so it doubles as the fog pass's frame clock.
-        // Parity of `frame_counter` after this increment also selects the
-        // ping-pong accumulation target (`write_parity`).
-        self.frame_counter = self.frame_counter.wrapping_add(1);
         let params = fog_volume::pack_fog_params(fog_volume::FogParamsInput {
             inv_view_proj,
             camera_position,
@@ -830,35 +769,8 @@ impl FogPass {
             far_clip,
             point_count: self.point_count,
             spot_count: self.spot_count,
-            frame_index: self.frame_counter,
-            prev_view_proj,
         });
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
-    }
-
-    /// Index of the accumulation target the resolve pass writes (and the
-    /// composite reads) this frame. Alternates with `frame_counter` parity,
-    /// which is advanced in `upload_params` — call those before dispatching the
-    /// resolve/composite so the parity matches the uploaded `frame_index`.
-    fn write_parity(&self) -> usize {
-        (self.frame_counter & 1) as usize
-    }
-
-    /// Resolve-pass bind group for this frame: reads the raw scatter + the
-    /// opposite accumulation target (history) and writes the current target.
-    pub fn resolve_bind_group(&self) -> &wgpu::BindGroup {
-        &self.resolve_bind_groups[self.write_parity()]
-    }
-
-    /// Compute-pipeline handle for the temporal resolve pass.
-    pub fn resolve_pipeline(&self) -> &wgpu::ComputePipeline {
-        &self.resolve_pipeline
-    }
-
-    /// Composite bind group for this frame: reads the accumulation target the
-    /// resolve pass just wrote.
-    pub fn composite_bind_group(&self) -> &wgpu::BindGroup {
-        &self.composite_bind_groups[self.write_parity()]
     }
 
     /// Upload the per-frame point-light list for the fog raymarch. Truncates
@@ -976,219 +888,6 @@ fn create_scatter_target(
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     (tex, view)
-}
-
-/// Create the two ping-pong accumulation targets. Same format/size as the
-/// scatter target but with `TEXTURE_BINDING` (read as history / by the
-/// composite) and `STORAGE_BINDING` (written by the resolve pass).
-fn create_accum_targets(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-) -> ([wgpu::Texture; 2], [wgpu::TextureView; 2]) {
-    let make = |i: u32| {
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Fog Accum Target"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: SCATTER_FORMAT,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let _ = i;
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-        (tex, view)
-    };
-    let (t0, v0) = make(0);
-    let (t1, v1) = make(1);
-    ([t0, t1], [v0, v1])
-}
-
-/// Resolve-pass bind group layout. Mirrors the bindings in fog_resolve.wgsl:
-///   0  raw scatter (low-res, current frame, read via `textureLoad`)
-///   1  history accumulation (previous frame, read via `textureLoad`)
-///   2  accumulation output (write-only storage texture)
-///   3  full-res depth texture (reprojection depth)
-///   4  fog params uniform (camera matrices + near/far)
-fn build_resolve_bgl(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Fog Resolve BGL"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: RESOLVE_BIND_RAW_SCATTER,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: RESOLVE_BIND_HISTORY,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: RESOLVE_BIND_ACCUM_OUT,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::StorageTexture {
-                    access: wgpu::StorageTextureAccess::WriteOnly,
-                    format: SCATTER_FORMAT,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: RESOLVE_BIND_DEPTH,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Depth,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: RESOLVE_BIND_PARAMS,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    })
-}
-
-/// Build both resolve bind groups. `groups[w]` reads `accum[1 - w]` as history
-/// and writes `accum[w]` — the parity `w` is `frame_counter & 1` for the frame.
-fn build_resolve_bind_groups(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    scatter_view: &wgpu::TextureView,
-    accum_views: &[wgpu::TextureView; 2],
-    depth_view: &wgpu::TextureView,
-    params_buffer: &wgpu::Buffer,
-) -> [wgpu::BindGroup; 2] {
-    let make = |write_idx: usize| {
-        let history_idx = 1 - write_idx;
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Fog Resolve Bind Group"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: RESOLVE_BIND_RAW_SCATTER,
-                    resource: wgpu::BindingResource::TextureView(scatter_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: RESOLVE_BIND_HISTORY,
-                    resource: wgpu::BindingResource::TextureView(&accum_views[history_idx]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: RESOLVE_BIND_ACCUM_OUT,
-                    resource: wgpu::BindingResource::TextureView(&accum_views[write_idx]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: RESOLVE_BIND_DEPTH,
-                    resource: wgpu::BindingResource::TextureView(depth_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: RESOLVE_BIND_PARAMS,
-                    resource: params_buffer.as_entire_binding(),
-                },
-            ],
-        })
-    };
-    [make(0), make(1)]
-}
-
-/// Composite-pass bind group layout (group 0 in the composite pipeline).
-/// Mirrors the bindings declared in `fog_composite.wgsl`:
-///   0  scatter target (low-res, read via `textureLoad`)
-///   1  full-res depth texture (bilateral upsample edge term)
-///   2  fog params uniform (reused per-frame buffer; near/far for linearization)
-fn build_composite_bgl(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Fog Composite BGL"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Depth,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    })
-}
-
-/// Build one composite bind group per accumulation target. `groups[w]` reads
-/// `accum[w]` — the target the resolve pass writes on a frame with parity `w`.
-fn build_composite_bind_groups(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    accum_views: &[wgpu::TextureView; 2],
-    depth_view: &wgpu::TextureView,
-    params_buffer: &wgpu::Buffer,
-) -> [wgpu::BindGroup; 2] {
-    let make = |idx: usize| {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Fog Composite Bind Group"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&accum_views[idx]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(depth_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: params_buffer.as_entire_binding(),
-                },
-            ],
-        })
-    };
-    [make(0), make(1)]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1493,28 +1192,6 @@ mod tests {
         )
         .validate(&module)
         .expect("fog shader must pass naga validation");
-    }
-
-    /// The temporal-resolve shader must parse, pass naga validation (including
-    /// control-flow uniformity), and export `@compute cs_main`. Catches WGSL
-    /// regressions in the accumulation/reprojection pass before pipeline
-    /// creation.
-    #[test]
-    fn fog_resolve_wgsl_parses_and_validates() {
-        let src = super::FOG_RESOLVE_SHADER_SOURCE;
-        let module =
-            naga::front::wgsl::parse_str(src).expect("fog_resolve.wgsl should parse as WGSL");
-        let has_cs = module
-            .entry_points
-            .iter()
-            .any(|ep| ep.name == "cs_main" && ep.stage == naga::ShaderStage::Compute);
-        assert!(has_cs, "fog_resolve.wgsl must export @compute cs_main");
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::all(),
-        )
-        .validate(&module)
-        .expect("fog_resolve.wgsl must pass naga validation");
     }
 
     /// The fog composite shader must parse and declare fullscreen vertex +

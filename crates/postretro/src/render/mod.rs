@@ -586,17 +586,10 @@ pub struct Renderer {
     /// `clear_splash`. Encodes a black clear when no splash is bound.
     splash_pipeline: SplashPipeline,
 
-    /// Volumetric fog raymarch + temporal resolve + composite. Active only when
-    /// the level has at least one fog volume uploaded; otherwise the passes are
-    /// skipped (see `FogPass::active`).
+    /// Volumetric fog raymarch + composite. Active only when the level has
+    /// at least one fog volume uploaded; otherwise the dispatch + composite
+    /// are skipped (see `FogPass::active`).
     fog: FogPass,
-    /// Previous frame's view-projection matrix, cached for the fog temporal
-    /// resolve pass's reprojection. Updated every frame the fog pass uploads its
-    /// params (i.e. when fog is active). Seeded to identity; the first active
-    /// frame reprojects against identity, but the resolve pass's neighborhood
-    /// clamp collapses the (cleared) history toward current, so the seed is
-    /// harmless.
-    prev_fog_view_proj: Mat4,
 
     /// Per-BSP-leaf bitmask of overlapping fog volumes, loaded from PRL section
     /// 31 at level load. When `Some`, the fog pass ORs the masks of visible
@@ -1721,7 +1714,6 @@ impl Renderer {
             smoke_pass,
             splash_pipeline,
             fog,
-            prev_fog_view_proj: Mat4::IDENTITY,
             fog_cell_masks: None,
             active_fog_aabbs: Vec::new(),
             texture_bind_group_layout,
@@ -3015,19 +3007,13 @@ impl Renderer {
             self.fog.upload_spots(&self.queue, &fog_spots);
 
             let inv_view_proj = view_proj.inverse();
-            // `prev_fog_view_proj` holds last active frame's `view_proj`; pass
-            // it for temporal reprojection, then cache the current matrix for
-            // next frame. Updating after the upload keeps the "previous" matrix
-            // exactly one fog frame stale.
             self.fog.upload_params(
                 &self.queue,
                 inv_view_proj,
-                self.prev_fog_view_proj,
                 self.last_camera_position,
                 crate::camera::NEAR,
                 crate::camera::FAR,
             );
-            self.prev_fog_view_proj = view_proj;
 
             let (scatter_w, scatter_h) = self.fog.scatter_dims();
             // 8×8 matches @workgroup_size(8,8); div_ceil covers edge pixels.
@@ -3046,18 +3032,6 @@ impl Renderer {
                 raymarch.dispatch_workgroups(groups_x, groups_y, 1);
             }
 
-            // Temporal resolve: blend raw scatter with reprojected history into
-            // the ping-pong accumulation target the composite reads below.
-            {
-                let mut resolve = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("Fog Resolve Pass"),
-                    timestamp_writes: None,
-                });
-                resolve.set_pipeline(self.fog.resolve_pipeline());
-                resolve.set_bind_group(0, self.fog.resolve_bind_group(), &[]);
-                resolve.dispatch_workgroups(groups_x, groups_y, 1);
-            }
-
             let mut composite = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Fog Composite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -3073,7 +3047,7 @@ impl Renderer {
                 ..Default::default()
             });
             composite.set_pipeline(&self.fog.composite_pipeline);
-            composite.set_bind_group(0, self.fog.composite_bind_group(), &[]);
+            composite.set_bind_group(0, &self.fog.composite_bind_group, &[]);
             composite.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
         }
 

@@ -106,9 +106,11 @@ mod tests {
     fn grunt_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some("grunt".to_string()),
+            default_weapon: None,
             light: None,
             emitter: None,
             movement: None,
+            weapon: None,
         }
     }
 

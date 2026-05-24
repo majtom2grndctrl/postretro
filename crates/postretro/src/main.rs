@@ -11,6 +11,7 @@ mod input;
 mod lighting;
 mod material;
 mod movement;
+mod weapon;
 
 mod portal_vis;
 mod prl;
@@ -159,6 +160,7 @@ fn main() -> Result<()> {
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
         input_system: input::InputSystem::new(input::default_bindings()),
+        gameplay_input_latch: input::GameplayInputLatch::new(),
         input_focus: InputFocus::Gameplay,
         gamepad_system: input::gamepad::GamepadSystem::new(),
         frame_timing: FrameTiming::new(initial_state),
@@ -179,6 +181,8 @@ fn main() -> Result<()> {
         emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
         collision_world: collision::CollisionWorld::new(),
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
+        active_wieldable: None,
+        active_wieldable_descriptor: None,
         builtin_handled: None,
         pending_spawn_points: None,
         pending_map_entities: None,
@@ -228,6 +232,7 @@ struct App {
 
     camera: Camera,
     input_system: input::InputSystem,
+    gameplay_input_latch: input::GameplayInputLatch,
 
     /// Coarse owner of keyboard/mouse focus. Drives pointer-lock acquire/release
     /// via `set_input_focus`. See: context/lib/input.md
@@ -302,6 +307,12 @@ struct App {
     /// Packs `SpriteInstance` bytes per collection in the Render stage;
     /// never touches wgpu directly. See: context/lib/scripting.md
     particle_render: scripting_systems::particle_render::ParticleRenderCollector,
+
+    /// Active wieldable instance equipped by the player. The companion
+    /// descriptor name lets mod-init hot reload refresh authored weapon stats
+    /// while preserving per-instance cooldown.
+    active_wieldable: Option<crate::scripting::registry::EntityId>,
+    active_wieldable_descriptor: Option<String>,
 
     /// Boot state machine: drives the splash → first-level-frame transition.
     /// Subsumes the previous `level_load_fired` one-shot flag.
@@ -464,6 +475,8 @@ impl ApplicationHandler for App {
         // clean placeholder state before populate_from_level runs on resume.
         self.fog_volume_bridge.clear();
         self.collision_world.clear();
+        self.active_wieldable = None;
+        self.active_wieldable_descriptor = None;
         // Drop any in-flight level-load worker handoff. On resume the splash
         // state machine starts over from frame 0 and will spawn a fresh
         // worker; holding a stale receiver/handle would either block install
@@ -622,6 +635,7 @@ impl ApplicationHandler for App {
                     // outlives transient OS focus loss.
                     input::cursor::release_cursor(&ws.window);
                     self.input_system.clear_all();
+                    self.gameplay_input_latch.clear();
                     self.diagnostic_inputs.clear_modifiers();
                 }
             }
@@ -639,8 +653,9 @@ impl ApplicationHandler for App {
                 // not back up. Definition-script edits are observed but no
                 // behavior-context rebuild runs (Live VM is gone). When a
                 // mod-init reload fires (start-script edited), re-run
-                // `run_mod_init` so the mod manifest stays current without
-                // restarting the engine. See: context/lib/scripting.md
+                // `run_mod_init`, upsert descriptors, and refresh the live
+                // equipped weapon from its descriptor. See:
+                // context/lib/scripting.md
                 match self.script_runtime.drain_reload_requests() {
                     Ok(summary) => {
                         if summary.mod_init {
@@ -660,6 +675,7 @@ impl ApplicationHandler for App {
                                     data_registry.upsert_entity_type(desc);
                                 }
                                 drop(data_registry);
+                                self.refresh_active_wieldable_from_descriptors();
                             }
                             // `pending_splash_override` is intentionally not checked here:
                             // we are in `Running` state, the splash phase is over, and
@@ -702,7 +718,10 @@ impl ApplicationHandler for App {
                 // drain_look_inputs() must precede snapshot(); both touch
                 // mouse_axes and look state belongs to the render-rate path.
                 let look = self.input_system.drain_look_inputs();
-                let snapshot = self.input_system.snapshot();
+                let frame_snapshot = self.input_system.snapshot();
+                let gameplay_snapshot = self
+                    .gameplay_input_latch
+                    .snapshot_for_ticks(&frame_snapshot, ticks);
 
                 // Apply look rotation once at render rate, not once per tick —
                 // so zero-tick frames still consume accumulated mouse motion.
@@ -716,89 +735,102 @@ impl ApplicationHandler for App {
                     .frame
                     .set(self.script_ctx.frame.get().wrapping_add(1));
 
-                // Accumulate movement events across all ticks; drain after the
-                // tick loop completes so reactions see fully-settled post-tick
-                // world state and event order is never interleaved with ongoing
-                // physics simulation. See: context/lib/entity_model.md §5
+                // Accumulate movement and weapon events across all ticks; drain
+                // after the tick loop completes so reactions see fully-settled
+                // post-tick world state and event order is never interleaved
+                // with ongoing physics simulation. See:
+                // context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
+                let mut pending_weapon_events: Vec<&'static str> = Vec::new();
 
-                for _ in 0..ticks {
-                    let forward_axis = snapshot.axis_value(Action::MoveForward);
-                    let right_axis = snapshot.axis_value(Action::MoveRight);
-                    let up_axis = snapshot.axis_value(Action::MoveUp);
-                    let sprint = snapshot.button(Action::Sprint).is_active();
+                if let Some(snapshot) = gameplay_snapshot.as_ref() {
+                    for _ in 0..ticks {
+                        let forward_axis = snapshot.axis_value(Action::MoveForward);
+                        let right_axis = snapshot.axis_value(Action::MoveRight);
+                        let up_axis = snapshot.axis_value(Action::MoveUp);
+                        let sprint = snapshot.button(Action::Sprint).is_active();
 
-                    let speed = if sprint {
-                        camera::MOVE_SPEED * camera::SPRINT_MULTIPLIER
-                    } else {
-                        camera::MOVE_SPEED
-                    };
+                        let speed = if sprint {
+                            camera::MOVE_SPEED * camera::SPRINT_MULTIPLIER
+                        } else {
+                            camera::MOVE_SPEED
+                        };
 
-                    // Camera-vs-pawn split (entity_model.md §5/§7):
-                    //   - If a PlayerMovementComponent entity exists, its
-                    //     position drives `camera.position` (yaw/pitch stay
-                    //     mouse-driven).
-                    //   - Otherwise, fly-cam moves the camera directly so the
-                    //     engine is navigable without a player spawn (dev maps,
-                    //     levels without a player descriptor).
-                    let has_player_pawn = {
-                        use crate::scripting::registry::ComponentKind;
-                        let registry = self.script_ctx.registry.borrow();
-                        registry
-                            .iter_with_kind(ComponentKind::PlayerMovement)
-                            .next()
-                            .is_some()
-                    };
+                        // Camera-vs-pawn split (entity_model.md §5/§7):
+                        //   - If a PlayerMovementComponent entity exists, its
+                        //     position drives `camera.position` (yaw/pitch stay
+                        //     mouse-driven).
+                        //   - Otherwise, fly-cam moves the camera directly so the
+                        //     engine is navigable without a player spawn (dev maps,
+                        //     levels without a player descriptor).
+                        let has_player_pawn = {
+                            use crate::scripting::registry::ComponentKind;
+                            let registry = self.script_ctx.registry.borrow();
+                            registry
+                                .iter_with_kind(ComponentKind::PlayerMovement)
+                                .next()
+                                .is_some()
+                        };
 
-                    if !has_player_pawn {
-                        let forward = self.camera.forward();
-                        let right = self.camera.right();
-                        let mut move_dir =
-                            forward * forward_axis + right * right_axis + Vec3::Y * up_axis;
+                        if !has_player_pawn {
+                            let forward = self.camera.forward();
+                            let right = self.camera.right();
+                            let mut move_dir =
+                                forward * forward_axis + right * right_axis + Vec3::Y * up_axis;
 
-                        // Normalize to prevent faster diagonal movement, but only
-                        // if there's actual movement input.
-                        if move_dir.length_squared() > 0.0 {
-                            move_dir = move_dir.normalize();
+                            // Normalize to prevent faster diagonal movement, but only
+                            // if there's actual movement input.
+                            if move_dir.length_squared() > 0.0 {
+                                move_dir = move_dir.normalize();
+                            }
+
+                            self.camera.position += move_dir * speed * tick_dt;
                         }
 
-                        self.camera.position += move_dir * speed * tick_dt;
-                    }
+                        // Order 1: movement-component tick (all entities carrying
+                        // PlayerMovementComponent, per entity_model.md §5).
+                        let jump_pressed = snapshot.button(Action::Jump).is_active();
+                        let movement_events =
+                            self.run_movement_tick(forward_axis, right_axis, jump_pressed, tick_dt);
+                        pending_movement_events.extend(movement_events);
 
-                    // Order 1: movement-component tick (all entities carrying
-                    // PlayerMovementComponent, per entity_model.md §5).
-                    let jump_pressed = snapshot.button(Action::Jump).is_active();
-                    let movement_events =
-                        self.run_movement_tick(forward_axis, right_axis, jump_pressed, tick_dt);
-                    pending_movement_events.extend(movement_events);
-
-                    // Camera follows the first pawn's position (eye-height
-                    // offset above the capsule center). Yaw/pitch are owned by
-                    // the mouse-driven look path and are not touched here.
-                    if has_player_pawn {
-                        use crate::scripting::registry::{
-                            ComponentKind, ComponentValue, Transform,
-                        };
-                        let registry = self.script_ctx.registry.borrow();
-                        for (id, value) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
-                            let ComponentValue::PlayerMovement(component) = value else {
-                                continue;
+                        // Camera follows the first pawn's position (eye-height
+                        // offset above the capsule center). Yaw/pitch are owned by
+                        // the mouse-driven look path and are not touched here.
+                        if has_player_pawn {
+                            use crate::scripting::registry::{
+                                ComponentKind, ComponentValue, Transform,
                             };
-                            if let Ok(transform) = registry.get_component::<Transform>(id) {
-                                self.camera.position = transform.position
-                                    + Vec3::new(0.0, component.capsule.eye_height, 0.0);
-                                break;
+                            let registry = self.script_ctx.registry.borrow();
+                            for (id, value) in
+                                registry.iter_with_kind(ComponentKind::PlayerMovement)
+                            {
+                                let ComponentValue::PlayerMovement(component) = value else {
+                                    continue;
+                                };
+                                if let Ok(transform) = registry.get_component::<Transform>(id) {
+                                    self.camera.position = transform.position
+                                        + Vec3::new(0.0, component.capsule.eye_height, 0.0);
+                                    break;
+                                }
                             }
                         }
-                    }
 
-                    self.frame_timing
-                        .push_state(InterpolableState::new(self.camera.position));
+                        let weapon_events = self.run_weapon_fire_tick(&snapshot, tick_dt);
+                        pending_weapon_events.extend(weapon_events);
+
+                        self.frame_timing
+                            .push_state(InterpolableState::new(self.camera.position));
+                    }
                 }
 
-                // Drain collected movement events after all ticks complete so
-                // reactions observe the final post-tick state of every entity.
+                // Drain collected movement and weapon events after all ticks
+                // complete so reactions observe the final post-tick state of
+                // every entity.
                 for event_name in &pending_movement_events {
+                    let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                }
+                for event_name in &pending_weapon_events {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
 
@@ -1439,6 +1471,8 @@ impl App {
         // before the data script runs, so any `world.getGravity()` call
         // inside `setupLevel` / `levelLoad` reactions sees the new value.
         self.script_ctx.gravity.set(world.initial_gravity);
+        self.active_wieldable = None;
+        self.active_wieldable_descriptor = None;
 
         // Derive material properties from texture names so the renderer can
         // populate per-material uniforms (shininess) without re-parsing.
@@ -1637,16 +1671,22 @@ impl App {
 
             // Spawn one entity per `player_spawn` placement, routing
             // each through its `entity_class` (default `"player"`).
-            match self.pending_spawn_points.take() {
-                Some(spawn_points) if !spawn_points.is_empty() => {
-                    spawn_from_player_starts(&spawn_points, &descriptors, &mut registry);
-                }
-                _ => {
-                    log::info!("[Loader] no player_spawn in map; skipping player spawn");
-                }
-            }
+            let (active_wieldable, active_wieldable_descriptor) =
+                match self.pending_spawn_points.take() {
+                    Some(spawn_points) if !spawn_points.is_empty() => {
+                        let result =
+                            spawn_from_player_starts(&spawn_points, &descriptors, &mut registry);
+                        (result.active_wieldable, result.active_wieldable_descriptor)
+                    }
+                    _ => {
+                        log::info!("[Loader] no player_spawn in map; skipping player spawn");
+                        (None, None)
+                    }
+                };
             // Drop the registry borrow before touching `self.level` / `self.camera`.
             drop(registry);
+            self.active_wieldable = active_wieldable;
+            self.active_wieldable_descriptor = active_wieldable_descriptor;
 
             if let Some((pos, angles)) = first_spawn {
                 self.camera.position = pos;
@@ -1699,6 +1739,23 @@ impl App {
                 renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
                 self.particle_render.register_sprite(&collection);
             }
+
+            let collection = weapon::impact_sprite_collection();
+            let frames = fx::smoke::load_collection_frames(&texture_root, collection)
+                .unwrap_or_else(|| {
+                    vec![fx::smoke::SpriteFrame {
+                        data: vec![255, 255, 255, 255],
+                        width: 1,
+                        height: 1,
+                    }]
+                });
+            renderer.register_smoke_collection(
+                collection,
+                &frames,
+                0.45,
+                weapon::impact_lifetime(),
+            );
+            self.particle_render.register_sprite(collection);
         }
         self.level_timings.record("archetype_sweep");
 
@@ -1785,6 +1842,73 @@ impl App {
         events_out
     }
 
+    fn run_weapon_fire_tick(
+        &mut self,
+        snapshot: &input::ActionSnapshot,
+        tick_dt: f32,
+    ) -> Vec<&'static str> {
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        let events = weapon::tick(
+            &mut registry,
+            self.active_wieldable,
+            snapshot,
+            &self.camera,
+            &self.collision_world,
+            tick_dt,
+        );
+        if let Some(impact) = events.impact {
+            weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
+        }
+        events.event_names()
+    }
+
+    fn refresh_active_wieldable_from_descriptors(&mut self) {
+        let Some(descriptor_name) = self.active_wieldable_descriptor.clone() else {
+            return;
+        };
+        let Some(active_wieldable) = self.active_wieldable else {
+            return;
+        };
+
+        let descriptor = {
+            let data_registry = self.script_ctx.data_registry.borrow();
+            data_registry
+                .entities
+                .iter()
+                .find(|d| d.canonical_name.as_deref() == Some(descriptor_name.as_str()))
+                .cloned()
+        };
+
+        let Some(descriptor) = descriptor else {
+            log::warn!(
+                "[Weapon] active wieldable descriptor `{descriptor_name}` disappeared after hot reload; player is now unarmed"
+            );
+            self.active_wieldable = None;
+            self.active_wieldable_descriptor = None;
+            return;
+        };
+
+        let Some(weapon_descriptor) = descriptor.weapon.as_ref() else {
+            log::warn!(
+                "[Weapon] active wieldable descriptor `{descriptor_name}` no longer declares a weapon component after hot reload; player is now unarmed"
+            );
+            self.active_wieldable = None;
+            self.active_wieldable_descriptor = None;
+            return;
+        };
+
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        if !weapon::refresh_active_wieldable_from_descriptor(
+            &mut registry,
+            Some(active_wieldable),
+            &descriptor_name,
+            weapon_descriptor,
+        ) {
+            self.active_wieldable = None;
+            self.active_wieldable_descriptor = None;
+        }
+    }
+
     /// Transition input focus, acquiring or releasing the cursor as required
     /// and clearing carry-over input state so keys/mouse held during the
     /// transition do not stick in the new mode.
@@ -1811,6 +1935,7 @@ impl App {
         // those modifiers. Accepted because the symmetric stale-state
         // protection is worth more than the one-keystroke regression.
         self.input_system.clear_all();
+        self.gameplay_input_latch.clear();
         self.diagnostic_inputs.clear_modifiers();
     }
 

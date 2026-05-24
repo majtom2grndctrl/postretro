@@ -1240,6 +1240,9 @@ mod tests {
     fn group3_shader_bindings_are_represented_by_rust_layout() {
         use std::collections::BTreeSet;
 
+        const FORWARD_CONSUMER_SOURCE: &str = include_str!("../shaders/forward.wgsl");
+        const BILLBOARD_CONSUMER_SOURCE: &str = include_str!("../shaders/billboard.wgsl");
+        const FOG_CONSUMER_SOURCE: &str = include_str!("../shaders/fog_volume.wgsl");
         const FORWARD_SHADER_SOURCE: &str = concat!(
             include_str!("../shaders/forward.wgsl"),
             "\n",
@@ -1298,6 +1301,28 @@ mod tests {
         assert!(
             forward_bindings.contains(&BIND_SCRIPTED_LIGHT_DESCRIPTORS),
             "forward shader must declare scripted light descriptors at group 3 binding {BIND_SCRIPTED_LIGHT_DESCRIPTORS}",
+        );
+
+        assert!(
+            !FORWARD_CONSUMER_SOURCE.contains("sample_sh_indirect_corners_without_depth("),
+            "forward shader must not use the non-depth SH compatibility helper",
+        );
+        assert!(
+            FORWARD_CONSUMER_SOURCE.contains("sample_sh_indirect_corners_depth_aware("),
+            "forward shader must use the depth-aware SH helper",
+        );
+        assert!(
+            !BILLBOARD_CONSUMER_SOURCE.contains("sample_sh_indirect_corners_without_depth("),
+            "billboard shader must not use the non-depth SH compatibility helper",
+        );
+        assert!(
+            BILLBOARD_CONSUMER_SOURCE.contains("sample_sh_indirect_corners_depth_aware("),
+            "billboard shader must use the depth-aware SH helper",
+        );
+        assert!(
+            FOG_CONSUMER_SOURCE.contains("sample_sh_indirect_corners_without_depth(")
+                || FOG_CONSUMER_SOURCE.contains("sample_sh_indirect_corners_two_without_depth("),
+            "fog shader should stay on the explicit no-depth SH compatibility helper",
         );
     }
 

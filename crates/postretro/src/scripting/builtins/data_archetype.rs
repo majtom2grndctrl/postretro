@@ -1,7 +1,8 @@
 // Data-archetype spawn path: walks `world.map_entities` against the
 // `DataRegistry.entities` table populated at `setupMod()` ingestion time,
-// materializing each matching placement into an ECS entity with the
-// descriptor's component presets attached.
+// materializing placeable descriptors into ECS entities with their component
+// presets attached. Weapon-only descriptors are equip targets, not map
+// placements.
 //
 // See: context/lib/build_pipeline.md §Built-in Classname Routing
 //      context/lib/scripting.md §2 (data context lifecycle)
@@ -19,6 +20,7 @@ use super::MapEntity;
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
 use crate::scripting::components::player_movement::PlayerMovementComponent;
+use crate::scripting::components::weapon::WeaponComponent;
 use crate::scripting::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
 use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 
@@ -150,10 +152,15 @@ fn find_descriptor<'a>(
         .find(|d| d.canonical_name.as_deref() == Some(classname))
 }
 
-/// Attach emitter, light, and movement components from a descriptor to an
-/// already-spawned entity. `initial_*` KVP overrides are applied to `emitter`
-/// and `light` before attachment; `movement` receives descriptor values
-/// verbatim — no per-placement override mechanism exists for movement params.
+fn is_directly_map_placeable(descriptor: &EntityTypeDescriptor) -> bool {
+    descriptor.light.is_some() || descriptor.emitter.is_some() || descriptor.movement.is_some()
+}
+
+/// Attach descriptor components to an already-spawned entity. `initial_*` KVP
+/// overrides are applied to `emitter` and `light` before attachment;
+/// `movement` receives descriptor values verbatim. Weapon attachment is opt-in
+/// because direct map placements may be otherwise-placeable without becoming
+/// wieldable instances.
 /// The light is always forced dynamic regardless of the descriptor's
 /// `is_dynamic` field (baked indirect lighting is not supported for
 /// descriptor-spawned lights), with a `warn!` if the descriptor had it set to
@@ -163,6 +170,7 @@ fn attach_descriptor_components(
     id: EntityId,
     descriptor: &EntityTypeDescriptor,
     entity: &MapEntity,
+    attach_weapon: bool,
 ) {
     if let Some(emitter) = descriptor.emitter.clone() {
         let mut component = emitter;
@@ -206,6 +214,31 @@ fn attach_descriptor_components(
         let component = PlayerMovementComponent::from_descriptor(movement_desc);
         let _ = registry.set_component(id, component);
     }
+
+    if attach_weapon {
+        if let Some(weapon_desc) = descriptor.weapon.as_ref() {
+            let component = WeaponComponent::from_descriptor(weapon_desc);
+            let _ = registry.set_component(id, component);
+        }
+    }
+}
+
+fn spawn_descriptor_instance(
+    registry: &mut EntityRegistry,
+    descriptor: &EntityTypeDescriptor,
+    entity: &MapEntity,
+    attach_weapon: bool,
+) -> Option<EntityId> {
+    let transform = Transform {
+        position: entity.origin,
+        rotation: entity.rotation_quat(),
+        scale: Vec3::ONE,
+    };
+
+    let id = registry.try_spawn(transform, &entity.tags)?;
+
+    attach_descriptor_components(registry, id, descriptor, entity, attach_weapon);
+    Some(id)
 }
 
 /// Spawn descriptor-driven entities for every `MapEntity` whose classname
@@ -278,13 +311,11 @@ pub(crate) fn apply_data_archetype_dispatch(
             continue;
         }
 
-        let transform = Transform {
-            position: entity.origin,
-            rotation: entity.rotation_quat(),
-            scale: Vec3::ONE,
-        };
+        if !is_directly_map_placeable(descriptor) {
+            continue;
+        }
 
-        let Some(id) = registry.try_spawn(transform, &entity.tags) else {
+        let Some(id) = spawn_descriptor_instance(registry, descriptor, entity, false) else {
             log::warn!(
                 "[Loader] {origin}: entity registry exhausted; dropping descriptor-spawned `{cls}`",
                 origin = entity.diagnostic_origin(),
@@ -292,8 +323,6 @@ pub(crate) fn apply_data_archetype_dispatch(
             );
             continue;
         };
-
-        attach_descriptor_components(registry, id, descriptor, entity);
 
         // Mirror the per-placement KVP bag so `getEntityProperty` works
         // uniformly across spawn paths. Always write — even an empty bag —
@@ -314,18 +343,27 @@ pub(crate) const PLAYER_START_CLASSNAME: &str = "player_spawn";
 
 /// Spawn one entity per `player_spawn` placement, using each placement's
 /// `entity_class` KVP (default `"player"`) to look up an
-/// [`EntityTypeDescriptor`]. Component attachment mirrors
-/// [`apply_data_archetype_dispatch`] — emitter, light (forced dynamic), and
-/// movement (when present in the descriptor) — and the per-placement KVP bag
-/// is forwarded with `entity_class` stripped so it
-/// is not confused with an `initial_*`-style override. Tags from the
-/// `player_spawn` placement are passed directly to `try_spawn`.
+/// [`EntityTypeDescriptor`]. Component attachment uses the same descriptor
+/// materialization helper as the data-archetype sweep, while `defaultWeapon`
+/// spawns a sibling weapon instance only when the target descriptor declares a
+/// weapon component. The per-placement KVP bag is forwarded with
+/// `entity_class` stripped so it is not confused with an `initial_*` override.
+/// Tags from the `player_spawn` placement are passed directly to `try_spawn`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PlayerSpawnResult {
+    pub(crate) spawned: usize,
+    pub(crate) active_wieldable: Option<EntityId>,
+    pub(crate) active_wieldable_descriptor: Option<String>,
+}
+
 pub(crate) fn spawn_from_player_starts(
     spawn_points: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
-) {
+) -> PlayerSpawnResult {
     let mut spawned = 0usize;
+    let mut active_wieldable = None;
+    let mut active_wieldable_descriptor = None;
 
     for entity in spawn_points {
         let entity_class = entity
@@ -342,13 +380,7 @@ pub(crate) fn spawn_from_player_starts(
             continue;
         };
 
-        let transform = Transform {
-            position: entity.origin,
-            rotation: entity.rotation_quat(),
-            scale: Vec3::ONE,
-        };
-
-        let Some(id) = registry.try_spawn(transform, &entity.tags) else {
+        let Some(id) = spawn_descriptor_instance(registry, descriptor, entity, true) else {
             log::warn!(
                 "[Loader] {origin}: entity registry exhausted; dropping player spawn `{entity_class}`",
                 origin = entity.diagnostic_origin(),
@@ -356,14 +388,54 @@ pub(crate) fn spawn_from_player_starts(
             continue;
         };
 
-        attach_descriptor_components(registry, id, descriptor, entity);
-
         // Forward the per-placement KVP bag (sans `entity_class`, which is a
         // routing hint, not a runtime property) so `getEntityProperty` works
         // uniformly for player-start-spawned entities.
         let mut kvps = entity.key_values.clone();
         kvps.remove("entity_class");
         let _ = registry.set_map_kvps(id, kvps);
+
+        if let Some(default_weapon) = descriptor.default_weapon.as_deref() {
+            let Some(weapon_descriptor) = find_descriptor(descriptors, default_weapon) else {
+                log::warn!(
+                    "[Loader] {origin}: defaultWeapon `{default_weapon}` not registered; player spawned unarmed",
+                    origin = entity.diagnostic_origin(),
+                );
+                spawned += 1;
+                continue;
+            };
+            if weapon_descriptor.weapon.is_none() {
+                log::warn!(
+                    "[Loader] {origin}: defaultWeapon `{default_weapon}` has no weapon component; player spawned unarmed",
+                    origin = entity.diagnostic_origin(),
+                );
+                spawned += 1;
+                continue;
+            }
+
+            let weapon_entity = MapEntity {
+                classname: default_weapon.to_string(),
+                origin: entity.origin,
+                angles: entity.angles,
+                key_values: Default::default(),
+                tags: vec![],
+            };
+            match spawn_descriptor_instance(registry, weapon_descriptor, &weapon_entity, true) {
+                Some(weapon_id) => {
+                    let _ = registry.set_map_kvps(weapon_id, Default::default());
+                    if active_wieldable.is_none() {
+                        active_wieldable = Some(weapon_id);
+                        active_wieldable_descriptor = Some(default_weapon.to_string());
+                    }
+                }
+                None => {
+                    log::warn!(
+                        "[Loader] {origin}: entity registry exhausted; dropping defaultWeapon `{default_weapon}`",
+                        origin = entity.diagnostic_origin(),
+                    );
+                }
+            }
+        }
 
         spawned += 1;
     }
@@ -374,11 +446,18 @@ pub(crate) fn spawn_from_player_starts(
             total = spawn_points.len(),
         );
     }
+
+    PlayerSpawnResult {
+        spawned,
+        active_wieldable,
+        active_wieldable_descriptor,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scripting::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor};
     use std::collections::HashMap;
 
     fn placement(classname: &str, kvps: &[(&str, &str)]) -> MapEntity {
@@ -398,6 +477,7 @@ mod tests {
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
+            default_weapon: None,
             light: Some(LightDescriptor {
                 color: [0.5, 0.5, 0.5],
                 intensity: 1.0,
@@ -406,6 +486,7 @@ mod tests {
             }),
             emitter: None,
             movement: None,
+            weapon: None,
         }
     }
 
@@ -426,6 +507,47 @@ mod tests {
         assert!(light.is_dynamic);
         assert_eq!(light.falloff_range, 8.0);
         assert_eq!(light.origin, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn map_sweep_skips_weapon_only_descriptors() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![weapon_descriptor("reference_pistol")];
+        let placements = vec![placement("reference_pistol", &[])];
+        let handled =
+            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        assert_eq!(handled.len(), 0);
+        assert!(
+            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Weapon)
+                .next()
+                .is_none(),
+            "weapon-only descriptors are equip targets, not direct map placements",
+        );
+    }
+
+    #[test]
+    fn map_sweep_skips_weapon_component_on_otherwise_placeable_descriptor() {
+        let mut reg = EntityRegistry::new();
+        let mut descriptor = weapon_descriptor("weapon_torch");
+        descriptor.light = light_descriptor("weapon_torch", true).light;
+        let descriptors = vec![descriptor];
+        let placements = vec![placement("weapon_torch", &[])];
+        let handled =
+            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        assert_eq!(handled.len(), 1);
+
+        assert!(
+            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Weapon)
+                .next()
+                .is_none(),
+            "direct map placement must not attach weapon components even when another component makes the descriptor placeable",
+        );
+
+        let (id, _) = reg
+            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .next()
+            .expect("placeable sibling component still spawns");
+        assert!(reg.get_component::<LightComponent>(id).unwrap().is_dynamic);
     }
 
     #[test]
@@ -631,6 +753,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("campfire".to_string()),
+            default_weapon: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -648,6 +771,7 @@ mod tests {
                 spin_animation: None,
             }),
             movement: None,
+            weapon: None,
         }];
         let placements = vec![placement(
             "campfire",
@@ -670,6 +794,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("campfire".to_string()),
+            default_weapon: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -687,6 +812,7 @@ mod tests {
                 spin_animation: None,
             }),
             movement: None,
+            weapon: None,
         }];
         let placements = vec![placement("campfire", &[("velocity", "9.0 9.0 9.0")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -706,6 +832,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("campfire".to_string()),
+            default_weapon: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -723,6 +850,7 @@ mod tests {
                 spin_animation: None,
             }),
             movement: None,
+            weapon: None,
         }];
         let placements = vec![placement("campfire", &[("initial_rate", "20.5")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -739,6 +867,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("burstfire".to_string()),
+            default_weapon: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 0.0,
@@ -756,6 +885,7 @@ mod tests {
                 spin_animation: None,
             }),
             movement: None,
+            weapon: None,
         }];
         let placements = vec![placement("burstfire", &[("initial_burst", "24")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -774,6 +904,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("smolder".to_string()),
+            default_weapon: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -791,6 +922,7 @@ mod tests {
                 spin_animation: None,
             }),
             movement: None,
+            weapon: None,
         }];
         let placements = vec![placement(
             "smolder",
@@ -828,6 +960,7 @@ mod tests {
         // Register a data-archetype descriptor for the same classname.
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("billboard_emitter".to_string()),
+            default_weapon: None,
             light: Some(LightDescriptor {
                 color: [1.0, 0.0, 0.0],
                 intensity: 5.0,
@@ -836,6 +969,7 @@ mod tests {
             }),
             emitter: None,
             movement: None,
+            weapon: None,
         }];
 
         let placements = vec![placement("billboard_emitter", &[])];
@@ -885,6 +1019,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: None,
+            default_weapon: None,
             light: Some(LightDescriptor {
                 color: [1.0, 1.0, 1.0],
                 intensity: 1.0,
@@ -893,6 +1028,7 @@ mod tests {
             }),
             emitter: None,
             movement: None,
+            weapon: None,
         }];
         let placements = vec![placement("ghost", &[]), placement("ghost", &[])];
         let handled =
@@ -945,9 +1081,39 @@ mod tests {
     fn stub_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
+            default_weapon: None,
             light: None,
             emitter: None,
             movement: None,
+            weapon: None,
+        }
+    }
+
+    fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some(classname.to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: Some(WeaponDescriptor {
+                damage: 12.0,
+                range: 64.0,
+                cooldown_ms: 180.0,
+                fire_mode: FireMode::Semi,
+                resolution: ResolutionMode::Hitscan,
+            }),
+        }
+    }
+
+    fn player_with_default_weapon(classname: &str, default_weapon: &str) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some(classname.to_string()),
+            default_weapon: Some(default_weapon.to_string()),
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
         }
     }
 
@@ -1035,6 +1201,55 @@ mod tests {
         spawn_from_player_starts(&points, &descriptors, &mut reg);
 
         assert_eq!(live_count(&reg), 1);
+    }
+
+    #[test]
+    fn player_spawn_materializes_default_weapon_as_active_wieldable() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![
+            player_with_default_weapon("player", "reference_pistol"),
+            weapon_descriptor("reference_pistol"),
+        ];
+        let points = vec![spawn_point(&[])];
+
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        assert_eq!(result.spawned, 1);
+        let weapon_id = result.active_wieldable.expect("active wieldable");
+        assert_eq!(
+            result.active_wieldable_descriptor.as_deref(),
+            Some("reference_pistol")
+        );
+        let weapon = reg.get_component::<WeaponComponent>(weapon_id).unwrap();
+        assert_eq!(weapon.damage, 12.0);
+        assert_eq!(live_count(&reg), 2, "player plus sibling weapon entity");
+    }
+
+    #[test]
+    fn default_weapon_must_resolve_to_weapon_descriptor() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![
+            player_with_default_weapon("player", "torch"),
+            light_descriptor("torch", true),
+        ];
+        let points = vec![spawn_point(&[])];
+
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        assert_eq!(result.spawned, 1);
+        assert!(result.active_wieldable.is_none());
+        assert!(result.active_wieldable_descriptor.is_none());
+        assert_eq!(
+            live_count(&reg),
+            1,
+            "player spawned without a weapon entity"
+        );
+        assert!(
+            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Weapon)
+                .next()
+                .is_none(),
+            "non-weapon defaultWeapon target must not produce an active no-op entity",
+        );
     }
 
     #[test]

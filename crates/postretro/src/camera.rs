@@ -71,6 +71,17 @@ impl Camera {
         Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin())
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn aim_ray(&self) -> (Vec3, Vec3) {
+        let direction = Vec3::new(
+            -self.yaw.sin() * self.pitch.cos(),
+            self.pitch.sin(),
+            -self.yaw.cos() * self.pitch.cos(),
+        )
+        .normalize();
+        (self.position, direction)
+    }
+
     /// Combined view-projection matrix. Used by tests; production rendering
     /// uses `InterpolableState::view_projection` for interpolated state.
     #[cfg(test)]
@@ -82,13 +93,9 @@ impl Camera {
 
     #[cfg(test)]
     fn view_matrix(&self) -> Mat4 {
-        let look_dir = Vec3::new(
-            -self.yaw.sin() * self.pitch.cos(),
-            self.pitch.sin(),
-            -self.yaw.cos() * self.pitch.cos(),
-        );
-        let target = self.position + look_dir;
-        Mat4::look_at_rh(self.position, target, Vec3::Y)
+        let (origin, direction) = self.aim_ray();
+        let target = origin + direction;
+        Mat4::look_at_rh(origin, target, Vec3::Y)
     }
 
     #[cfg(test)]
@@ -197,6 +204,30 @@ mod tests {
     fn right_is_unit_length() {
         let cam = Camera::new(Vec3::ZERO, 2.5, -0.7);
         assert!(approx_eq(cam.right().length(), 1.0));
+    }
+
+    // -- Aim ray --
+
+    #[test]
+    fn aim_ray_origin_is_camera_position() {
+        let cam = Camera::new(Vec3::new(4.0, 5.0, 6.0), 0.25, -0.4);
+        let (origin, _) = cam.aim_ray();
+        assert_vec3_approx(origin, cam.position);
+    }
+
+    #[test]
+    fn aim_ray_direction_includes_pitch() {
+        let cam = Camera::new(Vec3::ZERO, 0.0, PI / 6.0);
+        let (_, direction) = cam.aim_ray();
+
+        assert_vec3_approx(direction, Vec3::new(0.0, 0.5, -(3.0_f32).sqrt() / 2.0));
+    }
+
+    #[test]
+    fn aim_ray_direction_is_normalized() {
+        let cam = Camera::new(Vec3::ZERO, 1.23, -0.45);
+        let (_, direction) = cam.aim_ray();
+        assert!(approx_eq(direction.length(), 1.0));
     }
 
     // -- Rotation --

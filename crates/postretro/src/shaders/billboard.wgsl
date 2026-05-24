@@ -251,8 +251,8 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
 // `BILLBOARD_SHADER_SOURCE`). They read the group-3 `sh_band0..8`,
 // `sh_depth_moments`, and `sh_grid` declared above by lexical name. Billboard
 // passes `reject_backface = false`: a camera-facing sprite has no real surface
-// normal, so validity/depth exclusion of in-wall corners applies but backface
-// rejection does not.
+// normal, so validity excludes invalid corners and depth visibility attenuates
+// occluded corners; backface rejection does not apply.
 
 // Derive the raw grid index / sub-cell fraction and defer the depth-aware
 // 8-corner blend to the shared helper. `gi`/`gfrac` clamp the low side to the

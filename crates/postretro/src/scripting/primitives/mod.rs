@@ -72,7 +72,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("EntityTypeDescriptor")
         .doc("Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.")
-        .field("canonicalName?", "String", "FGD canonical map classname this descriptor binds to. Absence means the descriptor is not directly placeable from a map and is only reachable via indirect routing (e.g. `entity_class` on a `player_spawn` marker).")
+        .field("canonicalName?", "String", "Canonical descriptor name. Map placement also requires a placeable component; weapon-only descriptors use this name as equip targets.")
+        .field(
+            "defaultWeapon?",
+            "String",
+            "Canonical weapon descriptor name equipped when this entity is spawned through a player_spawn marker.",
+        )
         .field(
             "components?",
             "EntityTypeComponents",
@@ -176,6 +181,28 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("light?", "Option<LightDescriptor>", "")
         .field("emitter?", "Option<BillboardEmitterComponent>", "")
         .field("movement?", "Option<PlayerMovementDescriptor>", "")
+        .field("weapon?", "Option<WeaponDescriptor>", "")
+        .finish();
+    registry
+        .register_enum("FireMode")
+        .variant("semi", "One shot per press.")
+        .variant("auto", "Continuous fire while held.")
+        .finish();
+    registry
+        .register_enum("ResolutionMode")
+        .variant(
+            "hitscan",
+            "Resolve instantly against the static-world collision ray.",
+        )
+        .finish();
+    registry
+        .register_type("WeaponDescriptor")
+        .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
+        .field("damage", "f32", "Base damage payload amount.")
+        .field("range", "f32", "Maximum hitscan range in world units.")
+        .field("fireRateMs", "f32", "Inter-shot cooldown in milliseconds.")
+        .field("fireMode", "FireMode", "Semi or automatic input gate.")
+        .field("resolution", "ResolutionMode", "Shot resolution mode. Currently supports hitscan only.")
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")

@@ -14,6 +14,7 @@ use super::components::light::LightComponent;
 use super::components::particle::ParticleState;
 use super::components::player_movement::PlayerMovementComponent;
 use super::components::sprite_visual::SpriteVisual;
+use super::components::weapon::WeaponComponent;
 
 /// Packed entity identifier: `index: 16 | generation: 16`.
 ///
@@ -74,9 +75,9 @@ impl fmt::Display for EntityId {
 
 /// All component kinds the engine tracks internally.
 ///
-/// Not all variants are queryable via the script surface (`worldQuery`).
-/// `PlayerMovement` is engine-internal: the movement system owns it and
-/// scripts cannot read or write it through `worldQuery`.
+/// Not all variants are queryable via the script surface (`worldQuery`):
+/// `PlayerMovement` and `Weapon` are engine-owned runtime components, so
+/// scripts address them through higher-level descriptors and systems.
 ///
 /// `#[repr(u16)]` makes the discriminant a zero-cost index into the
 /// component-storage vector array. Not `#[non_exhaustive]`: the enum is
@@ -91,6 +92,7 @@ pub(crate) enum ComponentKind {
     SpriteVisual = 4,
     FogVolume = 5,
     PlayerMovement = 6,
+    Weapon = 7,
 }
 
 impl ComponentKind {
@@ -107,6 +109,7 @@ impl ComponentKind {
             ComponentKind::SpriteVisual,
             ComponentKind::FogVolume,
             ComponentKind::PlayerMovement,
+            ComponentKind::Weapon,
         ];
         VARIANTS.len()
     };
@@ -149,6 +152,7 @@ pub(crate) enum ComponentValue {
     SpriteVisual(SpriteVisual),
     FogVolume(FogVolumeComponent),
     PlayerMovement(PlayerMovementComponent),
+    Weapon(WeaponComponent),
 }
 
 fn default_fog_tint() -> [f32; 3] {
@@ -324,6 +328,21 @@ impl Component for PlayerMovementComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::PlayerMovement(self)
+    }
+}
+
+impl Component for WeaponComponent {
+    const KIND: ComponentKind = ComponentKind::Weapon;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Weapon(w) => Some(w),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Weapon(self)
     }
 }
 

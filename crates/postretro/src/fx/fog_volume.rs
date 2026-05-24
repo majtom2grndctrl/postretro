@@ -145,10 +145,22 @@ pub struct FogParams {
     /// bound its loop on a CPU-tracked count instead of
     /// `arrayLength(&fog_spots)`.
     pub spot_count: u32,
-    /// Explicit padding to match WGSL struct alignment. `FogParams` contains a
-    /// `mat4x4<f32>` (alignment 16), so WGSL rounds the struct size up to the
-    /// next multiple of 16: ceil(100/16)*16 = 112. The CPU struct must match.
-    pub _pad2: [u32; 3],
+    /// Monotonic frame counter (wrapping). Drives the per-frame temporal offset
+    /// of the raymarch ray-start jitter so the stratification pattern animates
+    /// instead of freezing into a static noise texture. Repurposed from one of
+    /// the former `_pad2` slots — size is unchanged.
+    pub frame_index: u32,
+    /// Explicit padding to keep the `frame_index` 16-byte block full before the
+    /// trailing `mat4x4`. The prefix through `frame_index` is 100 bytes; with a
+    /// `mat4x4<f32>` (16-aligned) appended, WGSL rounds the prefix to 112 and
+    /// then `prev_view_proj` occupies bytes 112..176. The CPU struct must match.
+    pub _pad2: [u32; 2],
+    /// Previous frame's view-projection matrix. Used by the temporal-resolve
+    /// pass to reproject the current world position into the prior frame's
+    /// screen UV and sample the accumulation history there. Appended at the END
+    /// so the composite's prefix-only `FogParams` (ending at `far_clip`) is
+    /// unaffected. See rendering_pipeline.md §7.5.
+    pub prev_view_proj: [[f32; 4]; 4],
 }
 
 pub const FOG_VOLUME_SIZE: usize = std::mem::size_of::<FogVolume>();
@@ -160,7 +172,7 @@ pub const FOG_PARAMS_SIZE: usize = std::mem::size_of::<FogParams>();
 const _: () = assert!(FOG_VOLUME_SIZE == 112);
 const _: () = assert!(FOG_SPOT_LIGHT_SIZE == 48);
 const _: () = assert!(FOG_POINT_LIGHT_SIZE == 32);
-const _: () = assert!(FOG_PARAMS_SIZE == 112);
+const _: () = assert!(FOG_PARAMS_SIZE == 176);
 
 pub fn pack_fog_volumes(volumes: &[FogVolume]) -> &[u8] {
     bytemuck::cast_slice(volumes)
@@ -187,6 +199,8 @@ pub struct FogParamsInput {
     pub far_clip: f32,
     pub point_count: u32,
     pub spot_count: u32,
+    pub frame_index: u32,
+    pub prev_view_proj: Mat4,
 }
 
 /// Build the per-frame fog uniform. Takes a [`FogParamsInput`] rather than a
@@ -205,7 +219,9 @@ pub fn pack_fog_params(input: FogParamsInput) -> FogParams {
         far_clip: input.far_clip,
         point_count: input.point_count,
         spot_count: input.spot_count,
-        _pad2: [0; 3],
+        frame_index: input.frame_index,
+        _pad2: [0; 2],
+        prev_view_proj: input.prev_view_proj.to_cols_array_2d(),
     }
 }
 

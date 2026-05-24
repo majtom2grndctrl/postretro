@@ -1,6 +1,6 @@
 # Weapon Primitives — Research Notes
 
-Ground-truth code inventory gathered during drafting. Not part of the spec; kept for implementer orientation. Confirm against source before relying on any signature — these were read at draft time.
+Ground-truth code inventory gathered during drafting. Not part of the spec; kept for implementer orientation. Confirm against source before relying on any signature — these were read at draft time, before M10 implementation.
 
 ## Execution model (the anchor)
 
@@ -14,7 +14,7 @@ Weapons mirror this: weapon descriptor (params) → weapon component → Rust fi
 
 ## What exists (reuse)
 
-- **Input.** `Action::Shoot`, `AltFire`, `Reload` already defined in `crates/postretro/src/input/types.rs` — **no handlers read them yet.** `ButtonState { Pressed, Held, Released, Inactive }`, `is_active()` (Pressed|Held). Per-frame `ActionSnapshot`.
+- **Input.** `Action::Shoot`, `AltFire`, `Reload` already existed in `crates/postretro/src/input/types.rs` before M10; the M10 fire system now reads `Action::Shoot`. `ButtonState { Pressed, Held, Released, Inactive }`, `is_active()` (Pressed|Held). Per-frame `ActionSnapshot`.
 - **Camera / aim.** `crates/postretro/src/camera.rs` `Camera { position, yaw, pitch }`, `forward()`/`right()` (yaw-only). Pitch-inclusive direction math exists test-only (~camera.rs:85) — needs promotion to a real view-ray method.
 - **Collision.** `crates/postretro/src/collision/mod.rs` `CollisionWorld::cast_ray(world, origin, dir, max_toi) -> Option<RayIntersection>` (pub(crate)). `RayIntersection` carries `time_of_impact` + `normal`. Hit point = `origin + dir * toi`.
 - **Entity registry.** `crates/postretro/src/scripting/registry.rs` `EntityRegistry::{spawn, try_spawn, set_component, get_component, despawn, query_by_component_and_tag}`. `ComponentKind` enum: Transform, Light, BillboardEmitter, ParticleState, SpriteVisual, FogVolume, PlayerMovement. `Component` trait with `const KIND`.
@@ -23,7 +23,7 @@ Weapons mirror this: weapon descriptor (params) → weapon component → Rust fi
 
 ## Gaps (must build)
 
-- **No weapon state.** No weapon component, no descriptor fields. `ComponentKind` has no `Weapon`.
+- **Weapon state.** M10 adds a weapon descriptor, weapon component, and `ComponentKind::Weapon`.
 - **No damage/health.** No health component, no damage event type, no kill path. `DamageSource` reference script is specced but not in repo; its `"damage"` event has no engine consumer. (Health + kill belong to the enemy-entity plan, not here.)
 - **No hit→material lookup.** `cast_ray` returns no triangle index, so `world.face_meta[i].material` is unreachable from a hit. `Material` enum + `FaceMeta.material` exist (baked). Material-aware impacts need a collision-API extension — deferred.
 - **No one-shot effect spawn.** Emitters are persistent + map-placed or level-load-spawned and activated via `setEmitterRate`. No transient "spawn a burst at a world point then clean up" mechanism. The impact effect needs one.

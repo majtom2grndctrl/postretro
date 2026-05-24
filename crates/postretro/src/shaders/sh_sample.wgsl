@@ -3,8 +3,9 @@
 
 // Manual 8-corner SH irradiance blend. Replaces the hardware-trilinear fetch:
 // per-corner weights cannot be reweighted through a linear sampler, so each
-// corner is loaded explicitly with `textureLoad` and reweighted by validity
-// and (optionally) backface rejection before renormalization.
+// corner is loaded explicitly with `textureLoad` and reweighted by validity,
+// optional backface rejection, and optional depth visibility before
+// renormalization.
 //
 // Binding-agnostic (§8): this helper declares no buffers. The consumer shader
 // must declare, at the (group, binding) the helper expects, BEFORE this file
@@ -15,6 +16,9 @@
 // The consumer must NOT declare its own `sh_irradiance` / `sample_sh_indirect*`
 // — this helper owns those symbols; a local copy is a duplicate-definition error.
 
+// Conservative guards for f16 moment data: keep variance non-zero, bias the
+// horizon slightly by probe spacing, and preserve a tiny visibility floor so
+// narrow walls do not collapse to black from quantization noise.
 const SH_DEPTH_MIN_VARIANCE_M2: f32 = 1.0e-4;
 const SH_DEPTH_BIAS_CELL_FRACTION: f32 = 0.05;
 const SH_DEPTH_MIN_VISIBILITY: f32 = 0.03;

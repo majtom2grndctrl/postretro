@@ -112,6 +112,9 @@ fn rust_to_ts(ty_name: &str) -> String {
         "LightDescriptor" => "LightDescriptor".to_string(),
         "EntityTypeDescriptor" => "EntityTypeDescriptor".to_string(),
         "EntityTypeComponents" => "EntityTypeComponents".to_string(),
+        "WeaponDescriptor" => "WeaponDescriptor".to_string(),
+        "FireMode" => "FireMode".to_string(),
+        "ResolutionMode" => "ResolutionMode".to_string(),
         "PlayerMovementDescriptor" => "PlayerMovementDescriptor".to_string(),
         "CapsuleParams" => "CapsuleParams".to_string(),
         "GroundParams" => "GroundParams".to_string(),
@@ -200,6 +203,9 @@ fn rust_to_luau(ty_name: &str) -> String {
         "LightDescriptor" => "LightDescriptor".to_string(),
         "EntityTypeDescriptor" => "EntityTypeDescriptor".to_string(),
         "EntityTypeComponents" => "EntityTypeComponents".to_string(),
+        "WeaponDescriptor" => "WeaponDescriptor".to_string(),
+        "FireMode" => "FireMode".to_string(),
+        "ResolutionMode" => "ResolutionMode".to_string(),
         "PlayerMovementDescriptor" => "PlayerMovementDescriptor".to_string(),
         "CapsuleParams" => "CapsuleParams".to_string(),
         "GroundParams" => "GroundParams".to_string(),
@@ -1130,8 +1136,10 @@ declare module \"postretro\" {
 
   /** Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets. */
   export type EntityTypeDescriptor = {
-    /** FGD canonical map classname this descriptor binds to. Absence means the descriptor is not directly placeable from a map and is only reachable via indirect routing (e.g. `entity_class` on a `player_spawn` marker). */
+    /** Canonical descriptor name. Map placement also requires a placeable component; weapon-only descriptors use this name as equip targets. */
     canonicalName?: string;
+    /** Canonical weapon descriptor name equipped when this entity is spawned through a player_spawn marker. */
+    defaultWeapon?: string;
     /** Optional component presets attached at level-load spawn. */
     components?: EntityTypeComponents;
   };
@@ -1209,7 +1217,31 @@ declare module \"postretro\" {
   };
 
   /** Optional bag of component presets carried by `EntityTypeDescriptor.components`. */
-  export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null; movement?: PlayerMovementDescriptor | null };
+  export type EntityTypeComponents = { light?: LightDescriptor | null; emitter?: BillboardEmitterComponent | null; movement?: PlayerMovementDescriptor | null; weapon?: WeaponDescriptor | null };
+
+  export type FireMode =
+    /** One shot per press. */
+    | \"semi\"
+    /** Continuous fire while held. */
+    | \"auto\";
+
+  export type ResolutionMode =
+    /** Resolve instantly against the static-world collision ray. */
+    | \"hitscan\";
+
+  /** Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor. */
+  export type WeaponDescriptor = {
+    /** Base damage payload amount. */
+    damage: number;
+    /** Maximum hitscan range in world units. */
+    range: number;
+    /** Inter-shot cooldown in milliseconds. */
+    fireRateMs: number;
+    /** Semi or automatic input gate. */
+    fireMode: FireMode;
+    /** Shot resolution mode. Currently supports hitscan only. */
+    resolution: ResolutionMode;
+  };
 
   /** Authored player-movement component preset. All four sub-objects are required when `movement` is present; the data-archetype spawn path materializes the runtime movement component from this. */
   export type PlayerMovementDescriptor = {
@@ -1314,8 +1346,10 @@ export type LightDescriptor = {
 
 --- Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.
 export type EntityTypeDescriptor = {
-  --- FGD canonical map classname this descriptor binds to. Absence means the descriptor is not directly placeable from a map and is only reachable via indirect routing (e.g. `entity_class` on a `player_spawn` marker).
+  --- Canonical descriptor name. Map placement also requires a placeable component; weapon-only descriptors use this name as equip targets.
   canonicalName: string?,
+  --- Canonical weapon descriptor name equipped when this entity is spawned through a player_spawn marker.
+  defaultWeapon: string?,
   --- Optional component presets attached at level-load spawn.
   components: EntityTypeComponents?,
 }
@@ -1393,7 +1427,31 @@ export type FogVolumeEntity = {
 }
 
 --- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
-export type EntityTypeComponents = { light: LightDescriptor?, emitter: BillboardEmitterComponent?, movement: PlayerMovementDescriptor? }
+export type EntityTypeComponents = { light: LightDescriptor?, emitter: BillboardEmitterComponent?, movement: PlayerMovementDescriptor?, weapon: WeaponDescriptor? }
+
+export type FireMode =
+  --- One shot per press.
+  \"semi\"
+  --- Continuous fire while held.
+  | \"auto\"
+
+export type ResolutionMode =
+  --- Resolve instantly against the static-world collision ray.
+  \"hitscan\"
+
+--- Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.
+export type WeaponDescriptor = {
+  --- Base damage payload amount.
+  damage: number,
+  --- Maximum hitscan range in world units.
+  range: number,
+  --- Inter-shot cooldown in milliseconds.
+  fireRateMs: number,
+  --- Semi or automatic input gate.
+  fireMode: FireMode,
+  --- Shot resolution mode. Currently supports hitscan only.
+  resolution: ResolutionMode,
+}
 
 --- Authored player-movement component preset. All four sub-objects are required when `movement` is present; the data-archetype spawn path materializes the runtime movement component from this.
 export type PlayerMovementDescriptor = {

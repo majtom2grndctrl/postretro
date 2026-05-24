@@ -1294,7 +1294,7 @@
 "_tags" ""
 "style" "2"
 "_fade" "250"
-"light" "700"
+"light" "500"
 "_color" "245 221 51"
 "_cone" "5"
 "_cone2" "45"
@@ -1307,21 +1307,21 @@
 "_tags" ""
 "style" "2"
 "_fade" "250"
-"light" "700"
-"_color" "245 221 51"
+"light" "250"
+"_color" "255 255 255"
 "_cone" "5"
 "_cone2" "45"
 }
 // entity 14
 {
 "classname" "fog_volume"
-"glow" "0.4"
-"min_brightness" "-.05"
-"saturation" "1.3"
+"glow" "0.8"
+"min_brightness" "0"
+"saturation" "1.5"
 "tint" "255 255 255"
-"edge_softness" "3"
-"density" "0.4"
-"scatter_bias" "100"
+"edge_softness" "0"
+"density" "0.6"
+"scatter_bias" "0"
 // brush 0
 {
 ( -180 1696 80 ) ( -180 616 80 ) ( -180 616 -48 ) debug_ceiling_grey 0.67405987 0 0 4.65517 8
@@ -1357,4 +1357,15 @@
 "_color" "245 221 51"
 "_cone" "15"
 "_cone2" "45"
+}
+// entity 17
+{
+"classname" "light_spot"
+"origin" "8 1112 264"
+"angles" "-20 0 0"
+"_cone" "2"
+"_cone2" "30"
+"delay" "0"
+"light" "400"
+"_fade" "800"
 }

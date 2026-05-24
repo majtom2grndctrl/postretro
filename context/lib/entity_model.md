@@ -35,6 +35,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | ParticleState | Per-particle simulation state |
 | SpriteVisual | Billboard visual parameters |
 | FogVolume | Runtime fog-volume parameters |
+| Weapon | Runtime weapon params and per-instance cooldown state |
 
 Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Future entity types (enemies, doors, projectiles, pickups) follow the same pattern — illustrative, not current scope.
 
@@ -97,13 +98,15 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 | Order | Stage | Rationale |
 |-------|-------|-----------|
 | 1 | Player movement tick | Input-driven; resolves capsule physics and position before anything reads player state |
-| 2 | Scripting bridges | Emitter, particle sim, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities |
+| 2 | Camera follow | Camera position follows the resolved player pawn before aim-dependent systems run |
+| 3 | Weapon fire tick | Reads input and active wieldable state after movement/camera settle; may spawn impact effects |
+| 4 | Scripting bridges | Emitter, particle sim, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities |
 
 The camera follows the player pawn after movement resolves. When no player pawn exists (no `PlayerMovement` entity), a fly-camera moves directly from input.
 
 ### Events
 
-Movement events (footstep, landing, etc.) are collected across all ticks in a frame and drained after the tick loop completes, so reactions observe the fully-settled post-tick world state. Audio is not yet implemented; event categories listed above are illustrative of the intended model, not current consumers.
+Movement and weapon events are collected across all ticks in a frame and drained after the tick loop completes, so reactions observe the fully-settled post-tick world state. Audio is not yet implemented; event categories listed above are illustrative of the intended model, not current consumers.
 
 ---
 

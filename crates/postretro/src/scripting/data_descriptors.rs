@@ -1,5 +1,6 @@
 // Data-context descriptor types: `LevelManifest`/`ReactionDescriptor`, `EntityTypeDescriptor`,
-// `LightDescriptor`, and `PlayerMovementDescriptor`; JS and Luau deserialization paths for all of them.
+// `LightDescriptor`, `WeaponDescriptor`, and `PlayerMovementDescriptor`; JS and Luau
+// deserialization paths for all of them.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
 use mlua::{Table, Value as LuaValue};
@@ -115,15 +116,78 @@ impl LightDescriptor {
 /// `canonical_name` cannot be matched against a `MapEntity.classname` by the
 /// data-archetype dispatch.
 ///
-/// Optional `light` / `emitter` / `movement` carry per-entity-type component
-/// presets. The level-load spawn path materializes these into a fresh ECS
-/// entity per matching placement.
+/// `default_weapon` is the canonical name of the wieldable archetype spawned
+/// alongside this entity when routed through `player_spawn`. The descriptor
+/// keeps the string; runtime state stores the resolved `EntityId`.
+///
+/// Optional `light` / `emitter` / `movement` / `weapon` carry per-entity-type
+/// component presets. The level-load spawn path materializes these into a
+/// fresh ECS entity per matching placement.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EntityTypeDescriptor {
     pub(crate) canonical_name: Option<String>,
+    pub(crate) default_weapon: Option<String>,
     pub(crate) light: Option<LightDescriptor>,
     pub(crate) emitter: Option<BillboardEmitterComponent>,
     pub(crate) movement: Option<PlayerMovementDescriptor>,
+    pub(crate) weapon: Option<WeaponDescriptor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum FireMode {
+    Semi,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ResolutionMode {
+    Hitscan,
+}
+
+/// Authored weapon component preset. This is descriptor-owned tuning data:
+/// maps do not override these params, and the runtime materializes a separate
+/// wieldable instance entity from the descriptor at player spawn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WeaponDescriptor {
+    pub(crate) damage: f32,
+    pub(crate) range: f32,
+    #[serde(rename = "fireRateMs")]
+    pub(crate) cooldown_ms: f32,
+    pub(crate) fire_mode: FireMode,
+    pub(crate) resolution: ResolutionMode,
+}
+
+impl WeaponDescriptor {
+    pub(crate) fn validate(self) -> Result<Self, DescriptorError> {
+        if !self.damage.is_finite() || self.damage < 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.weapon.damage` must be a finite value >= 0.0, got {}",
+                    self.damage
+                ),
+            });
+        }
+        if !self.range.is_finite() || self.range <= 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.weapon.range` must be a finite value > 0.0, got {}",
+                    self.range
+                ),
+            });
+        }
+        if !self.cooldown_ms.is_finite() || self.cooldown_ms <= 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.weapon.fireRateMs` must be a finite value > 0.0, got {}",
+                    self.cooldown_ms
+                ),
+            });
+        }
+        Ok(self)
+    }
 }
 
 /// Authored player-movement component preset. All fields are required when
@@ -450,7 +514,7 @@ fn get_required_u32_js<'js>(
 }
 
 /// Deserialize an entity-type descriptor from a JS object. Shape:
-/// `{ canonicalName?: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor } }`.
+/// `{ canonicalName?: string, defaultWeapon?: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor } }`.
 /// Component sub-objects parse via `serde_json` after a recursive walk through
 /// the existing `js_to_json` helper — matches how `LightAnimation` /
 /// `BillboardEmitterComponent` cross the FFI elsewhere.
@@ -474,10 +538,21 @@ pub(crate) fn entity_descriptor_from_js<'js>(
     } else {
         None
     };
+    let default_weapon = if obj.contains_key("defaultWeapon").map_err(js_err)? {
+        let raw: JsValue = obj.get("defaultWeapon").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            Some(String::from_js_value_required(raw, "defaultWeapon")?)
+        }
+    } else {
+        None
+    };
 
     let mut light = None;
     let mut emitter = None;
     let mut movement = None;
+    let mut weapon = None;
 
     if obj.contains_key("components").map_err(js_err)? {
         let components_val: JsValue = obj.get("components").map_err(js_err)?;
@@ -494,6 +569,19 @@ pub(crate) fn entity_descriptor_from_js<'js>(
                             reason: "`components.movement` must be an object".to_string(),
                         })?;
                     movement = Some(movement_descriptor_from_js(&m_obj)?);
+                }
+            }
+            if components_obj.contains_key("weapon").map_err(js_err)? {
+                let raw: JsValue = components_obj.get("weapon").map_err(js_err)?;
+                if !raw.is_null() && !raw.is_undefined() {
+                    let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
+                    let descriptor: WeaponDescriptor =
+                        serde_json::from_value(json).map_err(|e| {
+                            DescriptorError::InvalidShape {
+                                reason: format!("`components.weapon` invalid: {e}"),
+                            }
+                        })?;
+                    weapon = Some(descriptor.validate()?);
                 }
             }
             if components_obj.contains_key("light").map_err(js_err)? {
@@ -532,9 +620,11 @@ pub(crate) fn entity_descriptor_from_js<'js>(
 
     Ok(EntityTypeDescriptor {
         canonical_name,
+        default_weapon,
         light,
         emitter,
         movement,
+        weapon,
     })
 }
 
@@ -990,7 +1080,7 @@ fn get_required_u32_lua(table: &Table, field: &'static str) -> Result<u32, Descr
 }
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
-/// `{ canonicalName?: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor } }`.
+/// `{ canonicalName?: string, defaultWeapon?: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor } }`.
 ///
 /// `canonicalName` is optional; absence means the descriptor has no direct
 /// map-placement form (see `EntityTypeDescriptor`).
@@ -1022,10 +1112,28 @@ pub(crate) fn entity_descriptor_from_lua(
     } else {
         None
     };
+    let default_weapon = if table.contains_key("defaultWeapon").map_err(lua_err)? {
+        let raw: LuaValue = table.get("defaultWeapon").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::String(s) => Some(s.to_str().map_err(lua_err)?.to_string()),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "'defaultWeapon' must be a string, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    } else {
+        None
+    };
 
     let mut light = None;
     let mut emitter = None;
     let mut movement = None;
+    let mut weapon = None;
 
     if table.contains_key("components").map_err(lua_err)? {
         let raw: LuaValue = table.get("components").map_err(lua_err)?;
@@ -1053,6 +1161,19 @@ pub(crate) fn entity_descriptor_from_lua(
                         }
                     };
                     movement = Some(movement_descriptor_from_lua(&m_table)?);
+                }
+            }
+            if components_table.contains_key("weapon").map_err(lua_err)? {
+                let raw: LuaValue = components_table.get("weapon").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    let json = super::conv::lua_to_json(raw).map_err(lua_err)?;
+                    let descriptor: WeaponDescriptor =
+                        serde_json::from_value(json).map_err(|e| {
+                            DescriptorError::InvalidShape {
+                                reason: format!("`components.weapon` invalid: {e}"),
+                            }
+                        })?;
+                    weapon = Some(descriptor.validate()?);
                 }
             }
             if components_table.contains_key("light").map_err(lua_err)? {
@@ -1091,9 +1212,11 @@ pub(crate) fn entity_descriptor_from_lua(
 
     Ok(EntityTypeDescriptor {
         canonical_name,
+        default_weapon,
         light,
         emitter,
         movement,
+        weapon,
     })
 }
 
@@ -1689,8 +1812,51 @@ mod tests {
         let src = r#"({ canonicalName: "vignette" })"#;
         let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
         assert_eq!(d.canonical_name.as_deref(), Some("vignette"));
+        assert!(d.default_weapon.is_none());
         assert!(d.light.is_none());
         assert!(d.emitter.is_none());
+        assert!(d.weapon.is_none());
+    }
+
+    #[test]
+    fn js_entity_descriptor_with_default_weapon_and_weapon_component_deserializes() {
+        let src = r#"({
+            canonicalName: "player",
+            defaultWeapon: "reference_pistol",
+            components: {
+                weapon: {
+                    damage: 12.0,
+                    range: 64.0,
+                    fireRateMs: 180.0,
+                    fireMode: "semi",
+                    resolution: "hitscan"
+                }
+            }
+        })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert_eq!(d.default_weapon.as_deref(), Some("reference_pistol"));
+        let weapon = d.weapon.expect("weapon present");
+        assert_eq!(weapon.damage, 12.0);
+        assert_eq!(weapon.range, 64.0);
+        assert_eq!(weapon.cooldown_ms, 180.0);
+        assert_eq!(weapon.fire_mode, FireMode::Semi);
+        assert_eq!(weapon.resolution, ResolutionMode::Hitscan);
+    }
+
+    #[test]
+    fn js_top_level_weapon_key_is_not_a_component_alias() {
+        let src = r#"({
+            canonicalName: "player",
+            weapon: {
+                damage: 12.0,
+                range: 64.0,
+                fireRateMs: 180.0,
+                fireMode: "semi",
+                resolution: "hitscan"
+            }
+        })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert!(d.weapon.is_none());
     }
 
     #[test]
@@ -1730,6 +1896,30 @@ mod tests {
         assert_eq!(d.canonical_name.as_deref(), Some("campfire"));
         let l = d.light.expect("light present");
         assert_eq!(l.intensity, 4.0);
+    }
+
+    #[test]
+    fn lua_entity_descriptor_with_default_weapon_and_weapon_component_deserializes() {
+        let src = r#"return {
+            canonicalName = "player",
+            defaultWeapon = "reference_pistol",
+            components = {
+                weapon = {
+                    damage = 12.0,
+                    range = 64.0,
+                    fireRateMs = 180.0,
+                    fireMode = "auto",
+                    resolution = "hitscan",
+                }
+            }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        assert_eq!(d.default_weapon.as_deref(), Some("reference_pistol"));
+        let weapon = d.weapon.expect("weapon present");
+        assert_eq!(weapon.damage, 12.0);
+        assert_eq!(weapon.cooldown_ms, 180.0);
+        assert_eq!(weapon.fire_mode, FireMode::Auto);
+        assert_eq!(weapon.resolution, ResolutionMode::Hitscan);
     }
 
     // --- PlayerMovementDescriptor parsing ----------------------------------

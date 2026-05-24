@@ -58,6 +58,51 @@ impl ActionSnapshot {
     }
 }
 
+/// Carries button press edges across render frames until fixed game logic runs.
+///
+/// `InputSystem::snapshot()` still advances at render rate so per-frame
+/// consumers see fresh state, but fixed-tick gameplay must not miss a one-frame
+/// `Pressed` edge on frames where the accumulator produces zero ticks.
+#[derive(Debug, Default)]
+pub struct GameplayInputLatch {
+    pressed_buttons: HashSet<Action>,
+}
+
+impl GameplayInputLatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn clear(&mut self) {
+        self.pressed_buttons.clear();
+    }
+
+    pub fn snapshot_for_ticks(
+        &mut self,
+        frame_snapshot: &ActionSnapshot,
+        ticks: u32,
+    ) -> Option<ActionSnapshot> {
+        for (&action, &state) in &frame_snapshot.button_states {
+            if state == ButtonState::Pressed {
+                self.pressed_buttons.insert(action);
+            }
+        }
+
+        if ticks == 0 {
+            return None;
+        }
+
+        let mut gameplay_snapshot = frame_snapshot.clone();
+        for action in self.pressed_buttons.drain() {
+            gameplay_snapshot
+                .button_states
+                .insert(action, ButtonState::Pressed);
+        }
+
+        Some(gameplay_snapshot)
+    }
+}
+
 /// The input subsystem. Collects raw input events and resolves them into action snapshots.
 pub struct InputSystem {
     bindings: Vec<Binding>,
@@ -567,6 +612,63 @@ mod tests {
         sys.handle_mouse_button(MouseButton::Left, true);
         let snap = sys.snapshot();
         assert_eq!(snap.button(Action::Shoot), ButtonState::Pressed);
+    }
+
+    #[test]
+    fn gameplay_input_latch_carries_pressed_button_across_zero_tick_frame() {
+        let mut sys = InputSystem::new(test_bindings());
+        let mut latch = GameplayInputLatch::new();
+
+        sys.handle_mouse_button(MouseButton::Left, true);
+        let zero_tick_snapshot = sys.snapshot();
+        assert_eq!(
+            zero_tick_snapshot.button(Action::Shoot),
+            ButtonState::Pressed
+        );
+        assert!(latch.snapshot_for_ticks(&zero_tick_snapshot, 0).is_none());
+
+        let tick_frame_snapshot = sys.snapshot();
+        assert_eq!(tick_frame_snapshot.button(Action::Shoot), ButtonState::Held);
+
+        let gameplay_snapshot = latch
+            .snapshot_for_ticks(&tick_frame_snapshot, 1)
+            .expect("fixed tick should receive a gameplay snapshot");
+        assert_eq!(
+            gameplay_snapshot.button(Action::Shoot),
+            ButtonState::Pressed
+        );
+
+        let later_snapshot = sys.snapshot();
+        let later_gameplay = latch
+            .snapshot_for_ticks(&later_snapshot, 1)
+            .expect("fixed tick should receive a gameplay snapshot");
+        assert_eq!(later_gameplay.button(Action::Shoot), ButtonState::Held);
+    }
+
+    #[test]
+    fn gameplay_input_latch_preserves_quick_tap_until_fixed_tick_consumes_it() {
+        let mut sys = InputSystem::new(test_bindings());
+        let mut latch = GameplayInputLatch::new();
+
+        sys.handle_mouse_button(MouseButton::Left, true);
+        let pressed = sys.snapshot();
+        assert!(latch.snapshot_for_ticks(&pressed, 0).is_none());
+
+        sys.handle_mouse_button(MouseButton::Left, false);
+        let released = sys.snapshot();
+        assert_eq!(released.button(Action::Shoot), ButtonState::Released);
+        assert!(latch.snapshot_for_ticks(&released, 0).is_none());
+
+        let inactive = sys.snapshot();
+        assert_eq!(inactive.button(Action::Shoot), ButtonState::Inactive);
+
+        let gameplay_snapshot = latch
+            .snapshot_for_ticks(&inactive, 1)
+            .expect("fixed tick should receive a gameplay snapshot");
+        assert_eq!(
+            gameplay_snapshot.button(Action::Shoot),
+            ButtonState::Pressed
+        );
     }
 
     // --- Cross-source additive resolution ---

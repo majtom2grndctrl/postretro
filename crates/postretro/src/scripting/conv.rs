@@ -289,6 +289,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::SpriteVisual => "sprite_visual",
         ComponentKind::FogVolume => "fog_volume",
         ComponentKind::PlayerMovement => "player_movement",
+        ComponentKind::Weapon => "weapon",
     }
 }
 
@@ -373,6 +374,15 @@ impl<'js> FromJs<'js> for ComponentValue {
                         "{kind} is bridge-managed; setComponent is not supported \
                          (use the dedicated reaction primitives instead)"
                     ),
+                ))
+            }
+            "weapon" => {
+                // Weapon components are descriptor-owned and refreshed by hot reload.
+                let _ = o;
+                Err(rquickjs::Exception::throw_type(
+                    ctx,
+                    "weapon is descriptor-owned; setComponent is not supported \
+                     (update the weapon descriptor instead)",
                 ))
             }
             "fog_volume" => {
@@ -524,7 +534,8 @@ impl<'js> IntoJs<'js> for ComponentValue {
             }
             other @ (ComponentValue::BillboardEmitter(_)
             | ComponentValue::ParticleState(_)
-            | ComponentValue::SpriteVisual(_)) => {
+            | ComponentValue::SpriteVisual(_)
+            | ComponentValue::Weapon(_)) => {
                 let json = serde_json::to_value(&other).map_err(|e| {
                     rquickjs::Exception::throw_type(
                         ctx,
@@ -574,6 +585,14 @@ impl FromLua for ComponentValue {
                     "{kind} is bridge-managed; setComponent is not supported \
                      (use the dedicated reaction primitives instead)"
                 )))
+            }
+            "weapon" => {
+                let _ = t;
+                Err(mlua::Error::RuntimeError(
+                    "weapon is descriptor-owned; setComponent is not supported \
+                     (update the weapon descriptor instead)"
+                        .to_string(),
+                ))
             }
             "fog_volume" => {
                 // The runtime-tweakable fields. Any AABB fields are baked
@@ -677,7 +696,8 @@ impl IntoLua for ComponentValue {
             }
             other @ (ComponentValue::BillboardEmitter(_)
             | ComponentValue::ParticleState(_)
-            | ComponentValue::SpriteVisual(_)) => {
+            | ComponentValue::SpriteVisual(_)
+            | ComponentValue::Weapon(_)) => {
                 let json = serde_json::to_value(&other).map_err(|e| {
                     mlua::Error::RuntimeError(format!("ComponentValue serialization failed: {e}"))
                 })?;

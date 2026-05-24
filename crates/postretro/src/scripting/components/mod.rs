@@ -10,3 +10,4 @@ pub(crate) mod light;
 pub(crate) mod particle;
 pub(crate) mod player_movement;
 pub(crate) mod sprite_visual;
+pub(crate) mod weapon;
